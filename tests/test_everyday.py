@@ -40,8 +40,11 @@ class _Prov:
 
 
 def F(t):
-    """wrap output in the fence a compliant model emits (see everyday._ask)."""
-    return f"<<<OUT>>>{t}<<<END>>>"
+    """wrap output in the OK fence a compliant model emits (see everyday._ask)."""
+    return f"<<<OK>>>{t}<<<END>>>"
+
+
+FAIL = "<<<FAIL>>>"   # what a compliant model emits when it declines
 
 
 def _rec(args):
@@ -112,43 +115,31 @@ def test_reminder_schedules_and_fires():
     s.close(); a.close(); j.close()
 
 
-def test_translate_unfenced_refusal_fails_but_content_verbatim():
-    print("test_translate_unfenced_refusal_fails_but_content_verbatim")
-    # translate treats output as VERBATIM user content (check_refusal=False), so
-    # the STRUCTURAL fence is its guard: an UNFENCED model refusal -> "" -> FAILED.
-    for refusal in ("CANNOT", "I'm sorry, I can't translate that due to policy", "无法翻译此内容"):
-        out = E._translate_execute(_rec({"text": "???"}), provider=_Prov(refusal))
+def test_declared_refusal_fails_but_content_verbatim():
+    print("test_declared_refusal_fails_but_content_verbatim")
+    # STRUCTURAL contract: a model that declines emits <<<FAIL>>> (or nothing) ->
+    # "" -> FAILED. No content guessing, so refusal-idiom CONTENT is not false-failed.
+    for decline in (FAIL, "", "I'm sorry, I can't translate that due to policy"):
+        out = E._translate_execute(_rec({"text": "???"}), provider=_Prov(decline))
         v = E._delivered("translation", "translated")(_rec({}), out)
-        check(v.status == FAILED, f"unfenced refusal {refusal!r} must be FAILED, got {v.status}")
-    # a real translation that happens to say sorry IS fenced by a compliant model
-    out2 = E._translate_execute(_rec({"text": "对不起"}), provider=_Prov(F("I'm sorry")))
-    check(E._delivered("translation", "translated")(_rec({}), out2).status == VERIFIED,
-          "a real (fenced) translation 'I'm sorry' must VERIFY")
-    # a CORRECT translation whose content IS a refusal idiom must VERIFY (real work)
-    out3 = E._translate_execute(_rec({"text": "我无法帮你"}), provider=_Prov(F("I cannot help you")))
-    check(E._delivered("translation", "translated")(_rec({}), out3).status == VERIFIED,
-          "translating refusal-idiom content must VERIFY, not false-fail")
-    # a long real translation mentioning 'no results' is not failed
-    long_ok = "Section 3: when the query returns no results, check the index. " * 3
-    out4 = E._translate_execute(_rec({"text": "x"}), provider=_Prov(F(long_ok)))
-    check(E._delivered("translation", "translated")(_rec({}), out4).status == VERIFIED,
-          "a long real translation mentioning 'no results' must VERIFY")
+        check(v.status == FAILED, f"a declined translate {decline[:20]!r} must be FAILED")
+    # a CORRECT translation whose content IS a refusal idiom VERIFIES — the model
+    # DECLARED success (<<<OK>>>…), we don't second-guess the words.
+    for src, tgt in (("对不起", "I'm sorry"), ("我无法帮你", "I cannot help you"),
+                     ("查询无结果", "the query returned no results")):
+        out = E._translate_execute(_rec({"text": src}), provider=_Prov(F(tgt)))
+        check(E._delivered("translation", "translated")(_rec({}), out).status == VERIFIED,
+              f"a declared translation {tgt!r} must VERIFY, not false-fail")
 
 
-def test_summarize_fenced_refusal_is_failed():
-    print("test_summarize_fenced_refusal_is_failed")
-    # web.summarize output IS assistant prose, so it keeps the refusal check: a
-    # fenced refusal (any shape/length) is FAILED, not a fabricated summary.
-    verbose = ("I'm sorry, but I cannot assist with summarizing this page, as it appears "
-               "to contain content that may violate applicable policies, and I'm not able "
-               "to help with this request.")   # 173 chars
-    for refusal in ("I cannot help with that.", "I can't summarize that content.",
-                    "无法完成该请求", "抱歉，我无法完成", verbose):
-        got = (200, "<html><body>" + "real page content here. " * 5 + "</body></html>")
+def test_summarize_declared_refusal_is_failed():
+    print("test_summarize_declared_refusal_is_failed")
+    got = (200, "<html><body>" + "real page content here. " * 5 + "</body></html>")
+    for decline in (FAIL, "", "Sorry, I cannot help with that request at all."):
         out = E._summarize_execute(_rec({"url": "http://example.com"}),
-                                   provider=_Prov(F(refusal)), fetch=lambda u, g=got: g)
+                                   provider=_Prov(decline), fetch=lambda u, g=got: g)
         v = E._delivered("summary", "summarized")(_rec({}), out)
-        check(v.status == FAILED, f"a fenced summarize refusal must be FAILED: {refusal[:34]!r}")
+        check(v.status == FAILED, f"a declined summarize {decline[:20]!r} must be FAILED")
 
 
 def test_summarize_error_page_is_failed():

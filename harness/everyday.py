@@ -23,47 +23,31 @@ def _provider():
     return make_provider(_s.get("PROVIDER"), _s.get("MODEL"))
 
 
-_OUT_FENCE = re.compile(r"<<<OUT>>>(.*?)<<<END>>>", re.S)
-# An ASSISTANT-refusal idiom (verb+object), for the rare case where a model BOTH
-# refuses AND wrongly fences it. Deliberately NARROW: it must be a refusal to
-# act ("I can't help", "无法翻译"), NOT a bare "sorry"/"抱歉" — those are valid
-# TRANSLATION content (对不起 -> "I'm sorry") and must never be false-failed.
-_REFUSAL = re.compile(
-    r"(?i)(i\s+(?:can'?t|cannot|can\s?not|am\s+unable\s+to|am\s+not\s+able\s+to|refuse\s+to|won'?t)"
-    r"\s+(?:help|assist|do|comply|provide|translate|summar)"
-    r"|as\s+an\s+ai\b|i\s+can'?t\s+help|i'?m\s+not\s+able\s+to\s+help"
-    r"|无法(?:翻译|完成|帮|协助|提供|回答|处理)|不能(?:帮|协助|翻译|完成)|我无法|拒绝(?:翻译|完成|帮))")
+_OK_FENCE = re.compile(r"<<<OK>>>(.*?)<<<END>>>", re.S)
 
 
-def _ask(system: str, user: str, provider=None, check_refusal: bool = True) -> str:
-    """Ask the model and return ONLY what it wrapped in an output fence. A decline
-    of ANY shape — the bare token, a refusal-with-reason, a content-policy prose
-    refusal, a non-English refusal — carries no fence, so it collapses to "" and
-    the caller's done-check reports FAILED. This is structural: a real answer
-    (even one that says "I'm sorry") lives inside the fence and passes. Never
-    fabricates success from refusal text."""
+def _ask(system: str, user: str, provider=None) -> str:
+    """Ask the model under a STRUCTURAL status contract, not content inspection.
+
+    The model must reply with EXACTLY `<<<OK>>>…<<<END>>>` when it did the work,
+    or `<<<FAIL>>>` when it cannot (refusal / policy / empty input). We return the
+    OK payload, or "" for FAIL / non-compliance -> the caller reports FAILED. This
+    is why translating "我无法帮你" -> "I cannot help you" VERIFIES (the model
+    emitted <<<OK>>>I cannot help you<<<END>>> — it did translate) while an actual
+    refusal ("<<<FAIL>>>") does not: the model DECLARES success, we don't guess it
+    from the words. No content-based refusal heuristic (those churn endlessly and
+    false-fail real content); the residual is a model that ignores the contract.
+    """
     p = provider or _provider()
-    sysp = (system + "\n\nWrap your ENTIRE output between the markers <<<OUT>>> and "
-            "<<<END>>>, each on its own. If you cannot do this, or the input is "
-            "empty/insufficient, put NOTHING between the markers.")
+    sysp = (system + "\n\nReply with EXACTLY one of:\n"
+            "  <<<OK>>>\n<your result>\n<<<END>>>      — if you did it\n"
+            "  <<<FAIL>>>                              — if you cannot (refusal, "
+            "policy, or empty/insufficient input)\nOutput nothing else.")
     c = p.complete(sysp, [{"role": "user", "content": (user or "")[:12000]}], [])
     if getattr(c, "stop_reason", "") == "error":
         return ""
-    raw = getattr(c, "text", "") or ""
-    m = _OUT_FENCE.search(raw)
-    if not m:
-        return ""                     # no fence -> refusal / non-compliance -> FAILED, honest
-    out = m.group(1).strip()
-    # defense-in-depth: a model that BOTH refuses AND (wrongly) fences it. Match an
-    # ACT-refusal idiom ("I cannot translate", "无法翻译") in the OPENING only — not
-    # content phrases like "no results", which are legitimate content. translate
-    # passes VERBATIM user content through _ask, so its output can legitimately BE a
-    # refusal idiom (translating 我无法帮你 -> "I cannot help you") — it sets
-    # check_refusal=False. The structural no-fence check above still fails a genuine
-    # model refusal there. summarize/research keep the check (assistant-authored).
-    if check_refusal and out and _REFUSAL.search(out[:120]):
-        return ""
-    return out
+    m = _OK_FENCE.search(getattr(c, "text", "") or "")
+    return m.group(1).strip() if m else ""      # <<<FAIL>>>/non-compliant -> "" -> FAILED
 
 
 def _delivered(field: str, label: str):
@@ -80,8 +64,8 @@ def _delivered(field: str, label: str):
 def _translate_execute(record, provider=None):
     text = record.args.get("text", "")
     to = record.args.get("to") or "English"
-    out = _ask(f"Translate the text into {to}. Output ONLY the translation, no notes.",
-               text, provider, check_refusal=False)   # output is verbatim user content
+    out = _ask(f"Translate the text into {to}. Put ONLY the translation in <<<OK>>>.",
+               text, provider)
     return {"translation": out, "to": to}
 
 
