@@ -54,11 +54,13 @@ def _ask(system: str, user: str, provider=None) -> str:
     if not m:
         return ""                     # no fence -> refusal / non-compliance -> FAILED, honest
     out = m.group(1).strip()
-    # defense-in-depth: a model that BOTH refuses AND (wrongly) fences it. Only
-    # collapse a SHORT + refusal-shaped fenced output, so a real translation/
-    # summary that merely mentions "no results"/"sorry" is never falsely failed.
-    from .research import _NOINFO
-    if out and len(out) < 120 and (_NOINFO.search(out[:120]) or _REFUSAL.search(out[:120])):
+    # defense-in-depth: a model that BOTH refuses AND (wrongly) fences it. We match
+    # only an ACT-refusal idiom ("I cannot translate", "无法翻译") in the OPENING —
+    # NOT content phrases like "no results"/"unable to find", which are legitimate
+    # translation/summary CONTENT. No length cap (safety refusals run long), and
+    # scanning only out[:120] keeps false positives to outputs that literally BEGIN
+    # by refusing the act.
+    if out and _REFUSAL.search(out[:120]):
         return ""
     return out
 
@@ -155,7 +157,8 @@ def _reminder_execute(record):
         # long laptop sleep. Size it well past any realistic reminder life.
         nonce = a.propose("note.append",
                           {"file": "reminders.txt", "text": f"[reminder] {text}"},
-                          job_id=jid, ttl_s=max(86400, fire - now + 10 * 365 * 86400))
+                          job_id=jid, ttl_s=max(86400, fire - now + 10 * 365 * 86400),
+                          auto=True)   # daemon-fired at fire time — keep out of the human inbox
         s = Scheduler(a, j, db_path=os.path.join(d, "jobs.db"))
         try:
             s.schedule(jid, nonce, fire_at=fire, now=now)

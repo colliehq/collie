@@ -54,6 +54,17 @@ def test_happy_path_fires_once_and_receipts():
     st.close()
 
 
+def test_auto_actions_hidden_from_inbox():
+    print("test_auto_actions_hidden_from_inbox")
+    st = ActionStore(_tmp())
+    human = st.propose("pay.charge", {"amt": 1})              # needs human confirm
+    auto = st.propose("note.append", {"text": "x"}, auto=True)  # daemon-driven
+    nonces = [p["nonce"] for p in st.pending()]
+    check(human in nonces, "a human-confirm action shows in the inbox")
+    check(auto not in nonces, "an auto (daemon) action is hidden from the inbox")
+    st.close()
+
+
 def test_single_use_no_double_send():
     print("test_single_use_no_double_send")
     st = ActionStore(_tmp())

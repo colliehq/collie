@@ -85,7 +85,8 @@ def _live_runner(query: str) -> str:
     # authenticated browser/Chrome profile — scrub those for the autonomous run so
     # research can never reach the logged-in session, then restore.
     _scrub = ("COLLIE_WEBSEARCH_BRIDGE", "COLLIE_WEBSEARCH_CHROME",
-              "COLLIE_CHROME", "COLLIE_CHROME_PROFILE")
+              "COLLIE_CHROME", "COLLIE_CHROME_PROFILE",
+              "COLLIE_WEBFETCH_ALLOW_LOCAL")   # keep the SSRF guard ON for unattended fetches
     saved = {k: os.environ.pop(k, None) for k in _scrub}
     try:
         res = h.run("research", _PROMPT + query)

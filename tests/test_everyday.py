@@ -122,12 +122,15 @@ def test_translate_refusal_is_failed_not_fabricated():
     out2 = E._translate_execute(_rec({"text": "对不起"}), provider=_Prov(F("I'm sorry")))
     v2 = E._delivered("translation", "translated")(_rec({}), out2)
     check(v2.status == VERIFIED, "a real (fenced) translation 'I'm sorry' must VERIFY")
-    # SHORT fenced refusals of any shape are caught (defense-in-depth)
-    for refusal in ("I was unable to find a translation", "I can't translate that content.",
-                    "I cannot help with that.", "无法翻译该内容", "抱歉，我无法完成"):
+    # fenced refusals of any shape/length are caught (defense-in-depth)
+    verbose = ("I'm sorry, but I cannot assist with translating this text, as it appears "
+               "to contain content that may violate applicable policies, and I'm not able "
+               "to help with this request.")   # 173 chars — must still be caught
+    for refusal in ("I cannot provide a translation of that.", "I can't translate that content.",
+                    "I cannot help with that.", "无法翻译该内容", "抱歉，我无法完成", verbose):
         o = E._translate_execute(_rec({"text": "x"}), provider=_Prov(F(refusal)))
         v = E._delivered("translation", "translated")(_rec({}), o)
-        check(v.status == FAILED, f"a short fenced refusal must be FAILED: {refusal!r}")
+        check(v.status == FAILED, f"a fenced refusal must be FAILED: {refusal[:40]!r}")
     # but a LONG genuine translation that mentions 'no results' is NOT failed
     long_ok = "Section 3: when the query returns no results, check the index. " * 3
     out4 = E._translate_execute(_rec({"text": "x"}), provider=_Prov(F(long_ok)))
@@ -173,6 +176,28 @@ def test_reminder_fires_even_on_a_very_late_wake():
           "a reminder must still fire on a very late catch-up wake (TTL never expires it)")
     with open(os.path.join(_state, "notes", "reminders.txt"), encoding="utf-8") as f:
         check("pay rent" in f.read(), "the reminder note is actually written on late fire")
+    s.close(); a.close(); j.close()
+
+
+def test_reminder_not_in_human_confirm_inbox():
+    print("test_reminder_not_in_human_confirm_inbox")
+    clear_registry(); caps.register_builtins()
+    from harness.actions import ActionStore
+    out = E._reminder_execute(_rec({"text": "take pills", "delay_minutes": 240}))
+    a = ActionStore(os.path.join(_state, "actions.db"))
+    pend_nonces = [p["nonce"] for p in a.pending()]
+    # the parked reminder action must NOT appear in the inbox — otherwise a human
+    # could click confirm and fire it early (its real fire time then no-ops).
+    check(all("reminder" not in (p.get("capability") or "") for p in a.pending()),
+          "no reminder machinery in the inbox")
+    # more precisely: the scheduled note.append nonce is auto -> hidden
+    from harness.jobs import JobStore
+    from harness.scheduler import Scheduler
+    j = JobStore(os.path.join(_state, "jobs.db"))
+    s = Scheduler(a, j, db_path=os.path.join(_state, "jobs.db"))
+    parked = [w["nonce"] for w in s.pending_waits() if w["job_id"] == out["reminder_job"]]
+    check(parked and all(n not in pend_nonces for n in parked),
+          "the parked reminder action is hidden from the human confirm inbox")
     s.close(); a.close(); j.close()
 
 

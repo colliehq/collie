@@ -174,11 +174,13 @@ class ActionStore:
             nonce TEXT PRIMARY KEY, job_id TEXT, capability TEXT, args_json TEXT,
             digest TEXT, risk TEXT, leash_id TEXT, snapshot_json TEXT, state TEXT,
             created_at INTEGER, expires_at INTEGER, decided_at INTEGER,
-            executed_at INTEGER, attempted_at INTEGER, refuse_reason TEXT)""")
-        try:  # guarded migration for a db created before attempted_at existed
-            c.execute("ALTER TABLE pending_actions ADD COLUMN attempted_at INTEGER")
-        except sqlite3.OperationalError:
-            pass
+            executed_at INTEGER, attempted_at INTEGER, auto INTEGER DEFAULT 0,
+            refuse_reason TEXT)""")
+        for col, decl in (("attempted_at", "INTEGER"), ("auto", "INTEGER DEFAULT 0")):
+            try:  # guarded migrations for a db created before these columns existed
+                c.execute("ALTER TABLE pending_actions ADD COLUMN %s %s" % (col, decl))
+            except sqlite3.OperationalError:
+                pass
         c.execute("""CREATE TABLE IF NOT EXISTS receipts(
             receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, nonce TEXT, job_id TEXT,
             capability TEXT, args_redacted TEXT, leash_id TEXT, approved INTEGER,
@@ -189,19 +191,23 @@ class ActionStore:
     # ── propose: materialize the exact action, return a payload-bound nonce ──
     def propose(self, capability: str, args: dict, risk: str = "irreversible",
                 job_id: str = "", leash_id: str = "", snapshot: dict = None,
-                ttl_s: int = 86400) -> str:
+                ttl_s: int = 86400, auto: bool = False) -> str:
+        # auto=True marks a daemon-driven action (e.g. a scheduled reminder's
+        # note.append): it is executed by colliejobd at fire time, never by a human,
+        # so it MUST stay out of the confirm inbox — otherwise a person could click
+        # it and fire the reminder early.
         nonce = secrets.token_hex(16)
         now = int(time.time())
         with self._lock:
             self.db.execute(
                 """INSERT INTO pending_actions(nonce,job_id,capability,args_json,digest,
                      risk,leash_id,snapshot_json,state,created_at,expires_at,
-                     decided_at,executed_at,attempted_at,refuse_reason)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,0,'')""",
+                     decided_at,executed_at,attempted_at,auto,refuse_reason)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,0,?,'')""",
                 (nonce, job_id, capability, json.dumps(args or {}, ensure_ascii=False),
                  _mac(self._key, capability, args, leash_id, job_id, risk, snapshot), risk, leash_id,
                  json.dumps(snapshot or {}, ensure_ascii=False), PENDING,
-                 now, now + int(ttl_s)))
+                 now, now + int(ttl_s), int(auto)))
             self.db.commit()
         return nonce
 
@@ -377,9 +383,11 @@ class ActionStore:
         return [dict(r) for r in self.db.execute(q + " ORDER BY receipt_id", args)]
 
     def pending(self):
-        """Actions materialized but not yet decided — the confirm inbox."""
+        """Actions awaiting a HUMAN confirm — the inbox. Excludes auto (daemon-
+        driven) actions like a scheduled reminder, which must never be human-fired."""
         return [dict(r) for r in self.db.execute(
-            "SELECT * FROM pending_actions WHERE state=? ORDER BY created_at", (PENDING,))]
+            "SELECT * FROM pending_actions WHERE state=? AND COALESCE(auto,0)=0 "
+            "ORDER BY created_at", (PENDING,))]
 
     def list(self, state=None):
         q, a = "SELECT * FROM pending_actions", ()
