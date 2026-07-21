@@ -46,8 +46,21 @@ def test_model_path_maps_to_registered_capability():
     plan = mandate.compile("remind me to buy milk", p)
     check(plan["capability"] == "note.append", "model plan must select note.append")
     check(plan["args"]["text"] == "buy milk", "args must carry through")
-    check(plan["leash"] == {"may": ["note.*"]}, "leash must be scoped to the family")
+    check("note.append" in plan["leash"]["may"] and "note.*" in plan["leash"]["may"],
+          "leash must permit the capability itself AND its family")
     check(plan["source"] == "model", "source should be model")
+
+
+def test_leash_permits_dotless_capability():
+    print("test_leash_permits_dotless_capability")
+    clear_registry(); caps.register_builtins()
+    from harness.leash import evaluate, DENY
+    # a no-dot capability (translate) must not be denied by its own compiled leash
+    plan = mandate.compile("把这句翻译成英文", _Prov(
+        '{"capability":"translate","args":{"text":"这句","to":"English"},"goal":"translate"}'))
+    check(plan["capability"] == "translate", "maps to translate")
+    dec = evaluate(plan["leash"], "translate", "reversible")
+    check(dec.decision != DENY, f"translate must not be denied by its own leash, got {dec.decision}")
 
 
 def test_unregistered_capability_falls_back_to_research():

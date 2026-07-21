@@ -50,8 +50,11 @@ def _catalog() -> str:
 
 
 def _leash_for(capability: str) -> dict:
+    # permit the capability itself AND its family — a no-dot name like "translate"
+    # does NOT match the glob "translate.*", so the exact name must be included or
+    # the compiled leash would deny its own action.
     family = (capability or "").split(".")[0] or capability
-    return {"may": [f"{family}.*"]}
+    return {"may": sorted({capability, f"{family}.*"})}
 
 
 def _heuristic(text: str) -> dict:
