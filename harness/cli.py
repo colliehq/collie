@@ -560,6 +560,10 @@ def cmd_jobs(args):
             print("catch-up: fired %d due wait(s); %d still pending"
                   % (fired, len(sched.pending_waits())))
             sched.close()
+        elif args.action == "web":
+            # the delegation-first dashboard (Today / Inbox / Receipts).
+            from .jobsweb import serve
+            serve(port=int(args.port) if args.port else 8794, state_dir=d)
         elif args.action == "daemon":
             # colliejobd: catch up on start, then tick on an interval. Owns no
             # model process — it only drives due, already-materialized actions.
@@ -942,13 +946,14 @@ def main(argv=None):
     # jobs: the delegate surface — list jobs, confirm gated actions, read receipts.
     pj = sub.add_parser("jobs", help="delegated work: ls | inbox | run <cap> | confirm <nonce> | receipts")
     pj.add_argument("action",
-                    choices=["ls", "inbox", "run", "confirm", "receipts", "wake", "daemon"])
+                    choices=["ls", "inbox", "run", "confirm", "receipts", "wake", "daemon", "web"])
     pj.add_argument("text", nargs="?", default="",
                     help="nonce (confirm/receipts) or capability name (run)")
     pj.add_argument("jargs", nargs="?", default="", help="JSON args for `run`")
     pj.add_argument("--goal", default="", help="job goal text (run)")
     pj.add_argument("--leash", default="", help="job leash as JSON (run)")
     pj.add_argument("--interval", default=60, type=float, help="daemon tick seconds")
+    pj.add_argument("--port", default=0, type=int, help="dashboard port (web; default 8794)")
     pj.set_defaults(fn=cmd_jobs)
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally

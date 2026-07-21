@@ -22,6 +22,7 @@ if $PY tests/test_leash.py >/dev/null 2>&1; then echo "  leash (authority allow/
 if $PY tests/test_capabilities.py >/dev/null 2>&1; then echo "  capabilities (note.append live e2e) OK"; else echo "  capabilities FAIL"; rc=1; fi
 if $PY tests/test_scheduler.py >/dev/null 2>&1; then echo "  scheduler (durable wait/catch-up) OK"; else echo "  scheduler FAIL"; rc=1; fi
 if $PY tests/test_gate_freshness.py >/dev/null 2>&1; then echo "  gate freshness (loop regression) OK"; else echo "  gate freshness FAIL"; rc=1; fi
+if $PY tests/test_jobsweb.py >/dev/null 2>&1; then echo "  jobs web (dashboard + CSRF) OK"; else echo "  jobs web FAIL"; rc=1; fi
 if $PY tests/test_cli_jobs.py >/dev/null 2>&1; then echo "  cli jobs (inbox/confirm/receipts) OK"; else echo "  cli jobs FAIL"; rc=1; fi
 
 echo "── model catalog + codex provider (offline) ─────────────"
