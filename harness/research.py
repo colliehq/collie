@@ -25,7 +25,13 @@ from .jobs import Capability, register
 from .observe import fetch_loggedout
 
 _URL = re.compile(r"https?://[^\s)\]}>\"'，、。（）：；]+")   # also stop at CJK punctuation
-_RESEARCH_TOOLS = {"web_search", "web_fetch", "browser_open", "browser_read", "browser_links"}
+# Autonomous research uses ONLY the cookieless, SSRF-guarded web tools — NOT the
+# user's authenticated browser bridge. Driving a logged-in browser with no human
+# present (and feeding its pages to the model) is a real exfiltration/injection
+# risk; authenticated-browser research belongs behind a confirm, not here.
+_RESEARCH_TOOLS = {"web_search", "web_fetch"}
+_NOINFO = re.compile(r"(?i)^(i\s+(couldn'?t|could not|was unable|can'?t)\s+find|"
+                     r"no\s+(information|results?|data)\b|n/?a\b|没有(找到|相关)|查不到)")
 
 _PROMPT = (
     "Research this and give a SHORT recommendation (a few sentences), then a "
@@ -52,8 +58,16 @@ def _live_runner(query: str) -> str:
     from . import settings as _s
     _s.apply()
     h = make_harness(_notes_dir(), provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
-                     project="research", embed="hash", browser=True, web_search=True)
-    # read-only: drop edit/write/bash so a research run can have no side effect
+                     project="research", embed="hash", browser=False, web_search=True)
+    # ensure the cookieless web tools exist even if a live bridge suppressed them
+    # (default_registry drops web_search/web_fetch when the bridge is on).
+    from .websearch import register_web_search
+    from .webfetch import register_web_fetch
+    if not h.registry.get("web_search"):
+        register_web_search(h.registry)
+    if not h.registry.get("web_fetch"):
+        register_web_fetch(h.registry)
+    # read-only + cookieless: keep ONLY web_search/web_fetch (no bridge, no edit/bash)
     for name in list(h.registry._tools):
         if name not in _RESEARCH_TOOLS:
             del h.registry._tools[name]
@@ -95,8 +109,8 @@ def _research_verify(record, result):
     answer is the only genuine miss."""
     result = result or {}
     answer = (result.get("answer") or "").strip()
-    if not answer:
-        return _v.Verdict(_v.FAILED, "no answer produced")
+    if not answer or _NOINFO.match(answer):
+        return _v.Verdict(_v.FAILED, "no answer produced")   # empty or a bare no-info reply
     cites = result.get("citations") or []
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
     detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"

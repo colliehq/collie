@@ -21,7 +21,9 @@ from .jobs import Capability, register
 
 
 def notes_dir() -> str:
-    d = os.environ.get("COLLIE_NOTES_DIR") or os.path.expanduser("~/.collie/notes")
+    d = (os.environ.get("COLLIE_NOTES_DIR")
+         or os.path.join(os.environ.get("COLLIE_STATE_DIR")
+                         or os.path.expanduser("~/.collie"), "notes"))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -35,6 +37,8 @@ def _safe_path(name) -> str:
 def _note_execute(record):
     p = _safe_path(record.args.get("file"))
     text = str(record.args.get("text", ""))
+    if not text.strip():
+        return {"path": p, "skipped": "empty note"}   # write nothing; verify will FAIL it
     with open(p, "a", encoding="utf-8") as f:
         f.write(text + "\n")
     return {"path": p}
@@ -49,6 +53,10 @@ def _note_verify(record, result):
     """Independent post-check: re-open the file and assert the text landed."""
     p = _safe_path(record.args.get("file"))
     text = str(record.args.get("text", ""))
+    if not text.strip():
+        # `"" in content` is ALWAYS True — an empty note would fabricate a
+        # done_verified for a write that recorded nothing. Fail it honestly.
+        return _v.Verdict(_v.FAILED, "empty note — nothing to record")
     obs = []
     try:
         with open(p, encoding="utf-8") as f:

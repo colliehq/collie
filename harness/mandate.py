@@ -49,6 +49,19 @@ def _catalog() -> str:
     return "\n".join(lines) or "(none registered)"
 
 
+# the arg each capability cannot run without — a job missing it is garbage and
+# must never be created (it would execute on nothing and could fabricate success).
+_REQUIRED_ARG = {"note.append": "text", "translate": "text",
+                 "web.summarize": "url", "research.web": "query", "reminder.set": "text"}
+
+
+def _args_ok(capability: str, args: dict) -> bool:
+    req = _REQUIRED_ARG.get(capability)
+    if not req:
+        return True
+    return bool(str((args or {}).get(req) or "").strip())
+
+
 def _leash_for(capability: str) -> dict:
     # permit the capability itself AND its family — a no-dot name like "translate"
     # does NOT match the glob "translate.*", so the exact name must be included or
@@ -106,14 +119,16 @@ def compile(text: str, provider=None) -> dict:
             if getattr(comp, "stop_reason", "") != "error":
                 plan = _parse(getattr(comp, "text", "") or "")
                 cap = (plan or {}).get("capability")
-                if plan and cap and get_capability(cap):
+                if plan and cap and get_capability(cap) and _args_ok(cap, plan.get("args")):
                     return {"capability": cap,
                             "args": plan.get("args") or {},
                             "goal": plan.get("goal") or text[:60],
                             "leash": _leash_for(cap),
                             "source": "model"}
-                # model returned null or an unregistered capability -> fall through
-                # to the heuristic, which routes anything to research (never refuse)
+                # model returned null / an unregistered capability / missing a
+                # required arg -> fall through to the heuristic, which routes
+                # anything to research with the FULL text (never refuse, never
+                # create a garbage job)
         except Exception:
             pass
     return _heuristic(text)

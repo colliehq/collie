@@ -100,6 +100,18 @@ def test_non_note_falls_back_to_research():
     check(plan["args"]["query"] == "帮我订一张明天去北京的机票", "the request becomes the query")
 
 
+def test_missing_required_arg_falls_back_not_garbage():
+    print("test_missing_required_arg_falls_back_not_garbage")
+    clear_registry(); caps.register_builtins()
+    # model picks note.append but forgets `text` -> must NOT create an empty-note
+    # job (which would fabricate success); falls back to research with full text.
+    p = _Prov('{"capability":"note.append","args":{"file":"todo.txt"},"goal":"note"}')
+    plan = mandate.compile("找一下附近好吃的火锅", p)
+    check(plan["capability"] == "research.web",
+          f"a job missing its required arg must fall back, got {plan}")
+    check(plan["args"]["query"] == "找一下附近好吃的火锅", "full text preserved as query")
+
+
 def test_bad_json_from_model_falls_back():
     print("test_bad_json_from_model_falls_back")
     clear_registry(); caps.register_builtins()
