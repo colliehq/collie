@@ -122,11 +122,12 @@ def test_translate_refusal_is_failed_not_fabricated():
     out2 = E._translate_execute(_rec({"text": "对不起"}), provider=_Prov(F("I'm sorry")))
     v2 = E._delivered("translation", "translated")(_rec({}), out2)
     check(v2.status == VERIFIED, "a real (fenced) translation 'I'm sorry' must VERIFY")
-    # a SHORT fenced refusal-shaped output is still caught (defense-in-depth)
-    out3 = E._translate_execute(_rec({"text": "x"}),
-                                provider=_Prov(F("I was unable to find a translation")))
-    v3 = E._delivered("translation", "translated")(_rec({}), out3)
-    check(v3.status == FAILED, "a short fenced no-info output must be FAILED")
+    # SHORT fenced refusals of any shape are caught (defense-in-depth)
+    for refusal in ("I was unable to find a translation", "I can't translate that content.",
+                    "I cannot help with that.", "无法翻译该内容", "抱歉，我无法完成"):
+        o = E._translate_execute(_rec({"text": "x"}), provider=_Prov(F(refusal)))
+        v = E._delivered("translation", "translated")(_rec({}), o)
+        check(v.status == FAILED, f"a short fenced refusal must be FAILED: {refusal!r}")
     # but a LONG genuine translation that mentions 'no results' is NOT failed
     long_ok = "Section 3: when the query returns no results, check the index. " * 3
     out4 = E._translate_execute(_rec({"text": "x"}), provider=_Prov(F(long_ok)))

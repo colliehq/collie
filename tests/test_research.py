@@ -22,7 +22,7 @@ os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = "1"   # citations are a localhost fi
 from harness import research  # noqa: E402
 from harness.jobs import clear_registry, get_capability  # noqa: E402
 from harness import capabilities as caps  # noqa: E402
-from harness.verifier import VERIFIED, INCONCLUSIVE  # noqa: E402
+from harness.verifier import VERIFIED, INCONCLUSIVE, FAILED  # noqa: E402
 
 _fails = []
 
@@ -62,11 +62,19 @@ def main():
     v = research._research_verify(type("R", (), {"args": {}})(), out)
     check(v.status == VERIFIED, f"a reachable cited source must VERIFY, got {v.status}")
 
-    print("test_answer_without_sources_still_verifies")
-    # deliverable-is-the-answer: a real answer succeeds even with no sources.
+    print("test_source_less_answer_fails")
+    # research's deliverable is a SOURCED answer; no URL == not properly delivered
+    # (and is indistinguishable from a refusal), so it fails honestly.
     out2 = research.run_research("vague question", runner=lambda q: "Here is a useful answer.")
     v2 = research._research_verify(type("R", (), {"args": {}})(), out2)
-    check(v2.status == VERIFIED, f"a delivered answer must VERIFY, got {v2.status}")
+    check(v2.status == FAILED, f"a source-less answer must FAIL, got {v2.status}")
+
+    print("test_bare_refusals_of_any_shape_fail")
+    for refusal in ("Sorry, I can't help with that right now.", "I cannot help with that.",
+                    "I refuse to do this.", "抱歉，我无法翻译这个。", "不能帮你做这个。"):
+        o = research.run_research("q", runner=lambda q, n=refusal: n)   # no Sources -> no cites
+        v = research._research_verify(type("R", (), {"args": {}})(), o)
+        check(v.status == FAILED, f"a bare refusal must FAIL: {refusal!r} -> {v.status}")
 
     print("test_blocked_source_still_verifies_not_failed")
     # a real site that 403s a cookieless bot must NOT fail the job (the Kickstarter
@@ -94,10 +102,10 @@ def main():
         o = research.run_research("q", runner=lambda q, n=noinfo: n)
         v = research._research_verify(type("R", (), {"args": {}})(), o)
         check(v.status != VERIFIED, f"a hedged no-info reply must NOT verify: {noinfo!r} -> {v.status}")
-    # a real answer that merely opens with 'Sorry' is not falsely failed
-    ok = research.run_research("q", runner=lambda q: "Sorry for the wait — buy it at RideCo.")
+    # a real SOURCED answer that merely opens with 'Sorry' is not falsely failed
+    ok = research.run_research("q", runner=lambda q: f"Sorry for the wait — buy at RideCo. Sources:\n- {src}\n")
     check(research._research_verify(type("R", (), {"args": {}})(), ok).status == VERIFIED,
-          "a real answer opening with 'Sorry' must still verify")
+          "a real sourced answer opening with 'Sorry' must still verify")
 
     print("test_negative_topic_answer_with_sources_verifies")
     # a REAL cited answer to a negative-topic query restates the phrase but must

@@ -24,6 +24,15 @@ def _provider():
 
 
 _OUT_FENCE = re.compile(r"<<<OUT>>>(.*?)<<<END>>>", re.S)
+# An ASSISTANT-refusal idiom (verb+object), for the rare case where a model BOTH
+# refuses AND wrongly fences it. Deliberately NARROW: it must be a refusal to
+# act ("I can't help", "无法翻译"), NOT a bare "sorry"/"抱歉" — those are valid
+# TRANSLATION content (对不起 -> "I'm sorry") and must never be false-failed.
+_REFUSAL = re.compile(
+    r"(?i)(i\s+(?:can'?t|cannot|can\s?not|am\s+unable\s+to|am\s+not\s+able\s+to|refuse\s+to|won'?t)"
+    r"\s+(?:help|assist|do|comply|provide|translate|summar)"
+    r"|as\s+an\s+ai\b|i\s+can'?t\s+help|i'?m\s+not\s+able\s+to\s+help"
+    r"|无法(?:翻译|完成|帮|协助|提供|回答|处理)|不能(?:帮|协助|翻译|完成)|我无法|拒绝(?:翻译|完成|帮))")
 
 
 def _ask(system: str, user: str, provider=None) -> str:
@@ -47,9 +56,9 @@ def _ask(system: str, user: str, provider=None) -> str:
     out = m.group(1).strip()
     # defense-in-depth: a model that BOTH refuses AND (wrongly) fences it. Only
     # collapse a SHORT + refusal-shaped fenced output, so a real translation/
-    # summary that merely mentions "no results"/"找不到" is never falsely failed.
+    # summary that merely mentions "no results"/"sorry" is never falsely failed.
     from .research import _NOINFO
-    if out and len(out) < 120 and _NOINFO.search(out[:120]):
+    if out and len(out) < 120 and (_NOINFO.search(out[:120]) or _REFUSAL.search(out[:120])):
         return ""
     return out
 

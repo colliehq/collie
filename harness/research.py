@@ -128,12 +128,15 @@ def _research_verify(record, result):
     result = result or {}
     answer = (result.get("answer") or "").strip()
     cites = result.get("citations") or []
-    # empty, or a SOURCE-LESS no-info reply. Gate the no-info match on the absence
-    # of citations: a genuine refusal cites nothing, whereas a real answer to a
-    # negative-topic query ("how to fix 'unable to locate package'") legitimately
-    # restates the phrase AND carries Sources — those must still VERIFY.
-    if not answer or (not cites and _NOINFO.search(answer[:200])):
-        return _v.Verdict(_v.FAILED, "no answer produced")
+    # Require a CITATION. The prompt contractually demands a 2-4 URL Sources list,
+    # so a real research answer always carries >=1 URL (even a Kickstarter link that
+    # later 403s a bot — the URL is in the TEXT, reachability is separate/
+    # informational). A refusal of ANY shape ("Sorry, I can't help", "无法完成")
+    # cites nothing -> FAILED. This is the single robust gate: content-phrase
+    # matching leaks (every round found another refusal wording); "did it produce
+    # a sourced answer?" does not.
+    if not answer or not cites:
+        return _v.Verdict(_v.FAILED, "no sourced answer produced")
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
     detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"
               + (f"; {ok}/{len(cites)} sources re-checkable" if cites else ""))
