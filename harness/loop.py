@@ -21,6 +21,7 @@ from .providers import (ModelProvider, Usage, ToolCall, classify_error, is_overf
                         _error_completion)
 from .recorder import Recorder, RunResult
 from .tools import ToolRegistry, ToolCtx, repair_args
+from .verifier import CodeReproVerifier, Mutation, Observation
 
 # Output-truncation feedback (point 1): a tool call whose args were cut off at the output-token
 # limit must NOT execute — its arguments may be silently incomplete. Tell the model to re-issue,
@@ -277,6 +278,23 @@ class Harness:
         if not text or text.upper().lstrip("*# `").startswith("CORRECT"):
             return True, ""
         return False, text
+
+    def _repro_verified(self, did_edit, last_edit_turn, last_repro_turn,
+                        last_repro_failed, last_repro_asserted) -> bool:
+        """Single source of truth for the assert-verify gate: delegated to
+        harness.verifier.CodeReproVerifier so the code gate here and the world
+        done-checks (ListingVerifier, …) share ONE decision implementation.
+        Returns True iff finishing as verified is allowed. The three former inline
+        copies (spin-break guard, finish gate, final receipt verdict) now all call
+        this; equivalence with the historical logic is pinned by
+        tests/test_verifier.py::test_matches_loop_gate."""
+        if not did_edit:
+            return False
+        return CodeReproVerifier(require_assert=self.require_assert).verdict(
+            [Mutation(at=last_edit_turn)],
+            [Observation(channel="exit-code", at=last_repro_turn,
+                         ok=not last_repro_failed, asserted=last_repro_asserted)],
+        ).verified
 
     def run(self, task_id: str, user_msg: str, consolidate: bool = True,
             history: list = None) -> RunResult:
@@ -665,8 +683,9 @@ class Harness:
                         # run), defeating verify_gate/require_assert. Push a repair nudge instead
                         # (bounded by verify_max); otherwise break as before.
                         if self.verify_gate:
-                            _repro_ok = (last_repro_turn >= last_edit_turn and not last_repro_failed
-                                         and (last_repro_asserted or not self.require_assert))
+                            _repro_ok = self._repro_verified(
+                                did_edit, last_edit_turn, last_repro_turn,
+                                last_repro_failed, last_repro_asserted)
                             if not _repro_ok and verify_rounds < self.verify_max:
                                 session["messages"].append(
                                     {"role": "user", "content": self.repair_nudge or REPAIR_NUDGE})
@@ -692,11 +711,11 @@ class Harness:
                 # stubborn model can't spin; falls back to the old one-shot nudge when gate off.
                 if self.self_verify and did_edit and turn < self.max_turns - 1:
                     if self.verify_gate:
-                        repro_ok = (last_repro_turn >= last_edit_turn
-                                    and not last_repro_failed
-                                    # assert-mode: a print-only repro (no `assert`) is NOT
-                                    # verification — the wrong-output-doesn't-raise hole.
-                                    and (last_repro_asserted or not self.require_assert))
+                        # assert-mode: a print-only repro (no `assert`) is NOT verification —
+                        # the wrong-output-doesn't-raise hole. Decision lives in verifier.py.
+                        repro_ok = self._repro_verified(
+                            did_edit, last_edit_turn, last_repro_turn,
+                            last_repro_failed, last_repro_asserted)
                         if not repro_ok and verify_rounds < self.verify_max:
                             nudge = ((self.verify_nudge or VERIFY_NUDGE)
                                      if last_repro_turn < last_edit_turn
@@ -887,10 +906,11 @@ class Harness:
         # streaming UX / editor / ACP surfaces (the "$" the brand promises, now on the wire).
         # verified = edited + a repro ran on the FIXED code + it didn't fail + (in assert-mode) it
         # actually executed an assertion — matching the gate's own definition, so the receipt can't
-        # claim "verified" for a print-only repro under require_assert.
-        res.verified = (did_edit and last_repro_turn >= last_edit_turn
-                        and not last_repro_failed
-                        and (last_repro_asserted or not self.require_assert))
+        # claim "verified" for a print-only repro under require_assert. Same verifier.py decision
+        # as the finish gate, so the receipt can never disagree with why the run was allowed to stop.
+        res.verified = self._repro_verified(
+            did_edit, last_edit_turn, last_repro_turn,
+            last_repro_failed, last_repro_asserted)
         self._emit("receipt", verified=res.verified,
                    prefix_tokens=res.prefix_tokens, prefix_measured=res.prefix_measured,
                    input_tokens=res.input_tokens,

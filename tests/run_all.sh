@@ -13,6 +13,9 @@ echo "── core component tests (Python) ────────────�
 $PY tests/test_core.py 2>&1 | grep -vE "RequestsDependency|warnings.warn|WARN\(costs\)"
 [ "${PIPESTATUS[0]}" = "0" ] || rc=1
 
+echo "── verifier protocol (done-check equivalence) ───────────"
+if $PY tests/test_verifier.py >/dev/null 2>&1; then echo "  verifier OK"; else echo "  verifier FAIL"; rc=1; fi
+
 echo "── model catalog + codex provider (offline) ─────────────"
 if $PY tests/test_catalog.py >/dev/null 2>&1; then echo "  catalog OK"; else echo "  catalog FAIL"; rc=1; fi
 if $PY tests/test_codex_oauth.py >/dev/null 2>&1; then echo "  codex_oauth OK"; else echo "  codex_oauth FAIL"; rc=1; fi
