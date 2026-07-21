@@ -25,11 +25,14 @@ from .jobs import Capability, register
 from .observe import fetch_loggedout
 
 _URL = re.compile(r"https?://[^\s)\]}>\"'，、。（）：；]+")   # also stop at CJK punctuation
-# Autonomous research uses ONLY the cookieless, SSRF-guarded web tools — NOT the
-# user's authenticated browser bridge. Driving a logged-in browser with no human
-# present (and feeding its pages to the model) is a real exfiltration/injection
-# risk; authenticated-browser research belongs behind a confirm, not here.
-_RESEARCH_TOOLS = {"web_search", "web_fetch"}
+# Research uses the user's REAL browser (the product's whole point — reaches
+# bot-blocked sites and their logged-in sessions) but ONLY its READ-ONLY tools
+# (open/read/links) plus the cookieless web_search/web_fetch. It deliberately
+# EXCLUDES browser_eval/type/click/console, so an injected page can at most
+# poison the research report — never drive a send/pay/submit action. web_fetch
+# stays SSRF-guarded (loopback/metadata blocked) for the urllib path.
+_RESEARCH_TOOLS = {"web_search", "web_fetch",
+                   "browser_open", "browser_read", "browser_links"}
 # ANCHORED (with an optional apology lead-in): a no-info/refusal reply BEGINS by
 # stating the model's own inability. A real answer to a negative-topic query
 # ("how to fix 'unable to locate package'") mentions such a phrase MID-string,
@@ -60,7 +63,8 @@ _PROMPT = (
     "the best actionable guidance (the right official tool/directory to use, the major "
     "relevant options, and how to get the rest), and say what you'd need (e.g. a city "
     "or zip). Then a markdown list of 2-4 real source URLs under a final line starting "
-    "'Sources:'. Use web_search and web_fetch. Do NOT edit or write files. Reply with "
+    "'Sources:'. Use the browser (browser_open/browser_read/browser_links) and "
+    "web_search/web_fetch. Do NOT edit or write files. Reply with "
     "EXACTLY the single token NOFINDINGS only if the open web has nothing relevant at "
     "all. Question: ")
 
@@ -82,17 +86,20 @@ def _live_runner(query: str) -> str:
     from .cli import make_harness
     from . import settings as _s
     _s.apply()
+    # browser=None -> default_registry auto-enables the real browser bridge when it
+    # is live (that is the whole point). web_search/web_fetch are force-registered
+    # below so they exist as a fallback even when the bridge suppresses them.
     h = make_harness(_notes_dir(), provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
-                     project="research", embed="hash", browser=False, web_search=True)
-    # ensure the cookieless web tools exist even if a live bridge suppressed them
-    # (default_registry drops web_search/web_fetch when the bridge is on).
+                     project="research", embed="hash", web_search=True)
     from .websearch import register_web_search
     from .webfetch import register_web_fetch
     if not h.registry.get("web_search"):
         register_web_search(h.registry)
     if not h.registry.get("web_fetch"):
         register_web_fetch(h.registry)
-    # read-only + cookieless: keep ONLY web_search/web_fetch (no bridge, no edit/bash)
+    # keep ONLY the read-only research tools: the browser's open/read/links + the
+    # cookieless web tools. Drops browser_eval/type/click/console and edit/bash, so
+    # a research run can neither act nor be injection-driven into acting.
     for name in list(h.registry._tools):
         if name not in _RESEARCH_TOOLS:
             del h.registry._tools[name]
