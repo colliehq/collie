@@ -1,15 +1,15 @@
-"""research.web — a read-only research capability using collie's real browser.
+"""research.web — research + decide, driving the user's real browser.
 
-The plan's first-slice archetype #1 (research + decision), and the delegation
-category the 2026 market evidence says actually works. It runs collie's own
-bounded agent loop restricted to READ-ONLY tools — the user's real logged-in
-browser (browser_open/read/links via the bridge) plus keyless web_search/
-web_fetch — to answer a question with a short, SOURCED recommendation.
+The plan's first-slice archetype #1 (research + decision). It runs collie's own
+bounded agent loop with the FULL browser tool set against the user's real
+logged-in Chrome (open/read/links + type/click/console/eval via the bridge) plus
+keyless web_search/web_fetch — so it can actually USE interactive sites (fill a
+finder form, click through) to produce a short, SOURCED answer. Only the local
+file/shell mutators are dropped, so the browser is the sole actuator.
 
-It is read-only, so it needs no confirm token; the leash marks it reversible and
-drive() runs it autonomously. Its done-check is honest: re-fetch the cited URLs
-through the independent channel and require at least one to be reachable — a
-recommendation with no verifiable source is INCONCLUSIVE, never "verified".
+Its done-check is structural: the answer must declare findings (not NOFINDINGS),
+carry a real cited URL, and follow the mandated Sources: format; cited-URL
+re-fetch is an informational annotation, never a gate.
 
 The agent run is injectable (`runner`) so tests are deterministic without a live
 model or browser.
@@ -25,14 +25,13 @@ from .jobs import Capability, register
 from .observe import fetch_loggedout
 
 _URL = re.compile(r"https?://[^\s)\]}>\"'，、。（）：；]+")   # also stop at CJK punctuation
-# Research uses the user's REAL browser (the product's whole point — reaches
-# bot-blocked sites and their logged-in sessions) but ONLY its READ-ONLY tools
-# (open/read/links) plus the cookieless web_search/web_fetch. It deliberately
-# EXCLUDES browser_eval/type/click/console, so an injected page can at most
-# poison the research report — never drive a send/pay/submit action. web_fetch
-# stays SSRF-guarded (loopback/metadata blocked) for the urllib path.
-_RESEARCH_TOOLS = {"web_search", "web_fetch",
-                   "browser_open", "browser_read", "browser_links"}
+# Research uses the user's REAL browser with its FULL tool set — open/read/links
+# AND type/click/console/eval — so it can actually USE interactive sites (type a
+# zip into VSP's finder, click through, work a form), plus cookieless web_search/
+# web_fetch. The browser is the only actuator: we drop just the LOCAL mutators
+# (edit/write/bash/run_in_env) so a run can't touch the filesystem or shell.
+# web_fetch stays SSRF-guarded (loopback/metadata blocked) for the urllib path.
+_RESEARCH_DROP = {"edit_file", "write_file", "bash", "run_in_env"}
 # ANCHORED (with an optional apology lead-in): a no-info/refusal reply BEGINS by
 # stating the model's own inability. A real answer to a negative-topic query
 # ("how to fix 'unable to locate package'") mentions such a phrase MID-string,
@@ -97,11 +96,10 @@ def _live_runner(query: str) -> str:
         register_web_search(h.registry)
     if not h.registry.get("web_fetch"):
         register_web_fetch(h.registry)
-    # keep ONLY the read-only research tools: the browser's open/read/links + the
-    # cookieless web tools. Drops browser_eval/type/click/console and edit/bash, so
-    # a research run can neither act nor be injection-driven into acting.
+    # keep the FULL browser + web tools; drop only local file/shell mutators so a
+    # research run acts ONLY through the browser (never the filesystem).
     for name in list(h.registry._tools):
-        if name not in _RESEARCH_TOOLS:
+        if name in _RESEARCH_DROP:
             del h.registry._tools[name]
     h.self_verify = False
     h.force_edit = False
