@@ -1,8 +1,11 @@
 # Delegate spine — the verification gate, extended from code to the world
 
-Status: implemented on branch `verifier-protocol` (6 commits, CORE 111/111 + new
-suites green throughout). This is the first working slice of DELEGATE_PLAN_CLAUDE.md
-§5.1/§5.2 — the safety spine, not yet a live irreversible capability.
+Status: implemented on branch `verifier-protocol`, CORE 111/111 + all new suites
+green throughout. A coherent, runnable build of DELEGATE_PLAN_CLAUDE.md §5.1/§5.2:
+authority (leash) + evidence (verifier) + an irreversible seam (confirm token +
+model-free executor + receipts) + durable waiting (colliejobd) + a real,
+executable capability. The only thing deliberately withheld is a live *external
+irreversible* capability (send/publish/pay), which needs real authority.
 
 ## What it is
 
@@ -20,23 +23,33 @@ Two different gates, often conflated — keep them apart:
 
 They meet at the executor: leash authorizes → execute → verify → receipt.
 
-## The five modules
+## The modules
 
 ```
-verifier.py   the done-check protocol (arms / freshness / ground-truth /
-              assert-strength / repairable). CodeReproVerifier re-expresses the
-              SWE gate; ListingVerifier is the world case. loop.py's three inline
-              gate copies now all call one _repro_verified() -> this.
-observe.py    the independent observation channel: a cookieless, SSRF-guarded
-              GET (via webfetch._open_pinned). Ground truth for a listing is a
-              LOGGED-OUT re-fetch — never the acting page's own success toast.
-actions.py    confirm-token + model-free executor + receipts. propose (materialize
-              exact payload) -> confirm (human approves the payload) -> execute
-              (deterministic, no model) -> receipt. SQLite, ~/.collie/actions.db.
-jobs.py       the Job object + state machine + Capability registry + Executor.
-              Maps a done-check verdict onto the job's terminal state.
-cli.py        `collie jobs ls | inbox | confirm <nonce> | receipts` — the human
-              surface that closes the loop from the terminal.
+verifier.py     the done-check protocol (arms / freshness / ground-truth /
+                assert-strength / repairable). CodeReproVerifier re-expresses the
+                SWE gate; ListingVerifier is the world case. loop.py's three
+                inline gate copies now all call one _repro_verified() -> this.
+observe.py      the independent observation channel: a cookieless, SSRF-guarded
+                GET (via webfetch._open_pinned). Ground truth for a listing is a
+                LOGGED-OUT re-fetch — never the acting page's own success toast.
+actions.py      confirm-token + model-free executor + receipts. propose -> confirm
+                -> execute -> receipt. HMAC integrity (key outside the DB), atomic
+                single-use latch, crash-evidenced. SQLite ~/.collie/actions.db.
+leash.py        the authority model: evaluate(leash, cap) -> allow / ask / deny
+                over an allowlist, spend cap, expiry, irreversible mode. Enforced
+                in the executor — a DENY blocks even a confirmed action.
+jobs.py         the Job object + state machine + Capability registry + Executor.
+                drive() = autonomous entry (reversible in-scope auto-runs;
+                irreversible parks for confirm); run_confirmed() = post-confirm.
+capabilities.py the shipped, executable capabilities. note.append (a safe
+                reversible file write) verified by an independent re-read — the
+                full chain runs live, not just in tests.
+scheduler.py    durable waiting + catch-up-on-wake (colliejobd). A wait is a row;
+                tick(now) fires every overdue wait by driving its action. serve()
+                is the thin daemon loop.
+cli.py          `collie jobs ls | inbox | run <cap> | confirm <nonce> | receipts
+                | wake | daemon` — the human/daemon surface.
 ```
 
 ## The six load-bearing pieces (why it generalizes)
@@ -98,27 +111,39 @@ the signature code gate: same-turn repro-then-edit could stamp a broken edit
 VERIFIED (turn-granular freshness key) — now a landed edit invalidates prior
 repro evidence.
 
-## Deliberately NOT done yet
+## Done since the first cut
 
-- **The live irreversible action itself** (real FB publish / email send). It
-  belongs behind the confirm-token / daemon executor and needs real authority —
-  wiring it live now would violate the plan's own rules. Everything *around* it
-  (precheck + independent post-check + receipt) is real and tested.
-- **colliejobd** (the daemon owning scheduling / IMAP wake / catch-up-on-wake) —
-  DELEGATE_PLAN_CLAUDE.md §5.2, stage 1.
-- **The leash gate at the tool-registry dispatch layer** — the other safety
-  blocker from the earlier plan review (gate `Tool.run` not `loop.py:545`, cover
-  the progtool RPC, argument-level bash gating, browser-bridge secret). Separate,
-  riskier piece; not started here.
-- **HMAC-with-external-key** for the action digest (see invariants).
-- A full mock-provider-driven loop test for the same-turn freshness fix (the fix
-  is in place; CORE 111 stays green; a dedicated Harness-level regression is a
-  follow-up).
+- **colliejobd** — durable waiting + catch-up-on-wake (scheduler.py); `collie
+  jobs daemon` / `wake`.
+- **Leash authority model** (leash.py) enforced in the executor.
+- **A real, executable capability** (note.append) verified by an independent
+  re-read — the full chain runs live.
+- **HMAC-with-external-key** for action integrity (replaced the plain digest).
+- **Loop-level regression** for the same-turn freshness fix (test_gate_freshness;
+  proven to fail without the fix).
+
+## Deliberately NOT done (needs real authority or is a separate subsystem)
+
+- **A live EXTERNAL irreversible capability** (real FB publish / email send).
+  Everything around it is real — a done-check, the confirm token, the executor,
+  receipts, and a working reversible capability — but wiring a real external
+  side effect needs real authority and is a deliberate stop.
+- **The leash gate at the tool-registry dispatch layer** — the *coding agent's*
+  own tools (gate `Tool.run` not `loop.py:545`, cover the progtool RPC,
+  argument-level bash gating, browser-bridge secret). Hardens the existing
+  harness rather than the delegate spine; separate, riskier piece.
+- **Email / page-change waits** — scheduler.py ships timer waits; content-poll
+  waits schedule the same way but need live credentials (auto-apply's IMAP loop
+  is the port target).
 
 ## Try it
 
 ```
+collie jobs run note.append '{"file":"todo.txt","text":"buy milk"}' --leash '{"may":["note.*"]}'
+                                  # create + drive a job live -> done_verified + receipt
 collie jobs inbox                 # pending confirmations + jobs needing you
-collie jobs confirm <nonce>       # approve a concrete payload; a runner executes+verifies
+collie jobs confirm <nonce>       # approve a concrete payload; executor runs+verifies
 collie jobs receipts              # what fired, under which leash, how it verified
+collie jobs wake                  # fire due durable waits now (catch-up)
+collie jobs daemon                # colliejobd: catch-up + tick on an interval
 ```

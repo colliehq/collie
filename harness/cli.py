@@ -560,6 +560,18 @@ def cmd_jobs(args):
             print("catch-up: fired %d due wait(s); %d still pending"
                   % (fired, len(sched.pending_waits())))
             sched.close()
+        elif args.action == "daemon":
+            # colliejobd: catch up on start, then tick on an interval. Owns no
+            # model process — it only drives due, already-materialized actions.
+            from .scheduler import Scheduler
+            sched = Scheduler(acts, jobs, db_path=os.path.join(d, "jobs.db"))
+            print("colliejobd: catch-up + tick every %ss (Ctrl-C to stop)" % args.interval)
+            try:
+                sched.serve(interval=float(args.interval))
+            except KeyboardInterrupt:
+                print("\ncolliejobd stopped")
+            finally:
+                sched.close()
         elif args.action == "receipts":
             rows = acts.receipts(args.text or None)
             if not rows:
@@ -929,12 +941,14 @@ def main(argv=None):
 
     # jobs: the delegate surface — list jobs, confirm gated actions, read receipts.
     pj = sub.add_parser("jobs", help="delegated work: ls | inbox | run <cap> | confirm <nonce> | receipts")
-    pj.add_argument("action", choices=["ls", "inbox", "run", "confirm", "receipts", "wake"])
+    pj.add_argument("action",
+                    choices=["ls", "inbox", "run", "confirm", "receipts", "wake", "daemon"])
     pj.add_argument("text", nargs="?", default="",
                     help="nonce (confirm/receipts) or capability name (run)")
     pj.add_argument("jargs", nargs="?", default="", help="JSON args for `run`")
     pj.add_argument("--goal", default="", help="job goal text (run)")
     pj.add_argument("--leash", default="", help="job leash as JSON (run)")
+    pj.add_argument("--interval", default=60, type=float, help="daemon tick seconds")
     pj.set_defaults(fn=cmd_jobs)
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally
