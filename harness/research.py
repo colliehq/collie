@@ -36,7 +36,7 @@ _RESEARCH_TOOLS = {"web_search", "web_fetch"}
 # describing the topic — anchoring at the start distinguishes the two. Applied
 # with .match() alongside the citation gate.
 _NOINFO = re.compile(
-    r"(?i)^\W*"
+    r"(?i)^(?:[^\n]{0,80}?[,，:：]\s*)?\W*"          # skip an optional short lead-in clause
     r"(?:(?:i'?m\s+)?(?:sorry|apolog\w*|unfortunately|regrettabl\w*|抱歉|很抱歉|遗憾|很遗憾)"
     r"[\s,，、:：.\-—]*)?"
     r"(?:"
@@ -51,7 +51,9 @@ _NOINFO = re.compile(
 _PROMPT = (
     "Research this and give a SHORT recommendation (a few sentences), then a "
     "markdown list of 2-4 source URLs under a final 'Sources:' line. Use web_search "
-    "and web_fetch. Do NOT edit or write files. Question: ")
+    "and web_fetch. Do NOT edit or write files. If your search turns up nothing "
+    "useful, reply with EXACTLY the single token NOFINDINGS and nothing else. "
+    "Question: ")
 
 
 def _notes_dir() -> str:
@@ -141,7 +143,8 @@ def _research_verify(record, result):
     # reply that DID emit a (generic/hallucinated) URL is caught by the anchored
     # _NOINFO — it opens by stating the model's own inability, which a real answer
     # (even one restating "unable to locate" about the topic) does not.
-    if not answer or not cites or _NOINFO.match(answer):
+    if (not answer or answer.strip().upper().startswith("NOFINDINGS")   # structural declaration
+            or not cites or _NOINFO.match(answer)):
         return _v.Verdict(_v.FAILED, "no sourced answer produced")
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
     detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"

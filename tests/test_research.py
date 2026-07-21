@@ -78,13 +78,26 @@ def main():
 
     print("test_no_info_WITH_a_url_still_fails")
     # the model was ordered to emit a Sources list, so a no-info reply carries a
-    # (generic/hallucinated) URL — the anchored _NOINFO catches it by its opening.
+    # (generic/hallucinated) URL — the anchored _NOINFO catches it, including
+    # PREAMBLE-led refusals ("Based on my search, I could not find ...").
     for lead in ("I couldn't find reliable information on this.",
                  "Sorry, I was unable to find anything.",
-                 "抱歉，我没有找到相关信息。"):
+                 "抱歉，我没有找到相关信息。",
+                 "Based on my search, I could not find specific information about this",
+                 "After extensive research, I was unable to locate anything",
+                 "关于这个问题，我没有找到相关资料"):
         o = research.run_research("q", runner=lambda q, l=lead: f"{l}\n\nSources:\n- {src}\n")
         v = research._research_verify(type("R", (), {"args": {}})(), o)
-        check(v.status == FAILED, f"no-info+URL must still FAIL: {lead!r} -> {v.status}")
+        check(v.status == FAILED, f"no-info+URL must still FAIL: {lead[:36]!r} -> {v.status}")
+
+    print("test_nofindings_token_fails")
+    o = research.run_research("q", runner=lambda q: "NOFINDINGS")
+    check(research._research_verify(type("R", (), {"args": {}})(), o).status == FAILED,
+          "an explicit NOFINDINGS declaration must FAIL")
+    # a real answer that mentions 'unable to be beaten' mid-body still verifies
+    o2 = research.run_research("q", runner=lambda q: f"The best budget pick is unbeatable value. Sources:\n- {src}\n")
+    check(research._research_verify(type("R", (), {"args": {}})(), o2).status == VERIFIED,
+          "a real sourced answer with a mid-body negative phrase must VERIFY")
 
     print("test_blocked_source_still_verifies_not_failed")
     # a real site that 403s a cookieless bot must NOT fail the job (the Kickstarter
