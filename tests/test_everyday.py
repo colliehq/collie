@@ -205,6 +205,28 @@ def test_reminder_not_in_human_confirm_inbox():
     s.close(); a.close(); j.close()
 
 
+def test_fire_at_parses_ampm_and_relative():
+    print("test_fire_at_parses_ampm_and_relative")
+    import datetime
+    now = int(datetime.datetime(2026, 7, 20, 10, 0, 0).timestamp())
+
+    def fa(at=None, delay=None):
+        return E._fire_at(_rec({"at": at, "delay_minutes": delay}), now)
+
+    def hm(ts):
+        return datetime.datetime.fromtimestamp(ts).strftime("%H:%M")
+
+    check(hm(fa(at="remind me at 6:15pm")) == "18:15", "6:15pm -> 18:15")
+    check(hm(fa(at="at 10:00PM")) == "22:00", "10:00PM -> 22:00")
+    check(hm(fa(at="9:30am")) == "09:30", "9:30am -> 09:30")
+    check(hm(fa(at="wake me at 7am")) == "07:00", "bare 7am -> 07:00")
+    check(hm(fa(at="at 3pm")) == "15:00", "bare 3pm -> 15:00")
+    check(hm(fa(at="14:30")) == "14:30", "24h 14:30 unchanged")
+    check(fa(at="in 5 minutes") == now + 5 * 60, "in 5 minutes -> +5min")
+    check(fa(at="2小时后提醒我") == now + 120 * 60, "2小时后 -> +120min")
+    check(fa(at="in 1 hour and 30 minutes") == now + 90 * 60, "1h30m -> +90min")
+
+
 def test_huge_delay_does_not_crash():
     print("test_huge_delay_does_not_crash")
     clear_registry(); caps.register_builtins()

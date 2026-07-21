@@ -40,10 +40,14 @@ _NOINFO = re.compile(
     r"(?:(?:i'?m\s+)?(?:sorry|apolog\w*|unfortunately|regrettabl\w*|抱歉|很抱歉|遗憾|很遗憾)"
     r"[\s,，、:：.\-—]*)?"
     r"(?:"
-    r"i\s+(?:couldn'?t|could\s+not|was\s+unable|am\s+unable|can'?t|cannot|failed|refuse)"
-    r"(?:\s+(?:to\s+)?(?:find|locate|retrieve|help|assist|answer|provide|do))?"
-    r"|(?:was\s+)?unable\s+to\s+(?:find|locate|help|answer)"
-    r"|no\s+(?:information|results?|data|sources?)\s+(?:found|available|for|on)"
+    # first-person branch: object is REQUIRED (no trailing ?) — "I can't go wrong"
+    # / "I couldn't be happier" are real content, not refusals; only "I can't FIND"
+    # etc. count.
+    r"i\s+(?:couldn'?t|could\s+not|was\s+unable|am\s+unable|was\s+not\s+able|can'?t|cannot|failed|refuse)"
+    r"\s+(?:to\s+)?(?:find|locate|retrieve|determine|help|assist|answer|provide)"
+    r"|(?:was\s+)?unable\s+to\s+(?:find|locate|determine|help|answer)"
+    r"|no\s+(?:information|results?|data|sources?|findings?|luck)\b"
+    r"|nothing\s+(?:turned\s+up|found|came\s+up)"
     r"|as\s+an\s+ai\b"
     r"|我?(?:没(?:能|有)?(?:找到|查到)|无法(?:找到|查到|获取|回答|完成|提供|帮)|查不到|找不到|不能(?:帮|回答))"
     r")")
@@ -143,8 +147,13 @@ def _research_verify(record, result):
     # reply that DID emit a (generic/hallucinated) URL is caught by the anchored
     # _NOINFO — it opens by stating the model's own inability, which a real answer
     # (even one restating "unable to locate" about the topic) does not.
-    if (not answer or answer.strip().upper().startswith("NOFINDINGS")   # structural declaration
-            or not cites or _NOINFO.match(answer)):
+    # STRUCTURAL gates first (robust, not phrase-matching): a real answer declares
+    # findings (not NOFINDINGS), carries a URL, AND follows the mandated format with
+    # a "Sources:" section — a prose non-finding with a bare URL ("Nothing turned
+    # up. https://x") has no Sources block. _NOINFO is a narrowed phrase backstop.
+    if (not answer or answer.strip().upper().startswith("NOFINDINGS")
+            or not cites or not re.search(r"(?im)^\s*sources?\s*:", answer)
+            or _NOINFO.match(answer)):
         return _v.Verdict(_v.FAILED, "no sourced answer produced")
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
     detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"

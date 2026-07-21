@@ -53,7 +53,7 @@ def main():
     src = f"http://127.0.0.1:{port}/review"
 
     print("test_extracts_citations_and_writes_report")
-    fake = lambda q: f"Buy the PowerRider P1 at RideCo, best price. Sources:\n- {src}\n"
+    fake = lambda q: f"Buy the PowerRider P1 at RideCo, best price.\n\nSources:\n- {src}\n"
     out = research.run_research("where to buy PowerRider P1", runner=fake)
     check(src in out["citations"], "must extract the cited URL")
     check(os.path.exists(out["report_file"]), "must write a report file")
@@ -94,16 +94,32 @@ def main():
     o = research.run_research("q", runner=lambda q: "NOFINDINGS")
     check(research._research_verify(type("R", (), {"args": {}})(), o).status == FAILED,
           "an explicit NOFINDINGS declaration must FAIL")
-    # a real answer that mentions 'unable to be beaten' mid-body still verifies
-    o2 = research.run_research("q", runner=lambda q: f"The best budget pick is unbeatable value. Sources:\n- {src}\n")
-    check(research._research_verify(type("R", (), {"args": {}})(), o2).status == VERIFIED,
-          "a real sourced answer with a mid-body negative phrase must VERIFY")
+
+    print("test_prose_nonfinding_with_bare_url_fails")
+    # a prose non-finding with a bare URL but NO Sources: block -> FAILED (structural)
+    for bad in ("Unfortunately I have no data on this. See https://generic.com",
+                "No findings for this query, but check https://example.com",
+                "Nothing turned up. https://example.com",
+                "I was not able to determine this. https://x.com"):
+        o = research.run_research("q", runner=lambda q, b=bad: b)
+        v = research._research_verify(type("R", (), {"args": {}})(), o)
+        check(v.status == FAILED, f"prose non-finding + bare URL must FAIL: {bad[:34]!r} -> {v.status}")
+
+    print("test_real_answer_with_negative_idiom_verifies")
+    # real sourced answers whose CONTENT contains "I can't go wrong" / "unbeatable"
+    # must VERIFY (the _NOINFO object is required, so "I can't go" doesn't match)
+    for good in (f"For your budget, I can't go wrong recommending the Anker 737.\n\nSources:\n- {src}\n",
+                 f"The best budget pick is unbeatable value.\n\nSources:\n- {src}\n",
+                 f"I couldn't be happier with the Sony WH-1000XM5.\n\nSources:\n- {src}\n"):
+        o = research.run_research("q", runner=lambda q, g=good: g)
+        v = research._research_verify(type("R", (), {"args": {}})(), o)
+        check(v.status == VERIFIED, f"a real sourced answer must VERIFY: {good[:34]!r} -> {v.status}")
 
     print("test_blocked_source_still_verifies_not_failed")
     # a real site that 403s a cookieless bot must NOT fail the job (the Kickstarter
     # case): the answer was delivered; source re-check is just an annotation.
     blk = f"http://127.0.0.1:{port}/blocked"
-    out3 = research.run_research("q", runner=lambda q: f"Buy it. Sources:\n- {blk}\n")
+    out3 = research.run_research("q", runner=lambda q: f"Buy it.\n\nSources:\n- {blk}\n")
     v3 = research._research_verify(type("R", (), {"args": {}})(), out3)
     check(v3.status == VERIFIED,
           f"a 403-blocked source must NOT fail a delivered answer, got {v3.status}")
@@ -126,7 +142,7 @@ def main():
         v = research._research_verify(type("R", (), {"args": {}})(), o)
         check(v.status != VERIFIED, f"a hedged no-info reply must NOT verify: {noinfo!r} -> {v.status}")
     # a real SOURCED answer that merely opens with 'Sorry' is not falsely failed
-    ok = research.run_research("q", runner=lambda q: f"Sorry for the wait — buy at RideCo. Sources:\n- {src}\n")
+    ok = research.run_research("q", runner=lambda q: f"Sorry for the wait — buy at RideCo.\n\nSources:\n- {src}\n")
     check(research._research_verify(type("R", (), {"args": {}})(), ok).status == VERIFIED,
           "a real sourced answer opening with 'Sorry' must still verify")
 
@@ -134,7 +150,7 @@ def main():
     # a REAL cited answer to a negative-topic query restates the phrase but must
     # NOT be failed — the no-info gate is skipped when citations are present.
     neg = (f"The 'unable to locate package' error means apt can't find it in your "
-           f"sources. Fix: run apt update. Sources:\n- {src}\n")
+           f"sources. Fix: run apt update.\n\nSources:\n- {src}\n")
     o = research.run_research("how to fix apt unable to locate package", runner=lambda q: neg)
     v = research._research_verify(type("R", (), {"args": {}})(), o)
     check(v.status == VERIFIED,

@@ -96,7 +96,13 @@ def _summarize_execute(record, provider=None, fetch=None):
 
 
 # ── reminder.set (durable, fired by colliejobd) ──────────────────────────────
-_HHMM = re.compile(r"\b([01]?\d|2[0-3])[:：]([0-5]?\d)\b")   # single-digit minute ok ("7:5")
+# HH:MM with an optional am/pm suffix (no trailing \b so "6:15pm" parses).
+_HHMM = re.compile(r"\b([01]?\d|2[0-3])[:：]([0-5]?\d)\s*([ap]m)?", re.I)
+# bare-hour with a meridiem ("7am", "3 pm") — no colon.
+_HAMPM = re.compile(r"\b([01]?\d)\s*([ap]m)\b", re.I)
+# relative durations: "in 5 minutes", "in 2 hours", "5分钟后", "2小时后".
+_REL_MIN = re.compile(r"(\d+)\s*(?:min(?:ute)?s?|分钟)", re.I)
+_REL_HR = re.compile(r"(\d+)\s*(?:hours?|hrs?|小时)", re.I)
 
 
 def _state_dir() -> str:
@@ -116,16 +122,34 @@ def _fire_at(record, now: int) -> int:
             # ArithmeticError, NOT ValueError); fall through to the default below.
             pass
     at = str(record.args.get("at") or "")
+    # relative durations ("in 5 minutes", "2小时后") — combine minutes + hours
+    rmin, rhr = _REL_MIN.search(at), _REL_HR.search(at)
+    if rmin or rhr:
+        mins = (int(rmin.group(1)) if rmin else 0) + (int(rhr.group(1)) * 60 if rhr else 0)
+        if mins > 0:
+            return now + min(mins, 5_256_000) * 60
+    # clock time HH:MM (+ optional am/pm) or a bare "7am"/"3pm"
     m = _HHMM.search(at)
+    h = mm = mer = None
     if m:
-        import datetime
-        h, mm = int(m.group(1)), int(m.group(2))
-        base = datetime.datetime.fromtimestamp(now)
-        tgt = base.replace(hour=h, minute=mm, second=0, microsecond=0)
-        if int(tgt.timestamp()) <= now:                # roll to the next calendar day (DST-safe:
-            tgt = (base + datetime.timedelta(days=1)).replace(   # re-derive from local wall clock,
-                hour=h, minute=mm, second=0, microsecond=0)      # not a fixed +86400s)
-        return int(tgt.timestamp())
+        h, mm, mer = int(m.group(1)), int(m.group(2)), (m.group(3) or "").lower()
+    else:
+        hm = _HAMPM.search(at)
+        if hm:
+            h, mm, mer = int(hm.group(1)), 0, hm.group(2).lower()
+    if h is not None:
+        if mer == "pm" and h < 12:
+            h += 12
+        elif mer == "am" and h == 12:
+            h = 0
+        if 0 <= h <= 23 and 0 <= mm <= 59:
+            import datetime
+            base = datetime.datetime.fromtimestamp(now)
+            tgt = base.replace(hour=h, minute=mm, second=0, microsecond=0)
+            if int(tgt.timestamp()) <= now:            # roll to the next calendar day (DST-safe)
+                tgt = (base + datetime.timedelta(days=1)).replace(
+                    hour=h, minute=mm, second=0, microsecond=0)
+            return int(tgt.timestamp())
     return now + 600                                    # default: 10 minutes
 
 
