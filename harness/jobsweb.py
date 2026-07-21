@@ -150,20 +150,23 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
             h = (self.headers.get("Host", "") or "").rsplit(":", 1)[0].strip("[]").lower()
             return h not in ("", "127.0.0.1", "localhost", "::1")
 
-        def _web_origin(self):
-            o = (self.headers.get("Origin") or "").lower()
-            return o.startswith("http://") or o.startswith("https://")
-
         def _post_blocked(self):
-            # state-changing POSTs need the same-origin custom header a drive-by
-            # page cannot set cross-origin without a preflight we don't allow.
-            return self._bad_host() or self._web_origin() or not self.headers.get(_HDR)
+            # state-changing POSTs need the same-origin custom header. THIS is the
+            # CSRF gate: a cross-origin page cannot set a custom header without a
+            # CORS preflight, and we answer none, so its request never lands. Do
+            # NOT reject on a bare http Origin — this dashboard IS a web page and
+            # its own same-origin fetch legitimately sends Origin; rejecting it
+            # 403'd the dashboard's own calls (which surfaced as "not sure").
+            # DNS-rebinding (a rebound host that becomes same-origin and could then
+            # set the header) is closed by _bad_host: loopback Host only.
+            return self._bad_host() or not self.headers.get(_HDR)
 
         def _send(self, code, body, ctype="application/json"):
             data = body if isinstance(body, bytes) else body.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", ctype + "; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")   # live dashboard — never cache
             self.end_headers()
             self.wfile.write(data)
 

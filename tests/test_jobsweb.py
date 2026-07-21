@@ -32,12 +32,14 @@ def check(cond, msg):
         print("  FAIL:", msg)
 
 
-def _req(url, method="GET", body=None, header=True):
+def _req(url, method="GET", body=None, header=True, origin=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     if header:
         req.add_header("X-Collie-Jobs", "1")
+    if origin:
+        req.add_header("Origin", origin)      # simulate a browser's same-origin fetch
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, r.read().decode()
@@ -87,6 +89,18 @@ def main():
                      {"capability": "note.append", "args": {}, "leash": {}},
                      header=False)
     check(code == 403, f"a POST without the same-origin header must be 403, got {code}")
+
+    print("test_same_origin_browser_post_allowed")
+    # a real browser sends Origin on same-origin POSTs; that MUST NOT be rejected
+    # (the bug that 403'd the dashboard's own calls -> "not sure").
+    code, out = _req(base + "/api/run", "POST",
+                     {"capability": "note.append",
+                      "args": {"file": "b.txt", "text": "browser-origin"},
+                      "leash": {"may": ["note.*"]}},
+                     origin=base)
+    r = json.loads(out)
+    check(code == 200 and r.get("status") == "verified",
+          f"a same-origin browser POST (Origin set + header) must succeed, got {code} {out}")
 
     srv.shutdown()
     if _fails:
