@@ -44,7 +44,14 @@ def _ask(system: str, user: str, provider=None) -> str:
     m = _OUT_FENCE.search(raw)
     if not m:
         return ""                     # no fence -> refusal / non-compliance -> FAILED, honest
-    return m.group(1).strip()
+    out = m.group(1).strip()
+    # defense-in-depth: a model that BOTH refuses AND (wrongly) fences it. Only
+    # collapse a SHORT + refusal-shaped fenced output, so a real translation/
+    # summary that merely mentions "no results"/"找不到" is never falsely failed.
+    from .research import _NOINFO
+    if out and len(out) < 120 and _NOINFO.search(out[:120]):
+        return ""
+    return out
 
 
 def _delivered(field: str, label: str):

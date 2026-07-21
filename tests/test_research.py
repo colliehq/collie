@@ -99,6 +99,16 @@ def main():
     check(research._research_verify(type("R", (), {"args": {}})(), ok).status == VERIFIED,
           "a real answer opening with 'Sorry' must still verify")
 
+    print("test_negative_topic_answer_with_sources_verifies")
+    # a REAL cited answer to a negative-topic query restates the phrase but must
+    # NOT be failed — the no-info gate is skipped when citations are present.
+    neg = (f"The 'unable to locate package' error means apt can't find it in your "
+           f"sources. Fix: run apt update. Sources:\n- {src}\n")
+    o = research.run_research("how to fix apt unable to locate package", runner=lambda q: neg)
+    v = research._research_verify(type("R", (), {"args": {}})(), o)
+    check(v.status == VERIFIED,
+          f"a real cited answer restating a negative phrase must VERIFY, got {v.status}")
+
     print("test_registered_in_builtins")
     clear_registry(); caps.register_builtins()
     check(get_capability("research.web") is not None, "research.web must be registered")

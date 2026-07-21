@@ -182,6 +182,35 @@ def test_confirm_cas_blocks_resurrecting_executed():
     st.close()
 
 
+def test_cold_start_keys_converge_across_processes():
+    print("test_cold_start_keys_converge_across_processes")
+    import threading
+    from harness.actions import _load_or_create_key
+    d = _tmp() + ".d"
+    os.makedirs(d, exist_ok=True)
+    kf = os.path.join(d, "actions.db.key")
+    keys = []
+    lk = threading.Lock()
+
+    def grab():
+        k = _load_or_create_key(kf)
+        with lk:
+            keys.append(k)
+
+    ts = [threading.Thread(target=grab) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    check(len(set(keys)) == 1,
+          f"all cold-start processes must converge on ONE key, got {len(set(keys))}")
+    # and a MAC made under one store verifies under another on the same dir
+    a = ActionStore(os.path.join(d, "actions.db"))
+    b = ActionStore(os.path.join(d, "actions.db"))
+    check(a._key == b._key, "two stores on the same dir share the key")
+    a.close(); b.close()
+
+
 def test_capability_exception_is_failed_receipt_not_crash():
     print("test_capability_exception_is_failed_receipt_not_crash")
     st = ActionStore(_tmp())

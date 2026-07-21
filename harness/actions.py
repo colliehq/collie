@@ -56,11 +56,29 @@ def _load_or_create_key(keyfile: str) -> bytes:
                 return k
     except FileNotFoundError:
         pass
-    k = secrets.token_hex(32).encode()
     d = os.path.dirname(keyfile)
     if d:
         os.makedirs(d, exist_ok=True)
-    fd = os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    k = secrets.token_hex(32).encode()
+    # ATOMIC create (O_EXCL, not O_TRUNC): two processes cold-starting on the same
+    # state dir (e.g. the colliejobd daemon + a `collie jobs ask`) must converge on
+    # ONE key. O_TRUNC let both write divergent keys (last-writer-wins on disk while
+    # each kept its own in-memory key) — a reminder proposed under one key then
+    # failed its MAC under the other, silently never firing while verify said
+    # "parked". On FileExistsError, adopt the winner's persisted key.
+    try:
+        fd = os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        for _ in range(100):               # winner may have created but not yet written
+            try:
+                with open(keyfile, "rb") as f:
+                    k2 = f.read().strip()
+                if len(k2) >= 32:
+                    return k2
+            except FileNotFoundError:
+                pass
+            time.sleep(0.01)
+        return k                            # last resort (never observed in practice)
     try:
         os.write(fd, k)
     finally:

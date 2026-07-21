@@ -43,9 +43,8 @@ _NOINFO = re.compile(
 
 _PROMPT = (
     "Research this and give a SHORT recommendation (a few sentences), then a "
-    "markdown list of 2-4 source URLs under a final 'Sources:' line. Use the "
-    "browser (browser_open/browser_read/browser_links) and web_search/web_fetch. "
-    "Do NOT edit or write files. Question: ")
+    "markdown list of 2-4 source URLs under a final 'Sources:' line. Use web_search "
+    "and web_fetch. Do NOT edit or write files. Question: ")
 
 
 def _notes_dir() -> str:
@@ -129,9 +128,11 @@ def _research_verify(record, result):
     result = result or {}
     answer = (result.get("answer") or "").strip()
     cites = result.get("citations") or []
-    # empty or a no-info reply (matched anywhere in the opening) -> nothing was
-    # really delivered. A short but genuine answer still counts (deliver-is-success).
-    if not answer or _NOINFO.search(answer[:200]):
+    # empty, or a SOURCE-LESS no-info reply. Gate the no-info match on the absence
+    # of citations: a genuine refusal cites nothing, whereas a real answer to a
+    # negative-topic query ("how to fix 'unable to locate package'") legitimately
+    # restates the phrase AND carries Sources — those must still VERIFY.
+    if not answer or (not cites and _NOINFO.search(answer[:200])):
         return _v.Verdict(_v.FAILED, "no answer produced")
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
     detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"
