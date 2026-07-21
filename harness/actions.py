@@ -279,5 +279,16 @@ class ActionStore:
             args = (nonce,)
         return [dict(r) for r in self.db.execute(q + " ORDER BY receipt_id", args)]
 
+    def pending(self):
+        """Actions materialized but not yet decided — the confirm inbox."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM pending_actions WHERE state=? ORDER BY created_at", (PENDING,))]
+
+    def list(self, state=None):
+        q, a = "SELECT * FROM pending_actions", ()
+        if state:
+            q, a = q + " WHERE state=?", (state,)
+        return [dict(r) for r in self.db.execute(q + " ORDER BY created_at", a)]
+
     def close(self):
         self.db.close()

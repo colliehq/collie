@@ -468,6 +468,74 @@ def cmd_mem(args):
     return 0
 
 
+def _state_dir():
+    """Where the delegate's durable state lives (~/.collie, overridable for tests
+    via COLLIE_STATE_DIR). Matches the actions.py/jobs.py defaults."""
+    d = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def cmd_jobs(args):
+    """The human surface for delegated work: see jobs, confirm gated (irreversible)
+    actions, read receipts. The confirm step approves a CONCRETE materialized
+    payload; execution runs only in a process where the capability is registered
+    (a runner/daemon), so a bare `collie jobs confirm` approves and reports —
+    the model never executes here."""
+    from .actions import ActionStore, RefusedError
+    from .jobs import JobStore, Executor, NEEDS_YOU
+    d = _state_dir()
+    acts = ActionStore(os.path.join(d, "actions.db"))
+    jobs = JobStore(os.path.join(d, "jobs.db"))
+    rc = 0
+    try:
+        if args.action == "ls":
+            js = jobs.list()
+            if not js:
+                print("(no jobs)")
+            for j in js:
+                print("  %-12s %-14s %s" % (j.job_id, j.state, (j.goal or "")[:60]))
+        elif args.action == "inbox":
+            pend = acts.pending()
+            print("── pending confirmations (%d) ──" % len(pend))
+            for p in pend:
+                print("  %s  %s  %s" % (p["nonce"], p["capability"],
+                                        (p["args_json"] or "")[:80]))
+            ny = jobs.list(state=NEEDS_YOU)
+            print("── jobs needing you (%d) ──" % len(ny))
+            for j in ny:
+                print("  %-12s %s" % (j.job_id, (j.goal or "")[:60]))
+            if not pend and not ny:
+                print("  (nothing waiting)")
+        elif args.action == "confirm":
+            nonce = args.text
+            rec = acts.get(nonce)
+            if not rec:
+                print("unknown nonce"); return 1
+            acts.confirm(nonce)
+            print("approved %s  cap=%s  digest=%s…" % (nonce, rec.capability, rec.digest[:12]))
+            try:
+                v = Executor(acts, jobs).run_confirmed(nonce, job_id=rec.job_id)
+                print("executed → %s: %s" % (v.status, v.reason))
+            except RefusedError as e:
+                print("approved; not executed here (%s)." % e)
+                print("a runner with the capability loaded will execute it.")
+        elif args.action == "receipts":
+            rows = acts.receipts(args.text or None)
+            if not rows:
+                print("(no receipts)")
+            for r in rows:
+                print("  %s  %s  fired=%s  %s: %s" % (
+                    r["capability"], r["nonce"][:12], r["fired"],
+                    r["verdict"], (r["verdict_reason"] or "")[:60]))
+                if r["evidence"]:
+                    print("      evidence: %s" % r["evidence"][:100])
+    finally:
+        acts.close()
+        jobs.close()
+    return rc
+
+
 def cmd_init(args):
     """collie init — one-time repo prep. Everything collie does is lazy, so this only front-loads
     the two costs a user would otherwise pay mid-conversation: the embedder's first-use model
@@ -577,7 +645,7 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "browser-bridge", "mcp", "init"}
+        "loop", "repl", "tui", "web", "browser-bridge", "mcp", "init", "jobs"}
 
 
 def _setup_wizard(force=False):
@@ -818,6 +886,12 @@ def main(argv=None):
     pm.add_argument("--workers", type=int, default=1,
                     help="parallel distillation workers (db writes stay single-threaded)")
     pm.set_defaults(fn=cmd_mem)
+
+    # jobs: the delegate surface — list jobs, confirm gated actions, read receipts.
+    pj = sub.add_parser("jobs", help="delegated work: ls | inbox | confirm <nonce> | receipts [nonce]")
+    pj.add_argument("action", choices=["ls", "inbox", "confirm", "receipts"])
+    pj.add_argument("text", nargs="?", default="", help="nonce (for confirm / receipts filter)")
+    pj.set_defaults(fn=cmd_jobs)
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally
     # have the model write AGENTS.md — the friendly "collie, meet my repo" moment.
