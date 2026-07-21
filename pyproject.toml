@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "collie-harness"
+version = "0.18.0"
+description = "A memory-first, context-lean coding-agent harness with a built-in benchmark lab."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Daming Wu" }]
+dependencies = []                       # core is stdlib-only
+
+[project.optional-dependencies]
+local = ["fastembed"]                   # real local embeddings (jina-v3)
+browser = ["playwright"]
+tui = ["rich"]                          # the full-experience terminal chat (collie tui)
+acp = ["agent-client-protocol"]         # editor integration (collie acp)
+search = ["ddgs"]                        # keyless web_search (DuckDuckGo JSON API)
+dev = ["pytest"]
+
+[project.scripts]
+collie = "harness.cli:main"             # `collie -p "task"` one-liner
+
+[tool.setuptools]
+packages = ["harness"]
+
+# ship the web GUI + browser extension inside the wheel — without this, `pip install collie-harness`
+# produced a package whose `collie web` 404s on its own index.html (assets only existed in the repo).
+[tool.setuptools.package-data]
+harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "browser_ext/*"]

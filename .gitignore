@@ -1,0 +1,71 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+venv/
+*.egg-info/
+
+# local dev scratch / logs (never publish)
+.web.log
+data/proxy.log
+
+# collie runtime data (regenerated)
+data/*.db
+data/*.db.bak*
+data/*.db-shm
+data/*.db-wal
+data/sandbox/
+data/dashboard*.html
+data/sessions/
+~/.collie/
+# user runtime state written outside the repo is never committed anyway; listed for clarity:
+# ~/.collie/{settings.json,mcp.json,mcp_cache.json,plans/,checkpoints/,browser-profile/}
+
+# local model / embedding caches
+.fastembed_cache/
+*.onnx
+
+# env / secrets — never commit
+.env
+*.key
+credentials.json
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+data/sbx_*/
+data/mem_*.db
+CHANGELOG.md.tmp
+preds/
+logs/
+results/
+
+# SWE-bench eval reports (data, regenerated)
+*.collie_swe.json
+*.claude_swe.json
+*.hermes_swe.json
+*.collie_v3.json
+*_swe.json
+logs/
+
+# benchmark datasets (large, fetched)
+data/bench/
+data/polyglot/
+scratch/
+transcripts/
+
+# experiment scratch drivers + SWE-bench eval-report JSONs written to repo root
+/_*.py
+/collie*.json
+/claude*.json
+/hermes*.json
+/aider*.json
+/opencode*.json
+/gold*.json
+/results*.json
+build/
+dist_check/
+dist/
+*.egg-info/

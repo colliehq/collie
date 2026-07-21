@@ -1,0 +1,305 @@
+"""Model catalog — one flat list of runnable (provider, model) entries the UI picks from.
+
+Replaces "choose a provider dropdown, then TYPE a model id" with a single choice. Each
+entry is already bound to how it's reached (API key / OAuth subscription / local) and what
+it costs, carrying a live auth badge — so a switch can never produce an invalid
+(provider, model) pair, and you see up front whether you can actually run it.
+
+Three sources, merged + deduped by (provider, model):
+  1. STATIC  — curated presets per provider (always present, offline-safe)
+  2. LIVE    — a provider's model endpoint queried with your CURRENT auth
+               (codex-oauth /models, OpenAI-compatible /v1/models, ollama /api/tags, …)
+  3. CUSTOM  — the user's openai-compat base_url + model (from settings)
+
+Grounding: make_provider(provider, model) is unchanged — an entry just carries both.
+Prices are registered into costs.PRICES so $/instance receipts are correct for every
+catalog model (fixes the "no price for gpt-5.6-terra" $0 misprice).
+"""
+from __future__ import annotations
+import json
+import os
+import shutil
+import time
+import urllib.request
+from dataclasses import dataclass, field
+
+from .providers import OPENAI_COMPAT_PRESETS
+
+# provider -> (base_url, api-key env, default model). Reuse the preset table where it exists;
+# add the non-compat providers so auth-probing + discovery have one source of truth.
+_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY", "groq": "GROQ_API_KEY",
+    "moonshot": "MOONSHOT_API_KEY", "zhipu": "ZHIPU_API_KEY",
+    "qwen": "DASHSCOPE_API_KEY", "dashscope": "DASHSCOPE_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# ---- prices ($/1M tokens: input, cached_input, output) ------------------------------------
+# Subscription entries (anthropic-oauth / codex-oauth) bill at the EQUIVALENT metered rate in
+# receipts — same convention collie already uses for Claude-sub Opus — while the picker labels
+# them "$0 marginal". Registered into costs.PRICES on import (idempotent).
+PRICES = {
+    "claude-opus-4-8":  (15.0, 1.5, 75.0),
+    "claude-sonnet-5":  (3.0, 0.3, 15.0),
+    "claude-haiku-4-5": (0.8, 0.08, 4.0),
+    "claude-fable-5":   (15.0, 1.5, 75.0),
+    "gpt-5.6-sol":      (5.0, 0.5, 30.0),
+    "gpt-5.6-terra":    (2.5, 0.25, 15.0),
+    "gpt-5.6-luna":     (1.0, 0.10, 6.0),
+    "gpt-4o-mini":      (0.15, 0.075, 0.60),
+    "deepseek-chat":    (0.27, 0.07, 1.10),
+    "deepseek-reasoner": (0.55, 0.14, 2.19),
+    "gemini-2.5-pro":   (1.25, 0.31, 10.0),
+    "gemini-2.5-flash": (0.30, 0.075, 2.50),
+    "llama-3.3-70b-versatile": (0.59, 0.0, 0.79),
+    "glm-4-flash":      (0.0, 0.0, 0.0),
+}
+
+
+def _register_prices():
+    from . import costs
+    for k, v in PRICES.items():
+        costs.PRICES.setdefault(k, v)
+
+
+_register_prices()
+
+
+@dataclass
+class ModelEntry:
+    provider: str
+    model: str
+    label: str
+    via: str                    # human "how it's reached": Claude subscription / API key / local …
+    kind: str                   # subscription | metered | local
+    tags: list = field(default_factory=list)
+    source: str = "static"      # static | live | custom
+    price: tuple = (0.0, 0.0, 0.0)
+
+    @property
+    def id(self) -> str:
+        return "%s:%s" % (self.provider, self.model)
+
+    def to_dict(self, auth: str) -> dict:
+        pin, _pc, pout = self.price
+        return {"id": self.id, "provider": self.provider, "model": self.model,
+                "label": self.label, "via": self.via, "kind": self.kind,
+                "tags": self.tags, "source": self.source,
+                "price_in": pin, "price_out": pout, "auth": auth}
+
+
+# ---- STATIC curated catalog ---------------------------------------------------------------
+def _static() -> list:
+    P = PRICES
+    return [
+        # Claude — subscription first (the recommended $0-marginal path), then metered API.
+        ModelEntry("anthropic-oauth", "claude-opus-4-8", "Claude Opus 4.8",
+                   "Claude subscription", "subscription", ["coding", "frontier"], price=P["claude-opus-4-8"]),
+        ModelEntry("anthropic-oauth", "claude-sonnet-5", "Claude Sonnet 5",
+                   "Claude subscription", "subscription", ["coding", "fast"], price=P["claude-sonnet-5"]),
+        ModelEntry("anthropic", "claude-opus-4-8", "Claude Opus 4.8",
+                   "Anthropic API key", "metered", ["coding", "frontier"], price=P["claude-opus-4-8"]),
+        ModelEntry("anthropic", "claude-sonnet-5", "Claude Sonnet 5",
+                   "Anthropic API key", "metered", ["coding", "fast"], price=P["claude-sonnet-5"]),
+        ModelEntry("anthropic", "claude-haiku-4-5-20251001", "Claude Haiku 4.5",
+                   "Anthropic API key", "metered", ["fast", "cheap"], price=P["claude-haiku-4-5"]),
+        # GPT-5.6 via ChatGPT Codex subscription ($0 marginal) then metered OpenAI API.
+        ModelEntry("codex-oauth", "gpt-5.6-terra", "GPT-5.6 Terra",
+                   "ChatGPT subscription", "subscription", ["coding", "reasoning"], price=P["gpt-5.6-terra"]),
+        ModelEntry("codex-oauth", "gpt-5.6-sol", "GPT-5.6 Sol",
+                   "ChatGPT subscription", "subscription", ["coding", "frontier"], price=P["gpt-5.6-sol"]),
+        ModelEntry("codex-oauth", "gpt-5.6-luna", "GPT-5.6 Luna",
+                   "ChatGPT subscription", "subscription", ["fast", "cheap"], price=P["gpt-5.6-luna"]),
+        ModelEntry("openai", "gpt-5.6-terra", "GPT-5.6 Terra",
+                   "OpenAI API key", "metered", ["coding", "reasoning"], price=P["gpt-5.6-terra"]),
+        ModelEntry("openai", "gpt-4o-mini", "GPT-4o mini",
+                   "OpenAI API key", "metered", ["fast", "cheap"], price=P["gpt-4o-mini"]),
+        # DeepSeek — the cheap strong default.
+        ModelEntry("deepseek", "deepseek-chat", "DeepSeek Chat",
+                   "DeepSeek API key", "metered", ["coding", "cheap"], price=P["deepseek-chat"]),
+        ModelEntry("deepseek", "deepseek-reasoner", "DeepSeek Reasoner",
+                   "DeepSeek API key", "metered", ["reasoning"], price=P["deepseek-reasoner"]),
+        # Others.
+        ModelEntry("gemini", "gemini-2.5-pro", "Gemini 2.5 Pro",
+                   "Google API key", "metered", ["frontier"], price=P["gemini-2.5-pro"]),
+        ModelEntry("gemini", "gemini-2.5-flash", "Gemini 2.5 Flash",
+                   "Google API key", "metered", ["fast", "cheap"], price=P["gemini-2.5-flash"]),
+        ModelEntry("groq", "llama-3.3-70b-versatile", "Llama 3.3 70B (Groq)",
+                   "Groq API key", "metered", ["fast"], price=P["llama-3.3-70b-versatile"]),
+        # OpenRouter — one key, hundreds of models (turn on Discover to list them all).
+        ModelEntry("openrouter", "deepseek/deepseek-chat", "DeepSeek v3 (OpenRouter)",
+                   "OpenRouter API key", "metered", ["cheap", "gateway"]),
+        # Qwen / DashScope — the cloud Qwen (distinct from any local ollama qwen).
+        ModelEntry("qwen", "qwen2.5-coder-32b-instruct", "Qwen2.5 Coder 32B",
+                   "DashScope API key", "metered", ["coding"]),
+        ModelEntry("claude-cli", "sonnet", "Claude CLI (logged-in)",
+                   "your claude CLI", "subscription", ["coding"], price=P["claude-sonnet-5"]),
+        ModelEntry("mock", "mock", "Mock (offline)",
+                   "local, canned", "local", ["testing"]),
+    ]
+
+
+# ---- auth probing -------------------------------------------------------------------------
+def probe_auth(provider: str) -> str:
+    """'ok' | 'missing-key' | 'not-logged-in' | 'unknown'. Cheap + no network except the
+    ollama liveness ping (which is localhost + 0.3s)."""
+    if provider == "mock":
+        return "ok"
+    if provider == "anthropic-oauth":
+        cred = os.path.expanduser("~/.claude/.credentials.json")
+        return "ok" if (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.path.exists(cred)) \
+            else "not-logged-in"
+    if provider == "codex-oauth":
+        return "ok" if os.path.exists(
+            os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"),
+                         "auth.json")) else "not-logged-in"
+    if provider == "claude-cli":
+        return "ok" if shutil.which("claude") else "not-logged-in"
+    if provider == "ollama":
+        try:
+            urllib.request.urlopen("http://localhost:11434/api/tags", timeout=0.3).read()
+            return "ok"
+        except Exception:
+            return "not-logged-in"
+    env = _KEY_ENV.get(provider)
+    if env:
+        return "ok" if os.environ.get(env) else "missing-key"
+    if provider in OPENAI_COMPAT_PRESETS:            # openai-compat / openrouter / moonshot / …
+        _b, keyenv, _d = OPENAI_COMPAT_PRESETS[provider]
+        return "ok" if os.environ.get(keyenv) else "missing-key"
+    return "unknown"
+
+
+# ---- live discovery -----------------------------------------------------------------------
+_disc_cache = {}                                     # provider -> (expiry_ts, [model_ids])
+_DISC_TTL = 300
+
+
+def _http_json(url: str, headers: dict, timeout: float = 4.0):
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def discover(provider: str) -> list:
+    """Model ids the provider reports for the CURRENT auth. [] on any failure (offline-safe).
+    Cached for _DISC_TTL so the picker never blocks on a slow endpoint twice."""
+    now = time.time()
+    hit = _disc_cache.get(provider)
+    if hit and hit[0] > now:
+        return hit[1]
+    ids = []
+    try:
+        if provider == "codex-oauth":
+            from .codex_oauth import _fresh_access_token, BASE_URL
+            access, acct = _fresh_access_token()
+            d = _http_json(BASE_URL.rstrip("/") + "/models?client_version=1.0.0",
+                           {"authorization": "Bearer " + access, "ChatGPT-Account-Id": acct,
+                            "originator": "codex_cli_rs", "user-agent": "codex_cli_rs/0.0.0 (collie)",
+                            "accept": "application/json"})
+            ids = [m["slug"] for m in d.get("models", []) if m.get("slug")]
+        elif provider == "ollama":
+            d = _http_json("http://localhost:11434/api/tags", {}, timeout=1.0)
+            ids = [m["name"] for m in d.get("models", []) if m.get("name")]
+        elif provider == "anthropic":
+            key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if key:
+                d = _http_json("https://api.anthropic.com/v1/models",
+                               {"x-api-key": key, "anthropic-version": "2023-06-01"})
+                ids = [m["id"] for m in d.get("data", []) if m.get("id")]
+        elif provider in OPENAI_COMPAT_PRESETS or provider in _KEY_ENV:
+            base, keyenv, _d = OPENAI_COMPAT_PRESETS.get(
+                provider, ("https://api.openai.com/v1", _KEY_ENV.get(provider, ""), ""))
+            key = os.environ.get(keyenv, "")
+            if key:
+                d = _http_json(base.rstrip("/") + "/models", {"authorization": "Bearer " + key})
+                ids = [m.get("id") for m in d.get("data", []) if m.get("id")]
+    except Exception:
+        ids = []
+    ids = [i for i in ids if i]
+    _disc_cache[provider] = (now + _DISC_TTL, ids)
+    return ids
+
+
+def _label_for(provider: str, model: str) -> str:
+    return model
+
+
+def _via_kind(provider: str) -> tuple:
+    if provider in ("anthropic-oauth", "codex-oauth", "claude-cli"):
+        return {"anthropic-oauth": "Claude subscription", "codex-oauth": "ChatGPT subscription",
+                "claude-cli": "your claude CLI"}[provider], "subscription"
+    if provider in ("ollama", "mock"):
+        return "local", "local"
+    return "API key", "metered"
+
+
+# ---- the merged catalog -------------------------------------------------------------------
+def list_entries(discover_live: bool = False, custom: dict | None = None) -> list:
+    """The full catalog as a list of dicts (each with an `auth` badge + price). Static always;
+    live discovery only for providers whose auth probes 'ok'; plus one custom openai-compat
+    entry if the settings carry a base_url+model. Deduped by (provider, model)."""
+    from . import costs
+    entries, seen = [], set()
+    auth_cache = {}
+    unauthed_shown = set()          # providers we've already shown one "get started" row for
+
+    def _auth(p):
+        if p not in auth_cache:
+            auth_cache[p] = probe_auth(p)
+        return auth_cache[p]
+
+    def _add(e: ModelEntry, collapse_unauthed: bool = False):
+        if e.id in seen:
+            return
+        a = _auth(e.provider)
+        if collapse_unauthed and a != "ok":
+            # a provider you have no key/login for gets ONE representative row (so you can see
+            # it exists + how to enable it), not its whole curated list greyed out.
+            if e.provider in unauthed_shown:
+                return
+            unauthed_shown.add(e.provider)
+        seen.add(e.id)
+        entries.append(e.to_dict(a))
+
+    for e in _static():
+        _add(e, collapse_unauthed=True)
+
+    # LOCAL discovery (Ollama) is a cheap localhost call and the ONLY way to know which models
+    # you've pulled — always include it, no toggle. NETWORK (cloud) discovery stays opt-in below.
+    if _auth("ollama") == "ok":
+        for mid in discover("ollama"):
+            _add(ModelEntry("ollama", mid, mid, "local (Ollama)", "local", source="live"))
+
+    if discover_live:
+        # the full per-provider model list for every cloud we're actually authed for — this is
+        # how DeepSeek/Qwen/OpenRouter/… surface their whole catalog without hardcoding it.
+        providers = sorted({e["provider"] for e in entries} |
+                           {"openrouter", "openai", "codex-oauth", "deepseek", "qwen"})
+        for p in providers:
+            if p == "ollama" or _auth(p) != "ok":
+                continue
+            for mid in discover(p):
+                if "%s:%s" % (p, mid) in seen:
+                    continue
+                via, kind = _via_kind(p)
+                _add(ModelEntry(p, mid, _label_for(p, mid), via, kind,
+                                source="live", price=costs.price_for(mid)))
+
+    if custom and custom.get("base_url") and custom.get("model"):
+        _add(ModelEntry("openai-compat", custom["model"], custom["model"],
+                        "custom endpoint", "metered", source="custom",
+                        price=costs.price_for(custom["model"])))
+
+    # stable, useful order: authed first, then subscription > metered > local, then label
+    kind_rank = {"subscription": 0, "metered": 1, "local": 2}
+    entries.sort(key=lambda e: (e["auth"] != "ok", kind_rank.get(e["kind"], 3), e["label"]))
+    return entries
+
+
+def resolve(entry_id: str) -> tuple:
+    """'provider:model' -> (provider, model). Provider names carry no ':', so split once."""
+    provider, _, model = (entry_id or "").partition(":")
+    return provider, (model or None)

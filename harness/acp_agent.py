@@ -1,0 +1,271 @@
+"""collie as an ACP (Agent Client Protocol) agent — one implementation that plugs into Zed,
+JetBrains, neovim, OpenCode, and VS Code (via the community ACP client), reusing collie's
+Harness loop verbatim. The distribution multiplier over a per-editor extension.
+
+collie's streaming `emit` events map straight onto ACP's native session/update primitives, so
+the SIGNATURE verification gate renders in every editor for free:
+  emit("tool")    -> ToolCallStart (human titles: "Read foo.py" / "Search \"bug\"" / "$ pytest")
+                     with jump-to-file `locations` so read/search/edit are clickable.
+  emit("edit")    -> ToolCallStart(kind=edit) with a native FileEditToolCallContent DIFF.
+  emit("repro")   -> the VERIFICATION GATE: the reproduction's execute call is upgraded in place
+                     (ToolCallProgress) from "in_progress" to completed/failed — the executed
+                     pass/fail is the signal (no synthesized "model thought").
+  emit("receipt") -> UsageUpdate(cost) + a final AgentMessageChunk — the honest receipt
+                     (verified · tokens · turns · time · $), rendered AFTER the answer.
+
+Every newer ACP primitive (ToolCallProgress, AgentThoughtChunk, ToolCallLocation) is feature-
+detected, so an older `acp` build renders a still-clean fallback instead of crashing.
+
+Run:  collie acp        (the editor spawns this over stdio)
+"""
+import asyncio
+import os
+import uuid
+
+import acp
+import acp.schema as s
+
+# Feature-detect the richer session/update primitives so older `acp` builds degrade gracefully
+# (absence never crashes the agent — we fall back to plain ToolCallStart / no locations).
+_HAS_PROGRESS = hasattr(s, "ToolCallProgress")
+_HAS_THOUGHT = hasattr(s, "AgentThoughtChunk")
+_HAS_LOC = hasattr(s, "ToolCallLocation")
+
+# read/search verbs + ACP tool `kind` for the tools collie streams. Human titles, not raw
+# function names — an editor sidebar should read like a colleague's activity, not a call log.
+_VERBS = {
+    "read_file": "Read", "code_search": "Search", "grep": "Grep", "ripgrep": "Search",
+    "list_files": "List", "glob": "Find", "web_search": "Web search",
+    "web_fetch": "Fetch", "fetch": "Fetch",
+}
+_KINDS = {
+    "read_file": "read", "code_search": "search", "grep": "search", "ripgrep": "search",
+    "list_files": "search", "glob": "search", "web_search": "fetch",
+    "web_fetch": "fetch", "fetch": "fetch",
+}
+
+
+def _tb(text):
+    return s.TextContentBlock(text=text, type="text")
+
+
+def _oneline(t, n):
+    t = " ".join((t or "").split())
+    return t if len(t) <= n else t[:n - 1] + "…"
+
+
+def _basename(path):
+    p = str(path or "")
+    return os.path.basename(p.rstrip("/")) or p
+
+
+def _loc(path, line=None):
+    """A clickable jump-to-file target for the editor, if the schema supports it."""
+    if not _HAS_LOC or not path:
+        return None
+    try:
+        return [s.ToolCallLocation(path=str(path), line=line)]
+    except Exception:
+        return None
+
+
+def _tool_title(name, args):
+    """(title, kind, path) — a human, editor-friendly label for a read/search tool call."""
+    args = args or {}
+    q = args.get("query") or args.get("pattern")
+    path = args.get("path") or args.get("file")
+    kind = _KINDS.get(name, "other")
+    if name == "read_file":
+        return ("Read " + (_basename(path) or "file"), kind, path)
+    if name in ("code_search", "grep", "ripgrep"):
+        term = _oneline(str(q or path or ""), 60)
+        return ('%s "%s"' % (_VERBS.get(name, "Search"), term),
+                kind, path if not q else None)
+    verb = _VERBS.get(name)
+    if verb:
+        return ((verb + " " + _oneline(str(q or path or ""), 60)).strip(), kind, path)
+    return ((name + " " + _oneline(str(q or path or ""), 60)).strip(), kind, path)
+
+
+class CollieAgent(acp.Agent):
+    def __init__(self):
+        self.conn = None
+        self.sessions = {}          # session_id -> {"cwd": ...}
+        self._n = 0
+        self._last_bash = None      # (tool_call_id, command) — upgraded in place by the gate
+
+    def _tcid(self):
+        self._n += 1
+        return "tc-%d" % self._n
+
+    def on_connect(self, conn):
+        self.conn = conn
+
+    async def initialize(self, protocol_version, client_capabilities=None, client_info=None, **kw):
+        return acp.InitializeResponse(
+            protocol_version=protocol_version,
+            agent_capabilities=s.AgentCapabilities(
+                load_session=False,
+                prompt_capabilities=s.PromptCapabilities(image=False, audio=False,
+                                                         embedded_context=True)),
+            agent_info=s.Implementation(name="collie", version="1")
+            if hasattr(s, "Implementation") else None)
+
+    async def new_session(self, cwd, additional_directories=None, mcp_servers=None, **kw):
+        sid = "collie-" + uuid.uuid4().hex[:12]
+        self.sessions[sid] = {"cwd": cwd or os.getcwd()}
+        return acp.NewSessionResponse(session_id=sid)
+
+    async def prompt(self, session_id, prompt, **kw):
+        task = " ".join(getattr(b, "text", "") for b in prompt if getattr(b, "text", "")).strip()
+        sess = self.sessions.setdefault(session_id, {"cwd": os.getcwd()})
+        cwd = sess.get("cwd", os.getcwd())
+        loop = asyncio.get_running_loop()
+        self._last_bash = None
+
+        from .cli import make_harness
+        from . import settings
+        # env > settings.json > API default — the ACP entry never calls settings.apply(), so read
+        # settings directly to keep the web Settings panel authoritative here too.
+        provider = settings.get("PROVIDER", "anthropic")
+        # Bridge the SYNC emit callback (fired from the worker thread) onto THIS event loop.
+        # The receipt is captured, not streamed inline, so we can render it AFTER the final
+        # answer (metadata reads better below the substance it summarizes).
+        receipt = {}
+
+        def _bridge(kind, dd):
+            if kind == "receipt":
+                receipt.update(dd)
+                return
+            asyncio.run_coroutine_threadsafe(self._send(session_id, kind, dd), loop)
+
+        h = None
+        try:
+            # build INSIDE the try — make_harness -> AnthropicOAuth raises on a missing token, and
+            # that must reach the user as a chat message, not an escaped JSON-RPC error.
+            h = make_harness(cwd, provider=provider, model=os.environ.get("COLLIE_MODEL"),
+                             project="acp", code_search=True, embed="hash",
+                             exec_code=True, delegate=True)
+            h.emit = _bridge
+            history = sess.get("messages")   # ACP is a LONG session (many prompts) -> carry thread
+            res = await loop.run_in_executor(
+                None, lambda: h.run("acp", task, consolidate=False, history=history))
+            sess["messages"] = res.messages  # remember for the next prompt in this session
+            if res.answer:
+                await self.conn.session_update(session_id, s.AgentMessageChunk(
+                    session_update="agent_message_chunk", content=_tb(res.answer)))
+            if receipt:
+                await self._send(session_id, "receipt", receipt)
+        except Exception as e:
+            await self.conn.session_update(session_id, s.AgentMessageChunk(
+                session_update="agent_message_chunk",
+                content=_tb("collie could not run: %s: %s" % (type(e).__name__, e))))
+        finally:
+            if h is not None:
+                try:
+                    h.memory.close(); h.recorder.close()
+                except Exception:
+                    pass
+        return acp.PromptResponse(stop_reason="end_turn")
+
+    async def _send(self, sid, kind, d):
+        import sys as _sys
+        if os.environ.get("COLLIE_ACP_DEBUG"):
+            print("[_send] kind=%s conn=%s" % (kind, self.conn is not None), file=_sys.stderr, flush=True)
+        try:
+            if kind == "tool":
+                name, ok = d.get("name"), d.get("ok", True)
+                args = d.get("args") or {}
+                status = "completed" if ok else "failed"
+                # edits arrive as a first-class diff event; skip the bare call here.
+                if name in ("edit_file", "write_file"):
+                    return
+                # bash: render every shell command (pytest, pip, git, ls — previously invisible)
+                # as an execute call. A post-edit reproduction is a bash call too; we stash its
+                # id so the repro/gate event can upgrade THIS very call in place (no duplicate).
+                if name == "bash":
+                    cmd = str(args.get("command") or "").strip()
+                    tcid = self._tcid()
+                    self._last_bash = (tcid, cmd)
+                    await self.conn.session_update(sid, s.ToolCallStart(
+                        session_update="tool_call", tool_call_id=tcid,
+                        title="$ " + _oneline(cmd, 72), kind="execute", status=status,
+                        content=[s.ContentToolCallContent(content=_tb(cmd), type="content")]
+                        if cmd else None))
+                    return
+                title, akind, path = _tool_title(name, args)
+                await self.conn.session_update(sid, s.ToolCallStart(
+                    session_update="tool_call", tool_call_id=self._tcid(),
+                    title=title, kind=akind, status=status, locations=_loc(path)))
+
+            elif kind == "edit":
+                path = d.get("path", "")
+                await self.conn.session_update(sid, s.ToolCallStart(
+                    session_update="tool_call", tool_call_id=self._tcid(),
+                    title="Edit " + (_basename(path) or "file"), kind="edit",
+                    status="completed", locations=_loc(path),
+                    content=[s.FileEditToolCallContent(
+                        path=path, old_text=d.get("old", ""), new_text=d.get("new", ""),
+                        type="diff")]))
+
+            elif kind == "repro":
+                # THE VERIFICATION GATE. The reproduction just ran on the edited code; flip the
+                # reproduction's own execute call from "in_progress" to completed/failed so the
+                # gate visibly gates. (We do NOT synthesize a fake "model thought" here — collie's
+                # brand is honest signals; the executed pass/fail IS the signal.)
+                passed = d.get("passed")
+                asserted = d.get("asserted")
+                cmd = d.get("cmd", "")
+                badge = " (assert-checked)" if asserted else ""
+                title = ("Verification gate · reproduction "
+                         + ("passed ✓" if passed else "failed ✗") + badge)
+                status = "completed" if passed else "failed"
+                content = [s.ContentToolCallContent(content=_tb(cmd), type="content")] if cmd else None
+
+                lb = self._last_bash
+                if _HAS_PROGRESS and lb:
+                    # Upgrade the bash call we just rendered into the labelled gate: name it,
+                    # show it "running", then flip to the verdict — one call, no duplicate.
+                    tcid = lb[0]
+                    self._last_bash = None
+                    await self.conn.session_update(sid, s.ToolCallProgress(
+                        session_update="tool_call_update", tool_call_id=tcid,
+                        title=title, kind="execute", status="in_progress", content=content))
+                    await self.conn.session_update(sid, s.ToolCallProgress(
+                        session_update="tool_call_update", tool_call_id=tcid, status=status))
+                else:
+                    # Fallback (older schema / no tracked bash): a single labelled execute call.
+                    await self.conn.session_update(sid, s.ToolCallStart(
+                        session_update="tool_call", tool_call_id=self._tcid(),
+                        title=title, kind="execute", status=status, content=content))
+
+            elif kind == "receipt":
+                tok = d.get("total_tokens", 0) or 0
+                cost = float(d.get("cost_usd", 0.0) or 0.0)
+                await self.conn.session_update(sid, s.UsageUpdate(
+                    session_update="usage_update", used=tok, size=200000,
+                    cost=s.Cost(amount=cost, currency="USD")))
+                if d.get("error"):
+                    line = "collie · ⚠ %s · %s tok · $%.4f" % (
+                        _oneline(str(d["error"]), 80), "{:,}".format(tok), cost)
+                else:
+                    gate = "✓ verified" if d.get("verified") else "· unverified"
+                    sec = (d.get("wall_ms", 0) or 0) / 1000.0
+                    line = ("collie · %s · %s tok · %d turns · "
+                            "%d tools · %.1fs · $%.4f") % (
+                        gate, "{:,}".format(tok), d.get("turns", 0) or 0,
+                        d.get("tool_calls", 0) or 0, sec, cost)
+                await self.conn.session_update(sid, s.AgentMessageChunk(
+                    session_update="agent_message_chunk", content=_tb(line)))
+        except Exception as e:
+            if os.environ.get("COLLIE_ACP_DEBUG"):
+                import sys as _sys
+                print("[_send ERROR] %s: %s" % (kind, e), file=_sys.stderr, flush=True)
+
+
+def main():
+    asyncio.run(acp.run_agent(CollieAgent()))
+
+
+if __name__ == "__main__":
+    main()

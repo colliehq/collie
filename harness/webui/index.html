@@ -1,0 +1,2522 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<title>Collie · web</title>
+<style>
+  /* ============================================================= palette
+     "Blue Merle" — named for the border-collie coat: a slate-indigo chrome on
+     cool porcelain paper, silver-grey neutrals, and colour reserved for meaning.
+     The accent (buttons, borders, active nav, logo) is slate-indigo; GREEN is
+     demoted to a sage PASS only, so the UI no longer reads all-green. Signal
+     trio kept: sage PASS, signal-coral FAIL, marigold-amber money/tokens.
+     NOTE: the token names --pine / --pine-ink are LEGACY (were green); they now
+     carry the slate-indigo accent — re-valued in place to keep the diff small.
+     --on-accent is the readable text/icon colour on a --pine or --meadow fill
+     (white in light; dark-ink in dark, since the dark accent is light periwinkle).
+     Serif headings over a humanist sans, mono for machine data. */
+  :root {
+    --bg:        #EBEDF1;
+    --surface:   #FBFCFE;
+    --surface-2: #EFF1F5;
+    --raise:     #FFFFFF;
+    --ink:       #1A1F2B;
+    --muted:     #5E6473;
+    --faint:     #8A90A0;
+    --line:      #D8DBE4;
+    --line-2:    #E4E7EE;
+    --pine:      #3D4E8F;   /* LEGACY name — now the Blue-Merle slate-indigo chrome accent */
+    --pine-ink:  #33427A;
+    --on-accent: #FFFFFF;   /* readable text/icons on a --pine or --meadow fill */
+    --meadow:    #3E8E6E;   /* PASS — sage green, semantic-only (chrome is the slate above) */
+    --meadow-bg: #E1F0E9;
+    --coral:     #CD4234;
+    --coral-bg:  #FBE7E3;
+    --amber:     #B4720C;
+    --azure:     #2E7CA8;
+    --shadow:    0 1px 2px rgba(20,40,32,.05), 0 8px 24px rgba(20,40,32,.06);
+    --shadow-lg: 0 2px 6px rgba(20,40,32,.07), 0 18px 46px rgba(20,40,32,.11);
+    /* Type = sans everywhere + mono for machine data (the dev-tool idiom that CC / Codex / Cursor
+       use — serif reads as "prose", which fights the "tool" model). Distinctiveness comes from the
+       Blue-Merle palette, not the typeface. --cjk is appended to every stack because the user works
+       bilingually and the Latin faces carry no Han glyphs (Chinese used to fall back to a random
+       browser font). --serif is kept defined but UNUSED — an editorial accent to opt back into. */
+    --cjk:   "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC";
+    --sans:  system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, var(--cjk), sans-serif;
+    --mono:  ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, var(--cjk), monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, var(--cjk), serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #0E0F14;
+      --surface:   #14161D;
+      --surface-2: #181B23;
+      --raise:     #1C2029;
+      --ink:       #E7E9F0;
+      --muted:     #969CAD;
+      --faint:     #666C7C;
+      --line:      #252833;
+      --line-2:    #2F323E;
+      --pine:      #8AA0E8;   /* LEGACY name — slate-indigo accent, lightened to periwinkle for dark */
+      --pine-ink:  #A9BAF0;
+      --on-accent: #151824;   /* dark ink — the dark accent is light, so text on it must be dark */
+      --meadow:    #5BC79A;   /* PASS — sage, semantic-only */
+      --meadow-bg: #14332A;
+      --coral:     #FF7060;
+      --coral-bg:  #3A211D;
+      --amber:     #E8B24E;
+      --azure:     #6FC0DE;
+      --shadow:    0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.34);
+      --shadow-lg: 0 2px 6px rgba(0,0,0,.36), 0 18px 46px rgba(0,0,0,.5);
+    }
+  }
+  /* explicit toggle wins in BOTH directions over the media query */
+  :root[data-theme="light"] {
+    --bg:#EBEDF1; --surface:#FBFCFE; --surface-2:#EFF1F5; --raise:#FFFFFF;
+    --ink:#1A1F2B; --muted:#5E6473; --faint:#8A90A0; --line:#D8DBE4; --line-2:#E4E7EE;
+    --pine:#3D4E8F; --pine-ink:#33427A; --on-accent:#FFFFFF; --meadow:#3E8E6E; --meadow-bg:#E1F0E9;
+    --coral:#CD4234; --coral-bg:#FBE7E3; --amber:#B4720C; --azure:#2E7CA8;
+    --shadow:0 1px 2px rgba(20,40,32,.05),0 8px 24px rgba(20,40,32,.06);
+    --shadow-lg:0 2px 6px rgba(20,40,32,.07),0 18px 46px rgba(20,40,32,.11);
+  }
+  :root[data-theme="dark"] {
+    --bg:#0E0F14; --surface:#14161D; --surface-2:#181B23; --raise:#1C2029;
+    --ink:#E7E9F0; --muted:#969CAD; --faint:#666C7C; --line:#252833; --line-2:#2F323E;
+    --pine:#8AA0E8; --pine-ink:#A9BAF0; --on-accent:#151824; --meadow:#5BC79A; --meadow-bg:#14332A;
+    --coral:#FF7060; --coral-bg:#3A211D; --amber:#E8B24E; --azure:#6FC0DE;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.34);
+    --shadow-lg:0 2px 6px rgba(0,0,0,.36),0 18px 46px rgba(0,0,0,.5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  }
+  h1,h2,h3 { font-family: var(--sans); font-weight: 600; letter-spacing: -.01em; }
+  /* accessibility: a visible keyboard focus ring on every interactive control (mouse users
+     don't see it thanks to :focus-visible), and honour reduced-motion. */
+  :focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; border-radius: 6px; }
+  button:focus:not(:focus-visible) { outline: none; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important; }
+  }
+  a { color: var(--pine); }
+  ::selection { background: var(--meadow-bg); }
+
+  /* ============================================================= shell */
+  .app {
+    display: grid; grid-template-columns: 276px minmax(0,1fr);
+    height: 100vh; height: 100dvh;
+    transition: grid-template-columns .22s cubic-bezier(.4,0,.2,1);
+  }
+  /* retractable sidebar (cc/codex/ChatGPT-style): collapse to reclaim width for the conversation */
+  .app.side-collapsed { grid-template-columns: 0 minmax(0,1fr); }
+  .app.side-collapsed .side { opacity: 0; pointer-events: none; }
+  @media (prefers-reduced-motion: reduce) { .app { transition: none; } }
+
+  /* ---------------------------------------------------------- sidebar */
+  .side {
+    background: var(--surface); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0;
+    overflow: hidden; transition: opacity .16s ease;
+  }
+  .brand { padding: 20px 20px 14px; }
+  .brand .logo { display: flex; align-items: center; gap: 10px; }
+  .glyph {
+    width: 34px; height: 34px; flex: none; border-radius: 9px; object-fit: contain;
+    background: #fff; padding: 2px; box-shadow: var(--shadow);
+  }
+  .brand .word { font-family: var(--sans); font-size: 22px; font-weight: 700; line-height: 1; letter-spacing: -.021em; }
+  .brand .tag { color: var(--muted); font-size: 12px; margin-top: 6px; letter-spacing: .01em; }
+
+  .newbtn {
+    margin: 4px 16px 12px; padding: 9px 12px; border: 1px solid var(--line);
+    background: var(--surface-2); color: var(--ink); border-radius: 10px;
+    font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer;
+    display: flex; align-items: center; gap: 8px; transition: .15s;
+  }
+  .newbtn:hover { border-color: var(--pine); color: var(--pine); background: var(--meadow-bg); }
+  .newbtn svg { width: 15px; height: 15px; }
+
+  .side .lbl {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--faint); padding: 4px 20px; font-weight: 600;
+  }
+  .threads { overflow-y: auto; flex: 1; min-height: 0; padding: 2px 10px 14px; }
+  .thread {
+    padding: 10px 12px; border-radius: 10px; cursor: pointer; margin-bottom: 2px;
+    border: 1px solid transparent; transition: background .12s, border-color .12s;
+  }
+  .thread:hover { background: var(--surface-2); }
+  .thread.active { background: var(--meadow-bg); border-color: color-mix(in srgb, var(--meadow) 30%, transparent); }
+  .thread .t-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .thread .t-last {
+    font-size: 13px; margin-top: 3px; color: var(--ink);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .thread { position: relative; }
+  .thread .t-turns { font-size: 11px; color: var(--faint); margin-top: 4px; }
+  .thread .t-acts { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; opacity: 0;
+    transition: opacity .12s; }
+  .thread:hover .t-acts { opacity: 1; }
+  .thread .t-act { border: 0; background: var(--surface); color: var(--faint); width: 22px; height: 22px;
+    border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1; display: grid; place-items: center; }
+  .thread .t-act:hover { background: var(--surface-2); color: var(--ink); }
+  .thread .t-act[data-a="delete"]:hover { color: var(--coral); }
+  .threads .empty { color: var(--faint); font-size: 13px; padding: 14px 12px; }
+
+  /* ------------------------------------------------------------ main */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+  .topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 22px; border-bottom: 1px solid var(--line); background: var(--surface);
+  }
+  .topbar h1 { font-size: 16px; margin: 0; }
+  .topbar .spacer { flex: 1; }
+  @media (max-width: 560px) {
+    .topbar { padding: 10px 12px; gap: 6px; }
+    .topbar h1 { font-size: 15px; }
+    #statePill, #mapBtn, #meadowBtn { display: none; }
+    .topbar .model-trigger { max-width: 112px; height: 32px; padding: 0 7px; }
+    .topbar .tbtn { width: 32px; height: 32px; }
+  }
+  .pill {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
+    display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2);
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .pill.live .dot { background: var(--meadow); box-shadow: 0 0 0 0 var(--meadow); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--meadow) 60%,transparent);} 70%{box-shadow:0 0 0 7px transparent;} 100%{box-shadow:0 0 0 0 transparent;} }
+  .tbtn {
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
+    width: 34px; height: 34px; border-radius: 9px; cursor: pointer; display: grid;
+    place-items: center; transition: .15s;
+  }
+  .tbtn:hover { border-color: var(--pine); color: var(--pine); }
+  .tbtn svg { width: 17px; height: 17px; }
+
+  /* --------------------------------------------------- settings modal */
+  .modal-overlay {
+    position: fixed; inset: 0; background: color-mix(in srgb, #000 44%, transparent);
+    display: none; align-items: flex-start; justify-content: center; z-index: 50;
+    padding: 6vh 16px; overflow-y: auto;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+    width: 100%; max-width: 560px; box-shadow: 0 24px 60px color-mix(in srgb,#000 40%,transparent);
+    animation: modalpop .16s ease; overflow: hidden;
+  }
+  @keyframes modalpop { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .modal-head {
+    display: flex; align-items: center; gap: 10px; padding: 16px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-head h2 { font-size: 15px; margin: 0; flex: 1; }
+  .modal-body { padding: 8px 20px 4px; max-height: 62vh; overflow-y: auto; }
+  .modal-foot {
+    display: flex; align-items: center; gap: 10px; padding: 14px 20px;
+    border-top: 1px solid var(--line); background: var(--surface-2);
+  }
+  .modal-foot .spacer { flex: 1; }
+  .set-group { padding: 14px 0 6px; }
+  .set-group + .set-group { border-top: 1px dashed var(--line); }
+  .set-group h3 {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  .set-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+  .set-row label { flex: 1; font-size: 13.5px; color: var(--ink); }
+  .set-row .hint { display: block; font-size: 11.5px; color: var(--faint); margin-top: 1px; }
+  .set-row input, .set-row select {
+    width: 200px; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
+    border-radius: 8px; padding: 7px 9px; font-size: 13px; font-family: inherit;
+  }
+  .set-row input:focus, .set-row select:focus {
+    outline: none; border-color: var(--pine); box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 20%,transparent);
+  }
+  .btn-primary {
+    border: 0; background: var(--pine); color: var(--on-accent); border-radius: 9px;
+    padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .btn-primary:hover { filter: brightness(1.06); }
+  .btn-primary:disabled { opacity: .55; cursor: default; }
+  .btn-ghost {
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    border-radius: 9px; padding: 9px 14px; font-size: 13px; cursor: pointer;
+  }
+  .btn-ghost:hover { border-color: var(--pine); color: var(--pine); }
+  .set-status { font-size: 12px; color: var(--muted); }
+  .set-status.ok { color: var(--meadow); }
+  .set-status.err { color: #d9544f; }
+  /* one-line help under each knob — so nothing is a mystery (what's Temperature, etc.) */
+  .set-hint { font-size: 11.5px; line-height: 1.5; color: var(--faint); margin: -2px 0 4px; max-width: 92%; }
+  .set-group .set-row + .set-hint { padding-bottom: 2px; }
+  /* toggle switch for bool knobs */
+  .set-toggle { position: relative; display: inline-block; width: 40px; height: 23px; flex: 0 0 auto; cursor: pointer; }
+  .set-toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .set-toggle .tk {
+    position: absolute; inset: 0; border-radius: 999px; background: var(--line);
+    border: 1px solid var(--line-2); transition: background .16s, border-color .16s;
+  }
+  .set-toggle .tk::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%;
+    background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.28); transition: transform .16s;
+  }
+  .set-toggle input:checked + .tk { background: var(--pine); border-color: var(--pine); }
+  .set-toggle input:checked + .tk::after { transform: translateX(17px); }
+  .set-toggle input:focus-visible + .tk { box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 26%,transparent); }
+
+  .scroll { flex: 1; overflow-y: auto; min-height: 0; scroll-behavior: smooth; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 22px 22px 8px; }
+
+  /* ------------------------------------- verification gate (sidebar, compact) */
+  .gate {
+    position: relative; overflow: hidden;
+    margin: auto 12px 12px;             /* flex column sidebar -> pinned bottom-left */
+    display: grid; grid-template-columns: auto 1fr; gap: 11px; align-items: center;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 12px 10px 14px;
+    transition: border-color .4s, background .4s;
+  }
+  .gate::before {
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
+    background: var(--faint); transition: background .4s;
+  }
+  .gate[data-state="verifying"]::before { background: var(--amber); }
+  .gate[data-state="fail"]::before      { background: var(--coral); }
+  .gate[data-state="pass"]::before       { background: var(--meadow); }
+  .gate[data-state="pass"]  { border-color: color-mix(in srgb, var(--meadow) 40%, var(--line)); }
+  .gate[data-state="fail"]  { border-color: color-mix(in srgb, var(--coral) 40%, var(--line)); }
+
+  .ring { width: 38px; height: 38px; position: relative; flex: none; }
+  .ring svg { width: 38px; height: 38px; transform: rotate(-90deg); }
+  .ring .track { fill: none; stroke: var(--line-2); stroke-width: 8; }
+  .ring .prog  { fill: none; stroke: var(--faint); stroke-width: 8; stroke-linecap: round;
+                 stroke-dasharray: 264; stroke-dashoffset: 264; transition: stroke .4s, stroke-dashoffset .8s cubic-bezier(.5,0,.2,1); }
+  .ring .mark  { position: absolute; inset: 0; display: grid; place-items: center; }
+  .ring .mark svg { width: 16px; height: 16px; transform: none; overflow: visible; }
+  .ring .mark path { fill: none; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round;
+                     stroke-dasharray: 60; stroke-dashoffset: 60; }
+  .gate[data-state="idle"]      .ring .prog { stroke-dashoffset: 264; stroke: var(--faint); }
+  .gate[data-state="none"]      .ring .prog { stroke-dashoffset: 0;   stroke: var(--azure); opacity: .5; }
+  .gate[data-state="working"]   .ring .prog { stroke: var(--azure); animation: spin 1.7s linear infinite; }
+  .gate[data-state="working"]::before { background: var(--azure); }
+  .gate[data-state="verifying"] .ring .prog { stroke: var(--amber); animation: spin 1.1s linear infinite; }
+  @keyframes spin { from{stroke-dashoffset:200;} 50%{stroke-dashoffset:70;} to{stroke-dashoffset:200; transform:rotate(360deg);} }
+  .gate[data-state="fail"] .ring .prog { stroke-dashoffset: 0; stroke: var(--coral); animation: none; }
+  .gate[data-state="pass"] .ring .prog { stroke-dashoffset: 0; stroke: var(--meadow); animation: none; }
+  .gate[data-state="fail"] .ring .cross { stroke: var(--coral); animation: draw .45s ease forwards; }
+  .gate[data-state="pass"] .ring .check { stroke: var(--meadow); animation: draw .55s .12s ease forwards; }
+  /* the signature moment: even a first-try pass sweeps coral -> meadow */
+  .gate[data-state="pass"] .ring { animation: sweep .7s ease; }
+  @keyframes sweep { 0%{filter:hue-rotate(-40deg) saturate(1.3);} 100%{filter:none;} }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .gate[data-state="fail"] { animation: shake .4s; }
+  @keyframes shake { 10%,90%{transform:translateX(-1px);} 30%,70%{transform:translateX(3px);} 50%{transform:translateX(-3px);} }
+  .cross, .check { display: none; }
+  .gate[data-state="fail"] .cross { display: block; }
+  .gate[data-state="pass"] .check { display: block; }
+
+  .gate .g-copy { min-width: 0; }
+  .gate .g-eyebrow { font-size: 9.5px; text-transform: uppercase; letter-spacing: .09em;
+                     color: var(--faint); font-weight: 600; }
+  .gate .g-status { font-family: var(--sans); font-size: 13.5px; font-weight: 600;
+                    margin: 1px 0 1px; line-height: 1.2;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gate[data-state="fail"] .g-status { color: var(--coral); }
+  .gate[data-state="pass"] .g-status { color: var(--meadow); }
+  .gate .g-sub { color: var(--muted); font-size: 11px; line-height: 1.35;
+                 display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .gate .g-sub code { font-family: var(--mono); font-size: 10px; background: var(--surface);
+                      padding: 0 4px; border-radius: 4px; color: var(--ink); }
+
+  /* ---------------------------------------------------------- receipt */
+  .receipt { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 16px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+          padding: 11px 13px; min-width: 0; }
+  .stat .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); font-weight: 600; }
+  .stat .v { font-family: var(--mono); font-size: 18px; margin-top: 3px; font-weight: 550;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat.money .v { color: var(--amber); }
+  .stat.prefix .v { color: var(--pine); }
+
+  /* ------------------------------------------------------ work panels */
+  .panels { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.1fr); gap: 16px; margin-top: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+          display: flex; flex-direction: column; min-width: 0; }
+  .card > h3 { font-family: var(--sans); font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+               color: var(--muted); margin: 0; padding: 13px 16px; border-bottom: 1px solid var(--line-2);
+               display: flex; align-items: center; gap: 8px; }
+  .card > h3 .count { margin-left: auto; font-family: var(--mono); color: var(--faint);
+                      font-size: 11px; background: var(--surface-2); padding: 1px 7px; border-radius: 999px; }
+  .card .body { padding: 8px; overflow-y: auto; max-height: 340px; }
+  .card .none { color: var(--faint); font-size: 13px; padding: 20px 12px; text-align: center; }
+
+  /* ---- "Now" strip: what the agent is doing, in words (replaced the constellation
+     mini-map 2026-07-18 — dots showed THAT something happened; this shows WHAT) */
+  .nowstrip { display: flex; flex-direction: column; gap: 7px; margin-top: 16px;
+              background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+              padding: 10px 14px; }
+  .now-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .now-ico { flex: none; width: 22px; height: 22px; border-radius: 7px; display: grid;
+             place-items: center; background: var(--surface-2); font-size: 12px; color: var(--muted); }
+  .now-verb { font-weight: 600; font-size: 12.5px; flex: none; }
+  .now-target { font-family: var(--mono); font-size: 12px; color: var(--muted);
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .now-ribbon { margin-left: auto; display: flex; gap: 2px; flex: none; align-items: center; }
+  .now-ribbon i { width: 3px; height: 12px; border-radius: 1px; background: var(--line-2); display: block; }
+  .now-ribbon i[data-k="read"]   { background: var(--pine); opacity: .75; }
+  .now-ribbon i[data-k="search"] { background: var(--faint); }
+  .now-ribbon i[data-k="bash"]   { background: var(--azure); }
+  .now-ribbon i[data-k="edit"]   { background: var(--amber); }
+  .now-ribbon i[data-k="pass"]   { background: var(--meadow); height: 15px; }
+  .now-ribbon i[data-k="fail"]   { background: var(--coral); height: 15px; }
+  .hotfiles { display: flex; gap: 6px; flex-wrap: wrap; }
+  .hotchip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono);
+             font-size: 11px; border: 1px solid var(--line); background: var(--surface-2);
+             border-radius: 999px; padding: 2px 9px; color: var(--muted); max-width: 220px; }
+  .hotchip .hc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hotchip .hc-dot { flex: none; width: 6px; height: 6px; border-radius: 2px; background: var(--faint); }
+  .hotchip[data-act="read"] .hc-dot { background: var(--pine); }
+  .hotchip[data-act="edit"] .hc-dot { background: var(--amber); }
+  .hotchip .hc-n { color: var(--faint); }
+  .hotchip.cur { border-color: var(--pine); color: var(--ink); }
+  .hotchip.cur .hc-dot { animation: mlpulse 1.1s ease-in-out infinite; }
+  @keyframes mlpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  /* timeline */
+  .ev { display: grid; grid-template-columns: 22px 1fr auto; gap: 9px; align-items: start;
+        padding: 8px 8px; border-radius: 9px; }
+  .ev:hover { background: var(--surface-2); }
+  .ev .ico { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center;
+             margin-top: 1px; flex: none; }
+  .ev .ico svg { width: 13px; height: 13px; }
+  .ev.tool .ico { background: var(--surface-2); color: var(--azure); }
+  .ev.tool.bad .ico { background: var(--coral-bg); color: var(--coral); }
+  .ev.edit .ico { background: var(--meadow-bg); color: var(--meadow); }
+  .ev.repro.ok .ico { background: var(--meadow-bg); color: var(--meadow); }
+  .ev.repro.bad .ico { background: var(--coral-bg); color: var(--coral); }
+  .ev.meta .ico { background: var(--surface-2); color: var(--faint); }
+  .ev .lead { min-width: 0; }
+  .ev .name { font-size: 13.5px; font-weight: 550; }
+  .ev .detail { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+                margin-top: 2px; overflow-x: auto; white-space: nowrap; max-width: 100%;
+                padding-bottom: 1px; }
+  .ev .detail::-webkit-scrollbar { height: 5px; }
+  .ev .at { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+
+  /* diff */
+  .diff { border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; margin: 6px; }
+  .diff .dhead { font-family: var(--mono); font-size: 11.5px; padding: 7px 11px; background: var(--surface-2);
+                 color: var(--ink); border-bottom: 1px solid var(--line-2);
+                 white-space: nowrap; overflow-x: auto; }
+  .diff pre { margin: 0; overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+  .diff .ln { display: block; padding: 0 11px; white-space: pre; }
+  .diff .ln.add { background: var(--meadow-bg); color: color-mix(in srgb, var(--meadow) 78%, var(--ink)); }
+  .diff .ln.del { background: var(--coral-bg);  color: color-mix(in srgb, var(--coral) 72%, var(--ink)); }
+  .diff .ln .lno { display: inline-block; width: 30px; padding-right: 8px; text-align: right;
+    color: var(--faint); user-select: none; font-variant-numeric: tabular-nums; opacity: .7; }
+  .diff .ln .sig { display: inline-block; width: 14px; color: var(--faint); user-select: none; }
+  .diff .ln.add .lno, .diff .ln.add .sig { color: var(--meadow); }
+  .diff .ln.del .lno, .diff .ln.del .sig { color: var(--coral); }
+
+  /* ------------------------------------------------------ conversation */
+  .thread-log { max-width: 980px; margin: 4px auto 0; padding: 6px 22px 20px; }
+  .msg { display: flex; gap: 12px; margin: 14px 0; }
+  .msg .av { width: 30px; height: 30px; border-radius: 9px; flex: none; display: grid; place-items: center;
+             font-family: var(--sans); font-weight: 600; font-size: 13px; margin-top: 2px; }
+  .msg.user .av { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
+  /* assistant = the brand glyph on a neutral tile (A/B/C'd 2026-07-18: the dog head goes
+     muddy on the green gradient; identity comes from the mark, not a colored box) */
+  .msg.assistant .av { background: var(--surface-2); border: 1px solid var(--line); }
+  .msg.assistant .av img { width: 22px; height: 22px; display: block; }
+  .msg .bubble { min-width: 0; flex: 1; }
+  .msg .who { font-size: 12px; color: var(--faint); font-weight: 600; margin-bottom: 3px; }
+  .msg .text { white-space: pre-wrap; word-break: break-word; font-size: 14.5px; }
+  .msg.user .text { color: var(--ink); }
+  /* mid-run steer: a message sent while Collie was working — subtle accent rail + label tint */
+  .msg.steer .bubble { border-left: 2px solid var(--pine); padding-left: 9px; }
+  .msg.steer .who { color: var(--pine); }
+  /* rendered markdown (assistant answers) — normal flow, not pre-wrap */
+  .msg .text.md { white-space: normal; line-height: 1.62; }
+  .msg .text.md > :first-child { margin-top: 0; }
+  .msg .text.md > :last-child { margin-bottom: 0; }
+  .msg .text.md p { margin: 0 0 10px; }
+  .msg .text.md h2 { font-family: var(--sans); font-size: 19px; margin: 16px 0 8px; }
+  .msg .text.md h3 { font-size: 15.5px; font-weight: 700; margin: 15px 0 6px; }
+  .msg .text.md h4 { font-size: 14px; font-weight: 700; margin: 13px 0 5px; color: var(--muted); }
+  .msg .text.md ul, .msg .text.md ol { margin: 4px 0 11px; padding-left: 22px; }
+  .msg .text.md li { margin: 3px 0; }
+  .msg .text.md code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2);
+    padding: 1px 5px; border-radius: 5px; }
+  .msg .text.md pre.cb { background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 10px 0; }
+  .msg .text.md pre.cb code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; }
+  .msg .text.md .hl-kw  { color: var(--pine); font-weight: 600; }
+  .msg .text.md .hl-str { color: var(--amber); }
+  .msg .text.md .hl-com { color: var(--faint); font-style: italic; }
+  .msg .text.md .hl-num { color: var(--azure); }
+  .msg .text.md a { color: var(--pine); text-decoration: underline; text-underline-offset: 2px; }
+  .msg .text.md .tw { overflow-x: auto; margin: 10px 0; }
+  .msg .text.md table { border-collapse: collapse; font-size: 13px; min-width: 40%; }
+  .msg .text.md th, .msg .text.md td { border: 1px solid var(--line); padding: 6px 11px; text-align: left; }
+  .msg .text.md th { background: var(--surface-2); font-weight: 600; }
+  .msg .text.md tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+  .msg .text.md strong { font-weight: 700; }
+  /* live "thinking" state inside the conversation while collie works */
+  .msg { position: relative; }
+  .msg .text.thinking { display: flex; align-items: center; gap: 9px; color: var(--muted); }
+  .msg .text .dots { display: inline-flex; gap: 3px; }
+  .msg .text .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--meadow);
+    animation: blink 1.2s infinite both; }
+  .msg .text .dots i:nth-child(2) { animation-delay: .18s; }
+  .msg .text .dots i:nth-child(3) { animation-delay: .36s; }
+  @keyframes blink { 0%,80%,100% { opacity: .25; transform: translateY(0); }
+    40% { opacity: 1; transform: translateY(-2px); } }
+  .msg .pstat { font-size: 13px; }
+  /* streamed content is now LIVE-rendered markdown; a caret trails the last block as a stream cue */
+  .msg .text.streaming > :last-child::after,
+  .msg .text.streaming:empty::after { content: "▋"; color: var(--meadow); animation: blink 1s step-end infinite; margin-left: 2px; }
+  /* interleaved conversation flow: text segments + tool steps stack in chronological order */
+  .msg .flow { display: flex; flex-direction: column; gap: 7px; }
+  .msg .flow > .text.md { margin: 0; }             /* segment spacing comes from the flow gap */
+  /* inline tool trace (cc-style): a compact step per tool — verb + mono target + a ⎿ result line */
+  .trace-step { font-size: 12.5px; color: var(--muted); }
+  .trace-step .ts-head { display: flex; align-items: baseline; gap: 8px; }
+  .trace-step .ts-ico { width: 14px; text-align: center; color: var(--faint);
+    font-family: var(--mono); font-size: 11px; flex: none; }
+  .trace-step .ts-verb { font-weight: 600; color: var(--ink); flex: none; }
+  .trace-step .ts-target { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .trace-step .ts-res { display: flex; gap: 8px; padding-left: 22px; margin-top: 1px;
+    color: var(--faint); font-size: 11.5px; }
+  .trace-step .ts-corner { flex: none; }
+  .trace-step .ts-restext { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; min-width: 0; }
+  .trace-step.ok  .ts-ico { color: var(--meadow); }
+  .trace-step.bad .ts-ico, .trace-step.bad .ts-restext { color: var(--coral); }
+  /* copy-answer button (hover-reveal) */
+  .msg .copy { position: absolute; top: -2px; right: 0; opacity: 0; border: 1px solid var(--line);
+    background: var(--surface); color: var(--muted); border-radius: 7px; padding: 2px 9px;
+    font-size: 11.5px; cursor: pointer; transition: opacity .15s, color .15s; }
+  .msg:hover .copy { opacity: 1; }
+  .msg .copy:hover { color: var(--ink); border-color: var(--pine); }
+  .msg .text .caret { display: inline-block; width: 7px; height: 15px; background: var(--pine);
+                      vertical-align: -2px; margin-left: 1px; animation: blink .9s steps(2) infinite; border-radius: 1px; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .msg .err { background: var(--coral-bg); border: 1px solid color-mix(in srgb,var(--coral) 30%,transparent);
+              color: var(--coral); padding: 9px 12px; border-radius: 10px; font-size: 13.5px;
+              font-family: var(--mono); }
+
+  /* ---------------------------------------- run drawer (collapsible) + empty state */
+  .welcome { max-width: 560px; margin: 12vh auto 0; text-align: center; padding: 0 20px; }
+  .welcome .wc-logo { width: 56px; height: 56px; border-radius: 14px; background: #fff;
+    padding: 4px; box-shadow: var(--shadow); margin-bottom: 16px; }
+  .welcome .wc-title { font-family: var(--sans); font-size: 25px; color: var(--ink);
+    margin-bottom: 10px; text-wrap: balance; }
+  .welcome .wc-sub { color: var(--muted); font-size: 14px; line-height: 1.6; text-wrap: pretty; }
+  .workpanel { border-top: 1px solid var(--line); background: var(--surface); }
+  .workpanel[hidden] { display: none; }
+  .model-trigger {
+    appearance: none; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
+    border-radius: 9px; min-width: 0; max-width: 260px; height: 34px; padding: 0 10px;
+    display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font: inherit;
+    transition: border-color .15s, background .15s, box-shadow .15s;
+  }
+  .model-trigger:hover { border-color: var(--pine); background: var(--surface); }
+  .model-trigger[aria-expanded="true"] { border-color: var(--pine); box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 18%,transparent); }
+  .model-trigger-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--azure); flex: none; }
+  .model-trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+  .model-trigger-chev { width: 13px; height: 13px; color: var(--faint); flex: none; transition: transform .16s; }
+  .model-trigger[aria-expanded="true"] .model-trigger-chev { transform: rotate(180deg); }
+  .wpbody { max-width: 980px; margin: 0 auto; padding: 14px 22px 6px; }
+  .wpbody .gate { margin-top: 0; }
+
+  /* ------------------------------------------------------- model picker */
+  .model-overlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    padding: 24px 16px; background: color-mix(in srgb,#000 44%,transparent); z-index: 60;
+  }
+  .model-overlay.open { display: flex; }
+  .model-dialog {
+    width: min(720px, 100%); max-height: min(720px, calc(100vh - 48px)); display: flex; flex-direction: column;
+    overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--surface);
+    box-shadow: 0 24px 70px color-mix(in srgb,#000 42%,transparent); animation: modalpop .16s ease;
+  }
+  .model-head { display: flex; align-items: flex-start; gap: 12px; padding: 17px 20px 14px; border-bottom: 1px solid var(--line); }
+  .model-head-copy { min-width: 0; flex: 1; }
+  .model-head h2 { margin: 0; color: var(--ink); font-size: 16px; }
+  .model-head p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+  .model-shortcut { display: inline-flex; align-items: center; height: 23px; padding: 0 6px; border: 1px solid var(--line);
+    border-radius: 6px; color: var(--faint); background: var(--surface-2); font-family: var(--mono); font-size: 10.5px; }
+  .model-toolbar { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+  .model-search { flex: 1; min-width: 0; position: relative; }
+  .model-search svg { position: absolute; width: 16px; height: 16px; top: 50%; left: 10px; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .model-search input { width: 100%; height: 36px; padding: 0 10px 0 33px; border: 1px solid var(--line); border-radius: 9px;
+    background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; outline: none; }
+  .model-search input:focus { border-color: var(--pine); box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 18%,transparent); }
+  .model-discover { flex: none; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .model-discover input { accent-color: var(--pine); }
+  .model-list { min-height: 180px; max-height: 414px; overflow-y: auto; padding: 8px 10px 12px; }
+  .model-group + .model-group { margin-top: 6px; }
+  .model-group-title { display: flex; align-items: baseline; gap: 8px; padding: 10px 9px 6px; color: var(--muted);
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .model-group-title span { color: var(--faint); font-family: var(--sans); font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .model-option { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 10px; border: 1px solid transparent;
+    border-radius: 11px; background: transparent; color: var(--ink); cursor: pointer; text-align: left; font: inherit; transition: background .12s, border-color .12s; }
+  .model-option:hover, .model-option.is-keyboard-active { background: var(--surface-2); border-color: color-mix(in srgb,var(--pine) 32%,var(--line)); }
+  .model-option.is-current { background: color-mix(in srgb,var(--meadow) 10%,var(--surface-2)); border-color: color-mix(in srgb,var(--meadow) 36%,var(--line)); }
+  .model-option:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 22%,transparent); }
+  .model-option:disabled { opacity: .55; cursor: not-allowed; }
+  .model-option-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .model-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 650; }
+  .model-option-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-family: var(--mono); font-size: 10.5px; }
+  .model-option-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .model-tag, .model-source { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 6px; background: var(--surface-2);
+    color: var(--muted); font-family: var(--mono); font-size: 9.5px; }
+  .model-source { color: var(--azure); }
+  .model-option-side { flex: none; display: flex; align-items: flex-end; flex-direction: column; gap: 4px; }
+  .model-auth { border-radius: 999px; padding: 2px 6px; background: var(--surface-2); color: var(--faint); font-size: 10.5px; font-weight: 650; }
+  .model-auth.ok { background: var(--meadow-bg); color: var(--meadow); }
+  .model-auth.missing-key, .model-auth.not-logged-in { background: color-mix(in srgb,var(--amber) 14%,var(--surface-2)); color: #a56c17; }
+  .model-price { color: var(--muted); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+  .model-empty { display: grid; min-height: 180px; place-items: center; color: var(--muted); font-size: 13px; text-align: center; }
+  .model-foot { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 10px 20px; border-top: 1px solid var(--line); background: var(--surface-2); }
+  .model-status { min-width: 0; flex: 1; color: var(--muted); font-size: 12px; }
+  .model-status.err { color: var(--coral); }
+  .model-status.ok { color: var(--meadow); }
+  .model-foot-note { color: var(--faint); font-size: 11px; white-space: nowrap; }
+
+  @media (max-width: 560px) {
+    .model-overlay { padding: 12px 8px; }
+    .model-dialog { max-height: calc(100vh - 24px); border-radius: 14px; }
+    .model-head, .model-toolbar, .model-foot { padding-left: 14px; padding-right: 14px; }
+    .model-toolbar { align-items: flex-start; flex-direction: column; gap: 9px; }
+    .model-search { width: 100%; }
+    .model-option { gap: 8px; padding: 9px 7px; }
+    .model-option-side { display: none; }
+    .model-option-tags { display: none; }
+    .model-foot-note { display: none; }
+  }
+
+  /* scroll-to-latest button (appears when scrolled up) */
+  .scrolldown {
+    position: absolute; left: 50%; transform: translateX(-50%) translateY(6px);
+    bottom: 124px; width: 34px; height: 34px; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+    box-shadow: var(--shadow); cursor: pointer; display: grid; place-items: center;
+    opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 5;
+  }
+  .scrolldown.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+  .scrolldown:hover { color: var(--pine); border-color: var(--pine); }
+  .scrolldown svg { width: 17px; height: 17px; }
+
+  /* ------------------------------------------------------- composer */
+  .composer { border-top: 1px solid var(--line); background: var(--surface); padding: 12px 22px 16px; }
+  .composer .inner { max-width: 980px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end;
+                     background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px;
+                     padding: 8px 8px 8px 14px; transition: border-color .15s, box-shadow .15s; }
+  .composer .inner:focus-within { border-color: var(--pine); box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 20%,transparent); }
+  .composer textarea { flex: 1; resize: none; border: 0; background: transparent; color: var(--ink);
+                       font: inherit; font-size: 15px; line-height: 1.5; max-height: 180px; padding: 6px 0; outline: none; }
+  .composer textarea::placeholder { color: var(--faint); }
+  /* custom run-mode picker (replaces the OS-ugly native select) */
+  .modepick { position: relative; align-self: stretch; display: flex; }
+  .mode-trigger { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink); border-radius: 9px; padding: 0 9px;
+    min-height: 34px; font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer;
+    white-space: nowrap; transition: border-color .15s, background .15s; }
+  .mode-trigger:hover { border-color: var(--pine); }
+  .modepick.open .mode-trigger { border-color: var(--pine);
+    box-shadow: 0 0 0 3px color-mix(in srgb,var(--pine) 16%,transparent); }
+  .mt-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .mt-dot[data-mode="herding"] { background: var(--amber); }
+  .mt-dot[data-mode="pack"] { background: var(--pine); }
+  .mt-chev { width: 13px; height: 13px; color: var(--faint); transition: transform .16s; }
+  .modepick.open .mt-chev { transform: rotate(180deg); }
+  .mode-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; min-width: 236px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column; gap: 2px;
+    animation: modemenu .13s ease; }
+  .mode-menu[hidden] { display: none; }
+  @keyframes modemenu { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  .mode-item { display: flex; align-items: center; gap: 9px; border: 0; background: transparent;
+    border-radius: 8px; padding: 7px 9px; cursor: pointer; text-align: left; font: inherit; color: var(--ink); }
+  .mode-item:hover { background: var(--surface-2); }
+  .mode-item.is-active { background: color-mix(in srgb,var(--pine) 11%,transparent); }
+  .mi-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+  .mi-dot[data-mode="herding"] { background: var(--amber); }
+  .mi-dot[data-mode="pack"] { background: var(--pine); }
+  .mi-txt { display: flex; flex-direction: column; flex: 1; line-height: 1.25; }
+  .mi-name { font-size: 13px; font-weight: 600; }
+  .mi-desc { font-size: 11px; color: var(--faint); }
+  .mi-check { width: 15px; height: 15px; color: var(--pine); opacity: 0; flex: none; }
+  .mode-item.is-active .mi-check { opacity: 1; }
+  /* attach-image button + preview strip */
+  .attach { border: 1px solid var(--line); background: var(--surface); color: var(--faint);
+            border-radius: 10px; width: 38px; height: 40px; flex: none; cursor: pointer;
+            display: grid; place-items: center; transition: color .15s, border-color .15s; }
+  .attach:hover { color: var(--pine); border-color: var(--pine); }
+  .attach svg { width: 17px; height: 17px; }
+  .attach-strip { max-width: 980px; margin: 0 auto 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .attach-strip[hidden] { display: none; }
+  .thumb { position: relative; width: 56px; height: 56px; border-radius: 9px; overflow: hidden;
+           border: 1px solid var(--line); background: var(--surface-2); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb .rm { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; border: 0;
+               border-radius: 50%; background: rgba(20,20,24,.72); color: #fff; font-size: 12px;
+               line-height: 15px; cursor: pointer; padding: 0; }
+  .thumb .rm:hover { background: var(--coral, #e0553f); }
+  .msg .imgs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .msg .imgs img { max-width: 180px; max-height: 180px; border-radius: 8px; border: 1px solid var(--line); }
+  .send { border: 0; border-radius: 10px; width: 40px; height: 40px; flex: none; cursor: pointer;
+          background: var(--pine); color: var(--on-accent); display: grid; place-items: center; transition: .15s; }
+  .send:hover:not(:disabled) { background: var(--pine-ink); }
+  .send:disabled { opacity: .45; cursor: not-allowed; }
+  .send svg { width: 18px; height: 18px; }
+  .send.stop { background: var(--coral); }
+  .hint { max-width: 980px; margin: 7px auto 0; color: var(--faint); font-size: 11.5px;
+          display: flex; gap: 6px; align-items: center; }
+  .hint kbd { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--line);
+              border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; font-size: 10.5px; }
+
+  /* ------------------------------------------------ pack (best-of-N) */
+  .pack-opts { max-width: 980px; margin: 8px auto 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pack-opts[hidden] { display: none; }
+  .pack-opts label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  .pack-opts input[type=number] { width: 52px; }
+  .pack-opts input[type=text] { flex: 1; min-width: 180px; }
+  .pack-opts input[type=number], .pack-opts input[type=text] {
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
+    border-radius: 7px; padding: 5px 8px; font-size: 12px; font-family: inherit; }
+  .pack-opts input:focus { outline: none; border-color: var(--pine); }
+  .pack-opts .po-apply { cursor: pointer; }
+  .pack-note { flex-basis: 100%; margin: 4px 0 0; font-size: 11.5px; line-height: 1.55;
+               color: var(--muted); }
+  .pack-note b { font-weight: 700; }
+  .pack-note .good { color: #3f9d5f; } .pack-note .warn { color: #c98a2b; }
+  .pack-note em { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--ink); }
+  /* the live progress card shown in the thinking bubble while N attempts run */
+  .pack-card { border: 1px solid var(--line); border-radius: 11px; background: var(--surface-2);
+               padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .pk-head { font-size: 12px; color: var(--muted); }
+  .pk-head code { font-family: var(--mono); font-size: 11px; color: var(--accent, var(--pine)); }
+  .pk-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; padding: 2px 0; }
+  .pk-i { font-family: var(--mono); font-size: 11px; color: var(--faint); width: 22px; }
+  .pk-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+  .pk-dot.pending { background: var(--faint); opacity: .5; }
+  .pk-dot.ran { background: var(--azure); }
+  .pk-dot.ok  { background: var(--meadow); }
+  .pk-dot.fail { background: var(--coral); }
+  .pk-st { color: var(--ink); }
+  .pk-meta { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .pk-row.winner { background: var(--meadow-bg); border-radius: 7px; padding: 3px 6px; margin: 0 -6px; }
+  .pk-row.winner .pk-st { color: var(--meadow); font-weight: 600; }
+  .pack-summary { font-size: 13px; color: var(--ink); background: var(--meadow-bg);
+                  border: 1px solid color-mix(in srgb,var(--meadow) 30%,transparent);
+                  border-radius: 9px; padding: 8px 11px; }
+  .pack-summary code { font-family: var(--mono); font-size: 12px; }
+  .pk-applied { color: var(--meadow); font-weight: 600; }
+  .pk-noapply { color: var(--muted); }
+
+  /* ----------------------------------------------------- responsive */
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .side { border-right: 0; border-bottom: 1px solid var(--line); max-height: 34vh; }
+    .threads { display: flex; overflow-x: auto; overflow-y: hidden; gap: 8px; }
+    .thread { min-width: 210px; }
+    .panels { grid-template-columns: 1fr; }
+    .receipt { grid-template-columns: repeat(3, 1fr); }
+    .gate { display: none; }   /* sidebar is a shallow band on mobile — runbar mini-gate carries the state */
+  }
+  @media (max-width: 520px) { .receipt { grid-template-columns: repeat(2, 1fr); } }
+</style>
+
+<div class="app">
+  <!-- ============================================ sidebar : sessions -->
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">
+        <img class="glyph" src="/logo.svg" alt="Collie" />
+        <span class="word">Collie</span>
+      </div>
+      <div class="tag">executed-verification harness · lean prompt</div>
+    </div>
+    <button class="newbtn" id="newChat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      New thread
+    </button>
+    <div class="lbl">Recent threads</div>
+    <div class="threads" id="threads"><div class="empty">No sessions yet.</div></div>
+
+    <!-- verification gate: compact, pinned bottom-left. Same ids/state machine as
+         before the move — setGate() drives it unchanged. -->
+    <section class="gate" id="gate" data-state="idle"
+             title="Collie doesn't finish on the model's say-so. After an edit it re-runs a reproduction and won't accept done until it prints green.">
+      <div class="ring">
+        <svg viewBox="0 0 96 96"><circle class="track" cx="48" cy="48" r="42"/><circle class="prog" cx="48" cy="48" r="42"/></svg>
+        <span class="mark">
+          <svg viewBox="0 0 40 40">
+            <path class="check" d="M9 21l7 7 15-16"/>
+            <path class="cross" d="M12 12l16 16M28 12l-16 16"/>
+          </svg>
+        </span>
+      </div>
+      <div class="g-copy">
+        <div class="g-eyebrow">Verification gate</div>
+        <div class="g-status" id="gateStatus">Awaiting a task</div>
+        <div class="g-sub" id="gateSub">Won't accept <code>done</code> until the reproduction prints green.</div>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ================================================= main column -->
+  <div class="main">
+    <div class="topbar">
+      <button class="tbtn" id="sideToggle" title="toggle sidebar" aria-label="toggle sidebar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+      </button>
+      <h1>Workbench</h1>
+      <span class="pill" id="statePill"><span class="dot"></span><span id="stateText">idle</span></span>
+      <div class="spacer"></div>
+      <button type="button" class="model-trigger" id="modelTrigger" title="Switch model (Ctrl/⌘ K)" aria-haspopup="dialog" aria-controls="modelOverlay" aria-expanded="false">
+        <span class="model-trigger-dot"></span>
+        <span class="model-trigger-label" id="modelTriggerLabel">Loading model…</span>
+        <svg class="model-trigger-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <button class="tbtn" id="runDetailsBtn" title="run details" aria-label="run details" aria-controls="workpanel" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+      </button>
+      <a class="tbtn" id="mapBtn" href="/map" target="_blank" rel="noopener" title="Map — 3D code galaxy" aria-label="open code map">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+      </a>
+      <a class="tbtn" id="meadowBtn" href="/meadow" target="_blank" rel="noopener" title="Meadow — sheepdog herds the files" aria-label="open sheepdog meadow">🐑</a>
+      <button class="tbtn" id="themeBtn" title="toggle theme" aria-label="toggle theme">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+      <button class="tbtn" id="settingsBtn" title="settings" aria-label="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+
+    <div class="scroll" id="scroll">
+      <div class="thread-log" id="log">
+        <div class="welcome" id="welcome">
+          <img class="wc-logo" src="/logo.svg" alt="" />
+          <div class="wc-title">Ask Collie to fix, build, or explain</div>
+          <div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>
+        </div>
+      </div>
+    </div>
+
+    <section class="workpanel" id="workpanel" role="region" aria-label="run details" hidden>
+      <div class="wpbody">
+        <!-- receipt : the honest token / $ / time tally (the gate itself lives in the
+             sidebar's bottom-left corner; the runbar summary above mirrors its state) -->
+        <div class="receipt" id="receipt">
+          <div class="stat prefix"><div class="k">Prefix</div><div class="v" id="rPrefix">—</div></div>
+          <div class="stat"><div class="k">Total tok</div><div class="v" id="rTotal">—</div></div>
+          <div class="stat"><div class="k">Turns</div><div class="v" id="rTurns">—</div></div>
+          <div class="stat"><div class="k">Tools</div><div class="v" id="rTools">—</div></div>
+          <div class="stat"><div class="k">Wall</div><div class="v" id="rWall">—</div></div>
+          <div class="stat money"><div class="k">Cost</div><div class="v" id="rCost">—</div></div>
+        </div>
+
+        <!-- "Now" strip: current action + this run's hot files + action-rhythm ribbon -->
+        <div class="nowstrip" id="nowstrip" hidden>
+          <div class="now-line">
+            <span class="now-ico" id="nowIco">·</span>
+            <span class="now-verb" id="nowVerb"></span>
+            <span class="now-target" id="nowTarget"></span>
+            <span class="now-ribbon" id="nowRibbon" title="recent actions — reads · searches · runs · edits · reproductions"></span>
+          </div>
+          <div class="hotfiles" id="hotFiles"></div>
+        </div>
+
+        <!-- work panels : live timeline + colored diff -->
+        <div class="panels">
+          <section class="card">
+            <h3>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+              Activity <span class="count" id="tlCount">0</span>
+            </h3>
+            <div class="body" id="timeline"><div class="none">Tool calls, edits and reproductions stream here as they happen.</div></div>
+          </section>
+          <section class="card">
+            <h3>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
+              Changes <span class="count" id="diffCount">0</span>
+            </h3>
+            <div class="body" id="diffs"><div class="none">Edits appear as a colored +/- diff.</div></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <button class="scrolldown" id="scrollDownBtn" title="Scroll to latest" aria-label="Scroll to latest">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+    </button>
+
+    <!-- composer -->
+    <div class="composer">
+      <div class="attach-strip" id="attachStrip" hidden></div>
+      <div class="inner">
+        <div class="modepick" id="modePick">
+          <input type="hidden" id="mode" value="normal">
+          <button type="button" class="mode-trigger" id="modeTrigger" title="Run mode" aria-haspopup="listbox" aria-expanded="false">
+            <span class="mt-dot" data-mode="normal"></span><span id="modeLabel">Normal</span>
+            <svg class="mt-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="mode-menu" id="modeMenu" role="listbox" hidden>
+            <button type="button" class="mode-item" data-val="normal" role="option">
+              <span class="mi-dot" data-mode="normal"></span>
+              <span class="mi-txt"><span class="mi-name">Normal</span><span class="mi-desc">Standard single run</span></span>
+              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </button>
+            <button type="button" class="mode-item" data-val="herding" role="option">
+              <span class="mi-dot" data-mode="herding"></span>
+              <span class="mi-txt"><span class="mi-name">Extreme Herding</span><span class="mi-desc">More turns + assert-verify gate</span></span>
+              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </button>
+            <button type="button" class="mode-item" data-val="pack" role="option">
+              <span class="mi-dot" data-mode="pack"></span>
+              <span class="mi-txt"><span class="mi-name">Pack · best-of-N</span><span class="mi-desc">N isolated tries, keep the one that passes a check</span></span>
+              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </button>
+          </div>
+        </div>
+        <textarea id="input" rows="1" placeholder="Ask Collie to fix, build, or explain something…"></textarea>
+        <input type="file" id="fileInput" accept="image/*" multiple hidden>
+        <button class="attach" id="attachBtn" title="attach image (or paste / drop one)" aria-label="attach image">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
+        <button class="send" id="send" title="send" aria-label="send">
+          <svg id="sendIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>
+        </button>
+      </div>
+      <div class="pack-opts" id="packOpts" hidden>
+        <label class="po-n">N&nbsp;<input id="packN" type="number" min="2" max="6" value="3" title="how many isolated attempts"></label>
+        <input id="packCheck" type="text" placeholder="check command (optional) — exit 0 = pass, e.g. pytest -q">
+        <label class="po-apply"><input id="packApply" type="checkbox"> apply winner to files</label>
+        <p class="pack-note">
+          <b class="good">Best for</b> bug fixes &amp; tasks with a clear pass/fail check — it runs N
+          isolated attempts and keeps the one that actually passes, so reliability beats a single try.
+          <b class="warn">Not for</b> building large or new files: it's N× the cost, and nothing is
+          written unless you tick <em>apply winner</em> (otherwise it's preview-only). To build a
+          feature, use <b>Normal</b> and let it write incrementally.
+        </p>
+      </div>
+      <div class="hint"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · streams live over SSE</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ model picker -->
+<div class="model-overlay" id="modelOverlay">
+  <section class="model-dialog" role="dialog" aria-modal="true" aria-labelledby="modelTitle" aria-describedby="modelCaption">
+    <div class="model-head">
+      <div class="model-head-copy">
+        <h2 id="modelTitle">Choose a model</h2>
+        <p id="modelCaption">Switches immediately and applies to your next message.</p>
+      </div>
+      <span class="model-shortcut">⌘ K</span>
+      <button class="tbtn" id="modelClose" title="close model picker" aria-label="close model picker">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="model-toolbar">
+      <div class="model-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+        <input id="modelSearch" type="search" autocomplete="off" placeholder="Search models, providers, or capabilities" aria-controls="modelList" aria-activedescendant="">
+      </div>
+      <label class="model-discover"><input id="modelDiscover" type="checkbox"> Discover live</label>
+    </div>
+    <div class="model-list" id="modelList" role="listbox" aria-label="Available models">
+      <div class="model-empty">Loading available models…</div>
+    </div>
+    <div class="model-foot">
+      <span class="model-status" id="modelStatus" aria-live="polite"></span>
+      <span class="model-foot-note">↑ ↓ to browse · Enter to select</span>
+    </div>
+  </section>
+</div>
+
+<!-- ============================================ settings modal -->
+<div class="modal-overlay" id="setOverlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <div class="modal-head">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:var(--pine)"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82M4.6 9a1.65 1.65 0 0 0-.33-1.82"/></svg>
+      <h2 id="setTitle">Settings</h2>
+      <button class="tbtn" id="setClose" title="close" aria-label="close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="setBody"><!-- rendered from /api/settings --></div>
+    <div class="modal-foot">
+      <span class="set-status" id="setStatus"></span>
+      <div class="spacer"></div>
+      <button class="btn-ghost" id="setCancel">Cancel</button>
+      <button class="btn-primary" id="setSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  // CSRF token injected same-origin by the server; sent on every state-changing / agent-running
+  // request so a drive-by page (which can't read this same-origin HTML) can't trigger them.
+  var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
+  // Escape ALL five HTML-significant chars. Quotes matter: md()'s link rule drops the URL into
+  // href="$2", and a model/web-search result like [x](https://a"onmouseover="alert(1)) would
+  // otherwise break out of the attribute (XSS). Escaping quotes also makes hlCode's string rule
+  // (which looks for &quot;/&#39;) actually fire on real code.
+  var esc = function (s) { return String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;"); };
+
+  // ---- theme ------------------------------------------------------------
+  var root = document.documentElement;
+  var saved = null;
+  try { saved = localStorage.getItem("collie-theme"); } catch (e) {}
+  if (saved) root.setAttribute("data-theme", saved);
+  function curTheme() {
+    var t = root.getAttribute("data-theme");
+    if (t) return t;
+    return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  $("themeBtn").onclick = function () {
+    var next = curTheme() === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("collie-theme", next); } catch (e) {}
+  };
+
+  // ---- i18n --------------------------------------------------------------
+  // Resolved from Settings (LANG: auto or a language code); auto follows the browser. Each
+  // I18N[lang] dict is keyed by the ENGLISH source string, so an untranslated string simply
+  // falls through to English — no key namespace, add a language by adding a dict.
+  var UI_LANG = "en";
+  var SUPPORTED = ["en", "zh", "ja", "ko", "es", "fr", "de", "pt", "ru"];
+  function resolveLang(v) {
+    if (v && v !== "auto" && SUPPORTED.indexOf(v) >= 0) return v;
+    var b = (navigator.language || "").toLowerCase();      // "pt-BR" -> pt, "zh-CN" -> zh
+    for (var i = 1; i < SUPPORTED.length; i++) if (b.indexOf(SUPPORTED[i]) === 0) return SUPPORTED[i];
+    return "en";
+  }
+  var ZH = {
+    "Ask Collie to fix, build, or explain": "让 Collie 修复、构建或解释",
+    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.":
+      "它会先写一个复现、真的跑起来,直到检查变绿才收工——只用同类 agent 的一小部分 tokens。回答在这里流式出现;工具与 diff 在下方的运行抽屉里,验证门在左下角守着。",
+    "Ask Collie to fix, build, or explain something…": "让 Collie 修复、构建或解释点什么…",
+    "Steer while Collie works — Enter to send": "运行中可继续输入转向 — Enter 发送",
+    "New thread": "新会话",
+    "run details": "运行详情",
+    "no run yet": "尚无运行",
+    "Ready": "就绪",
+    "Settings": "设置",
+    "Cancel": "取消",
+    "Save": "保存",
+    "loading…": "加载中…",
+    "saving…": "保存中…",
+    "saved · applies to your next message": "已保存 · 下一条消息生效",
+    "failed to load": "加载失败",
+    "steering delivered": "转向已送达",
+    "not delivered": "未送达",
+    "run already finished — send again to start a new turn": "运行已结束——再发一次将开启新的一轮",
+    "connection dropped — checking whether Collie finished…": "连接中断——正在确认 Collie 是否已完成…",
+    "stream interrupted": "流被中断",
+    "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.":
+      "流被中断——若 Collie 仍在工作,稍后从侧栏重新打开本会话即可看到结果。",
+    "run started": "运行开始",
+    "switching…": "切换中…",
+    "switched · applies to your next message": "已切换 · 下一条消息生效",
+    "not logged in for that provider": "未登录该 provider",
+    "API key not set for that provider": "该 provider 未设置 API key",
+    "__kbd": "<kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 · SSE 实时流式"
+  };
+  var I18N = {
+    zh: ZH,
+    ja: {
+      "Ask Collie to fix, build, or explain": "Collie に修正・構築・説明を頼む",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Collie はまず再現を書いて実際に実行し、チェックが緑になって初めて完了します——同種エージェントのごく一部のトークンで。回答はここにストリーム表示され、ツールと差分は下の実行ドロワーに、検証ゲートは左下で見張っています。",
+      "Ask Collie to fix, build, or explain something…": "Collie に修正・構築・説明したいことを入力…",
+      "Steer while Collie works — Enter to send": "Collie の作業中も入力で誘導できます — Enter で送信",
+      "New thread": "新しいスレッド", "run details": "実行の詳細", "no run yet": "実行はまだありません",
+      "Ready": "準備完了", "Settings": "設定", "Cancel": "キャンセル", "Save": "保存",
+      "loading…": "読み込み中…", "saving…": "保存中…",
+      "saved · applies to your next message": "保存しました · 次のメッセージから有効",
+      "failed to load": "読み込みに失敗しました", "steering delivered": "誘導を送信しました",
+      "not delivered": "送信されませんでした",
+      "run already finished — send again to start a new turn": "実行はすでに終了しました——もう一度送信すると新しいターンを開始します",
+      "connection dropped — checking whether Collie finished…": "接続が切れました——Collie が完了したか確認中…",
+      "stream interrupted": "ストリームが中断されました",
+      "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.": "ストリームが中断されました——Collie がまだ作業中だった場合は、少ししてからサイドバーでこのスレッドを開き直してください。",
+      "run started": "実行を開始しました", "switching…": "切り替え中…",
+      "switched · applies to your next message": "切り替えました · 次のメッセージから有効",
+      "not logged in for that provider": "このプロバイダーにログインしていません",
+      "API key not set for that provider": "このプロバイダーの API キーが未設定です",
+      "__kbd": "<kbd>Enter</kbd> 送信 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 改行 · SSE でライブ配信"
+    },
+    ko: {
+      "Ask Collie to fix, build, or explain": "Collie에게 수정·구축·설명을 요청하세요",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Collie는 먼저 재현을 작성해 실제로 실행하고, 검사가 초록이 될 때만 완료합니다 — 동급 에이전트의 극히 일부 토큰으로. 답변은 여기 스트리밍되고, 도구와 diff는 아래 실행 서랍에, 검증 게이트는 왼쪽 아래에서 지켜봅니다.",
+      "Ask Collie to fix, build, or explain something…": "Collie에게 수정·구축·설명할 내용을 입력…",
+      "Steer while Collie works — Enter to send": "Collie 작업 중에도 입력해 방향을 바꿀 수 있습니다 — Enter로 전송",
+      "New thread": "새 스레드", "run details": "실행 세부정보", "no run yet": "아직 실행 없음",
+      "Ready": "준비됨", "Settings": "설정", "Cancel": "취소", "Save": "저장",
+      "loading…": "불러오는 중…", "saving…": "저장 중…",
+      "saved · applies to your next message": "저장됨 · 다음 메시지부터 적용",
+      "failed to load": "불러오지 못했습니다", "steering delivered": "방향 지시 전달됨",
+      "not delivered": "전달되지 않음",
+      "run already finished — send again to start a new turn": "실행이 이미 끝났습니다 — 다시 보내면 새 턴을 시작합니다",
+      "connection dropped — checking whether Collie finished…": "연결이 끊겼습니다 — Collie가 완료했는지 확인 중…",
+      "stream interrupted": "스트림이 중단되었습니다",
+      "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.": "스트림이 중단되었습니다 — Collie가 아직 작업 중이었다면 잠시 후 사이드바에서 이 스레드를 다시 여세요.",
+      "run started": "실행 시작됨", "switching…": "전환 중…",
+      "switched · applies to your next message": "전환됨 · 다음 메시지부터 적용",
+      "not logged in for that provider": "해당 제공자에 로그인되어 있지 않습니다",
+      "API key not set for that provider": "해당 제공자의 API 키가 설정되지 않았습니다",
+      "__kbd": "<kbd>Enter</kbd> 전송 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈 · SSE로 실시간 스트리밍"
+    },
+    es: {
+      "Ask Collie to fix, build, or explain": "Pide a Collie que corrija, construya o explique",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Escribe una reproducción, la ejecuta de verdad y solo termina cuando la comprobación se pone verde — con una fracción de los tokens. La respuesta se transmite aquí; las herramientas y los diffs están en el panel de ejecución de abajo, y la puerta de verificación vigila desde la esquina inferior izquierda.",
+      "Ask Collie to fix, build, or explain something…": "Pide a Collie que corrija, construya o explique algo…",
+      "Steer while Collie works — Enter to send": "Guía a Collie mientras trabaja — Enter para enviar",
+      "New thread": "Nuevo hilo", "run details": "detalles de ejecución", "no run yet": "aún no hay ejecución",
+      "Ready": "Listo", "Settings": "Ajustes", "Cancel": "Cancelar", "Save": "Guardar",
+      "loading…": "cargando…", "saving…": "guardando…",
+      "saved · applies to your next message": "guardado · se aplica a tu próximo mensaje",
+      "failed to load": "error al cargar", "steering delivered": "guía entregada",
+      "not delivered": "no entregada",
+      "run already finished — send again to start a new turn": "la ejecución ya terminó — envía de nuevo para iniciar un nuevo turno",
+      "connection dropped — checking whether Collie finished…": "conexión perdida — comprobando si Collie terminó…",
+      "stream interrupted": "transmisión interrumpida",
+      "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.": "transmisión interrumpida — si Collie seguía trabajando, vuelve a abrir este hilo desde la barra lateral en un momento.",
+      "run started": "ejecución iniciada", "switching…": "cambiando…",
+      "switched · applies to your next message": "cambiado · se aplica a tu próximo mensaje",
+      "not logged in for that provider": "no has iniciado sesión en ese proveedor",
+      "API key not set for that provider": "no hay clave API configurada para ese proveedor",
+      "__kbd": "<kbd>Enter</kbd> enviar · <kbd>Shift</kbd>+<kbd>Enter</kbd> nueva línea · transmisión en vivo por SSE"
+    },
+    fr: {
+      "Ask Collie to fix, build, or explain": "Demandez à Collie de corriger, construire ou expliquer",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Il écrit une reproduction, l'exécute réellement et ne termine que lorsque la vérification passe au vert — avec une fraction des tokens. La réponse s'affiche ici en direct ; les outils et les diffs sont dans le tiroir d'exécution ci-dessous, et la porte de vérification veille depuis le coin inférieur gauche.",
+      "Ask Collie to fix, build, or explain something…": "Demandez à Collie de corriger, construire ou expliquer quelque chose…",
+      "Steer while Collie works — Enter to send": "Orientez Collie pendant qu'il travaille — Entrée pour envoyer",
+      "New thread": "Nouveau fil", "run details": "détails d'exécution", "no run yet": "aucune exécution",
+      "Ready": "Prêt", "Settings": "Paramètres", "Cancel": "Annuler", "Save": "Enregistrer",
+      "loading…": "chargement…", "saving…": "enregistrement…",
+      "saved · applies to your next message": "enregistré · s'applique à votre prochain message",
+      "failed to load": "échec du chargement", "steering delivered": "orientation transmise",
+      "not delivered": "non transmise",
+      "run already finished — send again to start a new turn": "l'exécution est déjà terminée — renvoyez pour démarrer un nouveau tour",
+      "connection dropped — checking whether Collie finished…": "connexion perdue — vérification si Collie a terminé…",
+      "stream interrupted": "flux interrompu",
+      "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.": "flux interrompu — si Collie travaillait encore, rouvrez ce fil depuis la barre latérale dans un instant.",
+      "run started": "exécution démarrée", "switching…": "changement…",
+      "switched · applies to your next message": "changé · s'applique à votre prochain message",
+      "not logged in for that provider": "non connecté à ce fournisseur",
+      "API key not set for that provider": "aucune clé API définie pour ce fournisseur",
+      "__kbd": "<kbd>Entrée</kbd> envoyer · <kbd>Maj</kbd>+<kbd>Entrée</kbd> nouvelle ligne · diffusion en direct via SSE"
+    },
+    de: {
+      "Ask Collie to fix, build, or explain": "Bitte Collie, etwas zu beheben, zu bauen oder zu erklären",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Es schreibt eine Reproduktion, führt sie wirklich aus und ist erst fertig, wenn die Prüfung grün wird — mit einem Bruchteil der Tokens. Die Antwort erscheint hier live; Werkzeuge und Diffs liegen in der Ausführungs-Schublade unten, und das Verifizierungs-Gate wacht unten links.",
+      "Ask Collie to fix, build, or explain something…": "Bitte Collie, etwas zu beheben, zu bauen oder zu erklären…",
+      "Steer while Collie works — Enter to send": "Steuere Collie während der Arbeit — Enter zum Senden",
+      "New thread": "Neuer Thread", "run details": "Ausführungsdetails", "no run yet": "noch keine Ausführung",
+      "Ready": "Bereit", "Settings": "Einstellungen", "Cancel": "Abbrechen", "Save": "Speichern",
+      "loading…": "lädt…", "saving…": "speichert…",
+      "saved · applies to your next message": "gespeichert · gilt ab deiner nächsten Nachricht",
+      "failed to load": "Laden fehlgeschlagen", "steering delivered": "Steuerung zugestellt",
+      "not delivered": "nicht zugestellt",
+      "run already finished — send again to start a new turn": "Ausführung bereits beendet — erneut senden, um eine neue Runde zu starten",
+      "connection dropped — checking whether Collie finished…": "Verbindung abgebrochen — prüfe, ob Collie fertig ist…",
+      "stream interrupted": "Stream unterbrochen",
+      "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.": "Stream unterbrochen — falls Collie noch arbeitete, öffne diesen Thread gleich erneut über die Seitenleiste.",
+      "run started": "Ausführung gestartet", "switching…": "wechselt…",
+      "switched · applies to your next message": "gewechselt · gilt ab deiner nächsten Nachricht",
+      "not logged in for that provider": "bei diesem Anbieter nicht angemeldet",
+      "API key not set for that provider": "kein API-Schlüssel für diesen Anbieter gesetzt",
+      "__kbd": "<kbd>Enter</kbd> senden · <kbd>Shift</kbd>+<kbd>Enter</kbd> neue Zeile · Live-Stream über SSE"
+    },
+    pt: {
+      "Ask Collie to fix, build, or explain": "Peça ao Collie para corrigir, construir ou explicar",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Ele escreve uma reprodução, executa de verdade e só termina quando a verificação fica verde — com uma fração dos tokens. A resposta aparece aqui ao vivo; ferramentas e diffs ficam na gaveta de execução abaixo, e o portão de verificação vigia no canto inferior esquerdo.",
+      "Ask Collie to fix, build, or explain something…": "Peça ao Collie para corrigir, construir ou explicar algo…",
+      "Steer while Collie works — Enter to send": "Oriente o Collie enquanto ele trabalha — Enter para enviar",
+      "New thread": "Novo tópico", "run details": "detalhes da execução", "no run yet": "ainda sem execução",
+      "Ready": "Pronto", "Settings": "Configurações", "Cancel": "Cancelar", "Save": "Salvar",
+      "loading…": "carregando…", "saving…": "salvando…",
+      "saved · applies to your next message": "salvo · aplica-se à sua próxima mensagem",
+      "failed to load": "falha ao carregar", "steering delivered": "orientação entregue",
+      "not delivered": "não entregue",
+      "run already finished — send again to start a new turn": "a execução já terminou — envie novamente para iniciar um novo turno",
+      "connection dropped — checking whether Collie finished…": "conexão perdida — verificando se o Collie terminou…",
+      "stream interrupted": "transmissão interrompida",
+      "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.": "transmissão interrompida — se o Collie ainda estava trabalhando, reabra este tópico pela barra lateral em instantes.",
+      "run started": "execução iniciada", "switching…": "alternando…",
+      "switched · applies to your next message": "alternado · aplica-se à sua próxima mensagem",
+      "not logged in for that provider": "você não está conectado a esse provedor",
+      "API key not set for that provider": "nenhuma chave de API definida para esse provedor",
+      "__kbd": "<kbd>Enter</kbd> enviar · <kbd>Shift</kbd>+<kbd>Enter</kbd> nova linha · transmissão ao vivo via SSE"
+    },
+    ru: {
+      "Ask Collie to fix, build, or explain": "Попросите Collie исправить, создать или объяснить",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Он пишет воспроизведение, реально запускает его и завершает только когда проверка становится зелёной — тратя долю токенов. Ответ транслируется здесь; инструменты и диффы — в панели запуска ниже, а шлюз проверки следит из левого нижнего угла.",
+      "Ask Collie to fix, build, or explain something…": "Попросите Collie что-нибудь исправить, создать или объяснить…",
+      "Steer while Collie works — Enter to send": "Направляйте Collie прямо во время работы — Enter для отправки",
+      "New thread": "Новый тред", "run details": "детали запуска", "no run yet": "запусков ещё нет",
+      "Ready": "Готово", "Settings": "Настройки", "Cancel": "Отмена", "Save": "Сохранить",
+      "loading…": "загрузка…", "saving…": "сохранение…",
+      "saved · applies to your next message": "сохранено · применится к следующему сообщению",
+      "failed to load": "не удалось загрузить", "steering delivered": "команда направления доставлена",
+      "not delivered": "не доставлено",
+      "run already finished — send again to start a new turn": "запуск уже завершён — отправьте ещё раз, чтобы начать новый ход",
+      "connection dropped — checking whether Collie finished…": "соединение прервано — проверяем, завершил ли Collie…",
+      "stream interrupted": "поток прерван",
+      "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.": "поток прерван — если Collie ещё работал, через мгновение откройте этот тред заново на боковой панели.",
+      "run started": "запуск начат", "switching…": "переключение…",
+      "switched · applies to your next message": "переключено · применится к следующему сообщению",
+      "not logged in for that provider": "вы не вошли у этого провайдера",
+      "API key not set for that provider": "для этого провайдера не задан API-ключ",
+      "__kbd": "<kbd>Enter</kbd> отправить · <kbd>Shift</kbd>+<kbd>Enter</kbd> новая строка · прямая трансляция по SSE"
+    }
+  };
+  var GROUPS_I18N = {
+    zh: { "General": "通用", "Model": "模型", "Tools": "工具", "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能" },
+    ja: { "General": "一般", "Model": "モデル", "Tools": "ツール", "Retrieval": "検索", "Limits": "制限", "Privacy": "プライバシー", "Reliability": "信頼性", "Skills": "スキル" },
+    ko: { "General": "일반", "Model": "모델", "Tools": "도구", "Retrieval": "검색", "Limits": "제한", "Privacy": "개인정보", "Reliability": "안정성", "Skills": "스킬" },
+    es: { "General": "General", "Model": "Modelo", "Tools": "Herramientas", "Retrieval": "Recuperación", "Limits": "Límites", "Privacy": "Privacidad", "Reliability": "Fiabilidad", "Skills": "Habilidades" },
+    fr: { "General": "Général", "Model": "Modèle", "Tools": "Outils", "Retrieval": "Récupération", "Limits": "Limites", "Privacy": "Confidentialité", "Reliability": "Fiabilité", "Skills": "Compétences" },
+    de: { "General": "Allgemein", "Model": "Modell", "Tools": "Werkzeuge", "Retrieval": "Abruf", "Limits": "Limits", "Privacy": "Datenschutz", "Reliability": "Zuverlässigkeit", "Skills": "Fähigkeiten" },
+    pt: { "General": "Geral", "Model": "Modelo", "Tools": "Ferramentas", "Retrieval": "Recuperação", "Limits": "Limites", "Privacy": "Privacidade", "Reliability": "Confiabilidade", "Skills": "Habilidades" },
+    ru: { "General": "Общие", "Model": "Модель", "Tools": "Инструменты", "Retrieval": "Поиск", "Limits": "Лимиты", "Privacy": "Приватность", "Reliability": "Надёжность", "Skills": "Навыки" }
+  };
+  function t(en) { var d = I18N[UI_LANG]; return (d && d[en]) || en; }
+  function applyLang() {
+    // static chrome (live nodes + templates); dynamic strings route through t() at their call sites
+    var wt = document.querySelector(".wc-title"), ws = document.querySelector(".wc-sub");
+    if (wt) wt.textContent = t("Ask Collie to fix, build, or explain");
+    if (ws) ws.textContent = t("It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.");
+    var hint = document.querySelector(".hint");
+    if (hint) hint.innerHTML = ((I18N[UI_LANG] || {}).__kbd)
+      || "<kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · streams live over SSE";
+    var inp = $("input");
+    if (inp && !running) inp.placeholder = t("Ask Collie to fix, build, or explain something…");
+    var nb = $("newChat");
+    if (nb) nb.childNodes[nb.childNodes.length - 1].textContent = "\n      " + t("New thread") + "\n    ";
+    var runDetails = $("runDetailsBtn");
+    if (runDetails) {
+      runDetails.title = t("run details");
+      runDetails.setAttribute("aria-label", t("run details"));
+    }
+    var st = $("setTitle"); if (st) st.textContent = t("Settings");
+    var sc = $("setCancel"); if (sc) sc.textContent = t("Cancel");
+    var sv = $("setSave"); if (sv) sv.textContent = t("Save");
+  }
+  // boot: pick the language up from saved settings once, then patch the chrome
+  fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
+    UI_LANG = resolveLang(((d || {}).values || {}).LANG);
+    if (UI_LANG !== "en") applyLang();
+  }).catch(function () {});
+
+  // ---- settings modal --------------------------------------------------
+  var setOverlay = $("setOverlay"), setBody = $("setBody"), setStatus = $("setStatus");
+  function setEsc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  function renderSettings(schema, values) {
+    var groups = [], seen = {};
+    schema.forEach(function (s) { if (!seen[s.group]) { seen[s.group] = []; groups.push(s.group); } seen[s.group].push(s); });
+    var html = "";
+    var L = UI_LANG, loc = L !== "en";           // schema carries label_<lang>/hint_<lang>; missing -> English
+    groups.forEach(function (g) {
+      html += '<div class="set-group"><h3>' + setEsc(loc && GROUPS_I18N[L] && GROUPS_I18N[L][g] || g) + "</h3>";
+      seen[g].forEach(function (s) {
+        var v = values[s.key], id = "set_" + s.key, ctl;
+        if (s.type === "select") {
+          ctl = '<select id="' + id + '" data-key="' + s.key + '">' + (s.options || []).map(function (o) {
+            var ov = (o && o.value != null) ? o.value : o, ol = (o && o.label != null) ? o.label : o;
+            if (loc && o && o["label_" + L]) ol = o["label_" + L];
+            return '<option value="' + setEsc(ov) + '"' + (String(ov) === String(v) ? " selected" : "") + ">" + setEsc(ol) + "</option>";
+          }).join("") + "</select>";
+        } else if (s.type === "bool") {
+          var on = String(v) === "on" || String(v) === "1" || String(v) === "true";
+          ctl = '<label class="set-toggle"><input id="' + id + '" data-key="' + s.key + '" data-bool="1" type="checkbox"'
+              + (on ? " checked" : "") + '><span class="tk"></span></label>';
+        } else {
+          var t = s.type === "number" ? "number" : "text", extra = "", dl = "";
+          if (s.min != null) extra += ' min="' + setEsc(s.min) + '"';
+          if (s.max != null) extra += ' max="' + setEsc(s.max) + '"';
+          if (s.step != null) extra += ' step="' + setEsc(s.step) + '"';
+          if (s.list && s.list.length) {
+            extra += ' list="' + id + '_dl" autocomplete="off"';
+            dl = '<datalist id="' + id + '_dl">' + s.list.map(function (o) {
+              return '<option value="' + setEsc(o) + '"></option>'; }).join("") + "</datalist>";
+          }
+          ctl = '<input id="' + id + '" data-key="' + s.key + '" type="' + t + '" value="' + setEsc(v) + '"' + extra + ">" + dl;
+        }
+        html += '<div class="set-row"><label for="' + id + '">' + setEsc(loc && s["label_" + L] || s.label) + "</label>" + ctl + "</div>";
+        var hn = loc && s["hint_" + L] || s.hint;
+        if (hn) html += '<div class="set-hint">' + setEsc(hn) + "</div>";
+      });
+      html += "</div>";
+    });
+    setBody.innerHTML = html;
+  }
+
+  function openSettings() {
+    setStatus.textContent = t("loading…"); setStatus.className = "set-status";
+    setOverlay.classList.add("open");
+    fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
+      renderSettings(d.schema || [], d.values || {});
+      setStatus.textContent = "";
+    }).catch(function () { setStatus.textContent = t("failed to load"); setStatus.className = "set-status err"; });
+  }
+  function closeSettings() { setOverlay.classList.remove("open"); }
+
+  $("settingsBtn").onclick = openSettings;
+  $("setClose").onclick = closeSettings;
+  $("setCancel").onclick = closeSettings;
+  setOverlay.addEventListener("click", function (e) { if (e.target === setOverlay) closeSettings(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && setOverlay.classList.contains("open")) closeSettings(); });
+
+  $("setSave").onclick = function () {
+    var vals = {};
+    setBody.querySelectorAll("[data-key]").forEach(function (el) {
+      vals[el.getAttribute("data-key")] = el.getAttribute("data-bool") ? (el.checked ? "on" : "off") : el.value;
+    });
+    var btn = this; btn.disabled = true;
+    setStatus.textContent = t("saving…"); setStatus.className = "set-status";
+    fetch("/api/settings?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(vals)
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        btn.disabled = false;
+        if (res.ok && res.d.ok) {
+          // language applies IMMEDIATELY (not next message): re-resolve + repaint the chrome
+          UI_LANG = resolveLang((res.d.values || {}).LANG);
+          applyLang();
+          setStatus.textContent = t("saved · applies to your next message"); setStatus.className = "set-status ok";
+          loadModelCatalog(false);
+          setTimeout(closeSettings, 900);
+        } else {
+          setStatus.textContent = (res.d && res.d.error) || "save failed"; setStatus.className = "set-status err";
+        }
+      }).catch(function () { btn.disabled = false; setStatus.textContent = "network error"; setStatus.className = "set-status err"; });
+  };
+
+  var workPanel = $("workpanel"), runDetailsButton = $("runDetailsBtn");
+  function setRunDetailsOpen(isOpen) {
+    workPanel.hidden = !isOpen;
+    runDetailsButton.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  }
+  runDetailsButton.addEventListener("click", function () {
+    setRunDetailsOpen(workPanel.hidden);
+  });
+
+  // ---- retractable sidebar (cc/codex/ChatGPT-style), persisted ----------
+  var appEl = document.querySelector(".app");
+  try { if (localStorage.getItem("collie-side") === "collapsed") appEl.classList.add("side-collapsed"); } catch (e) {}
+  $("sideToggle").onclick = function () {
+    var collapsed = appEl.classList.toggle("side-collapsed");
+    try { localStorage.setItem("collie-side", collapsed ? "collapsed" : "open"); } catch (e) {}
+  };
+
+  // ---- state ------------------------------------------------------------
+  var currentSession = null;
+  var es = null, running = false, runStart = 0, tlCount = 0, diffCount = 0, streamRAF = 0;
+
+  // ---- gate -------------------------------------------------------------
+  var GATE = {
+    idle:      ["Awaiting a task", "Collie doesn't finish on the model's say-so. After an edit it re-runs a reproduction and won't accept <code>done</code> until it prints green."],
+    working:   ["Working…", "Collie is exploring. The verification gate arms the moment it edits code — until then there's nothing to verify."],
+    verifying: ["Verifying…", "Code changed — re-running the reproduction against the edit to confirm it prints green."],
+    fail:      ["✗ Reproduction failing", "The check errored or printed the wrong result — Collie loops back to repair, it will not finish here."],
+    pass:      ["✓ Reproduction passing", "An actual run on the fixed code came back green. This is the gate Collie ships on."],
+    none:      ["No gate needed", "This run made no code edit, so there was nothing to reproduce — informational answer only."]
+  };
+  function setGate(state, subOverride) {
+    var g = $("gate"); g.setAttribute("data-state", state);
+    var pair = GATE[state] || GATE.idle;
+    $("gateStatus").textContent = pair[0];
+    $("gateSub").innerHTML = subOverride ? esc(subOverride) : pair[1];
+  }
+
+  // ---- pills ------------------------------------------------------------
+  function setRunState(text, live) {
+    $("stateText").textContent = text;
+    $("statePill").classList.toggle("live", !!live);
+  }
+
+  // ---- receipt ----------------------------------------------------------
+  function fmtInt(n) { return (n == null) ? "—" : Number(n).toLocaleString(); }
+  function fmtCost(c) {
+    if (c == null) return "—";
+    c = Number(c);
+    if (c === 0) return "$0";
+    if (c < 0.01) return "$" + c.toFixed(4);
+    return "$" + c.toFixed(2);
+  }
+  function fmtMs(ms) {
+    if (ms == null) return "—";
+    if (ms < 1000) return ms + "ms";
+    return (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + "s";
+  }
+  function setReceipt(r) {
+    $("rPrefix").textContent = fmtInt(r.prefix_tokens);
+    $("rTotal").textContent  = fmtInt(r.total_tokens);
+    $("rTurns").textContent  = r.turns == null ? "—" : r.turns;
+    $("rTools").textContent  = r.tool_calls == null ? "—" : r.tool_calls;
+    $("rWall").textContent   = fmtMs(r.wall_ms);
+    // On a flat subscription the real charge is $0; cost_usd is only a per-token API estimate —
+    // show "$0" (with the estimate on hover) instead of presenting the estimate as a charge.
+    var costTxt = r.subscription ? "$0" : fmtCost(r.cost_usd);
+    var costTile = $("rCost");
+    costTile.textContent = costTxt;
+    costTile.title = r.subscription && r.cost_usd
+      ? "flat subscription — no per-token charge (≈" + fmtCost(r.cost_usd) + " on the metered API)"
+      : "";
+  }
+
+  // ---- timeline ---------------------------------------------------------
+  var ICON = {
+    tool:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2-2 2.5-2.5z"/></svg>',
+    edit:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>',
+    ok:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>',
+    bad:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    flag:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4h11l-1.5 4L15 12H4"/></svg>'
+  };
+  function clearTimeline() {
+    tlCount = 0; diffCount = 0;
+    $("timeline").innerHTML = '<div class="none">Tool calls, edits and reproductions stream here as they happen.</div>';
+    $("diffs").innerHTML = '<div class="none">Edits appear as a colored +/- diff.</div>';
+    $("tlCount").textContent = "0"; $("diffCount").textContent = "0";
+  }
+  function elapsed() {
+    var s = (Date.now() - runStart) / 1000;
+    return "+" + (s < 10 ? s.toFixed(1) : Math.round(s)) + "s";
+  }
+  function addEvent(kind, ico, name, detail, cls) {
+    var tl = $("timeline");
+    var none = tl.querySelector(".none"); if (none) none.remove();
+    var row = document.createElement("div");
+    row.className = "ev " + kind + (cls ? " " + cls : "");
+    row.innerHTML =
+      '<span class="ico">' + ICON[ico] + '</span>' +
+      '<span class="lead"><div class="name">' + esc(name) + '</div>' +
+      (detail ? '<div class="detail">' + esc(detail) + '</div>' : '') + '</span>' +
+      '<span class="at">' + elapsed() + '</span>';
+    tl.appendChild(row);
+    tl.scrollTop = tl.scrollHeight;
+    $("tlCount").textContent = (++tlCount);
+  }
+
+  function shortArgs(name, args) {
+    if (!args) return "";
+    if (args.command) return args.command;
+    if (args.path) return args.path + (args.query ? "  “" + args.query + "”" : "");
+    if (args.query) return args.query;
+    try { return JSON.stringify(args).slice(0, 160); } catch (e) { return ""; }
+  }
+
+  // ---- diff -------------------------------------------------------------
+  function addDiff(path, oldStr, newStr) {
+    var d = $("diffs");
+    var none = d.querySelector(".none"); if (none) none.remove();
+    var block = document.createElement("div");
+    block.className = "diff";
+    var pre = document.createElement("pre");
+    function lines(str, sign, cls) {
+      if (!str) return "";
+      var n = 0;
+      return String(str).split("\n").map(function (l) {
+        n++;
+        return '<span class="ln ' + cls + '"><span class="lno">' + n + '</span>' +
+               '<span class="sig">' + sign + '</span>' + esc(l) + '</span>';
+      }).join("");
+    }
+    block.innerHTML = '<div class="dhead">' + esc(path || "(edit)") + '</div>';
+    pre.innerHTML = lines(oldStr, "-", "del") + lines(newStr, "+", "add");
+    block.appendChild(pre);
+    d.appendChild(block);
+    d.scrollTop = d.scrollHeight;
+    $("diffCount").textContent = (++diffCount);
+  }
+
+  // ---- conversation -----------------------------------------------------
+  function addMsg(role, text, imgs, isSteer) {
+    var log = $("log");
+    var m = document.createElement("div");
+    m.className = "msg " + role + (isSteer ? " steer" : "");
+    m.innerHTML =
+      (role === "user" ? '<div class="av">you</div>' : '<div class="av"><img src="/logo.svg" alt=""/></div>') +
+      '<div class="bubble"><div class="who">' + (role === "user" ? (isSteer ? "You ↳ steering" : "You") : "Collie") + '</div>' +
+      (role === "assistant" ? '<div class="trace"></div>' : "") +
+      '<div class="text"></div></div>';
+    m.querySelector(".text").textContent = text || "";
+    if (imgs && imgs.length) {                    // show attached images in the user bubble
+      var box = document.createElement("div"); box.className = "imgs";
+      imgs.forEach(function (im) {
+        var el = document.createElement("img");
+        el.src = "data:" + im.media_type + ";base64," + im.data;
+        box.appendChild(el);
+      });
+      m.querySelector(".bubble").appendChild(box);
+    }
+    var w = $("welcome"); if (w) w.remove();     // first message clears the empty state
+    log.appendChild(m);
+    scrollDown();
+    return m.querySelector(".text");
+  }
+  function addErr(text) {
+    var log = $("log");
+    var m = document.createElement("div");
+    m.className = "msg assistant";
+    m.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div><div class="bubble"><div class="who">Collie</div>' +
+                  '<div class="err"></div></div>';
+    m.querySelector(".err").textContent = text;
+    log.appendChild(m); scrollDown();
+    return m;
+  }
+
+  // After a dropped SSE connection the run often FINISHED server-side (the answer was saved) — the
+  // transport just died mid-stream (common on WSL2 localhost forwarding). Poll the session and, once
+  // the assistant answer lands, re-render the whole thread so the user gets their answer instead of
+  // an error. Only give up (leave the interrupted notice) if nothing arrives after a few tries.
+  function recoverAfterInterrupt() {
+    if (!currentSession) { addErr(t("stream interrupted")); return; }
+    var note = addErr(t("connection dropped — checking whether Collie finished…"));
+    var tries = 0;
+    (function poll() {
+      tries++;
+      fetch("/api/session/" + encodeURIComponent(currentSession))
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          var msgs = (s && s.messages) || [];
+          var last = msgs[msgs.length - 1];
+          if (last && last.role === "assistant" && (last.content || "").trim()) {
+            if (note && note.parentNode) note.parentNode.removeChild(note);
+            openSession(currentSession);        // re-render the saved thread (shows the recovered answer)
+          } else if (tries < 5) {
+            setTimeout(poll, 1500);              // run may still be finishing — retry
+          } else if (note) {
+            note.querySelector(".err").textContent =
+              t("stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.");
+          }
+        })
+        .catch(function () {
+          if (tries < 5) setTimeout(poll, 1500);
+          else if (note) note.querySelector(".err").textContent = t("stream interrupted");
+        });
+    })();
+  }
+  function nearBottom() { var s = $("scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 130; }
+  // smart auto-scroll: follow new content ONLY when the user is already near the bottom, so
+  // scrolling up to read isn't yanked away. Pass true to force (e.g. when the user sends).
+  function scrollDown(force) {
+    var s = $("scroll");
+    if (force || nearBottom()) s.scrollTop = s.scrollHeight;
+    updateScrollBtn();
+  }
+  function updateScrollBtn() {
+    var btn = $("scrollDownBtn"); if (!btn) return;
+    btn.classList.toggle("show", !nearBottom());
+  }
+  $("scroll").addEventListener("scroll", updateScrollBtn, { passive: true });
+  $("scrollDownBtn").onclick = function () { var s = $("scroll"); s.scrollTop = s.scrollHeight; updateScrollBtn(); };
+
+  // typewriter reveal for the final answer (providers return the whole text at done)
+  function typeInto(el, text) {
+    el.textContent = "";
+    var caret = document.createElement("span"); caret.className = "caret";
+    el.appendChild(caret);
+    var i = 0, step = Math.max(1, Math.round(text.length / 240));
+    var timer = setInterval(function () {
+      i = Math.min(text.length, i + step);
+      caret.remove();
+      el.textContent = text.slice(0, i);
+      el.appendChild(caret);
+      scrollDown();
+      if (i >= text.length) { clearInterval(timer); caret.remove(); }
+    }, 16);
+  }
+
+  // Minimal, safe Markdown -> HTML (no external lib; the CSP blocks CDNs). Escapes first, so
+  // model output can never inject HTML. Handles fenced code, headings, lists, bold/italic,
+  // inline code and links — enough to render collie's answers like Claude Code / Codex do.
+  // lightweight offline syntax highlight — ONE alternation pass over escaped code so strings/
+  // comments swallow keywords inside them (no nested-match corruption). Language-agnostic.
+  function hlCode(code) {
+    return code.replace(
+      /(&quot;[^\n]*?&quot;|&#39;[^\n]*?&#39;|`[^`]*?`)|(#[^\n]*|\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(\b\d[\d_.eExXbo]*\b)|(\b(?:def|class|return|if|elif|else|for|while|import|from|as|with|try|except|finally|raise|lambda|yield|async|await|and|or|not|in|is|None|True|False|const|let|var|function|new|typeof|this|null|undefined|true|false|export|default|extends|super|throw|switch|case|break|continue|do|void|of|func|package|type|struct|interface|nil|end|then|fn|use|pub|mut|match|self|print)\b)/g,
+      function (m, str, com, num, kw) {
+        if (str) return '<span class="hl-str">' + str + "</span>";
+        if (com) return '<span class="hl-com">' + com + "</span>";
+        if (num) return '<span class="hl-num">' + num + "</span>";
+        if (kw) return '<span class="hl-kw">' + kw + "</span>";
+        return m;
+      });
+  }
+  function md(src) {
+    src = String(src == null ? "" : src);
+    var blocks = [];
+    src = src.replace(/```(\w*)\n?([\s\S]*?)```/g, function (_, lang, code) {
+      blocks.push('<pre class="cb"><code>' + hlCode(esc(code.replace(/\n$/, ""))) + "</code></pre>");
+      return "\uE000" + (blocks.length - 1) + "\uE001";
+    });
+    src = esc(src);
+    src = src.replace(/^### (.*)$/gm, "<h4>$1</h4>")
+             .replace(/^## (.*)$/gm, "<h3>$1</h3>")
+             .replace(/^# (.*)$/gm, "<h2>$1</h2>");
+    src = src.replace(/`([^`]+)`/g, "<code>$1</code>");
+    src = src.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    src = src.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+                      '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // GitHub-style tables: a header row, a |---|---| separator, then body rows. The separator
+    // check gates it, so stray pipe lines are left untouched.
+    src = src.replace(/(?:^|\n)((?:\|[^\n]*\|[ \t]*(?:\n|$))+)/g, function (m, block) {
+      var rows = block.trim().split("\n").map(function (r) {
+        return r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(function (c) { return c.trim(); });
+      });
+      if (rows.length < 2 || !/^:?-{2,}:?$/.test((rows[1][0] || "").replace(/\s/g, ""))) return m;
+      var thead = "<tr>" + rows[0].map(function (c) { return "<th>" + c + "</th>"; }).join("") + "</tr>";
+      var tbody = rows.slice(2).map(function (r) {
+        return "<tr>" + r.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
+      }).join("");
+      return "\n<div class=\"tw\"><table>" + thead + tbody + "</table></div>\n";
+    });
+    src = src.replace(/(?:^|\n)((?:[-*] .*(?:\n|$))+)/g, function (_, items) {
+      return "\n<ul>" + items.trim().split("\n")
+        .map(function (l) { return "<li>" + l.replace(/^[-*] /, "") + "</li>"; }).join("") + "</ul>";
+    });
+    src = src.replace(/(?:^|\n)((?:\d+\. .*(?:\n|$))+)/g, function (_, items) {
+      return "\n<ol>" + items.trim().split("\n")
+        .map(function (l) { return "<li>" + l.replace(/^\d+\. /, "") + "</li>"; }).join("") + "</ol>";
+    });
+    src = src.split(/\n{2,}/).map(function (c) {
+      c = c.trim();
+      if (!c) return "";
+      if (/^<(h\d|ul|ol|pre|div|table| )/.test(c) || c.indexOf("\uE000") === 0) return c;
+      return "<p>" + c.replace(/\n/g, "<br>") + "</p>";
+    }).join("\n");
+    src = src.replace(/\uE000(\d+)\uE001/g, function (_, i) { return blocks[+i]; });
+    return src;
+  }
+
+  // LIVE markdown while streaming: a half-arrived ``` fence would leak raw backticks, so
+  // temporarily close an odd fence (and a dangling inline `) so the block renders as it grows.
+  function mdStream(src) {
+    if (((src.match(/```/g) || []).length) % 2) src += "\n```";
+    return md(src);
+  }
+
+  function renderMd(el, text) {
+    // drop BOTH transient classes — "streaming" carries the blinking ▋ caret + pre-wrap, which
+    // must not survive onto the finished, fully-rendered markdown answer.
+    el.classList.remove("thinking", "streaming");
+    el.classList.add("md");
+    el.innerHTML = md(text);
+    scrollDown();
+  }
+
+  // Progressive reveal: providers hand back the whole answer at done, so we replay it word-by-word
+  // (fast) for a "typing" feel, THEN swap to the fully-rendered markdown. Respects reduced-motion.
+  function revealAnswer(el, text) {
+    el.classList.remove("thinking");
+    addCopy(el, text);
+    var reduce = false;
+    try { reduce = matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
+    if (reduce || text.length < 40) { renderMd(el, text); return; }
+    el.className = "text"; el.textContent = "";
+    var words = text.split(/(\s+)/), i = 0, step = Math.max(1, Math.round(words.length / 26));
+    var timer = setInterval(function () {
+      i = Math.min(words.length, i + step);
+      el.textContent = words.slice(0, i).join("");
+      scrollDown();
+      if (i >= words.length) { clearInterval(timer); renderMd(el, text); }
+    }, 20);
+  }
+
+  // --- live conversation flow: text segments and tool steps INTERLEAVE in chronological order (cc-
+  // style), instead of grouping all tools above all text. `flowEl` is the ordered container; text
+  // streams into `curTextEl` (the open segment) until a tool arrives, which closes it so the next
+  // text starts a fresh block AFTER the tool. `statusEl` (the thinking line) always sits last. ---
+  var flowEl = null, curTextEl = null, curSeg = "", statusEl = null, curMsg = null, streamedAll = "";
+  var pstatEl = null;   // the live "…verb · Ns" line inside statusEl
+  // Buffered display (user preference over token streaming): pieces accumulate silently and each
+  // text segment renders ONCE, complete, when it closes — a tool arrives, or the run finishes.
+  // No half-rendered markdown, no blinking caret; the status line is the aliveness cue meanwhile.
+  function flowText(piece) {
+    if (!flowEl || !piece) return;
+    if (!curSeg) pstat("writing…");
+    curSeg += piece; streamedAll += piece;
+  }
+  // Seal the buffered segment: render it fully, in order, right before the status line.
+  function sealText() {
+    var seg = curSeg; curSeg = ""; curTextEl = null;
+    if (!flowEl || !seg.trim()) return;
+    var el = document.createElement("div"); el.className = "text md";
+    el.innerHTML = md(seg);
+    flowEl.insertBefore(el, statusEl && statusEl.parentNode === flowEl ? statusEl : null);
+    scrollDown();
+  }
+  // cc-style step: icon + bold verb + mono target + optional ⎿ result. Appending one CLOSES the
+  // current text segment so text before/after a tool renders in the true order it happened.
+  function traceStep(icon, verb, target, result, cls) {
+    if (!flowEl) return;
+    sealText();                              // seal the current text block; next token opens a new one
+    var s = document.createElement("div");
+    s.className = "trace-step" + (cls ? " " + cls : "");
+    s.innerHTML =
+      '<div class="ts-head"><span class="ts-ico">' + icon + '</span>' +
+        '<span class="ts-verb"></span><span class="ts-target"></span></div>' +
+      (result ? '<div class="ts-res"><span class="ts-corner">⎿</span><span class="ts-restext"></span></div>' : '');
+    s.querySelector(".ts-verb").textContent = verb || "";
+    s.querySelector(".ts-target").textContent = target || "";
+    if (result) s.querySelector(".ts-restext").textContent = result;
+    flowEl.insertBefore(s, statusEl); scrollDown();
+  }
+  // one place mapping a tool call -> {verb, target}, cc-style (Read file.py, Bash <cmd>, Grep <pat>…)
+  function ccLabel(name, args) {
+    args = args || {}; var b = baseName;
+    switch (name) {
+      case "read_file":   return { verb: "Read",   target: b(args.path) };
+      case "write_file":  return { verb: "Write",  target: b(args.path) };
+      case "edit_file":   return { verb: "Edit",   target: b(args.path) };
+      case "bash":        return { verb: "Bash",   target: args.command || "" };
+      case "grep":        return { verb: "Grep",   target: args.pattern || args.query || "" };
+      case "code_search": return { verb: "Search", target: args.query || "" };
+      case "glob":        return { verb: "Glob",   target: args.pattern || "" };
+      case "web_search":  return { verb: "Web search", target: args.query || "" };
+      case "web_fetch":   return { verb: "Fetch",  target: args.url || "" };
+      case "browser_open":    return { verb: "Open page",  target: args.url || "" };
+      case "browser_read":    return { verb: "Read page",  target: "" };
+      case "browser_click":   return { verb: "Click",      target: args.text || args.selector || "" };
+      case "browser_type":    return { verb: "Type",       target: args.text || "" };
+      case "browser_links":   return { verb: "List links", target: args.filter || "" };
+      case "browser_console": return { verb: "Console",    target: "" };
+      case "browser_eval":    return { verb: "Eval",       target: args.expr || "" };
+      case "plan":          return { verb: "Plan",   target: "" };
+      case "undo":          return { verb: "Undo",   target: "" };
+      case "remember":      return { verb: "Remember", target: (args.text || "").slice(0, 60) };
+      case "memory_search": return { verb: "Recall", target: args.query || "" };
+    }
+    if (name && name.indexOf("mcp__") === 0) return { verb: name.split("__").pop(), target: "" };
+    return { verb: name, target: shortArgs(name, args) };
+  }
+  var pendStart = 0, pendTimer = null, pendAction = "working…";
+  function pendRender() {
+    if (!pstatEl) return;
+    var s = Math.round((Date.now() - pendStart) / 1000);
+    pstatEl.textContent = pendAction + " · " + s + "s";
+  }
+  function addPending() {
+    var log = $("log");
+    var m = document.createElement("div"); m.className = "msg assistant";
+    m.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div><div class="bubble"><div class="who">Collie</div>' +
+                  '<div class="flow"></div></div>';
+    var w = $("welcome"); if (w) w.remove();
+    log.appendChild(m);
+    curMsg = m; flowEl = m.querySelector(".flow");
+    sealText();                                      // a leftover open block from a cut stream loses its caret
+    curSeg = ""; streamedAll = "";
+    statusEl = document.createElement("div"); statusEl.className = "text thinking";
+    statusEl.innerHTML = '<span class="dots"><i></i><i></i><i></i></span><span class="pstat">working…</span>';
+    flowEl.appendChild(statusEl);                    // status line always sits at the bottom of the flow
+    pstatEl = statusEl.querySelector(".pstat");
+    pendStart = Date.now(); pendAction = "working…";
+    if (pendTimer) clearInterval(pendTimer);
+    pendTimer = setInterval(pendRender, 1000);       // live elapsed, cc-style, non-annoying
+    scrollDown();
+    return m;
+  }
+  // update the CURRENT action collie is doing; each label change restarts the elapsed clock so
+  // "thinking… · 12s" is per-step, not run-total (the old "Bash… · 154s" read as a 154s command)
+  function pstat(s) { pendStart = Date.now(); pendAction = s; pendRender(); }
+  function toolIcon(name) {
+    if (name === "read_file") return "▤";
+    if (name === "grep" || name === "code_search" || name === "web_search") return "⌕";
+    if (name === "bash") return "$";
+    if (name === "edit_file" || name === "write_file") return "✎";
+    if (name && name.indexOf("browser_") === 0) return "◉";
+    return "•";
+  }
+  function pendStop() { if (pendTimer) { clearInterval(pendTimer); pendTimer = null; } }
+  function baseName(p) { p = String(p || ""); return p.split("/").pop() || p; }
+
+  // ---- "Now" strip: current action + hot files + action-rhythm ribbon ----------
+  var NOW = (function () {
+    var files = {}, ticks = [], cur = "", seq = 0;
+    var TOK = /[\w./-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|html|css|md|toml|c|cpp|h|sh|json|ya?ml|cfg|ini)\b/g;
+    function show() { var s = $("nowstrip"); if (s && s.hidden) s.hidden = false; }
+    function tick(k) { ticks.push(k); if (ticks.length > 26) ticks.shift();
+      var r = $("nowRibbon"); if (!r) return;
+      r.innerHTML = ticks.map(function (t) { return '<i data-k="' + t + '"></i>'; }).join(""); }
+    function renderChips() {
+      var h = $("hotFiles"); if (!h) return;
+      var rows = Object.keys(files).map(function (p) {
+        var f = files[p];
+        return { p: p, f: f, score: f.e * 3 + f.r * 2 + f.s + f.last / 1000 };
+      }).sort(function (a, b) { return b.score - a.score; }).slice(0, 8);
+      h.innerHTML = rows.map(function (r) {
+        var act = r.f.e ? "edit" : r.f.r ? "read" : "seen";
+        return '<span class="hotchip' + (r.p === cur ? " cur" : "") + '" data-act="' + act +
+          '" title="' + esc(r.p) + '"><span class="hc-dot"></span><span class="hc-name">' +
+          esc(baseName(r.p)) + '</span><span class="hc-n">' + (r.f.e + r.f.r + r.f.s) + '</span></span>';
+      }).join("");
+    }
+    function touch(p, act) {
+      if (!p) return;
+      var f = files[p] = files[p] || { r: 0, e: 0, s: 0, last: 0 };
+      if (act === "edit") f.e++; else if (act === "read") f.r++; else f.s++;
+      f.last = ++seq; cur = p; renderChips();
+    }
+    function act(ico, verb, target, kind) {
+      show();
+      var i = $("nowIco"), v = $("nowVerb"), t = $("nowTarget");
+      if (i) i.textContent = ico || "·";
+      if (v) v.textContent = verb || "";
+      if (t) { t.textContent = target || ""; t.title = target || ""; }
+      if (kind) tick(kind);
+    }
+    return {
+      act: act, touch: touch,
+      bash: function (command) {
+        var m, n = 0, w = /(^|\s)(sed\s+-i|tee)\b|>>?/.test(String(command));
+        TOK.lastIndex = 0;
+        while ((m = TOK.exec(String(command))) && n++ < 4) touch(m[0], w ? "edit" : "seen");
+      },
+      idle: function () {},
+      reset: function () {
+        files = {}; ticks = []; cur = ""; seq = 0;
+        var h = $("hotFiles"), r = $("nowRibbon"), s = $("nowstrip");
+        if (h) h.innerHTML = ""; if (r) r.innerHTML = ""; if (s) s.hidden = true;
+      }
+    };
+  })();
+  window.NOW = NOW;                    // exposed for debugging / driving from the console
+  function toolStatus(name, args) {
+    args = args || {};
+    if (name === "read_file") return "reading " + (baseName(args.path) || "a file");
+    if (name === "grep" || name === "code_search") return "searching " + ((args.query || args.pattern || "") + "").slice(0, 40);
+    if (name === "web_search") return "searching the web";
+    if (name === "bash") return "running " + (args.command || "").slice(0, 40);
+    if (name === "edit_file" || name === "write_file") return "editing " + baseName(args.path);
+    if (name.indexOf("browser_") === 0) return "using the browser";
+    return name.replace(/_/g, " ");
+  }
+  function addCopy(textEl, raw) {
+    var msg = textEl.closest && textEl.closest(".msg");
+    if (!msg || msg.querySelector(".copy")) return;
+    var b = document.createElement("button");
+    b.className = "copy"; b.type = "button"; b.textContent = "Copy";
+    b.onclick = function () {
+      try {
+        navigator.clipboard.writeText(raw);
+        b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1200);
+      } catch (e) {}
+    };
+    msg.appendChild(b);
+  }
+
+  // ---- sessions ---------------------------------------------------------
+  function loadSessions() {
+    fetch("/api/sessions").then(function (r) { return r.json(); }).then(function (d) {
+      var box = $("threads"); box.innerHTML = "";
+      var list = (d && d.sessions) || [];
+      if (!list.length) { box.innerHTML = '<div class="empty">No sessions yet.</div>'; return; }
+      list.forEach(function (s) {
+        var el = document.createElement("div");
+        el.className = "thread" + (s.id === currentSession ? " active" : "");
+        el.innerHTML = '<div class="t-last">' + esc(s.title || s.last || "(untitled)") + '</div>' +
+          '<div class="t-turns">' + (s.turns || 0) + ' turn' + (s.turns === 1 ? "" : "s") + '</div>' +
+          '<div class="t-acts">' +
+          '<button class="t-act" data-a="rename" title="Rename">✎</button>' +
+          '<button class="t-act" data-a="delete" title="Delete">✕</button></div>';
+        el.onclick = function () { openSession(s.id); };
+        el.querySelector('[data-a="rename"]').onclick = function (ev) {
+          ev.stopPropagation();
+          var t = prompt("Rename thread:", s.title || s.last || "");
+          if (t == null) return;
+          fetch("/api/rename/" + encodeURIComponent(s.id) + "?title=" + encodeURIComponent(t) +
+                "&token=" + encodeURIComponent(CT))
+            .then(function () { loadSessions(); });
+        };
+        el.querySelector('[data-a="delete"]').onclick = function (ev) {
+          ev.stopPropagation();
+          if (!confirm("Delete this thread?")) return;
+          fetch("/api/delete/" + encodeURIComponent(s.id) + "?token=" + encodeURIComponent(CT))
+            .then(function () {
+            if (s.id === currentSession) newThread(); else loadSessions();
+          });
+        };
+        box.appendChild(el);
+      });
+    }).catch(function () {});
+  }
+
+  function openSession(id) {
+    if (running) return;
+    currentSession = id;
+    clearTimeline(); setGate("idle"); NOW.reset();
+    setReceipt({}); loadSessions();
+    $("log").innerHTML = "";
+    fetch("/api/session/" + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (s) {
+      var msgs = (s && s.messages) || [];
+      msgs.forEach(function (m) {
+        if (m.role === "user" && typeof m.content === "string") addMsg("user", m.content);
+        else if (m.role === "assistant" && m.content) {
+          var t = addMsg("assistant", ""); renderMd(t, m.content); addCopy(t, m.content);
+        }
+      });
+      scrollDown();
+    }).catch(function () {});
+  }
+
+  var WELCOME_HTML = '<div class="welcome" id="welcome"><img class="wc-logo" src="/logo.svg" alt="" />'
+    + '<div class="wc-title">Ask Collie to fix, build, or explain</div>'
+    + '<div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes '
+    + 'green — at a fraction of the tokens. The answer streams here; tools and '
+    + 'diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div></div>';
+  function newThread() {
+    if (running) return;
+    currentSession = null;
+    $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
+    loadSessions(); $("input").focus();
+  }
+  $("newChat").onclick = newThread;
+
+  // ---- run --------------------------------------------------------------
+  function stopRun() {
+    if (es) { try { es.close(); } catch (e) {} es = null; }
+    if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }  // no late frame over the final render
+    finishRunUI();
+  }
+  function finishRunUI() {
+    running = false;
+    setRunState("idle", false);
+    var b = $("send"); b.classList.remove("stop"); b.disabled = false;
+    $("sendIcon").innerHTML = '<path d="M4 12l16-8-6 16-3-7-7-1z"/>';
+    var inp = $("input"); inp.disabled = false;
+    inp.placeholder = t("Ask Collie to fix, build, or explain something…");
+  }
+
+  // ---- image attachments ------------------------------------------------
+  var attached = [];   // [{media_type, data(base64)}]
+  function renderAttached() {
+    var strip = $("attachStrip"); if (!strip) return;
+    strip.hidden = attached.length === 0; strip.innerHTML = "";
+    attached.forEach(function (im, i) {
+      var t = document.createElement("div"); t.className = "thumb";
+      t.innerHTML = '<img alt=""><button class="rm" title="remove">×</button>';
+      t.querySelector("img").src = "data:" + im.media_type + ";base64," + im.data;
+      t.querySelector(".rm").onclick = function () { attached.splice(i, 1); renderAttached(); };
+      strip.appendChild(t);
+    });
+  }
+  function clearAttached() { attached = []; renderAttached(); }
+  function addFile(file) {
+    if (!file || !/^image\//.test(file.type)) return;
+    if (file.size > 15 * 1024 * 1024) { addErr("image too large (>15MB)"); return; }
+    var r = new FileReader();
+    r.onload = function () {
+      var s = String(r.result), c = s.indexOf(",");
+      attached.push({ media_type: file.type || "image/png", data: s.slice(c + 1) });
+      renderAttached();
+    };
+    r.readAsDataURL(file);
+  }
+  function uploadImg(im) {
+    return fetch("/api/upload?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ media_type: im.media_type, data: im.data })
+    }).then(function (r) { return r.json(); }).then(function (d) { return d.id || null; });
+  }
+  (function () {   // wiring: attach button, file input, paste, drag-drop
+    var ab = $("attachBtn"), fi = $("fileInput"), inp = $("input"), comp = document.querySelector(".composer");
+    if (ab && fi) { ab.onclick = function () { fi.click(); };
+      fi.onchange = function () { Array.prototype.forEach.call(fi.files, addFile); fi.value = ""; }; }
+    if (inp) inp.addEventListener("paste", function (e) {
+      var items = (e.clipboardData || {}).items || [];
+      for (var i = 0; i < items.length; i++)
+        if (/^image\//.test(items[i].type)) { addFile(items[i].getAsFile()); e.preventDefault(); }
+    });
+    if (comp) {
+      comp.addEventListener("dragover", function (e) { e.preventDefault(); comp.classList.add("drag"); });
+      comp.addEventListener("dragleave", function () { comp.classList.remove("drag"); });
+      comp.addEventListener("drop", function (e) { e.preventDefault(); comp.classList.remove("drag");
+        Array.prototype.forEach.call((e.dataTransfer || {}).files || [], addFile); });
+    }
+  })();
+
+  // steer the in-flight run: echo the message as a user bubble, then queue it server-side. The loop
+  // injects it at the next turn boundary and streams back a `steer` event when it lands.
+  function steer(q) {
+    addMsg("user", q, null, true);      // 4th arg -> marked as a mid-run steer
+    fetch("/api/steer?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: currentSession, q: q })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.queued)              // run ended between our keystroke and the POST
+        addEvent("meta", "flag", t("not delivered"), t("run already finished — send again to start a new turn"));
+    }).catch(function () {});
+  }
+
+  function send() {
+    var input = $("input");
+    var q = input.value.trim();
+    var imgs = attached.slice();
+    // While a run streams, a send STEERS it — the message is queued and delivered at the next turn
+    // boundary (Claude Code model), NOT a new run. Text-only for now; images still start fresh runs.
+    if (running) {
+      if (!q || !currentSession) return;   // nothing to steer, or the run hasn't reported its id yet
+      input.value = ""; input.style.height = "auto";
+      steer(q);
+      return;
+    }
+    if (q === "/model") {
+      input.value = ""; input.style.height = "auto";
+      openModelPicker();
+      return;
+    }
+    if (!q && !imgs.length) return;
+    input.value = ""; input.style.height = "auto";
+    addMsg("user", q, imgs);            // show text + attached image thumbnails
+    clearAttached();
+    addPending();                       // live "thinking" bubble in the conversation
+    scrollDown(true);                   // sending always jumps to the latest
+
+    // reset live surfaces for this run
+    clearTimeline(); setReceipt({});
+    setGate("working");                 // neutral while exploring — NOT "verifying" until an edit
+    setRunState("running", true);
+    running = true; runStart = Date.now();
+    var b = $("send"); b.classList.add("stop"); b.disabled = false;
+    $("sendIcon").innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
+    // input stays ENABLED so you can steer while it works; the button becomes Stop.
+    input.placeholder = t("Steer while Collie works — Enter to send");
+
+    // upload any attached images first (-> ids), then open the stream referencing them
+    var launch = function (imgIds) {
+    var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false;
+
+    var mode = ($("mode") && $("mode").value) || "normal";
+    var url = "/api/stream?q=" + encodeURIComponent(q) + "&mode=" + mode +
+              "&token=" + encodeURIComponent(CT) +
+              (imgIds && imgIds.length ? "&imgs=" + imgIds.join(",") : "") +
+              (currentSession ? "&session=" + encodeURIComponent(currentSession) : "");
+    if (mode === "pack") {
+      var pn = ($("packN") && $("packN").value) || "3";
+      var pchk = ($("packCheck") && $("packCheck").value.trim()) || "";
+      var papply = $("packApply") && $("packApply").checked;
+      url += "&n=" + encodeURIComponent(pn) + (pchk ? "&check=" + encodeURIComponent(pchk) : "") +
+             (papply ? "&apply=1" : "");
+    }
+    es = new EventSource(url);
+
+    es.addEventListener("token", function (e) {
+      // stream text into the current flow segment (interleaved with tool steps in event order)
+      flowText(JSON.parse(e.data).t || "");
+    });
+
+    es.addEventListener("start", function (e) {
+      var d = JSON.parse(e.data);
+      currentSession = d.session;
+      // run drawer stays as the user left it — no auto-open (it used to pop open on every run)
+      addEvent("meta", "flag", t("run started"), d.provider + " · " + d.prior_turns + " prior turns");
+    });
+
+    es.addEventListener("steer", function (e) {
+      // the loop picked up a queued steer and injected it as a user turn — confirm delivery
+      var d = JSON.parse(e.data);
+      addEvent("meta", "flag", t("steering delivered"), (d.text || "").slice(0, 120));
+    });
+
+    es.addEventListener("tool", function (e) {
+      var d = JSON.parse(e.data);
+      addEvent("tool", d.ok ? "tool" : "bad", d.name, shortArgs(d.name, d.args), d.ok ? "" : "bad");
+      var lab = ccLabel(d.name, d.args);
+      traceStep(toolIcon(d.name), lab.verb, lab.target, d.result, d.ok === false ? "bad" : "ok");
+      var nm = String(d.name || "").toLowerCase(), a = d.args || {};
+      var kind = nm.indexOf("edit") >= 0 || nm.indexOf("write") >= 0 ? "edit"
+               : nm.indexOf("read") >= 0 ? "read"
+               : nm.indexOf("bash") >= 0 || nm.indexOf("exec") >= 0 ? "bash" : "search";
+      NOW.act(toolIcon(d.name), lab.verb, lab.target, kind);
+      var f0 = a.path || a.file_path || a.file;
+      if (f0) NOW.touch(f0, kind === "edit" ? "edit" : kind === "read" ? "read" : "seen");
+      else if (a.command) NOW.bash(a.command);
+      pstat("thinking…");                             // the tool already ran (result arrived with the
+                                                      // event) — what's pending now is the next completion
+    });
+
+    es.addEventListener("edit", function (e) {
+      var d = JSON.parse(e.data);
+      sawEdit = true;
+      addEvent("edit", "edit", "edit " + (d.path || ""), null);
+      addDiff(d.path, d.old, d.new);
+      traceStep("✎", "Edit", baseName(d.path), "", "ok");
+      NOW.act("✎", "Edit", baseName(d.path), "edit"); NOW.touch(d.path, "edit");
+      pstat("thinking…");
+      setGate("verifying");             // NOW verification is real — code changed, repro is due
+    });
+
+    es.addEventListener("repro", function (e) {
+      var d = JSON.parse(e.data);
+      sawRepro = true; lastReproPass = !!d.passed;
+      addEvent("repro", d.passed ? "ok" : "bad",
+        (d.passed ? "reproduction passed" : "reproduction failed") + (d.asserted ? " · assert" : ""),
+        d.cmd, d.passed ? "ok" : "bad");
+      pstat(d.passed ? "verified ✓" : "repairing…");
+      traceStep(d.passed ? "✓" : "✗", "Reproduction", d.passed ? "passed" : "failed",
+                d.cmd || "", d.passed ? "ok" : "bad");
+      setGate(d.passed ? "pass" : "fail", d.cmd || undefined);   // evidence: WHICH command went green/red
+      NOW.act(d.passed ? "✓" : "✗", d.passed ? "Repro passed" : "Repro failed",
+              d.cmd || "", d.passed ? "pass" : "fail");
+    });
+
+    es.addEventListener("receipt", function (e) {
+      var d = JSON.parse(e.data);
+      setReceipt(d);
+      if (d.verified) { runVerified = true; setGate("pass"); }
+      else if (sawEdit && sawRepro && !lastReproPass) setGate("fail");
+    });
+
+    es.addEventListener("pack_start", function (e) {
+      var d = JSON.parse(e.data);
+      pstat("running " + d.n + " attempts…");
+      var card = document.createElement("div"); card.className = "pack-card";
+      var head = "🎯 Pack · best-of-" + d.n +
+                 (d.check ? " · check: <code>" + setEsc(d.check) + "</code>"
+                          : " · no check (Collie's own verify picks)") +
+                 (d.apply ? " · <b>apply on</b>" : "");
+      var rows = "";
+      for (var i = 0; i < d.n; i++) {
+        rows += '<div class="pk-row" id="pkrow' + i + '"><span class="pk-i">#' + (i + 1) +
+                '</span><span class="pk-dot pending"></span><span class="pk-st">queued</span>' +
+                '<span class="pk-meta"></span></div>';
+      }
+      card.innerHTML = '<div class="pk-head">' + head + "</div>" + rows;
+      if (flowEl) flowEl.insertBefore(card, statusEl); else if (curMsg) curMsg.appendChild(card);
+    });
+
+    es.addEventListener("pack_attempt", function (e) {
+      var d = JSON.parse(e.data);
+      var row = $("pkrow" + d.idx);
+      if (!row) return;
+      var st = row.querySelector(".pk-st"), meta = row.querySelector(".pk-meta"),
+          dot = row.querySelector(".pk-dot"), status, cls;
+      if (d.error) { status = "error"; cls = "fail"; }
+      else if (d.check_pass === false) { status = "check failed"; cls = "fail"; }
+      else if (d.verified) { status = d.check_pass === true ? "verified ✓ · check ✓" : "verified ✓"; cls = "ok"; }
+      else if (d.check_pass === true) { status = "check ✓"; cls = "ok"; }
+      else { status = "ran"; cls = "ran"; }
+      dot.className = "pk-dot " + cls;
+      st.textContent = status;
+      meta.textContent = (d.turns || 0) + " turns" +
+        (d.cost_usd ? " · $" + Number(d.cost_usd).toFixed(4) : "");
+      pstat("attempt " + (d.idx + 1) + " done…");
+    });
+
+    es.addEventListener("done", function (e) {
+      var d = JSON.parse(e.data);
+      currentSession = d.session;
+      setReceipt(d);
+      pendStop();
+      if (d.pack) {                                           // best-of-N summary + winner highlight
+        if (d.winner != null && $("pkrow" + d.winner)) $("pkrow" + d.winner).classList.add("winner");
+        var sum = document.createElement("div"); sum.className = "pack-summary";
+        if (d.winner == null) sum.innerHTML = "<b>No winner</b> — " + setEsc(d.reason || "nothing passed the check");
+        else sum.innerHTML = "🏆 <b>Attempt #" + (d.winner + 1) + " won</b> · " + setEsc(d.reason || "") +
+             (d.applied ? ' · <span class="pk-applied">applied to files ✓</span>'
+                        : ' · <span class="pk-noapply">not applied (preview only)</span>');
+        if (flowEl) flowEl.insertBefore(sum, statusEl || null);
+      }
+      if (statusEl) { statusEl.remove(); statusEl = null; }   // drop the thinking line
+      if (d.error) {
+        if (curMsg) curMsg.remove();
+        addErr(d.error);
+      } else {
+        // trust the streamed text if the provider's final answer came back empty, so a live-
+        // streamed reply is never wiped to "(no answer)".
+        var ans = d.answer || streamedAll || "(no answer)";
+        if (d.answer) curSeg = "";        // the buffered final segment duplicates the answer — drop it
+        sealText();                       // renders leftover streamed text only when no answer came back
+        if (d.answer || !streamedAll) {   // authoritative final render (markdown, links, copy button)
+          var fin = document.createElement("div"); fin.className = "text md";
+          flowEl.appendChild(fin);
+          renderMd(fin, ans);
+          addCopy(fin, ans);
+        }
+        // ran out of turns mid-task: say so, instead of presenting a half-way answer as finished
+        if (d.max_turns && d.turns >= d.max_turns) {
+          var cap = document.createElement("div"); cap.className = "pack-summary";
+          cap.innerHTML = "⏱ <b>Turn limit reached</b> (" + d.turns + "/" + d.max_turns +
+                          ") — the run stopped mid-task; the text above may be a plan, not a result. " +
+                          "Reply “continue” to resume.";
+          flowEl.appendChild(cap);
+        }
+      }
+      pstatEl = curTextEl = null; curMsg = flowEl = null;
+      // settle the gate on the final truth — TRUST the backend's verified signal (from the
+      // receipt) over the client's own event bookkeeping, so a passing repro shows green.
+      if (d.pack) {
+        var wv = d.winner != null && d.attempts && d.attempts[d.winner] && d.attempts[d.winner].verified;
+        setGate(d.winner == null ? "fail" : (wv ? "pass" : "none"),
+                d.winner == null ? "No attempt passed — Collie applied nothing." :
+                (wv ? null : "A winner was chosen, but no attempt's reproduction ran green."));
+      }
+      else if (runVerified) setGate("pass");
+      else if (!sawEdit) setGate("none");
+      else if (sawRepro) setGate(lastReproPass ? "pass" : "fail");
+      else setGate("none", "An edit was made but no reproduction ran — Collie could not confirm it green.");
+      stopRun();
+      loadSessions();
+    });
+
+    es.onerror = function () {
+      // EventSource fires onerror both on network loss and on normal stream close.
+      if (running) {
+        pendStop();
+        if (statusEl) { statusEl.remove(); statusEl = null; }
+        // keep whatever text/tools already streamed; only drop an EMPTY pending message
+        sealText();                          // the interrupted block keeps its text but loses the caret
+        if (curMsg && flowEl && !flowEl.querySelector(".text.md, .trace-step")) curMsg.remove();
+        pstatEl = null; curMsg = flowEl = null;
+        recoverAfterInterrupt();             // the run may have finished; salvage the saved answer
+        // (stopRun() below sets running=false synchronously, so the async openSession() re-render
+        //  inside recoverAfterInterrupt — guarded on !running — is unblocked by the time it fires)
+      }
+      stopRun();
+    };
+    };   // close launch()
+    // upload any attached images first (-> ids), then open the stream; run text-only if upload fails
+    if (imgs.length) {
+      Promise.all(imgs.map(uploadImg))
+        .then(function (ids) { launch(ids.filter(Boolean)); })
+        .catch(function () { launch([]); });
+    } else launch([]);
+  }
+
+  $("send").onclick = function () { if (running) stopRun(); else send(); };
+
+  var modelOverlay = $("modelOverlay"), modelTrigger = $("modelTrigger"),
+      modelTriggerLabel = $("modelTriggerLabel"), modelClose = $("modelClose"),
+      modelSearch = $("modelSearch"), modelDiscover = $("modelDiscover"),
+      modelList = $("modelList"), modelStatus = $("modelStatus");
+  var modelEntries = [], modelCurrentId = "", modelActiveIndex = -1, modelCatalogLoaded = false, modelBusy = false;
+  var modelGroupDefinitions = [
+    { kind: "subscription", title: "Subscription", caption: "Included with your logged-in plan" },
+    { kind: "metered", title: "Metered API", caption: "Billed by the connected provider" },
+    { kind: "local", title: "Local", caption: "Runs on this machine" }
+  ];
+
+  function modelAuthLabel(authState) {
+    if (authState === "ok") return "Ready";
+    if (authState === "not-logged-in") return "Sign in required";
+    if (authState === "missing-key") return "API key required";
+    return "Unavailable";
+  }
+
+  function modelPriceLabel(entry) {
+    var inputPrice = Number(entry.price_in || 0), outputPrice = Number(entry.price_out || 0);
+    if (entry.kind === "local") return "Local · $0";
+    if (entry.kind === "subscription") {
+      if (!inputPrice && !outputPrice) return "$0 marginal";
+      return "$0 · ≈$" + inputPrice.toFixed(2) + "/$" + outputPrice.toFixed(2) + " per M";
+    }
+    if (!inputPrice && !outputPrice) return "Price unavailable";
+    return "$" + inputPrice.toFixed(2) + "/$" + outputPrice.toFixed(2) + " per M";
+  }
+
+  function modelSearchText(entry) {
+    return [entry.label, entry.provider, entry.model, entry.via].concat(entry.tags || []).join(" ").toLowerCase();
+  }
+
+  function modelOptions() {
+    return Array.prototype.slice.call(modelList.querySelectorAll(".model-option:not(:disabled)"));
+  }
+
+  function setModelActive(nextIndex) {
+    var options = modelOptions();
+    if (!options.length) {
+      modelActiveIndex = -1;
+      modelList.removeAttribute("aria-activedescendant");
+      return;
+    }
+    modelActiveIndex = ((nextIndex % options.length) + options.length) % options.length;
+    options.forEach(function (option, optionIndex) {
+      option.classList.toggle("is-keyboard-active", optionIndex === modelActiveIndex);
+    });
+    var activeOption = options[modelActiveIndex];
+    modelList.setAttribute("aria-activedescendant", activeOption.id);
+    activeOption.scrollIntoView({ block: "nearest" });
+  }
+
+  function updateModelTrigger() {
+    var currentEntry = modelEntries.find(function (entry) { return entry.id === modelCurrentId; });
+    if (!currentEntry) {
+      var currentParts = modelCurrentId.split(":");
+      var fallbackLabel = currentParts.slice(1).join(":") || currentParts[0] || "Choose a model";
+      modelTriggerLabel.textContent = fallbackLabel;
+      modelTrigger.title = "Current model " + fallbackLabel + " · switch model (Ctrl/⌘ K)";
+      modelTrigger.setAttribute("aria-label", "Current model " + fallbackLabel + ". Switch model.");
+      return;
+    }
+    modelTriggerLabel.textContent = currentEntry.label;
+    modelTrigger.title = currentEntry.label + " · " + currentEntry.via + " · switch model (Ctrl/⌘ K)";
+    modelTrigger.setAttribute("aria-label", "Current model " + currentEntry.label + ". Switch model.");
+  }
+
+  function renderModelEntries() {
+    var query = modelSearch.value.trim().toLowerCase();
+    var visibleEntries = modelEntries.filter(function (entry) {
+      return !query || modelSearchText(entry).indexOf(query) >= 0;
+    });
+    modelList.textContent = "";
+    var optionCount = 0;
+    modelGroupDefinitions.forEach(function (group) {
+      var groupEntries = visibleEntries.filter(function (entry) { return entry.kind === group.kind; });
+      if (!groupEntries.length) return;
+      var groupElement = document.createElement("section");
+      groupElement.className = "model-group";
+      var title = document.createElement("div");
+      title.className = "model-group-title";
+      title.appendChild(document.createTextNode(group.title));
+      var caption = document.createElement("span");
+      caption.textContent = group.caption;
+      title.appendChild(caption);
+      groupElement.appendChild(title);
+
+      groupEntries.forEach(function (entry) {
+        var option = document.createElement("button");
+        var current = entry.id === modelCurrentId;
+        option.type = "button";
+        option.id = "model-option-" + entry.id.replace(/[^a-z0-9_-]/gi, "-");
+        option.className = "model-option" + (current ? " is-current" : "");
+        option.dataset.modelId = entry.id;
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", current ? "true" : "false");
+        option.disabled = entry.auth !== "ok";
+        option.title = entry.label + " · " + entry.via + " · " + modelAuthLabel(entry.auth);
+
+        var main = document.createElement("span");
+        main.className = "model-option-main";
+        var label = document.createElement("span");
+        label.className = "model-option-label";
+        label.textContent = entry.label;
+        var metadata = document.createElement("span");
+        metadata.className = "model-option-meta";
+        metadata.textContent = entry.via + " · " + entry.model;
+        main.appendChild(label);
+        main.appendChild(metadata);
+        if ((entry.tags || []).length || entry.source === "live") {
+          var tags = document.createElement("span");
+          tags.className = "model-option-tags";
+          (entry.tags || []).slice(0, 3).forEach(function (tag) {
+            var tagElement = document.createElement("span");
+            tagElement.className = "model-tag";
+            tagElement.textContent = tag;
+            tags.appendChild(tagElement);
+          });
+          if (entry.source === "live") {
+            var source = document.createElement("span");
+            source.className = "model-source";
+            source.textContent = "live";
+            tags.appendChild(source);
+          }
+          main.appendChild(tags);
+        }
+
+        var side = document.createElement("span");
+        side.className = "model-option-side";
+        var auth = document.createElement("span");
+        auth.className = "model-auth " + entry.auth;
+        auth.textContent = modelAuthLabel(entry.auth);
+        var price = document.createElement("span");
+        price.className = "model-price";
+        price.textContent = modelPriceLabel(entry);
+        side.appendChild(auth);
+        side.appendChild(price);
+        option.appendChild(main);
+        option.appendChild(side);
+        option.addEventListener("click", function () { selectModel(entry); });
+        groupElement.appendChild(option);
+        optionCount += 1;
+      });
+      modelList.appendChild(groupElement);
+    });
+    if (!optionCount) {
+      var empty = document.createElement("div");
+      empty.className = "model-empty";
+      empty.textContent = query ? "No models match that search." : "No models are available right now.";
+      modelList.appendChild(empty);
+    }
+    var currentOptionIndex = modelOptions().findIndex(function (option) { return option.dataset.modelId === modelCurrentId; });
+    setModelActive(currentOptionIndex >= 0 ? currentOptionIndex : 0);
+  }
+
+  function setModelBusy(isBusy) {
+    modelBusy = isBusy;
+    modelOverlay.classList.toggle("is-busy", isBusy);
+    modelSearch.disabled = isBusy;
+    modelDiscover.disabled = isBusy;
+  }
+
+  function loadModelCatalog(discoverLive) {
+    modelStatus.textContent = discoverLive ? "Discovering authenticated providers…" : "Loading available models…";
+    modelStatus.className = "model-status";
+    var query = discoverLive ? "?discover=1" : "";
+    return fetch("/api/models" + query).then(function (response) {
+      if (!response.ok) throw new Error("model catalog request failed");
+      return response.json();
+    }).then(function (payload) {
+      modelEntries = Array.isArray(payload.entries) ? payload.entries : [];
+      modelCurrentId = payload.current || modelCurrentId;
+      modelCatalogLoaded = true;
+      updateModelTrigger();
+      renderModelEntries();
+      modelStatus.textContent = modelEntries.length + " models available";
+      modelStatus.className = "model-status";
+    }).catch(function () {
+      modelStatus.textContent = "Could not load the model catalog.";
+      modelStatus.className = "model-status err";
+      if (!modelCatalogLoaded) modelTriggerLabel.textContent = "Model unavailable";
+    });
+  }
+
+  function openModelPicker() {
+    if (modelBusy) return;
+    modelOverlay.classList.add("open");
+    modelTrigger.setAttribute("aria-expanded", "true");
+    modelSearch.value = "";
+    renderModelEntries();
+    window.setTimeout(function () { modelSearch.focus(); }, 0);
+    loadModelCatalog(modelDiscover.checked);
+  }
+
+  function closeModelPicker() {
+    if (modelBusy) return;
+    modelOverlay.classList.remove("open");
+    modelTrigger.setAttribute("aria-expanded", "false");
+    modelTrigger.focus();
+  }
+
+  function selectModel(entry) {
+    if (modelBusy || !entry || entry.auth !== "ok") return;
+    setModelBusy(true);
+    modelStatus.textContent = "Switching to " + entry.label + "…";
+    modelStatus.className = "model-status";
+    fetch("/api/model?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: entry.id })
+    }).then(function (response) {
+      return response.json().then(function (payload) { return { ok: response.ok, payload: payload }; });
+    }).then(function (result) {
+      if (!result.ok || !result.payload.ok) throw new Error((result.payload || {}).error || "model switch failed");
+      modelCurrentId = result.payload.provider + ":" + result.payload.model;
+      updateModelTrigger();
+      modelStatus.textContent = "Switched · applies to your next message";
+      modelStatus.className = "model-status ok";
+      window.setTimeout(function () {
+        setModelBusy(false);
+        closeModelPicker();
+      }, 260);
+    }).catch(function (error) {
+      setModelBusy(false);
+      modelStatus.textContent = error.message || "Could not switch model.";
+      modelStatus.className = "model-status err";
+    });
+  }
+
+  modelTrigger.addEventListener("click", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    openModelPicker();
+  });
+  modelClose.addEventListener("click", closeModelPicker);
+  modelOverlay.addEventListener("click", function (event) {
+    if (event.target === modelOverlay) closeModelPicker();
+  });
+  modelSearch.addEventListener("input", renderModelEntries);
+  modelSearch.addEventListener("keydown", function (event) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setModelActive(modelActiveIndex + 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setModelActive(modelActiveIndex - 1);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      var options = modelOptions();
+      if (modelActiveIndex >= 0 && options[modelActiveIndex]) options[modelActiveIndex].click();
+    }
+  });
+  modelDiscover.addEventListener("change", function () { loadModelCatalog(modelDiscover.checked); });
+  document.addEventListener("keydown", function (event) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openModelPicker();
+    } else if (event.key === "Escape" && modelOverlay.classList.contains("open")) {
+      closeModelPicker();
+    }
+  });
+  loadModelCatalog(false);
+
+  // custom run-mode picker: popover menu -> writes hidden #mode (send() reads .value),
+  // updates the trigger label + intensity dot, and reveals pack's N/check/apply row.
+  (function () {
+    var pick = $("modePick"), trig = $("modeTrigger"), menu = $("modeMenu"),
+        hidden = $("mode"), label = $("modeLabel"),
+        tdot = pick && pick.querySelector(".mt-dot"), po = $("packOpts");
+    if (!pick) return;
+    function open(o) {
+      pick.classList.toggle("open", o); menu.hidden = !o;
+      trig.setAttribute("aria-expanded", o ? "true" : "false");
+    }
+    function choose(val) {
+      hidden.value = val;
+      var name = "Normal";
+      menu.querySelectorAll(".mode-item").forEach(function (it) {
+        var on = it.getAttribute("data-val") === val;
+        it.classList.toggle("is-active", on);
+        if (on) name = it.querySelector(".mi-name").textContent;
+      });
+      label.textContent = name;
+      if (tdot) tdot.setAttribute("data-mode", val);
+      if (po) po.hidden = val !== "pack";
+    }
+    trig.addEventListener("click", function (e) { e.stopPropagation(); open(menu.hidden); });
+    menu.querySelectorAll(".mode-item").forEach(function (it) {
+      it.addEventListener("click", function () { choose(it.getAttribute("data-val")); open(false); });
+    });
+    document.addEventListener("click", function (e) { if (!pick.contains(e.target)) open(false); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") open(false); });
+    choose("normal");
+  })();
+
+  // ---- composer input ---------------------------------------------------
+  var input = $("input");
+  input.addEventListener("input", function () {
+    input.style.height = "auto";
+    input.style.height = Math.min(180, input.scrollHeight) + "px";
+  });
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  loadSessions();
+  input.focus();
+})();
+</script>

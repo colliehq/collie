@@ -1,0 +1,54 @@
+name: CI
+
+# Gate every push to main and every PR on the same suite that guards local pushes
+# (tests/run_all.sh): py_compile · core · renderer (Node) · GUI (Playwright) · surfaces.
+# Everything runs offline against the mock provider + hash embedder — no API keys, no secrets.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# a newer push to the same branch/PR cancels the in-flight run
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      COLLIE_PROVIDER: mock          # offline, deterministic — no vendor calls
+      COLLIE_EMBED: hash             # skip the heavy local embedder (fastembed not installed)
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Collie + test extras
+        # core is stdlib-only; extras cover the surfaces the suite exercises
+        #   browser=playwright (GUI) · tui=rich · acp=agent-client-protocol · search=ddgs · dev=pytest
+        # (fastembed/`local` is intentionally omitted — tests use the hash embedder)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[browser,tui,acp,search,dev]"
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run test suite
+        run: bash tests/run_all.sh

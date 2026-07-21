@@ -1,0 +1,19 @@
+// Reference config for running opencode on the flat Claude subscription via collie's oauth-proxy.
+// Copy to ~/.config/opencode/opencode.jsonc, then start the proxy (python -m harness.oauth_proxy)
+// and run:  opencode run --model claudesub/claude-opus-4-8 "task"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "claudesub": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Claude (flat subscription via collie oauth-proxy)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8788/v1",
+        "apiKey": "dummy-proxy-ignores-this"
+      },
+      "models": {
+        "claude-opus-4-8": { "name": "Claude Opus 4.8 (subscription)" }
+      }
+    }
+  }
+}

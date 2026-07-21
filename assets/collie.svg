@@ -1,0 +1,27 @@
+<svg width="128" height="128" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="collie">
+  <!-- abstract border-collie mark: two-tone face + ears + one teal eye.
+       A geometric logo, not an illustration — swap for AI art at the same path if wanted. -->
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="#14202A"/>
+  <!-- ears -->
+  <path d="M17 20 L22 8 L30 19 Z" fill="#F4F6F8"/>
+  <path d="M47 20 L42 8 L34 19 Z" fill="#0E7C8B"/>
+  <!-- head: rounded shape split into the collie's white blaze + dark side -->
+  <path d="M32 15
+           C43 15 49 24 49 34
+           C49 45 42 52 32 52
+           C22 52 15 45 15 34
+           C15 24 21 15 32 15 Z" fill="#F4F6F8"/>
+  <!-- dark asymmetric marking over the left of the face (border-collie patch) -->
+  <path d="M32 15
+           C24 15 18 21 16 30
+           C15 34 15 40 18 45
+           C22 50 27 52 32 52
+           L32 15 Z" fill="#14202A"/>
+  <!-- central white blaze stripe -->
+  <path d="M29 16 L35 16 L34 50 L30 50 Z" fill="#F4F6F8"/>
+  <!-- eyes: one on the white side (dark), one teal on the dark side -->
+  <circle cx="39.5" cy="33" r="3.1" fill="#14202A"/>
+  <circle cx="24.5" cy="33" r="3.1" fill="#2AA7B8"/>
+  <!-- nose -->
+  <path d="M32 41 l4 3 -4 3 -4 -3 Z" fill="#0E7C8B"/>
+</svg>

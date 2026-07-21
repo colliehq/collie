@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "collie browser bridge",
+  "version": "1.0",
+  "description": "Lets the collie agent drive THIS browser (navigate / read / click / type) via a localhost bridge, using your real logged-in session.",
+  "permissions": ["scripting", "tabs", "activeTab", "debugger", "alarms", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "collie bridge (polling localhost)" }
+}

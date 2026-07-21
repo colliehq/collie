@@ -1,0 +1,61 @@
+{
+  "name": "collie",
+  "displayName": "Collie",
+  "description": "Collie coding agent, docked in a VS Code sidebar — chat, the verification gate, live diffs, and the code map. Runs on your workspace.",
+  "version": "0.1.0",
+  "publisher": "collie",
+  "license": "MIT",
+  "engines": { "vscode": "^1.84.0" },
+  "categories": ["AI", "Chat", "Other"],
+  "keywords": ["collie", "agent", "coding-agent", "acp"],
+  "icon": "media/icon.png",
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "collie", "title": "Collie", "icon": "media/galaxy.svg" }
+      ]
+    },
+    "views": {
+      "collie": [
+        { "type": "webview", "id": "collie.panel", "name": "Collie", "icon": "media/galaxy.svg" }
+      ]
+    },
+    "commands": [
+      { "command": "collie.reload", "title": "Collie: Reload Panel" },
+      { "command": "collie.restart", "title": "Collie: Restart Server" },
+      { "command": "collie.openInBrowser", "title": "Collie: Open in Browser" },
+      { "command": "collie.showLog", "title": "Collie: Show Server Log" }
+    ],
+    "configuration": {
+      "title": "Collie",
+      "properties": {
+        "collie.command": {
+          "type": "string",
+          "default": "collie",
+          "scope": "machine",
+          "description": "Path to the collie CLI (must be on PATH, or an absolute path). Machine-scoped so an untrusted workspace cannot override the spawned command (RCE guard)."
+        },
+        "collie.port": {
+          "type": "number",
+          "default": 0,
+          "description": "Port for the managed `collie web` server. 0 = auto-pick a free port."
+        },
+        "collie.provider": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Override COLLIE_PROVIDER for the server (blank = collie's own default, e.g. anthropic-oauth). Machine-scoped so an untrusted workspace cannot override it (RCE guard)."
+        },
+        "collie.extraArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "scope": "machine",
+          "description": "Extra arguments appended to `collie web`. Machine-scoped so an untrusted workspace cannot inject args into the spawned command (RCE guard)."
+        }
+      }
+    }
+  }
+}
