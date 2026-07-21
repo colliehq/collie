@@ -66,25 +66,28 @@ def test_translate_empty_is_failed_not_needsyou():
 
 def test_summarize_delivers():
     print("test_summarize_delivers")
-
-    class H(BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_GET(self):
-            body = b"<html><body><h1>Widgets</h1><p>All about widgets and gizmos.</p></body></html>"
-            self.send_response(200); self.send_header("Content-Length", str(len(body)))
-            self.end_headers(); self.wfile.write(body)
-
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-    port = srv.server_address[1]
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    out = E._summarize_execute(_rec({"url": f"http://127.0.0.1:{port}/"}),
-                               provider=_Prov(F("- It is about widgets\n- and gizmos")))
+    page = "<html><body><h1>Widgets</h1><p>All about widgets and gizmos.</p></body></html>"
+    out = E._summarize_execute(_rec({"url": "http://example.com/"}),
+                               provider=_Prov(F("- It is about widgets\n- and gizmos")),
+                               fetch=lambda u: (200, page))
     check(out["summary"].startswith("- It is about widgets"), "summary returned")
     v = E._delivered("summary", "summarized")(_rec({}), out)
     check(v.status == VERIFIED, f"a delivered summary must VERIFY, got {v.status}")
-    srv.shutdown()
+
+
+def test_summarize_ssrf_blocked_even_with_allow_local():
+    print("test_summarize_ssrf_blocked_even_with_allow_local")
+    # even with the operator opt-out set, an autonomous summarize must NOT reach a
+    # loopback/metadata target: the scrub keeps the SSRF guard on -> "" -> FAILED.
+    os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = "1"
+    try:
+        out = E._summarize_execute(_rec({"url": "http://127.0.0.1:9/secret"}),
+                                   provider=_Prov(F("- leaked internal data")))
+        check(out["summary"] == "", "a loopback URL must be blocked (empty summary)")
+        v = E._delivered("summary", "summarized")(_rec({}), out)
+        check(v.status == FAILED, "an SSRF-blocked summarize must be FAILED, not fabricated")
+    finally:
+        os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = "1"   # test module default
 
 
 def test_reminder_schedules_and_fires():
@@ -109,33 +112,43 @@ def test_reminder_schedules_and_fires():
     s.close(); a.close(); j.close()
 
 
-def test_translate_refusal_is_failed_not_fabricated():
-    print("test_translate_refusal_is_failed_not_fabricated")
-    # ANY unfenced decline (bare token, reason, prose policy refusal, non-English)
-    # collapses to FAILED — no fence, no success.
-    for refusal in ("CANNOT", "CANNOT - the input is empty",
-                    "I'm sorry, I can't translate that due to policy", "无法翻译此内容"):
+def test_translate_unfenced_refusal_fails_but_content_verbatim():
+    print("test_translate_unfenced_refusal_fails_but_content_verbatim")
+    # translate treats output as VERBATIM user content (check_refusal=False), so
+    # the STRUCTURAL fence is its guard: an UNFENCED model refusal -> "" -> FAILED.
+    for refusal in ("CANNOT", "I'm sorry, I can't translate that due to policy", "无法翻译此内容"):
         out = E._translate_execute(_rec({"text": "???"}), provider=_Prov(refusal))
         v = E._delivered("translation", "translated")(_rec({}), out)
         check(v.status == FAILED, f"unfenced refusal {refusal!r} must be FAILED, got {v.status}")
     # a real translation that happens to say sorry IS fenced by a compliant model
     out2 = E._translate_execute(_rec({"text": "对不起"}), provider=_Prov(F("I'm sorry")))
-    v2 = E._delivered("translation", "translated")(_rec({}), out2)
-    check(v2.status == VERIFIED, "a real (fenced) translation 'I'm sorry' must VERIFY")
-    # fenced refusals of any shape/length are caught (defense-in-depth)
-    verbose = ("I'm sorry, but I cannot assist with translating this text, as it appears "
-               "to contain content that may violate applicable policies, and I'm not able "
-               "to help with this request.")   # 173 chars — must still be caught
-    for refusal in ("I cannot provide a translation of that.", "I can't translate that content.",
-                    "I cannot help with that.", "无法翻译该内容", "抱歉，我无法完成", verbose):
-        o = E._translate_execute(_rec({"text": "x"}), provider=_Prov(F(refusal)))
-        v = E._delivered("translation", "translated")(_rec({}), o)
-        check(v.status == FAILED, f"a fenced refusal must be FAILED: {refusal[:40]!r}")
-    # but a LONG genuine translation that mentions 'no results' is NOT failed
+    check(E._delivered("translation", "translated")(_rec({}), out2).status == VERIFIED,
+          "a real (fenced) translation 'I'm sorry' must VERIFY")
+    # a CORRECT translation whose content IS a refusal idiom must VERIFY (real work)
+    out3 = E._translate_execute(_rec({"text": "我无法帮你"}), provider=_Prov(F("I cannot help you")))
+    check(E._delivered("translation", "translated")(_rec({}), out3).status == VERIFIED,
+          "translating refusal-idiom content must VERIFY, not false-fail")
+    # a long real translation mentioning 'no results' is not failed
     long_ok = "Section 3: when the query returns no results, check the index. " * 3
     out4 = E._translate_execute(_rec({"text": "x"}), provider=_Prov(F(long_ok)))
-    v4 = E._delivered("translation", "translated")(_rec({}), out4)
-    check(v4.status == VERIFIED, "a long real translation mentioning 'no results' must VERIFY")
+    check(E._delivered("translation", "translated")(_rec({}), out4).status == VERIFIED,
+          "a long real translation mentioning 'no results' must VERIFY")
+
+
+def test_summarize_fenced_refusal_is_failed():
+    print("test_summarize_fenced_refusal_is_failed")
+    # web.summarize output IS assistant prose, so it keeps the refusal check: a
+    # fenced refusal (any shape/length) is FAILED, not a fabricated summary.
+    verbose = ("I'm sorry, but I cannot assist with summarizing this page, as it appears "
+               "to contain content that may violate applicable policies, and I'm not able "
+               "to help with this request.")   # 173 chars
+    for refusal in ("I cannot help with that.", "I can't summarize that content.",
+                    "无法完成该请求", "抱歉，我无法完成", verbose):
+        got = (200, "<html><body>" + "real page content here. " * 5 + "</body></html>")
+        out = E._summarize_execute(_rec({"url": "http://example.com"}),
+                                   provider=_Prov(F(refusal)), fetch=lambda u, g=got: g)
+        v = E._delivered("summary", "summarized")(_rec({}), out)
+        check(v.status == FAILED, f"a fenced summarize refusal must be FAILED: {refusal[:34]!r}")
 
 
 def test_summarize_error_page_is_failed():

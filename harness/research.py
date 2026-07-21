@@ -30,15 +30,22 @@ _URL = re.compile(r"https?://[^\s)\]}>\"'，、。（）：；]+")   # also stop
 # present (and feeding its pages to the model) is a real exfiltration/injection
 # risk; authenticated-browser research belongs behind a confirm, not here.
 _RESEARCH_TOOLS = {"web_search", "web_fetch"}
-# Matched with .search over the answer's opening (not anchored): a no-info reply
-# of any shape — with an apology lead-in, "locate/retrieve" instead of "find",
-# "no results available", or CN 没能/无法/未能 — must not pass as a real answer.
+# ANCHORED (with an optional apology lead-in): a no-info/refusal reply BEGINS by
+# stating the model's own inability. A real answer to a negative-topic query
+# ("how to fix 'unable to locate package'") mentions such a phrase MID-string,
+# describing the topic — anchoring at the start distinguishes the two. Applied
+# with .match() alongside the citation gate.
 _NOINFO = re.compile(
-    r"(?i)("
-    r"(?:could\s?n'?t|could\s+not|was\s+unable|am\s+unable|unable|can'?t|failed)"
-    r"\s+(?:to\s+)?(?:find|locate|retrieve)"
-    r"|no\s+(?:information|results?|data|sources?)\b"
-    r"|没(?:能|有)?(?:找到|查到|相关|结果)|无法(?:找到|查到|获取)|未能?找到|查不到|找不到"
+    r"(?i)^\W*"
+    r"(?:(?:i'?m\s+)?(?:sorry|apolog\w*|unfortunately|regrettabl\w*|抱歉|很抱歉|遗憾|很遗憾)"
+    r"[\s,，、:：.\-—]*)?"
+    r"(?:"
+    r"i\s+(?:couldn'?t|could\s+not|was\s+unable|am\s+unable|can'?t|cannot|failed|refuse)"
+    r"(?:\s+(?:to\s+)?(?:find|locate|retrieve|help|assist|answer|provide|do))?"
+    r"|(?:was\s+)?unable\s+to\s+(?:find|locate|help|answer)"
+    r"|no\s+(?:information|results?|data|sources?)\s+(?:found|available|for|on)"
+    r"|as\s+an\s+ai\b"
+    r"|我?(?:没(?:能|有)?(?:找到|查到)|无法(?:找到|查到|获取|回答|完成|提供|帮)|查不到|找不到|不能(?:帮|回答))"
     r")")
 
 _PROMPT = (
@@ -129,14 +136,12 @@ def _research_verify(record, result):
     result = result or {}
     answer = (result.get("answer") or "").strip()
     cites = result.get("citations") or []
-    # Require a CITATION. The prompt contractually demands a 2-4 URL Sources list,
-    # so a real research answer always carries >=1 URL (even a Kickstarter link that
-    # later 403s a bot — the URL is in the TEXT, reachability is separate/
-    # informational). A refusal of ANY shape ("Sorry, I can't help", "无法完成")
-    # cites nothing -> FAILED. This is the single robust gate: content-phrase
-    # matching leaks (every round found another refusal wording); "did it produce
-    # a sourced answer?" does not.
-    if not answer or not cites:
+    # Two complementary gates: (1) a real answer must carry a URL (the prompt
+    # demands a Sources list) — a source-less refusal fails here; (2) a no-info
+    # reply that DID emit a (generic/hallucinated) URL is caught by the anchored
+    # _NOINFO — it opens by stating the model's own inability, which a real answer
+    # (even one restating "unable to locate" about the topic) does not.
+    if not answer or not cites or _NOINFO.match(answer):
         return _v.Verdict(_v.FAILED, "no sourced answer produced")
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
     detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"

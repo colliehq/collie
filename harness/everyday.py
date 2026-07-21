@@ -35,7 +35,7 @@ _REFUSAL = re.compile(
     r"|无法(?:翻译|完成|帮|协助|提供|回答|处理)|不能(?:帮|协助|翻译|完成)|我无法|拒绝(?:翻译|完成|帮))")
 
 
-def _ask(system: str, user: str, provider=None) -> str:
+def _ask(system: str, user: str, provider=None, check_refusal: bool = True) -> str:
     """Ask the model and return ONLY what it wrapped in an output fence. A decline
     of ANY shape — the bare token, a refusal-with-reason, a content-policy prose
     refusal, a non-English refusal — carries no fence, so it collapses to "" and
@@ -54,13 +54,14 @@ def _ask(system: str, user: str, provider=None) -> str:
     if not m:
         return ""                     # no fence -> refusal / non-compliance -> FAILED, honest
     out = m.group(1).strip()
-    # defense-in-depth: a model that BOTH refuses AND (wrongly) fences it. We match
-    # only an ACT-refusal idiom ("I cannot translate", "无法翻译") in the OPENING —
-    # NOT content phrases like "no results"/"unable to find", which are legitimate
-    # translation/summary CONTENT. No length cap (safety refusals run long), and
-    # scanning only out[:120] keeps false positives to outputs that literally BEGIN
-    # by refusing the act.
-    if out and _REFUSAL.search(out[:120]):
+    # defense-in-depth: a model that BOTH refuses AND (wrongly) fences it. Match an
+    # ACT-refusal idiom ("I cannot translate", "无法翻译") in the OPENING only — not
+    # content phrases like "no results", which are legitimate content. translate
+    # passes VERBATIM user content through _ask, so its output can legitimately BE a
+    # refusal idiom (translating 我无法帮你 -> "I cannot help you") — it sets
+    # check_refusal=False. The structural no-fence check above still fails a genuine
+    # model refusal there. summarize/research keep the check (assistant-authored).
+    if check_refusal and out and _REFUSAL.search(out[:120]):
         return ""
     return out
 
@@ -80,15 +81,22 @@ def _translate_execute(record, provider=None):
     text = record.args.get("text", "")
     to = record.args.get("to") or "English"
     out = _ask(f"Translate the text into {to}. Output ONLY the translation, no notes.",
-               text, provider)
+               text, provider, check_refusal=False)   # output is verbatim user content
     return {"translation": out, "to": to}
 
 
 # ── web.summarize ─────────────────────────────────────────────────────────────
-def _summarize_execute(record, provider=None):
+def _summarize_execute(record, provider=None, fetch=None):
     from .observe import fetch_loggedout, _visible, _TAGS, _WS, _LOGINWALL
     url = record.args.get("url", "")
-    got = fetch_loggedout(url)
+    # autonomous + attacker-URL-driven: keep the SSRF guard ON even if the operator
+    # set the ALLOW_LOCAL opt-out (mirrors research._live_runner). Scrub, fetch, restore.
+    _saved = os.environ.pop("COLLIE_WEBFETCH_ALLOW_LOCAL", None)
+    try:
+        got = (fetch or fetch_loggedout)(url)
+    finally:
+        if _saved is not None:
+            os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = _saved
     if got is None or got[0] >= 400:
         return {"summary": "", "url": url}           # unreachable / HTTP error -> FAILED, honest
     text = _WS.sub(" ", _TAGS.sub(" ", _visible(got[1]))).strip()
@@ -104,7 +112,7 @@ def _summarize_execute(record, provider=None):
 
 
 # ── reminder.set (durable, fired by colliejobd) ──────────────────────────────
-_HHMM = re.compile(r"\b([01]?\d|2[0-3])[:：]([0-5]\d)\b")
+_HHMM = re.compile(r"\b([01]?\d|2[0-3])[:：]([0-5]?\d)\b")   # single-digit minute ok ("7:5")
 
 
 def _state_dir() -> str:

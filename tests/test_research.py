@@ -71,10 +71,20 @@ def main():
 
     print("test_bare_refusals_of_any_shape_fail")
     for refusal in ("Sorry, I can't help with that right now.", "I cannot help with that.",
-                    "I refuse to do this.", "抱歉，我无法翻译这个。", "不能帮你做这个。"):
+                    "I refuse to do this.", "抱歉，我无法完成这个。", "不能帮你做这个。"):
         o = research.run_research("q", runner=lambda q, n=refusal: n)   # no Sources -> no cites
         v = research._research_verify(type("R", (), {"args": {}})(), o)
         check(v.status == FAILED, f"a bare refusal must FAIL: {refusal!r} -> {v.status}")
+
+    print("test_no_info_WITH_a_url_still_fails")
+    # the model was ordered to emit a Sources list, so a no-info reply carries a
+    # (generic/hallucinated) URL — the anchored _NOINFO catches it by its opening.
+    for lead in ("I couldn't find reliable information on this.",
+                 "Sorry, I was unable to find anything.",
+                 "抱歉，我没有找到相关信息。"):
+        o = research.run_research("q", runner=lambda q, l=lead: f"{l}\n\nSources:\n- {src}\n")
+        v = research._research_verify(type("R", (), {"args": {}})(), o)
+        check(v.status == FAILED, f"no-info+URL must still FAIL: {lead!r} -> {v.status}")
 
     print("test_blocked_source_still_verifies_not_failed")
     # a real site that 403s a cookieless bot must NOT fail the job (the Kickstarter
