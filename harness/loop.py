@@ -601,6 +601,13 @@ class Harness:
                             if edit_ok:
                                 did_edit = True
                                 last_edit_turn = turn
+                                # A landed edit INVALIDATES any prior reproduction: tool calls in one
+                                # turn are processed in order, so a pass+assert repro that ran BEFORE a
+                                # same-turn breaking edit would otherwise share this turn's key and read
+                                # as fresh (last_repro_turn >= last_edit_turn), stamping a broken edit
+                                # VERIFIED. Reset so only a repro that runs AFTER this edit can clear
+                                # the gate. (audit: same-turn repro-then-edit false-verify.)
+                                last_repro_turn, last_repro_failed, last_repro_asserted = -100, False, False
                                 p = tc.args.get("path", "")
                                 if p:
                                     p = p if isinstance(p, str) else str(p)   # malformed non-str path

@@ -24,6 +24,10 @@ from harness.jobs import (  # noqa: E402
 from harness.observe import donecheck_listing  # noqa: E402
 from harness.verifier import VERIFIED, FAILED, INCONCLUSIVE, NOT_ARMED, Verdict  # noqa: E402
 
+# the lifecycle test observes a localhost fixture; opt into local for the
+# SSRF-guarded independent channel (production refuses loopback by default).
+os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = "1"
+
 _fails = []
 
 
@@ -146,6 +150,62 @@ def test_failed_verdict_marks_failed_and_compensates():
     check(comp["ran"], "an irreversible failure must run the compensation hook")
     acts.close()
     jobs.close()
+
+
+def test_not_armed_irreversible_goes_needs_you():
+    print("test_not_armed_irreversible_goes_needs_you")
+    clear_registry()
+    # a fired IRREVERSIBLE action whose done-check reports NOT_ARMED is a
+    # mis-authored verify, not a real no-op — must not read as success.
+    register(Capability("send.thing", execute=lambda r: {"ok": True}, reversible=False,
+                        verify=lambda r, res: Verdict(NOT_ARMED, "nothing to verify")))
+    acts, jobs = _stores()
+    jobs.create("job-na", "send", {})
+    n = acts.propose("send.thing", {}, job_id="job-na")
+    acts.confirm(n)
+    Executor(acts, jobs).run_confirmed(n, job_id="job-na")
+    check(jobs.get("job-na").state == NEEDS_YOU,
+          "fired irreversible + NOT_ARMED must go needs_you, not done_accepted")
+    acts.close(); jobs.close()
+
+
+def test_reconcile_stuck_job_from_receipt():
+    print("test_reconcile_stuck_job_from_receipt")
+    clear_registry()
+    register(Capability("do.it", execute=lambda r: {"ok": True}, reversible=True,
+                        verify=lambda r, res: Verdict(VERIFIED, "done")))
+    acts, jobs = _stores()
+    jobs.create("job-rec", "do", {})
+    n = acts.propose("do.it", {}, job_id="job-rec")
+    acts.confirm(n)
+    ex = Executor(acts, jobs)
+    ex.run_confirmed(n, job_id="job-rec")           # fires + advances
+    # simulate a crash that fired+receipted the action but left the job behind
+    jobs.set_state("job-rec", NEEDS_YOU)
+    v = ex.run_confirmed(n, job_id="job-rec")        # re-drive: must reconcile, not re-fire/raise
+    check(v.status == VERIFIED, "reconcile must return the stored verdict")
+    check(jobs.get("job-rec").state == DONE_VERIFIED,
+          "re-driving a stuck job must converge it from the receipt")
+    check(len([r for r in acts.receipts(n) if r["fired"]]) == 1,
+          "reconcile must NOT fire the side effect again")
+    acts.close(); jobs.close()
+
+
+def test_job_id_self_binds_to_record():
+    print("test_job_id_self_binds_to_record")
+    clear_registry()
+    register(Capability("do.it", execute=lambda r: {"ok": True}, reversible=True,
+                        verify=lambda r, res: Verdict(VERIFIED, "done")))
+    acts, jobs = _stores()
+    jobs.create("real", "the real job", {})
+    jobs.create("other", "someone else's job", {})
+    n = acts.propose("do.it", {}, job_id="real")
+    acts.confirm(n)
+    # a caller passes the WRONG job_id; the executor must bind to rec.job_id
+    Executor(acts, jobs).run_confirmed(n, job_id="other")
+    check(jobs.get("real").state == DONE_VERIFIED, "verdict must land on the record's own job")
+    check(jobs.get("other").state != DONE_VERIFIED, "verdict must NOT land on the passed job")
+    acts.close(); jobs.close()
 
 
 def test_unknown_capability_refused_before_firing():

@@ -512,13 +512,19 @@ def cmd_jobs(args):
             rec = acts.get(nonce)
             if not rec:
                 print("unknown nonce"); return 1
-            acts.confirm(nonce)
-            print("approved %s  cap=%s  digest=%s…" % (nonce, rec.capability, rec.digest[:12]))
+            # confirm() raises on a non-pending nonce (already approved/executed);
+            # don't let that abort the command — report state and, if it already
+            # fired, reconcile the job from its receipt rather than crashing.
+            try:
+                acts.confirm(nonce)
+                print("approved %s  cap=%s  digest=%s…" % (nonce, rec.capability, rec.digest[:12]))
+            except RefusedError as e:
+                print("not confirming %s: %s" % (nonce, e))
             try:
                 v = Executor(acts, jobs).run_confirmed(nonce, job_id=rec.job_id)
                 print("executed → %s: %s" % (v.status, v.reason))
             except RefusedError as e:
-                print("approved; not executed here (%s)." % e)
+                print("not executed here (%s)." % e)
                 print("a runner with the capability loaded will execute it.")
         elif args.action == "receipts":
             rows = acts.receipts(args.text or None)

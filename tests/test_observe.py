@@ -23,6 +23,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from harness.observe import donecheck_listing, fetch_loggedout  # noqa: E402
 from harness.verifier import VERIFIED, FAILED, INCONCLUSIVE  # noqa: E402
 
+# The independent channel is SSRF-guarded and refuses loopback by default; these
+# tests observe a localhost fixture server, so they explicitly opt into local.
+# (test_ssrf_and_nonhttp_blocked_by_default temporarily removes this to prove the
+# guard is active by default.)
+os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = "1"
+
 _fails = []
 
 
@@ -102,11 +108,28 @@ def main():
     check("cookie" not in hdr,
           "independent channel must send NO Cookie header (session-free by construction)")
 
+    print("test_ssrf_and_nonhttp_blocked_by_default")
+    saved = os.environ.pop("COLLIE_WEBFETCH_ALLOW_LOCAL", None)
+    try:
+        check(fetch_loggedout("file:///etc/hostname") is None,
+              "file:// must be refused (no forged local-file evidence)")
+        check(fetch_loggedout("data:text/html,<h1>x</h1>") is None,
+              "data: URL must be refused")
+        check(fetch_loggedout(base + "/listing/ok") is None,
+              "loopback http must be refused by the SSRF guard by default")
+        v = donecheck_listing("file:///etc/hostname", "root",
+                              publish_at=1, at=2)
+        check(v.status == INCONCLUSIVE,
+              f"a file:// done-check can never be VERIFIED, got {v.status}")
+    finally:
+        if saved is not None:
+            os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = saved
+
     srv.shutdown()
     if _fails:
         print(f"\n== OBSERVE: {len(_fails)} FAILED ==")
         sys.exit(1)
-    print("\n== OBSERVE: 7 checks passed (real sockets) ==")
+    print("\n== OBSERVE: all checks passed (real sockets) ==")
 
 
 if __name__ == "__main__":

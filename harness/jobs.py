@@ -32,7 +32,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .actions import ActionStore, RefusedError
+from .actions import ActionStore, EXECUTED, RefusedError
 from .verifier import FAILED, INCONCLUSIVE, NOT_ARMED, VERIFIED, Verdict
 
 QUEUED = "queued"
@@ -171,6 +171,27 @@ class Executor:
         self.actions = actions
         self.jobs = jobs
 
+    def _apply(self, tgt: str, cap: Capability, rec, status: str, reason: str):
+        if not tgt:
+            return
+        if status == VERIFIED:
+            self.jobs.set_state(tgt, DONE_VERIFIED, reason)
+        elif status == FAILED:
+            if not cap.reversible and cap.compensate:
+                try:
+                    cap.compensate(rec)
+                except Exception:
+                    pass
+            self.jobs.set_state(tgt, FAILED_S, reason)
+        elif status == NOT_ARMED:
+            # a fired action that produced NO armed evidence is a mis-authored
+            # verify, not a real no-op. For an irreversible action that already
+            # fired, never read that as success — a human must look. Reserve
+            # done_accepted for a reversible no-op / explicit human accept.
+            self.jobs.set_state(tgt, DONE_ACCEPTED if cap.reversible else NEEDS_YOU, reason)
+        else:  # INCONCLUSIVE — fired but could not confirm; a human must look
+            self.jobs.set_state(tgt, NEEDS_YOU, reason)
+
     def run_confirmed(self, nonce: str, job_id: str = "", redact_fn=None,
                       unchanged_fn=None) -> Verdict:
         rec = self.actions.get(nonce)
@@ -179,6 +200,9 @@ class Executor:
         cap = get_capability(rec.capability)
         if not cap:
             raise RefusedError(f"no registered capability {rec.capability!r}")
+        # self-bind to the action's own job so a caller cannot mis-attribute the
+        # verdict to a different job (falls back to the passed job_id).
+        tgt = rec.job_id or job_id
         try:
             receipt = self.actions.execute(
                 nonce,
@@ -187,23 +211,18 @@ class Executor:
                 unchanged_fn=unchanged_fn,
                 redact_fn=redact_fn)
         except RefusedError:
-            # a guard refused BEFORE firing (unconfirmed / tamper / TOCTOU /
-            # single-use). The job is not advanced to a done state.
+            # RECONCILE: if the action already fired+receipted (a crash between
+            # execute and set_state left the job stuck non-terminal), converge the
+            # job from the stored receipt instead of stranding it or re-firing.
+            # Any other refusal (unconfirmed / tamper / TOCTOU / single-use before
+            # any fire) genuinely blocks — re-raise.
+            fired = [x for x in self.actions.receipts(nonce) if x.get("fired")]
+            cur = self.actions.get(nonce)
+            if fired and cur and cur.state == EXECUTED:
+                last = fired[-1]
+                self._apply(tgt, cap, rec, last["verdict"], last["verdict_reason"])
+                return Verdict(last["verdict"], last["verdict_reason"])
             raise
 
-        verdict = Verdict(receipt.verdict, receipt.verdict_reason)
-        if job_id:
-            if verdict.status == VERIFIED:
-                self.jobs.set_state(job_id, DONE_VERIFIED, receipt.verdict_reason)
-            elif verdict.status == FAILED:
-                if not cap.reversible and cap.compensate:
-                    try:
-                        cap.compensate(rec)
-                    except Exception:
-                        pass
-                self.jobs.set_state(job_id, FAILED_S, receipt.verdict_reason)
-            elif verdict.status == NOT_ARMED:
-                self.jobs.set_state(job_id, DONE_ACCEPTED, receipt.verdict_reason)
-            else:  # INCONCLUSIVE — fired but could not confirm; a human must look
-                self.jobs.set_state(job_id, NEEDS_YOU, receipt.verdict_reason)
-        return verdict
+        self._apply(tgt, cap, rec, receipt.verdict, receipt.verdict_reason)
+        return Verdict(receipt.verdict, receipt.verdict_reason)

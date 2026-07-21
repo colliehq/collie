@@ -19,6 +19,10 @@ from harness.actions import ActionStore, RefusedError, EXECUTED, APPROVED  # noq
 from harness.observe import donecheck_listing  # noqa: E402
 from harness.verifier import VERIFIED, INCONCLUSIVE, Verdict, FAILED  # noqa: E402
 
+# the end-to-end done-check observes a localhost fixture; opt into local for the
+# SSRF-guarded independent channel (production refuses loopback by default).
+os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = "1"
+
 _fails = []
 
 
@@ -111,6 +115,24 @@ def test_payload_tamper_refused():
     except RefusedError:
         pass
     check(not fired["v"], "tampered side effect must NOT fire (digest binding)")
+    st.close()
+
+
+def test_leash_tamper_refused():
+    print("test_leash_tamper_refused")
+    st = ActionStore(_tmp())
+    n = st.propose("pay.charge", {"amt": 50}, leash_id="L-safe")
+    st.confirm(n)
+    # escalate authority by swapping the leash after approval — digest now binds it
+    st.db.execute("UPDATE pending_actions SET leash_id=? WHERE nonce=?", ("L-evil", n))
+    st.db.commit()
+    fired = {"v": False}
+    try:
+        st.execute(n, side_effect_fn=lambda r: fired.__setitem__("v", True))
+        check(False, "tampered leash_id must be refused (digest binds authority fields)")
+    except RefusedError:
+        pass
+    check(not fired["v"], "leash-tampered side effect must NOT fire")
     st.close()
 
 

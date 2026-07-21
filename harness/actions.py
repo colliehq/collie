@@ -38,6 +38,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from . import redact as _redact
 from .verifier import INCONCLUSIVE, Verdict
 
 # action lifecycle
@@ -49,13 +50,22 @@ REFUSED = "refused"      # rejected by a guard (never fired)
 EXPIRED = "expired"      # TTL elapsed before confirm
 
 
-def _canonical(capability: str, args: dict) -> str:
-    return capability + "\x00" + json.dumps(args or {}, sort_keys=True,
-                                            separators=(",", ":"), ensure_ascii=False)
+def _j(o) -> str:
+    return json.dumps(o or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _digest(capability: str, args: dict) -> str:
-    return hashlib.sha256(_canonical(capability, args).encode("utf-8")).hexdigest()
+def _digest(capability: str, args: dict, leash_id: str = "", job_id: str = "",
+            risk: str = "", snapshot: dict = None) -> str:
+    """Bind the payload AND its authority-bearing fields (leash, job, risk,
+    snapshot), so tampering any of them after propose is caught at execute.
+
+    Honest limit: this is a plain SHA-256 — an attacker who can write the DB can
+    recompute it. Real integrity needs an HMAC keyed by a secret held OUTSIDE the
+    state DB (env/keyring); that is the intended follow-up. Widening the digest is
+    cheap defense-in-depth that catches naive/partial tampers today."""
+    payload = "\x00".join([capability, _j(args), leash_id or "", job_id or "",
+                           risk or "", _j(snapshot)])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -117,7 +127,11 @@ class ActionStore:
             nonce TEXT PRIMARY KEY, job_id TEXT, capability TEXT, args_json TEXT,
             digest TEXT, risk TEXT, leash_id TEXT, snapshot_json TEXT, state TEXT,
             created_at INTEGER, expires_at INTEGER, decided_at INTEGER,
-            executed_at INTEGER, refuse_reason TEXT)""")
+            executed_at INTEGER, attempted_at INTEGER, refuse_reason TEXT)""")
+        try:  # guarded migration for a db created before attempted_at existed
+            c.execute("ALTER TABLE pending_actions ADD COLUMN attempted_at INTEGER")
+        except sqlite3.OperationalError:
+            pass
         c.execute("""CREATE TABLE IF NOT EXISTS receipts(
             receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, nonce TEXT, job_id TEXT,
             capability TEXT, args_redacted TEXT, leash_id TEXT, approved INTEGER,
@@ -135,10 +149,10 @@ class ActionStore:
             self.db.execute(
                 """INSERT INTO pending_actions(nonce,job_id,capability,args_json,digest,
                      risk,leash_id,snapshot_json,state,created_at,expires_at,
-                     decided_at,executed_at,refuse_reason)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,'')""",
+                     decided_at,executed_at,attempted_at,refuse_reason)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,0,'')""",
                 (nonce, job_id, capability, json.dumps(args or {}, ensure_ascii=False),
-                 _digest(capability, args), risk, leash_id,
+                 _digest(capability, args, leash_id, job_id, risk, snapshot), risk, leash_id,
                  json.dumps(snapshot or {}, ensure_ascii=False), PENDING,
                  now, now + int(ttl_s)))
             self.db.commit()
@@ -197,17 +211,20 @@ class ActionStore:
             # fail-closed: only an APPROVED action may execute (not pending/executed/…)
             if r["state"] != APPROVED:
                 raise RefusedError(f"not approved for execution (state={r['state']})")
-            # payload binding: args must not have changed since propose
+            # payload binding: capability/args AND authority fields must be intact
             args = json.loads(r["args_json"] or "{}")
-            if _digest(r["capability"], args) != r["digest"]:
+            if _digest(r["capability"], args, r["leash_id"], r["job_id"], r["risk"],
+                       json.loads(r["snapshot_json"] or "{}")) != r["digest"]:
                 self._refuse(nonce, "payload digest mismatch (tampered)", now)
                 raise RefusedError("payload digest mismatch (tampered)")
-            # single-use latch: atomically claim APPROVED -> EXECUTING. A second
+            # single-use latch + durable attempt marker in ONE txn: atomically
+            # claim APPROVED -> EXECUTING and stamp attempted_at. A second
             # concurrent/duplicate execute sees a non-APPROVED row and is refused,
-            # so the side effect can never fire twice (no double-send).
+            # so the side effect can never fire twice (no double-send); attempted_at
+            # makes a crash-after-fire distinguishable from crash-before-fire.
             claimed = self.db.execute(
-                "UPDATE pending_actions SET state=? WHERE nonce=? AND state=?",
-                (EXECUTING, nonce, APPROVED))
+                "UPDATE pending_actions SET state=?,attempted_at=? WHERE nonce=? AND state=?",
+                (EXECUTING, now, nonce, APPROVED))
             self.db.commit()
             if claimed.rowcount != 1:
                 raise RefusedError("already claimed (single-use)")
@@ -238,12 +255,19 @@ class ActionStore:
         verdict = donecheck_fn(record, result) if donecheck_fn else \
             Verdict(INCONCLUSIVE, "no done-check declared")
 
+        # finalize: terminal state AND the evidenced receipt land in ONE commit,
+        # so a crash cannot leave a fired action EXECUTED without its receipt.
+        rc, params = self._mk_receipt(record, approved=True, fired=True,
+                                      verdict=verdict, redact_fn=redact_fn)
         with self._lock:
             self.db.execute("UPDATE pending_actions SET state=?,executed_at=? WHERE nonce=?",
                             (EXECUTED, int(time.time()), nonce))
+            self.db.execute(
+                """INSERT INTO receipts(nonce,job_id,capability,args_redacted,leash_id,
+                     approved,fired,verdict,verdict_reason,evidence,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""", params)
             self.db.commit()
-        return self._write_receipt(record, approved=True, fired=True,
-                                   verdict=verdict, redact_fn=redact_fn)
+        return rc
 
     # ── receipts ──
     def _refuse(self, nonce, reason, now):
@@ -251,23 +275,33 @@ class ActionStore:
                         (REFUSED, reason, nonce))
         self.db.commit()
 
-    def _write_receipt(self, record: ActionRecord, approved: bool, fired: bool,
-                       verdict: Verdict, redact_fn=None) -> Receipt:
+    def _mk_receipt(self, record: ActionRecord, approved: bool, fired: bool,
+                    verdict: Verdict, redact_fn=None):
+        """Build the Receipt + its INSERT params. Redaction is on by DEFAULT: with
+        no redact_fn, args are scrubbed of pattern-matched secrets (tokens/keys)
+        via redact.py before they land in the receipts DB. This is defense-in-depth
+        — it does not catch non-pattern PII (e.g. a raw card number), so callers
+        handling such data should pass a stricter redact_fn."""
         ev = "; ".join(getattr(o, "detail", str(o)) for o in (verdict.evidence or ()))
-        args_redacted = (redact_fn(record.args) if redact_fn
-                         else json.dumps(record.args, ensure_ascii=False))
+        raw = json.dumps(record.args, ensure_ascii=False)
+        args_redacted = redact_fn(raw) if redact_fn else _redact.redact(raw, {})
         rc = Receipt(nonce=record.nonce, capability=record.capability, approved=approved,
                      verdict=verdict.status, verdict_reason=verdict.reason, evidence=ev,
                      args_redacted=args_redacted, job_id=record.job_id,
                      leash_id=record.leash_id, fired=fired, created_at=int(time.time()))
+        params = (rc.nonce, rc.job_id, rc.capability, rc.args_redacted, rc.leash_id,
+                  int(approved), int(fired), rc.verdict, rc.verdict_reason, rc.evidence,
+                  rc.created_at)
+        return rc, params
+
+    def _write_receipt(self, record: ActionRecord, approved: bool, fired: bool,
+                       verdict: Verdict, redact_fn=None) -> Receipt:
+        rc, params = self._mk_receipt(record, approved, fired, verdict, redact_fn)
         with self._lock:
             self.db.execute(
                 """INSERT INTO receipts(nonce,job_id,capability,args_redacted,leash_id,
                      approved,fired,verdict,verdict_reason,evidence,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (rc.nonce, rc.job_id, rc.capability, rc.args_redacted, rc.leash_id,
-                 int(approved), int(fired), rc.verdict, rc.verdict_reason, rc.evidence,
-                 rc.created_at))
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""", params)
             self.db.commit()
         return rc
 
