@@ -82,6 +82,18 @@ def main():
     v4 = research._research_verify(type("R", (), {"args": {}})(), out4)
     check(v4.status != VERIFIED, "an empty answer is the only genuine miss")
 
+    print("test_hedged_no_info_is_failed_not_fabricated")
+    for noinfo in ("Sorry, I was unable to find any reliable information on this topic.",
+                   "Unfortunately, I couldn't find anything.",
+                   "抱歉，我没有找到相关信息。", "很遗憾，查不到这个产品。"):
+        o = research.run_research("q", runner=lambda q, n=noinfo: n)
+        v = research._research_verify(type("R", (), {"args": {}})(), o)
+        check(v.status != VERIFIED, f"a hedged no-info reply must NOT verify: {noinfo!r} -> {v.status}")
+    # a real answer that merely opens with 'Sorry' is not falsely failed
+    ok = research.run_research("q", runner=lambda q: "Sorry for the wait — buy it at RideCo.")
+    check(research._research_verify(type("R", (), {"args": {}})(), ok).status == VERIFIED,
+          "a real answer opening with 'Sorry' must still verify")
+
     print("test_registered_in_builtins")
     clear_registry(); caps.register_builtins()
     check(get_capability("research.web") is not None, "research.web must be registered")

@@ -99,9 +99,11 @@ def _fire_at(record, now: int) -> int:
     delay = record.args.get("delay_minutes")
     if delay is not None:
         try:
-            mins = min(max(1, int(float(delay))), 5_256_000)   # clamp to ~10y: no
-            return now + mins * 60                              # OverflowError into SQLite/datetime
-        except (TypeError, ValueError):
+            mins = min(max(1, int(float(delay))), 5_256_000)   # clamp to ~10y
+            return now + mins * 60
+        except (TypeError, ValueError, OverflowError):
+            # inf / 1e999 / "inf" -> int(float(...)) raises OverflowError (an
+            # ArithmeticError, NOT ValueError); fall through to the default below.
             pass
     at = str(record.args.get("at") or "")
     m = _HHMM.search(at)

@@ -36,8 +36,11 @@ _NOTE_PREFIX = re.compile(r"^\s*(记一下|记[:：]|备忘[:：]?|note[:：]?|t
 # a request only maps to note-taking when it actually asks to note something —
 # otherwise the heuristic must NOT silently write an un-doable request as a note.
 _NOTE_CUE = re.compile(
-    r"(记一下|记[:：]|记录|备忘|提醒我?|待办|清单|note|todo|jot|remember|remind|"
+    r"(记一下|记[:：]|记录|备忘|待办|清单|note|todo|jot|remember|"
     r"write (this |it )?down|save this|add to (my )?(list|todo))", re.I)
+# reminder words are routed to reminder.set FIRST, so they must NOT fall into the
+# note branch (that swallowed "remind me …" -> a note that never fires).
+_REMIND_CUE = re.compile(r"(提醒我?|叫我|remind me|wake me|set a (timer|alarm|reminder))", re.I)
 _JSON = re.compile(r"\{.*\}", re.S)
 
 
@@ -77,6 +80,14 @@ def _heuristic(text: str) -> dict:
     """No-model fallback. A clear note request -> note.append. EVERYTHING ELSE
     falls back to research.web — collie always does something useful (finds out
     how / where / whether) rather than refusing. No dead-ends, no 'I can't'."""
+    # reminders first — a timed request must schedule, never become a note
+    if get_capability("reminder.set") and _REMIND_CUE.search(text):
+        body = _NOTE_PREFIX.sub("", text).strip() or text.strip()
+        return {"capability": "reminder.set",
+                "args": {"text": body, "at": text},   # _fire_at finds any HH:MM in `at`
+                "goal": (body[:60] or "reminder"),
+                "leash": _leash_for("reminder.set"),
+                "source": "heuristic"}
     if get_capability("note.append") and _NOTE_CUE.search(text):
         body = _NOTE_PREFIX.sub("", text).strip() or text.strip()
         low = text.lower()

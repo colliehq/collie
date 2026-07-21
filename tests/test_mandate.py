@@ -112,6 +112,20 @@ def test_missing_required_arg_falls_back_not_garbage():
     check(plan["args"]["query"] == "找一下附近好吃的火锅", "full text preserved as query")
 
 
+def test_heuristic_routes_reminder_not_note():
+    print("test_heuristic_routes_reminder_not_note")
+    clear_registry(); caps.register_builtins()
+    # NO model (heuristic/out-of-box path): a reminder must schedule, not become a
+    # note that never fires (the round-3 blocker).
+    for t in ("remind me to take my meds at 20:00", "提醒我晚上八点吃药", "set a timer for 5 minutes"):
+        plan = mandate.compile(t, None)
+        check(plan["capability"] == "reminder.set",
+              f"heuristic must route {t!r} to reminder.set, got {plan['capability']}")
+    # a genuine note still routes to note.append
+    plan = mandate.compile("记一下 今晚买菜", None)
+    check(plan["capability"] == "note.append", "a real note still routes to note.append")
+
+
 def test_timing_only_reminder_not_misrouted():
     print("test_timing_only_reminder_not_misrouted")
     clear_registry(); caps.register_builtins()

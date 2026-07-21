@@ -30,8 +30,12 @@ _URL = re.compile(r"https?://[^\s)\]}>\"'，、。（）：；]+")   # also stop
 # present (and feeding its pages to the model) is a real exfiltration/injection
 # risk; authenticated-browser research belongs behind a confirm, not here.
 _RESEARCH_TOOLS = {"web_search", "web_fetch"}
-_NOINFO = re.compile(r"(?i)^(i\s+(couldn'?t|could not|was unable|can'?t)\s+find|"
-                     r"no\s+(information|results?|data)\b|n/?a\b|没有(找到|相关)|查不到)")
+_NOINFO = re.compile(
+    r"(?i)^\W*(?:(?:sorry|apolog\w*|unfortunately|regrettabl\w*|抱歉|遗憾|很遗憾)[\s,，、:：.\-]*)?"
+    r"(i\s+(?:couldn'?t|could\s+not|was\s+unable|am\s+unable|can'?t)\s+(?:to\s+)?find"
+    r"|(?:was\s+)?unable\s+to\s+find|couldn'?t\s+find"
+    r"|no\s+(?:information|results?|data)\b|n/?a\b"
+    r"|我?没有?(?:找到|相关|结果)|我?(?:找不到|没找到|查不到|无法找到))")
 
 _PROMPT = (
     "Research this and give a SHORT recommendation (a few sentences), then a "
