@@ -50,14 +50,14 @@ def test_model_path_maps_to_registered_capability():
     check(plan["source"] == "model", "source should be model")
 
 
-def test_unregistered_capability_falls_back():
-    print("test_unregistered_capability_falls_back")
+def test_unregistered_capability_falls_back_to_research():
+    print("test_unregistered_capability_falls_back_to_research")
     clear_registry(); caps.register_builtins()
     p = _Prov('{"capability":"email.send","args":{"to":"x"},"goal":"mail"}')
     plan = mandate.compile("email bob", p)          # email.send is NOT registered
-    # must not pass through an unregistered capability; heuristic handles the text
-    check(plan["capability"] in ("note.append", None),
-          f"unregistered cap must be rejected, got {plan['capability']}")
+    # never pass an unregistered capability, never refuse -> research is the catch-all
+    check(plan["capability"] == "research.web",
+          f"unregistered cap must fall back to research, got {plan['capability']}")
     check(plan.get("source") == "heuristic", "should fall back to heuristic")
 
 
@@ -77,13 +77,14 @@ def test_heuristic_todo_filename():
     check(plan["args"]["file"] == "todo.txt", "a todo request routes to todo.txt")
 
 
-def test_heuristic_refuses_non_note_honestly():
-    print("test_heuristic_refuses_non_note_honestly")
+def test_non_note_falls_back_to_research():
+    print("test_non_note_falls_back_to_research")
     clear_registry(); caps.register_builtins()
-    plan = mandate.compile("帮我订一张明天去北京的机票", None)   # no note cue, un-doable
-    check(plan["capability"] is None,
-          "an un-doable request must NOT be silently written as a note")
-    check("clarify" in plan and plan["clarify"], "it must say honestly it can't do that")
+    plan = mandate.compile("帮我订一张明天去北京的机票", None)   # no note cue
+    # collie never refuses: it researches how/where instead of a dead-end
+    check(plan["capability"] == "research.web",
+          f"a non-note request must fall back to research, got {plan['capability']}")
+    check(plan["args"]["query"] == "帮我订一张明天去北京的机票", "the request becomes the query")
 
 
 def test_bad_json_from_model_falls_back():

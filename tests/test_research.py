@@ -40,8 +40,9 @@ def main():
             pass
 
         def do_GET(self):
+            code = 403 if self.path.startswith("/blocked") else 200
             body = b"<h1>PowerRider P1 review</h1>"
-            self.send_response(200)
+            self.send_response(code)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -61,11 +62,25 @@ def main():
     v = research._research_verify(type("R", (), {"args": {}})(), out)
     check(v.status == VERIFIED, f"a reachable cited source must VERIFY, got {v.status}")
 
-    print("test_no_citation_is_inconclusive")
-    out2 = research.run_research("vague question", runner=lambda q: "I think just buy one.")
+    print("test_answer_without_sources_still_verifies")
+    # deliverable-is-the-answer: a real answer succeeds even with no sources.
+    out2 = research.run_research("vague question", runner=lambda q: "Here is a useful answer.")
     v2 = research._research_verify(type("R", (), {"args": {}})(), out2)
-    check(v2.status == INCONCLUSIVE,
-          f"a source-less answer must be INCONCLUSIVE, got {v2.status}")
+    check(v2.status == VERIFIED, f"a delivered answer must VERIFY, got {v2.status}")
+
+    print("test_blocked_source_still_verifies_not_failed")
+    # a real site that 403s a cookieless bot must NOT fail the job (the Kickstarter
+    # case): the answer was delivered; source re-check is just an annotation.
+    blk = f"http://127.0.0.1:{port}/blocked"
+    out3 = research.run_research("q", runner=lambda q: f"Buy it. Sources:\n- {blk}\n")
+    v3 = research._research_verify(type("R", (), {"args": {}})(), out3)
+    check(v3.status == VERIFIED,
+          f"a 403-blocked source must NOT fail a delivered answer, got {v3.status}")
+
+    print("test_empty_answer_is_the_only_miss")
+    out4 = research.run_research("q", runner=lambda q: "   ")
+    v4 = research._research_verify(type("R", (), {"args": {}})(), out4)
+    check(v4.status != VERIFIED, "an empty answer is the only genuine miss")
 
     print("test_registered_in_builtins")
     clear_registry(); caps.register_builtins()

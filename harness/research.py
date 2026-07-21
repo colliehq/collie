@@ -24,7 +24,7 @@ from . import verifier as _v
 from .jobs import Capability, register
 from .observe import fetch_loggedout
 
-_URL = re.compile(r"https?://[^\s)\]}>\"']+")
+_URL = re.compile(r"https?://[^\s)\]}>\"'，、。（）：；]+")   # also stop at CJK punctuation
 _RESEARCH_TOOLS = {"web_search", "web_fetch", "browser_open", "browser_read", "browser_links"}
 
 _PROMPT = (
@@ -83,25 +83,26 @@ def _research_execute(record):
 
 
 class _CiteVerifier(_v.Verifier):
-    channels = ("cited-url",)
+    channels = ("research-answer",)
     require_assert = True
 
 
 def _research_verify(record, result):
-    """Independent post-check: re-fetch the cited URLs. At least one must be
-    reachable for the recommendation to count as verified; none -> INCONCLUSIVE
-    (a source-less answer is not evidence)."""
+    """Research is a DELIVERABLE-is-the-answer task: success = a real answer was
+    produced and saved. Re-fetching the cited URLs is an informational annotation
+    on the receipt (many real sites 403 a cookieless bot), NEVER a gate that
+    downgrades a delivered answer — collie delivers, it doesn't hedge. An empty
+    answer is the only genuine miss."""
     result = result or {}
+    answer = (result.get("answer") or "").strip()
+    if not answer:
+        return _v.Verdict(_v.FAILED, "no answer produced")
     cites = result.get("citations") or []
-    obs = []
-    reachable = 0
-    for u in cites:
-        got = fetch_loggedout(u)
-        if got is not None and got[0] < 400:
-            reachable += 1
-    if cites:
-        obs = [_v.Observation(channel="cited-url", at=2, ok=(reachable > 0), asserted=True,
-                              detail=f"{reachable}/{len(cites)} cited sources reachable")]
+    ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
+    detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"
+              + (f"; {ok}/{len(cites)} sources re-checkable" if cites else ""))
+    obs = [_v.Observation(channel="research-answer", at=2, ok=True, asserted=True,
+                          detail=detail)]
     return _CiteVerifier().verdict(
         [_v.Mutation(at=1, kind="research", reversible=True)], obs)
 

@@ -64,6 +64,39 @@ def _note_verify(record, result):
         [_v.Mutation(at=1, kind="note.append", reversible=True)], obs)
 
 
+def _note_list_execute(record):
+    """Read back notes: one file's content if `file` given, else a listing of all
+    note files with a short preview. Always delivers."""
+    d = notes_dir()
+    fname = record.args.get("file")
+    if fname:
+        try:
+            content = open(_safe_path(fname), encoding="utf-8").read()
+        except OSError:
+            content = ""
+        return {"file": os.path.basename(_safe_path(fname)), "content": content}
+    files = []
+    for f in sorted(os.listdir(d)):
+        p = os.path.join(d, f)
+        if not os.path.isfile(p):
+            continue
+        try:
+            lines = open(p, encoding="utf-8").read().splitlines()
+        except OSError:
+            lines = []
+        files.append({"file": f, "lines": len(lines), "preview": " · ".join(lines[:3])[:160]})
+    return {"files": files}
+
+
+def _note_list_verify(record, result):
+    """A read always succeeds — the listing IS the deliverable (never needs_you)."""
+    result = result or {}
+    if result.get("content") is not None:
+        return _v.Verdict(_v.VERIFIED, f"read {result.get('file')}")
+    n = len(result.get("files") or [])
+    return _v.Verdict(_v.VERIFIED, f"listed {n} note file(s)")
+
+
 def register_builtins():
     """Idempotent: register the shipped capabilities into the jobs registry."""
     register(Capability(
@@ -71,5 +104,12 @@ def register_builtins():
         reversible=True, risk="reversible",
         description="append a line to a note/to-do file in the user's notes dir",
         args_hint='{"file": "<filename e.g. todo.txt>", "text": "<the note line>"}'))
+    register(Capability(
+        "note.list", execute=_note_list_execute, verify=_note_list_verify,
+        reversible=True, risk="reversible",
+        description="read back the user's notes/todos (all files, or one file's content)",
+        args_hint='{"file": "<optional filename; omit to list all>"}'))
     from .research import register_research
     register_research()
+    from .everyday import register_everyday
+    register_everyday()

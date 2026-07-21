@@ -55,10 +55,9 @@ def _leash_for(capability: str) -> dict:
 
 
 def _heuristic(text: str) -> dict:
-    """No-model fallback. Maps to note-taking ONLY when the request actually asks
-    to note/remember something; otherwise it says honestly that it can't do it,
-    rather than silently writing an un-doable request (e.g. 'book a flight') as a
-    note — the exact silent-wrong-completion failure the whole design rejects."""
+    """No-model fallback. A clear note request -> note.append. EVERYTHING ELSE
+    falls back to research.web — collie always does something useful (finds out
+    how / where / whether) rather than refusing. No dead-ends, no 'I can't'."""
     if get_capability("note.append") and _NOTE_CUE.search(text):
         body = _NOTE_PREFIX.sub("", text).strip() or text.strip()
         low = text.lower()
@@ -69,10 +68,14 @@ def _heuristic(text: str) -> dict:
                 "goal": (body[:60] or "take a note"),
                 "leash": _leash_for("note.append"),
                 "source": "heuristic"}
+    if get_capability("research.web"):
+        return {"capability": "research.web",
+                "args": {"query": text},
+                "goal": text[:60] or "research",
+                "leash": _leash_for("research.web"),
+                "source": "heuristic"}
     return {"capability": None,
-            "clarify": "我现在只会记笔记(试试「记一下 …」)。发邮件、订票、挂单这类真能力还没接上——"
-                       "接上前我不会假装做了。",
-            "source": "heuristic"}
+            "clarify": "no capabilities are registered", "source": "heuristic"}
 
 
 def _parse(txt: str):
@@ -106,9 +109,8 @@ def compile(text: str, provider=None) -> dict:
                             "goal": plan.get("goal") or text[:60],
                             "leash": _leash_for(cap),
                             "source": "model"}
-                if plan and cap is None and plan.get("clarify"):
-                    return {"capability": None, "clarify": plan["clarify"], "source": "model"}
-                # model picked an unregistered capability -> fall through to heuristic
+                # model returned null or an unregistered capability -> fall through
+                # to the heuristic, which routes anything to research (never refuse)
         except Exception:
             pass
     return _heuristic(text)
