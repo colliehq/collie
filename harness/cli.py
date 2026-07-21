@@ -570,8 +570,10 @@ def cmd_jobs(args):
                 print('usage: collie jobs ask "记一下 今晚买菜"'); return 1
             prov = None
             try:
+                from . import settings as _st
                 from .providers import make_provider
-                prov = make_provider(_settings.get("PROVIDER"), _settings.get("MODEL"))
+                _st.apply()
+                prov = make_provider(_st.get("PROVIDER"), _st.get("MODEL"))
             except Exception:
                 pass
             plan = mandate.compile(text, prov)
