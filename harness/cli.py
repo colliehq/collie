@@ -560,6 +560,32 @@ def cmd_jobs(args):
             print("catch-up: fired %d due wait(s); %d still pending"
                   % (fired, len(sched.pending_waits())))
             sched.close()
+        elif args.action == "ask":
+            # natural language -> compile to a job -> drive it
+            from . import mandate
+            from .jobs import Executor
+            import secrets as _s2
+            text = (args.text + (" " + args.jargs if args.jargs else "")).strip()
+            if not text:
+                print('usage: collie jobs ask "记一下 今晚买菜"'); return 1
+            prov = None
+            try:
+                from .providers import make_provider
+                prov = make_provider(_settings.get("PROVIDER"), _settings.get("MODEL"))
+            except Exception:
+                pass
+            plan = mandate.compile(text, prov)
+            if not plan.get("capability"):
+                print("🤔 " + (plan.get("clarify") or "not sure what to do")); return 0
+            print("understood → %s %s" % (plan["capability"], plan.get("args")))
+            jid = "job-" + _s2.token_hex(4)
+            jobs.create(jid, plan.get("goal") or text, leash=plan.get("leash") or {})
+            nonce = acts.propose(plan["capability"], plan.get("args") or {}, job_id=jid)
+            try:
+                v = Executor(acts, jobs).drive(nonce)
+                print("→ %s: %s   [job %s]" % (v.status, v.reason, jobs.get(jid).state))
+            except RefusedError as e:
+                print("refused: %s" % e)
         elif args.action == "web":
             # the delegation-first dashboard (Today / Inbox / Receipts).
             from .jobsweb import serve
@@ -946,7 +972,8 @@ def main(argv=None):
     # jobs: the delegate surface — list jobs, confirm gated actions, read receipts.
     pj = sub.add_parser("jobs", help="delegated work: ls | inbox | run <cap> | confirm <nonce> | receipts")
     pj.add_argument("action",
-                    choices=["ls", "inbox", "run", "confirm", "receipts", "wake", "daemon", "web"])
+                    choices=["ls", "inbox", "ask", "run", "confirm", "receipts",
+                             "wake", "daemon", "web"])
     pj.add_argument("text", nargs="?", default="",
                     help="nonce (confirm/receipts) or capability name (run)")
     pj.add_argument("jargs", nargs="?", default="", help="JSON args for `run`")

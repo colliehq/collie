@@ -1,0 +1,109 @@
+"""Pin the natural-language mandate compiler (harness.mandate).
+
+Run: python tests/test_mandate.py   (exit 0 = all green)
+
+Covers the model path (a scripted provider returns JSON), validation (an
+unregistered capability from the model is rejected -> heuristic), and the
+no-model heuristic (a note request maps to note.append; junk asks to clarify).
+"""
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+os.environ["COLLIE_NOTES_DIR"] = tempfile.mkdtemp(prefix="collie-mand-")
+
+from harness import mandate  # noqa: E402
+from harness.jobs import clear_registry  # noqa: E402
+from harness import capabilities as caps  # noqa: E402
+
+_fails = []
+
+
+def check(cond, msg):
+    if not cond:
+        _fails.append(msg)
+        print("  FAIL:", msg)
+
+
+class _Prov:
+    def __init__(self, text):
+        self._t = text
+
+    def complete(self, system, messages, tools, on_text=None):
+        class C:
+            stop_reason = "end_turn"
+        c = C(); c.text = self._t
+        return c
+
+
+def test_model_path_maps_to_registered_capability():
+    print("test_model_path_maps_to_registered_capability")
+    clear_registry(); caps.register_builtins()
+    p = _Prov('{"capability":"note.append","args":{"file":"todo.txt","text":"buy milk"},'
+              '"goal":"remember milk"}')
+    plan = mandate.compile("remind me to buy milk", p)
+    check(plan["capability"] == "note.append", "model plan must select note.append")
+    check(plan["args"]["text"] == "buy milk", "args must carry through")
+    check(plan["leash"] == {"may": ["note.*"]}, "leash must be scoped to the family")
+    check(plan["source"] == "model", "source should be model")
+
+
+def test_unregistered_capability_falls_back():
+    print("test_unregistered_capability_falls_back")
+    clear_registry(); caps.register_builtins()
+    p = _Prov('{"capability":"email.send","args":{"to":"x"},"goal":"mail"}')
+    plan = mandate.compile("email bob", p)          # email.send is NOT registered
+    # must not pass through an unregistered capability; heuristic handles the text
+    check(plan["capability"] in ("note.append", None),
+          f"unregistered cap must be rejected, got {plan['capability']}")
+    check(plan.get("source") == "heuristic", "should fall back to heuristic")
+
+
+def test_heuristic_note_when_no_provider():
+    print("test_heuristic_note_when_no_provider")
+    clear_registry(); caps.register_builtins()
+    plan = mandate.compile("记一下 今晚买菜记得带伞", None)
+    check(plan["capability"] == "note.append", "a note request maps to note.append offline")
+    check("买菜" in plan["args"]["text"], "the note text is extracted")
+    check("记一下" not in plan["args"]["text"], "the leading prefix is stripped")
+
+
+def test_heuristic_todo_filename():
+    print("test_heuristic_todo_filename")
+    clear_registry(); caps.register_builtins()
+    plan = mandate.compile("add to my todo list: call the dentist", None)
+    check(plan["args"]["file"] == "todo.txt", "a todo request routes to todo.txt")
+
+
+def test_heuristic_refuses_non_note_honestly():
+    print("test_heuristic_refuses_non_note_honestly")
+    clear_registry(); caps.register_builtins()
+    plan = mandate.compile("帮我订一张明天去北京的机票", None)   # no note cue, un-doable
+    check(plan["capability"] is None,
+          "an un-doable request must NOT be silently written as a note")
+    check("clarify" in plan and plan["clarify"], "it must say honestly it can't do that")
+
+
+def test_bad_json_from_model_falls_back():
+    print("test_bad_json_from_model_falls_back")
+    clear_registry(); caps.register_builtins()
+    plan = mandate.compile("记一下 明天开会", _Prov("sorry I only speak prose"))
+    check(plan["capability"] == "note.append" and plan["source"] == "heuristic",
+          "unparseable model output must fall back to the heuristic")
+
+
+def main():
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+    clear_registry()
+    if _fails:
+        print(f"\n== MANDATE: {len(_fails)} FAILED ==")
+        sys.exit(1)
+    print(f"\n== MANDATE: {len(tests)} test groups passed ==")
+
+
+if __name__ == "__main__":
+    main()

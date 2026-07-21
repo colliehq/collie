@@ -76,6 +76,8 @@ class Capability:
     reversible: bool = False
     risk: str = "irreversible"
     compensate: object = None             # optional fn(ActionRecord) -> None
+    description: str = ""                 # for the natural-language compiler (mandate.py)
+    args_hint: str = ""                   # e.g. '{"file": name, "text": the note}'
 
 
 _REGISTRY: dict = {}
@@ -88,6 +90,10 @@ def register(cap: Capability):
 
 def get_capability(name: str) -> Capability:
     return _REGISTRY.get(name)
+
+
+def all_capabilities():
+    return list(_REGISTRY.values())
 
 
 def clear_registry():

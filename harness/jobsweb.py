@@ -24,6 +24,24 @@ from .jobs import Executor, JobStore
 
 _HDR = "X-Collie-Jobs"
 
+_PROV = {"built": False, "p": None}
+
+
+def _provider():
+    """The configured model provider for the mandate compiler, built once and
+    cached. Returns None if it can't be built — the compiler then uses its
+    no-model heuristic, so the NL box still works offline."""
+    if not _PROV["built"]:
+        _PROV["built"] = True
+        try:
+            from . import settings as _s
+            from .providers import make_provider
+            _s.apply()
+            _PROV["p"] = make_provider(_s.get("PROVIDER"), _s.get("MODEL"))
+        except Exception:
+            _PROV["p"] = None
+    return _PROV["p"]
+
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
 <title>collie · delegate</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -55,12 +73,17 @@ input.grow{flex:1;min-width:120px}
 </style></head><body>
 <header><h1>collie · delegate</h1><span class="sub" id="sub">loading…</span></header>
 <main>
-<section><h2>Run a job</h2>
+<section><h2>Tell collie what to do</h2>
+<form class="run" id="askf">
+<input class="grow" id="ask" placeholder="e.g. 记一下 今晚买菜记得带伞" autofocus>
+<button>Go</button></form>
+<div class="ev" id="askout"></div></section>
+<section><h2>…or run a capability directly</h2>
 <form class="run" id="runf">
 <input id="cap" value="note.append" title="capability">
 <input class="grow" id="args" value='{"file":"todo.txt","text":"buy milk"}' title="JSON args">
 <input id="leash" value='{"may":["note.*"]}' title="leash JSON" size="18">
-<button>Run</button></form></section>
+<button class="ghost">Run</button></form></section>
 <section><h2>Inbox — needs you</h2><div id="inbox"></div></section>
 <section><h2>Today — jobs</h2><div id="jobs"></div></section>
 <section><h2>Receipts</h2><div id="receipts"></div></section>
@@ -94,6 +117,15 @@ async function load(){
   <div class="ev">${esc(r.evidence||r.verdict_reason||'')}</div></div>${pill(r.verdict)}`;rc.appendChild(el);});
  if(!rc.children.length)rc.innerHTML='<div class="empty">no receipts yet</div>';
 }
+document.getElementById('askf').onsubmit=async e=>{e.preventDefault();
+ const box=document.getElementById('ask');const t=box.value.trim();if(!t)return;
+ const out=document.getElementById('askout');out.textContent='thinking…';
+ const r=await post('/api/ask',{text:t});
+ const p=r.interpreted||{};
+ if(!p.capability){out.textContent='🤔 '+(r.message||p.clarify||'not sure what you mean');return;}
+ out.innerHTML=`understood → <b>${esc(p.capability)}</b> ${esc(JSON.stringify(p.args))} `
+  +`<span class="pill ${esc(r.status||'')}">${esc(r.status||'')}</span> ${esc(r.reason||'')}`;
+ box.value='';flash(r.status?`${r.status}: ${r.reason||''}`:(r.error||'done'));load();};
 document.getElementById('runf').onsubmit=async e=>{e.preventDefault();
  let args,leash;try{args=JSON.parse(document.getElementById('args').value||'{}');leash=JSON.parse(document.getElementById('leash').value||'{}');}
  catch(err){flash('bad JSON: '+err.message);return;}
@@ -155,6 +187,8 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
                 body = json.loads(self.rfile.read(n) or b"{}")
             except Exception:
                 self._json(400, {"error": "bad json"}); return
+            if self.path.startswith("/api/ask"):
+                self._json(200, self._ask(body)); return
             if self.path.startswith("/api/confirm"):
                 self._json(200, self._confirm(body)); return
             if self.path.startswith("/api/run"):
@@ -192,6 +226,32 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
                     return {"status": v.status, "reason": v.reason}
                 except RefusedError as e:
                     return {"error": str(e)}
+            finally:
+                acts.close(); jobs.close()
+
+        def _ask(self, body):
+            """Natural language -> compile to a job -> drive it. Shows the chosen
+            interpretation so the user can see (and, being a job, undo) it."""
+            import secrets
+            from . import mandate
+            text = (body or {}).get("text", "").strip()
+            if not text:
+                return {"interpreted": {}, "message": "say something"}
+            plan = mandate.compile(text, _provider())
+            if not plan.get("capability"):
+                return {"interpreted": plan, "message": plan.get("clarify")
+                        or "not sure what to do"}
+            acts, jobs = self._stores()
+            try:
+                jid = "job-" + secrets.token_hex(4)
+                jobs.create(jid, plan.get("goal") or text, leash=plan.get("leash") or {})
+                nonce = acts.propose(plan["capability"], plan.get("args") or {}, job_id=jid)
+                try:
+                    v = Executor(acts, jobs).drive(nonce)
+                    return {"interpreted": plan, "status": v.status, "reason": v.reason,
+                            "job_id": jid}
+                except RefusedError as e:
+                    return {"interpreted": plan, "error": str(e), "job_id": jid}
             finally:
                 acts.close(); jobs.close()
 

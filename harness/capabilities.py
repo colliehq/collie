@@ -66,5 +66,8 @@ def _note_verify(record, result):
 
 def register_builtins():
     """Idempotent: register the shipped capabilities into the jobs registry."""
-    register(Capability("note.append", execute=_note_execute, verify=_note_verify,
-                        reversible=True, risk="reversible"))
+    register(Capability(
+        "note.append", execute=_note_execute, verify=_note_verify,
+        reversible=True, risk="reversible",
+        description="append a line to a note/to-do file in the user's notes dir",
+        args_hint='{"file": "<filename e.g. todo.txt>", "text": "<the note line>"}'))
