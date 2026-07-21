@@ -71,3 +71,5 @@ def register_builtins():
         reversible=True, risk="reversible",
         description="append a line to a note/to-do file in the user's notes dir",
         args_hint='{"file": "<filename e.g. todo.txt>", "text": "<the note line>"}'))
+    from .research import register_research
+    register_research()
