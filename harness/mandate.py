@@ -65,7 +65,12 @@ def _args_ok(capability: str, args: dict) -> bool:
     req = _REQUIRED_ARG.get(capability)
     if not req:
         return True
-    return bool(str((args or {}).get(req) or "").strip())
+    # must be a real non-empty STRING — mirror the executor's own validity test.
+    # str()-coercing a list/number here would pass the gate but then _note_text
+    # coerces it to "" at execute -> a no-op note dead-ended as FAILED, skipping
+    # the research fallback. A non-string arg now falls through to the heuristic.
+    val = (args or {}).get(req)
+    return isinstance(val, str) and bool(val.strip())
 
 
 def _leash_for(capability: str) -> dict:

@@ -126,6 +126,18 @@ def test_heuristic_routes_reminder_not_note():
     check(plan["capability"] == "note.append", "a real note still routes to note.append")
 
 
+def test_non_string_arg_falls_back_not_deadend():
+    print("test_non_string_arg_falls_back_not_deadend")
+    clear_registry(); caps.register_builtins()
+    # model renders note.append with a LIST text -> must not be admitted (it would
+    # no-op + dead-end as FAILED); falls back to a working job with the full text.
+    p = _Prov('{"capability":"note.append","args":{"file":"todo.txt","text":["buy milk","eggs"]}}')
+    plan = mandate.compile("add buy milk and eggs to my todo", p)
+    ok = (plan["capability"] == "note.append" and isinstance(plan["args"].get("text"), str)
+          and plan["args"]["text"].strip()) or plan["capability"] == "research.web"
+    check(ok, f"a non-string arg must fall back to a working job, got {plan}")
+
+
 def test_timing_only_reminder_not_misrouted():
     print("test_timing_only_reminder_not_misrouted")
     clear_registry(); caps.register_builtins()
