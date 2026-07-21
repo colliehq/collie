@@ -32,7 +32,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .actions import ActionStore, EXECUTED, RefusedError
+from . import leash as _leash
+from .actions import ActionStore, EXECUTED, PENDING, RefusedError
 from .verifier import FAILED, INCONCLUSIVE, NOT_ARMED, VERIFIED, Verdict
 
 QUEUED = "queued"
@@ -192,6 +193,39 @@ class Executor:
         else:  # INCONCLUSIVE — fired but could not confirm; a human must look
             self.jobs.set_state(tgt, NEEDS_YOU, reason)
 
+    def drive(self, nonce: str, redact_fn=None, unchanged_fn=None) -> Verdict:
+        """Autonomous entry: evaluate the leash and act accordingly, so a
+        reversible in-scope action runs with no human, while an irreversible one
+        stops for a confirm token.
+
+          DENY  -> refuse (never executes)
+          ASK   -> irreversible: if not yet confirmed, park the job in needs_you
+                   and DON'T execute (returns INCONCLUSIVE 'awaiting confirm');
+                   once a human has confirmed, execute.
+          ALLOW -> reversible & in scope: host auto-approves (the leash IS the
+                   authority) and executes — no human in the loop.
+        """
+        rec = self.actions.get(nonce)
+        if not rec:
+            raise RefusedError("unknown nonce")
+        cap = get_capability(rec.capability)
+        if not cap:
+            raise RefusedError(f"no registered capability {rec.capability!r}")
+        tgt = rec.job_id
+        job = self.jobs.get(tgt) if tgt else None
+        dec = _leash.evaluate(job.leash if job else {}, rec.capability, cap.risk)
+        if dec.denied:
+            raise RefusedError(f"leash denied: {dec.reason}")
+        cur = self.actions.get(nonce)
+        if dec.decision == _leash.ASK and cur.state == PENDING:
+            if tgt:
+                self.jobs.set_state(tgt, NEEDS_YOU, "awaiting confirm for irreversible action")
+            return Verdict(INCONCLUSIVE, "awaiting human confirm (irreversible)")
+        if cur.state == PENDING and dec.decision == _leash.ALLOW:
+            self.actions.confirm(nonce)          # host auto-approve: leash-authorized reversible
+        return self.run_confirmed(nonce, job_id=tgt, redact_fn=redact_fn,
+                                  unchanged_fn=unchanged_fn)
+
     def run_confirmed(self, nonce: str, job_id: str = "", redact_fn=None,
                       unchanged_fn=None) -> Verdict:
         rec = self.actions.get(nonce)
@@ -203,6 +237,14 @@ class Executor:
         # self-bind to the action's own job so a caller cannot mis-attribute the
         # verdict to a different job (falls back to the passed job_id).
         tgt = rec.job_id or job_id
+        # leash gate: a DENY blocks execution even for a confirmed action — the
+        # human's confirm answers ASK (irreversible), it does not override an
+        # out-of-scope capability or an expired/over-budget leash.
+        job = self.jobs.get(tgt) if tgt else None
+        if job:
+            dec = _leash.evaluate(job.leash, rec.capability, cap.risk)
+            if dec.denied:
+                raise RefusedError(f"leash denied: {dec.reason}")
         try:
             receipt = self.actions.execute(
                 nonce,

@@ -484,6 +484,8 @@ def cmd_jobs(args):
     the model never executes here."""
     from .actions import ActionStore, RefusedError
     from .jobs import JobStore, Executor, NEEDS_YOU
+    from . import capabilities as _caps
+    _caps.register_builtins()          # make shipped capabilities executable here
     d = _state_dir()
     acts = ActionStore(os.path.join(d, "actions.db"))
     jobs = JobStore(os.path.join(d, "jobs.db"))
@@ -526,6 +528,38 @@ def cmd_jobs(args):
             except RefusedError as e:
                 print("not executed here (%s)." % e)
                 print("a runner with the capability loaded will execute it.")
+        elif args.action == "run":
+            # collie jobs run <capability> '<json-args>' — create a job, propose the
+            # action, and DRIVE it: a reversible in-scope capability runs live and
+            # verifies; an irreversible one parks in needs_you awaiting confirm.
+            import json as _json
+            cap = args.text
+            if not cap:
+                print("usage: collie jobs run <capability> '<json-args>' [--goal ...]"); return 1
+            try:
+                cap_args = _json.loads(args.jargs) if args.jargs else {}
+            except _json.JSONDecodeError as e:
+                print("bad json args: %s" % e); return 1
+            import secrets as _s
+            jid = "job-" + _s.token_hex(4)
+            jobs.create(jid, args.goal or cap, leash=_json.loads(args.leash) if args.leash else {})
+            nonce = acts.propose(cap, cap_args, job_id=jid)
+            print("job %s  proposed %s (%s)" % (jid, cap, nonce[:12]))
+            try:
+                v = Executor(acts, jobs).drive(nonce)
+                print("→ %s: %s   [job %s]" % (v.status, v.reason, jobs.get(jid).state))
+            except RefusedError as e:
+                print("refused: %s" % e)
+        elif args.action == "wake":
+            # catch-up-on-wake: fire every overdue wait now (what the daemon does
+            # on start / each tick). Durable waits survive restart; this drains them.
+            from .scheduler import Scheduler
+            import time as _t
+            sched = Scheduler(acts, jobs, db_path=os.path.join(d, "jobs.db"))
+            fired = sched.tick(int(_t.time()))
+            print("catch-up: fired %d due wait(s); %d still pending"
+                  % (fired, len(sched.pending_waits())))
+            sched.close()
         elif args.action == "receipts":
             rows = acts.receipts(args.text or None)
             if not rows:
@@ -894,9 +928,13 @@ def main(argv=None):
     pm.set_defaults(fn=cmd_mem)
 
     # jobs: the delegate surface — list jobs, confirm gated actions, read receipts.
-    pj = sub.add_parser("jobs", help="delegated work: ls | inbox | confirm <nonce> | receipts [nonce]")
-    pj.add_argument("action", choices=["ls", "inbox", "confirm", "receipts"])
-    pj.add_argument("text", nargs="?", default="", help="nonce (for confirm / receipts filter)")
+    pj = sub.add_parser("jobs", help="delegated work: ls | inbox | run <cap> | confirm <nonce> | receipts")
+    pj.add_argument("action", choices=["ls", "inbox", "run", "confirm", "receipts", "wake"])
+    pj.add_argument("text", nargs="?", default="",
+                    help="nonce (confirm/receipts) or capability name (run)")
+    pj.add_argument("jargs", nargs="?", default="", help="JSON args for `run`")
+    pj.add_argument("--goal", default="", help="job goal text (run)")
+    pj.add_argument("--leash", default="", help="job leash as JSON (run)")
     pj.set_defaults(fn=cmd_jobs)
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally

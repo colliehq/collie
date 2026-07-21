@@ -30,16 +30,46 @@ irreversible action itself.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
 import sqlite3
+import stat
 import threading
 import time
 from dataclasses import dataclass, field
 
 from . import redact as _redact
 from .verifier import INCONCLUSIVE, Verdict
+
+
+def _load_or_create_key(keyfile: str) -> bytes:
+    """The action-integrity secret, held OUTSIDE the state DB (0600 file). A
+    DB-write attacker cannot forge a valid MAC without also reading this file, so
+    binding actions with HMAC(key, …) is real integrity, not the recomputable
+    plain-SHA256 it replaces. Generated once, persisted, reused across restarts."""
+    try:
+        with open(keyfile, "rb") as f:
+            k = f.read().strip()
+            if len(k) >= 32:
+                return k
+    except FileNotFoundError:
+        pass
+    k = secrets.token_hex(32).encode()
+    d = os.path.dirname(keyfile)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    fd = os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, k)
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(keyfile, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    return k
 
 # action lifecycle
 PENDING = "pending"      # materialized, awaiting human confirm
@@ -54,18 +84,16 @@ def _j(o) -> str:
     return json.dumps(o or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _digest(capability: str, args: dict, leash_id: str = "", job_id: str = "",
-            risk: str = "", snapshot: dict = None) -> str:
-    """Bind the payload AND its authority-bearing fields (leash, job, risk,
-    snapshot), so tampering any of them after propose is caught at execute.
-
-    Honest limit: this is a plain SHA-256 — an attacker who can write the DB can
-    recompute it. Real integrity needs an HMAC keyed by a secret held OUTSIDE the
-    state DB (env/keyring); that is the intended follow-up. Widening the digest is
-    cheap defense-in-depth that catches naive/partial tampers today."""
+def _mac(key: bytes, capability: str, args: dict, leash_id: str = "", job_id: str = "",
+         risk: str = "", snapshot: dict = None) -> str:
+    """HMAC over the payload AND its authority-bearing fields (leash, job, risk,
+    snapshot). Tampering any of them after propose is caught at execute, and —
+    because the key lives outside the DB (see _load_or_create_key) — a DB-write
+    attacker cannot recompute a valid MAC. This is real integrity, replacing the
+    earlier recomputable plain digest."""
     payload = "\x00".join([capability, _j(args), leash_id or "", job_id or "",
                            risk or "", _j(snapshot)])
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 @dataclass
@@ -111,6 +139,7 @@ class ActionStore:
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
+        self._key = _load_or_create_key(path + ".key")
         self.db = sqlite3.connect(path, timeout=30, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self._lock = threading.Lock()
@@ -152,7 +181,7 @@ class ActionStore:
                      decided_at,executed_at,attempted_at,refuse_reason)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,0,'')""",
                 (nonce, job_id, capability, json.dumps(args or {}, ensure_ascii=False),
-                 _digest(capability, args, leash_id, job_id, risk, snapshot), risk, leash_id,
+                 _mac(self._key, capability, args, leash_id, job_id, risk, snapshot), risk, leash_id,
                  json.dumps(snapshot or {}, ensure_ascii=False), PENDING,
                  now, now + int(ttl_s)))
             self.db.commit()
@@ -213,10 +242,11 @@ class ActionStore:
                 raise RefusedError(f"not approved for execution (state={r['state']})")
             # payload binding: capability/args AND authority fields must be intact
             args = json.loads(r["args_json"] or "{}")
-            if _digest(r["capability"], args, r["leash_id"], r["job_id"], r["risk"],
-                       json.loads(r["snapshot_json"] or "{}")) != r["digest"]:
-                self._refuse(nonce, "payload digest mismatch (tampered)", now)
-                raise RefusedError("payload digest mismatch (tampered)")
+            expect = _mac(self._key, r["capability"], args, r["leash_id"], r["job_id"],
+                          r["risk"], json.loads(r["snapshot_json"] or "{}"))
+            if not hmac.compare_digest(expect, r["digest"] or ""):
+                self._refuse(nonce, "payload MAC mismatch (tampered)", now)
+                raise RefusedError("payload MAC mismatch (tampered)")
             # single-use latch + durable attempt marker in ONE txn: atomically
             # claim APPROVED -> EXECUTING and stamp attempted_at. A second
             # concurrent/duplicate execute sees a non-APPROVED row and is refused,

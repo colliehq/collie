@@ -18,6 +18,9 @@ if $PY tests/test_verifier.py >/dev/null 2>&1; then echo "  verifier OK"; else e
 if $PY tests/test_observe.py >/dev/null 2>&1; then echo "  observe (real-socket e2e) OK"; else echo "  observe FAIL"; rc=1; fi
 if $PY tests/test_actions.py >/dev/null 2>&1; then echo "  actions (confirm/executor/receipt) OK"; else echo "  actions FAIL"; rc=1; fi
 if $PY tests/test_jobs.py >/dev/null 2>&1; then echo "  jobs (lifecycle/registry/executor) OK"; else echo "  jobs FAIL"; rc=1; fi
+if $PY tests/test_leash.py >/dev/null 2>&1; then echo "  leash (authority allow/ask/deny) OK"; else echo "  leash FAIL"; rc=1; fi
+if $PY tests/test_capabilities.py >/dev/null 2>&1; then echo "  capabilities (note.append live e2e) OK"; else echo "  capabilities FAIL"; rc=1; fi
+if $PY tests/test_scheduler.py >/dev/null 2>&1; then echo "  scheduler (durable wait/catch-up) OK"; else echo "  scheduler FAIL"; rc=1; fi
 if $PY tests/test_cli_jobs.py >/dev/null 2>&1; then echo "  cli jobs (inbox/confirm/receipts) OK"; else echo "  cli jobs FAIL"; rc=1; fi
 
 echo "── model catalog + codex provider (offline) ─────────────"
