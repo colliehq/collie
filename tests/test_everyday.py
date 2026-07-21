@@ -269,6 +269,25 @@ def test_none_note_is_failed():
     check(v.status == FAILED, "a None note must FAIL, never fabricate (str(None)='None')")
 
 
+def test_webfetch_dns_pin_fails_closed():
+    print("test_webfetch_dns_pin_fails_closed")
+    import socket
+    from harness import webfetch as wf
+    wf._pin.host, wf._pin.infos = "example.com", [(2, 1, 6, "", ("93.184.216.34", 80))]
+    try:
+        # a mixed-case SAME host must match the pin (no second, un-vetted lookup)
+        check(wf._pinned_getaddrinfo("ExAmPle.COM", None) == wf._pin.infos,
+              "mixed-case same host must match the pin")
+        # a DIFFERENT host during a pinned fetch must FAIL CLOSED (DNS-rebinding)
+        try:
+            wf._pinned_getaddrinfo("evil.attacker.com", None)
+            check(False, "a rebind host must be refused, not re-resolved")
+        except socket.gaierror:
+            pass
+    finally:
+        wf._pin.host, wf._pin.infos = None, None
+
+
 def test_registered():
     print("test_registered")
     clear_registry(); caps.register_builtins()

@@ -64,8 +64,16 @@ _orig_getaddrinfo = socket.getaddrinfo
 
 def _pinned_getaddrinfo(host, *a, **k):
     infos = getattr(_pin, "infos", None)
-    if infos is not None and getattr(_pin, "host", None) == host:
-        return infos
+    if infos is not None:
+        # case-INSENSITIVE compare + FAIL CLOSED: urllib passes the original-case
+        # host to the connect-time lookup, but parsed.hostname pinned a lowercased
+        # one — a mixed-case host ("ExAmPle.COM") missed the pin and fell through
+        # to a SECOND, un-vetted resolution, reopening DNS-rebinding (a rebind could
+        # answer the connect lookup with 169.254.169.254 / 127.0.0.1). Once pinned,
+        # any unexpected host is refused, never re-resolved.
+        if str(host).lower() == getattr(_pin, "host", None):
+            return infos
+        raise socket.gaierror("SSRF: unexpected host %r during a pinned fetch" % (host,))
     return _orig_getaddrinfo(host, *a, **k)
 
 
@@ -118,7 +126,7 @@ def _open_pinned(url, timeout, max_hops=4):
             raise ValueError("refusing a loopback/private/link-local address (%s)" % host)
         req = urllib.request.Request(cur, headers={"User-Agent": _UA,
                                                    "Accept": "text/html,text/plain,*/*"})
-        _pin.host, _pin.infos = host, infos
+        _pin.host, _pin.infos = host.lower(), infos   # pin lowercased (see _pinned_getaddrinfo)
         try:
             resp = _NO_REDIRECT_OPENER.open(req, timeout=timeout)
         except urllib.error.HTTPError as e:
