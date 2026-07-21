@@ -53,11 +53,16 @@ _NOINFO = re.compile(
     r")")
 
 _PROMPT = (
-    "Research this and give a SHORT recommendation (a few sentences), then a "
-    "markdown list of 2-4 source URLs under a final 'Sources:' line. Use web_search "
-    "and web_fetch. Do NOT edit or write files. If your search turns up nothing "
-    "useful, reply with EXACTLY the single token NOFINDINGS and nothing else. "
-    "Question: ")
+    "Research this and give the MOST USEFUL answer you can, grounded in real sources. "
+    "Give a SHORT recommendation (a few sentences). If you cannot fully resolve it — "
+    "you don't know the user's exact location, or real-time data (today's "
+    "availability, live prices) isn't on the open web — do NOT give up: still provide "
+    "the best actionable guidance (the right official tool/directory to use, the major "
+    "relevant options, and how to get the rest), and say what you'd need (e.g. a city "
+    "or zip). Then a markdown list of 2-4 real source URLs under a final line starting "
+    "'Sources:'. Use web_search and web_fetch. Do NOT edit or write files. Reply with "
+    "EXACTLY the single token NOFINDINGS only if the open web has nothing relevant at "
+    "all. Question: ")
 
 
 def _notes_dir() -> str:
@@ -152,7 +157,8 @@ def _research_verify(record, result):
     # a "Sources:" section — a prose non-finding with a bare URL ("Nothing turned
     # up. https://x") has no Sources block. _NOINFO is a narrowed phrase backstop.
     if (not answer or answer.strip().upper().startswith("NOFINDINGS")
-            or not cites or not re.search(r"(?im)^\s*sources?\s*:", answer)
+            or not cites
+            or not re.search(r"(?im)^\s*(?:sources?|来源|参考(?:资料|链接)?)\s*[:：]", answer)
             or _NOINFO.match(answer)):
         return _v.Verdict(_v.FAILED, "no sourced answer produced")
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))

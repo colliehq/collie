@@ -115,6 +115,12 @@ def main():
         v = research._research_verify(type("R", (), {"args": {}})(), o)
         check(v.status == VERIFIED, f"a real sourced answer must VERIFY: {good[:34]!r} -> {v.status}")
 
+    print("test_chinese_sources_header_verifies")
+    # a real answer that labels sources in Chinese ("来源:") must verify too
+    o = research.run_research("q", runner=lambda q: f"用 VSP 官方 Find a Doctor 工具查找合作诊所。\n\n来源：\n- {src}\n")
+    check(research._research_verify(type("R", (), {"args": {}})(), o).status == VERIFIED,
+          "a Chinese-labelled '来源:' sourced answer must VERIFY")
+
     print("test_blocked_source_still_verifies_not_failed")
     # a real site that 403s a cookieless bot must NOT fail the job (the Kickstarter
     # case): the answer was delivered; source re-check is just an annotation.
