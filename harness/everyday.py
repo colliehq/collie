@@ -23,23 +23,28 @@ def _provider():
     return make_provider(_s.get("PROVIDER"), _s.get("MODEL"))
 
 
+_OUT_FENCE = re.compile(r"<<<OUT>>>(.*?)<<<END>>>", re.S)
+
+
 def _ask(system: str, user: str, provider=None) -> str:
-    """Ask the model, with a refusal SENTINEL so a decline collapses to empty ->
-    the caller's done-check reports FAILED, never a fabricated success. We use a
-    sentinel token (not a refusal-phrase regex): translating "I'm sorry"
-    legitimately yields "I'm sorry", so only an explicit CANNOT counts as a
-    decline."""
+    """Ask the model and return ONLY what it wrapped in an output fence. A decline
+    of ANY shape — the bare token, a refusal-with-reason, a content-policy prose
+    refusal, a non-English refusal — carries no fence, so it collapses to "" and
+    the caller's done-check reports FAILED. This is structural: a real answer
+    (even one that says "I'm sorry") lives inside the fence and passes. Never
+    fabricates success from refusal text."""
     p = provider or _provider()
-    sysp = (system + "\nIf you cannot do this, or the input is empty/insufficient, "
-            "reply with EXACTLY the single token CANNOT and nothing else.")
+    sysp = (system + "\n\nWrap your ENTIRE output between the markers <<<OUT>>> and "
+            "<<<END>>>, each on its own. If you cannot do this, or the input is "
+            "empty/insufficient, put NOTHING between the markers.")
     c = p.complete(sysp, [{"role": "user", "content": (user or "")[:12000]}], [])
     if getattr(c, "stop_reason", "") == "error":
         return ""
-    out = (getattr(c, "text", "") or "").strip()
-    first = out.splitlines()[0].strip(" .!。?？\t").upper() if out else ""
-    if first == "CANNOT":
-        return ""
-    return out
+    raw = getattr(c, "text", "") or ""
+    m = _OUT_FENCE.search(raw)
+    if not m:
+        return ""                     # no fence -> refusal / non-compliance -> FAILED, honest
+    return m.group(1).strip()
 
 
 def _delivered(field: str, label: str):
@@ -94,7 +99,8 @@ def _fire_at(record, now: int) -> int:
     delay = record.args.get("delay_minutes")
     if delay is not None:
         try:
-            return now + max(1, int(float(delay))) * 60
+            mins = min(max(1, int(float(delay))), 5_256_000)   # clamp to ~10y: no
+            return now + mins * 60                              # OverflowError into SQLite/datetime
         except (TypeError, ValueError):
             pass
     at = str(record.args.get("at") or "")
@@ -125,12 +131,13 @@ def _reminder_execute(record):
     try:
         jid = "reminder-" + secrets.token_hex(3)
         j.create(jid, f"reminder: {text}", leash={"may": ["note.*"]})
-        # TTL must outlive the fire time, or a reminder further out than the
-        # default 24h action TTL would EXPIRE before it fires — silently dropped
-        # while verify said "parked". Size it to fire + 24h margin.
+        # The parked note is reversible + leash-ALLOW (auto-confirmed by the
+        # daemon, no human), so the human-confirm TTL adds zero safety here and
+        # must never be able to expire the reminder before it fires — even after a
+        # long laptop sleep. Size it well past any realistic reminder life.
         nonce = a.propose("note.append",
                           {"file": "reminders.txt", "text": f"[reminder] {text}"},
-                          job_id=jid, ttl_s=max(86400, fire - now + 86400))
+                          job_id=jid, ttl_s=max(86400, fire - now + 10 * 365 * 86400))
         s = Scheduler(a, j, db_path=os.path.join(d, "jobs.db"))
         try:
             s.schedule(jid, nonce, fire_at=fire, now=now)

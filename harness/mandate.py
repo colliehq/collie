@@ -51,8 +51,11 @@ def _catalog() -> str:
 
 # the arg each capability cannot run without — a job missing it is garbage and
 # must never be created (it would execute on nothing and could fabricate success).
+# reminder.set is intentionally ABSENT: it needs no arg (text->"reminder",
+# timing->now+600 both default in everyday._fire_at), and requiring "text" would
+# false-drop a valid "remind me at 9am" -> misroute to a note that never fires.
 _REQUIRED_ARG = {"note.append": "text", "translate": "text",
-                 "web.summarize": "url", "research.web": "query", "reminder.set": "text"}
+                 "web.summarize": "url", "research.web": "query"}
 
 
 def _args_ok(capability: str, args: dict) -> bool:

@@ -74,7 +74,18 @@ def _live_runner(query: str) -> str:
     h.self_verify = False
     h.force_edit = False
     h.max_turns = 12
-    res = h.run("research", _PROMPT + query)
+    # enforce cookieless: web_search can be told (via env) to route through the
+    # authenticated browser/Chrome profile — scrub those for the autonomous run so
+    # research can never reach the logged-in session, then restore.
+    _scrub = ("COLLIE_WEBSEARCH_BRIDGE", "COLLIE_WEBSEARCH_CHROME",
+              "COLLIE_CHROME", "COLLIE_CHROME_PROFILE")
+    saved = {k: os.environ.pop(k, None) for k in _scrub}
+    try:
+        res = h.run("research", _PROMPT + query)
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
     return res.answer or ""
 
 

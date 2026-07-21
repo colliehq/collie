@@ -112,6 +112,17 @@ def test_missing_required_arg_falls_back_not_garbage():
     check(plan["args"]["query"] == "找一下附近好吃的火锅", "full text preserved as query")
 
 
+def test_timing_only_reminder_not_misrouted():
+    print("test_timing_only_reminder_not_misrouted")
+    clear_registry(); caps.register_builtins()
+    # "remind me at 9am" has no note body; reminder.set needs none. It must NOT be
+    # false-dropped by _args_ok and misrouted to a note that never fires.
+    p = _Prov('{"capability":"reminder.set","args":{"at":"09:00"},"goal":"remind at 9"}')
+    plan = mandate.compile("remind me at 9am", p)
+    check(plan["capability"] == "reminder.set",
+          f"a timing-only reminder must stay reminder.set, got {plan['capability']}")
+
+
 def test_bad_json_from_model_falls_back():
     print("test_bad_json_from_model_falls_back")
     clear_registry(); caps.register_builtins()

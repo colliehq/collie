@@ -34,9 +34,16 @@ def _safe_path(name) -> str:
     return os.path.join(notes_dir(), base)
 
 
+def _note_text(record) -> str:
+    # guard the RAW value: str(None) == "None" would be written & pass — so a
+    # None/non-str text must collapse to empty, not the literal "None".
+    raw = record.args.get("text")
+    return raw if isinstance(raw, str) else ""
+
+
 def _note_execute(record):
     p = _safe_path(record.args.get("file"))
-    text = str(record.args.get("text", ""))
+    text = _note_text(record)
     if not text.strip():
         return {"path": p, "skipped": "empty note"}   # write nothing; verify will FAIL it
     with open(p, "a", encoding="utf-8") as f:
@@ -52,10 +59,10 @@ class _FileReread(_v.Verifier):
 def _note_verify(record, result):
     """Independent post-check: re-open the file and assert the text landed."""
     p = _safe_path(record.args.get("file"))
-    text = str(record.args.get("text", ""))
+    text = _note_text(record)
     if not text.strip():
-        # `"" in content` is ALWAYS True — an empty note would fabricate a
-        # done_verified for a write that recorded nothing. Fail it honestly.
+        # `"" in content` is ALWAYS True — an empty (or None) note would fabricate
+        # a done_verified for a write that recorded nothing. Fail it honestly.
         return _v.Verdict(_v.FAILED, "empty note — nothing to record")
     obs = []
     try:
@@ -81,7 +88,7 @@ def _note_list_execute(record):
         try:
             content = open(_safe_path(fname), encoding="utf-8").read()
         except OSError:
-            content = ""
+            content = None                          # unreadable/nonexistent -> distinct from empty
         return {"file": os.path.basename(_safe_path(fname)), "content": content}
     files = []
     for f in sorted(os.listdir(d)):
@@ -97,9 +104,13 @@ def _note_list_execute(record):
 
 
 def _note_list_verify(record, result):
-    """A read always succeeds — the listing IS the deliverable (never needs_you)."""
+    """A listing IS the deliverable. But a single-file read that FAILED (file
+    missing/unreadable -> content is None) must not report "read <file>" — that
+    would fabricate a read that never happened."""
     result = result or {}
-    if result.get("content") is not None:
+    if "content" in result:                         # single-file read branch
+        if result["content"] is None:
+            return _v.Verdict(_v.FAILED, f"could not read {result.get('file')}")
         return _v.Verdict(_v.VERIFIED, f"read {result.get('file')}")
     n = len(result.get("files") or [])
     return _v.Verdict(_v.VERIFIED, f"listed {n} note file(s)")

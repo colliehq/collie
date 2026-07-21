@@ -25,7 +25,7 @@ import threading
 import time
 
 from .actions import RefusedError
-from .jobs import Executor, WAITING
+from .jobs import Executor, WAITING, FAILED_S
 
 PENDING_W = "pending"
 FIRED_W = "fired"
@@ -84,8 +84,12 @@ class Scheduler:
         for w in self.due(now):
             try:
                 self.executor.drive(w["nonce"])
-            except RefusedError:
-                pass                                  # job left in a non-done state; wait is spent
+            except RefusedError as e:
+                # a due wait that can't be driven must SURFACE as failed, never be
+                # silently orphaned in WAITING (that would look like a reminder
+                # that just vanished). Anti-fabrication defense-in-depth.
+                if w.get("job_id"):
+                    self.jobs.set_state(w["job_id"], FAILED_S, f"wait dropped: {e}")
             with self._lock:
                 self.db.execute("UPDATE waits SET state=?,fired_at=? WHERE wait_id=?",
                                 (FIRED_W, now, w["wait_id"]))
