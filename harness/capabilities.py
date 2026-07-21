@@ -90,8 +90,12 @@ def _note_list_execute(record):
         except OSError:
             content = None                          # unreadable/nonexistent -> distinct from empty
         return {"file": os.path.basename(_safe_path(fname)), "content": content}
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return {"files": None}                      # unreadable dir -> verify reports FAILED
     files = []
-    for f in sorted(os.listdir(d)):
+    for f in names:
         p = os.path.join(d, f)
         if not os.path.isfile(p):
             continue
@@ -112,7 +116,9 @@ def _note_list_verify(record, result):
         if result["content"] is None:
             return _v.Verdict(_v.FAILED, f"could not read {result.get('file')}")
         return _v.Verdict(_v.VERIFIED, f"read {result.get('file')}")
-    n = len(result.get("files") or [])
+    if result.get("files") is None:                 # listing branch: unreadable dir
+        return _v.Verdict(_v.FAILED, "could not read the notes directory")
+    n = len(result["files"])
     return _v.Verdict(_v.VERIFIED, f"listed {n} note file(s)")
 
 

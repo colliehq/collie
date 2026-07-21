@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import redact as _redact
-from .verifier import INCONCLUSIVE, Verdict
+from .verifier import FAILED, INCONCLUSIVE, Verdict
 
 
 def _load_or_create_key(keyfile: str) -> bytes:
@@ -212,13 +212,22 @@ class ActionStore:
             if r["state"] != PENDING:
                 raise RefusedError(f"not pending (state={r['state']})")
             if r["expires_at"] and now > r["expires_at"]:
-                self.db.execute("UPDATE pending_actions SET state=?,decided_at=? WHERE nonce=?",
-                                (EXPIRED, now, nonce))
+                self.db.execute("UPDATE pending_actions SET state=?,decided_at=? WHERE nonce=? AND state=?",
+                                (EXPIRED, now, nonce, PENDING))
                 self.db.commit()
                 raise RefusedError("expired before confirm")
-            self.db.execute("UPDATE pending_actions SET state=?,decided_at=? WHERE nonce=?",
-                            (APPROVED, now, nonce))
+            # ATOMIC CAS: only PENDING -> APPROVED. Without `AND state=PENDING` a
+            # stale WAL-snapshot read (two concurrent tickers) could blindly revive
+            # an already-EXECUTED nonce back to APPROVED and re-fire it — the
+            # single-use latch in execute() then claims the fresh APPROVED and the
+            # side effect runs TWICE (a reminder written twice). The CAS makes the
+            # losing ticker match 0 rows.
+            cur = self.db.execute(
+                "UPDATE pending_actions SET state=?,decided_at=? WHERE nonce=? AND state=?",
+                (APPROVED, now, nonce, PENDING))
             self.db.commit()
+            if cur.rowcount != 1:
+                raise RefusedError("not pending (lost confirm race)")
         return self.get(nonce)
 
     # ── execute: the deterministic, model-free executor ──
@@ -279,11 +288,17 @@ class ActionStore:
                                     redact_fn=redact_fn)
                 raise RefusedError("world diverged from approved snapshot (TOCTOU)")
 
-        # fire the real side effect exactly once
-        result = side_effect_fn(record)
-
-        verdict = donecheck_fn(record, result) if donecheck_fn else \
-            Verdict(INCONCLUSIVE, "no done-check declared")
+        # fire the real side effect exactly once. If the capability RAISES, that
+        # must become an honest FAILED receipt — never a traceback to the user or a
+        # nonce stuck in EXECUTING forever (which would dead-end the job). This one
+        # guard closes the entire "a capability bug crashes the run" class.
+        try:
+            result = side_effect_fn(record)
+            verdict = donecheck_fn(record, result) if donecheck_fn else \
+                Verdict(INCONCLUSIVE, "no done-check declared")
+        except Exception as e:
+            verdict = Verdict(FAILED, ("capability raised: %s: %s"
+                                       % (type(e).__name__, e))[:200])
 
         # finalize: terminal state AND the evidenced receipt land in ONE commit,
         # so a crash cannot leave a fired action EXECUTED without its receipt.

@@ -182,6 +182,22 @@ def test_note_list_missing_file_is_failed():
     check(v.status == FAILED, "reading a nonexistent file must FAIL, not fake 'read'")
 
 
+def test_note_list_unreadable_dir_degrades():
+    print("test_note_list_unreadable_dir_degrades")
+    import stat as _stat
+    clear_registry(); caps.register_builtins()
+    d = tempfile.mkdtemp(prefix="collie-nolist-")
+    os.environ["COLLIE_NOTES_DIR"] = d
+    try:
+        os.chmod(d, 0)                              # unreadable dir
+        out = caps._note_list_execute(_rec({}))     # must NOT raise
+        v = caps._note_list_verify(_rec({}), out)
+        check(v.status == FAILED, "an unreadable notes dir must FAIL honestly, not crash")
+    finally:
+        os.chmod(d, _stat.S_IRWXU)
+        os.environ["COLLIE_NOTES_DIR"] = os.path.join(_state, "notes")
+
+
 def test_none_note_is_failed():
     print("test_none_note_is_failed")
     clear_registry(); caps.register_builtins()

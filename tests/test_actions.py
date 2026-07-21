@@ -158,6 +158,46 @@ def test_toctou_divergence_refused():
     st.close()
 
 
+def test_confirm_cas_blocks_resurrecting_executed():
+    print("test_confirm_cas_blocks_resurrecting_executed")
+    st = ActionStore(_tmp())
+    calls = {"n": 0}
+    n = st.propose("note.append", {"x": 1})
+    st.confirm(n)
+    st.execute(n, side_effect_fn=lambda r: calls.__setitem__("n", calls["n"] + 1))
+    # a second confirm on an already-EXECUTED nonce must NOT resurrect it to
+    # APPROVED (the concurrent-ticker double-fire); it must be refused.
+    try:
+        st.confirm(n)
+        check(False, "confirm on a non-pending nonce must be refused")
+    except RefusedError:
+        pass
+    check(st.get(n).state == EXECUTED, "state stays EXECUTED, not revived to APPROVED")
+    # and a re-execute still can't fire again
+    try:
+        st.execute(n, side_effect_fn=lambda r: calls.__setitem__("n", calls["n"] + 1))
+    except RefusedError:
+        pass
+    check(calls["n"] == 1, "the side effect fired exactly once")
+    st.close()
+
+
+def test_capability_exception_is_failed_receipt_not_crash():
+    print("test_capability_exception_is_failed_receipt_not_crash")
+    st = ActionStore(_tmp())
+    n = st.propose("boom.op", {})
+    st.confirm(n)
+
+    def boom(record):
+        raise PermissionError("nope")
+
+    rc = st.execute(n, side_effect_fn=boom)          # must NOT raise
+    check(rc.verdict == "failed", f"a raising capability must yield FAILED, got {rc.verdict}")
+    check("PermissionError" in rc.verdict_reason, "the receipt records the error")
+    check(st.get(n).state == EXECUTED, "the nonce is spent (not stuck EXECUTING)")
+    st.close()
+
+
 def test_end_to_end_with_real_donecheck():
     print("test_end_to_end_with_real_donecheck")
     # fixture marketplace: publishing 'flips' the page from 404 to a live listing.

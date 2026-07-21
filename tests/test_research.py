@@ -85,7 +85,12 @@ def main():
     print("test_hedged_no_info_is_failed_not_fabricated")
     for noinfo in ("Sorry, I was unable to find any reliable information on this topic.",
                    "Unfortunately, I couldn't find anything.",
-                   "抱歉，我没有找到相关信息。", "很遗憾，查不到这个产品。"):
+                   "There are no results available for this product.",
+                   "I searched but was unable to find anything useful.",
+                   "I could not locate anything useful.",
+                   "I'm sorry, but I couldn't find that.",
+                   "抱歉，我没有找到相关信息。", "很遗憾，查不到这个产品。",
+                   "很抱歉，我没能找到答案。", "无法找到相关结果。"):
         o = research.run_research("q", runner=lambda q, n=noinfo: n)
         v = research._research_verify(type("R", (), {"args": {}})(), o)
         check(v.status != VERIFIED, f"a hedged no-info reply must NOT verify: {noinfo!r} -> {v.status}")

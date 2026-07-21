@@ -82,6 +82,16 @@ class Scheduler:
         now = int(now if now is not None else time.time())
         fired = 0
         for w in self.due(now):
+            # ATOMIC claim: only ONE ticker (a concurrent daemon + `wake`) may drive
+            # a given wait. Claim pending->fired BEFORE driving; if we lost the race
+            # (rowcount 0), skip — the winner drives it. Prevents double-fire.
+            with self._lock:
+                claimed = self.db.execute(
+                    "UPDATE waits SET state=?,fired_at=? WHERE wait_id=? AND state=?",
+                    (FIRED_W, now, w["wait_id"], PENDING_W))
+                self.db.commit()
+            if claimed.rowcount != 1:
+                continue
             try:
                 self.executor.drive(w["nonce"])
             except RefusedError as e:
@@ -90,11 +100,7 @@ class Scheduler:
                 # that just vanished). Anti-fabrication defense-in-depth.
                 if w.get("job_id"):
                     self.jobs.set_state(w["job_id"], FAILED_S, f"wait dropped: {e}")
-            with self._lock:
-                self.db.execute("UPDATE waits SET state=?,fired_at=? WHERE wait_id=?",
-                                (FIRED_W, now, w["wait_id"]))
-                self.db.commit()
-            fired += 1
+            fired += 1                                 # already claimed FIRED above
         return fired
 
     def pending_waits(self):

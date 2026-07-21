@@ -30,12 +30,16 @@ _URL = re.compile(r"https?://[^\s)\]}>\"'，、。（）：；]+")   # also stop
 # present (and feeding its pages to the model) is a real exfiltration/injection
 # risk; authenticated-browser research belongs behind a confirm, not here.
 _RESEARCH_TOOLS = {"web_search", "web_fetch"}
+# Matched with .search over the answer's opening (not anchored): a no-info reply
+# of any shape — with an apology lead-in, "locate/retrieve" instead of "find",
+# "no results available", or CN 没能/无法/未能 — must not pass as a real answer.
 _NOINFO = re.compile(
-    r"(?i)^\W*(?:(?:sorry|apolog\w*|unfortunately|regrettabl\w*|抱歉|遗憾|很遗憾)[\s,，、:：.\-]*)?"
-    r"(i\s+(?:couldn'?t|could\s+not|was\s+unable|am\s+unable|can'?t)\s+(?:to\s+)?find"
-    r"|(?:was\s+)?unable\s+to\s+find|couldn'?t\s+find"
-    r"|no\s+(?:information|results?|data)\b|n/?a\b"
-    r"|我?没有?(?:找到|相关|结果)|我?(?:找不到|没找到|查不到|无法找到))")
+    r"(?i)("
+    r"(?:could\s?n'?t|could\s+not|was\s+unable|am\s+unable|unable|can'?t|failed)"
+    r"\s+(?:to\s+)?(?:find|locate|retrieve)"
+    r"|no\s+(?:information|results?|data|sources?)\b"
+    r"|没(?:能|有)?(?:找到|查到|相关|结果)|无法(?:找到|查到|获取)|未能?找到|查不到|找不到"
+    r")")
 
 _PROMPT = (
     "Research this and give a SHORT recommendation (a few sentences), then a "
@@ -124,9 +128,11 @@ def _research_verify(record, result):
     answer is the only genuine miss."""
     result = result or {}
     answer = (result.get("answer") or "").strip()
-    if not answer or _NOINFO.match(answer):
-        return _v.Verdict(_v.FAILED, "no answer produced")   # empty or a bare no-info reply
     cites = result.get("citations") or []
+    # empty or a no-info reply (matched anywhere in the opening) -> nothing was
+    # really delivered. A short but genuine answer still counts (deliver-is-success).
+    if not answer or _NOINFO.search(answer[:200]):
+        return _v.Verdict(_v.FAILED, "no answer produced")
     ok = sum(1 for u in cites if (lambda g: g is not None and g[0] < 400)(fetch_loggedout(u)))
     detail = (f"answer written to {os.path.basename(result.get('report_file', ''))}"
               + (f"; {ok}/{len(cites)} sources re-checkable" if cites else ""))
