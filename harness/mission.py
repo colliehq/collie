@@ -391,7 +391,8 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
     other bounds); otherwise they park for confirm. Extra `bounds` (price_floor,
     local_only, spend_max_usd, …) are policy the caller sets — domain values, not a
     template — and are carried on the leash for verifiers/primitives to enforce."""
-    leash = {"may": sorted(may or ["research", "compose", "observe", "web.*", "browse", "browse.*"]),
+    leash = {"may": sorted(may or ["research", "compose", "observe", "web.*",
+                                   "browse", "browse.*", "code"]),
              "irreversible": "allow" if autonomous else "confirm"}
     if expires:
         leash["expires"] = expires
@@ -417,7 +418,9 @@ _SYS = (
     "To ACT on a website (fill a marketplace listing, submit a form, publish a post): use "
     "'browse' with a goal to fill/navigate it (it drives the real browser adaptively and STOPS "
     "before submitting), then 'browse.submit' to click the final Publish/Post — that last click "
-    "is gated for the user's confirm.\n")
+    "is gated for the user's confirm.\n"
+    "For a CODING step (write / fix / refactor code), use 'code' with a goal and a workspace path — "
+    "it runs collie's coding agent with executed verification (reversible; runs freely).\n")
 
 
 class ModelDecider:

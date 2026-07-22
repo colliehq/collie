@@ -199,12 +199,33 @@ def test_browse_mission_gates_publish():
     actions.close()
 
 
+def test_code_step_in_a_mission():
+    """Coding is one capability among many: a mission can run a `code` step (reversible,
+    auto) alongside world steps — the 'one entry, does anything' picture."""
+    print("test_code_step_in_a_mission")
+    clear_registry()
+    register_primitives(stub=True)
+    fd, p = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    actions = ActionStore(p + ".actions")
+    store = MissionStore(p + ".missions")
+    CODE = {"action": "code", "args": {"goal": "add a retry", "workspace": "/repo"}, "reason": "fix"}
+    drv = MissionDriver(store, actions, Scripted([CODE, {"action": "done"}]))
+    create_mission(store, "c", "fix the retry bug then done", leash=world_leash(autonomous=False))
+    st = drv.advance("c")
+    check(st == DONE_VERIFIED, f"code step (reversible) auto-runs, then done, got {st}")
+    check(store.get("c").case.get("coded") is True, "the mission ran a coding step")
+    store.close()
+    actions.close()
+
+
 def main():
     test_confirm_gate_then_resume()
     test_autonomous_with_durable_wait()
     test_leash_denies_out_of_scope()
     test_anti_poll_spin()
     test_browse_mission_gates_publish()
+    test_code_step_in_a_mission()
     if _fails:
         print(f"\n{len(_fails)} FAILED")
         sys.exit(1)

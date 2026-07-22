@@ -425,13 +425,65 @@ def _stub_browse_submit(rec):
             "button": (rec.args or {}).get("button") or "Publish"}
 
 
+# ── code: coding is a capability like any other — run collie's coding agent ───
+# The delegate's positioning is a human-delegate; coding is ONE function under it.
+# `code` runs collie's own coding loop (read/edit/search/run) with its executed-
+# verification gate, so a mission can compose a coding step with web/world steps.
+def _live_code(goal, workspace=None):
+    import os
+    from .cli import make_harness
+    from . import settings as _s
+    _s.apply()
+    cwd = workspace or os.getcwd()
+    h = make_harness(cwd, provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
+                     project="code", embed="hash", code_search=True, exec_code=True)
+    h.max_turns = int(os.environ.get("COLLIE_CODE_TURNS", "30"))
+    res = h.run("code", goal)
+    verified = bool(getattr(res, "verified", False))
+    try:
+        h.memory.close(); h.recorder.close()
+    except Exception:
+        pass
+    return {"answer": res.answer or res.error or "", "verified": verified}
+
+
+def _real_code(runner=None):
+    def execute(rec):
+        goal = (rec.args or {}).get("goal") or (rec.args or {}).get("task") or ""
+        ws = (rec.args or {}).get("workspace") or (rec.args or {}).get("cwd")
+        out = (runner or (lambda g: _live_code(g, ws)))(goal)
+        if isinstance(out, str):
+            out = {"answer": out, "verified": False}
+        return {"case": {"coded": True, "code_verified": bool(out.get("verified"))},
+                "result": out.get("answer", ""), "verified": bool(out.get("verified"))}
+    return execute
+
+
+def _code_verify(rec, result):
+    """Done-check = collie's OWN executed verification (a repro that fails on the
+    broken code, an edit that flips it, a re-run that passes). Verified only when the
+    coding loop reported that gate green; an edit without it is INCONCLUSIVE, not done."""
+    r = result or {}
+    if r.get("verified"):
+        return Verdict(VERIFIED, "code change executed-verified (repro RED->GREEN)")
+    if r.get("result"):
+        return Verdict(INCONCLUSIVE, "code edited but not executed-verified — a human should check")
+    return Verdict(FAILED, "coding task produced no result")
+
+
+def _stub_code(rec):
+    goal = (rec.args or {}).get("goal") or ""
+    return {"case": {"coded": True, "code_verified": True},
+            "result": "(stub) fixed: " + goal[:50], "verified": True}
+
+
 # ══════════════════════════ registration ═════════════════════════════════════
 def register_primitives(stub: bool = True, actuator=None, provider=None,
-                        research_runner=None, browse_runner=None):
+                        research_runner=None, browse_runner=None, code_runner=None):
     """Register the neutral primitive set. `stub=True` wires the canned bodies
     (container tests / safe default). `stub=False` wires the REAL bodies; deps are
-    injectable (actuator/provider/research_runner/browse_runner) for tests, and
-    fall back to live ones when omitted."""
+    injectable (actuator/provider/research_runner/browse_runner/code_runner) for
+    tests, and fall back to live ones when omitted."""
     if stub:
         research_exec, research_verify = _stub_research, _read_verify
         compose_exec, compose_verify = _stub_compose, _read_verify
@@ -440,6 +492,7 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         send_exec, send_verify = _stub_web_send, _stub_send_verify
         browse_exec, browse_verify = _stub_browse, _browse_verify
         bsubmit_exec, bsubmit_verify = _stub_browse_submit, _browse_submit_verify
+        code_exec, code_verify = _stub_code, _code_verify
     else:
         research_exec, research_verify = _real_research(research_runner), _real_research_verify
         compose_exec, compose_verify = _real_compose(provider), _compose_verify
@@ -448,6 +501,7 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         send_exec, send_verify = _real_web_send(actuator), _real_send_verify
         browse_exec, browse_verify = _real_browse(browse_runner), _browse_verify
         bsubmit_exec, bsubmit_verify = _real_browse_submit(actuator), _browse_submit_verify
+        code_exec, code_verify = _real_code(code_runner), _code_verify
 
     register(Capability(
         name="research", execute=research_exec, verify=research_verify, reversible=True,
@@ -483,3 +537,10 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         risk="publish", description="Click the final IRREVERSIBLE button (Publish / Post / Place "
         "order) after `browse` has filled the form. Gated — parks for your confirm.",
         args_hint='{"button": "Publish"}'))
+    register(Capability(
+        name="code", execute=code_exec, verify=code_verify, reversible=True, risk="code",
+        description="Write / fix / refactor code in a workspace by running collie's coding agent "
+        "(read/edit/search/run) with its executed-verification gate (a repro that fails on the broken "
+        "code, an edit that flips it, a re-run that passes). Reversible (version control). Use for the "
+        "coding step of an errand.",
+        args_hint='{"goal": "fix the null-pointer in parser.py", "workspace": "/path/to/repo"}'))

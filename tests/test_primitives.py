@@ -26,7 +26,7 @@ os.environ["COLLIE_NOTES_DIR"] = tempfile.mkdtemp() # keep research reports out 
 from harness.jobs import clear_registry, get_capability  # noqa: E402
 from harness.primitives import register_primitives  # noqa: E402
 from harness.webact import FakeActuator  # noqa: E402
-from harness.verifier import VERIFIED, FAILED  # noqa: E402
+from harness.verifier import VERIFIED, FAILED, INCONCLUSIVE  # noqa: E402
 
 _fails = []
 
@@ -194,9 +194,30 @@ def test_browse_and_submit_real():
     check(sub.verify(_Rec({}), sr).status == VERIFIED, "browse.submit verifies as clicked")
 
 
+def test_code_primitive():
+    print("test_code_primitive")
+    clear_registry()
+    # injected coding runner returns collie's executed-verification result
+    register_primitives(stub=False,
+                        code_runner=lambda g: {"answer": "fixed the null-pointer; repro passes",
+                                               "verified": True})
+    cap = get_capability("code")
+    check(cap.reversible is True and cap.risk == "code",
+          "code is reversible (VCS) -> auto-runs under the leash")
+    r = cap.execute(_Rec({"goal": "fix the null-pointer in parser.py", "workspace": "/tmp/x"}))
+    check(r.get("verified") is True and "fixed" in r.get("result", ""),
+          "code ran the coding agent and captured its executed-verification result")
+    check(cap.verify(_Rec({}), r).status == VERIFIED,
+          "code VERIFIED only when the coding loop executed-verified the fix (repro RED->GREEN)")
+    from harness.primitives import _code_verify
+    check(_code_verify(_Rec({}), {"result": "edited, no repro", "verified": False}).status
+          == INCONCLUSIVE, "an edit WITHOUT executed verification is INCONCLUSIVE, not a false 'done'")
+
+
 def main():
     test_research_real()
     test_browse_and_submit_real()
+    test_code_primitive()
     test_compose_real()
     test_observe_loggedout_real()
     test_web_submit_real_drives_and_verifies()
