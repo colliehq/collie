@@ -299,12 +299,23 @@ def _live_browse(goal):
         h.force_edit = False
     except Exception:
         pass
-    h.max_turns = int(os.environ.get("COLLIE_BROWSE_TURNS", "25"))
-    prompt = (goal.strip() + "\n\nAct ONLY through the browser_* tools. The form may be DYNAMIC — use "
-              "browser_fields to see the fields, browser_type (with a `label`) for text, browser_pick for "
-              "dropdowns, re-checking with browser_fields after each change. CRITICAL: do NOT click any "
-              "IRREVERSIBLE button (Publish, Post, Send, Pay, Place order, Submit for review) — fill and "
-              "navigate up to that point and STOP, then report exactly what is ready to submit.")
+    h.max_turns = int(os.environ.get("COLLIE_BROWSE_TURNS", "35"))
+    prompt = (goal.strip() + "\n\n"
+              "Act ONLY through the browser_* tools (browser_open / browser_fields / browser_type with a "
+              "`label` / browser_pick / browser_click / browser_read). The form is DYNAMIC: picking a "
+              "value can REVEAL or CHANGE other fields (e.g. after Vehicle type, Make becomes a dropdown "
+              "and Mileage/Body-style/Condition appear).\n"
+              "WORKFLOW — repeat until complete:\n"
+              "  1. call browser_fields to list the CURRENT fields (label, kind text/dropdown, value);\n"
+              "  2. fill every empty one — browser_type(label,text) for text, browser_pick(label,option) "
+              "for dropdowns;\n"
+              "  3. call browser_fields AGAIN to catch fields that just appeared or didn't take;\n"
+              "  4. keep going until EVERY field the listing needs is filled — fill ALL of them "
+              "(vehicle type, year, make, model, mileage, price, description, condition, …), do NOT stop "
+              "after the first one or two.\n"
+              "CRITICAL: do NOT click any IRREVERSIBLE button (Publish, Post, Send, Pay, Place order, "
+              "Next-to-publish) — fill everything up to that point and STOP, then report each field you "
+              "filled and its final value.")
     res = h.run("browse", prompt)
     try:
         h.memory.close(); h.recorder.close()
