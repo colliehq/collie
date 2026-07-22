@@ -171,8 +171,20 @@ def test_browse_and_submit_real():
     r = cap.execute(_Rec({"goal": "fill a Marketplace listing for a 2015 Corolla"}))
     check("Filled the Corolla" in r.get("result", ""),
           "browse ran the (injected) agent loop and returned its result")
-    check(cap.verify(_Rec({}), r).status == VERIFIED, "browse verifies when it produced a result")
     check(cap.reversible is True and cap.risk == "read", "browse is reversible (fills, no submit)")
+
+    # rigorous verify: an INDEPENDENT re-read of the form, not the agent's say-so
+    from harness.primitives import _browse_verify
+    form = [{"label": "Make", "value": "Toyota"}, {"label": "Model", "value": "Corolla"},
+            {"label": "Price", "value": "$9,500"}, {"label": "Year", "value": "Year 2015"}]
+    res = {"result": "done", "form": form}
+    check(_browse_verify(_Rec({"expect": {"Make": "Toyota", "Price": "9500", "Year": "2015"}}), res).status
+          == VERIFIED, "expect values found in the re-read form -> VERIFIED")
+    check(_browse_verify(_Rec({"expect": {"Make": "Honda"}}), res).status == FAILED,
+          "a value ABSENT from the re-read form -> FAILED (refutes a false 'done')")
+    check(_browse_verify(_Rec({"expect": {"Make": "Toyota"}}), {"result": "done", "form": []}).status
+          == FAILED, "'done' over an empty form is refuted, not trusted")
+    check(_browse_verify(_Rec({}), res).status == VERIFIED, "no expect + substantially filled -> VERIFIED")
 
     sub = get_capability("browse.submit")
     check(sub.reversible is False and sub.risk == "publish", "browse.submit is irreversible (gated)")

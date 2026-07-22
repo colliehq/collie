@@ -35,10 +35,11 @@ own account, gated the same way every other action is.
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from .jobs import Capability, register
-from .verifier import FAILED, INCONCLUSIVE, VERIFIED, Verdict
+from .verifier import FAILED, INCONCLUSIVE, VERIFIED, Observation, Verdict
 
 
 def _int(v):
@@ -324,18 +325,69 @@ def _live_browse(goal):
     return res.answer or res.error or ""
 
 
-def _real_browse(runner=None):
+# Independent form re-read (the verify's ground truth): after the acting agent
+# stops, snapshot the page's fields straight from the DOM — text/textarea via
+# el.value, dropdowns via their label text (which carries the picked value). This
+# is a FRESH read, not the agent's self-report, so it can refute a "done" that
+# didn't actually fill the form.
+_FORM_SNAPSHOT = (
+    "JSON.stringify([...document.querySelectorAll('input,textarea,[role=combobox]')].map(e=>{"
+    "var l=e.closest('label');var lab=l?(l.innerText||'').trim().split('\\n')[0]:(e.getAttribute('aria-label')||'');"
+    "var val=e.getAttribute('role')==='combobox'?(l?(l.innerText||'').replace(/\\n/g,' ').trim():''):(e.value||'');"
+    "return {label:lab,value:val};}).filter(x=>x.label&&x.value&&x.value!==x.label))")
+
+
+def _read_form():
+    from . import browserbridge as _bb
+    try:
+        r = _bb._call({"action": "eval", "expr": _FORM_SNAPSHOT})
+        data = r.get("data", {}).get("value") if isinstance(r, dict) else None
+        return json.loads(data) if isinstance(data, str) else (data or [])
+    except Exception:
+        return []
+
+
+def _real_browse(runner=None, form_reader=None):
     def execute(rec):
         goal = (rec.args or {}).get("goal") or (rec.args or {}).get("task") or ""
         out = (runner or _live_browse)(goal)
-        return {"case": {"browsed": True, "browse_result": (out or "")[:600]}, "result": out}
+        form = (form_reader or _read_form)()          # INDEPENDENT re-read for the done-check
+        return {"case": {"browsed": True, "browse_result": (out or "")[:600]},
+                "result": out, "form": form}
     return execute
 
 
 def _browse_verify(rec, result):
-    if (result or {}).get("result"):
-        return Verdict(VERIFIED, "browser task ran (filled/navigated; stopped before any submit)")
-    return Verdict(FAILED, "browser task produced no result")
+    """Done-check by an INDEPENDENT re-read of the form, not the agent's self-report.
+    If the caller passed `expect` ({label: value}), assert each value is actually
+    present in the re-read form (differential); otherwise confirm the form is
+    substantially filled. A 'done' over an empty form is refuted here."""
+    r = result or {}
+    form = r.get("form") or []
+    expect = (rec.args or {}).get("expect") or {}
+    if not r.get("result") and not form:
+        return Verdict(FAILED, "browse produced no result")
+
+    def _norm(s):                                    # ignore $, commas, spacing ("9500" == "$9,500")
+        return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+    def _present(label, val):
+        lab, v = str(label).lower(), _norm(val)
+        return bool(v) and any(lab in str(f.get("label", "")).lower() and v in _norm(f.get("value", ""))
+                               for f in form)
+
+    if expect:
+        missing = [k for k, v in expect.items() if not _present(k, v)]
+        if missing:
+            return Verdict(FAILED, "form fields NOT confirmed filled: " + ", ".join(missing))
+        ev = Observation(channel="form-reread", at=1, ok=True, asserted=True,
+                         detail="; ".join("%s=%s" % (k, v) for k, v in expect.items()))
+        return Verdict(VERIFIED, "independently confirmed %d field(s) filled" % len(expect), (ev,))
+    # no expected values -> at least confirm the form is substantially filled
+    if len(form) >= 3:
+        return Verdict(VERIFIED, "form re-read shows %d filled field(s)" % len(form))
+    return Verdict(INCONCLUSIVE,
+                   "could not confirm the form was filled (re-read found %d field(s))" % len(form))
 
 
 def _real_browse_submit(actuator=None):
@@ -361,7 +413,11 @@ def _browse_submit_verify(rec, result):
 
 def _stub_browse(rec):
     goal = (rec.args or {}).get("goal") or ""
-    return {"case": {"browsed": True}, "result": "(stub) filled the form for: " + goal[:60]}
+    # a canned re-read so the (real) _browse_verify has a form to check against
+    form = [{"label": "Make", "value": "Toyota"}, {"label": "Model", "value": "Corolla"},
+            {"label": "Price", "value": "$9,500"}]
+    return {"case": {"browsed": True}, "result": "(stub) filled the form for: " + goal[:60],
+            "form": form}
 
 
 def _stub_browse_submit(rec):
@@ -417,9 +473,11 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
     register(Capability(
         name="browse", execute=browse_exec, verify=browse_verify, reversible=True, risk="read",
         description="Do a task on a website by driving the real browser adaptively (fill a form, "
-        "navigate, act) — handles dynamic/obfuscated sites like Facebook Marketplace. Fills and "
-        "navigates up to the final submit, then STOPS (reversible; nothing is posted yet).",
-        args_hint='{"goal": "e.g. fill a Marketplace vehicle listing for a 2015 Corolla, $9500"}'))
+        "navigate, act) — handles dynamic/obfuscated sites like Facebook Marketplace. Fills up to the "
+        "final submit then STOPS (reversible). Pass `expect` (the field->value map you intend to fill) "
+        "so the outcome is verified by an INDEPENDENT re-read of the form, not the agent's say-so.",
+        args_hint='{"goal": "fill a Marketplace vehicle listing for a 2015 Corolla, $9500", '
+                  '"expect": {"Make":"Toyota","Model":"Corolla","Year":"2015","Price":"9500"}}'))
     register(Capability(
         name="browse.submit", execute=bsubmit_exec, verify=bsubmit_verify, reversible=False,
         risk="publish", description="Click the final IRREVERSIBLE button (Publish / Post / Place "
