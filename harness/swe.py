@@ -242,7 +242,7 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
                      code_search=_cs,           # semantic repo navigation (bge-small); env-gated
                      embed="hash")              # one-shot fix: skip loading jina-v3 for
                                                 # memory (unused here) -> ~2GB less peak
-    h.max_turns = max_turns
+    h.max_turns = int(os.environ.get("COLLIE_MAX_TURNS", str(max_turns)))   # pi-like: raise the cap
     # VERIFY step ported from Hermes' loop (trace diff: Hermes edits once after thorough
     # exploration, then runs `python -c` to TEST the fix and iterates — collie edited then
     # finished blind, causing the 3/9 "right file, wrong edit" failures). We enable a BOUNDED
@@ -391,6 +391,22 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         "Before finishing, VERIFY the fix with a `python3 -c` assertion (call your code by the "
         "names the ISSUE uses); iterate the SOURCE until it passes. Keep the change focused — do "
         "not expand it to unrelated files or cases the issue didn't ask for. Don't run the suite.\n")
+    # Full-path coverage (COLLIE_TRACE_PATH=1). The rebench gap autopsy: collie's misses are
+    # UNDER-COVERAGE of the reported behavior's data path — it defines a new symbol but never wires
+    # it into the existing call-site (pygraphistry), fixes the read half but not the write half of a
+    # flow (pdm), or patches the loudest traceback frame in the wrong subsystem (astropy). The SAME
+    # model (Opus) solves all three under pi/hermes — so this is a PROMPT gap (the lean prompt doesn't
+    # push tracing the whole path), not a capability limit. Scoped to the reported path only, to
+    # avoid the completeness-nudge backfire (which over-tested easy instances).
+    _trace = (
+        "Before finishing, trace the issue's reported behavior end-to-end. If your fix ADDS a symbol "
+        "(function/class/hook/option), grep for where it must be CALLED and wire it in — a symbol "
+        "defined but never invoked fixes nothing. If the behavior flows through several steps "
+        "(e.g. arg-parsing -> config-load, or produce -> consume), fix EVERY step on that path, not "
+        "just the first you find. Put the fix in the subsystem the reported symptom actually "
+        "originates from — don't just patch the loudest frame in a traceback. Still do NOT expand "
+        "beyond the reported behavior's own path (no unrelated files or cases).\n"
+        if os.environ.get("COLLIE_TRACE_PATH") in ("1", "true", "on") else "")
     # COLLIE_V1_PROMPT=1: exact original v1 prompt (HEAD, pre-regression-saga) — base + workflow +
     # no-pip guard with "reproduce encouraged", NO exact-API / env-guard / anti-scope-creep. Used to
     # test extended thinking on the PROVEN-GOOD baseline (v1 ~= hermes) without the v2/v3 confound.
@@ -419,7 +435,7 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         "If the issue declares a name or signature (function, class, parameter, attribute), "
         "implement THAT exact name verbatim — never rename it or 'improve' it, even if the issue "
         "labels it pseudocode or an example.\n"
-        + _verify +
+        + _trace + _verify +
         # Environment-mismatch guard (pylint-4661 audit, two findings): (a) local import
         # success is a FALSE signal — the grading container's packages differ from this
         # machine's; (b) when the fix genuinely needs a library, match the ERA/style of the
