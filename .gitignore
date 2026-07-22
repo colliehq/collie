@@ -69,3 +69,20 @@ build/
 dist_check/
 dist/
 *.egg-info/
+
+# ── scratch / experiments / vendored deps — NOT for release ──────────────────
+vendor/
+bench/
+data/rebench/
+data/*.jsonl
+data/*.txt
+data/bestof5_*.json
+# rebench investigation notes (kept locally, not shipped)
+docs/HARNESS_FINDINGS_2026-07.md
+docs/PI_ISOLATED_REBENCH_2026-07.md
+docs/REBENCH_2026_03_FAILURE_FORENSICS.md
+docs/rebench_2026_03_forensics_data.json
+# stray one-off scratch
+cf4604.cf4604.json
+cj
+run_terra_pilot.sh
