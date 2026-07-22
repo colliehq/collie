@@ -380,15 +380,44 @@ class BrowserClick(Tool):
 
 class BrowserType(Tool):
     name, tier = "browser_type", "always"
-    description = ("Type text into an input and optionally submit. Args: selector (CSS of the "
-                   "field), text, optional submit (bool).")
+    description = ("Type text into a form field. Target it by `label` (the field's visible "
+                   "label text — robust on obfuscated forms like Facebook where CSS selectors "
+                   "aren't stable) OR by `selector` (CSS). Args: label OR selector, text, "
+                   "optional submit (bool).")
     schema = {"type": "object", "properties": {
-        "selector": {"type": "string"}, "text": {"type": "string"}, "submit": {"type": "boolean"}},
-        "required": ["selector", "text"]}
+        "label": {"type": "string"}, "selector": {"type": "string"},
+        "text": {"type": "string"}, "submit": {"type": "boolean"}},
+        "required": ["text"]}
 
     def run(self, args, ctx):
-        return _fmt(_call({"action": "type", "selector": args.get("selector"),
-                           "text": args.get("text"), "submit": bool(args.get("submit"))}))
+        return _fmt(_call({"action": "type", "label": args.get("label"),
+                           "selector": args.get("selector"), "text": args.get("text"),
+                           "submit": bool(args.get("submit"))}))
+
+
+class BrowserPick(Tool):
+    name, tier = "browser_pick", "always"
+    description = ("Pick an option from a dropdown/combobox by its visible label: opens the "
+                   "dropdown labelled `label` and clicks the option matching `option`. Use for "
+                   "select-style fields (year, condition, category). Args: label, option.")
+    schema = {"type": "object", "properties": {
+        "label": {"type": "string"}, "option": {"type": "string"}},
+        "required": ["label", "option"]}
+
+    def run(self, args, ctx):
+        return _fmt(_call({"action": "pick", "label": args.get("label"),
+                           "option": args.get("option")}))
+
+
+class BrowserFields(Tool):
+    name, tier = "browser_fields", "always"
+    description = ("List the current page's labelled form fields (label, kind text/dropdown, "
+                   "current value) so you can see what to fill without guessing selectors. "
+                   "No args.")
+    schema = {"type": "object", "properties": {}}
+
+    def run(self, args, ctx):
+        return _fmt(_call({"action": "fields"}))
 
 
 class BrowserLinks(Tool):
@@ -424,7 +453,7 @@ class BrowserEval(Tool):
 
 
 def register_browser_bridge(registry):
-    for t in (BrowserOpen(), BrowserRead(), BrowserClick(), BrowserType(), BrowserLinks(),
-              BrowserConsole(), BrowserEval()):
+    for t in (BrowserOpen(), BrowserRead(), BrowserClick(), BrowserType(), BrowserPick(),
+              BrowserFields(), BrowserLinks(), BrowserConsole(), BrowserEval()):
         registry.register(t)
     return True

@@ -168,6 +168,20 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
         self._send_html(body, code, "application/json; charset=utf-8")
 
+    def _read_json(self, maxlen: int = 8192):
+        """Read + parse a JSON POST body, or None on any problem (missing/oversize/parse)."""
+        try:
+            n = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            return None
+        if n <= 0 or n > maxlen:
+            return None
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return body if isinstance(body, dict) else None
+
     def _sse_open(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -262,6 +276,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": sessions.set_title(sid, title)})
             if path.startswith("/api/session/"):
                 return self._serve_session(path[len("/api/session/"):])
+            if path == "/api/mission":                    # delegate: one mission's live status
+                from .missionweb import MissionService
+                mid = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
+                svc = MissionService()
+                try:
+                    return self._send_json(svc.status(mid) if mid else {"error": "id required"})
+                finally:
+                    svc.close()
+            if path == "/api/missions":                   # delegate: the mission list (sidebar)
+                from .missionweb import MissionService
+                svc = MissionService()
+                try:
+                    return self._send_json({"missions": svc.missions()})
+                finally:
+                    svc.close()
             if path == "/api/stream":
                 if not self._authed(parsed):
                     # SSE clients read errors as events; but headers aren't sent yet, so a plain
@@ -327,6 +356,68 @@ class Handler(BaseHTTPRequestHandler):
                 settings.update(partial)
                 settings.apply()
                 return self._send_json({"ok": True, "provider": provider, "model": model or ""})
+            if path in ("/api/mission", "/api/mission/confirm", "/api/mission/resume",
+                        "/api/mission/tick"):
+                # The NL front door: start/gate/carry a delegate mission from the chat.
+                # CSRF-gated like every state-changing route — a mission runs the model
+                # and can fire (gated) real-world actions, so a drive-by must never start one.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "bad body"}, 400)
+                from . import settings
+                settings.apply()                          # run on the Settings-panel provider
+                from .missionweb import MissionService
+                svc = MissionService()
+                try:
+                    if path == "/api/mission":
+                        goal = (body.get("goal") or "").strip()
+                        if not goal:
+                            return self._send_json({"error": "goal required"}, 400)
+                        bounds = {}
+                        if body.get("price_floor") is not None:
+                            bounds["price_floor"] = body["price_floor"]
+                        return self._send_json(svc.start(
+                            goal, autonomous=bool(body.get("autonomous")), **bounds))
+                    mid = (body.get("id") or "").strip()
+                    if not mid:
+                        return self._send_json({"error": "id required"}, 400)
+                    if path == "/api/mission/confirm":
+                        return self._send_json(svc.confirm(mid, (body.get("nonce") or "").strip()))
+                    if path == "/api/mission/resume":
+                        return self._send_json(svc.resume(mid))
+                    return self._send_json(svc.tick(mid))     # /api/mission/tick
+                finally:
+                    svc.close()
+            if path == "/api/route":
+                # The classifying "head": type a message (chat/code/mission) so the UI
+                # routes it. CSRF-gated (it runs the model). Model down -> 503, honestly.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "bad body"}, 400)
+                text = (body.get("text") or "").strip()
+                if not text:
+                    return self._send_json({"error": "text required"}, 400)
+                from . import settings
+                settings.apply()
+                from .router import classify, ModelUnavailable, DEFAULT_ROUTER_MODEL
+                from .providers import make_provider
+                try:
+                    # the router runs on every message's critical path. Default it to
+                    # Sonnet (fast + capable; all of haiku/sonnet/opus scored 28/28 on the
+                    # battery, so this trades only latency), overridable up (opus) or down
+                    # (haiku) via COLLIE_ROUTER_MODEL. Only anthropic providers take a claude
+                    # model id; others keep their own default.
+                    _name = os.environ.get("COLLIE_PROVIDER", "mock")
+                    _rmodel = os.environ.get("COLLIE_ROUTER_MODEL") or (
+                        DEFAULT_ROUTER_MODEL if _name in ("anthropic-oauth", "anthropic") else None)
+                    prov = make_provider(_name, _rmodel)
+                    return self._send_json(classify(text, prov))
+                except ModelUnavailable as e:
+                    return self._send_json({"error": "model_unavailable", "detail": str(e)}, 503)
             if path == "/api/write":
                 # code-editor write-back: verify (compile + relevant tests) then write, or reject.
                 # CSRF-gated like every state-changing route; a whole file can be up to ~2MB.

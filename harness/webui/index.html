@@ -738,6 +738,29 @@
     .gate { display: none; }   /* sidebar is a shallow band on mobile — runbar mini-gate carries the state */
   }
   @media (max-width: 520px) { .receipt { grid-template-columns: repeat(2, 1fr); } }
+  /* delegate mission card (the NL front door: "/mission <goal>") */
+  .msg.mission .mbody { display: flex; flex-direction: column; gap: 8px; }
+  .mhead { display: flex; gap: 8px; align-items: center; }
+  .mgoal { font-weight: 600; }
+  .mnote { color: var(--faint); font-size: 13px; }
+  .mchip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
+           background: color-mix(in srgb, var(--meadow) 22%, transparent); border: 1px solid var(--line); }
+  .mchip.step { background: transparent; color: var(--faint); }
+  .mchip.state-needs_you { background: color-mix(in srgb, #e8a33d 30%, transparent); }
+  .mchip.state-waiting { background: color-mix(in srgb, #4a90d9 24%, transparent); }
+  .mchip.state-running { background: color-mix(in srgb, var(--meadow) 30%, transparent); }
+  .mchip.state-done_verified, .mchip.state-done_accepted { background: color-mix(in srgb, var(--pine) 34%, transparent); }
+  .mchip.state-failed { background: color-mix(in srgb, #d95c5c 30%, transparent); }
+  .mcase { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--faint);
+           border-left: 2px solid var(--line); padding-left: 10px; }
+  .msteps { display: flex; flex-wrap: wrap; gap: 6px; }
+  .macts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
+  .mbtn { padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); cursor: pointer;
+          background: var(--surface); color: var(--ink); font-size: 13px; }
+  .mbtn.confirm { background: color-mix(in srgb, #e8a33d 26%, transparent); border-color: #e8a33d; }
+  .mbtn.accept { background: color-mix(in srgb, var(--pine) 24%, transparent); }
+  .mbtn:disabled { opacity: .5; cursor: default; }
+  .margs { font-size: 12px; color: var(--faint); word-break: break-all; }
 </style>
 
 <div class="app">
@@ -1491,6 +1514,110 @@
     return m;
   }
 
+  // ---- delegate missions: NL goal -> a durable, gated, verified campaign -----
+  function missionPost(path, body) {
+    return fetch(path + "?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    }).then(function (r) { return r.json(); });
+  }
+  function mchip(txt, cls) {
+    var s = document.createElement("span"); s.className = "mchip " + (cls || "");
+    s.textContent = txt; return s;
+  }
+  function _startMissionCard(goal) {
+    var card = document.createElement("div");
+    card.className = "msg assistant mission";
+    card.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div>' +
+      '<div class="bubble"><div class="who">Collie · delegate</div><div class="mbody"></div></div>';
+    var w = $("welcome"); if (w) w.remove();
+    $("log").appendChild(card); scrollDown(true);
+    card.querySelector(".mbody").textContent = t("starting the mission…");
+    missionPost("/api/mission", { goal: goal }).then(function (st) {
+      renderMission(card, st);
+    }).catch(function (e) { card.querySelector(".mbody").textContent = "error: " + e; });
+  }
+  function startMission(goal) { addMsg("user", "/mission " + goal); _startMissionCard(goal); }
+  function startMissionFromGoal(goal) { _startMissionCard(goal); }   // the router already showed the user msg
+
+  // a tiny "routing…" placeholder shown while the classifying head decides
+  function addRoutingHint() {
+    var m = document.createElement("div");
+    m.className = "msg assistant";
+    m.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div>' +
+      '<div class="bubble"><div class="who">Collie</div><div class="mnote">' + t("routing…") + '</div></div>';
+    $("log").appendChild(m); scrollDown();
+    return m;
+  }
+  // abstain affordance: the model leaned mission but below the bar -> we ran chat,
+  // and offer a one-click promote (CLINC150 abstain, RouteLLM threshold).
+  function offerPromote(goal, kind) {
+    var m = document.createElement("div");
+    m.className = "msg assistant";
+    m.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div>' +
+      '<div class="bubble"><div class="who">Collie</div></div>';
+    var b = m.querySelector(".bubble");
+    var note = document.createElement("span"); note.className = "mnote";
+    note.textContent = t("Looks like this could be a delegated task. ");
+    var btn = document.createElement("button"); btn.className = "mbtn accept";
+    btn.textContent = t("Run as mission");
+    btn.onclick = function () { btn.disabled = true; startMissionFromGoal(goal); };
+    b.appendChild(note); b.appendChild(btn);
+    $("log").appendChild(m); scrollDown();
+  }
+  function renderMission(card, st) {
+    var b = card.querySelector(".mbody"); b.textContent = "";
+    if (st.error && !st.mission_id) { b.textContent = "error: " + st.error; return; }
+    var head = document.createElement("div"); head.className = "mhead";
+    head.appendChild(mchip(st.state, "state-" + st.state));
+    if (st.error) head.appendChild(mchip(st.error, "state-failed"));
+    b.appendChild(head);
+    var goal = document.createElement("div"); goal.className = "mgoal"; goal.textContent = st.goal;
+    b.appendChild(goal);
+    if (st.result) { var r = document.createElement("div"); r.className = "mnote"; r.textContent = st.result; b.appendChild(r); }
+    var keys = Object.keys(st.case || {});
+    if (keys.length) {
+      var cl = document.createElement("div"); cl.className = "mcase";
+      keys.forEach(function (k) {
+        var v = st.case[k]; if (v && typeof v === "object") v = JSON.stringify(v);
+        var row = document.createElement("div"); row.textContent = k + ": " + String(v).slice(0, 140);
+        cl.appendChild(row);
+      });
+      b.appendChild(cl);
+    }
+    if ((st.steps || []).length) {
+      var sl = document.createElement("div"); sl.className = "msteps";
+      st.steps.forEach(function (s) { sl.appendChild(mchip(s.name + " · " + s.verdict, "step")); });
+      b.appendChild(sl);
+    }
+    var acts = document.createElement("div"); acts.className = "macts";
+    var reload = function (x) { renderMission(card, x); };
+    if (st.inbox) {                         // a gated irreversible action awaits your OK
+      var cbtn = document.createElement("button"); cbtn.className = "mbtn confirm";
+      cbtn.textContent = t("Confirm & run") + ": " + st.inbox.capability;
+      cbtn.onclick = function () {
+        cbtn.disabled = true;
+        missionPost("/api/mission/confirm", { id: st.mission_id, nonce: st.inbox.nonce }).then(reload);
+      };
+      acts.appendChild(cbtn);
+      var ap = document.createElement("div"); ap.className = "margs";
+      ap.textContent = t("will run with") + ": " + JSON.stringify(st.inbox.args).slice(0, 220);
+      acts.appendChild(ap);
+    } else if (st.needs_human) {            // hand-off: your call
+      var abtn = document.createElement("button"); abtn.className = "mbtn accept";
+      abtn.textContent = t("Accept & take over");
+      abtn.onclick = function () { abtn.disabled = true; missionPost("/api/mission/resume", { id: st.mission_id }).then(reload); };
+      acts.appendChild(abtn);
+    } else if (st.state === "waiting") {    // durable poll pending
+      var kbtn = document.createElement("button"); kbtn.className = "mbtn check";
+      kbtn.textContent = t("Check now");
+      kbtn.onclick = function () { kbtn.disabled = true; missionPost("/api/mission/tick", { id: st.mission_id }).then(reload); };
+      acts.appendChild(kbtn);
+    }
+    if (acts.children.length) b.appendChild(acts);
+    scrollDown();
+  }
+
   // After a dropped SSE connection the run often FINISHED server-side (the answer was saved) — the
   // transport just died mid-stream (common on WSL2 localhost forwarding). Poll the session and, once
   // the assistant answer lands, re-render the whole thread so the user gets their answer instead of
@@ -1992,10 +2119,40 @@
       openModelPicker();
       return;
     }
+    if (q.indexOf("/mission ") === 0 || q.indexOf("/delegate ") === 0) {
+      // NL front door: hand an open-ended world errand to the delegate. The model
+      // decides the flow; the mission container gates/persists/verifies it.
+      input.value = ""; input.style.height = "auto";
+      startMission(q.replace(/^\/(mission|delegate)\s+/, ""));
+      return;
+    }
     if (!q && !imgs.length) return;
+    // explicit overrides force the interactive stream (skip the classifier)
+    var forced = null;
+    if (/^\/code\s+/i.test(q)) { forced = "code"; q = q.replace(/^\/code\s+/i, ""); }
+    else if (/^\/chat\s+/i.test(q)) { forced = "chat"; q = q.replace(/^\/chat\s+/i, ""); }
     input.value = ""; input.style.height = "auto";
     addMsg("user", q, imgs);            // show text + attached image thumbnails
     clearAttached();
+    // the classifying head: plain text is routed (chat/code -> stream, mission -> the
+    // delegate); images or an explicit prefix skip straight to the stream.
+    if (forced || imgs.length) { runStream(q, imgs, null); return; }
+    var routeHint = addRoutingHint();
+    missionPost("/api/route", { text: q }).then(function (d) {
+      if (routeHint && routeHint.remove) routeHint.remove();
+      if (d && d.error === "model_unavailable") {
+        addErr(t("model unavailable — set a working provider in Settings")); return;
+      }
+      if (d && d.kind === "mission") { startMissionFromGoal(d.goal || q); return; }
+      runStream(q, imgs, (d && d.abstained) ? (d.suggested || "mission") : null);
+    }).catch(function () {          // the local server itself is unreachable -> let the stream surface it
+      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs, null);
+    });
+  }
+
+  // the interactive stream run (chat/code) — extracted so the classifying head can gate it
+  function runStream(q, imgs, promote) {
+    var input = $("input");
     addPending();                       // live "thinking" bubble in the conversation
     scrollDown(true);                   // sending always jumps to the latest
 
@@ -2008,6 +2165,7 @@
     $("sendIcon").innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
     // input stays ENABLED so you can steer while it works; the button becomes Stop.
     input.placeholder = t("Steer while Collie works — Enter to send");
+    if (promote) offerPromote(q, promote);   // abstained mission -> offer a one-click promote
 
     // upload any attached images first (-> ids), then open the stream referencing them
     var launch = function (imgIds) {

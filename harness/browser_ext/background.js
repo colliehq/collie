@@ -112,15 +112,78 @@ function pageClick(text, selector) {
 function pageType(selector, text, submit) {
   const el = document.querySelector(selector);
   if (!el) return { error: "no field " + selector };
-  el.focus(); el.value = text;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.focus();
+  // React-controlled inputs (Facebook, most SPAs) ignore a plain `el.value = text` —
+  // set through the NATIVE prototype setter so React's tracker registers it. Inlined
+  // (not a shared helper): this function is injected into the PAGE via
+  // chrome.scripting.executeScript and cannot reference other extension-scope functions.
+  {
+    const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+                                            : window.HTMLInputElement.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, "value");
+    if (d && d.set) d.set.call(el, text); else el.value = text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
   if (submit) {
     const form = el.form;
     if (form) form.submit();
     else el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   }
   return { typed: (text || "").slice(0, 40), submit: !!submit };
+}
+
+// Type into the input/textarea whose enclosing <label> matches `labelText` — robust on
+// obfuscated forms (Facebook Marketplace, etc.) where inputs have no stable selector.
+// Self-contained: this runs injected in the PAGE, so it can't call other extension fns.
+function pageTypeLabel(labelText, text) {
+  const t = (labelText || "").toLowerCase();
+  const el = [...document.querySelectorAll("input,textarea")].find((e) => {
+    const l = e.closest("label"); return l && (l.innerText || "").toLowerCase().includes(t);
+  });
+  if (!el) return { error: "no field labeled " + labelText };
+  el.focus();
+  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+                                          : window.HTMLInputElement.prototype;
+  const d = Object.getOwnPropertyDescriptor(proto, "value");
+  if (d && d.set) d.set.call(el, text); else el.value = text;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return { typed: (text || "").slice(0, 40), value: (el.value || "").slice(0, 40), label: labelText };
+}
+
+// Pick an option from a labelled dropdown/combobox: click the combobox, wait for its
+// listbox to render, click the option matching `optionText`. Generic (role=combobox +
+// role=option), not site-specific.
+async function pagePick(labelText, optionText) {
+  const t = (labelText || "").toLowerCase();
+  const trig = [...document.querySelectorAll("[role=combobox]")].find((c) => {
+    const l = c.closest("label") || c; return (l.innerText || "").toLowerCase().includes(t);
+  });
+  if (!trig) return { error: "no dropdown labeled " + labelText };
+  trig.click();
+  await new Promise((r) => setTimeout(r, 700));
+  const opts = [...document.querySelectorAll("[role=option]")];
+  const o = (optionText || "").toLowerCase();
+  const opt = opts.find((e) => (e.innerText || "").trim().toLowerCase() === o)
+           || opts.find((e) => (e.innerText || "").toLowerCase().includes(o));
+  if (!opt) return { error: "no option " + optionText + " under " + labelText,
+                     options: opts.slice(0, 8).map((e) => (e.innerText || "").trim()) };
+  opt.scrollIntoView(); opt.click();
+  await new Promise((r) => setTimeout(r, 200));
+  return { picked: optionText, label: labelText };
+}
+
+// List the labelled form controls on the page (label, kind, current value) so the agent
+// can see what to fill without guessing selectors.
+function pageFields() {
+  return [...document.querySelectorAll("input,textarea,[role=combobox]")].map((e) => {
+    const l = e.closest("label"); const lt = l ? (l.innerText || "").trim().split("\n")[0] : "";
+    const role = e.getAttribute("role");
+    return { label: lt || e.getAttribute("aria-label") || "",
+             kind: role === "combobox" ? "dropdown" : (e.tagName === "TEXTAREA" ? "text" : (e.getAttribute("type") || "text")),
+             value: (e.value || "").slice(0, 40) };
+  }).filter((x) => x.label && x.kind !== "hidden");
 }
 
 function pageUpload(selector, files) {
@@ -236,7 +299,11 @@ async function handle(cmd) {
       await new Promise((z) => setTimeout(z, 800));
       return { click: r, page: await exec(pageRead, []) };
     }
-    if (cmd.action === "type") return await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
+    if (cmd.action === "type") return cmd.label
+      ? await exec(pageTypeLabel, [cmd.label, cmd.text])
+      : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
+    if (cmd.action === "pick") return await exec(pagePick, [cmd.label, cmd.option]);
+    if (cmd.action === "fields") return await exec(pageFields, []);
     if (cmd.action === "upload") return await exec(pageUpload, [cmd.selector, cmd.files || []]);
     if (cmd.action === "console") return await getConsole(!!cmd.clear);
     if (cmd.action === "eval") return await evalExpr(cmd.expr || "");

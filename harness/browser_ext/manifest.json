@@ -6,5 +6,9 @@
   "permissions": ["scripting", "tabs", "activeTab", "debugger", "alarms", "storage"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "<all_urls>"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_title": "collie bridge (polling localhost)" }
+  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
+  "action": {
+    "default_title": "collie bridge (polling localhost)",
+    "default_icon": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
+  }
 }
