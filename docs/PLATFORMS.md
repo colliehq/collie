@@ -12,13 +12,22 @@ Everything platform-specific is one module, so the rest of the harness stays por
 
 | Function | POSIX (Linux/macOS/WSL) | Windows |
 |---|---|---|
+| `posix_shell()` | `/bin/sh` | Git Bash → MSYS2 → Cygwin (skips the `System32\bash.exe` WSL stub); `None` if none found |
+| `shell_argv(cmd)` | `(cmd, shell=True)` via `/bin/sh` | `([bash, "-c", cmd], shell=False)` if a POSIX shell exists, else `(cmd, shell=True)` → cmd.exe |
 | `kill_tree(proc)` | `killpg(getpgid(pid), SIGKILL)` — reaps the session + all grandchildren | `taskkill /F /T /PID` — walks the PID tree |
 | `new_group_kwargs()` | `{"start_new_session": True}` (own process group) | `{}` (taskkill /T handles the tree) |
 | `rmtree(path)` | `shutil.rmtree` (was `rm -rf`) | `shutil.rmtree` |
 | `open_excl(path)` | `O_CREAT\|O_EXCL\|O_WRONLY \| O_NOFOLLOW` (symlink-planting guard) | same, minus `O_NOFOLLOW` (absent on Windows) |
 | `chmod_private(path)` | `chmod 0600` (owner-only) | no-op (Windows ACLs differ) |
 | `to_host_path(p)` | identity | — (only WSL differs; see below) |
-| `shell_hint()` | "" (the model's Unix habits are correct) | steers the agent to the file/search tools, away from `ls/grep/rm` |
+| `shell_hint()` | "" (the model's Unix habits are correct) | "" when a POSIX shell is present; only when none is found does it steer to the file/search tools |
+
+**The shell contract.** collie routes every shell call — the `bash` tool, `grep`, `pack --check`,
+`loop --until` — through `shell_argv()`, so one POSIX dialect works identically on every OS. On
+Windows that means a real bash (Git Bash / MSYS2 / Cygwin); the WSL `System32\bash.exe` launcher is
+deliberately skipped because it runs commands inside the Linux filesystem with different cwd/path
+semantics. Where no POSIX shell is found, `bash` degrades to cmd.exe and `shell_hint()` steers the
+model toward the native file/search tools — but installing Git Bash restores full parity.
 
 Detection: `is_windows()`, `is_macos()`, `is_wsl()`, `os_label()`. Nothing branches at
 import time — each call checks the live OS, so a single build degrades gracefully where a
@@ -33,7 +42,7 @@ structurally, so the same test is meaningful on Linux, macOS, and Windows).
 |---|---|---|---|
 | **Linux (native)** | ✅ | ✅ same-OS localhost | the primary development target |
 | **macOS (native)** | ✅ | ✅ same-OS localhost | POSIX; the *simplest* bridge setup |
-| **Windows (native)** | ⚠️ runs | ✅ same-OS localhost | no POSIX shell — see "Windows" below |
+| **Windows (native)** | ✅ (Git Bash) | ✅ same-OS localhost | full parity with Git Bash; degrades without it — see "Windows" below |
 | **WSL2** | ✅ | ⚠️ cross-OS | Windows Chrome ↔ WSL server; see "WSL" below |
 
 ## The browser bridge, per OS (the one real platform nuance)
@@ -64,13 +73,15 @@ sit relative to each other is the only thing that changes:
 
 The core agent runs on native Windows, with two things to know:
 
-1. **No POSIX shell.** The agent's habit is to emit Unix commands (`ls`, `grep`, `cat`,
-   `rm`, `find`). On Windows `bash` maps to PowerShell/cmd, where those fail. Collie mitigates
-   this by (a) leaning on the **native, cross-platform tools** — `read_file`, `edit_file`,
-   `code_search` (ripgrep), `glob`, `execute_code` — which cover most work without a shell,
-   and (b) injecting `plat.shell_hint()` so the model prefers those tools and avoids Unix
-   commands. `bash` remains a rarely-needed escape hatch. For a heavy shell workflow, install
-   **Git Bash** (or run Collie under **WSL2**) to get a POSIX shell.
+1. **The shell is a POSIX shell.** collie discovers a real bash — **Git Bash**, MSYS2 or Cygwin —
+   and routes the `bash` tool, `grep`, `pack --check` and `loop --until` through it (`plat.shell_argv`),
+   so `ls`, `grep`, `;`, `&&`, pipes and heredocs behave exactly as on Linux/macOS. Git Bash ships
+   with **Git for Windows** (which most devs already have) and is preinstalled on GitHub's
+   `windows-latest` runner, so CI exercises the same commands there. If no POSIX shell is found,
+   `bash` falls back to cmd.exe and `plat.shell_hint()` steers the model toward the native,
+   cross-platform tools (`read_file`, `edit_file`, `code_search`, `glob`, `execute_code`) — install
+   Git Bash to restore full parity. (Prefer to avoid the WSL `System32\bash.exe` launcher: collie
+   skips it on purpose, since it runs commands in the Linux filesystem with different path semantics.)
 2. **Process/file primitives** are handled by `plat` (`taskkill /T` for timeouts, no-op
    `chmod`, `O_NOFOLLOW` omitted) — no action needed.
 

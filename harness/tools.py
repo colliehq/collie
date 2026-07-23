@@ -445,7 +445,11 @@ class BashTool(Tool):
         # stdout pipe keeps its write end open, so the follow-up drain would block forever and wedge
         # the whole agent loop — the same hazard GrepTool already guards against.
         try:
-            p = subprocess.Popen(args["command"], shell=True, cwd=ctx.cwd,
+            # Route through plat.shell_argv so `;`, `&&`, pipes and heredocs mean the same on every
+            # OS: POSIX uses /bin/sh; Windows uses Git Bash/MSYS2 if present (else cmd.exe, degraded).
+            # Inside the try so a missing `command` key returns a graceful ERROR, never raises.
+            _cmdargs, _use_shell = plat.shell_argv(args["command"])
+            p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                  env=_shim_env(), **plat.new_group_kwargs())
         except Exception as e:
@@ -618,7 +622,8 @@ class GrepTool(Tool):
         # holding the stdout pipe and communicate() hangs forever.
         import os as _os
         import signal as _sig
-        p = subprocess.Popen(cmd, shell=True, cwd=ctx.cwd, stdout=subprocess.PIPE,
+        _cmdargs, _use_shell = plat.shell_argv(cmd)          # POSIX shell on every OS (Git Bash on Win)
+        p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True, **plat.new_group_kwargs())
         try:
             out, _ = p.communicate(timeout=25)

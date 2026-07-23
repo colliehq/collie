@@ -195,6 +195,75 @@ class LocalEmbedding(EmbeddingProvider):
         return out
 
 
+# The default real embedder: IBM granite-embedding-107m-multilingual. Apache-2.0, ~55MB int8,
+# 384-d, CLS-pooled, strong cross-lingual (measured LOCOMO recall@10 0.600 with correct CLS pooling
+# — near jina-v3's 0.621 at 1/40th the size; see docs/MEMORY_BENCH.md). Loaded via raw onnxruntime
+# (NOT fastembed, whose Python model menu lacks it), so collie can run ANY ONNX model on the Hub.
+GRANITE = "ibm-granite/granite-embedding-107m-multilingual"
+
+
+class OnnxEmbedding(EmbeddingProvider):
+    """Any ONNX sentence-embedding model, run through onnxruntime + tokenizers directly (no torch,
+    no fastembed). This is what frees collie from fastembed's narrow Python model list: point it at
+    a HuggingFace repo's .onnx + tokenizer and it works. Handles CLS vs mean pooling and the e5
+    `query:`/`passage:` prefix. Cross-platform: onnxruntime ships CPU wheels for win/mac/linux."""
+
+    def __init__(self, repo: str = GRANITE, onnx_file: str = "model.onnx", pooling: str = "cls",
+                 e5_prefix: bool = False, tok_file: str = "tokenizer.json",
+                 data_file: str | None = None, name: str | None = None):
+        self.model = repo
+        self.name = name or repo.split("/")[-1]
+        self.pooling = pooling                             # "cls" (granite/bge/arctic) | "mean" (e5/gte)
+        self.e5_prefix = e5_prefix
+        _t = os.environ.get("COLLIE_EMBED_THREADS")
+        threads = int(_t) if _t else min(8, os.cpu_count() or 8)
+
+        def mk():
+            import numpy as np
+            from huggingface_hub import hf_hub_download
+            from tokenizers import Tokenizer
+            import onnxruntime as ort
+            if data_file:                                  # external-weights models (e.g. bge-m3)
+                hf_hub_download(repo, data_file)
+            mp = hf_hub_download(repo, onnx_file)
+            tp = hf_hub_download(repo, tok_file)
+            self._np = np
+            self._tok = Tokenizer.from_file(tp)
+            self._tok.enable_truncation(max_length=512)
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = threads
+            self._sess = ort.InferenceSession(mp, sess_options=so, providers=["CPUExecutionProvider"])
+            self._inputs = {i.name for i in self._sess.get_inputs()}
+            return True
+        _hf_build(mk, repo)                                # first use downloads — mirror retry inside
+        self.dim = len(self.embed("dimension probe"))
+
+    def embed(self, text: str, kind: str = "passage") -> list[float]:
+        return self.embed_batch([text], kind)[0]
+
+    def embed_batch(self, texts: list[str], kind: str = "passage") -> list[list[float]]:
+        np = self._np
+        out = []
+        for t in texts:
+            if self.e5_prefix:
+                t = ("query: " if kind == "query" else "passage: ") + t
+            enc = self._tok.encode(t)
+            ids = np.array([enc.ids], dtype=np.int64)
+            mask = np.array([enc.attention_mask], dtype=np.int64)
+            feed = {"input_ids": ids, "attention_mask": mask}
+            if "token_type_ids" in self._inputs:
+                feed["token_type_ids"] = np.zeros_like(ids)
+            last = self._sess.run(None, feed)[0]           # (1, seq, dim)
+            if self.pooling == "cls":
+                vec = last[0][0]
+            else:
+                m = mask[0][:, None].astype(np.float32)
+                vec = (last[0] * m).sum(0) / max(float(m.sum()), 1e-9)
+            n = float(np.linalg.norm(vec)) or 1.0
+            out.append((vec / n).astype(np.float32).tolist())
+        return out
+
+
 class STEmbedding(EmbeddingProvider):
     """sentence-transformers backend — for models fastembed lacks, notably
     Qwen/Qwen3-Embedding-0.6B (2025-26 MTEB leader, big code-retrieval edge, Apache-2.0).
@@ -219,100 +288,6 @@ class STEmbedding(EmbeddingProvider):
         return self.embed_batch([text], kind)[0]
 
 
-class DaemonEmbedding(EmbeddingProvider):
-    """Client to the resident embed daemon (embed_server) — keeps the model warm ACROSS `collie`
-    invocations so each call embeds in ~50-150ms instead of paying the ~1.3s cold load. Policy:
-    if the daemon is up, use it. If not, spawn it and WAIT for it to load (the daemon binds its
-    socket only after the model is ready, so a successful ping == warm) — the model loads ONCE,
-    in the daemon, not twice. First-ever call is ~as slow as today; every call after is fast.
-    If the daemon can't come up at all, fall back to an in-process model so nothing breaks."""
-
-    def __init__(self, model: str = "jinaai/jina-embeddings-v3"):
-        import json
-        import socket
-        import time
-        self._json = json
-        self._socket = socket
-        self._time = time
-        self.model = model
-        self.name = model.split("/")[-1]
-        from .embed_server import sock_path
-        self._path = sock_path(model)
-        self._fallback = None                 # in-process LocalEmbedding, only if daemon fails
-        try:
-            self.dim = self._request({"op": "ping"}, timeout=3)["dim"]
-            return                            # daemon already warm
-        except Exception:
-            pass
-        self._spawn()                         # not up -> start it and wait for it to load once
-        for _ in range(140):                  # up to ~21s for the model to warm
-            try:
-                self.dim = self._request({"op": "ping"}, timeout=3)["dim"]
-                return
-            except Exception:
-                # if the daemon PROCESS already died (model load failed), stop waiting the full 21s
-                # and degrade in-process immediately instead of stalling then re-crashing.
-                if getattr(self, "_proc", None) is not None and self._proc.poll() is not None:
-                    break
-                time.sleep(0.15)
-        self._use_fallback()                  # daemon never came up -> in-process
-
-    def _request(self, obj, timeout=130):
-        s = self._socket.socket(self._socket.AF_UNIX)
-        s.settimeout(timeout)
-        s.connect(self._path)
-        try:
-            s.sendall((self._json.dumps(obj) + "\n").encode())
-            buf = b""
-            while b"\n" not in buf:
-                ch = s.recv(1 << 20)
-                if not ch:
-                    break
-                buf += ch
-        finally:
-            s.close()
-        # A truncated frame (daemon killed mid-send) has no newline and non-empty bytes ->
-        # json.loads would raise JSONDecodeError (a ValueError, NOT OSError) and escape the
-        # callers' fallback. Normalize EVERY malformed reply to OSError so the in-process
-        # fallback always engages instead of crashing the run.
-        if b"\n" not in buf and buf:
-            raise OSError("truncated daemon response")
-        try:
-            r = self._json.loads(buf.split(b"\n", 1)[0] or b"{}")
-        except ValueError as e:
-            raise OSError("garbled daemon response: %s" % e)
-        if not r.get("ok"):
-            raise OSError("daemon error: %s" % r.get("error"))
-        return r
-
-    def _spawn(self):
-        import subprocess
-        self._proc = None
-        try:
-            self._proc = subprocess.Popen(
-                [__import__("sys").executable, "-m", "harness.embed_server", "--model", self.model],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **plat.new_group_kwargs())
-        except Exception:
-            pass
-
-    def _use_fallback(self):
-        if self._fallback is None:
-            self._fallback = LocalEmbedding(self.model)
-            self.dim = self._fallback.dim
-
-    def embed(self, text: str, kind: str = "passage") -> list[float]:
-        return self.embed_batch([text], kind)[0]
-
-    def embed_batch(self, texts: list[str], kind: str = "passage") -> list[list[float]]:
-        if self._fallback is not None:
-            return self._fallback.embed_batch(texts, kind)
-        try:
-            return self._request({"texts": texts, "kind": kind})["vectors"]
-        except Exception:                     # any daemon failure -> in-process (never crash)
-            self._use_fallback()
-            return self._fallback.embed_batch(texts, kind)
-
-
 _EMB_CACHE = {}
 
 
@@ -329,17 +304,33 @@ def make_embedding(name: str = "hash") -> EmbeddingProvider:
 
 
 def _build_embedding(name: str) -> EmbeddingProvider:
-    if name == "daemon":
-        return DaemonEmbedding()
     if name == "hash":
         return HashEmbedding()
-    if name in ("local", "e5", "prod"):
-        return LocalEmbedding()
+    if name in ("granite", "local", "prod", "default"):   # the permissive default real embedder
+        return OnnxEmbedding(GRANITE, pooling="cls")
+    if name in ("bge-m3", "m3"):                          # quality opt-in: MIT, dense+sparse+colbert
+        return OnnxEmbedding("BAAI/bge-m3", onnx_file="onnx/model.onnx",
+                             data_file="onnx/model.onnx_data", pooling="cls", name="bge-m3")
+    if name in ("gte", "gte-multilingual"):
+        return OnnxEmbedding("onnx-community/gte-multilingual-base",
+                             onnx_file="onnx/model_int8.onnx", pooling="cls", name="gte-multilingual")
+    if name in ("e5", "e5-small"):                        # multilingual-e5-small int8 (MIT, mean-pooled)
+        return OnnxEmbedding("intfloat/multilingual-e5-small",
+                             onnx_file="onnx/model_qint8_avx512_vnni.onnx", tok_file="onnx/tokenizer.json",
+                             pooling="mean", e5_prefix=True, name="e5-small")
+    if name in ("jina", "jina-v3"):                      # fastembed jina-v3 (CC-BY-NC) — explicit opt-in
+        return LocalEmbedding("jinaai/jina-embeddings-v3")
     if name in ("qwen3", "qwen3-embed"):
         return STEmbedding("Qwen/Qwen3-Embedding-0.6B")
-    if name.startswith("st:"):                          # st:<hf-model-id> via sentence-transformers
+    if name.startswith("onnx:"):                         # onnx:<repo>[:cls|mean] via raw onnxruntime
+        rest = name.split(":", 1)[1]
+        pool = "cls"
+        if rest.endswith(":mean") or rest.endswith(":cls"):
+            rest, pool = rest.rsplit(":", 1)
+        return OnnxEmbedding(rest, pooling=pool)
+    if name.startswith("st:"):                           # st:<hf-model-id> via sentence-transformers
         return STEmbedding(name.split(":", 1)[1])
-    if name.startswith("local:"):                       # local:<hf-model-id> via fastembed
+    if name.startswith("local:"):                        # local:<hf-model-id> via fastembed
         return LocalEmbedding(name.split(":", 1)[1])
     raise ValueError("unknown embedding: %s" % name)
 
@@ -360,7 +351,58 @@ class Reranker:
         raise NotImplementedError
 
 
+# Default reranker: bge-reranker-v2-m3 int8 (Apache-2.0, multilingual incl. strong Chinese). Chosen
+# over jina-reranker-v2 (CC-BY-NC — can't be a permissive default) after a design-space sweep; run
+# via onnxruntime int8 and capped to the top candidates, it's the low-spec-viable cross-encoder
+# (LOCOMO: granite+this-reranker top-20 = 0.644 vs granite-only 0.556, at ~6x less CPU than jina).
+RERANKER = "onnx-community/bge-reranker-v2-m3-ONNX"
+
+
+class OnnxReranker(Reranker):
+    """Cross-encoder reranker via onnxruntime int8 (no torch, no fastembed). Scores (query, doc)
+    jointly. Capped to the top `cap` candidates so the per-query cost stays weak-CPU-viable."""
+
+    def __init__(self, repo: str = RERANKER, onnx_file: str = "onnx/model_int8.onnx",
+                 tok_file: str = "tokenizer.json", cap: int = 20):
+        self.cap = cap
+        self.name = "rerank:" + repo.split("/")[-1]
+
+        def mk():
+            import numpy as np
+            from huggingface_hub import hf_hub_download
+            from tokenizers import Tokenizer
+            import onnxruntime as ort
+            self._np = np
+            self._tok = Tokenizer.from_file(hf_hub_download(repo, tok_file))
+            self._tok.enable_truncation(max_length=512)
+            so = ort.SessionOptions()
+            _t = os.environ.get("COLLIE_EMBED_THREADS")
+            so.intra_op_num_threads = int(_t) if _t else min(8, os.cpu_count() or 8)
+            self._sess = ort.InferenceSession(hf_hub_download(repo, onnx_file), sess_options=so,
+                                              providers=["CPUExecutionProvider"])
+            self._inputs = {i.name for i in self._sess.get_inputs()}
+            return True
+        _hf_build(mk, repo)
+
+    def rerank(self, query: str, docs: list[str]) -> list[float]:
+        if not docs:
+            return []
+        np = self._np
+        scores = [-1e9] * len(docs)
+        for i in range(min(self.cap, len(docs))):          # only the top `cap` candidates
+            enc = self._tok.encode(query, docs[i][:1200])   # RoBERTa pair encoding
+            ids = np.array([enc.ids], dtype=np.int64)
+            mask = np.array([enc.attention_mask], dtype=np.int64)
+            feed = {"input_ids": ids, "attention_mask": mask}
+            if "token_type_ids" in self._inputs:
+                feed["token_type_ids"] = np.zeros_like(ids)
+            scores[i] = float(self._sess.run(None, feed)[0].reshape(-1)[0])
+        return scores
+
+
 class LocalReranker(Reranker):
+    """fastembed cross-encoder (jina-reranker-v2, CC-BY-NC). Kept as an explicit opt-in only —
+    NOT the default, because its non-commercial license can't ship as a permissive default."""
     def __init__(self, model: str = "jinaai/jina-reranker-v2-base-multilingual"):
         def mk():
             from fastembed.rerank.cross_encoder import TextCrossEncoder
@@ -380,9 +422,13 @@ def make_reranker(name: str | None):
         return None
     if name in _RERANK_CACHE:                            # cache the cross-encoder model (same
         return _RERANK_CACHE[name]                       # per-request ONNX-leak hazard as embedders)
-    if name in ("local", "jina", "on"):
+    if name in ("local", "on", "bge", "default"):        # the permissive default (Apache, onnx int8)
+        r = OnnxReranker()
+    elif name in ("jina",):                              # explicit opt-in to the CC-BY-NC fastembed one
         r = LocalReranker()
-    elif name.startswith("local:"):                      # local:<hf-reranker-id>
+    elif name.startswith("onnx:"):                       # onnx:<hf-reranker-id>
+        r = OnnxReranker(name.split(":", 1)[1])
+    elif name.startswith("local:"):                      # local:<hf-reranker-id> via fastembed
         r = LocalReranker(name.split(":", 1)[1])
     else:
         raise ValueError("unknown reranker: %s" % name)

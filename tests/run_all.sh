@@ -3,7 +3,18 @@
 #   bash tests/run_all.sh
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
-[ -x "$PY" ] || PY=python3
+# fall back to whatever interpreter this OS actually ships. Use the BARE command name (not the
+# `command -v` path — that resolves to spaces like "C:\Users\Sining Xu\..." which split an unquoted
+# $PY, and to the broken Windows-Store python3 stub) and VERIFY it's a real Python 3 before picking
+# it — so the Store stub is skipped and `python` wins on Windows, `python3` on Linux/macOS.
+if [ ! -x "$PY" ]; then
+  PY=""
+  for c in python3 python; do
+    if "$c" -c 'import sys; sys.exit(0 if sys.version_info[0]==3 else 1)' >/dev/null 2>&1; then
+      PY=$c; break
+    fi
+  done
+fi
 rc=0
 
 echo "── py_compile (all modules) ─────────────────────────────"
@@ -45,8 +56,8 @@ else
 fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
-if python3 -c "import playwright" >/dev/null 2>&1; then
-  python3 tests/gui_test.py 2>&1 | grep -E "PASS|FAIL|GUI:" ; [ "${PIPESTATUS[0]}" = "0" ] || rc=1
+if "$PY" -c "import playwright" >/dev/null 2>&1; then
+  "$PY" tests/gui_test.py 2>&1 | grep -E "PASS|FAIL|GUI:" ; [ "${PIPESTATUS[0]}" = "0" ] || rc=1
 else
   echo "  (playwright not found — skipping GUI suite)"
 fi

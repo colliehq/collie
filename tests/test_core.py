@@ -5,6 +5,12 @@ import io, json, os, sys, tempfile, time, types, warnings
 warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
+class _Skip(Exception):
+    """Raise to skip a test that a given OS genuinely cannot exercise (e.g. creating a
+    symlink without privilege on Windows). Reported as SKIP — visible, not a silent pass
+    and not a failure — so the suite stays green cross-platform without hiding coverage."""
+
 # ------------------------------------------------------------------ sessions
 def test_sessions_toolcall_roundtrip():
     from harness import sessions as S
@@ -766,9 +772,14 @@ def test_skills_symlinked_dir_discovered():
             "---\nname: linked\ndescription: reached via symlink\n---\nbody\n")
         skdir = os.path.join(d, ".collie", "skills")
         os.makedirs(skdir, exist_ok=True)
-        os.symlink(os.path.join(real, "linked"), os.path.join(skdir, "linked"))
-        # a self-referential cycle: dir -> itself. followlinks=True must not loop forever.
-        os.symlink(skdir, os.path.join(skdir, "loop"))
+        try:
+            os.symlink(os.path.join(real, "linked"), os.path.join(skdir, "linked"))
+            # a self-referential cycle: dir -> itself. followlinks=True must not loop forever.
+            os.symlink(skdir, os.path.join(skdir, "loop"))
+        except (OSError, NotImplementedError) as e:
+            # Windows without Developer Mode / SeCreateSymbolicLink raises WinError 1314. The
+            # discovery code (os.walk followlinks=True) is portable; only the fixture needs a symlink.
+            raise _Skip("symlink creation not permitted on this OS: %s" % e)
         skills = discover_skills(d)                          # must terminate, must find 'linked'
         assert "linked" in {s["name"] for s in skills}, "symlinked skill must be discovered"
 
@@ -1786,13 +1797,23 @@ def test_dashboard_escapes_adversarial():
     assert "<img src=x onerror" not in html, "model field must be escaped (no live img tag)"
 
 # ------------------------------------------------------------------ codeindex invalidate
-def test_codeindex_invalidate():
+def test_codeindex_ripgrep_fresh():
+    """code_search is ripgrep-backed (no vector index): results always reflect CURRENT file
+    contents, so it never serves stale line numbers and invalidate() is a compatibility no-op."""
     from harness import codeindex as C
-    C._INDEX["/tmp/x"] = object()
-    C.invalidate("/tmp/x")
-    assert "/tmp/x" not in C._INDEX
-    C._INDEX["/a"] = 1; C.invalidate()
-    assert len(C._INDEX) == 0
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "mod.py")
+    open(p, "w", encoding="utf-8").write("def find_widget_by_name(x):\n    return x\n")
+    idx = C.get_index(d)
+    hits = idx.search("find_widget_by_name", k=3)
+    assert any("mod.py" in h and "find_widget_by_name" in h for h in hits), hits
+    # change the file; WITHOUT invalidate the next search must reflect the new symbol (freshness)
+    open(p, "w", encoding="utf-8").write("def resolve_gadget_ref(x):\n    return x\n")
+    C.invalidate(d)                                   # no-op, but must stay callable/safe
+    hits2 = idx.search("resolve_gadget_ref", k=3)
+    assert any("resolve_gadget_ref" in h for h in hits2), hits2
+    assert idx.search("find_widget_by_name", k=3) == [] or \
+        all("find_widget_by_name" not in h for h in idx.search("find_widget_by_name", k=3))
 
 def test_loop_whiteflag_rescue_and_restore():
     """sphinx-10435 regression lock: a model that edits, REVERTS itself, then insists on
@@ -1839,16 +1860,20 @@ def test_loop_whiteflag_rescue_and_restore():
 # ------------------------------------------------------------------ runner
 def main():
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
-    passed, failed = 0, []
+    passed, failed, skipped = 0, [], []
     for name, fn in tests:
         try:
             fn(); passed += 1; print("  PASS %s" % name)
+        except _Skip as s:
+            skipped.append(name); print("  SKIP %s :: %s" % (name, s))
         except Exception as e:
             failed.append(name)
             import traceback
             print("  FAIL %s :: %s" % (name, e))
             if os.environ.get("V"): traceback.print_exc()
-    print("\n== CORE: %d/%d passed ==%s" % (passed, len(tests), "" if not failed else " FAILS: " + ", ".join(failed)))
+    tail = "" if not failed else " FAILS: " + ", ".join(failed)
+    tail += "" if not skipped else " SKIPPED: " + ", ".join(skipped)
+    print("\n== CORE: %d/%d passed ==%s" % (passed, len(tests), tail))
     return 1 if failed else 0
 
 if __name__ == "__main__":

@@ -35,28 +35,30 @@ def _paths():
 
 
 def _embedder(embed="auto"):
-    """auto -> resident daemon (warm model, fast) if fastembed available, else hash.
-    Overrides: COLLIE_EMBED=hash|local|daemon forces a backend; COLLIE_EMBED_DAEMON=0 keeps
-    the model in-process (no daemon)."""
+    """Resolve the memory embedder. auto -> granite (in-process, no daemon) if its ONNX deps are
+    present, else None = BM25-only (NEVER HashEmbedding — measured worse than BM25). A named backend
+    (COLLIE_EMBED=granite|bge-m3|e5|jina|hash|onnx:<repo>|...) is honored as-is.
+
+    Returns an EmbeddingProvider or None (None => the memory pipeline runs sparse-only)."""
     embed = os.environ.get("COLLIE_EMBED", embed)
-    if embed in ("auto", "daemon", "local"):
-        use_daemon = embed != "local" and os.environ.get("COLLIE_EMBED_DAEMON") != "0"
+    if embed in ("bm25", "none", "off", "sparse"):
+        return None
+    if embed in ("auto", "granite", "local", "default", "daemon"):   # "daemon" = legacy alias
         try:
-            return make_embedding("daemon" if use_daemon else "local")
+            return make_embedding("granite")
         except Exception as e:
-            # stderr, NOT stdout — `run --json`/`--stream-json` promise machine-readable stdout,
-            # and this fires on every fastembed-less install (the default pipx one). Say WHY and
-            # the cure, or users sit on keyword-only retrieval thinking they have the real thing.
+            # stderr, NOT stdout — `run --json`/`--stream-json` promise machine-readable stdout.
+            # This fires when onnxruntime/tokenizers aren't installed or the model can't download.
             if isinstance(e, ImportError):
-                why, fix = ("fastembed not installed",
-                            "pipx inject collie-harness fastembed  (or pip install collie-harness[local])")
+                why, fix = ("onnxruntime/tokenizers not installed",
+                            "pip install collie-harness[local]   (or run: collie setup)")
             else:
                 why = "%s: %s" % (type(e).__name__, str(e)[:100])
-                fix = ("model download failed twice (huggingface.co + hf-mirror.com) — check the "
-                       "network, or set an intranet mirror: COLLIE_HF_ENDPOINT=<url>")
-            print("  [embed] local unavailable (%s) -> HashEmbedding (keyword-only, degraded)\n"
-                  "  [embed] fix: %s" % (why, fix), file=sys.stderr)
-            return make_embedding("hash")
+                fix = ("model download failed (huggingface.co + hf-mirror.com) — check the network, "
+                       "or set an intranet mirror: COLLIE_HF_ENDPOINT=<url>")
+            print("  [embed] semantic memory unavailable (%s) -> BM25-only (keyword retrieval)\n"
+                  "  [embed] enable it: %s" % (why, fix), file=sys.stderr)
+            return None
     return make_embedding(embed)
 
 
@@ -145,7 +147,9 @@ def cmd_loop(args):
             res = h.run("loop", task, consolidate=True)   # consolidate -> memory carries forward
             print(res.answer or res.error or "(no output)", flush=True)
             if args.until:
-                rc = _sp.run(args.until, shell=True, cwd=cwd).returncode
+                from . import plat
+                _uargs, _ush = plat.shell_argv(args.until)   # POSIX --until predicate on every OS
+                rc = _sp.run(_uargs, shell=_ush, cwd=cwd).returncode
                 print("  [until] `%s` → exit %d" % (args.until, rc), flush=True)
                 if rc == 0:
                     print("✓ goal condition met — stopping."); stopped = True; break
@@ -684,25 +688,24 @@ def cmd_jobs(args):
 
 
 def cmd_init(args):
-    """collie init — one-time repo prep. Everything collie does is lazy, so this only front-loads
-    the two costs a user would otherwise pay mid-conversation: the embedder's first-use model
-    download, and the code_search batch index (~seconds). --rules additionally has the MODEL explore
-    the repo and write an AGENTS.md (the opencode `/init` convention); collie reads AGENTS.md /
-    CLAUDE.md as project rules on every run."""
+    """collie init — one-time PROJECT prep for the current repo. code_search is ripgrep-backed now
+    (no index to build), so this front-loads the memory embedder's first-use model download and
+    validates the codemap. --rules additionally has the MODEL explore the repo and write an AGENTS.md
+    (the opencode `/init` convention); collie reads AGENTS.md / CLAUDE.md as project rules every run.
+    For machine-level setup (install deps, pick a provider), use `collie setup`."""
     import time as _t
     cwd = os.path.abspath(args.cwd or os.getcwd())
     print("collie init · %s" % cwd)
     if not args.no_config:
         _setup_wizard(force=True)     # provider/model first — init is also "set me up" (tty only)
     t0 = _t.time()
-    emb = _embedder(args.embed)                       # 1) warm the embedder (first use downloads)
-    emb.embed("warm-up", kind="query")
-    print("  ✓ embedder ready: %s (dim=%d)  [%.1fs]" % (emb.name, emb.dim, _t.time() - t0))
-    t1 = _t.time()
-    from . import codeindex                           # 2) code_search index (batch-embed the repo)
-    n = codeindex.get_index(cwd, emb).build()
-    print("  ✓ code index: %d chunks  [%.1fs]" % (n, _t.time() - t1))
-    from . import codemap                             # 3) codemap (cheap; validates the map view)
+    emb = _embedder(args.embed)                       # warm the memory embedder (first use downloads)
+    if emb is not None:
+        emb.embed("warm-up", kind="query")
+        print("  ✓ semantic memory ready: %s (dim=%d)  [%.1fs]" % (emb.name, emb.dim, _t.time() - t0))
+    else:
+        print("  · semantic memory unavailable — BM25 keyword recall (run `collie setup` to enable)")
+    from . import codemap                             # codemap (cheap; validates the map view)
     tree = codemap.build_tree(cwd)
     print("  ✓ codemap: %d files · %d defs" % (len(tree), sum(f.get("defs", 0) for f in tree)))
     if args.rules:                                    # 4) optional: model-written AGENTS.md
@@ -723,6 +726,89 @@ def cmd_init(args):
                    (res.error or "model finished without writing")))
     print("done in %.1fs — collie is warm; first question won't pay the indexing cost." % (_t.time() - t0))
     return 0
+
+
+def cmd_setup(args):
+    """collie setup — machine-level onboarding ("collie doctor" + one-click install). Checks the
+    environment (POSIX shell, ripgrep, the ONNX deps for semantic memory), installs the missing
+    Python pieces with ONE confirmation, prints OS-specific hints for the non-pip tools, and picks
+    a provider. `--check` diagnoses only (installs nothing); `--yes` installs without prompting."""
+    import importlib.util as _il
+    import shutil as _sh
+    import subprocess as _sp
+    from . import plat
+    check_only = getattr(args, "check", False)
+    assume_yes = getattr(args, "yes", False)
+    print("collie setup · %s\n" % plat.os_label())
+
+    def have(mod):
+        return _il.find_spec(mod) is not None
+
+    # 1) POSIX shell (the cross-platform shell contract) ----------------------------------------
+    sh = plat.posix_shell()
+    if sh:
+        print("  ✓ POSIX shell: %s" % sh)
+    else:
+        hint = ("winget install Git.Git  (Git Bash)" if plat.is_windows()
+                else "your package manager (bash ships with the OS)")
+        print("  ✗ POSIX shell: none — the `bash` tool degrades to cmd.exe.\n    install: %s" % hint)
+
+    # 2) ripgrep (code_search backend; grep is the fallback) ------------------------------------
+    if _sh.which("rg"):
+        print("  ✓ ripgrep: %s" % _sh.which("rg"))
+    elif _sh.which("grep"):
+        print("  · ripgrep not found — using grep (fine; rg is faster on big repos)")
+    else:
+        rg_hint = ("winget install BurntSushi.ripgrep.MSVC" if plat.is_windows()
+                   else "brew install ripgrep" if plat.is_macos() else "apt install ripgrep")
+        print("  ✗ no ripgrep or grep — code_search needs one.  install: %s" % rg_hint)
+
+    # 3) semantic-memory deps (granite via onnxruntime) ----------------------------------------
+    need = [m for m in ("onnxruntime", "tokenizers", "huggingface_hub", "numpy") if not have(m)]
+    if not need:
+        print("  ✓ semantic memory deps present (onnxruntime, tokenizers, huggingface_hub, numpy)")
+    else:
+        print("  ✗ semantic memory needs: %s" % ", ".join(need))
+        if check_only:
+            print("    install: pip install collie-harness[local]")
+        else:
+            ok = assume_yes or _confirm("  install semantic-memory deps now (pip install "
+                                        "collie-harness[local])?")
+            if ok:
+                rc = _sp.run([sys.executable, "-m", "pip", "install",
+                              "onnxruntime", "tokenizers", "huggingface_hub", "numpy"]).returncode
+                print("  %s deps install" % ("✓" if rc == 0 else "✗"))
+            else:
+                print("  · skipped — memory runs on BM25 keyword recall until installed")
+
+    # 4) pre-download the default model so the first run is instant -----------------------------
+    if not check_only and not need and have("onnxruntime"):
+        want = assume_yes or _confirm("  pre-download the granite semantic model (~55MB) now?")
+        if want:
+            try:
+                from .embeddings import make_embedding
+                e = make_embedding("granite")
+                print("  ✓ model ready: %s (dim=%d)" % (e.name, e.dim))
+            except Exception as e:
+                print("  ✗ model download failed (%s) — will retry on first use; for a mirror set "
+                      "COLLIE_HF_ENDPOINT=https://hf-mirror.com" % (type(e).__name__))
+
+    # 5) provider (interactive) ----------------------------------------------------------------
+    if not check_only:
+        print("")
+        _setup_wizard(force=True)
+    print("\nsetup %s." % ("check complete" if check_only else "complete — try: collie -p \"explain this repo\""))
+    return 0
+
+
+def _confirm(prompt):
+    """Yes/no on a tty; default NO off a tty (non-interactive/CI never auto-installs)."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+        return input(prompt + " [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 def cmd_mcp(args):
@@ -792,7 +878,7 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "browser-bridge", "mcp", "init", "jobs"}
+        "loop", "repl", "tui", "web", "browser-bridge", "mcp", "init", "setup", "jobs"}
 
 
 def _setup_wizard(force=False):
@@ -1056,16 +1142,23 @@ def main(argv=None):
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally
     # have the model write AGENTS.md — the friendly "collie, meet my repo" moment.
-    pi = sub.add_parser("init", help="configure provider/model, warm the embedder + build the code "
-                                     "index; --rules writes AGENTS.md")
+    pi = sub.add_parser("init", help="project prep for this repo: warm the memory model + codemap; "
+                                     "--rules writes AGENTS.md")
     pi.add_argument("--cwd", default=None)
     pi.add_argument("--no-config", action="store_true",
                     help="skip the provider/model prompt (CI / scripted runs)")
-    pi.add_argument("--embed", default="auto", help="embedder (auto|local|daemon|hash)")
+    pi.add_argument("--embed", default="auto", help="embedder (auto|granite|bge-m3|e5|bm25)")
     pi.add_argument("--rules", action="store_true",
                     help="also have the model explore the repo and write an AGENTS.md")
     pi.add_argument("--provider", default=None, help="provider for --rules (default: configured one)")
     pi.set_defaults(fn=cmd_init)
+
+    # setup: machine-level onboarding — deps + model + provider ("collie doctor" + one-click install)
+    ps = sub.add_parser("setup", help="install deps, pick a provider, pre-download the model "
+                                      "(--check = diagnose only)")
+    ps.add_argument("--check", action="store_true", help="diagnose only; install nothing")
+    ps.add_argument("--yes", action="store_true", help="install without prompting")
+    ps.set_defaults(fn=cmd_setup)
 
     # mcp: manage MCP servers — list configured ones, OAuth-login to a remote, logout, or list tools
     pmcp = sub.add_parser("mcp", help="manage MCP servers (list | login <name> | logout <name> | tools <name>)")

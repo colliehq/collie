@@ -38,8 +38,12 @@ class SqliteMemory:
     def __init__(self, path: str, embedder: EmbeddingProvider | None = None,
                  reranker=None, distiller=None):
         self.path = path
-        self.embedder = embedder or make_embedding("hash")
-        self.embed_model = self.embedder.name
+        # embedder=None -> BM25-only (dense arm disabled). This is the low-spec / offline default:
+        # a REAL embedder (granite) is added when available, but we NEVER fall back to HashEmbedding —
+        # measured on LOCOMO, hash-dense (0.346) is WORSE than pure BM25 (0.526): its bag-of-words
+        # cosines inject noise into RRF and actively hurt recall. So no embedder => sparse-only.
+        self.embedder = embedder
+        self.embed_model = self.embedder.name if self.embedder else "bm25-only"
         self.reranker = reranker          # optional cross-encoder over the fused top-k
         self.distiller = distiller        # optional (text,keys)->clean fact str, write-time
         # check_same_thread=False: the ACP path builds the harness on the asyncio event-loop
@@ -134,8 +138,8 @@ class SqliteMemory:
                 text = d
             except Exception:
                 pass
-        vec = self.embedder.embed(text + " " + keys, kind="passage")
-        near_id, sim = self._nearest(vec, project) if consolidate else (None, 0.0)
+        vec = self.embedder.embed(text + " " + keys, kind="passage") if self.embedder else []
+        near_id, sim = self._nearest(vec, project) if (consolidate and vec) else (None, 0.0)
         emb = json.dumps(vec)
         cur = self.db.execute(
             """INSERT INTO facts(project,text,keys,importance,access_count,
@@ -178,6 +182,8 @@ class SqliteMemory:
         """Re-embed every fact with the current embedder (after a model swap).
         Embeddings from different models live in different spaces, so a switch
         requires this pass; store `embed_model` so we know what's stale."""
+        if self.embedder is None:                          # BM25-only: nothing to (re)embed
+            return 0
         rows = self.db.execute("SELECT id, text, keys FROM facts").fetchall()
         for r in rows:
             emb = json.dumps(self.embedder.embed(
@@ -227,6 +233,8 @@ class SqliteMemory:
         return [(r["id"], 1.0) for r in rows]
 
     def _dense(self, query: str, project: str, limit: int) -> list[tuple[int, float]]:
+        if self.embedder is None:                          # BM25-only mode — no dense arm
+            return []
         qv = self.embedder.embed(query, kind="query")
         rows = self.db.execute(
             "SELECT id, embedding FROM facts WHERE (project=? OR project='global') "

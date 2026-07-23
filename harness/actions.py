@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import redact as _redact
+from . import plat
 from .verifier import FAILED, INCONCLUSIVE, Verdict
 
 
@@ -67,7 +68,7 @@ def _load_or_create_key(keyfile: str) -> bytes:
     # failed its MAC under the other, silently never firing while verify said
     # "parked". On FileExistsError, adopt the winner's persisted key.
     try:
-        fd = os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = plat.open_excl(keyfile)       # O_CREAT|O_EXCL|O_WRONLY (+O_NOFOLLOW on POSIX)
     except FileExistsError:
         for _ in range(100):               # winner may have created but not yet written
             try:
@@ -83,10 +84,7 @@ def _load_or_create_key(keyfile: str) -> bytes:
         os.write(fd, k)
     finally:
         os.close(fd)
-    try:
-        os.chmod(keyfile, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
+    plat.chmod_private(keyfile)            # owner-only on POSIX; no-op on Windows (ACLs differ)
     return k
 
 # action lifecycle

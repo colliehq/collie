@@ -128,14 +128,15 @@ Per-OS setup — especially the real-browser bridge (`collie browser-bridge` + t
 |---|---|
 | `ModelProvider` | **OpenAICompat** (DeepSeek/Qwen/GLM/OpenRouter…) · Anthropic · Ollama · subscription-OAuth |
 | `ToolRegistry` | read/write/**edit** (syntax-gated) · bash · grep · glob · **`code_search`** · **`web_search`** + **`web_fetch`** (keyless) · **`plan`** · **`undo`** · browser · **MCP** (deferred tier + `load_tools`) |
-| `EmbeddingProvider` | **LocalEmbedding** bge-small / jina-v3 (fastembed, ONNX/CPU, $0) · Hash fallback |
+| `EmbeddingProvider` | **OnnxEmbedding** granite-107m (Apache, 55MB, multilingual) · bge-m3 / e5 · jina-v3 opt-in (fastembed) · **BM25-only** when no model |
 | `SqliteMemory` | CORE + facts + FTS5 + cosine, hybrid RRF + optional rerank + consolidation |
 | `ContextComposer` | STABLE/CONTEXT/VOLATILE + auto-prefetch · a ~1K-token fixed prefix (still ~70–99× leaner than a mainstream agent's) |
 
-**`code_search`** (built in): batch-embeds the repo with a fast local model (~8s to index,
-~16ms/query) and returns ranked `path:line` snippets, so the agent reasons about *where* to
-edit instead of grepping blind — a localization lever most harnesses lack, and it runs
-entirely inside Collie's own loop. **`edit_file`** is exact-match + whitespace-tolerant and
+**`code_search`** (built in): extracts the identifiers from a natural-language query and greps the
+repo (ripgrep, else grep) — ranking files by how many of your terms each contains and returning the
+top `path:line` snippets, so the agent reasons about *where* to edit instead of grepping blind.
+Measured head-to-head on SWE-bench, grep localization matched-or-beat a semantic embedding index at
+a fraction of the cost, with no model, no index build, and never a stale line number. **`edit_file`** is exact-match + whitespace-tolerant and
 **rejects any edit that would break Python syntax** (a wrong edit never silently ships).
 **`read_file`** is line-numbered and pageable. A **self-verification loop** (`assert-verify`)
 runs the reproduction and repairs until the assertion holds.
@@ -144,19 +145,22 @@ runs the reproduction and repairs until the assertion holds.
 
 ```bash
 pipx install collie-harness        # or: uv tool install collie-harness
-collie                             # first run asks where completions come from, then the TUI opens
+collie setup                       # one-click: install deps, pre-download the model, pick a provider
+collie                             # then the TUI opens
 ```
 
 No account, no telemetry, and the core has **zero third-party dependencies** — `mock` and
-`ollama` run without any key. Try it without installing anything:
+`ollama` run without any key, and memory works out of the box on **BM25 keyword recall**. Try it
+without installing anything:
 
 ```bash
 uvx --from collie-harness collie -p "explain this repo"
 ```
 
-Optional extras: `pipx install "collie-harness[tui,local,search]"` — `tui` (rich terminal chat),
-`local` (real local embeddings), `search` (keyless web search), `acp` (editor protocol),
-`browser` (Playwright). From source: `git clone … && pip install -e ".[dev]"`.
+Optional extras: `pipx install "collie-harness[local,tui,search]"` — `local` (semantic memory:
+granite-107m via onnxruntime, ~55MB, multilingual — what `collie setup` installs), `tui` (rich
+terminal chat), `search` (keyless web search), `acp` (editor protocol), `browser` (Playwright),
+`fastembed` (jina-v3 opt-in). From source: `git clone … && pip install -e ".[local,dev]"`.
 
 ## Quickstart
 
@@ -164,7 +168,7 @@ Optional extras: `pipx install "collie-harness[tui,local,search]"` — `tui` (ri
 # zero-config: bare `collie` opens the default surface; first run picks a provider
 collie                     # terminal chat (TUI)
 collie web                 # browser GUI — chat, live verification gate, diffs, the star-map
-collie init                # optional: pre-warm the embedder + code index (--rules writes AGENTS.md)
+collie init                # optional: warm the memory model for this repo (--rules writes AGENTS.md)
 
 # $0 deterministic end-to-end (mock model, real tools + memory + dashboard)
 collie selftest

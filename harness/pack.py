@@ -31,8 +31,10 @@ def _isolate(cwd):
 
 
 def _run_check(cmd, cwd, timeout=300):
+    from . import plat
+    _cmdargs, _use_shell = plat.shell_argv(cmd)              # POSIX predicate on every OS
     try:
-        p = subprocess.run(cmd, shell=True, cwd=cwd, timeout=timeout,
+        p = subprocess.run(_cmdargs, shell=_use_shell, cwd=cwd, timeout=timeout,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         return p.returncode == 0, (p.stdout or "")[-2000:]
     except subprocess.TimeoutExpired:

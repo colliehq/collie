@@ -8,13 +8,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = dict(os.environ, COLLIE_PROVIDER="mock", PYTHONUNBUFFERED="1",
            # isolate session writes so the mock suite never pollutes the user's real Map run list
            COLLIE_SESSIONS_DIR=os.path.join(__import__("tempfile").gettempdir(), "collie_surftest_sessions"))
+# Invoke collie as a module (sys.executable -m harness.cli), NOT the installed `collie` console
+# script — so the suite runs from a bare checkout on any OS with no PATH / install assumption.
+COLLIE = [sys.executable, "-m", "harness.cli"]
 results = []
 def check(name, cond, detail=""):
     results.append((name, bool(cond)))
     print(("  PASS " if cond else "  FAIL ") + name + (("  :: " + detail) if detail and not cond else ""))
 
 def run(args, timeout=45, stdin=None):
-    p = subprocess.run(["collie"] + args, cwd=ROOT, env=ENV, capture_output=True,
+    p = subprocess.run(COLLIE + args, cwd=ROOT, env=ENV, capture_output=True,
                        text=True, timeout=timeout, input=stdin)
     return p.stdout, p.stderr, p.returncode
 
@@ -42,7 +45,7 @@ def test_tui():
     check("tui starts + exits clean", "session" in out and rc == 0 and "Traceback" not in out)
 
 def test_browser_bridge_health():
-    p = subprocess.Popen(["collie", "browser-bridge", "--port", "8689"], cwd=ROOT,
+    p = subprocess.Popen(COLLIE + ["browser-bridge", "--port", "8689"], cwd=ROOT,
                          env=dict(ENV, COLLIE_BROWSER_BRIDGE_NOSPAWN="1"),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -85,7 +88,12 @@ def test_browser_bridge_health():
         except Exception: pass
 
 def test_acp_initialize():
-    p = subprocess.Popen(["collie", "acp"], cwd=ROOT, env=ENV, stdin=subprocess.PIPE,
+    try:
+        import acp  # noqa: F401 — optional extra (agent-client-protocol); the ACP surface needs it
+    except ImportError:
+        print("  SKIP acp initialize -> JSON-RPC result :: agent-client-protocol not installed")
+        return
+    p = subprocess.Popen(COLLIE + ["acp"], cwd=ROOT, env=ENV, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         # ACP wire format = newline-delimited JSON-RPC
@@ -138,14 +146,23 @@ def test_map_codemap():
           len(edited) == 1 and edited[0]["edits"][0]["kind"] == "edit"
           and edited[0]["edits"][0]["new"] == "import json  # noqa",
           "edited=%d" % len(edited))
-    check("codemap.read_abs reads under home", bool(codemap.read_abs(os.path.join(ROOT, "harness/pack.py"))))
+    # read_abs guards reads to under the user's home — so test with a file actually under home
+    # (the repo itself may live anywhere: c:\workspace here, D:\a on Windows CI, /home on Linux CI).
+    import tempfile as _tf, shutil as _sh
+    _hd = _tf.mkdtemp(dir=os.path.expanduser("~"))
+    try:
+        _fp = os.path.join(_hd, "cm_read_abs_probe.py")
+        open(_fp, "w", encoding="utf-8").write("x = 1\n")
+        check("codemap.read_abs reads under home", bool(codemap.read_abs(_fp)))
+    finally:
+        _sh.rmtree(_hd, ignore_errors=True)
     check("codemap.read_abs blocks outside home", codemap.read_abs("/etc/passwd") is None)
 
 def test_map_web():
     """The Map's web surface: /map serves the galaxy, /api/tree + /api/file feed it, /api/file is
     guarded, and /api/session emits structured tool_calls the replay can parse."""
     port = 8791
-    p = subprocess.Popen(["collie", "web", "--port", str(port)], cwd=ROOT, env=ENV,
+    p = subprocess.Popen(COLLIE + ["web", "--port", str(port)], cwd=ROOT, env=ENV,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         base = "http://127.0.0.1:%d" % port
@@ -201,7 +218,9 @@ def test_map_web():
         buf = b""
         try:
             s = socket.create_connection(("127.0.0.1", port), timeout=4)
-            s.sendall(b"GET /api/live HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            # Host must be a loopback name or _host_ok() rejects it (403) as a DNS-rebinding guard.
+            s.sendall(("GET /api/live HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n"
+                       % port).encode())
             s.settimeout(4)
             while b"live_hello" not in buf and len(buf) < 2000:   # frame may arrive after headers
                 d = s.recv(400)
@@ -223,7 +242,7 @@ def test_image_upload():
     it as a multimodal message without crashing the (mock) run."""
     import re
     port = 8793
-    p = subprocess.Popen(["collie", "web", "--port", str(port)], cwd=ROOT, env=ENV,
+    p = subprocess.Popen(COLLIE + ["web", "--port", str(port)], cwd=ROOT, env=ENV,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         base = "http://127.0.0.1:%d" % port
@@ -271,13 +290,13 @@ def test_image_upload():
         except Exception: pass
 
 def test_cli_init():
-    """collie init front-loads the lazy costs: embedder warm + code index + codemap, and exits 0."""
+    """collie init warms the memory embedder + validates the codemap, and exits 0 (code_search is
+    ripgrep now — no index to build)."""
     out, err, rc = run(["init", "--embed", "hash"], timeout=90)
     check("init exits 0", rc == 0, err[-200:])
-    check("init warms embedder", "embedder ready" in out, out[-200:])
-    check("init builds code index", "code index:" in out and "chunks" in out, out[-200:])
+    check("init warms memory embedder", "semantic memory ready" in out, out[-200:])
     check("init scans codemap", "codemap:" in out, out[-200:])
-    assert rc == 0 and "code index:" in out
+    assert rc == 0 and "codemap:" in out
 
 def test_sse_write_lock_serializes_frames():
     """The run-stream keep-alive: a heartbeat thread pings the SSE socket while the run's token/tool

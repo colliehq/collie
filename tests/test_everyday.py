@@ -251,10 +251,21 @@ def test_note_list_unreadable_dir_degrades():
     d = tempfile.mkdtemp(prefix="collie-nolist-")
     os.environ["COLLIE_NOTES_DIR"] = d
     try:
-        os.chmod(d, 0)                              # unreadable dir
-        out = caps._note_list_execute(_rec({}))     # must NOT raise
-        v = caps._note_list_verify(_rec({}), out)
-        check(v.status == FAILED, "an unreadable notes dir must FAIL honestly, not crash")
+        os.chmod(d, 0)                              # attempt: make the dir unreadable
+        # Windows ignores POSIX owner bits — the owner can always read, so this failure mode
+        # cannot be simulated there. Probe whether the dir is actually unreadable; if not, skip
+        # honestly (visible) rather than assert a condition the OS refuses to produce.
+        try:
+            os.listdir(d); unreadable = False
+        except OSError:
+            unreadable = True
+        if not unreadable:
+            print("  SKIP test_note_list_unreadable_dir_degrades :: OS cannot make a dir "
+                  "owner-unreadable (POSIX perm bits ignored) — nothing to assert")
+        else:
+            out = caps._note_list_execute(_rec({}))     # must NOT raise
+            v = caps._note_list_verify(_rec({}), out)
+            check(v.status == FAILED, "an unreadable notes dir must FAIL honestly, not crash")
     finally:
         os.chmod(d, _stat.S_IRWXU)
         os.environ["COLLIE_NOTES_DIR"] = os.path.join(_state, "notes")

@@ -188,10 +188,8 @@ def _save_tokens(toks):
         tmp = _TOKENS + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(toks, f, indent=2)
-        try:
-            os.chmod(tmp, 0o600)          # tokens are secrets — keep them off other users
-        except OSError:
-            pass
+        from . import plat
+        plat.chmod_private(tmp)           # tokens are secrets — owner-only on POSIX, no-op on Windows
         os.replace(tmp, _TOKENS)
     except OSError:
         pass

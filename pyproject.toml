@@ -13,7 +13,10 @@ authors = [{ name = "Daming Wu" }]
 dependencies = []                       # core is stdlib-only
 
 [project.optional-dependencies]
-local = ["fastembed"]                   # real local embeddings (jina-v3)
+# semantic memory: granite / bge-m3 / e5 + the bge reranker, all run via onnxruntime (no torch).
+# `collie setup` installs this; without it memory degrades to BM25 keyword recall (never to hash).
+local = ["onnxruntime", "tokenizers", "huggingface-hub", "numpy"]
+fastembed = ["fastembed"]               # opt-in: jina-v3 / other fastembed models (jina is CC-BY-NC)
 browser = ["playwright"]
 tui = ["rich"]                          # the full-experience terminal chat (collie tui)
 acp = ["agent-client-protocol"]         # editor integration (collie acp)

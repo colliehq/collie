@@ -2,6 +2,7 @@ name: CI
 
 # Gate every push to main and every PR on the same suite that guards local pushes
 # (tests/run_all.sh): py_compile · core · renderer (Node) · GUI (Playwright) · surfaces.
+# Runs on Linux, macOS AND Windows so cross-platform support is proven every commit, not asserted.
 # Everything runs offline against the mock provider + hash embedder — no API keys, no secrets.
 
 on:
@@ -19,12 +20,24 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false          # one OS failing must not hide the status of the others
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        # bash on every OS — Git Bash is preinstalled on the windows runner, so run_all.sh and
+        # the POSIX-shell bash-tool tests execute for real on Windows (plat.posix_shell finds it),
+        # rather than degrading to cmd.exe or skipping.
+        shell: bash
     env:
       COLLIE_PROVIDER: mock          # offline, deterministic — no vendor calls
       COLLIE_EMBED: hash             # skip the heavy local embedder (fastembed not installed)
       PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +61,14 @@ jobs:
           pip install -e ".[browser,tui,acp,search,dev]"
 
       - name: Install Playwright Chromium
-        run: python -m playwright install --with-deps chromium
+        # --with-deps installs the OS libraries chromium needs, but that flag is Linux-only;
+        # macOS/Windows ship them, so plain `install` there.
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            python -m playwright install --with-deps chromium
+          else
+            python -m playwright install chromium
+          fi
 
       - name: Run test suite
         run: bash tests/run_all.sh

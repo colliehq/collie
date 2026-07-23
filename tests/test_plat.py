@@ -99,9 +99,43 @@ def test_to_host_path():
         check(out == "/home/x/file", "non-WSL: to_host_path is the identity")
 
 
+def test_shell():
+    print("test_shell")
+    sh = plat.posix_shell()
+    check(sh is None or isinstance(sh, str), "posix_shell returns a path or None")
+    check(plat.has_posix_shell() == (sh is not None), "has_posix_shell tracks posix_shell")
+    if sh is not None:
+        check(os.path.exists(sh), "posix_shell path exists on disk")
+        if plat.is_windows():
+            low = sh.lower()
+            check("system32" not in low and "windir" not in low,
+                  "windows: posix_shell must not be the System32 WSL launcher")
+
+    args, use_shell = plat.shell_argv("echo hi")
+    if not plat.is_windows():
+        check(args == "echo hi" and use_shell is True, "posix: shell_argv -> (cmd, shell=True)")
+    elif sh is not None:
+        check(args == [sh, "-c", "echo hi"] and use_shell is False,
+              "windows+posix-shell: shell_argv -> ([bash, -c, cmd], shell=False)")
+    else:
+        check(args == "echo hi" and use_shell is True,
+              "windows+no-shell: shell_argv -> (cmd, shell=True) cmd.exe fallback")
+
+    # functional: POSIX chaining + exit codes work through the routing wherever a POSIX shell exists
+    if plat.has_posix_shell() or not plat.is_windows():
+        a, us = plat.shell_argv("echo out; exit 3")
+        p = subprocess.run(a, shell=us, capture_output=True, text=True)
+        check(p.returncode == 3 and p.stdout.strip() == "out",
+              "shell_argv runs POSIX `;`/exit-code correctly, got rc=%r out=%r" % (p.returncode, p.stdout))
+
+    # shell_hint is empty whenever a real shell is available (Unix habits are correct)
+    if plat.has_posix_shell():
+        check(plat.shell_hint() == "", "shell_hint empty when a POSIX shell is present")
+
+
 def main():
     for t in (test_detection, test_rmtree, test_open_excl, test_new_group_kwargs,
-              test_chmod_private, test_kill_tree, test_to_host_path):
+              test_chmod_private, test_kill_tree, test_to_host_path, test_shell):
         t()
     if _fails:
         print(f"\n{len(_fails)} FAILED")

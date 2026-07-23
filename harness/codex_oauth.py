@@ -75,10 +75,8 @@ def _save_auth(doc: dict) -> None:
         pass
     tmp = p + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
+    from . import plat
+    plat.chmod_private(tmp)               # owner-only on POSIX; no-op on Windows
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=2)
         f.flush()
