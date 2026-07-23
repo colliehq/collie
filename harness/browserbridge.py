@@ -22,6 +22,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import plat
 from .tools import Tool
 
 DEFAULT_PORT = 8677
@@ -288,7 +289,7 @@ def _ensure_server(port):
     import time
     try:
         subprocess.Popen([sys.executable, "-m", "harness.cli", "browser-bridge", "--port", str(port)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **plat.new_group_kwargs())
     except Exception:
         return False
     for _ in range(30):                       # ~6s for it to bind

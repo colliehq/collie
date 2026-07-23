@@ -21,6 +21,8 @@ import subprocess
 import tempfile
 import time
 
+from . import plat
+
 
 def _git(args, cwd=None, capture=False, check=True, timeout=600):
     return subprocess.run(["git"] + args, cwd=cwd, text=True, check=check,
@@ -56,7 +58,7 @@ def ensure_mirror(repo: str) -> str:
         return path
     os.makedirs(_MIRROR_DIR, exist_ok=True)
     tmp = path + ".tmp"
-    subprocess.run(["rm", "-rf", tmp], check=False)
+    plat.rmtree(tmp)
     _git_net(["clone", "--mirror", "--quiet", f"https://github.com/{repo}.git", tmp])
     os.replace(tmp, path)
     return path

@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 
-from . import swe
+from . import plat, swe
 
 
 def main():
@@ -68,7 +68,7 @@ def main():
     except Exception as e:
         sys.stderr.write("swe_predict_one ERROR %s: %s\n" % (spec["instance_id"], e))
     finally:
-        subprocess.run(["rm", "-rf", wd], check=False)
+        plat.rmtree(wd)
     if not ok:
         # a TRANSIENT failure (clone/API/disk) must NOT leave a success-shaped empty out.json —
         # the parent keys "completed" on os.path.exists(out.json) and would freeze this instance as

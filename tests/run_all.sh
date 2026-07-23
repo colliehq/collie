@@ -27,6 +27,7 @@ if $PY tests/test_research.py >/dev/null 2>&1; then echo "  research (web capabi
 if $PY tests/test_everyday.py >/dev/null 2>&1; then echo "  everyday (translate/summarize/reminder/note.list) OK"; else echo "  everyday FAIL"; rc=1; fi
 if $PY tests/test_jobsweb.py >/dev/null 2>&1; then echo "  jobs web (dashboard + CSRF) OK"; else echo "  jobs web FAIL"; rc=1; fi
 if $PY tests/test_cli_jobs.py >/dev/null 2>&1; then echo "  cli jobs (inbox/confirm/receipts) OK"; else echo "  cli jobs FAIL"; rc=1; fi
+if $PY tests/test_plat.py >/dev/null 2>&1; then echo "  plat (OS layer: detect/kill_tree/rmtree/open_excl) OK"; else echo "  plat FAIL"; rc=1; fi
 if $PY tests/test_mission.py >/dev/null 2>&1; then echo "  mission (multi-step campaign: plan/loop/gate/hand-off) OK"; else echo "  mission FAIL"; rc=1; fi
 if $PY tests/test_missionweb.py >/dev/null 2>&1; then echo "  mission web (NL front-door service: start/confirm/resume) OK"; else echo "  mission web FAIL"; rc=1; fi
 if $PY tests/test_primitives.py >/dev/null 2>&1; then echo "  primitives (real: research/compose/observe/web.submit+verify/web.send) OK"; else echo "  primitives FAIL"; rc=1; fi

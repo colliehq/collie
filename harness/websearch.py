@@ -16,6 +16,7 @@ import re
 import urllib.parse
 import urllib.request
 
+from . import plat
 from .tools import Tool
 
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -88,14 +89,7 @@ def _find_chrome():
 
 def _winpath(p, chrome):
     """Windows Chrome under WSL needs a Windows-style --user-data-dir path."""
-    if chrome.endswith(".exe"):
-        try:
-            import subprocess
-            w = subprocess.run(["wslpath", "-w", p], capture_output=True, text=True).stdout.strip()
-            return w or p
-        except Exception:
-            return p
-    return p
+    return plat.to_host_path(p) if chrome.endswith(".exe") else p
 
 
 def _chrome_search(query, k, chrome):

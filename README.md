@@ -92,6 +92,22 @@ extension:
 The verification gate, native diffs, and the token/time/$ receipt render in every editor for
 free, because Collie's streaming events map straight onto the [Agent Client Protocol](https://agentclientprotocol.com).
 
+## Platforms
+
+One cross-platform Python codebase — **not** a per-OS fork. The handful of operations that
+genuinely differ (kill a process tree on a timeout, secure a token file, convert a path,
+choose a shell) are isolated in `harness/plat.py`, so the same wheel runs everywhere.
+
+| OS | Status | Notes |
+|---|---|---|
+| **Linux** | ✅ native | the primary target |
+| **macOS** | ✅ native | POSIX; the browser bridge is *simplest* here (Chrome + Collie on one OS, plain localhost) |
+| **Windows** (native) | ⚠️ core runs | no POSIX shell — the agent prefers the file/search tools over `bash`; process-tree kill uses `taskkill /T` |
+| **WSL2** | ✅ | a Windows-Chrome ↔ WSL bridge crosses OSes, so it uses the LAN IP + `wslpath` (handled for you) |
+
+Per-OS setup — especially the real-browser bridge (`collie browser-bridge` + the
+`harness/browser_ext/` extension) on each platform — is in **[docs/PLATFORMS.md](docs/PLATFORMS.md)**.
+
 ## Architecture (abstractions & seams)
 
 ```

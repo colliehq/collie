@@ -21,6 +21,8 @@ import math
 import os
 import re
 
+from . import plat
+
 _TOKEN_RE = re.compile(r"[a-z0-9_]+|[一-鿿]")
 
 
@@ -289,7 +291,7 @@ class DaemonEmbedding(EmbeddingProvider):
         try:
             self._proc = subprocess.Popen(
                 [__import__("sys").executable, "-m", "harness.embed_server", "--model", self.model],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **plat.new_group_kwargs())
         except Exception:
             pass
 

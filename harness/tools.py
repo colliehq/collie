@@ -17,6 +17,8 @@ import time
 import unicodedata
 from dataclasses import dataclass
 
+from . import plat
+
 _SHIM_DIR = None
 
 
@@ -409,7 +411,8 @@ def _spill_full_output(out):
         path = os.path.join(_SPILL_DIR, "bash-%d-%d.log" % (os.getpid(), next(_spill_seq)))
         # O_EXCL|O_NOFOLLOW: fail if the target already exists or is a symlink, so a planted
         # symlink can't make us follow it and overwrite an arbitrary file the user can write.
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        # (O_NOFOLLOW is added only where the platform has it — see plat.open_excl.)
+        fd = plat.open_excl(path)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(out)
         return path
@@ -444,7 +447,7 @@ class BashTool(Tool):
         try:
             p = subprocess.Popen(args["command"], shell=True, cwd=ctx.cwd,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                 start_new_session=True, env=_shim_env())
+                                 env=_shim_env(), **plat.new_group_kwargs())
         except Exception as e:
             return "ERROR: %s" % e
         timed_out = False
@@ -452,10 +455,7 @@ class BashTool(Tool):
             stdout, stderr = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            try:
-                _os.killpg(_os.getpgid(p.pid), _sig.SIGKILL)   # sh + every grandchild
-            except Exception:
-                p.kill()
+            plat.kill_tree(p)                                  # sh + every grandchild (cross-platform)
             try:
                 stdout, stderr = p.communicate(timeout=5)      # drain what was buffered
             except Exception:
@@ -619,15 +619,12 @@ class GrepTool(Tool):
         import os as _os
         import signal as _sig
         p = subprocess.Popen(cmd, shell=True, cwd=ctx.cwd, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+                             stderr=subprocess.DEVNULL, text=True, **plat.new_group_kwargs())
         try:
             out, _ = p.communicate(timeout=25)
             return ((out or "").strip() or "(no matches)")[:6000]
         except subprocess.TimeoutExpired:
-            try:
-                _os.killpg(_os.getpgid(p.pid), _sig.SIGKILL)   # kill sh + rg + grep together
-            except Exception:
-                p.kill()
+            plat.kill_tree(p)                                  # kill sh + rg + grep together
             out = ""
             try:
                 out, _ = p.communicate(timeout=5)
