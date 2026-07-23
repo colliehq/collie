@@ -761,6 +761,56 @@
   .mbtn.accept { background: color-mix(in srgb, var(--pine) 24%, transparent); }
   .mbtn:disabled { opacity: .5; cursor: default; }
   .margs { font-size: 12px; color: var(--faint); word-break: break-all; }
+
+  /* --------------------------------------------------- onboarding (first-run "pick a brain") */
+  .ob-overlay { position: fixed; inset: 0; z-index: 130; display: none; align-items: center;
+    justify-content: center; padding: 24px; background: color-mix(in srgb, var(--bg) 66%, transparent);
+    backdrop-filter: blur(12px) saturate(1.1); -webkit-backdrop-filter: blur(12px) saturate(1.1); }
+  .ob-overlay.open { display: flex; }
+  .ob-card { width: min(600px, 96vw); max-height: 92vh; overflow-y: auto; background: var(--raise);
+    border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow-lg);
+    padding: 34px 34px 20px; animation: obrise .3s cubic-bezier(.2,.8,.2,1); }
+  @keyframes obrise { from { transform: translateY(16px) scale(.985); opacity: 0; } to { transform: none; opacity: 1; } }
+  .ob-hero { text-align: center; position: relative; padding: 4px 0 18px; }
+  .ob-hero::before { content: ""; position: absolute; top: -10px; left: 50%; transform: translateX(-50%);
+    width: 200px; height: 130px; z-index: 0; pointer-events: none;
+    background: radial-gradient(58% 58% at 50% 40%, color-mix(in srgb, var(--pine) 22%, transparent), transparent 72%); }
+  .ob-logo { position: relative; width: 56px; height: 56px;
+    filter: drop-shadow(0 8px 18px color-mix(in srgb, var(--pine) 42%, transparent)); }
+  .ob-hero h1 { font-family: var(--serif); font-size: 27px; line-height: 1.15; margin: 14px 0 6px;
+    color: var(--ink); letter-spacing: -.01em; }
+  .ob-sub { color: var(--muted); font-size: 14.5px; max-width: 44ch; margin: 0 auto; line-height: 1.55; }
+  .ob-label { font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); margin: 12px 2px 10px; }
+  .ob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+  @media (max-width: 520px) { .ob-grid { grid-template-columns: 1fr; } }
+  .ob-brain { display: flex; flex-direction: column; gap: 5px; text-align: left; padding: 14px 15px;
+    border-radius: 13px; background: var(--surface); border: 1px solid var(--line); cursor: pointer;
+    font: inherit; position: relative; transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+  .ob-brain:hover { transform: translateY(-2px); box-shadow: var(--shadow);
+    border-color: color-mix(in srgb, var(--pine) 45%, var(--line)); }
+  .ob-brain:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+  .ob-brain.is-rec { border-color: var(--pine);
+    background: linear-gradient(158deg, color-mix(in srgb, var(--pine) 9%, var(--surface)), var(--surface)); }
+  .ob-pill { align-self: flex-start; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
+    padding: 2px 8px; border-radius: 999px; color: var(--meadow); background: var(--meadow-bg); }
+  .ob-brain.is-rec .ob-pill { color: var(--on-accent); background: var(--pine); }
+  .ob-bname { font-size: 15px; font-weight: 640; color: var(--ink); }
+  .ob-bvia { font-size: 12.5px; color: var(--muted); }
+  .ob-bcta { margin-top: 3px; font-size: 12.5px; font-weight: 600; color: var(--pine); }
+  .ob-keyrow { display: flex; align-items: center; gap: 8px; justify-content: center; margin-top: 16px;
+    font-size: 13px; color: var(--muted); }
+  .ob-link { background: none; border: none; color: var(--pine); font-weight: 600; cursor: pointer;
+    font-size: 13px; padding: 2px 4px; font-family: inherit; }
+  .ob-link:hover { text-decoration: underline; }
+  .ob-foot { display: flex; justify-content: center; gap: 20px; margin-top: 18px; padding-top: 14px;
+    border-top: 1px solid var(--line); }
+  .ob-ghost { background: none; border: none; color: var(--faint); font-size: 12.5px; cursor: pointer;
+    font-family: inherit; }
+  .ob-ghost:hover { color: var(--muted); }
+  .ob-empty { grid-column: 1 / -1; text-align: center; color: var(--muted); font-size: 13.5px;
+    line-height: 1.6; padding: 6px 4px; }
+  @media (prefers-reduced-motion: reduce) { .ob-card { animation: none; } .ob-brain { transition: none; } }
 </style>
 
 <div class="app">
@@ -970,6 +1020,24 @@
       <span class="model-foot-note">↑ ↓ to browse · Enter to select</span>
     </div>
   </section>
+</div>
+
+<!-- ============================================ onboarding (first-run: pick a brain) -->
+<div class="ob-overlay" id="obOverlay" role="dialog" aria-modal="true" aria-labelledby="obTitle">
+  <div class="ob-card">
+    <div class="ob-hero">
+      <img class="ob-logo" src="/logo.svg" alt="" width="56" height="56">
+      <h1 id="obTitle">Welcome to Collie</h1>
+      <p class="ob-sub">Pick a brain to get started. Collie writes code, proves it works with a real test, and remembers.</p>
+    </div>
+    <div class="ob-label" id="obLabel">Ready to use</div>
+    <div class="ob-grid" id="obGrid"></div>
+    <div class="ob-keyrow"><span id="obKeyText">Have an API key?</span><button class="ob-link" id="obKeyBtn">Connect with a key</button></div>
+    <div class="ob-foot">
+      <button class="ob-ghost" id="obBrowse">Browse all models</button>
+      <button class="ob-ghost" id="obSkip">Skip for now</button>
+    </div>
+  </div>
 </div>
 
 <!-- ============================================ settings modal -->
@@ -1310,6 +1378,68 @@
   function closeSettings() { setOverlay.classList.remove("open"); }
 
   $("settingsBtn").onclick = openSettings;
+
+  // ---- onboarding: first-run "pick a brain" ----------------------------
+  var obOverlay = $("obOverlay");
+  function obClose() { obOverlay.classList.remove("open"); }
+  function obDone() { try { localStorage.setItem("collie-onboarded", "1"); } catch (e) {} obClose(); }
+  function obUse(entry, card) {
+    var cta = card.querySelector(".ob-bcta"); cta.textContent = "Connecting…";
+    fetch("/api/model?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: entry.id })
+    }).then(function (r) { return r.json(); }).then(function (p) {
+      if (!p.ok) throw new Error(p.error || "failed");
+      try { modelCurrentId = p.provider + ":" + p.model; updateModelTrigger(); } catch (e) {}
+      obDone();
+    }).catch(function () { cta.textContent = "Try again →"; });
+  }
+  function obRender(entries) {
+    var seen = {}, brains = [];
+    (entries || []).forEach(function (e) {           // one best (already rank-sorted) authed brain per provider
+      if (e.auth === "ok" && e.provider !== "mock" && !seen[e.provider]) { seen[e.provider] = 1; brains.push(e); }
+    });
+    brains = brains.slice(0, 6);
+    var grid = $("obGrid"); grid.innerHTML = "";
+    if (!brains.length) {
+      $("obLabel").textContent = "Connect a brain";
+      var em = document.createElement("div"); em.className = "ob-empty";
+      em.textContent = "No brain detected yet. Paste an API key below, or run a local model with Ollama — Collie finds it automatically.";
+      grid.appendChild(em); return;
+    }
+    $("obLabel").textContent = "Ready to use";
+    brains.forEach(function (e, i) {
+      var rec = i === 0;
+      var extra = e.kind === "local" ? "free" : e.kind === "subscription" ? "included"
+        : (e.price_out ? ("$" + e.price_out + " / M out") : "API");
+      var card = document.createElement("button");
+      card.className = "ob-brain" + (rec ? " is-rec" : "");
+      card.innerHTML = '<span class="ob-pill"></span><span class="ob-bname"></span>'
+        + '<span class="ob-bvia"></span><span class="ob-bcta">Use this →</span>';
+      card.querySelector(".ob-pill").textContent = rec ? "Recommended" : "✓ Detected";
+      card.querySelector(".ob-bname").textContent = e.label;
+      card.querySelector(".ob-bvia").textContent = (e.via || "") + " · " + extra;
+      card.addEventListener("click", function () { obUse(e, card); });
+      grid.appendChild(card);
+    });
+  }
+  function obOpen() {
+    fetch("/api/models?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
+      .then(function (d) { obRender((d || {}).entries); obOverlay.classList.add("open"); })
+      .catch(function () {});
+  }
+  $("obKeyBtn").addEventListener("click", function () { obClose(); openSettings(); });
+  $("obBrowse").addEventListener("click", function () { obClose(); openModelPicker(); });
+  $("obSkip").addEventListener("click", obDone);
+  obOverlay.addEventListener("click", function (ev) { if (ev.target === obOverlay) obDone(); });
+  (function () {                                     // trigger: unconfigured brain (mock/empty) + not dismissed
+    var dismissed; try { dismissed = localStorage.getItem("collie-onboarded"); } catch (e) {}
+    if (dismissed) return;
+    fetch("/api/models?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
+      .then(function (d) {
+        var cur = ((d || {}).current || "");
+        if (!cur || cur.indexOf("mock:") === 0 || cur.charAt(0) === ":") { obRender((d || {}).entries); obOverlay.classList.add("open"); }
+      }).catch(function () {});
+  })();
   $("setClose").onclick = closeSettings;
   $("setCancel").onclick = closeSettings;
   setOverlay.addEventListener("click", function (e) { if (e.target === setOverlay) closeSettings(); });
