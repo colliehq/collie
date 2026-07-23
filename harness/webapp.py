@@ -46,6 +46,10 @@ if not os.path.exists(LOGO_SVG):
 # served HTML (same-origin, so cross-site JS can't read it), and required on every state-changing /
 # code-executing route. Same-origin requests from our own page carry it; cross-site ones can't.
 TOKEN = os.urandom(16).hex()
+# Non-secret per-process id. Injected into served HTML and returned by /api/ver so a long-lived
+# desktop/wallpaper page can detect a server restart and auto-reload itself (picking up the fresh
+# token + latest front-end/behaviour). Safe to expose: it's not a credential.
+BOOT = os.urandom(8).hex()
 
 
 def _provider() -> str:
@@ -228,12 +232,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_logo()
             if path == "/map":
                 return self._serve_static("map.html", "text/html; charset=utf-8")
+            if path == "/wallpaper":
+                return self._serve_static("wallpaper.html", "text/html; charset=utf-8")
             if path == "/meadow":
                 return self._serve_static("meadow.html", "text/html; charset=utf-8")
             if path == "/map/three.min.js":
                 return self._serve_static("three.min.js", "application/javascript; charset=utf-8")
             if path in ("/dog_sprite.png", "/sheep_sprite.png"):
                 return self._serve_static(path.lstrip("/"), "image/png")
+            if path == "/api/ver":
+                # non-secret per-process id; a long-lived desktop page polls this and reloads when it changes
+                return self._send_html(BOOT.encode(), 200, "text/plain; charset=utf-8")
             if path == "/api/tree":
                 return self._serve_tree(urllib.parse.parse_qs(parsed.query))
             if path == "/api/repos":
@@ -532,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(HERE, "webui", name), "rb") as f:
                 data = f.read()
             if name.endswith(".html"):
-                meta = ('<meta name="collie-token" content="%s">\n' % TOKEN).encode()
+                meta = ('<meta name="collie-token" content="%s">\n<meta name="collie-boot" content="%s">\n' % (TOKEN, BOOT)).encode()
                 for anchor in (b'<meta charset="utf-8">', b'<head>', b'<!doctype html>', b'<!DOCTYPE html>'):
                     if anchor in data:
                         data = data.replace(anchor, anchor + b"\n" + meta, 1)
@@ -724,7 +733,25 @@ class Handler(BaseHTTPRequestHandler):
             # (the advertised real path), and the SSE headers are already committed — so a
             # provider error must arrive as a clean `done{error}` frame, not an escaped 500.
             h = make_harness(cwd, provider=_provider(), project="web",
-                             code_search=True, web_search=True, exec_code=True, delegate=True)
+                             browser=True, code_search=True, web_search=True, exec_code=True, delegate=True)
+            # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
+            # shell + the user's logged-in browser. Nudge it to ACT on local/system questions (time, tz,
+            # hardware, status, location) via bash/powershell.exe instead of refusing for "lack of a tool".
+            try:
+                h.composer.identity = (
+                    "You are collie, a focused coding agent running as the user's live desktop assistant. "
+                    "Use tools to gather facts before answering; be concise and correct. "
+                    "You have a real shell (bash) and, on this machine (WSL under Windows), can call "
+                    "powershell.exe to reach the Windows host. For anything about the local machine — "
+                    "current time, timezone, hardware/spec, OS, battery or status, network or approximate "
+                    "location — just RUN the command (date, timedatectl, `powershell.exe Get-ComputerInfo`, "
+                    "`powershell.exe Get-TimeZone`, `curl -s ipinfo.io`, etc.) rather than saying you lack "
+                    "permission. You also drive the user's real logged-in browser via the browser_* tools. "
+                    "Do NOT preface your work with what you are about to do (no 'let me check', no 'I'll look "
+                    "into it') — just do it, then give the result directly and concisely."
+                )
+            except Exception:
+                pass
             # run mode: "herding" (🐕 Extreme Herding) pushes harder — more turns + the executed
             # assert-verify gate on (won't finish until a reproduction prints green).
             # Turn ceilings sit well above typical need: session 10e8 (2026-07-14) exhausted the old

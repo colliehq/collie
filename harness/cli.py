@@ -213,6 +213,69 @@ def cmd_web(args):
     return web_main(argv)
 
 
+def _desktop_window(url, kiosk=False):
+    """From WSL, pop a borderless Edge window on the Windows desktop showing `url` — a *real* window,
+    so clicks/typing are 100% reliable (unlike a behind-icons wallpaper, where the shell eats clicks).
+    Uses the user's own Edge profile (logged-in). Returns (ok, detail)."""
+    import shutil, subprocess
+    ps = shutil.which("powershell.exe")
+    if not ps:
+        return False, ("no powershell.exe — `collie wallpaper` drives a Windows desktop from WSL; "
+                       "on native Windows just open %s in a browser" % url)
+    flags = ["'--kiosk'", "'--edge-kiosk-type=fullscreen'"] if kiosk else ["'--start-maximized'"]
+    argl = ",".join(["'--app=%s'" % url] + flags) + \
+        ",('--user-data-dir=' + $env:LOCALAPPDATA + '\\collie-desktop')"
+    script = (
+        "$e=@('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',"
+        "'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe')|?{Test-Path $_}|Select-Object -First 1;"
+        "if(-not $e){Write-Error 'edge-not-found';exit 3};"
+        "Start-Process $e -ArgumentList " + argl
+    )
+    try:
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
+                           capture_output=True, text=True, timeout=25)
+    except Exception as e:
+        return False, "launch error: %s" % e
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout or ("powershell exit %d" % r.returncode)).strip()
+    return True, "opened"
+
+
+def cmd_wallpaper(args):
+    """Put collie's live desktop on screen and let collie OWN it — no third-party wallpaper engine.
+    Starts the web server if it isn't already up, then pops a borderless full-screen window at
+    /wallpaper. Real window ⇒ reliable clicks/typing; auto-reloads on restart ⇒ never hand-refresh."""
+    import time, threading, urllib.request
+    port = args.port
+    url = "http://127.0.0.1:%d/wallpaper" % port
+
+    def _up():
+        try:
+            urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % port, timeout=0.8).read()
+            return True
+        except Exception:
+            return False
+
+    if _up():                                   # a server is already running — just open the window
+        ok, detail = _desktop_window(url, kiosk=args.kiosk)
+        print("collie wallpaper · %s · %s" % (url, "window opened" if ok else "no window: " + detail))
+        return 0 if ok else 1
+
+    # no server yet: start one, and open the window the moment it starts accepting connections
+    def _delayed():
+        for _ in range(60):
+            if _up():
+                break
+            time.sleep(0.2)
+        ok, detail = _desktop_window(url, kiosk=args.kiosk)
+        print(("collie wallpaper · window opened" if ok else
+               "collie wallpaper · could not open window (%s) — open %s yourself" % (detail, url)),
+              flush=True)
+    threading.Thread(target=_delayed, daemon=True).start()
+    from .webapp import main as web_main
+    return web_main(["--port", str(port), "--no-open"])
+
+
 def cmd_browser_bridge(args):
     """Run the browser-bridge server (the Chrome extension polls it; browser_* tools drive it)."""
     from .browserbridge import main as bb_main
@@ -910,6 +973,12 @@ def main(argv=None):
     pw.add_argument("--port", type=int, default=8787)
     pw.add_argument("--no-open", dest="open", action="store_false", help="don't auto-open a browser")
     pw.set_defaults(open=True, fn=cmd_web)
+
+    # wallpaper: collie owns its own live desktop window (no third-party wallpaper engine)
+    pwp = sub.add_parser("wallpaper", help="put collie's live desktop on screen, owned by collie (no Lively/WE)")
+    pwp.add_argument("--port", type=int, default=8787)
+    pwp.add_argument("--kiosk", action="store_true", help="immersive full-screen (no frame; Alt-F4 exits)")
+    pwp.set_defaults(fn=cmd_wallpaper)
 
     # browser-bridge: LLM-driven real browser via a Chrome extension (authenticated / full-page)
     pb = sub.add_parser("browser-bridge", help="run the bridge the browser extension polls (browser_* tools)")

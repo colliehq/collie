@@ -1,0 +1,304 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collie · Live Desktop</title>
+<style>
+  :root{ --mono:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    --ink:#e3e9ff; --mut:#8794b8; --faint:#4a5578; --bg:#03040a; --pine:#8aa0e8; --pine2:#a9bdff;
+    --amber:#f2bc55; --green:#54e6a6; --coral:#e8656b; }
+  *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;font-family:var(--sans);color:var(--ink)}
+  #cv{position:fixed;inset:0;display:block;cursor:default}
+  .glass{background:rgba(10,14,26,.62);border:1px solid rgba(120,140,210,.18);backdrop-filter:blur(12px) saturate(1.2);-webkit-backdrop-filter:blur(12px) saturate(1.2);box-shadow:0 12px 44px -18px #000}
+  /* center-top controls (kept clear of left-side desktop icons) */
+  #top{position:fixed;top:24px;left:50%;transform:translateX(-50%);z-index:6}
+  #banner{display:flex;align-items:center;gap:14px;padding:14px 30px;border-radius:999px;font-family:var(--mono);font-size:18px;color:var(--mut);white-space:nowrap;max-width:90vw;overflow:hidden;letter-spacing:.01em}
+  #banner .bdot{width:12px;height:12px;border-radius:50%;background:var(--faint);flex:0 0 auto;transition:background .2s}
+  #banner.busy .bdot{background:var(--green);box-shadow:0 0 14px var(--green);animation:pl 1.1s ease-in-out infinite}
+  #banner #btitle{color:var(--ink);font-weight:600;font-size:18px}
+  #banner #bsub{color:var(--faint);overflow:hidden;text-overflow:ellipsis;font-size:16px}
+  @keyframes pl{0%,100%{opacity:1}50%{opacity:.4}}
+  /* bottom-center chat */
+  #chat{position:fixed;left:50%;bottom:92px;transform:translateX(-50%);z-index:7;width:min(680px,92vw);border-radius:16px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}  /* bottom:92px clears the Windows taskbar (~48px) + breathing room */
+  #log{display:flex;flex-direction:column;gap:9px;max-height:min(44vh,420px);overflow:auto;padding-right:2px}
+  #log:empty{display:none}
+  .msg{font-size:13.5px;line-height:1.5;max-width:100%;}
+  .msg.u{align-self:flex-end;background:rgba(138,160,232,.16);border:1px solid rgba(138,160,232,.28);color:var(--ink);padding:8px 12px;border-radius:12px 12px 3px 12px;max-width:82%}
+  .msg.a{align-self:flex-start;color:#d7e0ff;white-space:pre-wrap;padding:2px 2px}
+  .msg.a strong{color:#fff;font-weight:600} .msg.a em{font-style:italic;color:#eef2ff}
+  .msg.a code{font-family:var(--mono);background:rgba(138,160,232,.14);padding:1px 5px;border-radius:5px;font-size:12.5px}
+  .msg.a pre{font-family:var(--mono);background:rgba(138,160,232,.1);padding:8px 10px;border-radius:8px;font-size:12px;white-space:pre-wrap;overflow-x:auto}
+  .msg.a a{color:var(--pine2)}
+  .msg.a .mdh{display:block;font-weight:700;color:#fff;margin:6px 0 2px} .msg.a .mdh1{font-size:15px} .msg.a .mdh2{font-size:14px} .msg.a .mdh3,.msg.a .mdh4,.msg.a .mdh5,.msg.a .mdh6{font-size:13.5px;color:#dfe7ff}
+  .msg.a .mdli{display:block;padding-left:13px;text-indent:-9px} .msg.a .mdli::before{content:"·\00a0";color:var(--pine)}
+  .msg.status{align-self:flex-start;color:var(--pine2);font-size:14px;display:flex;align-items:center;gap:9px}
+  .msg.status .sdot{width:8px;height:8px;border-radius:50%;background:var(--pine2);box-shadow:0 0 8px var(--pine2);animation:pl 1s ease-in-out infinite;flex:0 0 auto}
+  .msg.err{align-self:flex-start;color:var(--coral);font-size:12.5px}
+  .composer{display:flex;align-items:flex-end;gap:9px}
+  .composer textarea{flex:1;resize:none;border:0;background:rgba(255,255,255,.04);border:1px solid rgba(120,140,210,.2);border-radius:11px;color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45;padding:10px 12px;max-height:120px;outline:none}
+  .composer textarea:focus{border-color:var(--pine)} .composer textarea::placeholder{color:var(--faint)}
+  .send{border:0;border-radius:11px;width:42px;height:42px;flex:none;cursor:pointer;background:var(--pine);color:#0a0f1e;display:grid;place-items:center;transition:background .15s}
+  .send:hover:not(:disabled){background:var(--pine2)} .send:disabled{opacity:.45;cursor:not-allowed} .send.stop{background:var(--coral);color:#fff} .send svg{width:19px;height:19px}
+  .newc{border:0;border:1px solid rgba(120,140,210,.22);background:transparent;border-radius:11px;width:42px;height:42px;flex:none;cursor:pointer;color:var(--faint);display:grid;place-items:center;transition:.15s;font-family:var(--mono)}
+  .newc:hover{color:var(--ink);border-color:var(--pine);background:rgba(255,255,255,.04)} .newc svg{width:17px;height:17px}
+  #brand{position:fixed;left:26px;bottom:66px;z-index:5;font-family:var(--mono);font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--faint)} #brand b{color:var(--mut)}  /* above the taskbar */
+  #hlab{position:fixed;z-index:8;pointer-events:none;font-family:var(--mono);font-size:11px;color:var(--ink);background:rgba(10,14,26,.72);border:1px solid rgba(120,140,210,.2);border-radius:7px;padding:5px 9px;display:none;white-space:nowrap;backdrop-filter:blur(8px)}
+  #labels{position:fixed;inset:0;z-index:4;pointer-events:none;overflow:hidden}
+  .nlabel{position:absolute;transform:translate(-50%,-50%);font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;text-shadow:0 0 10px #000,0 1px 3px #000;will-change:left,top,opacity}
+  .bgmode #top,.bgmode #chat,.bgmode #brand{display:none!important}   /* ?bg=1 → pure galaxy for the behind-icons wallpaper layer (chat lives in a separate floating window) */
+</style></head><body>
+<script>(function(){try{var m=new URLSearchParams(location.search);if(m.get('bg')==='1'){document.documentElement.className+=' bgmode';document.title='collie-bg';}}catch(e){}})();</script>
+<canvas id="cv"></canvas>
+<div id="top">
+  <div id="banner" class="glass"><span class="bdot" id="bdot"></span><span id="btitle">collie</span><span id="bsub">idle</span></div>
+</div>
+<div id="chat" class="glass">
+  <div id="log"></div>
+  <div class="composer">
+    <button class="newc" id="newc" title="new chat — clears this thread"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+    <textarea id="input" rows="1" placeholder="Ask collie to fix, build, or explain something…"></textarea>
+    <button class="send" id="send" title="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg></button>
+  </div>
+</div>
+<div id="brand"><b>collie</b> · live desktop</div>
+<div id="hlab"></div>
+<div id="labels"></div>
+<div id="dbg" style="position:fixed;left:8px;top:8px;z-index:20;font:12px monospace;color:#8fe;background:rgba(0,0,0,.6);padding:4px 8px;pointer-events:none;border-radius:4px"></div>
+
+<script src="/map/three.min.js"></script>
+<script>
+(function(){
+  "use strict";
+  const $=(id)=>document.getElementById(id);
+  const CT=(document.querySelector('meta[name="collie-token"]')||{}).content||"";
+  const GA=2.399963; function rnd(s){const x=Math.sin(s*127.1)*43758.5453;return x-Math.floor(x);}
+  if(typeof THREE==="undefined"){ $("act").textContent="3D engine failed to load."; return; }
+
+  const cv=$("cv"); const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true});
+  renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
+  const scene=new THREE.Scene(); scene.fog=new THREE.Fog(0x05070e,120,360);
+  const camera=new THREE.PerspectiveCamera(55,1,0.1,4000);
+  function glowTex(){const c=document.createElement("canvas");c.width=c.height=64;const g=c.getContext("2d");const gr=g.createRadialGradient(32,32,0,32,32,32);gr.addColorStop(0,"#fff");gr.addColorStop(.25,"rgba(255,255,255,.85)");gr.addColorStop(.55,"rgba(255,255,255,.25)");gr.addColorStop(1,"rgba(255,255,255,0)");g.fillStyle=gr;g.fillRect(0,0,64,64);return new THREE.CanvasTexture(c);}
+  function starTex(){const c=document.createElement("canvas");c.width=c.height=128;const g=c.getContext("2d");const gr=g.createRadialGradient(64,64,0,64,64,64);gr.addColorStop(0,"#fff");gr.addColorStop(.06,"#fff");gr.addColorStop(.14,"rgba(255,255,255,.5)");gr.addColorStop(.34,"rgba(255,255,255,.09)");gr.addColorStop(1,"rgba(255,255,255,0)");g.fillStyle=gr;g.fillRect(0,0,128,128);return new THREE.CanvasTexture(c);}
+  const TEX=glowTex(),STAR=starTex();
+  const NEB=[[143,166,242],[90,217,198],[176,143,232],[111,200,230],[230,143,176],[125,205,154],[214,196,120],[150,150,240],[120,220,180]];
+  const col=(l,a,e,v,r)=>l===4?new THREE.Color(.33,.9,.65):l===3?new THREE.Color(.95,.74,.33):l===2?new THREE.Color(.4,.62,1):l===1?new THREE.Color(.56,.59,.66):null;
+
+  // background dust
+  (function(){const M=520,p=new Float32Array(M*3),c=new Float32Array(M*3);let s=99;const r=()=>{s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff;};
+    for(let i=0;i<M;i++){p[3*i]=(r()-.5)*900;p[3*i+1]=(r()-.5)*600;p[3*i+2]=(r()-.5)*900;const v=.12+r()*.2;c[3*i]=v*.8;c[3*i+1]=v*.85;c[3*i+2]=v;}
+    const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(p,3));g.setAttribute("color",new THREE.BufferAttribute(c,3));
+    scene.add(new THREE.Points(g,new THREE.PointsMaterial({size:1.4,map:STAR,vertexColors:true,transparent:true,opacity:.5,depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true})));})();
+
+  const TT={v:0}; let galaxy=null, CWD="";
+  function ellipse(pm,th){const x0=pm.or*Math.cos(th),z0=pm.b*Math.sin(th),y1=-z0*Math.sin(pm.iX),z1=z0*Math.cos(pm.iX),x2=x0*Math.cos(pm.iZ)-y1*Math.sin(pm.iZ),y2=x0*Math.sin(pm.iZ)+y1*Math.cos(pm.iZ);return[pm.sx+x2,pm.sy+y2,pm.sz+z1];}
+  function buildGalaxy(files){
+    const group=new THREE.Group(),groups={},order=[];
+    files.forEach(f=>{if(!groups[f.g]){groups[f.g]=[];order.push(f.g);}groups[f.g].push(f);});
+    order.sort((a,b)=>groups[b].length-groups[a].length);
+    const stars=[],byPath={},planetsMeta=[],nebulae=[];let extent=40,defCount=0;
+    order.forEach((g,ci)=>{const ang=ci*GA,rad=19*Math.sqrt(ci+.55),cx=Math.cos(ang)*rad,cy=(rnd(ci+1)-.5)*9,cz=Math.sin(ang)*rad;
+      const fs=groups[g],cr=3.2+Math.sqrt(fs.length)*1.8,nc=NEB[ci%NEB.length],ncol=new THREE.Color(nc[0]/255,nc[1]/255,nc[2]/255);
+      const idle=new THREE.Color(nc[0]/255*.9,nc[1]/255*.9,nc[2]/255*.95);extent=Math.max(extent,rad+cr);
+      nebulae.push({name:g,pos:new THREE.Vector3(cx,cy,cz),col:ncol,n:fs.length});
+      for(let q=0;q<4;q++){const m=new THREE.SpriteMaterial({map:TEX,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,color:ncol,opacity:.12});
+        const sp=new THREE.Sprite(m);sp.position.set(cx+(rnd(ci*7+q)-.5)*cr*1.1,cy+(rnd(ci*3+q)-.5)*cr*.7,cz+(rnd(ci*5+q)-.5)*cr*1.1);sp.scale.setScalar(cr*(2.4+rnd(q)*1.6));group.add(sp);}
+      fs.forEach((f,k)=>{const t=(k+.5)/fs.length,phi=Math.acos(1-2*t),th=GA*k,r=cr*(.42+.58*Math.cbrt(t));
+        const sx=cx+r*Math.sin(phi)*Math.cos(th),sy=cy+r*Math.cos(phi)*.75,sz=cz+r*Math.sin(phi)*Math.sin(th);
+        const mat=new THREE.SpriteMaterial({map:STAR,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,color:idle.clone()});
+        const sp=new THREE.Sprite(mat);sp.position.set(sx,sy,sz);const sz2=.75+Math.min(2.3,Math.sqrt(f.loc||1)/4.8);sp.scale.setScalar(sz2);group.add(sp);
+        const star={f:f,pos:sp.position,sp:sp,base:sz2,idle:idle,lvl:0,hot:0,planets:[]};stars.push(star);byPath[f.p]=star;
+        const np=Math.min(14,f.defs||0);defCount+=np;
+        for(let pi=0;pi<np;pi++){const orad=1.2+pi*.42+(rnd(pi+k*11)-.5)*.3;
+          const pm={sx,sy,sz,or:orad,b:orad*(.78+rnd(pi+3)*.18),a0:rnd(pi+k*5)*6.28,sp:.5/Math.sqrt(orad)*(rnd(pi+k*9)>.5?1:-1),iX:(rnd(pi+k*2)-.5)*1.8,iZ:(rnd(pi+k*4)-.5)*1.2,col:idle};planetsMeta.push(pm);star.planets.push(pm);}});
+    });
+    const ep=[];files.forEach(f=>{(f.imports||[]).forEach(ip=>{if(byPath[f.p]&&byPath[ip]){const a=byPath[f.p].pos,b=byPath[ip].pos;ep.push(a.x,a.y,a.z,b.x,b.y,b.z);}});});
+    if(ep.length){const eg=new THREE.BufferGeometry();eg.setAttribute("position",new THREE.Float32BufferAttribute(ep,3));group.add(new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0x8aa0e8,transparent:true,opacity:.05,blending:THREE.AdditiveBlending,depthWrite:false})));}
+    const pc=planetsMeta.length,ppos=new Float32Array(pc*3),pcol=new Float32Array(pc*3);
+    for(let i=0;i<pc;i++){const c=planetsMeta[i].col;pcol[3*i]=c.r*1.2;pcol[3*i+1]=c.g*1.3;pcol[3*i+2]=c.b*1.5;}
+    const pgeo=new THREE.BufferGeometry();pgeo.setAttribute("position",new THREE.BufferAttribute(ppos,3));pgeo.setAttribute("color",new THREE.BufferAttribute(pcol,3));
+    group.add(new THREE.Points(pgeo,new THREE.PointsMaterial({size:.55,map:STAR,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,vertexColors:true,sizeAttenuation:true})));
+    return {group,stars,byPath,planetsMeta,pgeo,ppos,extent,defCount,nebCount:order.length,nebulae:nebulae};
+  }
+
+  let radGoal=180,rad=180,orbit=.6,elev=.42;const target=new THREE.Vector3();
+  function showGalaxy(files){ if(galaxy)scene.remove(galaxy.group); galaxy=buildGalaxy(files); scene.add(galaxy.group);
+    radGoal=galaxy.extent*1.5+22; makeLabels(galaxy.nebulae); hoverStar=null; buildRings(null); }
+
+  // module (constellation) labels — one per nebula, positioned in the DOM each frame
+  const labelBox=document.getElementById("labels");let labelEls=[];
+  function makeLabels(nebs){ labelBox.innerHTML="";labelEls=(nebs||[]).map(nb=>{const d=document.createElement("div");d.className="nlabel";const nm=String(nb.name||"").replace(/\\/g,"/");d.textContent=(nm.split("/").filter(Boolean).pop())||nm||"·";const c=nb.col;d.style.color="rgb("+Math.round(c.r*130+105)+","+Math.round(c.g*130+110)+","+Math.round(c.b*140+125)+")";labelBox.appendChild(d);return {el:d,pos:nb.pos,n:nb.n||1};}); }
+  function updateLabels(){ for(let i=0;i<labelEls.length;i++){const L=labelEls[i];v.copy(L.pos).project(camera);if(v.z>1){L.el.style.opacity=0;continue;}L.el.style.left=((v.x*.5+.5)*innerWidth)+"px";L.el.style.top=((-v.y*.5+.5)*innerHeight)+"px";const dist=camera.position.distanceTo(L.pos);let op=(1.55-dist/(rad*1.4))*Math.min(1,L.n/2+.35);L.el.style.opacity=Math.max(0,Math.min(.82,op));} }
+
+  // hover a star -> draw its planets' orbit rings (the "star system")
+  const ringGroup=new THREE.Group();scene.add(ringGroup);let hoverStar=null,ringOp=0;
+  function buildRings(hv){ while(ringGroup.children.length){const c=ringGroup.children.pop();ringGroup.remove(c);if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}
+    if(!hv||!hv.planets||!hv.planets.length)return;
+    hv.planets.forEach(pm=>{const N=64,ps=new Float32Array((N+1)*3);for(let i=0;i<=N;i++){const p=ellipse(pm,i/N*6.2832);ps[3*i]=p[0];ps[3*i+1]=p[1];ps[3*i+2]=p[2];}
+      const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(ps,3));
+      ringGroup.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:0xcfe0ff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})));
+      // dots along the orbit make it read clearly even where a 1px line is invisible
+      ringGroup.add(new THREE.Points(g,new THREE.PointsMaterial({size:.9,map:STAR,color:0xbcd2ff,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true})));}); }
+
+  // ---- collie "agent": a comet that flies to the file collie touches and lands, flashing the action colour ----
+  function actCol(a){a=(a||"").toLowerCase(); if(a.indexOf("edit")>=0||a.indexOf("write")>=0)return new THREE.Color(.99,.75,.28); if(a.indexOf("verify")>=0)return new THREE.Color(.36,.98,.62); if(a.indexOf("read")>=0||a.indexOf("seen")>=0)return new THREE.Color(.34,.96,.66); return new THREE.Color(.99,.85,.45);}
+  const orbHalo=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex(),transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending}));orbHalo.scale.setScalar(5.5);scene.add(orbHalo);
+  const orbCore=new THREE.Sprite(new THREE.SpriteMaterial({map:STAR,color:0xffffff,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending}));orbCore.scale.setScalar(2.2);scene.add(orbCore);
+  const agentPos=new THREE.Vector3(),agentTgt=new THREE.Vector3(),agentCol=new THREE.Color(.99,.85,.45);
+  let agentActive=false,agentLast=-99,agentHold=false,agentArr=-99,aSeed=7;
+  const ATN=26,aTrailGeo=new THREE.BufferGeometry(),aTrailP=new Float32Array(ATN*3),aTrailC=new Float32Array(ATN*3);
+  aTrailGeo.setAttribute("position",new THREE.BufferAttribute(aTrailP,3));aTrailGeo.setAttribute("color",new THREE.BufferAttribute(aTrailC,3));
+  const aTrail=new THREE.Points(aTrailGeo,new THREE.PointsMaterial({size:1.8,map:STAR,vertexColors:true,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true}));scene.add(aTrail);
+  function aRnd(){aSeed=(aSeed*16807)%2147483647;return aSeed/2147483647;}
+  function aWander(){const e=(galaxy?galaxy.extent:40)*.72,ang=aRnd()*6.283,r=e*(.25+.75*aRnd());return new THREE.Vector3(Math.cos(ang)*r,(aRnd()-.5)*e*.5,Math.sin(ang)*r);}
+  // pos = a file star to LAND on (holds there); no pos = wander (research). act sets the colour.
+  function agentPing(pos,act,col){agentActive=true;agentLast=TT.v;agentCol.copy(col||actCol(act));agentHold=!!pos;agentArr=-99;if(pos)agentTgt.copy(pos);
+    if(orbHalo.material.opacity<0.04){agentPos.copy(pos||agentTgt);for(let i=0;i<ATN;i++){aTrailP[3*i]=agentPos.x;aTrailP[3*i+1]=agentPos.y;aTrailP[3*i+2]=agentPos.z;}}}
+
+  // ---- galaxy AUTO-FOLLOWS the active task's repo (no manual switch) ----
+  let curRepo="", curRepoName="collie";
+  function loadTree(repo){ const q=repo?("?repo="+encodeURIComponent(repo)):""; fetch("/api/tree"+q).then(r=>r.json()).then(t=>{ CWD=t.cwd||""; curRepo=t.cwd||repo||""; curRepoName=(t.repo||(CWD.split("/").pop()))||"collie"; showGalaxy(t.files||[]); if(!$("banner").classList.contains("busy")){ $("btitle").textContent="collie · "+curRepoName; $("bsub").textContent="idle"; } }).catch(()=>{}); }
+  loadTree("");   // start with the repo collie web runs in; live events switch it per task
+  // task-driven repo switch: when collie touches a file, detect which repo it's in and switch the galaxy there
+  let REPOS=[];
+  fetch("/api/repos").then(r=>r.json()).then(d=>{ REPOS=(d.repos||[]).slice().sort((a,b)=>b.root.length-a.root.length); }).catch(()=>{});
+  function repoOf(p){ p=String(p||""); if(p[0]!=="/")return null; for(const r of REPOS){ if(p===r.root||p.indexOf(r.root+"/")===0)return r; }
+    const m=p.match(/^(\/(?:home|mnt\/[a-z]|Users)\/[^/]+\/[^/]+)\//); if(m)return {root:m[1],name:m[1].split("/").pop()}; return null; }
+  function maybeSwitch(f){ const r=repoOf(f); if(r&&r.root!==CWD){ loadTree(r.root); } }
+  // also switch when collie NAMES a repo in its answer (e.g. answers about a repo from memory, touching no files)
+  let _switchedText="";
+  function maybeSwitchByText(t){ if(!REPOS.length)return; const low=String(t).toLowerCase();
+    for(const r of REPOS){ const nm=r.name.toLowerCase(); if(nm.length>=4&&low.indexOf(nm)>=0&&r.root!==CWD&&r.root!==_switchedText){ _switchedText=r.root; loadTree(r.root); return; } } }
+
+  // ---- live activity feed (lights up files as collie works) ----
+  function rel(p){ p=String(p||""); if(CWD&&p.indexOf(CWD)===0)p=p.slice(CWD.length).replace(/^[\/]+/,""); return p.replace(/^\.\//,""); }
+  function hit(path,act){ if(!galaxy)return; const s=galaxy.byPath[rel(path)]; if(!s)return; const c=actCol(act); s.sp.material.color.copy(c); s.lvl=(act&&act.indexOf("edit")>=0)?3:2; s.hot=TT.v; agentPing(s.pos,act,c); }
+  let bannerT=null;
+  function setBanner(title,sub){ $("banner").classList.add("busy"); $("btitle").textContent=title; $("bsub").textContent=sub||""; clearTimeout(bannerT);
+    bannerT=setTimeout(()=>{ $("banner").classList.remove("busy"); $("btitle").textContent="collie · "+curRepoName; $("bsub").textContent="idle"; },5000); }
+  try{ const es=new EventSource("/api/live");
+    es.addEventListener("live_hello",e=>{try{const d=JSON.parse(e.data); if(d.cwd&&d.cwd!==CWD)loadTree(d.cwd);}catch(_){}});
+    es.addEventListener("start",e=>{try{const d=JSON.parse(e.data); if(d.cwd&&d.cwd!==CWD)loadTree(d.cwd);}catch(_){} setBanner("collie is working",""); agentPing();});
+    es.addEventListener("edit",e=>{try{const d=JSON.parse(e.data);maybeSwitch(d.path);hit(d.path,"edit");setBanner("Editing "+curRepoName, rel(d.path).split("/").pop());}catch(_){}});
+    es.addEventListener("tool",e=>{try{const d=JSON.parse(e.data);const a=d.args||{},nm=(d.name||"").toLowerCase();let f=a.path||a.file_path||a.file;
+      if(!f){const cmd=String(a.cmd||a.command||"");const m=cmd.match(/(\/(?:home|mnt\/[a-z]|Users)\/[^\s'":()]+)/);if(m)f=m[1].replace(/[.,;:]+$/,"");}
+      agentPing();
+      if(nm.indexOf("search")>=0||nm.indexOf("web")>=0||nm.indexOf("fetch")>=0||nm.indexOf("browser")>=0){ setBanner("Searching the web", a.query||a.q||a.url||""); }
+      else if(f){ const act=nm.indexOf("edit")>=0||nm.indexOf("write")>=0?"edit":nm.indexOf("read")>=0?"read":"seen"; maybeSwitch(f); hit(f,act); setBanner(act==="edit"?"Editing "+curRepoName:"Reading code", rel(f).split("/").pop()); }
+      else if(nm){ setBanner(nm.replace(/_/g," "),""); }}catch(_){}});
+    es.addEventListener("repro",e=>{try{const d=JSON.parse(e.data);setBanner(d.passed?"✓ Verified":"Running check…","");}catch(_){}});
+    es.addEventListener("done",()=>setBanner("Done","")); es.onerror=()=>{};
+  }catch(_){}
+
+  // ---- chat: talk to collie, stream the answer, watch the galaxy light up ----
+  let sid="", running=null;
+  const input=$("input"),send=$("send"),log=$("log");
+  function addMsg(cls,txt){ const d=document.createElement("div"); d.className="msg "+cls; d.textContent=txt||""; log.appendChild(d); log.scrollTop=log.scrollHeight; return d; }
+  function autninput(){ input.style.height="auto"; input.style.height=Math.min(120,input.scrollHeight)+"px"; }
+  input.addEventListener("input",autninput);
+  input.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); doSend(); } });
+  send.onclick=()=>{ if(running) stopRun(); else doSend(); };
+  newc.onclick=()=>{ if(running) stopRun(); sid=""; log.innerHTML=""; input.value=""; autninput(); input.focus(); };
+  // The desktop shell often eats the FIRST click on a behind-icons wallpaper (the double-click the user
+  // found = one activate + one real click). So once the window is activated, grab the input without a
+  // precise second click — then Enter sends (no send-button click needed).
+  const chatEl=document.getElementById("chat");
+  const focusInput=()=>{ try{ input.focus({preventScroll:true}); }catch(_){} };
+  window.addEventListener("focus",focusInput);
+  chatEl.addEventListener("pointerdown",focusInput);
+  focusInput();
+  // Auto-reload on server restart: a long-lived wallpaper page won't see back-end/token changes until
+  // it reloads. Poll the non-secret boot id; when it changes, reload (but never mid-type / mid-run).
+  // NOTE: auto-reload on server restart is DISABLED for the pinned desktop engine — a location.reload()
+  // rebuilds the WebView2's Chromium child and invalidates the native input hook + z-order pin (which
+  // made icons vanish / input break). Updates are pushed by relaunching collie-wallpaper.exe instead.
+  function setRunning(on){ send.classList.toggle("stop",on); send.innerHTML=on?'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>'; }
+  function stopRun(){ if(running){ running.close(); running=null; } setRunning(false); }
+  // map a tool name to a human "collie is …" status (Chinese)
+  const TOOLZH={bash:"正在执行命令",execute_code:"正在运行代码",read_file:"正在阅读代码",grep:"正在查找",glob:"正在查找",code_search:"正在检索代码",write_file:"正在修改文件",edit_file:"正在修改代码",browser_open:"正在打开网页",browser_navigate:"正在浏览网页",browser_read:"正在读取网页",browser_click:"正在操作浏览器",browser_type:"正在操作浏览器",browser_screenshot:"正在截图",browser_eval:"正在分析网页",browser_links:"正在浏览网页",browser_console:"正在分析网页",web_search:"正在搜索",web_fetch:"正在抓取网页",memory_search:"正在回忆",remember:"正在记忆",delegate:"正在分派子任务",plan:"正在规划",undo:"正在撤销"};
+  function toolZh(nm){ nm=(nm||"").toLowerCase(); if(TOOLZH[nm])return TOOLZH[nm]; for(const k in TOOLZH){ if(nm.indexOf(k)>=0)return TOOLZH[k]; } if(nm.indexOf("browser")>=0)return "正在浏览网页"; if(nm.indexOf("search")>=0||nm.indexOf("web")>=0||nm.indexOf("fetch")>=0)return "正在搜索"; return "正在思考"; }
+  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function md(s){ let h=esc(s);
+    h=h.replace(/```([\s\S]*?)```/g,(m,c)=>"<pre>"+c.replace(/^\n/,"")+"</pre>");
+    h=h.replace(/`([^`\n]+)`/g,"<code>$1</code>");
+    h=h.replace(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*$/gm,function(m,hh,t){return '<span class="mdh mdh'+hh.length+'">'+t+'</span>';});
+    h=h.replace(/^\s*[-*]\s+(.+)$/gm,'<span class="mdli">$1</span>');
+    h=h.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
+    h=h.replace(/(^|[^*])\*([^*\n]+)\*/g,"$1<em>$2</em>");
+    h=h.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2">$1</a>');
+    return h; }
+  function doSend(){ const q=input.value.trim(); if(!q||running)return; input.value=""; autninput();
+    log.innerHTML="";                                   // only ever show the single latest reply
+    _switchedText="";                                   // let this new question switch the galaxy again
+    const bubble=addMsg("a",""); let acc="", answering=false;
+    function status(txt){ if(answering)return; bubble.className="msg status"; bubble.innerHTML='<span class="sdot"></span>collie '+esc(txt)+'…'; }
+    status("正在思考");
+    const url="/api/stream?token="+encodeURIComponent(CT)+(sid?("&session="+encodeURIComponent(sid)):"")+"&q="+encodeURIComponent(q);
+    setRunning(true); setBanner("collie is working",""); agentPing();
+    const es=new EventSource(url); running=es;
+    es.addEventListener("tool",e=>{ try{const d=JSON.parse(e.data); status(toolZh(d.name)); }catch(_){} });
+    es.addEventListener("edit",()=>status("正在修改代码"));
+    es.addEventListener("token",e=>{ try{const d=JSON.parse(e.data); if(!answering){ answering=true; bubble.className="msg a"; } acc+=d.t||""; maybeSwitchByText(acc); bubble.innerHTML=md(acc); log.scrollTop=log.scrollHeight; }catch(_){} });
+    es.addEventListener("done",e=>{ try{const d=JSON.parse(e.data); if(d.session)sid=d.session; if(d.error){ bubble.remove(); addMsg("err","⚠ "+d.error); } else { const t=acc||d.answer||"(done — see the galaxy above)"; bubble.className="msg a"; bubble.innerHTML=md(t); log.scrollTop=log.scrollHeight; } }catch(_){} es.close(); running=null; setRunning(false); });
+    es.onerror=()=>{ if(!answering){ bubble.className="msg a"; bubble.textContent="(stream interrupted)"; } es.close(); running=null; setRunning(false); };
+  }
+
+  // ---- hover a star -> file label ----
+  let mx=-1,my=-1;const hlab=$("hlab"),v=new THREE.Vector3();
+  let dMove=0,dLeave=0,dEnter=0,dHvLost=0,dLastNull=true;
+  cv.addEventListener("mousemove",e=>{mx=e.clientX;my=e.clientY;dMove++;});
+  cv.addEventListener("mouseleave",()=>{mx=-1;dLeave++;});
+  cv.addEventListener("mouseenter",()=>{dEnter++;});
+  const dbg=document.getElementById("dbg");
+  // user camera control — wheel zoom + drag rotate (mouse events are forwarded into the wallpaper by collie's engine)
+  let uDrag=false,uLX=0,uLY=0,uManual=-99;
+  cv.addEventListener("wheel",e=>{ e.preventDefault(); radGoal=Math.max(40,Math.min(1000,radGoal*(e.deltaY>0?1.12:0.89))); uManual=TT.v; },{passive:false});
+  cv.addEventListener("pointerdown",e=>{ uDrag=true; uLX=e.clientX; uLY=e.clientY; });
+  addEventListener("pointerup",()=>{ uDrag=false; });
+  cv.addEventListener("pointermove",e=>{ if(!uDrag)return; orbit-=(e.clientX-uLX)*0.005; elev=Math.max(0.06,Math.min(1.45,elev+(e.clientY-uLY)*0.004)); uLX=e.clientX; uLY=e.clientY; uManual=TT.v; });
+
+  function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h);camera.aspect=w/h;
+    camera.setViewOffset(w,h,0,Math.round(h*0.10),w,h);   // lift the galaxy up ~10% to sit above the chat box + taskbar
+    camera.updateProjectionMatrix();}
+  addEventListener("resize",resize);resize();
+  function animate(t){ requestAnimationFrame(animate); TT.v=(t||0)/1000; if(TT.v-uManual>4)orbit+=0.0006; rad+=(radGoal-rad)*0.05;
+    scene.fog.near=rad*0.45; scene.fog.far=rad*2.15;
+    camera.position.set(target.x+Math.cos(orbit)*Math.cos(elev)*rad,target.y+Math.sin(elev)*rad,target.z+Math.sin(orbit)*Math.cos(elev)*rad);camera.lookAt(target);
+    if(galaxy){ const pm=galaxy.planetsMeta,pp=galaxy.ppos; for(let i=0;i<pm.length;i++){const p=ellipse(pm[i],pm[i].a0+TT.v*pm[i].sp);pp[3*i]=p[0];pp[3*i+1]=p[1];pp[3*i+2]=p[2];} galaxy.pgeo.attributes.position.needsUpdate=true;
+      // fade hot stars back to idle
+      for(let i=0;i<galaxy.stars.length;i++){const s=galaxy.stars[i];const age=TT.v-s.hot;const sc=s.base*(s.hot&&age<2.4?1+2.8*Math.max(0,1-age/2.4):1);s.sp.scale.setScalar(sc); if(s.hot&&age>2.8&&s.lvl){s.lvl=Math.max(0,s.lvl-0.02); if(s.lvl<0.5){s.sp.material.color.copy(s.idle);s.lvl=0;}}}
+    }
+    let hv=null;
+    if(mx>=0&&galaxy){let best=1e9,curD=1e9;for(let i=0;i<galaxy.stars.length;i++){const s=galaxy.stars[i];v.copy(s.pos).project(camera);if(v.z>1)continue;const sx=(v.x*.5+.5)*innerWidth,sy=(-v.y*.5+.5)*innerHeight,dd=(sx-mx)*(sx-mx)+(sy-my)*(sy-my);if(dd<best){best=dd;hv=s;}if(s===hoverStar)curD=dd;}
+      if(hoverStar&&curD<5200&&curD<best*3)hv=hoverStar;     // strong stickiness: hold the star until the cursor is ~72px away
+      else if(best>2600)hv=null;                             // acquire only within ~51px
+      if(hv){uManual=TT.v;const vp=v.copy(hv.pos).project(camera);hlab.style.display="block";hlab.style.left=((vp.x*.5+.5)*innerWidth+12)+"px";hlab.style.top=((-vp.y*.5+.5)*innerHeight-8)+"px";hlab.innerHTML=hv.f.p+"  ·  <span style='color:var(--faint)'>"+hv.f.loc+" loc"+(hv.f.defs?" · "+hv.f.defs+" fn":"")+"</span>";}else hlab.style.display="none";}
+    else hlab.style.display="none";
+    // orbit rings: rebuild geometry ONLY when the star changes; fade opacity so a brief hover-loss never flashes/vanishes
+    if(hv&&hv!==hoverStar){hoverStar=hv;buildRings(hv);}
+    ringOp+=((hv?1:0)-ringOp)*0.14;
+    for(let i=0;i<ringGroup.children.length;i++){const c=ringGroup.children[i];c.material.opacity=ringOp*(c.type==="Points"?0.9:0.6);}
+    if(ringOp<0.015&&!hv)hoverStar=null;
+    if(!hv&&!dLastNull)dHvLost++; dLastNull=!hv;
+    if(dbg)dbg.textContent="mv="+dMove+" lv="+dLeave+" en="+dEnter+" hvLost="+dHvLost+" hv="+(hv?1:0)+" rings="+ringGroup.children.length+" rop="+ringOp.toFixed(2)+" mx="+mx+","+my;
+    if(galaxy)updateLabels();
+    if(agentActive){
+      if(!agentHold){ const e=(galaxy?galaxy.extent:40)*0.20,a=TT.v*0.55; agentTgt.set(Math.cos(a)*e,Math.sin(a*0.8)*e*0.3,Math.sin(a)*e); }   // orbit the core = "thinking / searching", not random flying
+      agentPos.lerp(agentTgt,agentHold?0.05:0.10);
+      if(agentHold&&agentPos.distanceTo(agentTgt)<1.8&&agentArr<0)agentArr=TT.v;   // landed on a file star
+      orbCore.position.copy(agentPos);orbHalo.position.copy(agentPos);
+      const flash=(agentHold&&agentArr>0&&TT.v-agentArr<0.9)?(1-(TT.v-agentArr)/0.9):0;   // bright pop on arrival
+      const idleFor=TT.v-agentLast,on=idleFor>8?0:1;
+      orbHalo.material.color.copy(agentCol);
+      orbHalo.material.opacity+=((on*(0.85+flash*1.7))-orbHalo.material.opacity)*0.12;
+      orbCore.material.opacity+=((on*(0.8+flash*1.4))-orbCore.material.opacity)*0.12;
+      orbCore.scale.setScalar(1.7+flash*2.6+Math.sin(TT.v*7)*0.25);
+      orbHalo.scale.setScalar(5.0+flash*5.0);
+      aTrail.material.opacity=orbHalo.material.opacity*0.9;
+      for(let i=ATN-1;i>0;i--){aTrailP[3*i]=aTrailP[3*(i-1)];aTrailP[3*i+1]=aTrailP[3*(i-1)+1];aTrailP[3*i+2]=aTrailP[3*(i-1)+2];}
+      aTrailP[0]=agentPos.x;aTrailP[1]=agentPos.y;aTrailP[2]=agentPos.z;
+      for(let i=0;i<ATN;i++){const f=Math.pow(1-i/ATN,1.9);aTrailC[3*i]=agentCol.r*f;aTrailC[3*i+1]=agentCol.g*f;aTrailC[3*i+2]=agentCol.b*f;}
+      aTrailGeo.attributes.position.needsUpdate=true;aTrailGeo.attributes.color.needsUpdate=true;
+      if(idleFor>8&&orbHalo.material.opacity<0.02)agentActive=false;
+    }
+    renderer.render(scene,camera); }
+  requestAnimationFrame(animate);
+})();
+</script></body></html>
