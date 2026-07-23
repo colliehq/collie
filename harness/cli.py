@@ -246,9 +246,22 @@ def _desktop_window(url, kiosk=False):
 
 
 def cmd_wallpaper(args):
-    """Put collie's live desktop on screen and let collie OWN it — no third-party wallpaper engine.
-    Starts the web server if it isn't already up, then pops a borderless full-screen window at
-    /wallpaper. Real window ⇒ reliable clicks/typing; auto-reloads on restart ⇒ never hand-refresh."""
+    """collie's live desktop as the wallpaper (behind the icons), owned by collie. On Windows this
+    drives the WebView2 engine (built on demand from source, autostart-able, port picked at runtime);
+    elsewhere it degrades to a borderless full-screen browser window. See harness/wallpaper.py."""
+    from . import plat
+    # sub-actions (Windows engine): install/uninstall autostart, boot entry, clean stop
+    if plat.is_windows():
+        from . import wallpaper as wp
+        if getattr(args, "install", False):
+            return wp.install()
+        if getattr(args, "uninstall", False):
+            return wp.uninstall()
+        if getattr(args, "stop", False):
+            return wp.stop()
+        return wp.run(port_pref=args.port, boot=getattr(args, "boot", False))
+
+    # non-Windows: no Progman/WebView2 — fall back to a borderless browser window at /wallpaper
     import time, threading, urllib.request
     port = args.port
     url = "http://127.0.0.1:%d/wallpaper" % port
@@ -260,12 +273,11 @@ def cmd_wallpaper(args):
         except Exception:
             return False
 
-    if _up():                                   # a server is already running — just open the window
+    if _up():
         ok, detail = _desktop_window(url, kiosk=args.kiosk)
         print("collie wallpaper · %s · %s" % (url, "window opened" if ok else "no window: " + detail))
         return 0 if ok else 1
 
-    # no server yet: start one, and open the window the moment it starts accepting connections
     def _delayed():
         for _ in range(60):
             if _up():
@@ -878,7 +890,7 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "browser-bridge", "mcp", "init", "setup", "jobs"}
+        "loop", "repl", "tui", "web", "wallpaper", "browser-bridge", "mcp", "init", "setup", "jobs"}
 
 
 def _setup_wizard(force=False):
@@ -1061,9 +1073,14 @@ def main(argv=None):
     pw.set_defaults(open=True, fn=cmd_web)
 
     # wallpaper: collie owns its own live desktop window (no third-party wallpaper engine)
-    pwp = sub.add_parser("wallpaper", help="put collie's live desktop on screen, owned by collie (no Lively/WE)")
-    pwp.add_argument("--port", type=int, default=8787)
-    pwp.add_argument("--kiosk", action="store_true", help="immersive full-screen (no frame; Alt-F4 exits)")
+    pwp = sub.add_parser("wallpaper", help="live desktop behind your icons (Windows engine); "
+                                           "--install autostarts it at logon")
+    pwp.add_argument("--port", type=int, default=8787, help="preferred port (a free one is picked if busy)")
+    pwp.add_argument("--kiosk", action="store_true", help="non-Windows: immersive full-screen window")
+    pwp.add_argument("--install", action="store_true", help="autostart the wallpaper at every logon")
+    pwp.add_argument("--uninstall", action="store_true", help="remove the logon autostart")
+    pwp.add_argument("--stop", action="store_true", help="cleanly stop the running wallpaper engine")
+    pwp.add_argument("--boot", action="store_true", help=argparse.SUPPRESS)  # internal autostart entry
     pwp.set_defaults(fn=cmd_wallpaper)
 
     # browser-bridge: LLM-driven real browser via a Chrome extension (authenticated / full-page)

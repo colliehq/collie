@@ -163,7 +163,11 @@ class CollieWallpaper : Form
             _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _web.CoreWebView2.Settings.IsZoomControlEnabled = false;
             _web.DefaultBackgroundColor = Color.Black;
-            _web.CoreWebView2.Navigate("http://127.0.0.1:8787/wallpaper");
+            // URL is passed by `collie wallpaper` via COLLIE_WALLPAPER_URL (the port is picked at
+            // runtime, not hardcoded, so it never collides with a busy 8787). Fallback for a manual run.
+            string url = Environment.GetEnvironmentVariable("COLLIE_WALLPAPER_URL");
+            if (string.IsNullOrEmpty(url)) url = "http://127.0.0.1:8787/wallpaper";
+            _web.CoreWebView2.Navigate(url);
         }
         catch (Exception ex) { Log("navigate EXCEPTION: " + ex.Message); }
         Pin();

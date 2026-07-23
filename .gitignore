@@ -86,3 +86,7 @@ docs/rebench_2026_03_forensics_data.json
 cf4604.cf4604.json
 cj
 run_terra_pilot.sh
+
+# built desktop wallpaper engine (compiled on first use via csc; not source)
+harness/wallpaper/collie-wallpaper.exe
+harness/wallpaper/*.log
