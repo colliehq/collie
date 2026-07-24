@@ -883,6 +883,43 @@ def _confirm(prompt):
         return False
 
 
+def cmd_config(args):
+    """collie config — read/write ~/.collie/settings.json from the command line.
+
+        collie config            list every knob and its effective value
+        collie config LANG       print one
+        collie config LANG zh    set one (merges; never clobbers the other keys)
+
+    Scriptable counterpart to the GUI Settings panel — it's how the Windows installer hands the
+    language you picked in the wizard to the app, so the first launch is already in your language.
+    """
+    from . import settings
+    keys = [s["key"] for s in settings.SCHEMA]
+    if not args.key:
+        vals = settings.all_values()
+        for k in keys:
+            print("%-18s %s" % (k, vals.get(k, "")))
+        return 0
+    key = args.key.upper()
+    if key not in keys:
+        print("collie config: unknown key %r (try `collie config` to list them)" % args.key,
+              file=sys.stderr)
+        return 2
+    spec = next(s for s in settings.SCHEMA if s["key"] == key)
+    if args.value is None:
+        print(settings.get(key, spec.get("default", "")) or "")
+        return 0
+    # validate against the schema's own options — a typo'd language should fail loudly, not
+    # silently persist a value nothing reads
+    opts = [o["value"] for o in spec.get("options", [])]
+    if opts and args.value not in opts:
+        print("collie config: %s must be one of: %s" % (key, ", ".join(opts)), file=sys.stderr)
+        return 2
+    settings.update({key: args.value})
+    print("%s = %s" % (key, args.value))
+    return 0
+
+
 def cmd_mcp(args):
     from . import mcpclient as mc
     servers = mc._load_config()
@@ -950,7 +987,8 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "mcp", "init", "setup", "jobs"}
+        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "mcp", "init", "setup",
+        "jobs", "config"}
 
 
 def _setup_wizard(force=False):
@@ -1245,6 +1283,12 @@ def main(argv=None):
     ps.add_argument("--check", action="store_true", help="diagnose only; install nothing")
     ps.add_argument("--yes", action="store_true", help="install without prompting")
     ps.set_defaults(fn=cmd_setup)
+
+    # config: scriptable settings.json access (the installer uses it to seed the UI language)
+    pc = sub.add_parser("config", help="read/write settings (config | config KEY | config KEY VALUE)")
+    pc.add_argument("key", nargs="?", default="")
+    pc.add_argument("value", nargs="?", default=None)
+    pc.set_defaults(fn=cmd_config)
 
     # mcp: manage MCP servers — list configured ones, OAuth-login to a remote, logout, or list tools
     pmcp = sub.add_parser("mcp", help="manage MCP servers (list | login <name> | logout <name> | tools <name>)")

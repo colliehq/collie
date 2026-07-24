@@ -1,65 +1,66 @@
-# Collie Wallpaper — one-click Windows installer
+# Collie — Windows installer
 
-`collie-wallpaper.iss` builds a single `collie-wallpaper-setup.exe` that a non-technical user
-double-clicks to get the live-desktop wallpaper running and auto-starting at logon — no command line,
-no Python knowledge. It's a **thin wrapper over the same `collie wallpaper --install` command** the
-lean path uses; the only extra job is bundling a self-contained runtime so the target machine needs
-nothing preinstalled.
-
-Two ways to ship the wallpaper, by audience:
+`collie.iss` builds **`Collie-Setup.exe`**: a single file a non-technical user double-clicks to get
+Collie — a real desktop app with a Start-menu/desktop icon, no Python, no terminal, no `pip`, no PATH
+surgery. Everything ships inside: an embeddable CPython with `collie-harness[local]` (semantic memory
+included), the WebView2-based desktop window and live-wallpaper engine, the browser extension, and
+the WebView2 bootstrapper.
 
 | Audience | Path |
 |---|---|
-| **Developers** | `pip install collie-harness[local]` → `collie wallpaper --install`. No installer. |
-| **Everyone else** | this `collie-wallpaper-setup.exe`. Bundles Python + collie + WebView2. |
+| **Everyone** | `Collie-Setup.exe` — bundles Python + collie + WebView2. From the [releases page](https://github.com/wudaming00/collie/releases). |
+| **Developers** | `pip install collie-harness[local]` → `collie setup`. No installer. |
 
-## Prerequisites (maintainer machine)
+## What's in this directory
 
-- **Inno Setup 6+** — `winget install JRSoftware.InnoSetup`
-- Python 3.10+ (only to stage the payload)
+| File | Role |
+|---|---|
+| `collie.iss` | The Inno Setup script: branded wizard, a custom card-style language page (33 languages, Simplified Chinese up front), tasks, uninstall. |
+| `build.ps1` | **The one command to build the exe.** Reads the version, generates art + language data, stages the payload, compiles. |
+| `build_payload.ps1` | Recreates `payload/` — the embeddable-Python runtime with collie installed. Called by `build.ps1`; idempotent. |
+| `make_art.py` | Generates the wizard's star-map branding BMPs from the logo (reproducible). |
+| `gen_langs.py` | Emits `languages.iss` + `langdata.iss` (the `[Languages]` section and the chip/dropdown data) from the `.isl` files present. Edit the `CHIPS`/`MORE` lists here to change which languages are offered. |
+| `gen_zhtw.py` | Regenerates the webui's Traditional-Chinese dict from the Simplified one via OpenCC (maintainer tool). |
+| `fetch_languages.py` | Downloads Inno's unofficial upstream translations into `lang/` and test-compiles each. Run once when adding new languages. |
+| `lang/` | Vendored `.isl` translations not bundled with Inno (committed so builds are hermetic). |
 
-## Build steps
+Generated/large paths (`payload/`, `Output/`, `art/`, `languages.iss`, `langdata.iss`) are
+`.gitignore`d — `build.ps1` recreates them.
+
+## Build
 
 ```powershell
-cd installer
+# prerequisites (maintainer/CI machine):
+#   - Inno Setup 6+       winget install JRSoftware.InnoSetup
+#   - a system Python with Pillow (make_art) — pip install pillow
+#   - network access (build_payload downloads the embeddable CPython + WebView2 on first run)
 
-# 1) embeddable Python runtime
-#    download python-3.12.x-embed-amd64.zip from python.org, unzip into payload\python\
-#    then enable site-packages: in payload\python\python312._pth uncomment the "import site" line
-mkdir payload\python
-# (unzip the embed zip here)
-
-# 2) install collie + its semantic-memory deps INTO that runtime
-payload\python\python.exe -m pip install --target payload\python\Lib\site-packages "collie-harness[local]"
-#    (or point pip at a locally built wheel:  ... ..\dist\collie_harness-0.18.0-py3-none-any.whl)
-
-# 3) the WebView2 Evergreen bootstrapper (tiny; installs the runtime only if the machine lacks it)
-#    download MicrosoftEdgeWebView2Setup.exe from https://developer.microsoft.com/microsoft-edge/webview2/
-#    into payload\
-
-# 4) compile the installer
-iscc collie-wallpaper.iss
-#    -> Output\collie-wallpaper-setup.exe
+powershell -File installer\build.ps1                 # -> installer\Output\Collie-Setup.exe
+powershell -File installer\build.ps1 -CleanPayload   # also rebuild the bundled runtime
 ```
 
-## What the installer does (and undoes)
+The version comes from `harness/__init__.py` (single source of truth) and is passed to `iscc` as
+`/DAppVer`. CI does the same in `.github/workflows/release.yml`, triggered by pushing a `v*` tag.
 
-On install: lays down `{app}\python` (the bundled runtime, incl. the collie package and the wallpaper
-engine source/DLLs shipped in the wheel) → silently ensures the WebView2 runtime → runs
-`collie wallpaper --install` (writes the hidden per-user logon autostart) → optionally starts it now.
+## What the installer does
 
-On first run the engine's `.exe` is compiled once from the shipped C# source via the in-box .NET
-Framework `csc` (no .NET SDK needed) and cached — so the installer ships source + DLLs, not a signed
-binary.
+- Lays down `{localappdata}\Programs\Collie\python` (the bundled runtime, per-user, no admin).
+- Silently ensures the WebView2 runtime (needed by the desktop window).
+- Applies the language you picked to Collie itself (`collie config LANG <code>`), so the first launch
+  is already in your language.
+- Optional tasks: the live star-map wallpaper and the real-browser bridge, each auto-starting at
+  logon.
+- Start-menu + desktop shortcuts to `collie app` (the native window), plus a *Collie Settings*
+  shortcut.
 
-On uninstall: `collie wallpaper --stop` (clean shutdown via the named quit event) →
-`collie wallpaper --uninstall` (removes the autostart) → `{app}` is deleted.
+On uninstall it stops the wallpaper, removes both logon autostarts, and deletes `{app}`.
 
 ## Notes
 
-- **Per-user, no admin.** `PrivilegesRequired=lowest`; the autostart is a per-user Startup entry, so
-  the whole thing installs and runs without elevation.
-- **Code signing.** For distribution outside your own machines, sign both the setup `.exe` and (ideally)
-  the built `collie-wallpaper.exe` to avoid SmartScreen warnings. Signing is out of scope of the `.iss`.
-- **Windows only.** The behind-icons engine needs Progman + WebView2. On macOS/Linux `collie wallpaper`
-  degrades to a borderless browser window — no installer needed there.
+- **Per-user, no admin.** `PrivilegesRequired=lowest`; autostarts are per-user Startup entries.
+- **The desktop engine `.exe`** is compiled once on first run from the shipped C# source via the
+  in-box .NET Framework `csc` (no .NET SDK needed).
+- **Code signing** is out of scope of the `.iss`. For distribution outside your own machines, sign
+  the setup `.exe` to avoid SmartScreen warnings.
+- **Windows only.** On macOS/Linux, `pip install collie-harness` + `collie` is the path; the desktop
+  window degrades to the browser GUI and the wallpaper to a borderless window.
