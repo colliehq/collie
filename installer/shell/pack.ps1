@@ -17,6 +17,15 @@ $payload = Join-Path (Split-Path -Parent $here) "payload"
 
 function Step($m){ Write-Host "==> $m" -ForegroundColor Cyan }
 
+# 0) build the Inno backend (the silent file-installer that carries the runtime payload) and copy it
+#    aside BEFORE the launcher overwrites installer\Output\Collie-Setup.exe — otherwise a re-run would
+#    embed the launcher as its own backend.
+Step "build the Inno backend"
+& (Join-Path (Split-Path -Parent $here) "build.ps1")
+$innoOut = Join-Path $outDir "Collie-Setup.exe"
+if (-not (Test-Path $innoOut)) { throw "backend build did not produce $innoOut" }
+Copy-Item $innoOut (Join-Path $here "Collie-Setup-backend.exe") -Force
+
 # 1) ensure the shell is freshly built
 Step "build the shell host"
 & (Join-Path $here "build-shell.ps1")
@@ -42,59 +51,26 @@ foreach ($f in $files) {
   Copy-Item $f $stage -Force
 }
 
-# 3) write the IExpress directive (.SED)
-Step "write IExpress directive"
-$names = Get-ChildItem $stage | Select-Object -ExpandProperty Name
-$fileLines  = ""; $srcLines = ""
-for ($i=0; $i -lt $names.Count; $i++){ $fileLines += "FILE$i=`"$($names[$i])`"`r`n"; $srcLines += "%FILE$i%=`r`n" }
+# 3) zip the staged files into the payload embedded in the launcher
+Step "zip payload"
+$zip = Join-Path $here "payload.zip"
+if (Test-Path $zip) { Remove-Item $zip -Force }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
+
+# 4) compile the self-extracting launcher WITH the Collie icon + embedded payload
+Step "compile Collie-Setup.exe (custom icon)"
 $target = Join-Path $outDir "Collie-Setup.exe"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 if (Test-Path $target) { Remove-Item $target -Force }
-$sed = @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=0
-HideExtractAnimation=1
-UseLongFileName=1
-InsideCompressed=0
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=%InstallPrompt%
-DisplayLicense=%DisplayLicense%
-FinishMessage=%FinishMessage%
-TargetName=%TargetName%
-FriendlyName=%FriendlyName%
-AppLaunched=%AppLaunched%
-PostInstallCmd=%PostInstallCmd%
-AdminQuietInstCmd=%AdminQuietInstCmd%
-UserQuietInstCmd=%UserQuietInstCmd%
-SourceFiles=SourceFiles
-[Strings]
-InstallPrompt=
-DisplayLicense=
-FinishMessage=
-TargetName=$target
-FriendlyName=Collie Setup
-AppLaunched=Collie-Shell.exe
-PostInstallCmd=<None>
-AdminQuietInstCmd=
-UserQuietInstCmd=
-$fileLines
-[SourceFiles]
-SourceFiles0=$stage\
-[SourceFiles0]
-$srcLines
-"@
-$sedPath = Join-Path $here "collie-setup.sed"
-Set-Content -Path $sedPath -Value $sed -Encoding ASCII
-
-# 4) build the self-extractor
-Step "run IExpress"
-Start-Process iexpress -ArgumentList "/N","/Q",$sedPath -Wait
-if (-not (Test-Path $target)) { throw "IExpress did not produce $target" }
+$csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+$ico = Join-Path $here "collie.ico"
+$args = @("/nologo","/target:winexe","/platform:x64","/out:$target","/win32icon:$ico",
+          "/resource:$zip,payload.zip",
+          "/reference:System.IO.Compression.dll","/reference:System.IO.Compression.FileSystem.dll",
+          (Join-Path $here "Launcher.cs"))
+& $csc $args
+if ($LASTEXITCODE -ne 0) { throw "csc failed building the launcher" }
+Remove-Item $zip -Force
 $mb = "{0:N1} MB" -f ((Get-Item $target).Length/1MB)
-Write-Host "`nBuilt $target  ($mb)" -ForegroundColor Green
+Write-Host "`nBuilt $target  ($mb, with the Collie icon)" -ForegroundColor Green

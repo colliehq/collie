@@ -114,3 +114,4 @@ installer/shell/collie.ico
 installer/shell/Collie-Setup-backend.exe
 installer/shell/dist-stage/
 installer/shell/collie-setup.sed
+installer/shell/payload.zip
