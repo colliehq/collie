@@ -269,6 +269,12 @@
   $("#doneClose").onclick=()=>{ send("close"); };
   $("#launchBtn").onclick=()=>{ send("launch"); };
 
+  // drag the borderless window: the host does the ReleaseCapture + WM_NCLBUTTONDOWN dance
+  document.querySelector(".titlebar").addEventListener("mousedown",(e)=>{
+    if(e.target.closest(".winbtn")) return;   // not on the close button
+    if(e.button===0) send("drag");
+  });
+
   // install
   $("#installBtn").onclick=()=>{
     goto("installing");

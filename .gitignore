@@ -106,3 +106,8 @@ installer/_probe/
 
 # docs site build output
 /site/
+
+# smart-shell compiled artifacts (build-shell.ps1 regenerates)
+installer/shell/Collie-Shell.exe
+installer/shell/*.dll
+installer/shell/collie.ico
