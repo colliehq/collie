@@ -18,6 +18,11 @@
     color:var(--ink); font-weight:500; -webkit-user-select:none; user-select:none;
     background:#09090C;
   }
+  /* no white system scrollbars anywhere; dark + thin where a scroll is unavoidable (the dropdown) */
+  ::-webkit-scrollbar{width:8px; height:8px;}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16); border-radius:99px;}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.28);}
+  ::-webkit-scrollbar-track{background:transparent;}
   #aurora{position:fixed; inset:0; z-index:0;}
   /* fine film grain — the texture that makes a flat dark UI read as premium (Raycast) */
   .grain{position:fixed; inset:0; z-index:2; pointer-events:none; opacity:.045; mix-blend-mode:overlay;
@@ -48,9 +53,9 @@
   /* form screens (language, options): a real column — scrollable body + a footer nav that can never
      overlap the content (the previous absolute nav covered the install-location line) */
   .screen.form{justify-content:flex-start; padding:0;}
-  .screen.form .body{width:100%; flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
-    align-items:center; padding:42px 52px 18px;}
-  .screen.form .nav{position:static; height:76px; border-top:1px solid rgba(255,255,255,.06); background:none;}
+  .screen.form .body{width:100%; flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column;
+    align-items:center; padding:38px 52px 14px;}
+  .screen.form .nav{position:static; height:74px; border-top:1px solid rgba(255,255,255,.06); background:none;}
 
   .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;}
 
@@ -87,10 +92,23 @@
   .lang .tick{position:absolute; top:8px; right:9px; width:16px; height:16px; border-radius:50%; background:var(--accent);
     color:#fff; font-size:10px; line-height:16px; opacity:0; transform:scale(.4); transition:.2s;}
   .lang.sel .tick{opacity:1; transform:none;}
-  .morerow{width:100%; max-width:588px; margin-top:16px; display:flex; align-items:center; gap:14px;}
+  .morerow{width:100%; max-width:588px; margin-top:14px; display:flex; align-items:center; gap:14px;}
   .morerow label{color:var(--faint); font-size:12.5px; font-weight:600; white-space:nowrap;}
-  select.more{flex:1; -webkit-app-region:no-drag; appearance:none; font-family:'Nunito'; font-weight:600; background:var(--glass);
-    color:var(--ink); border:1px solid var(--stroke); border-radius:12px; padding:11px 14px; font-size:13.5px; cursor:pointer; backdrop-filter:blur(12px);}
+  /* custom dark dropdown (native <select> pops a white, unthemed, hard-to-use list in WebView2) */
+  .dd{position:relative; flex:1; -webkit-app-region:no-drag;}
+  .dd-btn{display:flex; align-items:center; justify-content:space-between; font-family:'Nunito'; font-weight:600;
+    background:var(--glass); color:var(--muted); border:1px solid var(--stroke); border-radius:12px;
+    padding:11px 14px; font-size:13.5px; cursor:pointer; backdrop-filter:blur(12px);}
+  .dd-btn:hover{border-color:var(--glass-hi); color:var(--ink);}
+  .dd-btn::after{content:"▾"; color:var(--faint); font-size:11px; margin-left:8px;}
+  .dd-list{position:absolute; left:0; right:0; bottom:calc(100% + 8px); max-height:224px; overflow-y:auto;
+    background:#14141C; border:1px solid var(--stroke); border-radius:14px; padding:6px;
+    box-shadow:0 20px 50px -12px rgba(0,0,0,.7); opacity:0; transform:translateY(6px); pointer-events:none;
+    transition:.16s; z-index:20;}
+  .dd.open .dd-list{opacity:1; transform:none; pointer-events:auto;}
+  .dd-item{padding:9px 12px; border-radius:9px; font-size:13px; font-weight:600; color:var(--muted); cursor:pointer;}
+  .dd-item:hover{background:var(--glass-hi); color:var(--ink);}
+  .dd-item .en{color:var(--faint); font-weight:500; font-size:11.5px; margin-left:6px;}
 
   .opts{width:100%; max-width:588px; display:flex; flex-direction:column; gap:13px;}
   .opt{display:flex; align-items:center; gap:15px; padding:18px; border-radius:17px; background:var(--glass); border:1px solid var(--stroke); backdrop-filter:blur(12px);}
@@ -141,7 +159,9 @@
       <div class="body">
         <div class="head"><h2>Choose your language</h2><p>For Collie and the rest of Setup — you can change it anytime later.</p></div>
         <div class="langgrid" id="langgrid"></div>
-        <div class="morerow"><label>More languages</label><select class="more" id="moreSel"></select></div>
+        <div class="morerow"><label>More languages</label>
+          <div class="dd" id="moreDD"><div class="dd-btn" id="moreBtn">More languages…</div><div class="dd-list" id="moreList"></div></div>
+        </div>
       </div>
       <div class="nav"><button class="btn ghost" data-go="welcome">Back</button><button class="btn primary" data-go="options">Continue</button></div>
     </section>
@@ -176,8 +196,14 @@
   const MORE=[["Bahasa Indonesia","Indonesian","id"],["Tiếng Việt","Vietnamese","vi"],["Türkçe","Turkish","tr"],["Polski","Polish","pl"],["Nederlands","Dutch","nl"],["ไทย","Thai","th"],["Українська","Ukrainian","uk"],["हिन्दी","Hindi","hi"],["Ελληνικά","Greek","el"],["Čeština","Czech","cs"],["Svenska","Swedish","sv"],["Dansk","Danish","da"],["Suomi","Finnish","fi"],["Română","Romanian","ro"],["Magyar","Hungarian","hu"],["עברית","Hebrew","he"],["Norsk","Norwegian","no"],["Български","Bulgarian","bg"],["فارسی","Farsi","fa"],["தமிழ்","Tamil","ta"]];
   let state={lang:"en",wallpaper:false,bridge:false}; const $=(s)=>document.querySelector(s),$$=(s)=>document.querySelectorAll(s);
   const grid=$("#langgrid"); CHIPS.forEach(([n,e,c])=>{ const d=document.createElement("div"); d.className="lang"; d.dataset.code=c; d.innerHTML=`<div class="tick">✓</div><div class="nat">${n}</div><div class="en">${e}</div>`; d.onclick=()=>selectLang(c); grid.appendChild(d); });
-  const sel=$("#moreSel"); sel.innerHTML='<option value="">More languages…</option>'+MORE.map(([n,e,c])=>`<option value="${c}">${n}  ·  ${e}</option>`).join(""); sel.onchange=()=>{ if(sel.value)selectLang(sel.value); };
-  function selectLang(c){ state.lang=c; $$(".lang").forEach(l=>l.classList.toggle("sel",l.dataset.code===c)); if(CHIPS.some(x=>x[2]===c))sel.value=""; send("lang",{code:c}); }
+  // custom dark dropdown
+  const dd=$("#moreDD"), ddBtn=$("#moreBtn"), ddList=$("#moreList");
+  MORE.forEach(([n,e,c])=>{ const it=document.createElement("div"); it.className="dd-item"; it.dataset.code=c;
+    it.innerHTML=`${n}<span class="en">${e}</span>`; it.onclick=()=>{ selectLang(c); ddBtn.textContent=n; dd.classList.remove("open"); }; ddList.appendChild(it); });
+  ddBtn.onclick=(ev)=>{ ev.stopPropagation(); dd.classList.toggle("open"); };
+  document.addEventListener("click",()=>dd.classList.remove("open"));
+  function selectLang(c){ state.lang=c; $$(".lang").forEach(l=>l.classList.toggle("sel",l.dataset.code===c));
+    if(CHIPS.some(x=>x[2]===c)) ddBtn.textContent="More languages…"; send("lang",{code:c}); }
   selectLang("en");   // English by default; the host may re-select to match the OS language
   $$(".switch").forEach(sw=>sw.onclick=()=>{ sw.classList.toggle("on"); state[sw.dataset.opt]=sw.classList.contains("on"); });
   let current="welcome"; function goto(n){ if(n===current)return; const f=$(`.screen[data-screen="${current}"]`),t=$(`.screen[data-screen="${n}"]`); f.classList.add("leaving"); f.classList.remove("active"); setTimeout(()=>f.classList.remove("leaving"),550); t.classList.add("active"); current=n; $("#brandmini").classList.toggle("show",n!=="welcome"); }

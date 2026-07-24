@@ -23,8 +23,10 @@ class Shell : Form
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr wp, IntPtr lp);
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
     [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
+    [DllImport("user32.dll")] static extern int GetDpiForWindow(IntPtr h);
     [DllImport("gdi32.dll")] static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int w, int h);
     const int WM_NCLBUTTONDOWN = 0x00A1, HTCAPTION = 2;
+    const int CSS_W = 780, CSS_H = 560;   // the logical (CSS-pixel) size the HTML is designed for
 
     readonly WebView2 web = new WebView2();
     readonly string appDir;
@@ -46,23 +48,34 @@ class Shell : Form
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
         Text = "Collie Setup";
-        BackColor = Color.FromArgb(14, 16, 23);
-        double s = DeviceDpi / 96.0;
-        ClientSize = new Size((int)(780 * s), (int)(560 * s));
+        BackColor = Color.FromArgb(9, 9, 12);
+        // We size the window ourselves from the real per-monitor DPI (below) so the WebView's CSS
+        // viewport is always exactly 780x560 — WinForms' own scaling would fight that, hence None.
+        AutoScaleMode = AutoScaleMode.None;
+        ClientSize = new Size(CSS_W, CSS_H);
         try { Icon = new Icon(Path.Combine(appDir, "collie.ico")); } catch { }
 
         web.Dock = DockStyle.Fill;
         Controls.Add(web);
         Load += async (a, b) => await Init();
-        // big, smooth rounded corners — DWM's fixed ~8px reads as "square" on a window this size, so we
-        // clip the window to a generous round-rect region instead. Re-applied on resize.
-        Shown += (a, b) => RoundWindow();
-        Resize += (a, b) => RoundWindow();
+        Shown += (a, b) => ApplyDpiSize();
+        try { DpiChanged += (a, e) => ApplyDpiSize(); } catch { }   // moved to another-DPI monitor
     }
 
-    void RoundWindow()
+    // Physical client = CSS * (dpi/96), so WebView renders a stable 780x560 CSS viewport at any DPI —
+    // fixes content overflowing / a scrollbar appearing on 125%+ displays. Then re-round + re-center.
+    void ApplyDpiSize()
     {
-        int d = (int)(38 * (DeviceDpi / 96.0)) * 2;   // corner diameter
+        int dpi = 96; try { dpi = GetDpiForWindow(Handle); } catch { }
+        if (dpi < 72) dpi = 96;
+        ClientSize = new Size(CSS_W * dpi / 96, CSS_H * dpi / 96);
+        try { var wa = Screen.FromHandle(Handle).WorkingArea; Location = new Point(wa.X + (wa.Width - Width) / 2, wa.Y + (wa.Height - Height) / 2); } catch { }
+        RoundWindow(dpi);
+    }
+
+    void RoundWindow(int dpi)
+    {
+        int d = 38 * dpi / 96 * 2;   // corner diameter, scaled to DPI
         try { SetWindowRgn(Handle, CreateRoundRectRgn(0, 0, Width + 1, Height + 1, d, d), true); } catch { }
     }
 
