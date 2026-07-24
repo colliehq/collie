@@ -130,6 +130,8 @@ de.LangHint=Sie können sie jederzeit in den Collie-Einstellungen ändern.
 de.RunApp=Collie jetzt starten
 
 [Messages]
+; "Setup - Collie" in the title bar reads like an installer; just "Collie" reads like an app.
+SetupWindowTitle=%1
 ; The stock welcome/finish text says nothing about what you just downloaded. Overridden for the
 ; two primary audiences; every other language keeps Inno's translated default.
 en.WelcomeLabel2=Collie is a coding agent that remembers your project and verifies its own work before it calls anything done.%n%nEverything it needs ships inside this installer — no Python, no terminal, no configuration. Just click Next.
@@ -149,6 +151,8 @@ Name: "bridge";      Description: "{cm:TaskBridge}"; Flags: unchecked
 Source: "payload\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
 ; tiny bootstrapper; installs the WebView2 runtime only if the machine lacks it
 Source: "payload\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; the full-bleed welcome splash — extracted to {tmp} and painted over the whole welcome page ([Code])
+Source: "art\welcome-hero-900x570.bmp"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\{#AppName}";        Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"; IconFilename: "{#IcoFile}"
@@ -195,11 +199,12 @@ Type: filesandordirs; Name: "{app}"
 
 [Code]
 const
-  COLS = 4; CHIP_H = 38; GAP = 8;
+  COLS = 4; CHIP_H = 44; GAP = 10;
   C_ACCENT = $8F4E3D;   { #3D4E8F — TColor is BGR }
   C_CHIP   = $F4F0EC;
   C_TEXT   = $30251A;
   C_MUTED  = $8A8078;
+  C_LINE   = $E4DED8;   { hairline divider }
 
 var
   LangPage: TWizardPage;
@@ -209,6 +214,8 @@ var
   Sel: Integer;          { chip index, or -1 when the "more" combo owns the selection }
   AppLang: String;       { Collie UI-language code chosen on the language page }
   Relaunching: Boolean;
+  HeroImg: TBitmapImage; { full-bleed splash painted over the default welcome page }
+  ChipTop: Integer;      { y of the first chip row — lets the grid sit lower, not jammed at the top }
 
 procedure Repaint;
 var i: Integer;
@@ -249,7 +256,7 @@ begin
   w := (LangPage.SurfaceWidth - (COLS - 1) * ScaleX(GAP)) div COLS;
   p := TPanel.Create(LangPage);
   p.Parent := LangPage.Surface;
-  p.SetBounds(col * (w + ScaleX(GAP)), row * (ScaleY(CHIP_H) + ScaleY(GAP)), w, ScaleY(CHIP_H));
+  p.SetBounds(col * (w + ScaleX(GAP)), ChipTop + row * (ScaleY(CHIP_H) + ScaleY(GAP)), w, ScaleY(CHIP_H));
   p.BevelOuter := bvNone;
   p.ParentBackground := False;
   p.Caption := Native;
@@ -285,7 +292,7 @@ begin
 end;
 
 procedure InitializeWizard;
-var y: Integer; lbl: TNewStaticText;
+var y: Integer; lbl: TNewStaticText; divider: TPanel;
 begin
   ChipCode := TStringList.Create; MoreCode := TStringList.Create;
   LangPage := CreateCustomPage(wpWelcome, ExpandConstant('{cm:LangTitle}'),
@@ -297,25 +304,59 @@ begin
   MoreBox.Style := csDropDownList;
   MoreBox.OnChange := @MoreChange;
 
-  BuildLanguageList;   { generated: AddChip x12 then AddMore x65 }
+  ChipTop := ScaleY(10);   { let the grid breathe below the header, not jammed to the top edge }
+  BuildLanguageList;       { generated: AddChip x12 then AddMore }
 
-  y := ((GetArrayLength(Chips) + COLS - 1) div COLS) * (ScaleY(CHIP_H) + ScaleY(GAP)) + ScaleY(12);
+  y := ChipTop + ((GetArrayLength(Chips) + COLS - 1) div COLS) * (ScaleY(CHIP_H) + ScaleY(GAP))
+       + ScaleY(16);
+
+  { hairline divider separates the common languages from the long tail }
+  divider := TPanel.Create(LangPage);
+  divider.Parent := LangPage.Surface;
+  divider.SetBounds(0, y, LangPage.SurfaceWidth, 1);
+  divider.BevelOuter := bvNone; divider.ParentBackground := False; divider.Color := C_LINE;
+  y := y + ScaleY(16);
 
   lbl := TNewStaticText.Create(LangPage);
   lbl.Parent := LangPage.Surface;
-  lbl.SetBounds(0, y + ScaleY(4), LangPage.SurfaceWidth, ScaleY(15));
+  lbl.SetBounds(0, y, LangPage.SurfaceWidth, ScaleY(15));
   lbl.Font.Color := C_MUTED;
   lbl.Caption := ExpandConstant('{cm:LangMore}');
 
-  MoreBox.SetBounds(0, y + ScaleY(22), ScaleX(260), ScaleY(22));
+  MoreBox.SetBounds(0, y + ScaleY(20), LangPage.SurfaceWidth, ScaleY(22));   { full width, not a stub }
 
+  { a bottom-anchored brand line fills what used to be dead space and ties the page to the app }
   lbl := TNewStaticText.Create(LangPage);
   lbl.Parent := LangPage.Surface;
-  lbl.SetBounds(0, y + ScaleY(54), LangPage.SurfaceWidth, ScaleY(15));
+  lbl.SetBounds(0, LangPage.SurfaceHeight - ScaleY(18), LangPage.SurfaceWidth, ScaleY(15));
   lbl.Font.Color := C_MUTED;
   lbl.Caption := ExpandConstant('{cm:LangHint}');
 
   PreselectCurrent;
+
+  { the full-bleed welcome splash: a TBitmapImage covering the whole welcome page, painted over the
+    default 'Welcome to the Setup Wizard' panel (which CurPageChanged hides). Sized on show. }
+  ExtractTemporaryFile('welcome-hero-900x570.bmp');
+  HeroImg := TBitmapImage.Create(WizardForm);
+  HeroImg.Parent := WizardForm.WelcomePage;
+  HeroImg.Bitmap.LoadFromFile(ExpandConstant('{tmp}\welcome-hero-900x570.bmp'));
+  HeroImg.Stretch := True;
+  HeroImg.Visible := False;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if HeroImg = nil then exit;
+  { the hero owns the welcome page; everywhere else the default image + labels behave normally (the
+    Finished page reuses WizardBitmapImage, so it must reappear there) }
+  HeroImg.Visible := (CurPageID = wpWelcome);
+  WizardForm.WizardBitmapImage.Visible := (CurPageID <> wpWelcome);
+  WizardForm.WelcomeLabel1.Visible := (CurPageID <> wpWelcome);
+  WizardForm.WelcomeLabel2.Visible := (CurPageID <> wpWelcome);
+  if CurPageID = wpWelcome then begin
+    HeroImg.SetBounds(0, 0, WizardForm.WelcomePage.ClientWidth, WizardForm.WelcomePage.ClientHeight);
+    HeroImg.BringToFront;
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

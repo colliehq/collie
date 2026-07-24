@@ -148,6 +148,46 @@ def wizard(w, h, logo):
     return img
 
 
+def hero(w, h, logo):
+    """Full-bleed landscape splash for the welcome page — the whole page is this image (the default
+    white 'Welcome to the Setup Wizard' panel is hidden), so it reads like a product opener, not an
+    installer. Composition is centered so the mild stretch to the exact page size is invisible."""
+    img = starfield(w, h)
+    d = ImageDraw.Draw(img)
+    s = h / 360.0                                       # scale off height (landscape)
+
+    size = int(h * 0.30)
+    mark = logo.resize((size, size), Image.LANCZOS)
+    cx = w // 2
+    my = int(h * 0.16)
+    halo = Image.new("L", (w, h), 0)
+    hr = size * 0.9
+    hd = ImageDraw.Draw(halo)
+    for i in range(18):
+        k = 1 - i / 18.0
+        hd.ellipse([cx - hr * k, my + size / 2 - hr * k, cx + hr * k, my + size / 2 + hr * k],
+                   fill=int(3 + 8 * (1 - k)))
+    img = Image.composite(Image.new("RGB", (w, h), (150, 165, 225)), img,
+                          halo.filter(ImageFilter.GaussianBlur(size * 0.16)))
+    img.paste(mark, (cx - size // 2, my), mark)
+    d = ImageDraw.Draw(img)
+
+    y = my + size + int(18 * s)
+    f_word = font("seguisb.ttf", max(20, int(40 * s)))
+    tracked(d, (0, y), "Collie", f_word, (247, 249, 253), track=1.5 * s, center_w=w)
+    y += int(52 * s)
+    f_tag = font("segoeui.ttf", max(9, int(12.5 * s)))
+    tracked(d, (0, y), "A coding agent that proves its own work", f_tag, (176, 184, 205),
+            track=0.4 * s, center_w=w)
+
+    d.line([int(w * 0.38), h - int(48 * s), int(w * 0.62), h - int(48 * s)],
+           fill=(int(ACCENT[0] * .40), int(ACCENT[1] * .40), int(ACCENT[2] * .40)))
+    f_foot = font("segoeui.ttf", max(8, int(9.5 * s)))
+    tracked(d, (0, h - int(38 * s)), "OPEN SOURCE   ·   RUNS LOCALLY   ·   NO TELEMETRY", f_foot,
+            (108, 116, 136), track=0.9 * s, center_w=w)
+    return img
+
+
 def small(w, h, logo):
     """Top-right badge on the inner pages. Those pages are white, so this one is too."""
     S = 4
@@ -169,6 +209,11 @@ def main():
     for w, h in SMALL:
         p = os.path.join(OUT, "wizard-small-%dx%d.bmp" % (w, h))
         small(w, h, logo).save(p)
+        made.append(p)
+    # the full-bleed welcome splash — a couple of sizes; the .iss stretches to the exact page.
+    for w, h in [(600, 380), (900, 570)]:
+        p = os.path.join(OUT, "welcome-hero-%dx%d.bmp" % (w, h))
+        hero(w, h, logo).save(p)
         made.append(p)
     for p in made:
         print("  %-44s %6.1f KB" % (os.path.basename(p), os.path.getsize(p) / 1024.0))
