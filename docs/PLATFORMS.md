@@ -87,10 +87,13 @@ The core agent runs on native Windows, with two things to know:
 
 ## Install (every OS)
 
+Windows has a one-click `Collie-Setup.exe` (see the releases page). Everywhere else — and for
+developers on Windows — it's one `pip` install (PyPI publish is planned; today, from a clone):
+
 ```bash
-pipx install collie-harness          # one package, all platforms
+pip install -e .                     # one package, all platforms
 # optional extras:
-pipx install "collie-harness[tui,local,search,browser]"
+pip install -e ".[tui,local,search,browser]"
 ```
 
 Optional native conveniences (not required — the wheel is the source of truth) can be layered

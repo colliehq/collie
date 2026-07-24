@@ -143,24 +143,29 @@ runs the reproduction and repairs until the assertion holds.
 
 ## Install
 
+**Windows — one click.** Download **`Collie-Setup.exe`** from the
+[latest release](https://github.com/wudaming00/collie/releases/latest) and double-click it. A small
+app-style installer (borderless, animated) walks you through language + install location, lays down a
+self-contained runtime (Python + Collie + semantic memory, nothing to preinstall), and opens Collie
+in a native desktop window. On first launch you **pick a brain** — an existing Claude, Codex, or Grok
+login is detected and connects in one click; or paste an API key. See [docs/install](docs/install.md).
+
+**Developers — pip.** The core is stdlib-only, so the base install is tiny:
+
 ```bash
-pipx install collie-harness        # or: uv tool install collie-harness
-collie setup                       # one-click: install deps, pre-download the model, pick a provider
-collie                             # then the TUI opens
+pip install -e ".[local,dev]"      # from a clone (PyPI publish is planned)
+collie setup                       # install optional deps, pre-download the model, pick a provider
+collie                             # the terminal chat (TUI) opens
 ```
 
-No account, no telemetry, and the core has **zero third-party dependencies** — `mock` and
-`ollama` run without any key, and memory works out of the box on **BM25 keyword recall**. Try it
-without installing anything:
+No account, no telemetry, and the core has **zero third-party dependencies** — `mock` and `ollama`
+run without any key, and memory works out of the box on **BM25 keyword recall**.
 
-```bash
-uvx --from collie-harness collie -p "explain this repo"
-```
-
-Optional extras: `pipx install "collie-harness[local,tui,search]"` — `local` (semantic memory:
-granite-107m via onnxruntime, ~55MB, multilingual — what `collie setup` installs), `tui` (rich
-terminal chat), `search` (keyless web search), `acp` (editor protocol), `browser` (Playwright),
-`fastembed` (jina-v3 opt-in). From source: `git clone … && pip install -e ".[local,dev]"`.
+Optional extras: `pip install ".[local,tui,search]"` — `local` (semantic memory: granite-107m via
+onnxruntime, ~55MB, multilingual — what `collie setup` installs), `tui` (rich terminal chat),
+`search` (keyless web search), `acp` (editor protocol), `browser` (Playwright), `fastembed`
+(jina-v3 opt-in). macOS/Linux use the same `pip` path; the one-click installer is Windows-only today
+(a `.dmg` is on the roadmap).
 
 ## Quickstart
 

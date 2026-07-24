@@ -263,7 +263,7 @@ def install() -> int:
     os.makedirs(os.path.dirname(vbs), exist_ok=True)
     with open(vbs, "w", encoding="utf-8") as f:
         # Chr(34) is a literal double-quote — safer than VBScript's ""-doubling for quoting the two
-        # paths (which contain spaces, e.g. "Sining Xu"). The 0 = hidden window, False = don't wait.
+        # paths (which often contain spaces, e.g. "C:\Users\First Last"). 0 = hidden, False = no wait.
         f.write("' collie desktop wallpaper - hidden logon autostart (auto-generated).\n"
                 "q = Chr(34)\n"
                 'CreateObject("WScript.Shell").Run q & "%s" & q & " " & q & "%s" & q, 0, False\n'

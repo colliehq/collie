@@ -27,8 +27,7 @@ prompt) and cleanly uninstalls from *Add or remove programs*.
 The core is stdlib-only, so the base install is tiny.
 
 ```bash
-pip install collie-harness          # from a release wheel (see the releases page)
-# or from source:
+# from source (PyPI publish is planned):
 git clone https://github.com/wudaming00/collie && cd collie
 pip install -e ".[local,dev]"
 ```
