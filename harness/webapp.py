@@ -271,6 +271,36 @@ class Handler(BaseHTTPRequestHandler):
                 entries = catalog.list_entries(discover_live=live, custom=custom)
                 current = "%s:%s" % (vals.get("PROVIDER", ""), vals.get("MODEL", ""))
                 return self._send_json({"entries": entries, "current": current})
+            if path == "/api/browser/status":
+                # onboarding "connect your browser": is the bridge up, has the extension connected,
+                # where's the extension folder, and which Chromium browsers are installed.
+                import shutil
+                from . import browserbridge as bb
+                ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
+                health = {}
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:%d/health" % bb._port(), timeout=1.5) as r:
+                        health = json.loads(r.read())
+                except Exception:
+                    health = {}
+
+                def _found(cmd, paths):
+                    for p in paths:
+                        if p and os.path.exists(os.path.expandvars(p)):
+                            return True
+                    return bool(shutil.which(cmd))
+                browsers = []
+                if _found("chrome", [r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+                                     r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+                                     r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"]):
+                    browsers.append("Chrome")
+                if _found("msedge", [r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+                                     r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"]):
+                    browsers.append("Edge")
+                return self._send_json({"bridge_running": bool(health),
+                                        "extension_connected": bool(health.get("extension_connected")),
+                                        "ext_version": health.get("extension_version"),
+                                        "ext_path": ext, "browsers": browsers})
             if path.startswith("/api/delete/"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -340,6 +370,15 @@ class Handler(BaseHTTPRequestHandler):
                 saved = settings.save(body)
                 settings.apply()                              # take effect for the next query now
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
+            if path == "/api/browser/start":
+                # onboarding "connect your browser": bring the localhost bridge up (windowless), so the
+                # extension has something to poll. Returns the extension folder for the Load-unpacked step.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import browserbridge as bb
+                ok = bb.start_background()
+                ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
+                return self._send_json({"ok": bool(ok), "ext_path": ext})
             if path == "/api/model":
                 # Model picker's one-click switch: merge PROVIDER+MODEL into settings (never
                 # clobbers other keys) and apply, so the next run uses the chosen model.
