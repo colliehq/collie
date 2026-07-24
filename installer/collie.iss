@@ -185,6 +185,14 @@ Filename: "{#PyW}"; Parameters: "-m harness.cli wallpaper --uninstall"; WorkingD
 Filename: "{#PyW}"; Parameters: "-m harness.cli browser-bridge --uninstall"; WorkingDir: "{app}\python"; \
   RunOnceId: "UninstallBridge"; Flags: runhidden waituntilterminated
 
+[UninstallDelete]
+; Inno only removes what it INSTALLED. The app generates files afterward that it can't track — the
+; engine .exe compiled on first run from the shipped C# source, __pycache__ (.pyc), and any runtime
+; data written under {app}. Without this, uninstall leaves ~180 MB of the bundled runtime behind.
+; Runs after [UninstallRun], so the wallpaper is stopped and the autostarts are gone first. User
+; data in ~/.collie (settings, memory) is intentionally NOT touched — a reinstall keeps it.
+Type: filesandordirs; Name: "{app}"
+
 [Code]
 const
   COLS = 4; CHIP_H = 38; GAP = 8;
