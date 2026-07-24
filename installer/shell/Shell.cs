@@ -114,14 +114,42 @@ class Shell : Form
             case "launch":
                 LaunchCollie(); Close();
                 break;
+            case "browse":
+                BrowseFolder();
+                break;
             case "install":
-                RunInstall(J(json, "lang"), J(json, "wallpaper") == "true", J(json, "bridge") == "true");
+                RunInstall(J(json, "lang"), J(json, "wallpaper") == "true", J(json, "bridge") == "true", J(json, "dir"));
                 break;
         }
     }
 
+    // Native folder picker for the install location; returns the chosen dir (with \Collie appended) to
+    // the UI as {type:"dir",path:...}.
+    void BrowseFolder()
+    {
+        BeginInvoke((Action)(() =>
+        {
+            try
+            {
+                using (var d = new FolderBrowserDialog())
+                {
+                    d.Description = "Choose where to install Collie";
+                    d.SelectedPath = Environment.ExpandEnvironmentVariables(@"%LOCALAPPDATA%\Programs");
+                    if (d.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(d.SelectedPath))
+                    {
+                        var path = d.SelectedPath;
+                        if (!path.TrimEnd('\\').EndsWith("Collie", StringComparison.OrdinalIgnoreCase))
+                            path = Path.Combine(path, "Collie");
+                        web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"dir\",\"path\":\"" + Esc(path) + "\"}");
+                    }
+                }
+            }
+            catch { }
+        }));
+    }
+
     // ---- run the Inno backend silently, streaming progress to the UI ---------------------------
-    void RunInstall(string lang, bool wallpaper, bool bridge)
+    void RunInstall(string lang, bool wallpaper, bool bridge, string dir)
     {
         Task.Run(() =>
         {
@@ -135,11 +163,11 @@ class Shell : Form
                     Progress("Done", "", 100, true); return;
                 }
                 var tasks = (wallpaper ? "wallpaper," : "") + (bridge ? "bridge," : "") + "desktopicon";
-                var psi = new ProcessStartInfo(backendExe,
-                    "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL "
+                var args = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL "
                     + "/LANG=" + (string.IsNullOrEmpty(lang) ? "en" : lang)
-                    + " /TASKS=\"" + tasks + "\"")
-                { UseShellExecute = false, CreateNoWindow = true };
+                    + " /TASKS=\"" + tasks + "\"";
+                if (!string.IsNullOrEmpty(dir)) args += " /DIR=\"" + dir + "\"";
+                var psi = new ProcessStartInfo(backendExe, args) { UseShellExecute = false, CreateNoWindow = true };
 
                 Progress("Unpacking Collie…", "Embeddable Python + engine + extension", 20);
                 var p = Process.Start(psi);

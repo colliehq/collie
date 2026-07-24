@@ -53,8 +53,10 @@
   /* form screens (language, options): a real column — scrollable body + a footer nav that can never
      overlap the content (the previous absolute nav covered the install-location line) */
   .screen.form{justify-content:flex-start; padding:0;}
-  .screen.form .body{width:100%; flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column;
-    align-items:center; padding:38px 52px 14px;}
+  /* fits on one page normally; a DARK, thin scrollbar appears only if a display/DPI makes it overflow
+     (never clips content, never the white system bar) */
+  .screen.form .body{width:100%; flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
+    align-items:center; padding:36px 52px 14px;}
   .screen.form .nav{position:static; height:74px; border-top:1px solid rgba(255,255,255,.06); background:none;}
 
   .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;}
@@ -110,14 +112,20 @@
   .dd-item:hover{background:var(--glass-hi); color:var(--ink);}
   .dd-item .en{color:var(--faint); font-weight:500; font-size:11.5px; margin-left:6px;}
 
-  .opts{width:100%; max-width:588px; display:flex; flex-direction:column; gap:13px;}
-  .opt{display:flex; align-items:center; gap:15px; padding:18px; border-radius:17px; background:var(--glass); border:1px solid var(--stroke); backdrop-filter:blur(12px);}
-  .opt .txt{flex:1;} .opt .txt .t{font-size:15px; font-weight:700;} .opt .txt .d{margin-top:3px; font-size:12.5px; font-weight:500; color:var(--muted); line-height:1.45;}
+  .opts{width:100%; max-width:588px; display:flex; flex-direction:column; gap:11px;}
+  .opt{display:flex; align-items:center; gap:15px; padding:14px 16px; border-radius:16px; background:var(--glass); border:1px solid var(--stroke); backdrop-filter:blur(12px);}
+  .opt .txt{flex:1;} .opt .txt .t{font-size:14.5px; font-weight:700;} .opt .txt .d{margin-top:3px; font-size:12px; font-weight:500; color:var(--muted); line-height:1.4;}
   .switch{-webkit-app-region:no-drag; width:48px; height:28px; border-radius:99px; background:rgba(255,255,255,.13); position:relative; cursor:pointer; transition:.22s; flex:none;}
   .switch::after{content:""; position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#fff; transition:.22s; box-shadow:0 2px 7px rgba(0,0,0,.4);}
   .switch.on{background:var(--accent);} .switch.on::after{left:23px;}
-  .loc{width:100%; max-width:588px; margin-top:16px; font-size:12.5px; font-weight:500; color:var(--faint);}
-  .loc code{font-family:ui-monospace,Consolas,monospace; color:var(--muted); background:var(--glass); padding:3px 8px; border-radius:7px;}
+  /* install-path row — now selectable via the host's folder picker */
+  .pathrow{width:100%; max-width:588px; margin-top:12px; display:flex; align-items:center; gap:12px;
+    padding:12px 14px; border-radius:14px; background:var(--glass); border:1px solid var(--stroke); backdrop-filter:blur(12px);}
+  .pathrow .pi{flex:1; min-width:0;}
+  .pathrow .pi .k{font-size:11px; font-weight:700; letter-spacing:.03em; color:var(--faint); text-transform:uppercase;}
+  .pathrow .pi .v{margin-top:2px; font-family:ui-monospace,Consolas,monospace; font-size:12px; color:var(--muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .btn.small{padding:8px 16px; font-size:12.5px; border-radius:10px;}
 
   .prog-wrap{width:100%; max-width:470px; text-align:center;}
   .spinner{width:90px; height:90px; margin:0 auto 26px; position:relative;}
@@ -172,7 +180,10 @@
           <div class="opt"><div class="txt"><div class="t">Live star-map wallpaper</div><div class="d">Show Collie's animated star-map behind your desktop icons, starting at logon.</div></div><div class="switch" data-opt="wallpaper"></div></div>
           <div class="opt"><div class="txt"><div class="t">Use my real browser</div><div class="d">Let Collie drive your already-logged-in Chrome/Edge via the bridge extension.</div></div><div class="switch" data-opt="bridge"></div></div>
         </div>
-        <div class="loc">Installs to <code>%LOCALAPPDATA%\Programs\Collie</code> · per-user, no admin</div>
+        <div class="pathrow">
+          <div class="pi"><div class="k">Install location · per-user, no admin</div><div class="v" id="pathVal">%LOCALAPPDATA%\Programs\Collie</div></div>
+          <button class="btn ghost small" id="browseBtn">Change…</button>
+        </div>
       </div>
       <div class="nav"><button class="btn ghost" data-go="language">Back</button><button class="btn primary" id="installBtn">Install</button></div>
     </section>
@@ -194,7 +205,7 @@
   function send(a,d){ try{ host&&host.postMessage(JSON.stringify(Object.assign({action:a},d||{}))); }catch(e){} }
   const CHIPS=[["English","English","en"],["简体中文","Chinese (Simp.)","zh"],["繁體中文","Chinese (Trad.)","zhtw"],["Español","Spanish","es"],["Français","French","fr"],["Deutsch","German","de"],["Português","Portuguese","ptbr"],["Русский","Russian","ru"],["日本語","Japanese","ja"],["한국어","Korean","ko"],["Italiano","Italian","it"],["العربية","Arabic","ar"]];
   const MORE=[["Bahasa Indonesia","Indonesian","id"],["Tiếng Việt","Vietnamese","vi"],["Türkçe","Turkish","tr"],["Polski","Polish","pl"],["Nederlands","Dutch","nl"],["ไทย","Thai","th"],["Українська","Ukrainian","uk"],["हिन्दी","Hindi","hi"],["Ελληνικά","Greek","el"],["Čeština","Czech","cs"],["Svenska","Swedish","sv"],["Dansk","Danish","da"],["Suomi","Finnish","fi"],["Română","Romanian","ro"],["Magyar","Hungarian","hu"],["עברית","Hebrew","he"],["Norsk","Norwegian","no"],["Български","Bulgarian","bg"],["فارسی","Farsi","fa"],["தமிழ்","Tamil","ta"]];
-  let state={lang:"en",wallpaper:false,bridge:false}; const $=(s)=>document.querySelector(s),$$=(s)=>document.querySelectorAll(s);
+  let state={lang:"en",wallpaper:false,bridge:false,dir:""}; const $=(s)=>document.querySelector(s),$$=(s)=>document.querySelectorAll(s);
   const grid=$("#langgrid"); CHIPS.forEach(([n,e,c])=>{ const d=document.createElement("div"); d.className="lang"; d.dataset.code=c; d.innerHTML=`<div class="tick">✓</div><div class="nat">${n}</div><div class="en">${e}</div>`; d.onclick=()=>selectLang(c); grid.appendChild(d); });
   // custom dark dropdown
   const dd=$("#moreDD"), ddBtn=$("#moreBtn"), ddList=$("#moreList");
@@ -210,11 +221,13 @@
   $$("[data-go]").forEach(b=>b.onclick=()=>goto(b.dataset.go));
   $("#closeBtn").onclick=()=>send("close"); $("#doneClose").onclick=()=>send("close"); $("#launchBtn").onclick=()=>send("launch");
   document.querySelector(".titlebar").addEventListener("mousedown",(e)=>{ if(e.target.closest(".winbtn"))return; if(e.button===0)send("drag"); });
-  $("#installBtn").onclick=()=>{ goto("installing"); send("install",{lang:state.lang,wallpaper:state.wallpaper,bridge:state.bridge}); if(!host)sim(); };
+  $("#browseBtn").onclick=(ev)=>{ ev.stopPropagation(); send("browse"); };   // host opens a folder picker
+  $("#installBtn").onclick=()=>{ goto("installing"); send("install",{lang:state.lang,wallpaper:state.wallpaper,bridge:state.bridge,dir:state.dir}); if(!host)sim(); };
   function onP(p){ if(p.phase!=null)$("#progStatus").textContent=p.phase; if(p.detail!=null)$("#progSub").textContent=p.detail; if(p.pct!=null)$("#progFill").style.width=Math.max(3,Math.min(100,p.pct))+"%"; if(p.done)setTimeout(()=>goto("done"),550); }
   // PostWebMessageAsJson delivers e.data already parsed (an object); PostWebMessageAsString delivers
-  // a string. Handle both so progress actually reaches the UI (this is why it stuck at "Preparing…").
-  if(host)host.addEventListener("message",e=>{ var d=e.data; if(typeof d==="string"){ try{ d=JSON.parse(d); }catch(_){ return; } } if(d&&typeof d==="object") onP(d); });
+  // a string. Handle both. {type:"dir"} = the folder the user picked; anything else is progress.
+  if(host)host.addEventListener("message",e=>{ var d=e.data; if(typeof d==="string"){ try{ d=JSON.parse(d); }catch(_){ return; } } if(!d||typeof d!=="object")return;
+    if(d.type==="dir"){ state.dir=d.path; $("#pathVal").textContent=d.path; return; } onP(d); });
   function sim(){ const s=[["Unpacking the runtime…","Embeddable Python + Collie",24],["Installing the desktop engine…","WebView2 host",50],["Setting your language…","",66],["Registering shortcuts…","Start menu + desktop",84],["Finishing up…","",100]]; let i=0;(function n(){ if(i>=s.length){onP({done:true});return;} const[a,b,c]=s[i++]; onP({phase:a,detail:b,pct:c}); setTimeout(n,760); })(); }
 
   // ---- aurora: soft colour blooms slowly orbiting the centre + fine star dust (Raycast-grade depth) ----
