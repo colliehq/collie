@@ -55,6 +55,21 @@ async function activeTab() {
   return await targetTab(false);
 }
 
+// If the user ALREADY has that site open, adopt THAT tab instead of opening a second one. This is
+// what people mean by "just use the tab I've got open" — and it lands directly on the view they are
+// actually logged into. (Cookies are per-profile, so a fresh tab would be authenticated too; the
+// point of adopting is to reuse their page and not litter the window with duplicates.)
+async function adoptTabForUrl(url) {
+  let origin;
+  try { origin = new URL(url).origin; } catch (e) { return null; }
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: origin + "/*" }); } catch (e) { return null; }
+  if (!tabs || !tabs.length) return null;
+  const tab = tabs.find((t) => t.active) || tabs[0];
+  await rememberTabId(tab.id);
+  return tab;
+}
+
 // Forget the collie tab if the user closes it, so the next `open` makes a fresh one.
 chrome.tabs.onRemoved.addListener((id) => {
   rememberedTabId().then((savedId) => { if (id === savedId) return forgetTabId(); });
@@ -257,7 +272,7 @@ chrome.debugger.onDetach.addListener((source) => {
 
 async function getConsole(clear) {
   const tab = await activeTab();
-  if (!tab) return { error: "no active tab" };
+  if (!tab) return { error: "no collie tab yet — call browser_open(url) first. It opens in YOUR real, logged-in browser (and adopts a tab you already have on that site), so your sessions apply." };
   try { await ensureDebugger(tab.id); } catch (e) { return { error: "debugger attach failed: " + e }; }
   const b = consoleBuf[tab.id] || [];
   const out = b.slice(-200);
@@ -268,7 +283,7 @@ async function getConsole(clear) {
 
 async function evalExpr(expr) {
   const tab = await activeTab();
-  if (!tab) return { error: "no active tab" };
+  if (!tab) return { error: "no collie tab yet — call browser_open(url) first. It opens in YOUR real, logged-in browser (and adopts a tab you already have on that site), so your sessions apply." };
   try { await ensureDebugger(tab.id); } catch (e) { return { error: "debugger attach failed: " + e }; }
   const r = await chrome.debugger.sendCommand(debuggee(tab.id), "Runtime.evaluate",
     { expression: expr, returnByValue: true, awaitPromise: true });
@@ -282,8 +297,11 @@ async function handle(cmd) {
     if (cmd.action === "open") {
       const url = httpUrl(cmd.url);
       if (!url) return { error: "browser_open only accepts http(s) URLs" };
-      const tab = await targetTab(true);            // opens/reuses a background collie tab
-      await navigateCollieTab(tab.id, url);
+      // Prefer a tab the user already has on that site (their logged-in view); otherwise open one.
+      const adopted = await adoptTabForUrl(url);
+      const tab = adopted || await targetTab(true);
+      const already = adopted && (adopted.url || "").indexOf(url) === 0;
+      if (!already) await navigateCollieTab(tab.id, url);
       return await exec(pageRead, []);
     }
     if (cmd.action === "show") {

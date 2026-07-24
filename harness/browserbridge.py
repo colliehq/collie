@@ -437,7 +437,7 @@ class BrowserOpen(Tool):
 
 class BrowserRead(Tool):
     name, tier = "browser_read", "always"
-    description = ("Read the CURRENT browser tab's full readable text (the whole page, so the model "
+    description = ("Read collie's tab in YOUR real logged-in browser (call browser_open first; it adopts a tab you already have on that site, so your session applies). Full readable text (the whole page, so the model "
                    "can solve from complete context). Optional args: max_chars (default 8000).")
     schema = {"type": "object", "properties": {"max_chars": {"type": "integer"}}}
 
@@ -448,7 +448,7 @@ class BrowserRead(Tool):
 
 class BrowserClick(Tool):
     name, tier = "browser_click", "always"
-    description = ("Click a link/button in the current tab by its visible text (or a CSS selector). "
+    description = ("Click a link/button in collie's tab by its visible text (or a CSS selector). "
                    "Returns the resulting page text. Args: text (visible text) OR selector.")
     schema = {"type": "object", "properties": {
         "text": {"type": "string"}, "selector": {"type": "string"}}}
@@ -502,7 +502,7 @@ class BrowserFields(Tool):
 
 class BrowserLinks(Tool):
     name, tier = "browser_links", "always"
-    description = ("List the clickable links on the current tab (text + href), optionally filtered "
+    description = ("List the clickable links on collie's tab (text + href), optionally filtered "
                    "by a substring. Args: optional filter.")
     schema = {"type": "object", "properties": {"filter": {"type": "string"}}}
 
@@ -512,7 +512,7 @@ class BrowserLinks(Tool):
 
 class BrowserConsole(Tool):
     name, tier = "browser_console", "always"
-    description = ("Read the current tab's DevTools CONSOLE — console.log/warn/error output, "
+    description = ("Read collie's tab's DevTools CONSOLE — console.log/warn/error output, "
                    "uncaught JS exceptions, and page errors (captured via the debugger). Use it to "
                    "debug a web page. Args: optional clear (bool, drain the buffer after reading).")
     schema = {"type": "object", "properties": {"clear": {"type": "boolean"}}}
@@ -523,7 +523,7 @@ class BrowserConsole(Tool):
 
 class BrowserEval(Tool):
     name, tier = "browser_eval", "always"
-    description = ("Evaluate a JavaScript expression in the current tab and return its result — for "
+    description = ("Evaluate a JavaScript expression in collie's tab and return its result — for "
                    "debugging / inspecting page state (e.g. `document.title`, `window.__STATE__`, a "
                    "querySelector count). Runs in the page via the debugger. Args: expr.")
     schema = {"type": "object", "properties": {"expr": {"type": "string"}}, "required": ["expr"]}
