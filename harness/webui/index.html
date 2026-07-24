@@ -1484,32 +1484,48 @@
       else obDone();
     }).catch(function () { cta.textContent = "Try again →"; });
   }
+  // Onboarding connects the SUBSCRIPTION/account, not a specific top model — and defaults to a
+  // balanced mid model (change any time in the model picker). Picking "Claude Opus" up front was
+  // both presumptuous and expensive.
+  var OB_DEFAULT = { "anthropic-oauth": "claude-sonnet-5", "anthropic": "claude-sonnet-5",
+                     "codex-oauth": "gpt-5.6-sol", "openai": "gpt-5.6-terra",
+                     "gemini": "gemini-2.5-flash", "deepseek": "deepseek-chat" };
+  var OB_NAME = { "anthropic-oauth": "Claude subscription", "anthropic": "Claude · API key",
+                  "codex-oauth": "ChatGPT subscription", "openai": "OpenAI · API key",
+                  "ollama": "Local model (Ollama)", "claude-cli": "Claude CLI",
+                  "gemini": "Google Gemini", "deepseek": "DeepSeek", "groq": "Groq", "qwen": "Qwen" };
+  function obShort(label) { return String(label || "").replace(/\s*\(.*\)\s*$/, ""); }
   function obRender(entries) {
-    var seen = {}, brains = [];
-    (entries || []).forEach(function (e) {           // one best (already rank-sorted) authed brain per provider
-      if (e.auth === "ok" && e.provider !== "mock" && !seen[e.provider]) { seen[e.provider] = 1; brains.push(e); }
+    var byProv = {}, order = [];
+    (entries || []).forEach(function (e) {           // group the authed entries per provider/account
+      if (e.auth !== "ok" || e.provider === "mock") return;
+      if (!byProv[e.provider]) { byProv[e.provider] = []; order.push(e.provider); }
+      byProv[e.provider].push(e);
     });
-    brains = brains.slice(0, 6);
+    order = order.slice(0, 6);
     var grid = $("obGrid"); grid.innerHTML = "";
-    if (!brains.length) {
+    if (!order.length) {
       $("obLabel").textContent = "Connect a brain";
       var em = document.createElement("div"); em.className = "ob-empty";
       em.textContent = "No brain detected yet. Paste an API key below, or run a local model with Ollama — Collie finds it automatically.";
       grid.appendChild(em); return;
     }
     $("obLabel").textContent = "Ready to use";
-    brains.forEach(function (e, i) {
+    order.forEach(function (prov, i) {
+      var list = byProv[prov], def = OB_DEFAULT[prov], pick = null;
+      if (def) pick = list.filter(function (e) { return e.model === def; })[0];   // balanced default
+      if (!pick) pick = list[0];                                                  // else the best
       var rec = i === 0;
-      var extra = e.kind === "local" ? "free" : e.kind === "subscription" ? "included"
-        : (e.price_out ? ("$" + e.price_out + " / M out") : "API");
+      var extra = pick.kind === "local" ? "free" : pick.kind === "subscription" ? "$0 with your plan"
+        : (pick.price_out ? ("$" + pick.price_out + " / M out") : "API");
       var card = document.createElement("button");
       card.className = "ob-brain" + (rec ? " is-rec" : "");
       card.innerHTML = '<span class="ob-pill"></span><span class="ob-bname"></span>'
         + '<span class="ob-bvia"></span><span class="ob-bcta">Use this →</span>';
       card.querySelector(".ob-pill").textContent = rec ? "Recommended" : "✓ Detected";
-      card.querySelector(".ob-bname").textContent = e.label;
-      card.querySelector(".ob-bvia").textContent = (e.via || "") + " · " + extra;
-      card.addEventListener("click", function () { obUse(e, card); });
+      card.querySelector(".ob-bname").textContent = OB_NAME[prov] || pick.via || prov;
+      card.querySelector(".ob-bvia").textContent = extra + " · " + obShort(pick.label) + " by default";
+      card.addEventListener("click", function () { obUse(pick, card); });
       grid.appendChild(card);
     });
   }
