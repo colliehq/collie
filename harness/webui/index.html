@@ -1096,10 +1096,12 @@
   // I18N[lang] dict is keyed by the ENGLISH source string, so an untranslated string simply
   // falls through to English — no key namespace, add a language by adding a dict.
   var UI_LANG = "en";
-  var SUPPORTED = ["en", "zh", "ja", "ko", "es", "fr", "de", "pt", "ru"];
+  // "zh-tw" MUST precede "zh": the prefix match below is first-wins, so navigator.language
+  // "zh-TW"/"zh-HK" has to be tested against "zh-tw" before the bare "zh" (Simplified) swallows it.
+  var SUPPORTED = ["en", "zh-tw", "zh", "ja", "ko", "es", "fr", "de", "pt", "ru"];
   function resolveLang(v) {
     if (v && v !== "auto" && SUPPORTED.indexOf(v) >= 0) return v;
-    var b = (navigator.language || "").toLowerCase();      // "pt-BR" -> pt, "zh-CN" -> zh
+    var b = (navigator.language || "").toLowerCase();      // "pt-BR" -> pt, "zh-CN" -> zh, "zh-TW" -> zh-tw
     for (var i = 1; i < SUPPORTED.length; i++) if (b.indexOf(SUPPORTED[i]) === 0) return SUPPORTED[i];
     return "en";
   }
@@ -1134,8 +1136,42 @@
     "API key not set for that provider": "该 provider 未设置 API key",
     "__kbd": "<kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 · SSE 实时流式"
   };
+  // Traditional Chinese (Taiwan idiom). Generated from ZH via OpenCC s2twp — 設定/儲存/載入/訊息/
+  // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
+  var ZHTW = {
+    "Ask Collie to fix, build, or explain": "讓 Collie 修復、構建或解釋",
+    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.":
+      "它會先寫一個復現、真的跑起來,直到檢查變綠才收工——只用同類 agent 的一小部分 tokens。回答在這裡流式出現;工具與 diff 在下方的執行抽屜裡,驗證門在左下角守著。",
+    "Ask Collie to fix, build, or explain something…": "讓 Collie 修復、構建或解釋點什麼…",
+    "Steer while Collie works — Enter to send": "執行中可繼續輸入轉向 — Enter 傳送",
+    "New thread": "新會話",
+    "run details": "執行詳情",
+    "no run yet": "尚無執行",
+    "Ready": "就緒",
+    "Settings": "設定",
+    "Cancel": "取消",
+    "Save": "儲存",
+    "loading…": "載入中…",
+    "saving…": "儲存中…",
+    "saved · applies to your next message": "已儲存 · 下一條訊息生效",
+    "failed to load": "載入失敗",
+    "steering delivered": "轉向已送達",
+    "not delivered": "未送達",
+    "run already finished — send again to start a new turn": "執行已結束——再發一次將開啟新的一輪",
+    "connection dropped — checking whether Collie finished…": "連線中斷——正在確認 Collie 是否已完成…",
+    "stream interrupted": "流被中斷",
+    "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.":
+      "流被中斷——若 Collie 仍在工作,稍後從側欄重新開啟本會話即可看到結果。",
+    "run started": "執行開始",
+    "switching…": "切換中…",
+    "switched · applies to your next message": "已切換 · 下一條訊息生效",
+    "not logged in for that provider": "未登入該 provider",
+    "API key not set for that provider": "該 provider 未設定 API key",
+    "__kbd": "<kbd>Enter</kbd> 傳送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 換行 · SSE 實時流式"
+  };
   var I18N = {
     zh: ZH,
+    "zh-tw": ZHTW,
     ja: {
       "Ask Collie to fix, build, or explain": "Collie に修正・構築・説明を頼む",
       "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Collie はまず再現を書いて実際に実行し、チェックが緑になって初めて完了します——同種エージェントのごく一部のトークンで。回答はここにストリーム表示され、ツールと差分は下の実行ドロワーに、検証ゲートは左下で見張っています。",
@@ -1331,7 +1367,10 @@
     var groups = [], seen = {};
     schema.forEach(function (s) { if (!seen[s.group]) { seen[s.group] = []; groups.push(s.group); } seen[s.group].push(s); });
     var html = "";
-    var L = UI_LANG, loc = L !== "en";           // schema carries label_<lang>/hint_<lang>; missing -> English
+    // the schema (settings.py) only carries label_zh, so a Traditional user borrows the Simplified
+    // panel labels — the chrome above is already proper Traditional via ZHTW; this is the secondary
+    // surface, and 简体 labels beat English ones for a zh-tw reader.
+    var L = (UI_LANG === "zh-tw") ? "zh" : UI_LANG, loc = L !== "en";
     groups.forEach(function (g) {
       html += '<div class="set-group"><h3>' + setEsc(loc && GROUPS_I18N[L] && GROUPS_I18N[L][g] || g) + "</h3>";
       seen[g].forEach(function (s) {

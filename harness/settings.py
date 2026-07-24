@@ -31,7 +31,8 @@ SCHEMA = [
      "options": [
          {"value": "auto", "label": "Auto (follow browser)", "label_zh": "自动(跟随浏览器)"},
          {"value": "en", "label": "English"},
-         {"value": "zh", "label": "中文"},
+         {"value": "zh", "label": "简体中文"},
+         {"value": "zh-tw", "label": "繁體中文"},
          {"value": "ja", "label": "日本語"},
          {"value": "ko", "label": "한국어"},
          {"value": "es", "label": "Español"},
