@@ -1,0 +1,56 @@
+site_name: Collie
+site_description: A lean coding-agent harness that proves its work.
+site_url: https://wudaming00.github.io/collie/
+repo_url: https://github.com/wudaming00/collie
+repo_name: wudaming00/collie
+copyright: MIT-licensed · runs locally · no telemetry
+
+theme:
+  name: material
+  logo: assets/collie-logo.svg
+  favicon: assets/collie-logo.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - toc: { permalink: true }
+  - pymdownx.highlight: { anchor_linenums: true }
+  - pymdownx.superfences
+  - pymdownx.tabbed: { alternate_style: true }
+  - pymdownx.details
+
+# Only the user-facing pages are in the nav. The internal design notes under docs/ still build and
+# are reachable by URL, but they're not part of the documentation site's navigation.
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Quickstart: quickstart.md
+  - Providers: providers.md
+  - CLI reference: cli.md
+  - The desktop app: desktop.md
+
+validation:
+  omitted_files: ignore
+  absolute_links: ignore
+  unrecognized_links: ignore
+
+plugins:
+  - search
