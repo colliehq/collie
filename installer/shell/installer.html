@@ -4,335 +4,201 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Collie Setup</title>
+<link rel="stylesheet" href="fonts.css">
 <style>
   :root{
-    --bg0:#0E1017; --bg1:#161A26; --ink:#ECEEF4; --muted:#9AA1B3; --faint:#6A7082;
-    --card:rgba(255,255,255,.045); --card-hi:rgba(255,255,255,.08); --stroke:rgba(255,255,255,.09);
-    --accent:#5D6FDA; --accent2:#8B98EF; --glow:rgba(93,111,218,.5);
-    --ok:#54BC8A;
+    --ink:#F4F5FA; --muted:#9DA3B6; --faint:#6A6F82;
+    --glass:rgba(255,255,255,.045); --glass-hi:rgba(255,255,255,.09); --stroke:rgba(255,255,255,.08);
+    --accent:#6366F1; --accent2:#8B8CF7; --glow:rgba(110,110,245,.4); --ok:#5FC79A;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   html,body{height:100%; overflow:hidden;}
   body{
-    font-family:"Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
-    color:var(--ink); background:radial-gradient(120% 100% at 50% 0%,#1A1F2E 0%,var(--bg1) 42%,var(--bg0) 100%);
-    -webkit-user-select:none; user-select:none; position:relative;
+    font-family:'Nunito',system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    color:var(--ink); font-weight:500; -webkit-user-select:none; user-select:none;
+    background:#09090C;
   }
-  #stars{position:fixed; inset:0; z-index:0;}
-  .app{position:relative; z-index:1; height:100%; display:flex; flex-direction:column;}
+  #aurora{position:fixed; inset:0; z-index:0;}
+  /* fine film grain — the texture that makes a flat dark UI read as premium (Raycast) */
+  .grain{position:fixed; inset:0; z-index:2; pointer-events:none; opacity:.045; mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+  /* a soft vignette to seat the content and round the light off toward the edges */
+  .vignette{position:fixed; inset:0; z-index:1; pointer-events:none;
+    background:radial-gradient(120% 100% at 50% 34%, transparent 46%, rgba(6,6,10,.55) 100%);}
+  .app{position:relative; z-index:3; height:100%; display:flex; flex-direction:column;}
 
-  /* custom title bar (drag region for the WebView2 host) */
-  .titlebar{height:42px; flex:none; display:flex; align-items:center; padding:0 10px 0 16px;
+  .titlebar{height:48px; flex:none; display:flex; align-items:center; padding:0 14px 0 22px;
     -webkit-app-region:drag; app-region:drag;}
-  .brandmini{display:flex; align-items:center; gap:8px; opacity:.0; transition:opacity .4s;}
+  .brandmini{display:flex; align-items:center; gap:9px; opacity:0; transition:opacity .5s;}
   .brandmini.show{opacity:.85;}
   .brandmini img{width:18px; height:18px;}
-  .brandmini span{font-size:12.5px; font-weight:600; letter-spacing:.02em;}
+  .brandmini span{font-family:'Quicksand'; font-size:14px; font-weight:600; letter-spacing:.2px;}
   .tb-spacer{flex:1;}
-  .winbtn{-webkit-app-region:no-drag; app-region:no-drag; width:34px; height:28px; border-radius:7px;
-    display:flex; align-items:center; justify-content:center; color:var(--muted); cursor:pointer;
-    font-size:15px; transition:.15s;}
+  .winbtn{-webkit-app-region:no-drag; app-region:no-drag; width:34px; height:30px; border-radius:9px;
+    display:flex; align-items:center; justify-content:center; color:var(--faint); cursor:pointer; font-size:14px; transition:.16s;}
   .winbtn:hover{background:rgba(255,255,255,.08); color:var(--ink);}
-  .winbtn.close:hover{background:#C0392B; color:#fff;}
+  .winbtn.close:hover{background:rgba(226,90,74,.9); color:#fff;}
 
   .stage{flex:1; position:relative; overflow:hidden;}
-  .screen{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
-    justify-content:center; padding:8px 40px 34px; opacity:0; transform:translateY(14px) scale(.985);
-    pointer-events:none; transition:opacity .45s cubic-bezier(.22,.61,.36,1), transform .45s cubic-bezier(.22,.61,.36,1);}
+  .screen{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding:4px 52px 44px; opacity:0; transform:translateY(18px) scale(.985); pointer-events:none;
+    transition:opacity .55s cubic-bezier(.2,.7,.2,1), transform .55s cubic-bezier(.2,.7,.2,1);}
   .screen.active{opacity:1; transform:none; pointer-events:auto;}
-  .screen.leaving{opacity:0; transform:translateY(-12px) scale(.99);}
+  .screen.leaving{opacity:0; transform:translateY(-16px) scale(.99);}
 
-  /* footer nav bar shared across screens */
-  .nav{position:absolute; left:0; right:0; bottom:0; height:74px; display:flex; align-items:center;
-    justify-content:space-between; padding:0 34px;}
-  .nav .left{color:var(--faint); font-size:11.5px; letter-spacing:.14em; text-transform:uppercase;}
-  .nav .right{display:flex; gap:12px;}
+  .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;}
 
-  .btn{-webkit-app-region:no-drag; border:1px solid transparent; border-radius:11px; padding:11px 22px;
-    font:inherit; font-size:13.5px; font-weight:600; cursor:pointer; transition:.18s; letter-spacing:.01em;}
-  .btn:active{transform:translateY(1px);}
-  .btn.primary{color:#fff; background:linear-gradient(180deg,var(--accent2),var(--accent));
-    box-shadow:0 6px 22px -6px var(--glow), inset 0 1px 0 rgba(255,255,255,.25);}
-  .btn.primary:hover{filter:brightness(1.08); box-shadow:0 9px 28px -6px var(--glow), inset 0 1px 0 rgba(255,255,255,.3);}
-  .btn.ghost{color:var(--muted); background:transparent; border-color:var(--stroke);}
-  .btn.ghost:hover{color:var(--ink); background:var(--card); border-color:var(--card-hi);}
-  .btn[disabled]{opacity:.4; cursor:not-allowed;}
+  .btn{-webkit-app-region:no-drag; font-family:'Nunito'; border:1px solid transparent; border-radius:13px;
+    padding:12px 24px; font-size:14.5px; font-weight:700; cursor:pointer; transition:.2s; letter-spacing:.2px;}
+  .btn:active{transform:translateY(1px) scale(.99);}
+  .btn.primary{color:#fff; background:var(--accent); box-shadow:0 8px 26px -8px var(--glow), inset 0 1px 0 rgba(255,255,255,.22);}
+  .btn.primary:hover{background:var(--accent2); box-shadow:0 12px 34px -8px var(--glow);}
+  .btn.ghost{color:var(--muted); background:var(--glass); border-color:var(--stroke); backdrop-filter:blur(8px);}
+  .btn.ghost:hover{color:var(--ink); background:var(--glass-hi);}
 
-  /* WELCOME */
-  .logo-wrap{position:relative; width:132px; height:132px; margin-bottom:8px;}
-  .logo-wrap img{width:100%; height:100%; filter:drop-shadow(0 8px 30px rgba(120,140,240,.28));}
-  .logo-wrap .ring{position:absolute; inset:-14px; border-radius:50%;
-    background:radial-gradient(circle,var(--glow) 0%,transparent 62%); opacity:.55; animation:breathe 4.5s ease-in-out infinite;}
-  @keyframes breathe{0%,100%{transform:scale(1); opacity:.4;} 50%{transform:scale(1.08); opacity:.62;}}
-  .wordmark{font-size:52px; font-weight:650; letter-spacing:.5px; line-height:1.05; margin-top:6px;}
-  .tagline{margin-top:10px; color:var(--muted); font-size:15px; letter-spacing:.01em;}
-  .pillrow{margin-top:20px; display:flex; gap:10px; color:var(--faint); font-size:10.5px;
-    letter-spacing:.16em; text-transform:uppercase;}
-  .pillrow b{color:var(--muted); font-weight:600;}
-  .cta{margin-top:30px;}
+  /* WELCOME — minimal: bloom does the talking */
+  .logo-wrap{position:relative; width:128px; height:128px; margin-bottom:2px; animation:float 7s ease-in-out infinite;}
+  @keyframes float{0%,100%{transform:translateY(0);} 50%{transform:translateY(-8px);}}
+  .logo-wrap img{width:100%; height:100%; filter:drop-shadow(0 12px 40px rgba(120,120,250,.4));}
+  .wordmark{font-family:'Quicksand'; font-size:66px; font-weight:700; letter-spacing:-1.5px; line-height:1; margin-top:14px;}
+  .tagline{margin-top:16px; color:var(--muted); font-size:16.5px; font-weight:500; letter-spacing:.1px;}
+  .pillrow{margin-top:26px; display:flex; gap:10px; align-items:center; color:var(--faint); font-size:10.5px; font-weight:700; letter-spacing:.2em; text-transform:uppercase;}
+  .pillrow i{width:3px; height:3px; border-radius:50%; background:var(--faint);}
+  .cta{margin-top:34px; padding:14px 36px; font-size:15px; border-radius:15px;}
 
-  /* section heading used on inner screens */
-  .head{width:100%; max-width:560px; margin-bottom:18px;}
-  .head h2{font-size:22px; font-weight:640; letter-spacing:.01em;}
-  .head p{margin-top:5px; color:var(--muted); font-size:13.5px;}
+  .head{width:100%; max-width:588px; margin-bottom:22px;}
+  .head h2{font-family:'Quicksand'; font-size:27px; font-weight:700; letter-spacing:-.3px;}
+  .head p{margin-top:7px; color:var(--muted); font-size:14px; font-weight:500;}
 
-  /* LANGUAGE */
-  .langgrid{width:100%; max-width:560px; display:grid; grid-template-columns:repeat(4,1fr); gap:10px;}
-  .lang{position:relative; padding:13px 10px; border-radius:13px; background:var(--card);
-    border:1px solid var(--stroke); cursor:pointer; text-align:center; transition:.16s;}
-  .lang:hover{background:var(--card-hi); border-color:rgba(255,255,255,.16); transform:translateY(-1px);}
-  .lang .nat{font-size:14px; font-weight:600;}
-  .lang .en{margin-top:2px; font-size:10.5px; color:var(--faint); letter-spacing:.02em;}
-  .lang.sel{border-color:var(--accent); background:linear-gradient(180deg,rgba(93,111,218,.22),rgba(93,111,218,.08));
-    box-shadow:0 0 0 1px var(--accent), 0 8px 24px -10px var(--glow);}
+  .langgrid{width:100%; max-width:588px; display:grid; grid-template-columns:repeat(4,1fr); gap:11px;}
+  .lang{position:relative; padding:15px 10px; border-radius:15px; background:var(--glass); border:1px solid var(--stroke);
+    cursor:pointer; text-align:center; transition:.18s; backdrop-filter:blur(12px);}
+  .lang:hover{background:var(--glass-hi); border-color:rgba(255,255,255,.16); transform:translateY(-2px);}
+  .lang .nat{font-size:15px; font-weight:700;}
+  .lang .en{margin-top:2px; font-size:11px; font-weight:600; color:var(--faint);}
+  .lang.sel{border-color:transparent; background:rgba(99,102,241,.16); box-shadow:0 0 0 1.5px var(--accent2), 0 14px 32px -14px var(--glow);}
   .lang.sel .en{color:var(--accent2);}
-  .lang .tick{position:absolute; top:7px; right:8px; width:15px; height:15px; border-radius:50%;
-    background:var(--accent); color:#fff; font-size:10px; line-height:15px; opacity:0; transform:scale(.5); transition:.18s;}
+  .lang .tick{position:absolute; top:8px; right:9px; width:16px; height:16px; border-radius:50%; background:var(--accent);
+    color:#fff; font-size:10px; line-height:16px; opacity:0; transform:scale(.4); transition:.2s;}
   .lang.sel .tick{opacity:1; transform:none;}
-  .morerow{width:100%; max-width:560px; margin-top:14px; display:flex; align-items:center; gap:12px;}
-  .morerow label{color:var(--faint); font-size:12px; white-space:nowrap;}
-  select.more{flex:1; -webkit-app-region:no-drag; appearance:none; background:var(--card); color:var(--ink);
-    border:1px solid var(--stroke); border-radius:10px; padding:9px 12px; font:inherit; font-size:13px; cursor:pointer;}
-  select.more:hover{border-color:var(--card-hi);}
+  .morerow{width:100%; max-width:588px; margin-top:16px; display:flex; align-items:center; gap:14px;}
+  .morerow label{color:var(--faint); font-size:12.5px; font-weight:600; white-space:nowrap;}
+  select.more{flex:1; -webkit-app-region:no-drag; appearance:none; font-family:'Nunito'; font-weight:600; background:var(--glass);
+    color:var(--ink); border:1px solid var(--stroke); border-radius:12px; padding:11px 14px; font-size:13.5px; cursor:pointer; backdrop-filter:blur(12px);}
 
-  /* OPTIONS */
-  .opts{width:100%; max-width:560px; display:flex; flex-direction:column; gap:12px;}
-  .opt{display:flex; align-items:center; gap:14px; padding:15px 16px; border-radius:14px;
-    background:var(--card); border:1px solid var(--stroke);}
-  .opt .txt{flex:1;}
-  .opt .txt .t{font-size:14px; font-weight:600;}
-  .opt .txt .d{margin-top:3px; font-size:12px; color:var(--muted); line-height:1.4;}
-  .switch{-webkit-app-region:no-drag; width:46px; height:27px; border-radius:99px; background:rgba(255,255,255,.12);
-    position:relative; cursor:pointer; transition:.2s; flex:none;}
-  .switch::after{content:""; position:absolute; top:3px; left:3px; width:21px; height:21px; border-radius:50%;
-    background:#fff; transition:.2s; box-shadow:0 2px 6px rgba(0,0,0,.35);}
-  .switch.on{background:linear-gradient(180deg,var(--accent2),var(--accent));}
-  .switch.on::after{left:22px;}
-  .loc{width:100%; max-width:560px; margin-top:14px; font-size:12px; color:var(--faint);}
-  .loc code{color:var(--muted); background:var(--card); padding:2px 7px; border-radius:6px;
-    font-family:ui-monospace,Consolas,monospace;}
+  .opts{width:100%; max-width:588px; display:flex; flex-direction:column; gap:13px;}
+  .opt{display:flex; align-items:center; gap:15px; padding:18px; border-radius:17px; background:var(--glass); border:1px solid var(--stroke); backdrop-filter:blur(12px);}
+  .opt .txt{flex:1;} .opt .txt .t{font-size:15px; font-weight:700;} .opt .txt .d{margin-top:3px; font-size:12.5px; font-weight:500; color:var(--muted); line-height:1.45;}
+  .switch{-webkit-app-region:no-drag; width:48px; height:28px; border-radius:99px; background:rgba(255,255,255,.13); position:relative; cursor:pointer; transition:.22s; flex:none;}
+  .switch::after{content:""; position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#fff; transition:.22s; box-shadow:0 2px 7px rgba(0,0,0,.4);}
+  .switch.on{background:var(--accent);} .switch.on::after{left:23px;}
+  .loc{width:100%; max-width:588px; margin-top:16px; font-size:12.5px; font-weight:500; color:var(--faint);}
+  .loc code{font-family:ui-monospace,Consolas,monospace; color:var(--muted); background:var(--glass); padding:3px 8px; border-radius:7px;}
 
-  /* INSTALLING */
-  .prog-wrap{width:100%; max-width:460px; text-align:center;}
-  .spinner{width:74px; height:74px; margin:0 auto 22px; position:relative;}
+  .prog-wrap{width:100%; max-width:470px; text-align:center;}
+  .spinner{width:90px; height:90px; margin:0 auto 26px; position:relative;}
   .spinner .core{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;}
-  .spinner .core img{width:40px; height:40px;}
-  .spinner .orb{position:absolute; inset:0; border-radius:50%; border:2px solid transparent;
-    border-top-color:var(--accent2); border-right-color:var(--accent); animation:spin 1s linear infinite;}
+  .spinner .core img{width:44px; height:44px; filter:drop-shadow(0 6px 20px rgba(120,120,250,.5));}
+  .spinner .orb{position:absolute; inset:0; border-radius:50%; border:2.5px solid transparent; border-top-color:var(--accent2); border-right-color:var(--accent); animation:spin 1.05s cubic-bezier(.6,.15,.4,.85) infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
-  .prog-status{font-size:15px; font-weight:600;}
-  .prog-sub{margin-top:6px; color:var(--muted); font-size:12.5px; min-height:16px;}
-  .track{margin-top:20px; height:6px; border-radius:99px; background:rgba(255,255,255,.08); overflow:hidden;}
-  .fill{height:100%; width:0%; border-radius:99px; background:linear-gradient(90deg,var(--accent),var(--accent2));
-    box-shadow:0 0 12px var(--glow); transition:width .5s ease;}
+  .prog-status{font-family:'Quicksand'; font-size:18px; font-weight:600;}
+  .prog-sub{margin-top:7px; color:var(--muted); font-size:13px; font-weight:500; min-height:17px;}
+  .track{margin-top:24px; height:6px; border-radius:99px; background:rgba(255,255,255,.08); overflow:hidden;}
+  .fill{height:100%; width:0%; border-radius:99px; background:linear-gradient(90deg,var(--accent),var(--accent2)); box-shadow:0 0 16px var(--glow); transition:width .55s cubic-bezier(.3,.7,.3,1);}
 
-  /* DONE */
-  .check{width:82px; height:82px; margin-bottom:20px; border-radius:50%;
-    background:radial-gradient(circle at 50% 40%,rgba(84,188,138,.28),transparent 65%);
-    display:flex; align-items:center; justify-content:center;}
-  .check svg{width:52px; height:52px;}
-  .check circle{stroke:var(--ok); stroke-width:4; fill:none; stroke-dasharray:150; stroke-dashoffset:150;
-    animation:draw .6s ease forwards;}
-  .check path{stroke:var(--ok); stroke-width:5; fill:none; stroke-linecap:round; stroke-linejoin:round;
-    stroke-dasharray:40; stroke-dashoffset:40; animation:draw .4s .45s ease forwards;}
+  .check{width:90px; height:90px; margin-bottom:22px; border-radius:50%; background:radial-gradient(circle at 50% 42%,rgba(95,199,154,.28),transparent 62%); display:flex; align-items:center; justify-content:center;}
+  .check svg{width:56px; height:56px;}
+  .check circle{stroke:var(--ok); stroke-width:3.5; fill:none; stroke-dasharray:150; stroke-dashoffset:150; animation:draw .7s ease forwards;}
+  .check path{stroke:var(--ok); stroke-width:5; fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:40; stroke-dashoffset:40; animation:draw .45s .5s ease forwards;}
   @keyframes draw{to{stroke-dashoffset:0;}}
-  .fade-up{animation:fadeUp .6s cubic-bezier(.22,.61,.36,1) both;}
-  @keyframes fadeUp{from{opacity:0; transform:translateY(12px);} to{opacity:1; transform:none;}}
 </style>
 </head>
 <body>
-<canvas id="stars"></canvas>
+<canvas id="aurora"></canvas>
+<div class="vignette"></div>
+<div class="grain"></div>
 <div class="app">
   <div class="titlebar">
     <div class="brandmini" id="brandmini"><img src="collie-logo.png" alt=""><span>Collie</span></div>
     <div class="tb-spacer"></div>
     <div class="winbtn close" id="closeBtn" title="Close">&#10005;</div>
   </div>
-
   <div class="stage">
-    <!-- WELCOME -->
     <section class="screen active" data-screen="welcome">
-      <div class="logo-wrap"><div class="ring"></div><img src="collie-logo.png" alt="Collie"></div>
+      <div class="logo-wrap"><img src="collie-logo.png" alt="Collie"></div>
       <div class="wordmark">Collie</div>
-      <div class="tagline">Fetches bugs, not sticks — and proves every catch.</div>
-      <div class="pillrow"><b>Open source</b> · <b>Runs locally</b> · <b>No telemetry</b></div>
+      <div class="tagline">Humans and AI, friends who ship.</div>
+      <div class="pillrow"><span>OPEN SOURCE</span><i></i><span>RUNS LOCALLY</span><i></i><span>NO TELEMETRY</span></div>
       <button class="btn primary cta" data-go="language">Get started &nbsp;→</button>
     </section>
-
-    <!-- LANGUAGE -->
     <section class="screen" data-screen="language">
-      <div class="head"><h2>Choose your language</h2>
-        <p>This is the language for Collie and the rest of Setup — you can change it anytime later.</p></div>
+      <div class="head"><h2>Choose your language</h2><p>For Collie and the rest of Setup — you can change it anytime later.</p></div>
       <div class="langgrid" id="langgrid"></div>
       <div class="morerow"><label>More languages</label><select class="more" id="moreSel"></select></div>
-      <div class="nav"><div class="left"></div><div class="right">
-        <button class="btn ghost" data-go="welcome">Back</button>
-        <button class="btn primary" data-go="options">Continue</button></div></div>
+      <div class="nav"><button class="btn ghost" data-go="welcome">Back</button><button class="btn primary" data-go="options">Continue</button></div>
     </section>
-
-    <!-- OPTIONS -->
     <section class="screen" data-screen="options">
-      <div class="head"><h2>A couple of options</h2>
-        <p>Both are optional and off by default. You can toggle them later from Collie's settings.</p></div>
+      <div class="head"><h2>A couple of options</h2><p>Both are optional and off by default. Toggle them later in Collie's settings.</p></div>
       <div class="opts">
-        <div class="opt"><div class="txt"><div class="t">Live star-map wallpaper</div>
-          <div class="d">Show Collie's animated star-map behind your desktop icons, starting at logon.</div></div>
-          <div class="switch" data-opt="wallpaper"></div></div>
-        <div class="opt"><div class="txt"><div class="t">Use my real browser</div>
-          <div class="d">Let Collie drive your already-logged-in Chrome/Edge via the bridge extension.</div></div>
-          <div class="switch" data-opt="bridge"></div></div>
+        <div class="opt"><div class="txt"><div class="t">Live star-map wallpaper</div><div class="d">Show Collie's animated star-map behind your desktop icons, starting at logon.</div></div><div class="switch" data-opt="wallpaper"></div></div>
+        <div class="opt"><div class="txt"><div class="t">Use my real browser</div><div class="d">Let Collie drive your already-logged-in Chrome/Edge via the bridge extension.</div></div><div class="switch" data-opt="bridge"></div></div>
       </div>
-      <div class="loc">Installs to <code id="loc">%LOCALAPPDATA%\Programs\Collie</code> · per-user, no admin needed</div>
-      <div class="nav"><div class="left"></div><div class="right">
-        <button class="btn ghost" data-go="language">Back</button>
-        <button class="btn primary" id="installBtn">Install</button></div></div>
+      <div class="loc">Installs to <code>%LOCALAPPDATA%\Programs\Collie</code> · per-user, no admin</div>
+      <div class="nav"><button class="btn ghost" data-go="language">Back</button><button class="btn primary" id="installBtn">Install</button></div>
     </section>
-
-    <!-- INSTALLING -->
     <section class="screen" data-screen="installing">
-      <div class="prog-wrap">
-        <div class="spinner"><div class="orb"></div><div class="core"><img src="collie-logo.png" alt=""></div></div>
-        <div class="prog-status" id="progStatus">Preparing…</div>
-        <div class="prog-sub" id="progSub"></div>
-        <div class="track"><div class="fill" id="progFill"></div></div>
-      </div>
+      <div class="prog-wrap"><div class="spinner"><div class="orb"></div><div class="core"><img src="collie-logo.png" alt=""></div></div>
+        <div class="prog-status" id="progStatus">Preparing…</div><div class="prog-sub" id="progSub"></div>
+        <div class="track"><div class="fill" id="progFill"></div></div></div>
     </section>
-
-    <!-- DONE -->
     <section class="screen" data-screen="done">
       <div class="check"><svg viewBox="0 0 60 60"><circle cx="30" cy="30" r="24"/><path d="M18 31 l8 8 l16 -18"/></svg></div>
-      <div class="wordmark" style="font-size:30px;">All set</div>
-      <div class="tagline">Collie is installed. Pick a brain on first launch — an existing Claude,<br>Codex or Grok subscription connects in one click.</div>
-      <div class="nav"><div class="left"></div><div class="right">
-        <button class="btn ghost" id="doneClose">Close</button>
-        <button class="btn primary" id="launchBtn">Launch Collie</button></div></div>
+      <div class="wordmark" style="font-size:36px; letter-spacing:-.5px;">All set</div>
+      <div class="tagline">Collie is installed. Pick a brain on first launch — an existing<br>Claude, Codex or Grok subscription connects in one click.</div>
+      <div class="nav"><button class="btn ghost" id="doneClose">Close</button><button class="btn primary" id="launchBtn">Launch Collie</button></div>
     </section>
   </div>
 </div>
-
 <script>
-  // ---- host bridge (WebView2). Falls back to console/simulation in a plain browser preview. ----
-  const host = (window.chrome && window.chrome.webview) ? window.chrome.webview : null;
-  function send(action, data){ try{ host && host.postMessage(JSON.stringify(Object.assign({action}, data||{}))); }catch(e){} }
-
-  // ---- language data (kept in sync with the installer's curated set) ----
-  const CHIPS = [
-    ["English","English","en"],["简体中文","Chinese (Simp.)","zh"],["繁體中文","Chinese (Trad.)","zhtw"],
-    ["Español","Spanish","es"],["Français","French","fr"],["Deutsch","German","de"],
-    ["Português","Portuguese","ptbr"],["Русский","Russian","ru"],["日本語","Japanese","ja"],
-    ["한국어","Korean","ko"],["Italiano","Italian","it"],["العربية","Arabic","ar"]];
-  const MORE = [["Bahasa Indonesia","Indonesian","id"],["Tiếng Việt","Vietnamese","vi"],["Türkçe","Turkish","tr"],
-    ["Polski","Polish","pl"],["Nederlands","Dutch","nl"],["ไทย","Thai","th"],["Українська","Ukrainian","uk"],
-    ["हिन्दी","Hindi","hi"],["Ελληνικά","Greek","el"],["Čeština","Czech","cs"],["Svenska","Swedish","sv"],
-    ["Dansk","Danish","da"],["Suomi","Finnish","fi"],["Română","Romanian","ro"],["Magyar","Hungarian","hu"],
-    ["עברית","Hebrew","he"],["Norsk","Norwegian","no"],["Български","Bulgarian","bg"],["فارسی","Farsi","fa"],
-    ["தமிழ்","Tamil","ta"]];
-
-  let state = { lang:"en", wallpaper:false, bridge:false };
-  const $ = (s)=>document.querySelector(s), $$=(s)=>document.querySelectorAll(s);
-
-  // build language cards
-  const grid = $("#langgrid");
-  CHIPS.forEach(([nat,en,code])=>{
-    const d=document.createElement("div"); d.className="lang"; d.dataset.code=code;
-    d.innerHTML=`<div class="tick">✓</div><div class="nat">${nat}</div><div class="en">${en}</div>`;
-    d.onclick=()=>selectLang(code); grid.appendChild(d);
-  });
-  const sel=$("#moreSel"); sel.innerHTML='<option value="">More languages…</option>'+
-    MORE.map(([nat,en,code])=>`<option value="${code}">${nat}  ·  ${en}</option>`).join("");
-  sel.onchange=()=>{ if(sel.value){ selectLang(sel.value); } };
-
-  function selectLang(code){
-    state.lang=code;
-    $$(".lang").forEach(l=>l.classList.toggle("sel", l.dataset.code===code));
-    if(!CHIPS.some(c=>c[2]===code)){ /* from dropdown */ } else { sel.value=""; }
-    send("lang",{code});
-  }
-  selectLang("zh"); // default highlight (host overrides with the OS language)
-
-  // toggles
-  $$(".switch").forEach(sw=>sw.onclick=()=>{ sw.classList.toggle("on");
-    state[sw.dataset.opt]=sw.classList.contains("on"); });
-
-  // screen navigation with transition
-  let current="welcome";
-  function goto(name){
-    if(name===current) return;
-    const from=$(`.screen[data-screen="${current}"]`), to=$(`.screen[data-screen="${name}"]`);
-    from.classList.add("leaving"); from.classList.remove("active");
-    setTimeout(()=>from.classList.remove("leaving"),450);
-    to.classList.add("active"); current=name;
-    $("#brandmini").classList.toggle("show", name!=="welcome");
-  }
+  const host=(window.chrome&&window.chrome.webview)?window.chrome.webview:null;
+  function send(a,d){ try{ host&&host.postMessage(JSON.stringify(Object.assign({action:a},d||{}))); }catch(e){} }
+  const CHIPS=[["English","English","en"],["简体中文","Chinese (Simp.)","zh"],["繁體中文","Chinese (Trad.)","zhtw"],["Español","Spanish","es"],["Français","French","fr"],["Deutsch","German","de"],["Português","Portuguese","ptbr"],["Русский","Russian","ru"],["日本語","Japanese","ja"],["한국어","Korean","ko"],["Italiano","Italian","it"],["العربية","Arabic","ar"]];
+  const MORE=[["Bahasa Indonesia","Indonesian","id"],["Tiếng Việt","Vietnamese","vi"],["Türkçe","Turkish","tr"],["Polski","Polish","pl"],["Nederlands","Dutch","nl"],["ไทย","Thai","th"],["Українська","Ukrainian","uk"],["हिन्दी","Hindi","hi"],["Ελληνικά","Greek","el"],["Čeština","Czech","cs"],["Svenska","Swedish","sv"],["Dansk","Danish","da"],["Suomi","Finnish","fi"],["Română","Romanian","ro"],["Magyar","Hungarian","hu"],["עברית","Hebrew","he"],["Norsk","Norwegian","no"],["Български","Bulgarian","bg"],["فارسی","Farsi","fa"],["தமிழ்","Tamil","ta"]];
+  let state={lang:"en",wallpaper:false,bridge:false}; const $=(s)=>document.querySelector(s),$$=(s)=>document.querySelectorAll(s);
+  const grid=$("#langgrid"); CHIPS.forEach(([n,e,c])=>{ const d=document.createElement("div"); d.className="lang"; d.dataset.code=c; d.innerHTML=`<div class="tick">✓</div><div class="nat">${n}</div><div class="en">${e}</div>`; d.onclick=()=>selectLang(c); grid.appendChild(d); });
+  const sel=$("#moreSel"); sel.innerHTML='<option value="">More languages…</option>'+MORE.map(([n,e,c])=>`<option value="${c}">${n}  ·  ${e}</option>`).join(""); sel.onchange=()=>{ if(sel.value)selectLang(sel.value); };
+  function selectLang(c){ state.lang=c; $$(".lang").forEach(l=>l.classList.toggle("sel",l.dataset.code===c)); if(CHIPS.some(x=>x[2]===c))sel.value=""; send("lang",{code:c}); }
+  selectLang("zh");
+  $$(".switch").forEach(sw=>sw.onclick=()=>{ sw.classList.toggle("on"); state[sw.dataset.opt]=sw.classList.contains("on"); });
+  let current="welcome"; function goto(n){ if(n===current)return; const f=$(`.screen[data-screen="${current}"]`),t=$(`.screen[data-screen="${n}"]`); f.classList.add("leaving"); f.classList.remove("active"); setTimeout(()=>f.classList.remove("leaving"),550); t.classList.add("active"); current=n; $("#brandmini").classList.toggle("show",n!=="welcome"); }
   $$("[data-go]").forEach(b=>b.onclick=()=>goto(b.dataset.go));
-  $("#closeBtn").onclick=()=>{ send("close"); };
-  $("#doneClose").onclick=()=>{ send("close"); };
-  $("#launchBtn").onclick=()=>{ send("launch"); };
+  $("#closeBtn").onclick=()=>send("close"); $("#doneClose").onclick=()=>send("close"); $("#launchBtn").onclick=()=>send("launch");
+  document.querySelector(".titlebar").addEventListener("mousedown",(e)=>{ if(e.target.closest(".winbtn"))return; if(e.button===0)send("drag"); });
+  $("#installBtn").onclick=()=>{ goto("installing"); send("install",{lang:state.lang,wallpaper:state.wallpaper,bridge:state.bridge}); if(!host)sim(); };
+  function onP(p){ if(p.phase!=null)$("#progStatus").textContent=p.phase; if(p.detail!=null)$("#progSub").textContent=p.detail; if(p.pct!=null)$("#progFill").style.width=Math.max(3,Math.min(100,p.pct))+"%"; if(p.done)setTimeout(()=>goto("done"),550); }
+  if(host)host.addEventListener("message",e=>{ try{ onP(JSON.parse(e.data)); }catch(_){} });
+  function sim(){ const s=[["Unpacking the runtime…","Embeddable Python + Collie",24],["Installing the desktop engine…","WebView2 host",50],["Setting your language…","",66],["Registering shortcuts…","Start menu + desktop",84],["Finishing up…","",100]]; let i=0;(function n(){ if(i>=s.length){onP({done:true});return;} const[a,b,c]=s[i++]; onP({phase:a,detail:b,pct:c}); setTimeout(n,760); })(); }
 
-  // drag the borderless window: the host does the ReleaseCapture + WM_NCLBUTTONDOWN dance
-  document.querySelector(".titlebar").addEventListener("mousedown",(e)=>{
-    if(e.target.closest(".winbtn")) return;   // not on the close button
-    if(e.button===0) send("drag");
-  });
-
-  // install
-  $("#installBtn").onclick=()=>{
-    goto("installing");
-    send("install", { lang:state.lang, wallpaper:state.wallpaper, bridge:state.bridge });
-    if(!host) simulate();   // browser preview
-  };
-
-  // host → UI progress messages: {phase:"Extracting…", detail:"…", pct:42}  and {done:true}
-  function onProgress(p){
-    if(p.phase!=null) $("#progStatus").textContent=p.phase;
-    if(p.detail!=null) $("#progSub").textContent=p.detail;
-    if(p.pct!=null) $("#progFill").style.width=Math.max(3,Math.min(100,p.pct))+"%";
-    if(p.done) setTimeout(()=>goto("done"),500);
+  // ---- aurora: soft colour blooms slowly orbiting the centre + fine star dust (Raycast-grade depth) ----
+  const cv=$("#aurora"), ctx=cv.getContext("2d"); let W,H,DPR,cx,cy,blobs=[],dust=[];
+  const PAL=[[99,102,241],[139,92,246],[56,140,230],[120,90,220]];   // indigo · violet · blue
+  function rand(a,b){return a+Math.random()*(b-a);}
+  function resize(){ DPR=Math.min(2,devicePixelRatio||1); W=cv.width=innerWidth*DPR; H=cv.height=innerHeight*DPR; cv.style.width=innerWidth+"px"; cv.style.height=innerHeight+"px"; cx=W/2; cy=H*0.40; build(); }
+  function build(){
+    blobs=[]; for(let i=0;i<4;i++){ blobs.push({c:PAL[i%PAL.length], orb:rand(0.10,0.30)*W, size:rand(0.55,0.95)*W, a0:rand(0,6.28), sp:rand(0.5,1.1)*(Math.random()<.5?-1:1), al:rand(0.10,0.17)}); }
+    dust=[]; const n=Math.round(innerWidth*innerHeight/9000); const R=Math.hypot(W,H)*0.6;
+    for(let i=0;i<n;i++){ dust.push({rad:Math.pow(Math.random(),.6)*R, a:rand(0,6.28), r:rand(0.4,1.3)*DPR, base:rand(0.15,0.6), ph:rand(0,6.28), sp:rand(0.4,1.2)}); }
   }
-  if(host){ host.addEventListener("message", e=>{ try{ onProgress(JSON.parse(e.data)); }catch(_){} }); }
-
-  function simulate(){
-    const steps=[["Unpacking the runtime…","Embeddable Python + Collie",22],
-      ["Installing the desktop engine…","WebView2 host",48],
-      ["Setting your language…","zh",64],["Registering shortcuts…","Start menu + desktop",82],
-      ["Finishing up…","",100]];
-    let i=0; (function next(){ if(i>=steps.length){ onProgress({done:true}); return; }
-      const [ph,de,pc]=steps[i++]; onProgress({phase:ph,detail:de,pct:pc}); setTimeout(next,720); })();
-  }
-
-  // ---- animated star-map background (canvas) ----
-  const cv=$("#stars"), ctx=cv.getContext("2d"); let W,H,DPR,stars=[],shoot=null,shootT=0;
-  function resize(){ DPR=Math.min(2,window.devicePixelRatio||1); W=cv.width=innerWidth*DPR; H=cv.height=innerHeight*DPR;
-    cv.style.width=innerWidth+"px"; cv.style.height=innerHeight+"px"; makeStars(); }
-  function rand(a,b){ return a+Math.random()*(b-a); }
-  function makeStars(){ stars=[]; const n=Math.round(innerWidth*innerHeight/5200);
-    for(let i=0;i<n;i++){ const mag=Math.pow(Math.random(),2.3);
-      stars.push({x:Math.random()*W,y:Math.random()*H,r:(0.5+mag*1.7)*DPR,base:0.25+mag*0.7,
-        ph:rand(0,6.28),sp:rand(0.4,1.4),vx:rand(-0.02,0.02)*DPR,vy:rand(0.005,0.03)*DPR,bright:mag>0.72}); } }
-  let t0=performance.now();
+  const OMEGA=0.05; let t0=performance.now();
   function frame(now){ const t=(now-t0)/1000; ctx.clearRect(0,0,W,H);
-    // constellation lines between nearby bright stars
-    ctx.lineWidth=1*DPR;
-    for(let i=0;i<stars.length;i++){ const a=stars[i]; if(!a.bright) continue;
-      for(let j=i+1;j<stars.length;j++){ const b=stars[j]; if(!b.bright) continue;
-        const dx=a.x-b.x,dy=a.y-b.y,d=Math.hypot(dx,dy);
-        if(d<150*DPR){ ctx.strokeStyle="rgba(120,135,210,"+(0.07*(1-d/(150*DPR)))+")"; ctx.beginPath();
-          ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); } } }
-    // stars
-    for(const s of stars){ s.x+=s.vx; s.y+=s.vy; if(s.y>H)s.y=0; if(s.x<0)s.x=W; if(s.x>W)s.x=0;
-      const a=s.base*(0.55+0.45*Math.sin(t*s.sp+s.ph));
-      ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,6.2832);
-      ctx.fillStyle="rgba("+(200+s.bright*40)+","+(210+s.bright*30)+",255,"+a+")"; ctx.fill();
-      if(s.bright){ ctx.beginPath(); ctx.arc(s.x,s.y,s.r*2.6,0,6.2832);
-        ctx.fillStyle="rgba(150,170,255,"+(a*0.12)+")"; ctx.fill(); } }
-    // occasional shooting star
-    shootT-=1; if(!shoot && shootT<=0 && Math.random()<0.01){ shoot={x:rand(W*0.1,W*0.7),y:rand(0,H*0.4),
-      vx:rand(6,10)*DPR,vy:rand(2.5,4.5)*DPR,life:1}; }
-    if(shoot){ const s=shoot; const tx=s.x-s.vx*10,ty=s.y-s.vy*10;
-      const g=ctx.createLinearGradient(tx,ty,s.x,s.y); g.addColorStop(0,"rgba(160,180,255,0)");
-      g.addColorStop(1,"rgba(200,215,255,"+s.life+")"); ctx.strokeStyle=g; ctx.lineWidth=2*DPR;
-      ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(s.x,s.y); ctx.stroke();
-      s.x+=s.vx; s.y+=s.vy; s.life-=0.02; if(s.life<=0||s.x>W||s.y>H){ shoot=null; shootT=rand(180,520); } }
+    ctx.globalCompositeOperation="lighter";
+    for(const b of blobs){ const ang=b.a0+t*OMEGA*b.sp; const x=cx+Math.cos(ang)*b.orb, y=cy+Math.sin(ang)*b.orb*0.7;
+      const g=ctx.createRadialGradient(x,y,0,x,y,b.size); const c=b.c;
+      g.addColorStop(0,"rgba("+c[0]+","+c[1]+","+c[2]+","+b.al+")"); g.addColorStop(.5,"rgba("+c[0]+","+c[1]+","+c[2]+","+(b.al*0.4)+")"); g.addColorStop(1,"rgba("+c[0]+","+c[1]+","+c[2]+",0)");
+      ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
+    ctx.globalCompositeOperation="source-over";
+    for(const s of dust){ const ang=s.a+t*OMEGA*0.5*(1+40*DPR/(s.rad+40*DPR)); const x=cx+Math.cos(ang)*s.rad, y=cy+Math.sin(ang)*s.rad*0.86;
+      const a=s.base*(0.5+0.5*Math.sin(t*s.sp+s.ph)); ctx.beginPath(); ctx.arc(x,y,s.r,0,6.2832); ctx.fillStyle="rgba(210,214,255,"+a+")"; ctx.fill(); }
     requestAnimationFrame(frame); }
   addEventListener("resize",resize); resize(); requestAnimationFrame(frame);
 </script>

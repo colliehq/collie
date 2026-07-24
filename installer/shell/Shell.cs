@@ -22,9 +22,9 @@ class Shell : Form
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr wp, IntPtr lp);
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
-    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int cb);
+    [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int w, int h);
     const int WM_NCLBUTTONDOWN = 0x00A1, HTCAPTION = 2;
-    const int DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2;
 
     readonly WebView2 web = new WebView2();
     readonly string appDir;
@@ -48,13 +48,22 @@ class Shell : Form
         Text = "Collie Setup";
         BackColor = Color.FromArgb(14, 16, 23);
         double s = DeviceDpi / 96.0;
-        ClientSize = new Size((int)(760 * s), (int)(540 * s));
+        ClientSize = new Size((int)(780 * s), (int)(560 * s));
         try { Icon = new Icon(Path.Combine(appDir, "collie.ico")); } catch { }
 
         web.Dock = DockStyle.Fill;
         Controls.Add(web);
         Load += async (a, b) => await Init();
-        Shown += (a, b) => { int v = DWMWCP_ROUND; try { DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref v, 4); } catch { } };
+        // big, smooth rounded corners — DWM's fixed ~8px reads as "square" on a window this size, so we
+        // clip the window to a generous round-rect region instead. Re-applied on resize.
+        Shown += (a, b) => RoundWindow();
+        Resize += (a, b) => RoundWindow();
+    }
+
+    void RoundWindow()
+    {
+        int d = (int)(38 * (DeviceDpi / 96.0)) * 2;   // corner diameter
+        try { SetWindowRgn(Handle, CreateRoundRectRgn(0, 0, Width + 1, Height + 1, d, d), true); } catch { }
     }
 
     async Task Init()
