@@ -293,12 +293,17 @@ def cmd_wallpaper(args):
 
 
 def cmd_browser_bridge(args):
-    """Run the browser-bridge server (the Chrome extension polls it; browser_* tools drive it)."""
-    from .browserbridge import main as bb_main
+    """Run the browser-bridge server (the Chrome extension polls it; browser_* tools drive it).
+    --install registers it to start hidden at logon, so collie keeps its real-browser powers."""
+    from . import browserbridge as bb
+    if getattr(args, "install", False):
+        return bb.install_autostart()
+    if getattr(args, "uninstall", False):
+        return bb.uninstall_autostart()
     argv = ["--port", str(args.port)] if args.port else []   # [] not None: None re-reads argv
     if getattr(args, "browser", False):
         argv.append("--browser")
-    return bb_main(argv)
+    return bb.main(argv)
 
 
 def cmd_acp(args):
@@ -805,7 +810,30 @@ def cmd_setup(args):
                 print("  ✗ model download failed (%s) — will retry on first use; for a mirror set "
                       "COLLIE_HF_ENDPOINT=https://hf-mirror.com" % (type(e).__name__))
 
-    # 5) provider (interactive) ----------------------------------------------------------------
+    # 5) real-browser bridge -------------------------------------------------------------------
+    # Without this, collie's browser_* tools fall back to a logged-out scratch browser and every
+    # "check my account" task fails confusingly. The classic failure: the Chrome extension IS
+    # loaded, but nobody ever started the local server it polls.
+    from . import browserbridge as _bb
+    _ext = os.path.join(os.path.dirname(os.path.abspath(_bb.__file__)), "browser_ext")
+    if _bb._bridge_live():
+        print("  ✓ real browser: bridge live, extension connected")
+    elif _bb._server_up(_bb._port()):
+        print("  · real browser: bridge running, but no extension connected.\n"
+              "    load it: chrome://extensions → Developer mode → Load unpacked → %s" % _ext)
+    else:
+        print("  ✗ real browser: bridge not running — browser tools would use a LOGGED-OUT browser")
+        if check_only:
+            print("    fix: collie browser-bridge   (and load %s in chrome://extensions)" % _ext)
+        elif assume_yes or _confirm("  start the browser bridge now and run it at every logon?"):
+            ok = _bb.start_background()
+            print("  %s bridge started" % ("✓" if ok else "✗"))
+            _bb.install_autostart()
+            if ok and not _bb._bridge_live():
+                print("    now load the extension: chrome://extensions → Developer mode → "
+                      "Load unpacked → %s" % _ext)
+
+    # 6) provider (interactive) ------------------------------------------------------------------
     if not check_only:
         print("")
         _setup_wizard(force=True)
@@ -1088,6 +1116,9 @@ def main(argv=None):
     pb.add_argument("--port", type=int, default=0)
     pb.add_argument("--browser", action="store_true",
                     help="also auto-launch a managed Chromium with the extension (no manual install)")
+    pb.add_argument("--install", action="store_true",
+                    help="start the bridge hidden at every logon (keeps real-browser powers)")
+    pb.add_argument("--uninstall", action="store_true", help="remove the logon autostart")
     pb.set_defaults(fn=cmd_browser_bridge)
 
     # loop: autonomous goal-directed iteration — run the agent repeatedly toward a goal, stopping
