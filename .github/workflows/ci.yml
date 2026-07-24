@@ -3,7 +3,8 @@ name: CI
 # Gate every push to main and every PR on the same suite that guards local pushes
 # (tests/run_all.sh): py_compile · core · renderer (Node) · GUI (Playwright) · surfaces.
 # Runs on Linux, macOS AND Windows so cross-platform support is proven every commit, not asserted.
-# Everything runs offline against the mock provider + hash embedder — no API keys, no secrets.
+# Everything runs offline against the mock provider, no API keys, no secrets. Memory runs BM25-only
+# (COLLIE_EMBED=bm25) — the real no-[local] degradation path, not the removed hash embedder.
 
 on:
   push:
@@ -35,7 +36,8 @@ jobs:
         shell: bash
     env:
       COLLIE_PROVIDER: mock          # offline, deterministic — no vendor calls
-      COLLIE_EMBED: hash             # skip the heavy local embedder (fastembed not installed)
+      COLLIE_EMBED: bm25             # BM25-only: the real fallback when [local] isn't installed
+                                     # (the hash embedder was removed — measured worse than BM25)
       PYTHONUNBUFFERED: "1"
       HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
     steps:

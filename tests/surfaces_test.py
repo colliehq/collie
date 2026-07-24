@@ -290,11 +290,14 @@ def test_image_upload():
         except Exception: pass
 
 def test_cli_init():
-    """collie init warms the memory embedder + validates the codemap, and exits 0 (code_search is
-    ripgrep now — no index to build)."""
-    out, err, rc = run(["init", "--embed", "hash"], timeout=90)
+    """collie init reports its memory status + validates the codemap, and exits 0 (code_search is
+    ripgrep now — no index to build). Accepts either readiness signal: a real embedder warmed
+    ("semantic memory ready") OR the honest BM25-only fallback when [local] isn't installed — CI
+    runs the latter (COLLIE_EMBED=bm25), a dev box with granite the former."""
+    out, err, rc = run(["init"], timeout=90)
     check("init exits 0", rc == 0, err[-200:])
-    check("init warms memory embedder", "semantic memory ready" in out, out[-200:])
+    reported = ("semantic memory ready" in out) or ("BM25 keyword recall" in out)
+    check("init reports memory status", reported, out[-200:])
     check("init scans codemap", "codemap:" in out, out[-200:])
     assert rc == 0 and "codemap:" in out
 

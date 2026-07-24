@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "collie-harness"
-version = "0.18.0"
+# single source of truth: harness/__init__.py __version__ (read via [tool.setuptools.dynamic] below).
+# the installer reads the same value at build time (iscc /DAppVer=...), so a version lives in one place.
+dynamic = ["version"]
 description = "A memory-first, context-lean coding-agent harness with a built-in benchmark lab."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,12 +24,16 @@ tui = ["rich"]                          # the full-experience terminal chat (col
 acp = ["agent-client-protocol"]         # editor integration (collie acp)
 search = ["ddgs"]                        # keyless web_search (DuckDuckGo JSON API)
 dev = ["pytest"]
+docs = ["mkdocs-material"]               # the user docs site (mkdocs serve / build); see mkdocs.yml
 
 [project.scripts]
 collie = "harness.cli:main"             # `collie -p "task"` one-liner
 
 [tool.setuptools]
 packages = ["harness"]
+
+[tool.setuptools.dynamic]
+version = { attr = "harness.__version__" }
 
 # ship the web GUI + browser extension inside the wheel — without this, `pip install collie-harness`
 # produced a package whose `collie web` 404s on its own index.html (assets only existed in the repo).
@@ -36,4 +42,4 @@ packages = ["harness"]
 # DLLs + build/stop scripts) so `pip install collie-harness` gives `collie wallpaper` everything it
 # needs — it builds the .exe on first use via the in-box csc (no .NET SDK). Windows-only feature.
 harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "browser_ext/*",
-           "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md"]
+           "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico"]
