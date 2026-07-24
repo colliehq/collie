@@ -84,11 +84,19 @@ class CollieWallpaper : Form
     static int _buttons;
     static IntPtr _enumFound; static int _enumArea;
 
+    // ONE binary, TWO modes. Default = the behind-the-icons wallpaper. `--window` = an ordinary app
+    // window (title bar, taskbar entry, icon) hosting the same page — what the installer's desktop
+    // shortcut launches, so a non-technical user gets a real program instead of a browser tab that
+    // shows 127.0.0.1:8787 in the address bar and gets lost among their other tabs.
+    static bool _windowMode;
+
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        for (int i = 0; args != null && i < args.Length; i++)
+            if (args[i] == "--window" || args[i] == "-w") _windowMode = true;
         try { File.Delete(_log); } catch { }
-        Log("start M4");
+        Log("start M4 mode=" + (_windowMode ? "window" : "wallpaper"));
         SetProcessDpiAwarenessContext((IntPtr)(-4));
         Application.EnableVisualStyles();
         Application.Run(new CollieWallpaper());
@@ -99,7 +107,14 @@ class CollieWallpaper : Form
     // the wallpaper could become the foreground window and break desktop icon double-click.
     protected override CreateParams CreateParams
     {
-        get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x00000080; return cp; }
+        get
+        {
+            CreateParams cp = base.CreateParams;
+            // window mode wants a NORMAL, activatable, alt-tabbable window — the NOACTIVATE +
+            // TOOLWINDOW styles below exist only to keep the WALLPAPER from stealing focus.
+            if (!_windowMode) cp.ExStyle |= 0x08000000 | 0x00000080;
+            return cp;
+        }
     }
 
     // The CORRECT, event-driven way to stay behind the icons: intercept every z-order change and force
@@ -118,11 +133,24 @@ class CollieWallpaper : Form
 
     CollieWallpaper()
     {
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        StartPosition = FormStartPosition.Manual;
         int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
-        Bounds = new Rectangle(0, 0, w, h);
+        if (_windowMode)
+        {
+            Text = "Collie";
+            FormBorderStyle = FormBorderStyle.Sizable;
+            ShowInTaskbar = true;
+            StartPosition = FormStartPosition.CenterScreen;
+            ClientSize = new Size(Math.Min(1180, (int)(w * 0.8)), Math.Min(820, (int)(h * 0.85)));
+            MinimumSize = new Size(720, 520);
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        }
+        else
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            Bounds = new Rectangle(0, 0, w, h);
+        }
         BackColor = Color.Black;
         _web = new WebView2();
         _web.Dock = DockStyle.Fill;
@@ -166,10 +194,24 @@ class CollieWallpaper : Form
             // URL is passed by `collie wallpaper` via COLLIE_WALLPAPER_URL (the port is picked at
             // runtime, not hardcoded, so it never collides with a busy 8787). Fallback for a manual run.
             string url = Environment.GetEnvironmentVariable("COLLIE_WALLPAPER_URL");
-            if (string.IsNullOrEmpty(url)) url = "http://127.0.0.1:8787/wallpaper";
+            // window mode shows the full GUI; wallpaper mode shows the desktop /wallpaper page
+            if (string.IsNullOrEmpty(url))
+                url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/wallpaper";
+            // Keep target=_blank links (the star map, the meadow) INSIDE the app. Unhandled they
+            // escape to a bare popup / the system browser, which is exactly what makes a native shell
+            // feel like a browser wrapper. Each opens its own titled Collie window instead.
+            _web.CoreWebView2.NewWindowRequested += delegate (object s2, CoreWebView2NewWindowRequestedEventArgs e2)
+            {
+                e2.Handled = true;
+                if (_windowMode) OpenChildWindow(e2.Uri);
+                else _web.CoreWebView2.Navigate(e2.Uri);   // wallpaper has no window manager: navigate in place
+            };
             _web.CoreWebView2.Navigate(url);
         }
         catch (Exception ex) { Log("navigate EXCEPTION: " + ex.Message); }
+        // Everything below is WALLPAPER-only: pinning under the desktop icons and forwarding desktop
+        // mouse/keyboard into the page. A normal window is activatable and WebView2 gets input natively.
+        if (_windowMode) { Log("window mode: skipping pin + input hooks"); return; }
         Pin();
 
         // resolve the Chromium child + install input hooks a moment after the page starts
@@ -220,6 +262,30 @@ class CollieWallpaper : Form
         PostMessageW(_input, (uint)WM_LBUTTONUP, IntPtr.Zero, lp);
         foreach (char c in "hello collie") PostMessageW(_input, (uint)WM_CHAR, (IntPtr)c, IntPtr.Zero);
         Log("selftest posted click+text");
+    }
+
+    // A second ordinary Collie window — used for target=_blank links (star map, meadow) so they stay
+    // in the app instead of escaping to the browser.
+    static void OpenChildWindow(string url)
+    {
+        try
+        {
+            Form f = new Form();
+            f.Text = "Collie";
+            f.StartPosition = FormStartPosition.CenterScreen;
+            f.ClientSize = new Size(1100, 780);
+            f.BackColor = Color.Black;
+            try { f.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            WebView2 w = new WebView2();
+            w.Dock = DockStyle.Fill;
+            w.CoreWebView2InitializationCompleted += delegate
+            {
+                try { w.CoreWebView2.Navigate(url); } catch (Exception e) { Log("child nav: " + e.Message); }
+            };
+            f.Controls.Add(w);
+            f.Show();
+        }
+        catch (Exception ex) { Log("child window failed: " + ex.Message); }
     }
 
     void Pin()

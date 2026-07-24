@@ -204,6 +204,43 @@ def run(port_pref: int = 8787, boot: bool = False) -> int:
     return 0
 
 
+def run_app(port_pref: int = 8787) -> int:
+    """Open collie as a normal desktop APP WINDOW — the same WebView2 host in --window mode, showing
+    the full GUI, with the server started windowless behind it. This is what the installer's desktop
+    shortcut launches: a real program with a taskbar entry and icon, instead of a browser tab showing
+    127.0.0.1:8787 that gets lost among the user's other tabs."""
+    if not plat.is_windows():
+        print("collie app: the native window is Windows-only — use `collie web` here.", file=sys.stderr)
+        return 2
+    if not webview2_present():
+        print("collie app: WebView2 runtime not found. install it:\n"
+              "  winget install Microsoft.EdgeWebView2Runtime", file=sys.stderr)
+        return 3
+    port = port_pref if server_up(port_pref) else free_port(port_pref)
+    if not server_up(port):
+        start_server_windowless(port)
+    for _ in range(90):
+        if server_up(port):
+            break
+        time.sleep(0.5)
+    if not server_up(port):
+        print("collie app: server did not come up on port %d — see %s"
+              % (port, os.path.join(_collie_home(), "wallpaper-web.log")), file=sys.stderr)
+        return 1
+    exe = build_engine()
+    if not exe:
+        print("collie app: could not build the window host", file=sys.stderr)
+        return 1
+    env = dict(os.environ, COLLIE_WALLPAPER_URL="http://127.0.0.1:%d/" % port)
+    try:
+        subprocess.Popen([exe, "--window"], cwd=src_dir(), env=env)
+    except Exception as e:
+        print("collie app: %s" % e, file=sys.stderr)
+        return 1
+    print("collie app · http://127.0.0.1:%d/ · window opened" % port)
+    return 0
+
+
 def install() -> int:
     """Register a per-machine, hidden logon autostart. Generates a .pyw launcher with THIS machine's
     resolved package path + a .vbs that runs it windowless — no hardcoded repo/python paths."""

@@ -245,6 +245,16 @@ def _desktop_window(url, kiosk=False):
     return True, "opened"
 
 
+def cmd_app(args):
+    """collie app — open collie in a native desktop window (WebView2) with the server behind it."""
+    from . import plat
+    if plat.is_windows():
+        from . import wallpaper as wp
+        return wp.run_app(port_pref=args.port)
+    print("collie app: native window is Windows-only — falling back to the browser GUI.")
+    return cmd_web(args)
+
+
 def cmd_wallpaper(args):
     """collie's live desktop as the wallpaper (behind the icons), owned by collie. On Windows this
     drives the WebView2 engine (built on demand from source, autostart-able, port picked at runtime);
@@ -918,7 +928,7 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "wallpaper", "browser-bridge", "mcp", "init", "setup", "jobs"}
+        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "mcp", "init", "setup", "jobs"}
 
 
 def _setup_wizard(force=False):
@@ -1200,6 +1210,12 @@ def main(argv=None):
                     help="also have the model explore the repo and write an AGENTS.md")
     pi.add_argument("--provider", default=None, help="provider for --rules (default: configured one)")
     pi.set_defaults(fn=cmd_init)
+
+    # app: collie in a real desktop window (WebView2) — what the installer's shortcut launches
+    pa = sub.add_parser("app", help="open collie in a native desktop window (not a browser tab)")
+    pa.add_argument("--port", type=int, default=8787)
+    pa.add_argument("--open", action="store_true", help=argparse.SUPPRESS)
+    pa.set_defaults(fn=cmd_app)
 
     # setup: machine-level onboarding — deps + model + provider ("collie doctor" + one-click install)
     ps = sub.add_parser("setup", help="install deps, pick a provider, pre-download the model "
