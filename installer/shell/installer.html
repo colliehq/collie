@@ -45,11 +45,14 @@
     transition:opacity .55s cubic-bezier(.2,.7,.2,1), transform .55s cubic-bezier(.2,.7,.2,1);}
   .screen.active{opacity:1; transform:none; pointer-events:auto;}
   .screen.leaving{opacity:0; transform:translateY(-16px) scale(.99);}
-  /* form screens (language, options): top-aligned with the nav's space reserved, so nothing overlaps */
-  .screen.form{justify-content:flex-start; padding:44px 52px 96px;}
+  /* form screens (language, options): a real column — scrollable body + a footer nav that can never
+     overlap the content (the previous absolute nav covered the install-location line) */
+  .screen.form{justify-content:flex-start; padding:0;}
+  .screen.form .body{width:100%; flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
+    align-items:center; padding:42px 52px 18px;}
+  .screen.form .nav{position:static; height:76px; border-top:1px solid rgba(255,255,255,.06); background:none;}
 
-  .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;
-    background:linear-gradient(0deg, rgba(9,9,12,.9) 40%, transparent);}
+  .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;}
 
   .btn{-webkit-app-region:no-drag; font-family:'Nunito'; border:1px solid transparent; border-radius:13px;
     padding:12px 24px; font-size:14.5px; font-weight:700; cursor:pointer; transition:.2s; letter-spacing:.2px;}
@@ -63,11 +66,11 @@
   .logo-wrap{position:relative; width:106px; height:106px; margin-bottom:2px; animation:float 7s ease-in-out infinite;}
   @keyframes float{0%,100%{transform:translateY(0);} 50%{transform:translateY(-8px);}}
   .logo-wrap img{width:100%; height:100%; filter:drop-shadow(0 12px 40px rgba(120,120,250,.4));}
-  .wordmark{font-family:'Quicksand'; font-size:60px; font-weight:700; letter-spacing:-1.5px; line-height:1; margin-top:14px;}
-  .tagline{margin-top:16px; color:var(--muted); font-size:16.5px; font-weight:500; letter-spacing:.1px;}
-  .pillrow{margin-top:26px; display:flex; gap:10px; align-items:center; color:var(--faint); font-size:10.5px; font-weight:700; letter-spacing:.2em; text-transform:uppercase;}
+  .wordmark{font-family:'Quicksand'; font-size:52px; font-weight:700; letter-spacing:-1px; line-height:1; margin-top:14px;}
+  .tagline{margin-top:13px; color:var(--muted); font-size:16.5px; font-weight:500; letter-spacing:.1px;}
+  .pillrow{margin-top:20px; display:flex; gap:10px; align-items:center; color:var(--faint); font-size:10.5px; font-weight:700; letter-spacing:.2em; text-transform:uppercase;}
   .pillrow i{width:3px; height:3px; border-radius:50%; background:var(--faint);}
-  .cta{margin-top:34px; padding:14px 36px; font-size:15px; border-radius:15px;}
+  .cta{margin-top:26px; padding:14px 36px; font-size:15px; border-radius:15px;}
 
   .head{width:100%; max-width:588px; margin-bottom:22px;}
   .head h2{font-family:'Quicksand'; font-size:27px; font-weight:700; letter-spacing:-.3px;}
@@ -132,21 +135,25 @@
       <div class="wordmark">Collie</div>
       <div class="tagline">Humans' best AI friend.</div>
       <div class="pillrow"><span>OPEN SOURCE</span><i></i><span>RUNS LOCALLY</span><i></i><span>NO TELEMETRY</span></div>
-      <button class="btn primary cta" data-go="language">Get started &nbsp;→</button>
+      <button class="btn primary cta" data-go="language">Install Collie &nbsp;→</button>
     </section>
     <section class="screen form" data-screen="language">
-      <div class="head"><h2>Choose your language</h2><p>For Collie and the rest of Setup — you can change it anytime later.</p></div>
-      <div class="langgrid" id="langgrid"></div>
-      <div class="morerow"><label>More languages</label><select class="more" id="moreSel"></select></div>
+      <div class="body">
+        <div class="head"><h2>Choose your language</h2><p>For Collie and the rest of Setup — you can change it anytime later.</p></div>
+        <div class="langgrid" id="langgrid"></div>
+        <div class="morerow"><label>More languages</label><select class="more" id="moreSel"></select></div>
+      </div>
       <div class="nav"><button class="btn ghost" data-go="welcome">Back</button><button class="btn primary" data-go="options">Continue</button></div>
     </section>
     <section class="screen form" data-screen="options">
-      <div class="head"><h2>A couple of options</h2><p>Both are optional and off by default. Toggle them later in Collie's settings.</p></div>
-      <div class="opts">
-        <div class="opt"><div class="txt"><div class="t">Live star-map wallpaper</div><div class="d">Show Collie's animated star-map behind your desktop icons, starting at logon.</div></div><div class="switch" data-opt="wallpaper"></div></div>
-        <div class="opt"><div class="txt"><div class="t">Use my real browser</div><div class="d">Let Collie drive your already-logged-in Chrome/Edge via the bridge extension.</div></div><div class="switch" data-opt="bridge"></div></div>
+      <div class="body">
+        <div class="head"><h2>A couple of options</h2><p>Both are optional and off by default. Toggle them later in Collie's settings.</p></div>
+        <div class="opts">
+          <div class="opt"><div class="txt"><div class="t">Live star-map wallpaper</div><div class="d">Show Collie's animated star-map behind your desktop icons, starting at logon.</div></div><div class="switch" data-opt="wallpaper"></div></div>
+          <div class="opt"><div class="txt"><div class="t">Use my real browser</div><div class="d">Let Collie drive your already-logged-in Chrome/Edge via the bridge extension.</div></div><div class="switch" data-opt="bridge"></div></div>
+        </div>
+        <div class="loc">Installs to <code>%LOCALAPPDATA%\Programs\Collie</code> · per-user, no admin</div>
       </div>
-      <div class="loc">Installs to <code>%LOCALAPPDATA%\Programs\Collie</code> · per-user, no admin</div>
       <div class="nav"><button class="btn ghost" data-go="language">Back</button><button class="btn primary" id="installBtn">Install</button></div>
     </section>
     <section class="screen" data-screen="installing">
@@ -186,7 +193,7 @@
 
   // ---- aurora: soft colour blooms slowly orbiting the centre + fine star dust (Raycast-grade depth) ----
   const cv=$("#aurora"), ctx=cv.getContext("2d"); let W,H,DPR,cx,cy,blobs=[],dust=[];
-  const PAL=[[99,102,241],[139,92,246],[56,140,230],[120,90,220]];   // indigo · violet · blue
+  const PAL=[[99,102,241],[139,92,246],[56,140,230],[224,118,150]];   // indigo · violet · blue · a warm rose so it isn't all cold
   function rand(a,b){return a+Math.random()*(b-a);}
   function resize(){ DPR=Math.min(2,devicePixelRatio||1); W=cv.width=innerWidth*DPR; H=cv.height=innerHeight*DPR; cv.style.width=innerWidth+"px"; cv.style.height=innerHeight+"px"; cx=W/2; cy=H*0.40; build(); }
   function build(){
