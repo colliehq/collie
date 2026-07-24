@@ -128,9 +128,14 @@ def test_shell():
         check(p.returncode == 3 and p.stdout.strip() == "out",
               "shell_argv runs POSIX `;`/exit-code correctly, got rc=%r out=%r" % (p.returncode, p.stdout))
 
-    # shell_hint is empty whenever a real shell is available (Unix habits are correct)
-    if plat.has_posix_shell():
-        check(plat.shell_hint() == "", "shell_hint empty when a POSIX shell is present")
+    # shell_hint ALWAYS names the platform — a model that isn't told guesses (and on Windows+Git Bash
+    # it guessed WSL, ran `ip route`/`/proc/version`, and burned turns before finding MINGW64).
+    hint = plat.shell_hint()
+    check(hint.startswith("PLATFORM:"), "shell_hint always states the platform: %r" % hint[:60])
+    if plat.is_windows():
+        check("Windows" in hint and "NOT WSL" in hint, "windows hint says native Windows, not WSL")
+    else:
+        check(plat.os_label() in hint, "posix hint names the OS")
 
 
 def main():

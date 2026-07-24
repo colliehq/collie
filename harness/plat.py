@@ -176,14 +176,22 @@ def shell_argv(command: str):
 
 
 def shell_hint() -> str:
-    """A one-line note for the agent's system prompt so it emits commands the host
-    can actually run. Empty when a POSIX shell is available (the model's Unix habits
-    are correct) — including native Windows with Git Bash. Only when Windows has NO
-    POSIX shell does it steer toward the native tools and away from ls/grep/cat/rm."""
-    if not is_windows() or has_posix_shell():
-        return ""
-    return ("PLATFORM: you are on Windows with no POSIX shell (Git Bash / WSL not found). "
-            "Prefer the file and search tools (read_file / edit_file / code_search / glob / "
-            "execute_code) over `bash`; the fallback shell is cmd.exe, so do NOT use ls, grep, "
-            "cat, rm, find, or other Unix commands. Installing Git Bash restores full shell "
-            "support.")
+    """A one-line PLATFORM line for the agent's system prompt.
+
+    ALWAYS states the OS and which shell `bash` actually runs, because a model that doesn't know
+    guesses — and guesses wrong expensively. (Observed: on native Windows + Git Bash it assumed WSL,
+    ran `ip route`/`/proc/version`, and burned several turns before discovering MINGW64.) Naming the
+    environment up front costs ~20 tokens and removes a whole class of wrong-environment flailing."""
+    if not is_windows():
+        return "PLATFORM: %s — commands run in a POSIX shell." % os_label()
+    sh = posix_shell()
+    if sh:
+        flavour = "Git Bash / MSYS2 (MINGW)" if ("git" in sh.lower() or "msys" in sh.lower()) else sh
+        return ("PLATFORM: native Windows (NOT WSL, NOT Linux). `bash` runs through %s, so POSIX "
+                "commands work, but paths are Windows paths (C:\\...) and Linux-only things "
+                "(/proc, ip route, apt, systemd) do NOT exist. Use PowerShell via `powershell -Command` "
+                "for Windows-native queries (services, registry, processes)." % flavour)
+    return ("PLATFORM: native Windows with NO POSIX shell (Git Bash / WSL not found). Prefer the file "
+            "and search tools (read_file / edit_file / code_search / glob / execute_code) over `bash`; "
+            "the fallback shell is cmd.exe, so do NOT use ls, grep, cat, rm, find, or other Unix "
+            "commands. Installing Git Bash restores full shell support.")
