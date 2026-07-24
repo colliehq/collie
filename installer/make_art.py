@@ -175,10 +175,12 @@ def hero(w, h, logo):
     y = my + size + int(18 * s)
     f_word = font("seguisb.ttf", max(20, int(40 * s)))
     tracked(d, (0, y), "Collie", f_word, (247, 249, 253), track=1.5 * s, center_w=w)
-    y += int(52 * s)
+    y += int(50 * s)
+    # a border-collie pun that also states the thesis: it fetches bugs (not sticks) and *proves* the
+    # catch (executed verification). On-brand humour beats a generic "AI vs humans" line.
     f_tag = font("segoeui.ttf", max(9, int(12.5 * s)))
-    tracked(d, (0, y), "A coding agent that proves its own work", f_tag, (176, 184, 205),
-            track=0.4 * s, center_w=w)
+    tracked(d, (0, y), "Fetches bugs, not sticks — and proves every catch", f_tag, (178, 186, 207),
+            track=0.3 * s, center_w=w)
 
     d.line([int(w * 0.38), h - int(48 * s), int(w * 0.62), h - int(48 * s)],
            fill=(int(ACCENT[0] * .40), int(ACCENT[1] * .40), int(ACCENT[2] * .40)))

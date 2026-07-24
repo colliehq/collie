@@ -7,7 +7,7 @@ wants **pip**.
 
 The friendliest path: no Python, no terminal, no configuration.
 
-1. Download **`Collie-Setup.exe`** from the [latest release](https://github.com/wudaming00/collie/releases/latest).
+1. Download **`Collie-Setup.exe`** from the [latest release](https://github.com/colliehq/collie/releases/latest).
 2. Double-click it. Pick your language on the first screen (Simplified/Traditional Chinese, English,
    Spanish, and ~30 more) — the language you choose becomes Collie's own interface language too.
 3. Click through. When it finishes, open **Collie** from the Start menu or the desktop icon.
@@ -28,7 +28,7 @@ The core is stdlib-only, so the base install is tiny.
 
 ```bash
 # from source (PyPI publish is planned):
-git clone https://github.com/wudaming00/collie && cd collie
+git clone https://github.com/colliehq/collie && cd collie
 pip install -e ".[local,dev]"
 ```
 

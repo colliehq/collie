@@ -8,7 +8,7 @@ the WebView2 bootstrapper.
 
 | Audience | Path |
 |---|---|
-| **Everyone** | `Collie-Setup.exe` — bundles Python + collie + WebView2. From the [releases page](https://github.com/wudaming00/collie/releases). |
+| **Everyone** | `Collie-Setup.exe` — bundles Python + collie + WebView2. From the [releases page](https://github.com/colliehq/collie/releases). |
 | **Developers** | `pip install collie-harness[local]` → `collie setup`. No installer. |
 
 ## What's in this directory

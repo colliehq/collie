@@ -115,3 +115,6 @@ installer/shell/Collie-Setup-backend.exe
 installer/shell/dist-stage/
 installer/shell/collie-setup.sed
 installer/shell/payload.zip
+
+# Cloudflare wrangler local cache (account id, deploy cache)
+.wrangler/

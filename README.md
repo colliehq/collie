@@ -144,7 +144,7 @@ runs the reproduction and repairs until the assertion holds.
 ## Install
 
 **Windows — one click.** Download **`Collie-Setup.exe`** from the
-[latest release](https://github.com/wudaming00/collie/releases/latest) and double-click it. A small
+[latest release](https://github.com/colliehq/collie/releases/latest) and double-click it. A small
 app-style installer (borderless, animated) walks you through language + install location, lays down a
 self-contained runtime (Python + Collie + semantic memory, nothing to preinstall), and opens Collie
 in a native desktop window. On first launch you **pick a brain** — an existing Claude, Codex, or Grok
