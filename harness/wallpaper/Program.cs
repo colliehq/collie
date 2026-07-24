@@ -84,6 +84,20 @@ class CollieWallpaper : Form
     static int _buttons;
     static IntPtr _enumFound; static int _enumArea;
 
+    // The Collie mark for the window title bar + taskbar. Load the shipped multi-resolution
+    // collie.ico (16/48/128) directly — ExtractAssociatedIcon only returns one size and often
+    // renders as a generic icon at the taskbar/alt-tab sizes.
+    static Icon AppIcon()
+    {
+        try
+        {
+            var ico = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "collie.ico");
+            if (File.Exists(ico)) return new Icon(ico);
+        }
+        catch { }
+        try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { return null; }
+    }
+
     // ONE binary, TWO modes. Default = the behind-the-icons wallpaper. `--window` = an ordinary app
     // window (title bar, taskbar entry, icon) hosting the same page — what the installer's desktop
     // shortcut launches, so a non-technical user gets a real program instead of a browser tab that
@@ -142,7 +156,7 @@ class CollieWallpaper : Form
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(Math.Min(1180, (int)(w * 0.8)), Math.Min(820, (int)(h * 0.85)));
             MinimumSize = new Size(720, 520);
-            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            Icon = AppIcon();   // the Collie mark in the title bar + taskbar
         }
         else
         {
@@ -275,7 +289,7 @@ class CollieWallpaper : Form
             f.StartPosition = FormStartPosition.CenterScreen;
             f.ClientSize = new Size(1100, 780);
             f.BackColor = Color.Black;
-            try { f.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            f.Icon = AppIcon();
             WebView2 w = new WebView2();
             w.Dock = DockStyle.Fill;
             w.CoreWebView2InitializationCompleted += delegate

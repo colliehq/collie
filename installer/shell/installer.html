@@ -227,6 +227,7 @@
   // PostWebMessageAsJson delivers e.data already parsed (an object); PostWebMessageAsString delivers
   // a string. Handle both. {type:"dir"} = the folder the user picked; anything else is progress.
   if(host)host.addEventListener("message",e=>{ var d=e.data; if(typeof d==="string"){ try{ d=JSON.parse(d); }catch(_){ return; } } if(!d||typeof d!=="object")return;
+    if(d.type==="defaultdir"){ $("#pathVal").textContent=d.path; return; }   // absolute C:\… default
     if(d.type==="dir"){ state.dir=d.path; $("#pathVal").textContent=d.path; return; } onP(d); });
   function sim(){ const s=[["Unpacking the runtime…","Embeddable Python + Collie",24],["Installing the desktop engine…","WebView2 host",50],["Setting your language…","",66],["Registering shortcuts…","Start menu + desktop",84],["Finishing up…","",100]]; let i=0;(function n(){ if(i>=s.length){onP({done:true});return;} const[a,b,c]=s[i++]; onP({phase:a,detail:b,pct:c}); setTimeout(n,760); })(); }
 

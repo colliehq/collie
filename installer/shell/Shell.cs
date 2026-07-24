@@ -114,6 +114,13 @@ class Shell : Form
         // serve the shell folder under a virtual host so relative assets (logo) load cleanly
         c.SetVirtualHostNameToFolderMapping("collie.setup", appDir, CoreWebView2HostResourceAccessKind.Allow);
         c.WebMessageReceived += OnMessage;
+        // once the page is up, hand it the ABSOLUTE default install path (the UI otherwise shows the
+        // %LOCALAPPDATA% placeholder — the user asked for a real C:\… path).
+        c.NavigationCompleted += (s2, e2) =>
+        {
+            var def = Environment.ExpandEnvironmentVariables(@"%LOCALAPPDATA%\Programs\Collie");
+            try { c.PostWebMessageAsJson("{\"type\":\"defaultdir\",\"path\":\"" + Esc(def) + "\"}"); } catch { }
+        };
         c.Navigate("https://collie.setup/installer.html");
     }
 
