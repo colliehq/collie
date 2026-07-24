@@ -45,8 +45,11 @@
     transition:opacity .55s cubic-bezier(.2,.7,.2,1), transform .55s cubic-bezier(.2,.7,.2,1);}
   .screen.active{opacity:1; transform:none; pointer-events:auto;}
   .screen.leaving{opacity:0; transform:translateY(-16px) scale(.99);}
+  /* form screens (language, options): top-aligned with the nav's space reserved, so nothing overlaps */
+  .screen.form{justify-content:flex-start; padding:44px 52px 96px;}
 
-  .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;}
+  .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;
+    background:linear-gradient(0deg, rgba(9,9,12,.9) 40%, transparent);}
 
   .btn{-webkit-app-region:no-drag; font-family:'Nunito'; border:1px solid transparent; border-radius:13px;
     padding:12px 24px; font-size:14.5px; font-weight:700; cursor:pointer; transition:.2s; letter-spacing:.2px;}
@@ -57,10 +60,10 @@
   .btn.ghost:hover{color:var(--ink); background:var(--glass-hi);}
 
   /* WELCOME — minimal: bloom does the talking */
-  .logo-wrap{position:relative; width:128px; height:128px; margin-bottom:2px; animation:float 7s ease-in-out infinite;}
+  .logo-wrap{position:relative; width:106px; height:106px; margin-bottom:2px; animation:float 7s ease-in-out infinite;}
   @keyframes float{0%,100%{transform:translateY(0);} 50%{transform:translateY(-8px);}}
   .logo-wrap img{width:100%; height:100%; filter:drop-shadow(0 12px 40px rgba(120,120,250,.4));}
-  .wordmark{font-family:'Quicksand'; font-size:66px; font-weight:700; letter-spacing:-1.5px; line-height:1; margin-top:14px;}
+  .wordmark{font-family:'Quicksand'; font-size:60px; font-weight:700; letter-spacing:-1.5px; line-height:1; margin-top:14px;}
   .tagline{margin-top:16px; color:var(--muted); font-size:16.5px; font-weight:500; letter-spacing:.1px;}
   .pillrow{margin-top:26px; display:flex; gap:10px; align-items:center; color:var(--faint); font-size:10.5px; font-weight:700; letter-spacing:.2em; text-transform:uppercase;}
   .pillrow i{width:3px; height:3px; border-radius:50%; background:var(--faint);}
@@ -127,17 +130,17 @@
     <section class="screen active" data-screen="welcome">
       <div class="logo-wrap"><img src="collie-logo.png" alt="Collie"></div>
       <div class="wordmark">Collie</div>
-      <div class="tagline">Humans and AI, friends who ship.</div>
+      <div class="tagline">Humans' best AI friend.</div>
       <div class="pillrow"><span>OPEN SOURCE</span><i></i><span>RUNS LOCALLY</span><i></i><span>NO TELEMETRY</span></div>
       <button class="btn primary cta" data-go="language">Get started &nbsp;→</button>
     </section>
-    <section class="screen" data-screen="language">
+    <section class="screen form" data-screen="language">
       <div class="head"><h2>Choose your language</h2><p>For Collie and the rest of Setup — you can change it anytime later.</p></div>
       <div class="langgrid" id="langgrid"></div>
       <div class="morerow"><label>More languages</label><select class="more" id="moreSel"></select></div>
       <div class="nav"><button class="btn ghost" data-go="welcome">Back</button><button class="btn primary" data-go="options">Continue</button></div>
     </section>
-    <section class="screen" data-screen="options">
+    <section class="screen form" data-screen="options">
       <div class="head"><h2>A couple of options</h2><p>Both are optional and off by default. Toggle them later in Collie's settings.</p></div>
       <div class="opts">
         <div class="opt"><div class="txt"><div class="t">Live star-map wallpaper</div><div class="d">Show Collie's animated star-map behind your desktop icons, starting at logon.</div></div><div class="switch" data-opt="wallpaper"></div></div>
@@ -168,7 +171,7 @@
   const grid=$("#langgrid"); CHIPS.forEach(([n,e,c])=>{ const d=document.createElement("div"); d.className="lang"; d.dataset.code=c; d.innerHTML=`<div class="tick">✓</div><div class="nat">${n}</div><div class="en">${e}</div>`; d.onclick=()=>selectLang(c); grid.appendChild(d); });
   const sel=$("#moreSel"); sel.innerHTML='<option value="">More languages…</option>'+MORE.map(([n,e,c])=>`<option value="${c}">${n}  ·  ${e}</option>`).join(""); sel.onchange=()=>{ if(sel.value)selectLang(sel.value); };
   function selectLang(c){ state.lang=c; $$(".lang").forEach(l=>l.classList.toggle("sel",l.dataset.code===c)); if(CHIPS.some(x=>x[2]===c))sel.value=""; send("lang",{code:c}); }
-  selectLang("zh");
+  selectLang("en");   // English by default; the host may re-select to match the OS language
   $$(".switch").forEach(sw=>sw.onclick=()=>{ sw.classList.toggle("on"); state[sw.dataset.opt]=sw.classList.contains("on"); });
   let current="welcome"; function goto(n){ if(n===current)return; const f=$(`.screen[data-screen="${current}"]`),t=$(`.screen[data-screen="${n}"]`); f.classList.add("leaving"); f.classList.remove("active"); setTimeout(()=>f.classList.remove("leaving"),550); t.classList.add("active"); current=n; $("#brandmini").classList.toggle("show",n!=="welcome"); }
   $$("[data-go]").forEach(b=>b.onclick=()=>goto(b.dataset.go));
@@ -185,11 +188,11 @@
   function rand(a,b){return a+Math.random()*(b-a);}
   function resize(){ DPR=Math.min(2,devicePixelRatio||1); W=cv.width=innerWidth*DPR; H=cv.height=innerHeight*DPR; cv.style.width=innerWidth+"px"; cv.style.height=innerHeight+"px"; cx=W/2; cy=H*0.40; build(); }
   function build(){
-    blobs=[]; for(let i=0;i<4;i++){ blobs.push({c:PAL[i%PAL.length], orb:rand(0.10,0.30)*W, size:rand(0.55,0.95)*W, a0:rand(0,6.28), sp:rand(0.5,1.1)*(Math.random()<.5?-1:1), al:rand(0.10,0.17)}); }
-    dust=[]; const n=Math.round(innerWidth*innerHeight/9000); const R=Math.hypot(W,H)*0.6;
-    for(let i=0;i<n;i++){ dust.push({rad:Math.pow(Math.random(),.6)*R, a:rand(0,6.28), r:rand(0.4,1.3)*DPR, base:rand(0.15,0.6), ph:rand(0,6.28), sp:rand(0.4,1.2)}); }
+    blobs=[]; for(let i=0;i<4;i++){ blobs.push({c:PAL[i%PAL.length], orb:rand(0.16,0.42)*W, size:rand(0.5,0.9)*W, a0:rand(0,6.28), sp:rand(0.6,1.2)*(Math.random()<.5?-1:1), al:rand(0.10,0.18)}); }
+    dust=[]; const n=Math.round(innerWidth*innerHeight/7000); const R=Math.hypot(W,H)*0.6;
+    for(let i=0;i<n;i++){ dust.push({rad:Math.pow(Math.random(),.6)*R, a:rand(0,6.28), r:rand(0.4,1.4)*DPR, base:rand(0.2,0.7), ph:rand(0,6.28), sp:rand(0.5,1.5)}); }
   }
-  const OMEGA=0.05; let t0=performance.now();
+  const OMEGA=0.11; let t0=performance.now();   // a touch faster so the swirl reads clearly
   function frame(now){ const t=(now-t0)/1000; ctx.clearRect(0,0,W,H);
     ctx.globalCompositeOperation="lighter";
     for(const b of blobs){ const ang=b.a0+t*OMEGA*b.sp; const x=cx+Math.cos(ang)*b.orb, y=cy+Math.sin(ang)*b.orb*0.7;
@@ -197,7 +200,7 @@
       g.addColorStop(0,"rgba("+c[0]+","+c[1]+","+c[2]+","+b.al+")"); g.addColorStop(.5,"rgba("+c[0]+","+c[1]+","+c[2]+","+(b.al*0.4)+")"); g.addColorStop(1,"rgba("+c[0]+","+c[1]+","+c[2]+",0)");
       ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
     ctx.globalCompositeOperation="source-over";
-    for(const s of dust){ const ang=s.a+t*OMEGA*0.5*(1+40*DPR/(s.rad+40*DPR)); const x=cx+Math.cos(ang)*s.rad, y=cy+Math.sin(ang)*s.rad*0.86;
+    for(const s of dust){ const ang=s.a+t*OMEGA*0.8*(1+40*DPR/(s.rad+40*DPR)); const x=cx+Math.cos(ang)*s.rad, y=cy+Math.sin(ang)*s.rad*0.86;
       const a=s.base*(0.5+0.5*Math.sin(t*s.sp+s.ph)); ctx.beginPath(); ctx.arc(x,y,s.r,0,6.2832); ctx.fillStyle="rgba(210,214,255,"+a+")"; ctx.fill(); }
     requestAnimationFrame(frame); }
   addEventListener("resize",resize); resize(); requestAnimationFrame(frame);
