@@ -111,3 +111,6 @@ installer/_probe/
 installer/shell/Collie-Shell.exe
 installer/shell/*.dll
 installer/shell/collie.ico
+installer/shell/Collie-Setup-backend.exe
+installer/shell/dist-stage/
+installer/shell/collie-setup.sed

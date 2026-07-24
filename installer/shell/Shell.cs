@@ -79,11 +79,30 @@ class Shell : Form
         try { SetWindowRgn(Handle, CreateRoundRectRgn(0, 0, Width + 1, Height + 1, d, d), true); } catch { }
     }
 
+    async Task<CoreWebView2Environment> TryEnv(string udf)
+    {
+        try { return await CoreWebView2Environment.CreateAsync(null, udf, null); } catch { return null; }
+    }
+
     async Task Init()
     {
         // keep the WebView2 user-data in temp; the shell is transient
         string udf = Path.Combine(Path.GetTempPath(), "collie-shell-webview");
-        var env = await CoreWebView2Environment.CreateAsync(null, udf, null);
+        var env = await TryEnv(udf);
+        if (env == null)
+        {
+            // WebView2 runtime missing (rare on Win11) — install the bundled Evergreen bootstrapper
+            // once, then retry; failing that, fall back to the plain Inno wizard so Collie still installs.
+            var boot = Path.Combine(appDir, "MicrosoftEdgeWebView2Setup.exe");
+            if (File.Exists(boot))
+                try { Process.Start(new ProcessStartInfo(boot, "/silent /install") { UseShellExecute = false }).WaitForExit(); } catch { }
+            env = await TryEnv(udf);
+        }
+        if (env == null)
+        {
+            if (File.Exists(backendExe)) try { Process.Start(backendExe); } catch { }
+            Close(); return;
+        }
         await web.EnsureCoreWebView2Async(env);
         var c = web.CoreWebView2;
         c.Settings.AreDefaultContextMenusEnabled = false;

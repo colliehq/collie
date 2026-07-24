@@ -56,7 +56,8 @@ ArchitecturesAllowed=x64compatible
 ; own identity (same motif as the live wallpaper), generated from the logo by installer/make_art.py.
 ; Inno picks the entry from each ladder that matches the user's DPI — hence the sizes.
 WizardStyle=modern
-WizardSizePercent=120
+; a touch larger than the default so it reads like an app window, not a cramped setup dialog
+WizardSizePercent=135
 SetupIconFile=..\harness\wallpaper\collie.ico
 WizardImageFile=art\wizard-164x314.bmp,art\wizard-192x386.bmp,art\wizard-256x492.bmp,art\wizard-328x628.bmp,art\wizard-355x700.bmp,art\wizard-410x797.bmp
 WizardSmallImageFile=art\wizard-small-55x58.bmp,art\wizard-small-64x68.bmp,art\wizard-small-92x97.bmp,art\wizard-small-110x116.bmp,art\wizard-small-119x123.bmp,art\wizard-small-138x140.bmp
@@ -205,6 +206,54 @@ const
   C_TEXT   = $30251A;
   C_MUTED  = $8A8078;
   C_LINE   = $E4DED8;   { hairline divider }
+  C_DARK   = $1D1614;   { #14161D form background for the welcome page's dark bottom bar }
+  C_BTN    = $2E2824;   { neutral dark button (Cancel) }
+  { DwmSetWindowAttribute IDs (Win11 22000+; older Windows ignore them harmlessly) }
+  DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+  DWMWCP_ROUND = 2;
+
+function DwmSetWindowAttribute(hwnd: HWND; attr: Integer; var value: DWORD; cb: Integer): Integer;
+  external 'DwmSetWindowAttribute@dwmapi.dll stdcall';
+function SetTimer(hwnd: HWND; id, elapse, cb: LongWord): LongWord; external 'SetTimer@user32.dll stdcall';
+function KillTimer(hwnd: HWND; id: LongWord): Boolean; external 'KillTimer@user32.dll stdcall';
+
+{ Keep the rounded-corner + soft-shadow look after we strip the system border (bsNone otherwise gives
+  a flat rectangle). No-op before Win11 — safe to always call. }
+procedure RoundCorners;
+var v: DWORD;
+begin
+  try
+    v := DWMWCP_ROUND; DwmSetWindowAttribute(WizardForm.Handle, DWMWA_WINDOW_CORNER_PREFERENCE, v, 4);
+  except
+  end;
+end;
+
+{ Drive the real Inno buttons (kept, but hidden behind the full-window hero) from our custom card
+  controls via BM_CLICK, so all the wizard's navigation + validation still runs — we replace only
+  the look, not the behaviour. (Reading .OnClick directly is a type error in Pascal Script.) }
+procedure BtnNextClick(Sender: TObject);
+begin
+  SendMessage(WizardForm.NextButton.Handle, $00F5, 0, 0);   { BM_CLICK }
+end;
+procedure BtnCancelClick(Sender: TObject);
+begin
+  SendMessage(WizardForm.CancelButton.Handle, $00F5, 0, 0);
+end;
+
+function StripAmp(s: String): String;
+var i: Integer;
+begin
+  Result := '';
+  for i := 1 to Length(s) do if s[i] <> '&' then Result := Result + s[i];
+end;
+
+procedure StyleBtn(p: TPanel; accent: Boolean);
+begin
+  p.BevelOuter := bvNone; p.ParentBackground := False;
+  p.Font.Size := 10; p.Cursor := crHand;
+  if accent then begin p.Color := C_ACCENT; p.Font.Color := clWhite; p.Font.Style := [fsBold]; end
+  else begin p.Color := C_BTN; p.Font.Color := $C8CEDA; p.Font.Style := []; end;
+end;
 
 var
   LangPage: TWizardPage;
@@ -214,8 +263,14 @@ var
   Sel: Integer;          { chip index, or -1 when the "more" combo owns the selection }
   AppLang: String;       { Collie UI-language code chosen on the language page }
   Relaunching: Boolean;
-  HeroImg: TBitmapImage; { full-bleed splash painted over the default welcome page }
+  HeroImg: TBitmapImage; { full-window splash on the welcome page (borderless, no system chrome) }
   ChipTop: Integer;      { y of the first chip row — lets the grid sit lower, not jammed at the top }
+  BtnNext, BtnCancel, BtnClose: TPanel;   { custom themed nav fused onto the card, replacing the
+                                            system-chrome title bar + OS buttons }
+  BottomBar: TPanel;     { opaque dark strip that hides the real OS button row on the welcome card }
+  OrigFormColor: TColor; HaveOrigColor: Boolean;   { restore the light form bg off the welcome page }
+  TimerCb: LongWord;     { WinAPI-timer callback that re-hides Inno's buttons after it re-shows them }
+  CurPage: Integer;      { the page currently shown (the timer callback reads it) }
 
 procedure Repaint;
 var i: Integer;
@@ -294,6 +349,12 @@ end;
 procedure InitializeWizard;
 var y: Integer; lbl: TNewStaticText; divider: TPanel;
 begin
+  { In silent mode there is no wizard to build (the smart shell drives us with /VERYSILENT). All the
+    UI setup below touches WizardForm, which errors when there is no visible wizard — so skip it, or
+    the whole silent install aborts with exit code 1. The language Run step derives the UI language
+    from the active wizard language via CollieLang, so it needs nothing from here. }
+  if WizardSilent() then Exit;
+
   ChipCode := TStringList.Create; MoreCode := TStringList.Create;
   LangPage := CreateCustomPage(wpWelcome, ExpandConstant('{cm:LangTitle}'),
                                ExpandConstant('{cm:LangSub}'));
@@ -334,28 +395,96 @@ begin
 
   PreselectCurrent;
 
-  { the full-bleed welcome splash: a TBitmapImage covering the whole welcome page, painted over the
-    default 'Welcome to the Setup Wizard' panel (which CurPageChanged hides). Sized on show. }
+  { --- borderless, chrome-free window: strip the system title bar + frame entirely --- }
+  WizardForm.BorderStyle := bsNone;
+  RoundCorners;
+
+  { the welcome splash fills the welcome PAGE (parented to it so it sits above the notebook); the
+    bottom button strip below the page is darkened separately in CurPageChanged so the two meet
+    seamlessly (the hero's bottom is the same near-black as the strip). }
   ExtractTemporaryFile('welcome-hero-900x570.bmp');
   HeroImg := TBitmapImage.Create(WizardForm);
   HeroImg.Parent := WizardForm.WelcomePage;
   HeroImg.Bitmap.LoadFromFile(ExpandConstant('{tmp}\welcome-hero-900x570.bmp'));
   HeroImg.Stretch := True;
   HeroImg.Visible := False;
+
+  { custom nav fused onto the card — the real Inno buttons are hidden and these drive them }
+  BtnNext := TPanel.Create(WizardForm);   BtnNext.Parent := WizardForm;   StyleBtn(BtnNext, True);
+  BtnNext.OnClick := @BtnNextClick;        BtnNext.Visible := False;
+  BtnCancel := TPanel.Create(WizardForm); BtnCancel.Parent := WizardForm; StyleBtn(BtnCancel, False);
+  BtnCancel.OnClick := @BtnCancelClick;    BtnCancel.Visible := False;
+  { the close affordance the missing title bar would have provided }
+  BtnClose := TPanel.Create(WizardForm);  BtnClose.Parent := WizardForm;
+  BtnClose.BevelOuter := bvNone; BtnClose.ParentBackground := False; BtnClose.Color := C_DARK;
+  BtnClose.Font.Color := $9AA0B0; BtnClose.Font.Size := 12; BtnClose.Caption := 'X';
+  BtnClose.Cursor := crHand; BtnClose.OnClick := @BtnCancelClick; BtnClose.Visible := False;
+  { opaque dark strip that covers the real OS button row (which stays live for BM_CLICK) }
+  BottomBar := TPanel.Create(WizardForm); BottomBar.Parent := WizardForm;
+  BottomBar.BevelOuter := bvNone; BottomBar.ParentBackground := False; BottomBar.Color := C_DARK;
+  BottomBar.Visible := False;
+end;
+
+{ Inno re-shows Next/Cancel AFTER CurPageChanged returns, so hiding them there doesn't stick. This
+  fires ~40ms later, once the page has settled, and re-hides them + lifts our themed nav on top. }
+procedure RehideButtons(H: HWND; Msg, IdEvent, Time: LongWord);
+begin
+  KillTimer(0, IdEvent);
+  if (HeroImg <> nil) and (CurPage = wpWelcome) then begin
+    WizardForm.NextButton.Visible := False;
+    WizardForm.CancelButton.Visible := False;
+    WizardForm.BackButton.Visible := False;
+    BottomBar.BringToFront;
+    BtnNext.BringToFront; BtnCancel.BringToFront; BtnClose.BringToFront;
+  end;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
+var welcome: Boolean; cw, cs: Integer; nb, cb: TNewButton;
 begin
+  RoundCorners;   { re-assert after the handle is fully realized on the first page show }
   if HeroImg = nil then exit;
-  { the hero owns the welcome page; everywhere else the default image + labels behave normally (the
-    Finished page reuses WizardBitmapImage, so it must reappear there) }
-  HeroImg.Visible := (CurPageID = wpWelcome);
-  WizardForm.WizardBitmapImage.Visible := (CurPageID <> wpWelcome);
-  WizardForm.WelcomeLabel1.Visible := (CurPageID <> wpWelcome);
-  WizardForm.WelcomeLabel2.Visible := (CurPageID <> wpWelcome);
-  if CurPageID = wpWelcome then begin
+  CurPage := CurPageID;   { remember for the re-hide timer callback }
+  if not HaveOrigColor then begin OrigFormColor := WizardForm.Color; HaveOrigColor := True; end;
+  welcome := (CurPageID = wpWelcome);
+  cw := WizardForm.ClientWidth;
+  nb := WizardForm.NextButton; cb := WizardForm.CancelButton;
+
+  { hero fills the welcome page; other pages show their normal content }
+  HeroImg.Visible := welcome;
+  WizardForm.WizardBitmapImage.Visible := not welcome;   { Finished page reuses this — keep it }
+  WizardForm.WelcomeLabel1.Visible := not welcome;
+  WizardForm.WelcomeLabel2.Visible := not welcome;
+  { hide the real OS buttons on the card (they wouldn't stay behind our panels — Inno keeps them on
+    top); they remain functional via BM_CLICK even while hidden. Restored on inner pages. }
+  WizardForm.NextButton.Visible := not welcome;
+  WizardForm.CancelButton.Visible := not welcome;
+  BtnNext.Visible := welcome; BtnCancel.Visible := welcome;
+
+  { close 'X' (top-right) replaces the missing title-bar button — on every page }
+  cs := ScaleY(30);
+  BtnClose.SetBounds(cw - cs, 0, cs, cs);
+  BtnClose.Visible := True; BtnClose.BringToFront;
+
+  if welcome then begin
+    { dark the strip below the page so it merges with the hero's near-black bottom }
+    WizardForm.Color := C_DARK;
     HeroImg.SetBounds(0, 0, WizardForm.WelcomePage.ClientWidth, WizardForm.WelcomePage.ClientHeight);
     HeroImg.BringToFront;
+    { opaque dark bar over the whole OS button row, then our themed buttons on top of it — the real
+      buttons stay behind it, live, driven by BM_CLICK }
+    BottomBar.SetBounds(0, nb.Top - ScaleY(14), cw, WizardForm.ClientHeight - (nb.Top - ScaleY(14)));
+    BottomBar.Visible := True; BottomBar.BringToFront;
+    BtnNext.Caption := StripAmp(nb.Caption);
+    BtnCancel.Caption := StripAmp(cb.Caption);
+    BtnNext.SetBounds(nb.Left, nb.Top, nb.Width, nb.Height);
+    BtnCancel.SetBounds(cb.Left, cb.Top, cb.Width, cb.Height);
+    BtnNext.BringToFront; BtnCancel.BringToFront; BtnClose.BringToFront;
+    if TimerCb = 0 then TimerCb := CreateCallback(@RehideButtons);
+    SetTimer(0, 0, 40, TimerCb);   { re-hide the OS buttons after Inno re-shows them }
+  end else begin
+    WizardForm.Color := OrigFormColor;   { restore the light form bg on inner pages }
+    BottomBar.Visible := False;
   end;
 end;
 
@@ -363,7 +492,11 @@ function NextButtonClick(CurPageID: Integer): Boolean;
 var rc: Integer; pick: String;
 begin
   Result := True;
-  if (LangPage <> nil) and (CurPageID = LangPage.ID) then begin
+  { Pascal Script `and` does NOT short-circuit — in silent mode LangPage is nil, so a combined
+    `(LangPage <> nil) and (CurPageID = LangPage.ID)` would still deref LangPage.ID and EAbort the
+    whole (silent) install. Guard with nested ifs. }
+  if LangPage = nil then Exit;
+  if CurPageID = LangPage.ID then begin
     pick := Chosen;
     AppLang := CollieLang(pick);   { record for the [Run] step regardless of what happens next }
     { Relaunch Setup in the chosen language so the wizard chrome matches too. If the OS blocks a
@@ -386,12 +519,16 @@ begin
   if Relaunching then Confirm := False;   { the "are you sure you want to cancel?" is not our close }
 end;
 
-{ Expands the language [Run] line. "auto" means follow the browser — nothing to persist, so run a
-  harmless version query instead of writing a settings value. }
+{ Expands the language Run line. Derive Collie's UI language from the ACTIVE wizard language (the
+  language constant, which /LANG= sets) rather than the card page's AppLang var — so it works in
+  silent mode too (the smart-shell drives the backend with /VERYSILENT /LANG=xx, and the card page
+  never runs). "auto" => follow the browser, so run a harmless version query instead of writing. }
 function AppLangParam(Param: String): String;
+var c: String;
 begin
-  if (AppLang = '') or (CompareText(AppLang, 'auto') = 0) then
+  c := CollieLang(ExpandConstant('{language}'));
+  if (c = '') or (CompareText(c, 'auto') = 0) then
     Result := '-m harness.cli config'
   else
-    Result := '-m harness.cli config LANG ' + AppLang;
+    Result := '-m harness.cli config LANG ' + c;
 end;
