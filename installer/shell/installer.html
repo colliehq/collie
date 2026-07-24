@@ -175,10 +175,9 @@
     </section>
     <section class="screen form" data-screen="options">
       <div class="body">
-        <div class="head"><h2>A couple of options</h2><p>Both are optional and off by default. Toggle them later in Collie's settings.</p></div>
+        <div class="head"><h2>One quick option</h2><p>Off by default — you can turn it on any time in Collie's settings.</p></div>
         <div class="opts">
           <div class="opt"><div class="txt"><div class="t">Live star-map wallpaper</div><div class="d">Show Collie's animated star-map behind your desktop icons, starting at logon.</div></div><div class="switch" data-opt="wallpaper"></div></div>
-          <div class="opt"><div class="txt"><div class="t">Use my real browser</div><div class="d">Let Collie drive your already-logged-in Chrome/Edge via the bridge extension.</div></div><div class="switch" data-opt="bridge"></div></div>
         </div>
         <div class="pathrow">
           <div class="pi"><div class="k">Install location · per-user, no admin</div><div class="v" id="pathVal">%LOCALAPPDATA%\Programs\Collie</div></div>
@@ -205,7 +204,9 @@
   function send(a,d){ try{ host&&host.postMessage(JSON.stringify(Object.assign({action:a},d||{}))); }catch(e){} }
   const CHIPS=[["English","English","en"],["简体中文","Chinese (Simp.)","zh"],["繁體中文","Chinese (Trad.)","zhtw"],["Español","Spanish","es"],["Français","French","fr"],["Deutsch","German","de"],["Português","Portuguese","ptbr"],["Русский","Russian","ru"],["日本語","Japanese","ja"],["한국어","Korean","ko"],["Italiano","Italian","it"],["العربية","Arabic","ar"]];
   const MORE=[["Bahasa Indonesia","Indonesian","id"],["Tiếng Việt","Vietnamese","vi"],["Türkçe","Turkish","tr"],["Polski","Polish","pl"],["Nederlands","Dutch","nl"],["ไทย","Thai","th"],["Українська","Ukrainian","uk"],["हिन्दी","Hindi","hi"],["Ελληνικά","Greek","el"],["Čeština","Czech","cs"],["Svenska","Swedish","sv"],["Dansk","Danish","da"],["Suomi","Finnish","fi"],["Română","Romanian","ro"],["Magyar","Hungarian","hu"],["עברית","Hebrew","he"],["Norsk","Norwegian","no"],["Български","Bulgarian","bg"],["فارسی","Farsi","fa"],["தமிழ்","Tamil","ta"]];
-  let state={lang:"en",wallpaper:false,bridge:false,dir:""}; const $=(s)=>document.querySelector(s),$$=(s)=>document.querySelectorAll(s);
+  // "Use my real browser" moved out of the installer: it really means installing a Chrome/Edge
+  // extension, which belongs in the app's first-run onboarding (in the browser), not a Setup checkbox.
+  let state={lang:"en",wallpaper:false,dir:""}; const $=(s)=>document.querySelector(s),$$=(s)=>document.querySelectorAll(s);
   const grid=$("#langgrid"); CHIPS.forEach(([n,e,c])=>{ const d=document.createElement("div"); d.className="lang"; d.dataset.code=c; d.innerHTML=`<div class="tick">✓</div><div class="nat">${n}</div><div class="en">${e}</div>`; d.onclick=()=>selectLang(c); grid.appendChild(d); });
   // custom dark dropdown
   const dd=$("#moreDD"), ddBtn=$("#moreBtn"), ddList=$("#moreList");
@@ -222,7 +223,7 @@
   $("#closeBtn").onclick=()=>send("close"); $("#doneClose").onclick=()=>send("close"); $("#launchBtn").onclick=()=>send("launch");
   document.querySelector(".titlebar").addEventListener("mousedown",(e)=>{ if(e.target.closest(".winbtn"))return; if(e.button===0)send("drag"); });
   $("#browseBtn").onclick=(ev)=>{ ev.stopPropagation(); send("browse"); };   // host opens a folder picker
-  $("#installBtn").onclick=()=>{ goto("installing"); send("install",{lang:state.lang,wallpaper:state.wallpaper,bridge:state.bridge,dir:state.dir}); if(!host)sim(); };
+  $("#installBtn").onclick=()=>{ goto("installing"); send("install",{lang:state.lang,wallpaper:state.wallpaper,dir:state.dir}); if(!host)sim(); };
   function onP(p){ if(p.phase!=null)$("#progStatus").textContent=p.phase; if(p.detail!=null)$("#progSub").textContent=p.detail; if(p.pct!=null)$("#progFill").style.width=Math.max(3,Math.min(100,p.pct))+"%"; if(p.done)setTimeout(()=>goto("done"),550); }
   // PostWebMessageAsJson delivers e.data already parsed (an object); PostWebMessageAsString delivers
   // a string. Handle both. {type:"dir"} = the folder the user picked; anything else is progress.
