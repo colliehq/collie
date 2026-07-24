@@ -381,7 +381,10 @@ async function pollOnce() {
       try {
         // X-Collie-Bridge marks this as the extension (not a drive-by page); the bridge's CSRF
         // gate rejects any request missing it. host_permissions let the extension set it freely.
-        const r = await fetch(BRIDGE + "/poll", { headers: { "X-Collie-Bridge": "1" } });
+        // report our version so collie can warn when the LOADED extension is a stale copy from
+        // another path (that mismatch silently cost a long debugging session).
+        const r = await fetch(BRIDGE + "/poll?v=" + encodeURIComponent(chrome.runtime.getManifest().version),
+                              { headers: { "X-Collie-Bridge": "1" } });
         cmd = await r.json();
       } catch (e) {
         return;                      // bridge down / worker resuming — the alarm re-arms us

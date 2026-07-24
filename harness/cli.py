@@ -827,7 +827,29 @@ def cmd_setup(args):
     from . import browserbridge as _bb
     _ext = os.path.join(os.path.dirname(os.path.abspath(_bb.__file__)), "browser_ext")
     if _bb._bridge_live():
-        print("  ✓ real browser: bridge live, extension connected")
+        # Compare the LOADED extension's version with the one we ship. A mismatch means Chrome is
+        # running a copy from some other path (a second checkout, a \wsl$ share) — every fix you
+        # make here is invisible to it, which is maddening to debug without this line.
+        import json as _json
+        import urllib.request as _urlreq
+        want = ""
+        try:
+            with open(os.path.join(_ext, "manifest.json"), encoding="utf-8") as _f:
+                want = (_json.load(_f) or {}).get("version", "")
+        except Exception:
+            pass
+        got = ""
+        try:
+            with _urlreq.urlopen("http://127.0.0.1:%d/health" % _bb._port(), timeout=2) as _r:
+                got = (_json.loads(_r.read() or b"{}") or {}).get("extension_version", "")
+        except Exception:
+            pass
+        if want and got and want != got:
+            print("  ! real browser: bridge live, but the loaded extension is v%s while this collie "
+                  "ships v%s\n    it is loaded from ANOTHER copy — remove it and Load unpacked: %s"
+                  % (got, want, _ext))
+        else:
+            print("  ✓ real browser: bridge live, extension connected%s" % (" (v%s)" % got if got else ""))
     elif _bb._server_up(_bb._port()):
         print("  · real browser: bridge running, but no extension connected.\n"
               "    load it: chrome://extensions → Developer mode → Load unpacked → %s" % _ext)

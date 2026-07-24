@@ -19,6 +19,7 @@ import os
 import queue
 import threading
 import time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -38,6 +39,7 @@ class _Bridge:
         self.lock = threading.Lock()
         self.n = 0
         self.last_poll = 0.0                   # when the extension last polled (connection health)
+        self.ext_version = ""                  # manifest version the loaded extension reports
 
     def enqueue(self, cmd, timeout=60):
         with self.lock:
@@ -139,11 +141,18 @@ def _handler(bridge, enforce_host=True):
             if self.path.startswith("/poll"):
                 if self._blocked():
                     return self._json({"error": "forbidden"}, 403)
+                # the extension reports its manifest version (?v=) so collie can tell when the LOADED
+                # extension is a stale copy from another path — a mismatch that is otherwise invisible.
+                q = self.path.split("?", 1)[1] if "?" in self.path else ""
+                for kv in q.split("&"):
+                    if kv.startswith("v="):
+                        bridge.ext_version = urllib.parse.unquote(kv[2:])
                 cmd = bridge.next_cmd()
                 return self._json(cmd or {})       # {} == nothing pending, poll again
             if self.path.startswith("/health"):
                 age = time.time() - bridge.last_poll
                 return self._json({"ok": True, "extension_connected": bridge.last_poll > 0 and age < 40,
+                                   "extension_version": bridge.ext_version,
                                    "last_poll_secs_ago": round(age, 1) if bridge.last_poll else None})
             self._json({"error": "not found"}, 404)
 
