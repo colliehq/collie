@@ -109,6 +109,7 @@ async function navigateCollieTab(tabId, url) {
   const complete = waitComplete(tabId);
   await chrome.tabs.update(tabId, { url });
   await complete;
+  await ensureConsoleCapture(tabId);   // arm console capture on the fresh document (load logs onward)
   return await chrome.tabs.get(tabId);
 }
 
@@ -255,62 +256,92 @@ async function exec(func, args) {
   return res.result;
 }
 
-// --- DevTools console / debugger capture (chrome.debugger = real console + exceptions + eval) ---
-const consoleBuf = {};     // tabId -> [ "level: text" ]
-const attached = {};       // tabId -> true
+// --- console capture + eval WITHOUT chrome.debugger ----------------------------------------------
+// chrome.debugger is the single biggest Chrome Web Store rejection risk, and it paints a persistent
+// "collie has started debugging this browser" banner across the top of the window. Everything the
+// debugger did here runs through chrome.scripting in the page's MAIN world instead: a patch buffers
+// console.* + errors on window.__collieConsole, and eval runs an injected indirect-eval. Trade-offs
+// vs CDP: console captures from injection onward (re-armed on each navigation, so most load logs are
+// caught), and eval obeys the page's CSP (a strict unsafe-eval site refuses) — both acceptable for
+// store approvability and a far less alarming install.
 
-function debuggee(tabId) { return { tabId }; }
+// Injected (MAIN world): patch console + error handlers to buffer messages on the page. Idempotent —
+// runs on every navigation but only installs once per document. Self-contained (no extension scope).
+function installConsoleCapture() {
+  if (window.__collieConsoleInstalled) return true;
+  window.__collieConsoleInstalled = true;
+  const buf = (window.__collieConsole = window.__collieConsole || []);
+  const cap = (line) => { buf.push(line); if (buf.length > 500) buf.splice(0, buf.length - 500); };
+  const fmt = (a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch (e) { return String(a); } };
+  ["log", "info", "warn", "error", "debug"].forEach((level) => {
+    const orig = console[level] ? console[level].bind(console) : null;
+    console[level] = function () {
+      cap(level + ": " + Array.prototype.map.call(arguments, fmt).join(" "));
+      if (orig) orig.apply(console, arguments);
+    };
+  });
+  window.addEventListener("error", (e) => cap("exception: " + (e.message || "error") +
+    (e.filename ? " @ " + e.filename + ":" + e.lineno : "")));
+  window.addEventListener("unhandledrejection", (e) =>
+    cap("exception: unhandled rejection: " + fmt(e.reason)));
+  return true;
+}
 
-async function ensureDebugger(tabId) {
-  if (attached[tabId]) return;
-  await chrome.debugger.attach(debuggee(tabId), "1.3");
-  consoleBuf[tabId] = consoleBuf[tabId] || [];
-  await chrome.debugger.sendCommand(debuggee(tabId), "Runtime.enable");
-  await chrome.debugger.sendCommand(debuggee(tabId), "Log.enable");
-  attached[tabId] = true;   // set ONLY after enable succeeds — else a failed enable leaves the flag
-}                           // true and every later call short-circuits with capture silently broken
+// Injected (MAIN world): read + optionally clear the captured buffer.
+function readConsole(clear) {
+  const buf = window.__collieConsole || [];
+  const out = buf.slice(-200);
+  if (clear) window.__collieConsole = [];
+  return out;
+}
 
-chrome.debugger.onEvent.addListener((source, method, params) => {
-  const b = consoleBuf[source.tabId] || (consoleBuf[source.tabId] = []);
-  if (method === "Runtime.consoleAPICalled") {
-    const txt = (params.args || []).map((a) => a.value !== undefined ? a.value :
-      (a.description || a.preview && JSON.stringify(a.preview) || a.type)).join(" ");
-    b.push(params.type + ": " + txt);
-  } else if (method === "Runtime.exceptionThrown") {
-    const d = params.exceptionDetails || {};
-    b.push("exception: " + (d.exception && (d.exception.description || d.exception.value) || d.text));
-  } else if (method === "Log.entryAdded") {
-    const e = params.entry || {};
-    b.push(e.level + "(" + (e.source || "") + "): " + e.text);
+// Injected (MAIN world): indirect eval, awaiting a promise result, coerced to a serializable value.
+async function pageEval(expr) {
+  try {
+    let v = (0, eval)(expr);                       // indirect eval -> runs in the page global scope
+    if (v && typeof v.then === "function") v = await v;
+    let out;
+    if (v === undefined) out = "undefined";
+    else if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") out = v;
+    else { try { out = JSON.parse(JSON.stringify(v)); } catch (e) { out = String(v); } }
+    return { value: out };
+  } catch (e) {
+    return { error: String((e && e.message) || e) };
   }
-  if (b.length > 500) b.splice(0, b.length - 500);
-});
+}
 
-chrome.debugger.onDetach.addListener((source) => {
-  delete attached[source.tabId];       // free per-tab state so it doesn't grow unbounded across tabs
-  delete consoleBuf[source.tabId];
-});
+// Like exec(), but injects into the page's MAIN world — needed so the console patch and eval see the
+// real page globals (the default isolated world has its own console and forbids eval under MV3 CSP).
+async function execMain(func, args) {
+  const tab = await activeTab();
+  if (!tab) return { error: "no dedicated Collie tab — call browser_open first" };
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id }, world: "MAIN", func, args });
+  return res.result;
+}
+
+async function ensureConsoleCapture(tabId) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: installConsoleCapture });
+  } catch (e) { /* chrome:// pages etc. can't be scripted; console just stays empty there */ }
+}
+
+const NO_TAB = "no collie tab yet — call browser_open(url) first. It opens in YOUR real, logged-in " +
+  "browser (and adopts a tab you already have on that site), so your sessions apply.";
 
 async function getConsole(clear) {
   const tab = await activeTab();
-  if (!tab) return { error: "no collie tab yet — call browser_open(url) first. It opens in YOUR real, logged-in browser (and adopts a tab you already have on that site), so your sessions apply." };
-  try { await ensureDebugger(tab.id); } catch (e) { return { error: "debugger attach failed: " + e }; }
-  const b = consoleBuf[tab.id] || [];
-  const out = b.slice(-200);
-  if (clear) consoleBuf[tab.id] = [];
-  return out.length ? out : ["(console empty — logs are captured from when the debugger attached; " +
-    "reload the page after the first browser_console call to capture load-time logs)"];
+  if (!tab) return { error: NO_TAB };
+  await ensureConsoleCapture(tab.id);                // arm capture if a navigation hasn't already
+  const out = await execMain(readConsole, [!!clear]);
+  return (out && out.length) ? out : ["(console empty — capture starts when the page is opened via " +
+    "collie or browser_console is first called; reload the page to catch load-time logs)"];
 }
 
 async function evalExpr(expr) {
   const tab = await activeTab();
-  if (!tab) return { error: "no collie tab yet — call browser_open(url) first. It opens in YOUR real, logged-in browser (and adopts a tab you already have on that site), so your sessions apply." };
-  try { await ensureDebugger(tab.id); } catch (e) { return { error: "debugger attach failed: " + e }; }
-  const r = await chrome.debugger.sendCommand(debuggee(tab.id), "Runtime.evaluate",
-    { expression: expr, returnByValue: true, awaitPromise: true });
-  if (r.exceptionDetails) return { error: r.exceptionDetails.text || "eval error" };
-  const v = r.result;
-  return { value: v.value !== undefined ? v.value : (v.description || v.type) };
+  if (!tab) return { error: NO_TAB };
+  return await execMain(pageEval, [expr]);
 }
 
 async function handle(cmd) {
