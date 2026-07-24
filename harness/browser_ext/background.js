@@ -33,18 +33,18 @@ async function tabExists(id) {
   try { await chrome.tabs.get(id); return true; } catch (e) { return false; }
 }
 
-// Resolve the dedicated tab that commands should target. `create` = allowed to open a fresh
-// background tab (used by `open`); every other command fails closed until it exists.
+// Resolve the tab commands run in. NEVER fails: adopted tab -> a real tab the user already has ->
+// a fresh one. Failing closed here is what produced "no active tab", which the model then reported
+// to the user as "the bridge won't connect" while the bridge was perfectly healthy.
 async function targetTab(create) {
   const savedId = await rememberedTabId();
   if (await tabExists(savedId)) {
     return await chrome.tabs.get(savedId);
   }
   if (savedId != null) await forgetTabId();
-  // Nothing adopted yet -> take the tab the user is actually looking at (and remember it, so every
-  // later command stays on the same page). "Read the tab I already have open" is the single most
-  // common ask, and failing closed here produced "no active tab", which the model then reported as
-  // "the bridge won't connect" — while the bridge was perfectly connected.
+
+  // 1) the tab the user is actually looking at — it carries their logins, and "just use the tab I
+  //    already have open" is the single most common ask.
   try {
     const found = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     const act = found && found[0];
@@ -53,14 +53,23 @@ async function targetTab(create) {
       return act;
     }
   } catch (e) {}
-  if (create) {
-    // Start at about:blank so the navigation listener is installed before the target page loads.
-    // active:false keeps the user's Collie UI in the foreground.
-    const t = await chrome.tabs.create({ url: "about:blank", active: false });
-    await rememberTabId(t.id);
-    return t;
-  }
-  return null;
+
+  // 2) any other ordinary web tab (the active one may be chrome://extensions — e.g. right after
+  //    reloading this extension — which cannot be scripted).
+  try {
+    const web = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
+    if (web && web.length) {
+      const t = web.find((x) => x.active) || web[0];
+      await rememberTabId(t.id);
+      return t;
+    }
+  } catch (e) {}
+
+  // 3) nothing usable open at all -> make one. Start at about:blank so the navigation listener is
+  //    installed before the target page loads; active:false keeps the user's Collie UI in front.
+  const fresh = await chrome.tabs.create({ url: "about:blank", active: false });
+  await rememberTabId(fresh.id);
+  return fresh;
 }
 
 async function activeTab() {
