@@ -1382,7 +1382,12 @@
   // ---- onboarding: first-run "pick a brain" ----------------------------
   var obOverlay = $("obOverlay");
   function obClose() { obOverlay.classList.remove("open"); }
-  function obDone() { try { localStorage.setItem("collie-onboarded", "1"); } catch (e) {} obClose(); }
+  // Skip is remembered for THIS SESSION only. Connecting a brain needs no flag at all — the
+  // configured provider becomes authed, so the trigger below simply stops firing. (A localStorage
+  // "onboarded" flag was worse: after the settings were wiped collie silently ran on the mock
+  // provider — canned "Based on the tool output" answers — and the flag kept the welcome hidden.)
+  function obSkipped() { try { sessionStorage.setItem("collie-onboard-skip", "1"); } catch (e) {} obClose(); }
+  function obDone() { obClose(); }
   function obUse(entry, card) {
     var cta = card.querySelector(".ob-bcta"); cta.textContent = "Connecting…";
     fetch("/api/model?token=" + encodeURIComponent(CT), {
@@ -1429,15 +1434,23 @@
   }
   $("obKeyBtn").addEventListener("click", function () { obClose(); openSettings(); });
   $("obBrowse").addEventListener("click", function () { obClose(); openModelPicker(); });
-  $("obSkip").addEventListener("click", obDone);
-  obOverlay.addEventListener("click", function (ev) { if (ev.target === obOverlay) obDone(); });
-  (function () {                                     // trigger: unconfigured brain (mock/empty) + not dismissed
-    var dismissed; try { dismissed = localStorage.getItem("collie-onboarded"); } catch (e) {}
-    if (dismissed) return;
+  $("obSkip").addEventListener("click", obSkipped);
+  obOverlay.addEventListener("click", function (ev) { if (ev.target === obOverlay) obSkipped(); });
+  (function () {
+    // Trigger on the REAL question — "is there a working brain?" — not on the configured name.
+    // settings defaults PROVIDER to "anthropic" even when nothing is saved, while the runtime falls
+    // back to mock, so `current` alone cannot tell you there is no brain. Ask instead whether the
+    // current provider is actually AUTHED; that also catches "configured but the key is missing".
+    var skipped; try { skipped = sessionStorage.getItem("collie-onboard-skip"); } catch (e) {}
+    if (skipped) return;
     fetch("/api/models?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
       .then(function (d) {
-        var cur = ((d || {}).current || "");
-        if (!cur || cur.indexOf("mock:") === 0 || cur.charAt(0) === ":") { obRender((d || {}).entries); obOverlay.classList.add("open"); }
+        var entries = (d || {}).entries || [];
+        var prov = (((d || {}).current) || "").split(":")[0];
+        var working = prov && prov !== "mock" && entries.some(function (e) {
+          return e.provider === prov && e.auth === "ok";
+        });
+        if (!working) { obRender(entries); obOverlay.classList.add("open"); }
       }).catch(function () {});
   })();
   $("setClose").onclick = closeSettings;
