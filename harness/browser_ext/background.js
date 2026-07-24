@@ -41,6 +41,18 @@ async function targetTab(create) {
     return await chrome.tabs.get(savedId);
   }
   if (savedId != null) await forgetTabId();
+  // Nothing adopted yet -> take the tab the user is actually looking at (and remember it, so every
+  // later command stays on the same page). "Read the tab I already have open" is the single most
+  // common ask, and failing closed here produced "no active tab", which the model then reported as
+  // "the bridge won't connect" — while the bridge was perfectly connected.
+  try {
+    const found = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const act = found && found[0];
+    if (act && /^https?:/i.test(act.url || "")) {
+      await rememberTabId(act.id);
+      return act;
+    }
+  } catch (e) {}
   if (create) {
     // Start at about:blank so the navigation listener is installed before the target page loads.
     // active:false keeps the user's Collie UI in the foreground.
