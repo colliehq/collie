@@ -180,7 +180,9 @@ def run(port_pref: int = 8787, boot: bool = False) -> int:
         print("collie wallpaper: WebView2 runtime not found. install it:\n"
               "  winget install Microsoft.EdgeWebView2Runtime", file=sys.stderr)
         return 3
-    port = free_port(port_pref)
+    # REUSE a collie server already serving the preferred port — only pick a different free port
+    # when nothing of ours is there (otherwise a second `collie wallpaper` spawns a duplicate server).
+    port = port_pref if server_up(port_pref) else free_port(port_pref)
     if not server_up(port):
         start_server_windowless(port)
     for _ in range(90):                                    # wait up to ~45s
