@@ -19,7 +19,7 @@ jobs:
   check-version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Tag matches harness.__version__
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -31,13 +31,13 @@ jobs:
     needs: check-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade build
       - run: python -m build                       # dist/*.whl + dist/*.tar.gz (version is dynamic)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: python-dist
           path: dist/*
@@ -46,19 +46,23 @@ jobs:
     needs: check-version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Inno Setup 6
         run: choco install innosetup --no-progress -y
       - name: Generator deps (Pillow for the wizard art)
         run: python -m pip install --upgrade pillow
-      - name: Build Collie-Setup.exe
-        # build.ps1: read version -> art -> language data -> embeddable-python payload -> iscc
+      - name: Build Collie-Setup.exe (WebView2 shell wrapping the Inno backend)
+        # pack.ps1 runs build.ps1 (art -> language data -> embeddable-python payload -> iscc) to make the
+        # silent Inno backend, then wraps the WebView2 "smart shell" (the dark app-grade UI) around it
+        # into one self-extracting Collie-Setup.exe. Without this the release shipped the raw Inno wizard
+        # and users never saw the shell. csc is the in-box .NET Framework compiler (no SDK needed); the
+        # WebView2 DLLs are committed under harness/wallpaper.
         shell: pwsh
-        run: ./installer/build.ps1
-      - uses: actions/upload-artifact@v4
+        run: ./installer/shell/pack.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer
           path: installer/Output/Collie-Setup.exe
@@ -67,11 +71,11 @@ jobs:
     needs: [wheel, installer]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: Collie ${{ github.ref_name }}
           generate_release_notes: true            # auto-changelog from merged PRs since the last tag

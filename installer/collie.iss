@@ -201,12 +201,14 @@ Type: filesandordirs; Name: "{app}"
 [Code]
 const
   COLS = 4; CHIP_H = 44; GAP = 10;
-  C_ACCENT = $8F4E3D;   { #3D4E8F — TColor is BGR }
-  C_CHIP   = $F4F0EC;
-  C_TEXT   = $30251A;
-  C_MUTED  = $8A8078;
-  C_LINE   = $E4DED8;   { hairline divider }
-  C_DARK   = $1D1614;   { #14161D form background for the welcome page's dark bottom bar }
+  { Dark theme — matches the WebView2 shell (installer.html) so the wizard fallback reads as the same
+    product. TColor is BGR, so each literal is the #RRGGBB reversed. }
+  C_ACCENT = $F16663;   { #6366F1 — the shell's indigo }
+  C_CHIP   = $2B2622;   { #22262B — dark glass chip }
+  C_TEXT   = $FAF5F4;   { #F4F5FA — light ink }
+  C_MUTED  = $B6A39D;   { #9DA3B6 — muted light }
+  C_LINE   = $332A26;   { #262A33 — hairline divider on dark }
+  C_DARK   = $1D1614;   { #14161D — form background }
   C_BTN    = $2E2824;   { neutral dark button (Cancel) }
   { DwmSetWindowAttribute IDs (Win11 22000+; older Windows ignore them harmlessly) }
   DWMWA_WINDOW_CORNER_PREFERENCE = 33;
@@ -358,11 +360,13 @@ begin
   ChipCode := TStringList.Create; MoreCode := TStringList.Create;
   LangPage := CreateCustomPage(wpWelcome, ExpandConstant('{cm:LangTitle}'),
                                ExpandConstant('{cm:LangSub}'));
+  try LangPage.Surface.Color := C_DARK; except end;   { dark surface behind the language cards }
 
   { chips are laid out immediately; the combo must exist before AddMore is called }
   MoreBox := TNewComboBox.Create(LangPage);
   MoreBox.Parent := LangPage.Surface;
   MoreBox.Style := csDropDownList;
+  MoreBox.Color := C_CHIP; MoreBox.Font.Color := C_TEXT;   { dark dropdown, not a white native combo }
   MoreBox.OnChange := @MoreChange;
 
   ChipTop := ScaleY(10);   { let the grid breathe below the header, not jammed to the top edge }
@@ -439,6 +443,35 @@ begin
   end;
 end;
 
+{ Recolor the stock inner pages (Tasks / Ready / Installing / Finished) to the dark theme so they match
+  the welcome hero and the WebView2 shell. Each assignment is guarded — a control absent on a given
+  page or Inno build must not abort the wizard. }
+procedure ApplyDark;
+begin
+  WizardForm.Color := C_DARK;
+  try WizardForm.MainPanel.Color := C_DARK; except end;
+  try WizardForm.PageNameLabel.Font.Color := C_TEXT; except end;
+  try WizardForm.PageDescriptionLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.Bevel.Visible := False; except end;         { hairline under the header }
+  try WizardForm.Bevel1.Visible := False; except end;        { hairline above the buttons }
+  try WizardForm.InnerPage.Color := C_DARK; except end;
+  try WizardForm.TasksList.Color := C_DARK; WizardForm.TasksList.Font.Color := C_TEXT; except end;
+  try WizardForm.ReadyMemo.Color := C_DARK; WizardForm.ReadyMemo.Font.Color := C_TEXT; except end;
+  { the stock pages' body copy is near-black by default — unreadable on dark, so lift each to muted light }
+  try WizardForm.SelectDirLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.SelectDirBrowseLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.DiskSpaceLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.SelectTasksLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.SelectStartMenuFolderLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.ReadyLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.DirEdit.Color := C_CHIP; WizardForm.DirEdit.Font.Color := C_TEXT; except end;
+  try WizardForm.SelectDirBitmapImage.Visible := False; except end;
+  try WizardForm.StatusLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.FilenameLabel.Font.Color := C_MUTED; except end;
+  try WizardForm.FinishedHeadingLabel.Font.Color := C_TEXT; except end;
+  try WizardForm.FinishedLabel.Font.Color := C_TEXT; except end;
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 var welcome: Boolean; cw, cs: Integer; nb, cb: TNewButton;
 begin
@@ -483,7 +516,9 @@ begin
     if TimerCb = 0 then TimerCb := CreateCallback(@RehideButtons);
     SetTimer(0, 0, 40, TimerCb);   { re-hide the OS buttons after Inno re-shows them }
   end else begin
-    WizardForm.Color := OrigFormColor;   { restore the light form bg on inner pages }
+    ApplyDark;                                          { dark inner pages, matching the hero + shell }
+    WizardForm.WizardSmallBitmapImage.Visible := False; { the dog logo shared the top-right corner with
+                                                          our close 'X' — hide it so they never overlap }
     BottomBar.Visible := False;
   end;
 end;

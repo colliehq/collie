@@ -56,7 +56,7 @@
   /* fits on one page normally; a DARK, thin scrollbar appears only if a display/DPI makes it overflow
      (never clips content, never the white system bar) */
   .screen.form .body{width:100%; flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
-    align-items:center; padding:36px 52px 14px;}
+    align-items:center; padding:20px 52px 10px;}
   .screen.form .nav{position:static; height:74px; border-top:1px solid rgba(255,255,255,.06); background:none;}
 
   .nav{position:absolute; left:0; right:0; bottom:0; height:84px; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:0 44px;}
@@ -79,22 +79,22 @@
   .pillrow i{width:3px; height:3px; border-radius:50%; background:var(--faint);}
   .cta{margin-top:26px; padding:14px 36px; font-size:15px; border-radius:15px;}
 
-  .head{width:100%; max-width:588px; margin-bottom:22px;}
-  .head h2{font-family:'Quicksand'; font-size:27px; font-weight:700; letter-spacing:-.3px;}
-  .head p{margin-top:7px; color:var(--muted); font-size:14px; font-weight:500;}
+  .head{width:100%; max-width:588px; margin-bottom:12px;}
+  .head h2{font-family:'Quicksand'; font-size:23px; font-weight:700; letter-spacing:-.3px;}
+  .head p{margin-top:5px; color:var(--muted); font-size:13.5px; font-weight:500;}
 
-  .langgrid{width:100%; max-width:588px; display:grid; grid-template-columns:repeat(4,1fr); gap:11px;}
-  .lang{position:relative; padding:15px 10px; border-radius:15px; background:var(--glass); border:1px solid var(--stroke);
+  .langgrid{width:100%; max-width:588px; display:grid; grid-template-columns:repeat(4,1fr); gap:8px;}
+  .lang{position:relative; padding:10px 10px; border-radius:14px; background:var(--glass); border:1px solid var(--stroke);
     cursor:pointer; text-align:center; transition:.18s; backdrop-filter:blur(12px);}
   .lang:hover{background:var(--glass-hi); border-color:rgba(255,255,255,.16); transform:translateY(-2px);}
-  .lang .nat{font-size:15px; font-weight:700;}
-  .lang .en{margin-top:2px; font-size:11px; font-weight:600; color:var(--faint);}
+  .lang .nat{font-size:14.5px; font-weight:700;}
+  .lang .en{margin-top:1px; font-size:10.5px; font-weight:600; color:var(--faint);}
   .lang.sel{border-color:transparent; background:rgba(99,102,241,.16); box-shadow:0 0 0 1.5px var(--accent2), 0 14px 32px -14px var(--glow);}
   .lang.sel .en{color:var(--accent2);}
   .lang .tick{position:absolute; top:8px; right:9px; width:16px; height:16px; border-radius:50%; background:var(--accent);
     color:#fff; font-size:10px; line-height:16px; opacity:0; transform:scale(.4); transition:.2s;}
   .lang.sel .tick{opacity:1; transform:none;}
-  .morerow{width:100%; max-width:588px; margin-top:14px; display:flex; align-items:center; gap:14px;}
+  .morerow{width:100%; max-width:588px; margin-top:10px; display:flex; align-items:center; gap:14px;}
   .morerow label{color:var(--faint); font-size:12.5px; font-weight:600; white-space:nowrap;}
   /* custom dark dropdown (native <select> pops a white, unthemed, hard-to-use list in WebView2) */
   .dd{position:relative; flex:1; -webkit-app-region:no-drag;}
