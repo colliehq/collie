@@ -316,6 +316,30 @@ def cmd_browser_bridge(args):
     return bb.main(argv)
 
 
+def cmd_record(args):
+    """Screen recording with a circular webcam bubble + mic (Loom / Reframe style), via ffmpeg.
+    Sub-actions: start (default) / stop / status / devices. See harness/record.py."""
+    from . import record as rec
+    action = getattr(args, "record_action", None) or "start"
+    try:
+        if action == "stop":
+            print(rec.stop())
+        elif action == "status":
+            print(rec.status())
+        elif action == "devices":
+            cams, mics = rec.list_dshow_devices()
+            print("cameras:\n  " + ("\n  ".join(cams) or "(none found)"))
+            print("microphones:\n  " + ("\n  ".join(mics) or "(none found)"))
+        else:  # start
+            print(rec.start(webcam=args.webcam, mic=args.mic, fps=args.fps,
+                            cam_size=args.cam_size, margin=args.margin, out=args.out,
+                            no_cam=args.no_cam, no_mic=args.no_mic))
+        return 0
+    except Exception as e:
+        print("record: %s" % e)
+        return 1
+
+
 def cmd_acp(args):
     """Serve collie as an ACP agent over stdio (the editor spawns this)."""
     # A human running `collie acp` in a terminal has a tty on stdio, not the pipes the ACP
@@ -987,8 +1011,8 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "mcp", "init", "setup",
-        "jobs", "config"}
+        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "record", "mcp", "init",
+        "setup", "jobs", "config"}
 
 
 def _setup_wizard(force=False):
@@ -1190,6 +1214,24 @@ def main(argv=None):
                     help="start the bridge hidden at every logon (keeps real-browser powers)")
     pb.add_argument("--uninstall", action="store_true", help="remove the logon autostart")
     pb.set_defaults(fn=cmd_browser_bridge)
+
+    # record: Loom/Reframe-style screen capture with a circular webcam bubble + mic, via ffmpeg
+    prc = sub.add_parser("record", help="screen recording with a circular webcam bubble + mic "
+                                        "(start / stop / status / devices)")
+    prc.add_argument("record_action", nargs="?", default="start",
+                     choices=["start", "stop", "status", "devices"],
+                     help="start (default), stop, status, or list devices")
+    prc.add_argument("--webcam", default=None,
+                     help="camera device name (default: first found; see `record devices`)")
+    prc.add_argument("--mic", default=None, help="microphone device name (default: first found)")
+    prc.add_argument("--no-cam", dest="no_cam", action="store_true", help="screen only, no webcam bubble")
+    prc.add_argument("--no-mic", dest="no_mic", action="store_true", help="no microphone audio")
+    prc.add_argument("--fps", type=int, default=30, help="frame rate (default 30)")
+    prc.add_argument("--cam-size", dest="cam_size", type=int, default=240,
+                     help="webcam bubble diameter in px (default 240)")
+    prc.add_argument("--margin", type=int, default=40, help="bubble margin from the corner in px (default 40)")
+    prc.add_argument("--out", default=None, help="output file (default ~/Videos/Collie/collie-<ts>.mkv)")
+    prc.set_defaults(fn=cmd_record)
 
     # loop: autonomous goal-directed iteration — run the agent repeatedly toward a goal, stopping
     # when an EXECUTED check passes (on brand: the loop ends on real green, not the model's word).
