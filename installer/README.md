@@ -1,4 +1,4 @@
-# Collie — Windows installer
+# Collie — installers
 
 `collie.iss` builds **`Collie-Setup.exe`**: a single file a non-technical user double-clicks to get
 Collie — a real desktop app with a Start-menu/desktop icon, no Python, no terminal, no `pip`, no PATH
@@ -54,6 +54,34 @@ The version comes from `harness/__init__.py` (single source of truth) and is pas
   shortcut.
 
 On uninstall it stops the wallpaper, removes both logon autostarts, and deletes `{app}`.
+
+## macOS — `build_mac.sh`
+
+```bash
+bash installer/build_mac.sh                 # build + ad-hoc sign (local use)
+bash installer/build_mac.sh --sign          # sign with the best identity in the keychain
+bash installer/build_mac.sh --sign --dmg    # …and wrap it in Collie-<ver>.dmg
+bash installer/build_mac.sh --sign --dmg --notarize <profile>
+```
+
+**Why a bundle when `pip install collie-harness` already works: identity.** macOS attaches TCC
+permissions to the *application*, so a pip install makes `collie record` ask for Screen Recording on
+behalf of your **terminal** — which then holds blanket screen access forever, and System Settings
+lists "Terminal" rather than Collie. The PyObjC desktop wallpaper has the same problem in reverse:
+unbundled, it appears in the window list as "Python". The bundle fixes both.
+
+Distribution needs a **Developer ID Application** certificate — an *Apple Development* cert signs
+for local use only, and both Gatekeeper and notarisation reject it (the script says so and carries
+on, so a local build still works). Create one in Xcode → Settings → Accounts → Manage Certificates
+→ **+** → Developer ID Application; only the team's Account Holder can. Then:
+
+```bash
+xcrun notarytool store-credentials collie --apple-id <id> --team-id <team> --password <app-specific>
+```
+
+This builds the **developer** bundle: it launches the collie already installed on the machine.
+Bundling a private CPython — what `build_payload.ps1` does on Windows, for users with no Python —
+is a separate step and the thing standing between this and a real one-click macOS download.
 
 ## Notes
 
