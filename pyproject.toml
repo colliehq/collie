@@ -20,8 +20,7 @@ dependencies = []                       # core is stdlib-only
 local = ["onnxruntime", "tokenizers", "huggingface-hub", "numpy"]
 fastembed = ["fastembed"]               # opt-in: jina-v3 / other fastembed models (jina is CC-BY-NC)
 browser = ["playwright"]
-remote = ["segno", "cryptography"]      # segno: the panel's SVG QR · cryptography: Collie Remote E2E
-                                        # (the terminal QR needs neither — harness/qr.py is stdlib)
+remote = ["cryptography"]               # Collie Remote E2E. QR codes need nothing: harness/qr.py is stdlib
 desktop = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real behind-the-icons
            "pyobjc-framework-WebKit; sys_platform == 'darwin'",     # desktop on macOS (window
            "pyobjc-framework-Quartz; sys_platform == 'darwin'"]     # levels + WKWebView, no Xcode)

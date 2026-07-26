@@ -298,6 +298,33 @@ def encode(text: str):
     return best
 
 
+def svg(text: str, quiet: int = 2, scale: int = 5, dark: str = "#000000") -> bytes:
+    """The code as an SVG with a transparent background and one <rect> per dark module.
+
+    Transparent rather than white so it can sit on a dark panel unchanged, which is what the desktop
+    control panel wants; the caller picks the module colour.
+    """
+    m = encode(text)
+    size = len(m)
+    side = (size + quiet * 2) * scale
+    rects = []
+    for y, row in enumerate(m):
+        x = 0
+        while x < size:                      # merge horizontal runs: far fewer rects than per-module
+            if not row[x]:
+                x += 1
+                continue
+            run = 0
+            while x + run < size and row[x + run]:
+                run += 1
+            rects.append('<rect x="%d" y="%d" width="%d" height="%d"/>'
+                         % ((x + quiet) * scale, (y + quiet) * scale, run * scale, scale))
+            x += run
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" '
+            'shape-rendering="crispEdges"><g fill="%s">%s</g></svg>'
+            % (side, side, side, side, dark, "".join(rects))).encode("utf-8")
+
+
 def ansi(text: str, quiet: int = 2) -> str:
     """The code as terminal text, two module rows per character row (▀ ▄ █).
 

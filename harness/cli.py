@@ -264,11 +264,23 @@ def _cmd_web_remote(args):
     print("collie remote · relay=%s · %d paired device(s)" % (relay, n_dev), flush=True)
     print("  Control panel (on this computer):  http://127.0.0.1:%d/remote" % port, flush=True)
     print("─" * 60, flush=True)
-    print("  Open on your phone:  %s" % state.link(), flush=True)
-    _print_qr(state.link())
-    print("  Pairing code: %s   (only needed to add a NEW device)" % state.paircode, flush=True)
-    if n_dev:
-        print("  Already-paired devices reconnect automatically — no code needed.", flush=True)
+
+    # Do not advertise a pairing link until the agent socket is actually up. A relay hostname that
+    # serves something else (a marketing site, say) answers the phone's POST /pair with 405, and the
+    # failure surfaces on the phone rather than here — which is exactly backwards.
+    if not state.wait_connected(10.0):
+        why = state.last_error()
+        print("  NOT connected to the relay%s" % (" — %s" % why if why else ""), flush=True)
+        print("  So no pairing link: it would point at whatever else answers on that host.", flush=True)
+        print("  Check that %s routes /relay/agent and /r/* to the relay Worker," % relay, flush=True)
+        print("  or set COLLIE_RELAY to the Worker's own hostname "
+              "(e.g. wss://<name>.<subdomain>.workers.dev).", flush=True)
+    else:
+        print("  Open on your phone:  %s" % state.link(), flush=True)
+        _print_qr(state.link())
+        print("  Pairing code: %s   (only needed to add a NEW device)" % state.paircode, flush=True)
+        if n_dev:
+            print("  Already-paired devices reconnect automatically — no code needed.", flush=True)
     print("─" * 60, flush=True)
     print("  Ctrl-C to stop (this instantly cuts off all remote access).", flush=True)
 

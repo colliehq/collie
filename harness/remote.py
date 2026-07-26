@@ -53,6 +53,8 @@ class RelayClient:
         self._log = logf or (lambda *a: None)
         self._ws: WebSocketClient | None = None
         self._stop = False
+        self.connected = threading.Event()   # set once the agent socket is actually up
+        self.last_error = None               # why the last attempt failed, for the CLI to report
         # E2E state. The keypair is per process: a restart re-pairs any E2E device, which is the
         # honest tradeoff until the device store persists K_dev (E2E_DESIGN.md §7).
         self._e2e_keys = self._make_e2e_keys()   # (private, public), advertised in `hello`
@@ -66,10 +68,13 @@ class RelayClient:
         while not self._stop:
             try:
                 self._connect_and_serve()
+                self.last_error = None
                 backoff = 1.0
             except WebSocketClosed:
+                self.connected.clear()
                 self._log("relay: connection closed")
             except Exception as e:                       # noqa: BLE001 — keep the loop alive
+                self.last_error = e
                 self._log("relay: error: %s" % e)
             if self._stop:
                 break
@@ -106,6 +111,7 @@ class RelayClient:
         self._log("relay: connecting %s (room=%s)" % (self.relay_url, self.room))
         ws = WebSocketClient.connect(url)
         self._ws = ws
+        self.connected.set()
         # announce ourselves. The desktop is the source of truth for pairing: we hand the relay the
         # AGENTKEY (proves we own this room), the current pairing code (for NEW devices), and the set
         # of already-paired device-token hashes (so RETURNING phones validate without re-pairing —
@@ -357,6 +363,19 @@ class RemoteState:
         self.client: RelayClient | None = None
         self._thread = None
         self.enabled = False
+
+    def wait_connected(self, timeout=8.0):
+        """True once the agent socket is up. The CLI waits on this before advertising a pairing link:
+        printing a link (and a QR) while the relay is unreachable sends the user's phone to whatever
+        else answers on that hostname — which, for a relay behind a marketing site, is a 405."""
+        client = self.client
+        if client is None:
+            return False
+        return client.connected.wait(timeout)
+
+    def last_error(self):
+        client = self.client
+        return client.last_error if client else None
 
     def link(self):
         if not self.paircode:

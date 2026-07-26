@@ -561,7 +561,7 @@ class Handler(BaseHTTPRequestHandler):
                 if REMOTE is None:
                     return self._send_json({"available": False})
                 return self._send_json(dict(available=True, **REMOTE.status()))
-            if path == "/api/remote/qr":             # SVG QR of the pairing link (segno, optional)
+            if path == "/api/remote/qr":             # SVG QR of the pairing link (stdlib encoder)
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_remote_qr()
@@ -1027,21 +1027,19 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(got, TOKEN)     # constant-time compare
 
     def _serve_remote_qr(self):
-        """Render the current pairing link as an SVG QR (segno, optional dep). Transparent bg + light
-        modules so it sits on the dark control panel. 501 if segno isn't installed, 404 if no link."""
+        """Render the current pairing link as an SVG QR. Transparent background + light modules so it
+        sits on the dark control panel; 404 if there is no link yet.
+
+        Uses collie's own stdlib encoder rather than segno: an optional dependency meant this returned
+        "pip install …" on a plain install, exactly when someone is first trying to pair a phone."""
         link = REMOTE.link() if REMOTE else None
         if not link:
             return self._send_json({"error": "no pairing link"}, 404)
         try:
-            import io
-            import segno
-            buff = io.BytesIO()
-            segno.make(link, error="m").save(buff, kind="svg", scale=5, border=2,
-                                             dark="#c9d1e6", light=None)
-            svg = buff.getvalue()
-        except ImportError:
-            return self._send_json({"error": "segno not installed",
-                                    "hint": "pip install collie-harness[remote]"}, 501)
+            from . import qr
+            svg = qr.svg(link, dark="#c9d1e6")
+        except ValueError as e:                  # link longer than the encoder's 106-byte ceiling
+            return self._send_json({"error": str(e)}, 500)
         except Exception as e:
             return self._send_json({"error": str(e)}, 500)
         self.send_response(200)
