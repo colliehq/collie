@@ -129,6 +129,10 @@ SCHEMA = [
 
     {"group": "Skills", "key": "SKILL_DIRS", "label": "Extra skill dirs", "type": "text", "default": "",
      "hint": "Colon-separated folders of custom skills to load in addition to the built-ins (e.g. /home/me/skills:/team/skills)."},
+
+    {"group": "Remote", "key": "REMOTE", "label": "Phone remote access", "label_zh": "手机远程访问", "type": "bool", "default": "off",
+     "hint": "Let your phone drive this Collie from anywhere, via the relay. When on, remote starts automatically whenever Collie's web server runs — manage paired devices on the /remote panel. Off cuts all remote access.",
+     "hint_zh": "让手机在任何地方通过 relay 控制这台 Collie。开启后，每次 Collie 的 web 服务启动都会自动开远程；在 /remote 面板管理已配对设备。关闭即切断所有远程访问。"},
 ]
 # ---- panel localization (zh) ----------------------------------------------------------------
 # label/hint translations applied onto SCHEMA at import; the GUI picks label_zh/hint_zh when the

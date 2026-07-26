@@ -447,11 +447,15 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "enable":                # lazily create the relay client if needed
                     rs = _ensure_remote(self.server.server_address[1])
                     rs.start()
+                    from . import settings as _s
+                    _s.update({"REMOTE": "on"})        # persist → auto-starts on next launch
                     return self._send_json(dict(ok=True, **rs.status()))
                 if REMOTE is None:
                     return self._send_json({"error": "remote not available"}, 503)
                 if action == "disable":
                     REMOTE.stop()
+                    from . import settings as _s
+                    _s.update({"REMOTE": "off"})       # persist the off state too
                     return self._send_json(dict(ok=True, **REMOTE.status()))
                 if action == "rotate":
                     return self._send_json({"ok": True, "paircode": REMOTE.rotate_code(), "link": REMOTE.link()})
@@ -1100,6 +1104,15 @@ def main(argv=None):
     # print BOTH: the pretty one for humans, the 127.0.0.1 one so the VS Code extension's regex finds a port.
     print("collie web · %s · provider=%s · Ctrl-C to stop%s" % (url, _provider(), note), flush=True)
     print("            %s" % ip_url, flush=True)
+    # Remote is a first-class, Collie-managed capability: if the user turned it on (Settings/panel),
+    # it starts automatically whenever the web server runs — no separate process, no --remote flag.
+    try:
+        from . import settings as _settings
+        if _settings.get("REMOTE") == "on":
+            _ensure_remote(port).start()
+            print("collie remote · on (setting) · panel %s remote" % url, flush=True)
+    except Exception as e:                       # never let remote block the normal web server
+        print("collie remote: auto-start failed: %s" % e, flush=True)
     if open_browser:
         # open the browser a beat after the server is actually accepting connections
         threading.Timer(0.6, lambda: _open(url)).start()
