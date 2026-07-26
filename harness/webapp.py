@@ -58,6 +58,20 @@ _PAIR_LOCK = threading.Lock()
 _PAIR_LIVE = {}                      # secret(hex) -> expiry timestamp
 _PAIR_FAILS = []                     # timestamps of failed redemptions, for a crude rate limit
 
+# /api/desktop/audio proxies IP+time-locked CDN audio so playback is same-origin (Web Audio analyser
+# works, Range/seek forwards). It fetches an arbitrary URL, so it is an SSRF surface: only these CDN
+# hosts are allowed, and only over https. Kept module-level so it is unit-testable.
+_AUDIO_OK_HOSTS = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaized.net", "hdslb.com")
+
+
+def _audio_host_ok(target):
+    """True only for an https URL whose host is one of _AUDIO_OK_HOSTS — matched EXACTLY or as a
+    DOTTED subdomain. 'evilgooglevideo.com' must NOT pass (a bare endswith would let it through)."""
+    if not (target or "").startswith("https://"):
+        return False
+    host = (urllib.parse.urlparse(target).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in _AUDIO_OK_HOSTS)
+
 
 def _pair_mint():
     """A fresh pairing secret. Also expires stale ones, so the dict can't grow."""
@@ -555,10 +569,7 @@ class Handler(BaseHTTPRequestHandler):
                     target = base64.urlsafe_b64decode((qs.get("u") or [""])[0]).decode("utf-8")
                 except Exception:
                     return self._send_json({"error": "bad url"}, 400)
-                host = (urllib.parse.urlparse(target).hostname or "").lower()
-                _ok_hosts = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaized.net", "hdslb.com")
-                # exact host or a DOTTED subdomain — "evilgooglevideo.com" must NOT pass a bare endswith
-                if not (target.startswith("https://") and any(host == h or host.endswith("." + h) for h in _ok_hosts)):
+                if not _audio_host_ok(target):
                     return self._send_json({"error": "forbidden host"}, 403)
                 hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                 rng = self.headers.get("Range")
@@ -971,7 +982,7 @@ class Handler(BaseHTTPRequestHandler):
             # past _peer_ok, so it needs no second copy; one that doesn't gets the page tokenless.
             # ...and NOT to a relay-replayed request: the relay injects ?token= server-side, so the
             # phone never needs (or should get) the raw token embedded in the page it receives.
-            token = TOKEN if (self._peer_is_loopback() and not self._is_relay()) else ""
+            token = self._embed_token()
             meta = ('<meta name="collie-token" content="%s">\n' % token).encode()
             for anchor in (b'<meta charset="utf-8">', b'<head>', b'<!doctype html>', b'<!DOCTYPE html>'):
                 if anchor in html:
@@ -994,7 +1005,7 @@ class Handler(BaseHTTPRequestHandler):
             if name.endswith(".html"):
                 # same rule as the index: embed the CSRF token only for a DIRECT loopback page load,
                 # never for a relay-replayed request (the phone gets ?token= injected server-side).
-                tok = TOKEN if (self._peer_is_loopback() and not self._is_relay()) else ""
+                tok = self._embed_token()
                 meta = ('<meta name="collie-token" content="%s">\n<meta name="collie-boot" content="%s">\n' % (tok, BOOT)).encode()
                 for anchor in (b'<meta charset="utf-8">', b'<head>', b'<!doctype html>', b'<!DOCTYPE html>'):
                     if anchor in data:
@@ -1088,6 +1099,13 @@ class Handler(BaseHTTPRequestHandler):
             return (self.headers.get("X-Collie-Relay") or "") == "1"
         except Exception:
             return False
+
+    def _embed_token(self) -> str:
+        """The CSRF token to bake into a served HTML page — but ONLY for a direct loopback page load.
+        A non-loopback client got past _peer_ok with a token already, so it needs no second copy; and a
+        relay-replayed request (a phone) must NEVER get the raw token — the relay injects ?token=
+        server-side instead. Both cases fall through to '' (a tokenless page)."""
+        return TOKEN if (self._peer_is_loopback() and not self._is_relay()) else ""
 
     def _peer_ok(self, parsed) -> bool:
         """Everything a NON-loopback client asks for must carry the token.
