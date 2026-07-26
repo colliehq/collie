@@ -348,6 +348,30 @@ begin
   Repaint;
 end;
 
+{ Before copying any files, stop a PREVIOUS install's collie that's running OUT OF the install dir —
+  the live wallpaper engine, the desktop app window, the browser bridge. They hold python.dll/*.pyd
+  open, so an upgrade/reinstall would fail the copy with an "Abort/Retry/Ignore" that
+  /SUPPRESSMSGBOXES turns into exit code 5. We kill only processes whose path is under the install
+  dir, so an unrelated Python elsewhere is never touched. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var rc: Integer; app: String;
+begin
+  Result := '';
+  app := ExpandConstant('{app}');
+  if DirExists(app) then begin
+    { let it shut the wallpaper down cleanly first (best-effort) }
+    try Exec(app + '\python\pythonw.exe', '-m harness.cli wallpaper --stop', '',
+             SW_HIDE, ewWaitUntilTerminated, rc); except end;
+    { then force-stop anything still running from the install dir so its files are unlocked }
+    Exec(ExpandConstant('{cmd}'),
+         '/C powershell -NoProfile -Command "Get-Process python,pythonw,collie-wallpaper '
+         + '-ErrorAction SilentlyContinue | Where-Object { $_.Path -like ''' + app + '\*'' } '
+         + '| Stop-Process -Force"',
+         '', SW_HIDE, ewWaitUntilTerminated, rc);
+    Sleep(700);
+  end;
+end;
+
 procedure InitializeWizard;
 var y: Integer; lbl: TNewStaticText; divider: TPanel;
 begin

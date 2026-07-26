@@ -133,6 +133,9 @@
   .spinner .core img{width:44px; height:44px; filter:drop-shadow(0 6px 20px rgba(120,120,250,.5));}
   .spinner .orb{position:absolute; inset:0; border-radius:50%; border:2.5px solid transparent; border-top-color:var(--accent2); border-right-color:var(--accent); animation:spin 1.05s cubic-bezier(.6,.15,.4,.85) infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
+  /* failure: stop the orb spinning and turn everything coral so it reads as an error, not a hang */
+  .spinner.err .orb{animation:none; border-top-color:#e0574a; border-right-color:#e0574a; border-bottom-color:#e0574a; border-left-color:#e0574a;}
+  .prog-status.err{color:#e0574a;}
   .prog-status{font-family:'Quicksand'; font-size:18px; font-weight:600;}
   .prog-sub{margin-top:7px; color:var(--muted); font-size:13px; font-weight:500; min-height:17px;}
   .track{margin-top:24px; height:6px; border-radius:99px; background:rgba(255,255,255,.08); overflow:hidden;}
@@ -187,9 +190,11 @@
       <div class="nav"><button class="btn ghost" data-go="language">Back</button><button class="btn primary" id="installBtn">Install</button></div>
     </section>
     <section class="screen" data-screen="installing">
-      <div class="prog-wrap"><div class="spinner"><div class="orb"></div><div class="core"><img src="collie-logo.png" alt=""></div></div>
+      <div class="prog-wrap"><div class="spinner" id="spinner"><div class="orb"></div><div class="core"><img src="collie-logo.png" alt=""></div></div>
         <div class="prog-status" id="progStatus">Preparing…</div><div class="prog-sub" id="progSub"></div>
-        <div class="track"><div class="fill" id="progFill"></div></div></div>
+        <div class="track"><div class="fill" id="progFill"></div></div>
+        <div class="nav" id="failNav" style="display:none; position:static; height:auto; margin-top:24px; padding:0; justify-content:center;">
+          <button class="btn ghost" id="failClose">Close</button></div></div>
     </section>
     <section class="screen" data-screen="done">
       <div class="check"><svg viewBox="0 0 60 60"><circle cx="30" cy="30" r="24"/><path d="M18 31 l8 8 l16 -18"/></svg></div>
@@ -221,10 +226,13 @@
   let current="welcome"; function goto(n){ if(n===current)return; const f=$(`.screen[data-screen="${current}"]`),t=$(`.screen[data-screen="${n}"]`); f.classList.add("leaving"); f.classList.remove("active"); setTimeout(()=>f.classList.remove("leaving"),550); t.classList.add("active"); current=n; $("#brandmini").classList.toggle("show",n!=="welcome"); }
   $$("[data-go]").forEach(b=>b.onclick=()=>goto(b.dataset.go));
   $("#closeBtn").onclick=()=>send("close"); $("#doneClose").onclick=()=>send("close"); $("#launchBtn").onclick=()=>send("launch");
+  $("#failClose").onclick=()=>send("close");
   document.querySelector(".titlebar").addEventListener("mousedown",(e)=>{ if(e.target.closest(".winbtn"))return; if(e.button===0)send("drag"); });
   $("#browseBtn").onclick=(ev)=>{ ev.stopPropagation(); send("browse"); };   // host opens a folder picker
   $("#installBtn").onclick=()=>{ goto("installing"); send("install",{lang:state.lang,wallpaper:state.wallpaper,dir:state.dir}); if(!host)sim(); };
-  function onP(p){ if(p.phase!=null)$("#progStatus").textContent=p.phase; if(p.detail!=null)$("#progSub").textContent=p.detail; if(p.pct!=null)$("#progFill").style.width=Math.max(3,Math.min(100,p.pct))+"%"; if(p.done)setTimeout(()=>goto("done"),550); }
+  function onP(p){ if(p.phase!=null)$("#progStatus").textContent=p.phase; if(p.detail!=null)$("#progSub").textContent=p.detail; if(p.pct!=null)$("#progFill").style.width=Math.max(3,Math.min(100,p.pct))+"%";
+    if(p.phase&&/^setup (failed|error)/i.test(p.phase)){ document.getElementById("spinner").classList.add("err"); $("#progStatus").classList.add("err"); document.getElementById("failNav").style.display="flex"; }
+    if(p.done)setTimeout(()=>goto("done"),550); }
   // PostWebMessageAsJson delivers e.data already parsed (an object); PostWebMessageAsString delivers
   // a string. Handle both. {type:"dir"} = the folder the user picked; anything else is progress.
   if(host)host.addEventListener("message",e=>{ var d=e.data; if(typeof d==="string"){ try{ d=JSON.parse(d); }catch(_){ return; } } if(!d||typeof d!=="object")return;
