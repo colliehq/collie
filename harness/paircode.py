@@ -232,6 +232,9 @@ _PAGE = """<!doctype html>
   main { min-height:100%%; display:flex; flex-direction:column; align-items:center;
          justify-content:center; gap:22px; padding:28px; box-sizing:border-box; text-align:center; }
   h1 { font-size:22px; margin:0; font-weight:650; }
+  /* the logo is a near-black head on transparency, so on the dark theme it needs lifting */
+  .logo { display:block; }
+  @media (prefers-color-scheme: dark) { .logo { filter:invert(1) hue-rotate(180deg); } }
   p  { margin:0; color:var(--muted); max-width:34em; }
   .stage { position:relative; width:min(74vmin,560px); aspect-ratio:1; background:#FBFCFE;
            border-radius:24px; padding:14px; box-sizing:border-box; }
@@ -246,6 +249,7 @@ _PAGE = """<!doctype html>
            background:var(--pine); color:#fff; cursor:pointer; }
 </style>
 <main>
+  <img class="logo" src="/logo.svg" alt="collie" width="56" height="56">
   <h1>Scan with CollieIOS</h1>
   <p>Open the app, tap <b>Scan the pair code</b>, and point the camera at this screen. The code
      carries a one-time secret — never your token.</p>
