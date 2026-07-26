@@ -8,8 +8,14 @@ what it carries is a one-shot secret that is useless without also reaching the m
 PROTOCOL v1 — keep these numbers in lockstep with the JS renderer below and the Swift decoder in
 CollieIOS (`PairCode.swift`); `tests/test_paircode.py` asserts the JS copy matches this module.
 
-  payload    15 bytes: [0] version=1 · [1:5] IPv4 · [5:7] port (big endian) · [7:15] secret
-  ecc        Reed-Solomon over GF(256), 10 check bytes -> 25 bytes total = 200 bits
+  payload    18 bytes, byte 0 says which kind:
+               type 1 (LAN)    [1:5] IPv4 · [5:7] port (big endian) · [7:15] secret · [15:18] pad
+               type 2 (relay)  [1:13] room (the 12 raw bytes behind token_urlsafe(12))
+                               [13:18] pair code, 8 chars of a 30-letter alphabet packed base-30
+  ecc        Reed-Solomon over GF(256), 7 check bytes -> 25 bytes total = 200 bits, unchanged
+             geometry. 7 rather than 10 because this decoder DETECTS and never corrects: a frame with
+             non-zero syndromes is dropped and the next one tried, so the check bytes only have to
+             make a misread implausible (~2^-56), not repairable.
   geometry   normalised to the code's outer radius R = 1.0
                1.00 .. 0.90   locator: a solid dark annulus (what the decoder finds first)
                0.90 .. 0.86   quiet gap
@@ -26,18 +32,23 @@ CollieIOS (`PairCode.swift`); `tests/test_paircode.py` asserts the JS copy match
 """
 from __future__ import annotations
 
+import base64
 import struct
 import zlib
 
 from .qr import _ec_codewords
 
-VERSION = 1
+VERSION = 1                               # kept as the LAN type id, so v1 codes still parse
+TYPE_LAN = 1
+TYPE_RELAY = 2
+# the pair-code alphabet used by harness/remote_identity.gen_paircode
+PAIR_ALPHA = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 SECTORS = 52
 RINGS = 4
 DATA_SECTORS = SECTORS - 2                # sector 0 and 1 are the orientation spoke
 DATA_BITS = RINGS * DATA_SECTORS          # 200
-PAYLOAD_BYTES = 15
-ECC_BYTES = 10                            # RS(25,15): corrects up to 5 byte errors
+PAYLOAD_BYTES = 18
+ECC_BYTES = 7                             # detection only — see the module docstring
 # radial band edges, outer -> inner, as fractions of the outer radius
 LOCATOR = (1.00, 0.90)
 GAP = (0.90, 0.86)
@@ -61,17 +72,52 @@ def payload_bytes(host: str, port: int, secret: str) -> bytes:
     raw = bytes.fromhex(secret)
     if len(raw) != 8:
         raise ValueError("pairing secret must be 8 bytes, got %d" % len(raw))
-    out = bytes([VERSION]) + bytes(octets) + struct.pack(">H", int(port)) + raw
+    out = bytes([TYPE_LAN]) + bytes(octets) + struct.pack(">H", int(port)) + raw
+    out += b"\x00" * (PAYLOAD_BYTES - len(out))          # pad to the fixed payload width
     assert len(out) == PAYLOAD_BYTES
     return out
+
+
+def relay_payload_bytes(room: str, paircode: str) -> bytes:
+    """A relay pairing code: the room and the pair code, nothing else.
+
+    The relay HOST is not in here — a hostname does not fit in 18 bytes, and encoding one would mean a
+    denser symbol for everyone. So a ring code always means "the default relay"; a self-hosted worker
+    pairs with the QR fallback, which carries a full URL.
+    """
+    raw = base64.urlsafe_b64decode(room + "=" * (-len(room) % 4))
+    if len(raw) != 12:
+        raise ValueError("room must be 12 bytes (token_urlsafe(12)), got %d" % len(raw))
+    code = paircode.upper()
+    if len(code) != 8 or any(c not in PAIR_ALPHA for c in code):
+        raise ValueError("pair code must be 8 characters of %r" % PAIR_ALPHA)
+    n = 0
+    for c in code:                                        # base-30 into exactly 5 bytes
+        n = n * len(PAIR_ALPHA) + PAIR_ALPHA.index(c)
+    out = bytes([TYPE_RELAY]) + raw + n.to_bytes(5, "big")
+    assert len(out) == PAYLOAD_BYTES
+    return out
+
+
+def read_relay_payload(data: bytes):
+    """(room, paircode) from a type-2 payload."""
+    if len(data) != PAYLOAD_BYTES or data[0] != TYPE_RELAY:
+        raise ValueError("not a relay pair code")
+    room = base64.urlsafe_b64encode(data[1:13]).rstrip(b"=").decode("ascii")
+    n = int.from_bytes(data[13:18], "big")
+    chars = []
+    for _ in range(8):
+        n, r = divmod(n, len(PAIR_ALPHA))
+        chars.append(PAIR_ALPHA[r])
+    return room, "".join(reversed(chars))
 
 
 def read_payload(data: bytes):
     """The inverse: (host, port, secret_hex). Raises on a wrong version/length."""
     if len(data) != PAYLOAD_BYTES:
         raise ValueError("expected %d payload bytes, got %d" % (PAYLOAD_BYTES, len(data)))
-    if data[0] != VERSION:
-        raise ValueError("unsupported pair-code version %d" % data[0])
+    if data[0] != TYPE_LAN:
+        raise ValueError("not a LAN pair code (type %d)" % data[0])
     host = ".".join(str(b) for b in data[1:5])
     port = struct.unpack(">H", data[5:7])[0]
     return host, port, data[7:15].hex()
@@ -257,7 +303,7 @@ _PAGE = """<!doctype html>
     <canvas id="code" width="1024" height="1024"></canvas>
   </div>
   <div class="ttl" id="ttl"></div>
-  <div><code>%(host)s:%(port)d</code></div>
+  <div><code>%(host)s</code></div>
   <button id="again" hidden>New code</button>
 </main>
 <script>
@@ -365,9 +411,10 @@ function drawFace(ctx, cx, cy, outer, dark, light) {
 
 draw();
 
-let left = TTL;
+let left = TTL;   // 0 means "no expiry of its own" (a relay pair code rotates on the desktop)
 const ttl = document.getElementById('ttl'), again = document.getElementById('again');
 function tick() {
+  if (!TTL) { ttl.textContent = 'rotate the code from the desktop panel if you need a fresh one'; return; }
   if (left <= 0) {
     ttl.textContent = 'this code has expired';
     document.getElementById('stage').classList.add('dead');
@@ -388,7 +435,7 @@ def page(payload: bytes, host: str, port: int, ttl: int) -> str:
     """The /pair screen. The bits are computed server-side; the JS only draws them."""
     grid = rings(payload)
     return _PAGE % {
-        "host": host,
+        "host": host if ":" in str(host) or "/" in str(host) else "%s:%d" % (host, port),
         "port": port,
         "sectors": SECTORS,
         "rings": RINGS,

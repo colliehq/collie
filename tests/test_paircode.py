@@ -182,10 +182,29 @@ PAYLOAD = paircode.payload_bytes(HOST, PORT, SECRET)
 
 
 def test_payload_layout():
-    check(len(PAYLOAD) == 15, "payload is 15 bytes (version + IPv4 + port + 8-byte secret)")
+    check(len(PAYLOAD) == 18, "payload is 18 bytes (type + IPv4 + port + secret + pad)")
     check(paircode.read_payload(PAYLOAD) == (HOST, PORT, SECRET), "payload round-trips in memory")
     check(len(paircode.codewords(PAYLOAD)) * 8 == paircode.DATA_BITS,
           "25 codewords fill exactly the %d data bits" % paircode.DATA_BITS)
+
+    # the relay payload: the reason the split moved to 18 + 7
+    ROOM, CODE = "8diffZ9dkQmSdUDW", "NSTCRZ9F"
+    relay = paircode.relay_payload_bytes(ROOM, CODE)
+    check(len(relay) == 18, "a relay payload is the same 18 bytes")
+    check(paircode.read_relay_payload(relay) == (ROOM, CODE), "room + pair code round-trip exactly")
+    check(relay[0] == paircode.TYPE_RELAY and PAYLOAD[0] == paircode.TYPE_LAN,
+          "byte 0 distinguishes the two kinds")
+    try:
+        paircode.read_payload(relay)
+        check(False, "a relay payload is not mistaken for a LAN one")
+    except ValueError:
+        check(True, "a relay payload is not mistaken for a LAN one")
+    for bad_room, bad_code in (("short", CODE), (ROOM, "LOWERcase"), (ROOM, "AAA")):
+        try:
+            paircode.relay_payload_bytes(bad_room, bad_code)
+            check(False, "refuses room=%r code=%r" % (bad_room, bad_code))
+        except (ValueError, Exception):
+            check(True, "refuses room=%r code=%r" % (bad_room, bad_code))
     for bad in ("::1", "1.2.3", "1.2.3.999"):
         try:
             paircode.payload_bytes(bad, PORT, SECRET)

@@ -1008,15 +1008,25 @@ class Handler(BaseHTTPRequestHandler):
         if not self._peer_is_loopback():
             return self._send_json({"error": "pairing page is loopback-only"}, 403)
         from . import paircode
-        secret = _pair_mint()
-        host = _pair_advertised_host()
+        port = self.server.server_address[1]
+
+        # With Collie Remote on, the phone is going to reach us THROUGH the relay, so the code has to
+        # carry the room + relay pair code rather than a LAN address it cannot route to. Same symbol,
+        # different payload type.
+        remote = REMOTE if (REMOTE and REMOTE.enabled and REMOTE.paircode) else None
         try:
-            payload = paircode.payload_bytes(host, self.server.server_address[1], secret)
+            if remote is not None:
+                payload = paircode.relay_payload_bytes(remote.identity.room, remote.paircode)
+                target, ttl = remote.link() or "the relay", 0
+            else:
+                secret = _pair_mint()
+                host = _pair_advertised_host()
+                payload = paircode.payload_bytes(host, port, secret)
+                target, ttl = "%s:%d" % (host, port), _PAIR_TTL
         except Exception as e:
             return self._send_html(("cannot build a pair code: %s" % e).encode(), 500,
                                    "text/plain; charset=utf-8")
-        html = paircode.page(payload, host=host, port=self.server.server_address[1],
-                             ttl=_PAIR_TTL)
+        html = paircode.page(payload, host=target, port=port, ttl=ttl)
         self._send_html(html.encode("utf-8"))
 
     def _authed(self, parsed) -> bool:
