@@ -15,4 +15,4 @@ Seams (abstract base -> v1 impl -> future):
 import warnings as _warnings
 _warnings.filterwarnings("ignore", message=r".*doesn't match a supported version.*")
 
-__version__ = "0.19.0"   # iteration log in CHANGELOG.md; runs are tagged with this
+__version__ = "0.19.1"   # iteration log in CHANGELOG.md; runs are tagged with this
