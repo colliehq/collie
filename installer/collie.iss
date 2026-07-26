@@ -182,15 +182,20 @@ Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"
   Description: "{cm:RunApp}"; Flags: runhidden postinstall nowait skipifsilent
 
 [UninstallRun]
-; stop what's running and drop the logon autostarts before the files disappear
-Filename: "{#PyW}"; Parameters: "-m harness.cli wallpaper --stop"; WorkingDir: "{app}\python"; \
-  RunOnceId: "StopWallpaper"; Flags: runhidden waituntilterminated
-Filename: "{#PyW}"; Parameters: "-m harness.cli wallpaper --uninstall"; WorkingDir: "{app}\python"; \
-  RunOnceId: "UninstallWallpaper"; Flags: runhidden waituntilterminated
-Filename: "{#PyW}"; Parameters: "-m harness.cli browser-bridge --uninstall"; WorkingDir: "{app}\python"; \
-  RunOnceId: "UninstallBridge"; Flags: runhidden waituntilterminated
+; Stop what's running from the install dir BEFORE the files disappear — FAST (taskkill + one short
+; powershell), NOT by cold-starting the embeddable python three times to run harness commands: each
+; of those loads collie's heavy deps (onnx/providers), so the old approach made uninstall look hung
+; for ~40s. The logon autostart .vbs files are removed by [UninstallDelete] below (instant, no python).
+Filename: "{cmd}"; Parameters: "/C taskkill /F /IM collie-wallpaper.exe"; \
+  RunOnceId: "KillWallpaper"; Flags: runhidden waituntilterminated
+Filename: "{cmd}"; \
+  Parameters: "/C powershell -NoProfile -Command ""Get-Process python,pythonw -EA SilentlyContinue | Where-Object {{ $_.Path -like '{app}\*' }} | Stop-Process -Force"""; \
+  RunOnceId: "KillAppPython"; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
+; the logon autostart launchers (Startup folder) — removed directly so we don't need to run python
+Type: files; Name: "{userstartup}\collie-wallpaper.vbs"
+Type: files; Name: "{userstartup}\collie-bridge.vbs"
 ; Inno only removes what it INSTALLED. The app generates files afterward that it can't track — the
 ; engine .exe compiled on first run from the shipped C# source, __pycache__ (.pyc), and any runtime
 ; data written under {app}. Without this, uninstall leaves ~180 MB of the bundled runtime behind.
