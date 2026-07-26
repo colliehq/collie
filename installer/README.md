@@ -86,18 +86,43 @@ behalf of your **terminal** — which then holds blanket screen access forever, 
 lists "Terminal" rather than Collie. The PyObjC desktop wallpaper has the same problem in reverse:
 unbundled, it appears in the window list as "Python". The bundle fixes both.
 
-Distribution needs a **Developer ID Application** certificate — an *Apple Development* cert signs
-for local use only, and both Gatekeeper and notarisation reject it (the script says so and carries
-on, so a local build still works). Create one in Xcode → Settings → Accounts → Manage Certificates
-→ **+** → Developer ID Application; only the team's Account Holder can. Then:
+Distribution needs a **Developer ID Application** certificate. An *Apple Development* cert signs for
+local use only: `codesign --verify` passes, and Gatekeeper still refuses it on every Mac but the one
+that built it. `--sign` therefore **errors out** rather than quietly downgrading — a dmg that looks
+shippable and isn't is worse than no dmg. Pass `--allow-development` if a local build is what you
+actually want. See [DEVELOPER_ID.md](DEVELOPER_ID.md) for how to get the certificate (Account Holder
+only — Apple forbids it over the App Store Connect API).
+
+Notarisation credentials, once:
 
 ```bash
-xcrun notarytool store-credentials collie --apple-id <id> --team-id <team> --password <app-specific>
+xcrun notarytool store-credentials collie \
+  --key ~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8 \
+  --key-id <KEYID> --issuer <ISSUER-UUID>
 ```
 
-This builds the **developer** bundle: it launches the collie already installed on the machine.
-Bundling a private CPython — what `build_payload.ps1` does on Windows, for users with no Python —
-is a separate step and the thing standing between this and a real one-click macOS download.
+An API key beats an app-specific password here: it survives an Apple ID password change and is
+scoped to what it is allowed to do.
+
+However it was built and signed, the script ends by asking **Gatekeeper** for its verdict on the app
+and the dmg, and exits non-zero if either is refused after a notarisation run. `codesign --verify`
+only attests that a signature is internally consistent — it is `spctl` that predicts what someone
+downloading the dmg will see.
+
+## Homebrew — `brew_release.sh`
+
+For developers, `brew install wudaming00/collie/collie` beats a dmg. The tap lives at
+`wudaming00/homebrew-collie`; the formula installs the stdlib-only core into its own virtualenv and
+leaves the heavy extras (`local`, `tui`, `desktop`) to `collie setup`.
+
+```bash
+bash installer/brew_release.sh              # dry run: build the sdist, rewrite url + sha256
+bash installer/brew_release.sh --publish    # …and tag, release, upload and push the tap
+```
+
+The tarball is published as a **release asset on the tap**, not fetched from the source repo, because
+`wudaming00/collie` is private and `brew install` cannot authenticate to it. If that repo is ever
+made public, point `url` at its tag tarball and drop the indirection.
 
 ## Notes
 

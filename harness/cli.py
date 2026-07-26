@@ -12,6 +12,7 @@ import os
 import re
 import sys
 
+from . import __version__
 from .providers import make_provider
 from .embeddings import make_embedding
 from .memory import SqliteMemory
@@ -1311,6 +1312,9 @@ def main(argv=None):
             print("(rich not installed — plain repl. `pipx inject collie-harness rich` unlocks `collie tui`)")
 
     p = argparse.ArgumentParser(prog="collie", description="collie — evolvable coding-agent harness")
+    # every packaging path wants to ask a built binary what it is — the Homebrew formula's `test do`,
+    # a bug report, `spctl` triage on the .app. Subcommands make that awkward, so it lives up here.
+    p.add_argument("--version", action="version", version="collie %s" % __version__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("selftest").set_defaults(fn=cmd_selftest)

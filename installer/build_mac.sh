@@ -22,10 +22,11 @@ cd "$(dirname "$0")/.."
 
 VERSION=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"',open('harness/__init__.py').read()).group(1))")
 APP="installer/Output/Collie.app"
-SIGN=0; DMG=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop"
+SIGN=0; DMG=0; ALLOW_DEV=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop"
 while [ $# -gt 0 ]; do
   case "$1" in
     --sign) SIGN=1 ;;
+    --allow-development) ALLOW_DEV=1 ;;
     --dmg) DMG=1 ;;
     --notarize) NOTARY_PROFILE="${2:-}"; shift ;;
     --bundle-python) BUNDLE_PY=1 ;;
@@ -146,10 +147,17 @@ if [ "$SIGN" = "1" ]; then
   if [ -z "$ID" ]; then
     ID=$(security find-identity -v -p codesigning | { grep -E "Apple Develop(ment|er)" || true; } \
          | head -1 | sed -E 's/.*"(.*)"/\1/')
-    echo "  !! no 'Developer ID Application' certificate — falling back to: $ID"
-    echo "     That signs for LOCAL use only. Gatekeeper will reject it on anyone else's Mac, and"
-    echo "     notarisation will refuse it. Create a Developer ID Application cert (Xcode ->"
-    echo "     Settings -> Accounts -> Manage Certificates -> + ; team Account Holder only)."
+    if [ "$ALLOW_DEV" != "1" ]; then
+      echo "  no 'Developer ID Application' certificate." >&2
+      echo "  Signing with the Development cert instead would produce a .dmg that LOOKS shippable and" >&2
+      echo "  that Gatekeeper rejects on every Mac but this one — so this is an error, not a warning." >&2
+      echo "  Create one (Account Holder only, Apple forbids it over the App Store Connect API):" >&2
+      echo "    Xcode -> Settings -> Accounts -> Manage Certificates -> + -> Developer ID Application" >&2
+      echo "  Or pass --allow-development if you genuinely only want a local build." >&2
+      exit 1
+    fi
+    echo "  !! --allow-development: signing with $ID"
+    echo "     LOCAL USE ONLY. Gatekeeper rejects this on anyone else's Mac; notarisation refuses it."
   fi
   [ -n "$ID" ] || { echo "  no codesigning identity at all" >&2; exit 1; }
   sign_nested "$ID" --timestamp
@@ -176,10 +184,36 @@ if [ "$DMG" = "1" ]; then
     xcrun stapler staple "$DMG_PATH"
     echo "  stapled."
   else
-    echo "  not notarised. Store credentials once:"
-    echo "     xcrun notarytool store-credentials collie --apple-id <id> --team-id <team> --password <app-specific>"
+    echo "  not notarised. Store credentials once (an App Store Connect API key beats an"
+    echo "  app-specific password: it does not expire on a password change and is scoped):"
+    echo "     xcrun notarytool store-credentials collie \\"
+    echo "       --key ~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8 \\"
+    echo "       --key-id <KEYID> --issuer <ISSUER-UUID>"
     echo "   then re-run with:  --notarize collie"
   fi
+fi
+
+# ── the check that matters ───────────────────────────────────────────────────────────────────────
+# `codesign --verify` only says the signature is internally consistent — a Development-signed bundle
+# passes it happily and is still refused on every other Mac. Gatekeeper's own verdict is the only one
+# that predicts what a downloader sees, so ask for it by name and let it set the exit status.
+verdict() {
+  local what="$1" path="$2"; shift 2
+  local out; out=$(spctl -a -vv "$@" "$path" 2>&1) || true
+  if grep -q "accepted" <<<"$out"; then
+    echo "  gatekeeper: $what ACCEPTED — $(grep -o 'source=.*' <<<"$out" | head -1)"
+    return 0
+  fi
+  echo "  gatekeeper: $what REJECTED — $(head -2 <<<"$out" | tail -1)" >&2
+  return 1
+}
+
+ok=0
+verdict "app" "$APP" -t exec || ok=1
+[ "$DMG" = "1" ] && { verdict "dmg" "$DMG_PATH" -t open --context context:primary-signature || ok=1; }
+if [ "$ok" != "0" ] && [ -n "$NOTARY_PROFILE" ]; then
+  echo "  notarisation ran but Gatekeeper still refuses this build — do NOT ship it." >&2
+  exit 1
 fi
 
 echo "── done: $APP"
