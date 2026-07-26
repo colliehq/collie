@@ -75,7 +75,9 @@ meadow_assets/*_raw/
 
 # ── scratch / experiments / vendored deps — NOT for release ──────────────────
 vendor/
+bench/
 data/rebench/
+data/swebench.json
 data/*.jsonl
 data/*.txt
 data/bestof5_*.json
