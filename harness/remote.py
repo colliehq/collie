@@ -10,8 +10,11 @@ per-process CSRF TOKEN injected. So webapp.py's `_host_ok` (Host is loopback) an
 present) are satisfied untouched, and the local security model keeps holding. The local TOKEN never
 leaves the machine; the phone authenticates one layer up, at the relay.
 
-v0 scope: no E2E, plaintext pairing code, single implicit session. Concurrency, streaming (SSE),
-reconnect, and per-request isolation are here from the start because they're load-bearing.
+E2E (opt-in, per device): a phone can pair with an X25519 public key plus an HMAC over the transcript
+keyed by the pairing code. The relay cannot check that tag — it does not know the code — so it forwards
+it here; we verify it, answer with our own key and tag, and derive a per-device key. From then on that
+device's requests arrive sealed and its responses go back sealed, so a HOSTED relay routes bytes it
+cannot read. Plaintext clients keep working unchanged; see harness/e2e.py and relay/E2E_DESIGN.md.
 """
 from __future__ import annotations
 
@@ -50,6 +53,11 @@ class RelayClient:
         self._log = logf or (lambda *a: None)
         self._ws: WebSocketClient | None = None
         self._stop = False
+        # E2E state. The keypair is per process: a restart re-pairs any E2E device, which is the
+        # honest tradeoff until the device store persists K_dev (E2E_DESIGN.md §7).
+        self._e2e_keys = self._make_e2e_keys()   # (private, public), advertised in `hello`
+        self._e2e_devices = {}               # device_id -> K_dev
+        self._e2e_seq = {}                   # (device_id, rid) -> next outbound seq
 
     # ------------------------------------------------------------------ lifecycle
     def run_forever(self):
@@ -104,6 +112,7 @@ class RelayClient:
         # this is what makes pairing survive a desktop restart / 24h offline).
         ws.send_text(json.dumps({
             "t": "hello", "v": 1, "room": self.room, "agentKey": self.agent_key,
+            "e2ePub": self.e2e_public_b64(),
             "paircode": self.paircode, "devices": self.identity.device_hashes(),
         }))
         self._log("relay: connected")
@@ -152,6 +161,8 @@ class RelayClient:
             slot = self._pending_bodies.pop(msg.get("id"), None)
             if slot is not None:
                 self._spawn(ws, slot["msg"], bytes(slot["buf"]))
+        elif t == "e2e_pair":
+            self._e2e_handshake(ws, msg)
         elif t == "device_added":
             # a client completed pairing → the relay minted its session token and tells us the client's
             # stable device_id + the token HASH (never the token). Keyed by device_id, so the SAME
@@ -160,6 +171,87 @@ class RelayClient:
             self.refresh_devices()
             self._log("relay: device paired (%s)" % (msg.get("name") or msg.get("device_id", "")[:8]))
         # ping/pong are handled at the WS control-frame layer (wsclient auto-pongs)
+
+    # ------------------------------------------------------------------ E2E
+    @staticmethod
+    def _make_e2e_keys():
+        """An X25519 keypair for this process, or None when the crypto extra is missing (in which case
+        no public key is advertised and phones simply pair in plaintext)."""
+        try:
+            from . import e2e
+            return e2e.keypair() if e2e.available() else None
+        except Exception:                                          # pragma: no cover
+            return None
+
+    def e2e_public_b64(self):
+        import base64
+        return base64.b64encode(self._e2e_keys[1]).decode("ascii") if self._e2e_keys else ""
+
+    def _e2e_handshake(self, ws, msg: dict):
+        """A phone offered its public key. Verify its tag against the pairing code, answer with ours.
+
+        The relay forwarded this and cannot forge the tag, so a swapped key fails here — which is the
+        entire reason the pairing code is shown on this machine's screen rather than sent over the wire.
+        """
+        import base64
+        rid = msg.get("id")
+        device_id = str(msg.get("device_id") or "")
+        try:
+            from . import e2e
+        except Exception as exc:                                   # pragma: no cover
+            return self._e2e_refuse(ws, rid, "e2e unavailable: %s" % exc)
+        if not e2e.available():
+            # never fall back to plaintext for a client that ASKED for E2E
+            return self._e2e_refuse(ws, rid, "desktop lacks the crypto extra (collie-harness[remote])")
+        try:
+            phone_pub = base64.b64decode(msg.get("pub") or "")
+            phone_confirm = base64.b64decode(msg.get("confirm") or "")
+            if len(phone_pub) != 32:
+                raise ValueError("public key must be 32 bytes")
+            if self._e2e_keys is None:
+                return self._e2e_refuse(ws, rid, "desktop has no E2E keypair")
+            priv, pub = self._e2e_keys
+            if not e2e.verify_confirm(self.paircode, self.room, pub, phone_pub,
+                                      e2e.SIDE_PHONE, phone_confirm):
+                # either the code is wrong or the relay tampered with a key; both mean stop
+                return self._e2e_refuse(ws, rid, "confirm tag mismatch")
+            k_dev = e2e.device_key(e2e.shared_secret(priv, phone_pub), self.room)
+            self._e2e_devices[device_id] = k_dev
+            ws.send_text(json.dumps({
+                "t": "e2e_pair_result", "id": rid, "ok": True,
+                "pub": base64.b64encode(pub).decode("ascii"),
+                "confirm": base64.b64encode(
+                    e2e.confirm_tag(self.paircode, self.room, pub, phone_pub,
+                                    e2e.SIDE_DESKTOP)).decode("ascii"),
+            }))
+            self._log("relay: E2E paired (%s)" % (device_id[:8] or "device"))
+        except Exception as exc:                                   # noqa: BLE001
+            self._e2e_refuse(ws, rid, str(exc))
+
+    def _e2e_refuse(self, ws, rid, why: str):
+        self._log("relay: E2E handshake refused — %s" % why)
+        try:
+            ws.send_text(json.dumps({"t": "e2e_pair_result", "id": rid, "ok": False, "error": why}))
+        except Exception:
+            pass
+
+    def _e2e_key_for(self, req: dict):
+        """(K_sess, session) for a sealed request, or (None, None) when this one is plaintext."""
+        if not req.get("enc"):
+            return None, None
+        from . import e2e
+        session = str(req.get("session") or "s1")
+        cid = str(req.get("cid") or req.get("id"))
+        # one paired device at a time in v1: the sealed frame proves which key opens it
+        for k_dev in self._e2e_devices.values():
+            try:
+                key = e2e.session_key(k_dev, session)
+                e2e.open_request(key, json.loads(req["enc"]), room=self.room,
+                                 frame_id=cid, session=session, seq=int(req.get("seq") or 0))
+                return key, session
+            except Exception:
+                continue
+        return None, None
 
     def _spawn(self, ws, req: dict, body: bytes):
         # one thread per request → a long-lived SSE stream never blocks the sidebar's polls,
@@ -171,10 +263,26 @@ class RelayClient:
     def _handle(self, ws, req: dict, body: bytes):
         rid = req.get("id")
         try:
-            method = (req.get("method") or "GET").upper()
-            path = self._inject_token(req.get("path") or "/")
-            headers = {k: v for k, v in (req.get("headers") or {}).items()
-                       if k.lower() not in _DROP_HEADERS}
+            key, session = self._e2e_key_for(req)
+            cid = str(req.get("cid") or rid)
+            if req.get("enc") and key is None:
+                # a sealed frame we cannot open is not something to guess at
+                raise ValueError("no paired E2E key opens this frame")
+            if key is not None:
+                from . import e2e
+                envelope = e2e.open_request(key, json.loads(req["enc"]), room=self.room,
+                                            frame_id=cid, session=session,
+                                            seq=int(req.get("seq") or 0))
+                method = (envelope.get("method") or "GET").upper()
+                path = self._inject_token(envelope.get("path") or "/")
+                headers = {k: v for k, v in (envelope.get("headers") or {}).items()
+                           if k.lower() not in _DROP_HEADERS}
+                body = envelope.get("body") or b""
+            else:
+                method = (req.get("method") or "GET").upper()
+                path = self._inject_token(req.get("path") or "/")
+                headers = {k: v for k, v in (req.get("headers") or {}).items()
+                           if k.lower() not in _DROP_HEADERS}
 
             # generous timeout: an SSE run can have long quiet gaps (e.g. a slow bash tool call)
             # between frames; a short timeout would sever the phone's stream mid-run.
@@ -183,8 +291,18 @@ class RelayClient:
             resp = conn.getresponse()
 
             resp_headers = {k: v for k, v in resp.getheaders() if k.lower() not in _DROP_HEADERS}
-            ws.send_text(json.dumps({"t": "res", "id": rid, "status": resp.status,
-                                     "headers": resp_headers}))
+            if key is not None:
+                from . import e2e
+                head = json.dumps({"status": resp.status, "headers": resp_headers}).encode()
+                ws.send_text(json.dumps({
+                    "t": "res", "id": rid, "status": 200,
+                    "headers": {"content-type": "application/octet-stream"},
+                    "enc": json.dumps(e2e.seal_chunk(key, head, room=self.room, frame_id=cid,
+                                                     session=session, seq=0)), "seq": 0}))
+            else:
+                ws.send_text(json.dumps({"t": "res", "id": rid, "status": resp.status,
+                                         "headers": resp_headers}))
+            seq = 1
             while True:
                 # read1(): return as soon as ANY bytes are available, instead of blocking until the
                 # full buffer fills. Essential for SSE — a long-lived stream (/api/mirror) or a slow
@@ -192,8 +310,16 @@ class RelayClient:
                 chunk = resp.read1(_CHUNK)
                 if not chunk:
                     break
-                ws.send_text(json.dumps({"t": "chunk", "id": rid,
-                                         "data": base64.b64encode(chunk).decode("ascii")}))
+                if key is not None:
+                    from . import e2e
+                    ws.send_text(json.dumps({
+                        "t": "chunk", "id": rid, "seq": seq,
+                        "enc": json.dumps(e2e.seal_chunk(key, chunk, room=self.room, frame_id=cid,
+                                                         session=session, seq=seq))}))
+                    seq += 1
+                else:
+                    ws.send_text(json.dumps({"t": "chunk", "id": rid,
+                                             "data": base64.b64encode(chunk).decode("ascii")}))
             ws.send_text(json.dumps({"t": "end", "id": rid}))
             conn.close()
         except WebSocketClosed:

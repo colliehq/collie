@@ -44,6 +44,7 @@ export class RelayRoom {
     this.seq = 0;                  // request-id counter (per alive instance; resets after hibernation — fine)
     this.pending = new Map();      // id -> {controller,…}; only non-empty while a request is in flight
     this.pairAttempts = [];        // pair rate-limit timestamps (in-memory; the DO stays alive during any attack burst)
+    this.pendingE2E = new Map();   // in-flight E2E handshakes: id -> resolve (one request each, short-lived)
   }
 
   // Hibernation: an idle room is evicted from memory (→ no duration billing) while its WebSocket stays
@@ -60,6 +61,13 @@ export class RelayRoom {
     if (p === "/relay/agent") return this.acceptAgent(request);
     const rest = p.replace(/^\/r\/[^/]+/, "") || "/";
     if (rest === "/pair" && request.method === "POST") return this.pair(request);
+    // the desktop's X25519 PUBLIC key, so a phone can bind its confirm tag to the full transcript
+    // before pairing. Public by definition; the pairing code is what authenticates it.
+    if (rest === "/e2e" && request.method === "GET") {
+      const agent = this._agent();
+      if (!agent) return json({ error: "desktop offline" }, 503);
+      return json({ pub: this._astate(agent).e2ePub || "" });
+    }
     // phones get the dedicated mobile client, not the desktop index — room root → desktop /m
     const fwd = (rest === "/" || rest === "") ? "/m" : rest;
     return this.proxyToAgent(request, fwd, url.search);
@@ -97,18 +105,41 @@ export class RelayRoom {
     try { msg = JSON.parse(typeof message === "string" ? message : ""); } catch (e) { return; }
     // pairing state lives on the socket attachment (survives hibernation), not in memory
     if (msg.t === "hello") {
-      this._setAstate(ws, { paircode: (msg.paircode || "").toUpperCase(), devices: msg.devices || [] });
+      this._setAstate(ws, { paircode: (msg.paircode || "").toUpperCase(), devices: msg.devices || [],
+                            e2ePub: msg.e2ePub || "" });
+      return;
+    }
+    if (msg.t === "e2e_pair_result") {
+      const resolve = this.pendingE2E.get(msg.id);
+      if (resolve) resolve({ ok: !!msg.ok, pub: msg.pub, confirm: msg.confirm, error: msg.error });
       return;
     }
     if (msg.t === "devices") { const s = this._astate(ws); s.devices = msg.devices || []; this._setAstate(ws, s); return; }
     if (msg.t === "paircode") { const s = this._astate(ws); s.paircode = (msg.paircode || "").toUpperCase(); this._setAstate(ws, s); return; }
+    if (msg.t === "e2ePub") { const s = this._astate(ws); s.e2ePub = msg.e2ePub || ""; this._setAstate(ws, s); return; }
     const slot = this.pending.get(msg.id);
     if (!slot) return;
     if (msg.t === "res") {
       slot.status = msg.status; slot.headers = msg.headers || {}; slot.opened = true;
+      if (msg.enc) {
+        // sealed: the real status/headers are inside, so stream the frame and answer 200 octet-stream
+        try {
+          slot.controller.enqueue(new TextEncoder().encode(
+            JSON.stringify({ enc: msg.enc, seq: msg.seq || 0 }) + "\n"));
+        } catch (e) {}
+      }
       slot.headResolve();
     } else if (msg.t === "chunk") {
-      try { slot.controller.enqueue(b64ToBytes(msg.data)); } catch (e) {}
+      // an E2E chunk is opaque: forward the sealed envelope as one length-prefixed record so the
+      // phone can tell frames apart without us understanding any of them
+      try {
+        if (msg.enc) {
+          const line = new TextEncoder().encode(JSON.stringify({ enc: msg.enc, seq: msg.seq }) + "\n");
+          slot.controller.enqueue(line);
+        } else {
+          slot.controller.enqueue(b64ToBytes(msg.data));
+        }
+      } catch (e) {}
     } else if (msg.t === "end") {
       try { slot.controller.close(); } catch (e) {}
       this.pending.delete(msg.id);
@@ -137,6 +168,25 @@ export class RelayRoom {
       return json({ ok: false, error: "bad pairing code" }, 403);
     }
     this.pairAttempts = [];                              // reset on success
+
+    // E2E (optional, opt-in per client): the phone sends its X25519 public key and an HMAC over the
+    // transcript keyed by the pairing code. We cannot check that tag — we do not know the code, which
+    // is exactly the point — so we hand it to the desktop, which verifies it and answers with its own
+    // key and tag. A relay that swapped either key cannot produce a matching tag.
+    let e2e = null;
+    if (body.pub && body.confirm) {
+      const rid = ++this.seq;
+      const wait = new Promise((resolve) => { this.pendingE2E.set(rid, resolve); });
+      this.sendAgent(agent, { t: "e2e_pair", id: rid, device_id: String(body.device_id || ""),
+                              pub: String(body.pub), confirm: String(body.confirm) });
+      e2e = await Promise.race([wait, new Promise((r) => setTimeout(() => r(null), 15000))]);
+      this.pendingE2E.delete(rid);
+      if (!e2e || !e2e.ok) {
+        this.pairAttempts.push(now);
+        return json({ ok: false, error: (e2e && e2e.error) || "e2e handshake refused" }, 403);
+      }
+    }
+
     const token = randToken();
     const hash = await sha256hex(token);
     st.devices = [...(st.devices || []), hash];          // optimistic; the desktop's refresh confirms it
@@ -147,7 +197,9 @@ export class RelayRoom {
     this.sendAgent(agent, { t: "device_added", device_id: String(body.device_id || ""), hash, name });
     // token in the body too → a NATIVE app (no cookie jar) stores it in the Keychain and sends it as
     // `Authorization: Bearer <token>`. A browser/WKWebView just uses the Secure cookie below.
-    return new Response(JSON.stringify({ ok: true, token }), {
+    const payload = { ok: true, token };
+    if (e2e) { payload.pub = e2e.pub; payload.confirm = e2e.confirm; }
+    return new Response(JSON.stringify(payload), {
       status: 200,
       headers: {
         "content-type": "application/json",
@@ -180,8 +232,17 @@ export class RelayRoom {
         const slot = { controller, opened: false };
         slot.headPromise = new Promise((res, rej) => { slot.headResolve = res; slot.headReject = rej; });
         this.pending.set(id, slot);
-        this.sendAgent(agent, { t: "req", id, session: "s1", method: request.method, path: path + search, headers, hasBody });
-        if (hasBody) { this.sendAgent(agent, { t: "body", id, data: bodyB64 }); this.sendAgent(agent, { t: "body_end", id }); }
+        // An E2E client sends its whole request sealed in the `X-Collie-Enc` header: we forward the
+        // ciphertext and never learn the method, path, headers or body — only what routing needs
+        // (room, id, session, seq). A plaintext client is unchanged.
+        const enc = request.headers.get("X-Collie-Enc");
+        if (enc) {
+          this.sendAgent(agent, { t: "req", id, cid: request.headers.get("X-Collie-Rid") || "1",
+                                  session: sessionOf(request), enc, seq: 0 });
+        } else {
+          this.sendAgent(agent, { t: "req", id, session: "s1", method: request.method, path: path + search, headers, hasBody });
+          if (hasBody) { this.sendAgent(agent, { t: "body", id, data: bodyB64 }); this.sendAgent(agent, { t: "body_end", id }); }
+        }
       },
     });
 
@@ -241,6 +302,12 @@ function bytesToB64(bytes) {
   let bin = ""; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin);
 }
+// The phone names the session it is talking about so both ends derive the same K_sess. Missing means
+// a plaintext client, which has no session keys at all.
+function sessionOf(request) {
+  return request.headers.get("X-Collie-Session") || "s1";
+}
+
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 }
