@@ -422,14 +422,12 @@ def cmd_record(args):
         elif action == "status":
             print(rec.status())
         elif action == "devices":
-            cams, mics = rec.list_dshow_devices()
+            cams, mics = rec.list_capture_devices()
             print("cameras:\n  " + ("\n  ".join(cams) or "(none found)"))
             print("microphones:\n  " + ("\n  ".join(mics) or "(none found)"))
-            mons = rec._monitors()
-            if mons:
-                print("monitors:")
-                for i, (x, y, w, h) in enumerate(mons, 1):
-                    print("  %d: %dx%d @ %d,%d" % (i, w, h, x, y))
+            screens = rec.list_screens()
+            if screens:
+                print("monitors:\n  " + "\n  ".join(screens))
         elif action == "windows":
             print("windows:\n  " + ("\n  ".join(rec.list_windows()) or "(none)"))
         elif action == "list":

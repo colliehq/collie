@@ -503,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
                 from . import record as rec
                 cams, mics = [], []
                 try:
-                    cams, mics = rec.list_dshow_devices()
+                    cams, mics = rec.list_capture_devices()
                 except Exception:
                     pass
                 mons = []
