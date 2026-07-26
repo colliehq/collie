@@ -36,26 +36,29 @@ _LANG_NAMES = {
 
 
 def _response_language_line() -> str:
-    """RESPONSE LANGUAGE directive for the STABLE tier. The model must WRITE in the user's chosen
-    language (the LANG setting), NOT in whichever language the current message happens to be in:
-    short CJK-mixed inputs like "打开collie dashboard" were being misdetected as Japanese and
-    answered in Japanese. Pinning to LANG kills the per-message guesswork. Byte-stable per session
-    (LANG doesn't change mid-run), so it stays inside the cached prefix. LANG=auto/unknown -> no
-    pin; fall back to mirroring the user's own language."""
+    """RESPONSE LANGUAGE directive for the STABLE tier. Policy (highest priority first):
+      1. If the user has asked — anywhere in this conversation — to reply in a particular language,
+         honour that for the rest of the conversation.
+      2. Otherwise, reply in the SAME language as the user's most recent message (following the
+         user's input is the desired default).
+      3. When the user's language is ambiguous (a very short message, or Han characters that could
+         be Chinese OR Japanese — the misfire that answered "打开collie dashboard" in Japanese),
+         default to the install/UI language (the LANG setting, chosen in the installer). LANG=auto
+         has no fixed install language, so the tiebreaker is the language used earlier instead.
+    Byte-stable per session (LANG doesn't change mid-run), so it stays inside the cached prefix."""
     try:
         from . import settings
         lang = (settings.get("LANG", "auto") or "auto").lower()
     except Exception:
         lang = "auto"
     name = _LANG_NAMES.get(lang)
-    if not name:
-        return ("RESPONSE LANGUAGE: Reply in the same language the user writes in. When a short "
-                "input is ambiguous between Chinese and Japanese (they share Han characters), "
-                "prefer the language the user has been using earlier in this conversation.")
-    return ("RESPONSE LANGUAGE: Always write your reply in %s, regardless of what language the "
-            "user's message is written in. The ONE exception: if the user's CURRENT message "
-            "explicitly asks you to answer in another language, honor that for that one reply "
-            "only, then go back to %s on the next message." % (name, name))
+    tiebreak = ("default to %s (the language Collie was set up in)" % name) if name else \
+               "default to the language the user has been using earlier in this conversation"
+    return ("RESPONSE LANGUAGE: Reply in the SAME language as the user's most recent message. If "
+            "the user has asked — anywhere in this conversation — to reply in a particular "
+            "language, honour that for the rest of the conversation. When the user's language is "
+            "ambiguous (a very short message, or Han characters that could be Chinese or "
+            "Japanese), %s." % tiebreak)
 
 
 @dataclass

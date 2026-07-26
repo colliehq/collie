@@ -6,8 +6,8 @@
 
 <p align="center">
   <b>A lean coding-agent harness that proves its work.</b><br>
-  <sub>Writes a reproduction, runs it, and finishes only when an executed assertion passes —
-  at ~1/6 the tokens of comparable agents. Terminal-first, model-agnostic, honestly measured.</sub>
+  <sub>Writes a reproduction, runs it, and finishes only when an executed assertion passes.
+  Terminal-first, model-agnostic, token-lean.</sub>
 </p>
 
 <p align="center">
@@ -22,8 +22,8 @@
 tool log: **executed verification.** When Collie fixes something it writes a reproduction
 that *must* fail on the broken code, makes the smallest edit that flips it, and re-runs the
 assertion — a run isn't "done," it's **verified ✓**. Everything else follows from being
-lean: quiet by default, semantic code navigation built in, and every claim measured against
-other harnesses on the same task, so progress is a number, not a vibe.
+lean: quiet by default, semantic code navigation built in, and built to measure itself
+against other harnesses on the same task, so progress is a number, not a vibe.
 
 ## The signature: the verification gate
 
@@ -46,35 +46,8 @@ other harnesses on the same task, so progress is a number, not a vibe.
 
 Other agents check "did the test not error." Collie's gate is stronger: the reproduction
 carries an `assert actual == expected` derived from the issue, so a plausible-but-wrong edit
-fails *loudly* and drives another repair round. On SWE-bench Verified this **`assert-verify`**
-loop is the one change that measurably moved Collie's resolve rate — and it generalizes to
-unseen repos (see below).
-
-## Results — same model, isolated harness
-
-SWE-bench Verified, **official Docker eval**, every harness on the **same model**
-(Claude Opus 4.8) so the delta is the *harness*, not the model. Pooled over 27 instances
-(a diagnosis set + a fresh, unseen holdout):
-
-| harness | resolved | tokens / instance |
-|---|:--:|:--:|
-| Claude Code | **85%** | not reported |
-| **Collie + assert-verify** | **78%** | **~110k** |
-| Hermes | 78% | ~588k |
-| Collie (baseline) | 63% | ~105k |
-
-**Collie + assert-verify matches Hermes and trails Claude Code by 7 points — at roughly
-1/6 the tokens**, and it's the fastest of the four on multi-language (Exercism py/cpp/js).
-The gain **generalizes**: on a fresh holdout from repos Collie had never touched
-(django / sympy / matplotlib / scikit-learn), assert-verify held its edge with no net
-regression.
-
-> **Honest caveats.** n is small (tens of instances) and single-model, so treat ±1–2 as
-> noise — Collie ships a multi-run harness (`bench/multirun_eval.py`: pass@k, Wilson CI,
-> McNemar) and a flakiness guard exactly because a single lucky run lies. SWE-bench Verified
-> itself is now widely considered contamination-prone; Collie's pitch is not a leaderboard
-> number but **most-capable-per-token, with the evidence kept on disk.** Reproduce it:
-> `docs/SWE_AUDIT.md` records every experiment, including the ones that failed.
+fails *loudly* and drives another repair round. This **`assert-verify`** loop is the core of
+the harness — a wrong edit never silently ships as "done."
 
 ## Where it runs
 
@@ -131,13 +104,13 @@ Per-OS setup — especially the real-browser bridge (`collie browser-bridge` + t
 | `ToolRegistry` | read/write/**edit** (syntax-gated) · bash · grep · glob · **`code_search`** · **`web_search`** + **`web_fetch`** (keyless) · **`plan`** · **`undo`** · browser · **MCP** (deferred tier + `load_tools`) |
 | `EmbeddingProvider` | **OnnxEmbedding** granite-107m (Apache, 55MB, multilingual) · bge-m3 / e5 · jina-v3 opt-in (fastembed) · **BM25-only** when no model |
 | `SqliteMemory` | CORE + facts + FTS5 + cosine, hybrid RRF + optional rerank + consolidation |
-| `ContextComposer` | STABLE/CONTEXT/VOLATILE + auto-prefetch · a ~1K-token fixed prefix (still ~70–99× leaner than a mainstream agent's) |
+| `ContextComposer` | STABLE/CONTEXT/VOLATILE + auto-prefetch · a ~1K-token fixed prefix (kept deliberately lean) |
 
 **`code_search`** (built in): extracts the identifiers from a natural-language query and greps the
 repo (ripgrep, else grep) — ranking files by how many of your terms each contains and returning the
 top `path:line` snippets, so the agent reasons about *where* to edit instead of grepping blind.
-Measured head-to-head on SWE-bench, grep localization matched-or-beat a semantic embedding index at
-a fraction of the cost, with no model, no index build, and never a stale line number. **`edit_file`** is exact-match + whitespace-tolerant and
+Grep localization is cheap and robust — no model, no index build, and never a stale line number.
+**`edit_file`** is exact-match + whitespace-tolerant and
 **rejects any edit that would break Python syntax** (a wrong edit never silently ships).
 **`read_file`** is line-numbered and pageable. A **self-verification loop** (`assert-verify`)
 runs the reproduction and repairs until the assertion holds.
@@ -190,7 +163,7 @@ collie run "fix the bug" --stream-json   # live NDJSON: tool · edit · repro-ga
 collie run "summarize app.py" --provider ollama --model qwen2.5-coder:7b
 
 # a standing goal (pinned into CORE memory, loaded every turn) + web lookup
-collie run "make timeparse handle compound units" --goal "beat CC on prefix tokens" --web-search
+collie run "make timeparse handle compound units" --goal "keep the prefix lean" --web-search
 
 # autonomous loop: iterate toward the goal, STOP the first turn an executed check goes green
 collie loop --goal "get the suite passing" --until "pytest -q" --max 8
@@ -218,18 +191,19 @@ on a *real executed check*, not the model announcing it's done. Same idea as the
 gate, one level up. `web_search` is keyless (a DuckDuckGo HTML fetch Collie does itself, $0),
 or set `COLLIE_WEBSEARCH_BRIDGE=host:port` to route through a Chrome extension in your real
 logged-in browser — the same fetch-localhost pattern as Collie's browser tool. It's **off in
-the SWE-bench path** so benchmarks stay deterministic; on in interactive runs.
+the benchmark path** so runs stay deterministic; on in interactive runs.
 
 Providers: `mock`, `ollama`, `anthropic`, `anthropic-oauth`, and OpenAI-compatible presets
 `deepseek` · `qwen`/`dashscope` · `openrouter` · `moonshot` · `groq` · `zhipu` · `openai`.
 
 ## Benchmark lab (built in)
 
-Collie measures itself against other harnesses on the **same** task and model:
+Collie measures itself against other harnesses on the **same** task and model — you run it
+yourself; no numbers are asserted here:
 
 ```bash
-# SWE-bench Verified head-to-head (needs Docker) — official eval
-DEEPSEEK_API_KEY=... python swe_run.py --n 5                    # docs/SWEBENCH.md
+# SWE-bench Verified head-to-head (needs Docker)
+DEEPSEEK_API_KEY=... python swe_run.py --n 5
 
 # rigorous multi-run: pass@1 / pass@k / consistency / Wilson CI / McNemar
 python -m bench.multirun_eval
@@ -243,9 +217,8 @@ python -m bench.polyglot_eval --langs python,cpp,javascript --n 6 --agent collie
 
 ## Honesty & policy
 
-- Every result is version-tagged and reproducible; `docs/SWE_AUDIT.md` records the failures
-  too. "Progress is a number" cuts both ways — Collie documents the levers that turned out
-  **net-neutral**, not just the wins.
+- The benchmark harness is version-tagged and reproducible. "Progress is a number" cuts both
+  ways — Collie is built to surface the levers that turn out **net-neutral**, not just the wins.
 - Token counts are real usage (the model's own `usage`, or `harness/apitap.py` metering for
   CLIs that report none) — apples-to-apples, same source both sides.
 - Collie draws a personal Max/Pro subscription only through the first-party OAuth path
@@ -254,4 +227,4 @@ python -m bench.polyglot_eval --langs python,cpp,javascript --n 6 --agent collie
 
 ## License
 
-MIT © 2026 — see [LICENSE](LICENSE). See [CHANGELOG.md](CHANGELOG.md) for the iteration log.
+MIT © 2026 — see [LICENSE](LICENSE).

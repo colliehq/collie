@@ -82,6 +82,7 @@ class CollieWallpaper : Form
     static HookProc _mouseProc, _keyProc;   // keep delegates alive
     static EnumProc _enumProc;
     static int _buttons;
+    static int _lastMove;                   // throttle mouse-move forwarding (the LL hook fires 100s/sec)
     static IntPtr _enumFound; static int _enumArea;
 
     // The Collie mark for the window title bar + taskbar. Load the shipped multi-resolution
@@ -205,6 +206,13 @@ class CollieWallpaper : Form
             _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _web.CoreWebView2.Settings.IsZoomControlEnabled = false;
             _web.DefaultBackgroundColor = Color.Black;
+            // The wallpaper is pinned behind the desktop icons and can never show a permission prompt,
+            // so auto-grant microphone — that's what the composer's voice input (Web Speech API) needs.
+            _web.CoreWebView2.PermissionRequested += delegate (object s3, CoreWebView2PermissionRequestedEventArgs e3)
+            {
+                if (e3.PermissionKind == CoreWebView2PermissionKind.Microphone)
+                    e3.State = CoreWebView2PermissionState.Allow;
+            };
             // URL is passed by `collie wallpaper` via COLLIE_WALLPAPER_URL (the port is picked at
             // runtime, not hardcoded, so it never collides with a busy 8787). Fallback for a manual run.
             string url = Environment.GetEnvironmentVariable("COLLIE_WALLPAPER_URL");
@@ -460,6 +468,14 @@ class CollieWallpaper : Form
             bool isBtn = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP);
             if (isBtn || msg == WM_MOUSEMOVE || msg == WM_MOUSEWHEEL)
             {
+                // THROTTLE moves to ~70Hz. Forwarding every raw move floods Chromium (behind the icons)
+                // with repaints → flicker + laggy clicks. Buttons/wheel are rare, never throttled.
+                if (msg == WM_MOUSEMOVE)
+                {
+                    int now = Environment.TickCount;
+                    if (now - _lastMove < 14) return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+                    _lastMove = now;
+                }
                 MSLLHOOKSTRUCT m = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
                 // over a real icon on a click => do nothing (short-circuits before any other work)
                 if (!(isBtn && OverIconCached(m.pt.x, m.pt.y)) && DesktopIsForeground())

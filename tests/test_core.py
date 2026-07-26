@@ -120,26 +120,32 @@ def test_multimodal_run_through_composer():
     assert isinstance(system, str)
 
 
-def test_response_language_pinned_to_lang():
-    """RESPONSE LANGUAGE pins the reply language to the LANG setting, so short CJK-mixed inputs like
-    "打开collie dashboard" (Han chars + English) stop being misdetected as Japanese and answered in
-    Japanese. The line must ride in the STABLE tier AND survive a wholesale identity override — the
-    desktop persona replaces composer.identity outright, so the line lives OUTSIDE identity on
-    purpose. LANG=auto -> no hard pin, fall back to mirroring the user."""
+def test_response_language_directive():
+    """RESPONSE LANGUAGE: reply in the user's INPUT language by default (so clear Chinese like
+    "打开collie dashboard" gets a Chinese reply, not the Japanese misfire), with the install
+    language (LANG) as the tiebreaker ONLY when the input is ambiguous, plus a per-conversation
+    override when the user explicitly asks. The line must ride in the STABLE tier AND survive a
+    wholesale identity override — the desktop persona replaces composer.identity outright, so the
+    line lives OUTSIDE identity on purpose. LANG=auto has no install language to fall back to."""
     from harness.cli import make_harness
     from harness.context import _response_language_line
     old = os.environ.get("COLLIE_LANG")
     try:
         os.environ["COLLIE_LANG"] = "zh"
         line = _response_language_line()
-        assert "简体中文" in line and "regardless" in line, line
+        # follow input by default; zh is only the AMBIGUITY tiebreaker (not a hard pin)
+        assert "same language" in line.lower(), line
+        assert "简体中文" in line and "ambiguous" in line.lower(), line
+        assert "regardless" not in line.lower() and "always write" not in line.lower(), line
         h = make_harness(os.getcwd(), provider="mock", project="lang", embed="hash")
         h.composer.identity = "You are collie, the user's live desktop assistant."   # wholesale override
         system, _msgs, _meta = h.composer.build({"messages": []}, "打开collie dashboard", os.getcwd(), "lang")
         assert "RESPONSE LANGUAGE" in system and "简体中文" in system, \
-            "pinned reply language must survive the identity override"
+            "the directive must survive the identity override"
+        # LANG=auto: no concrete install language, so no language name is baked into the tiebreaker
         os.environ["COLLIE_LANG"] = "auto"
-        assert "same language the user writes in" in _response_language_line(), "auto must not hard-pin"
+        auto = _response_language_line()
+        assert "same language" in auto.lower() and "简体中文" not in auto, auto
     finally:
         if old is None:
             os.environ.pop("COLLIE_LANG", None)
