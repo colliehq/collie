@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>collie-bg</title>
+<style>
+  /* Collie ambient desktop — the behind-icons live wallpaper. Theme-adaptive (follows the Windows
+     light/dark app theme via prefers-color-scheme): soft drifting colour blooms, a big recessed Collie
+     watermark, and an unobtrusive clock / date / weather. Deliberately CALM and CHEAP (CSS-driven
+     motion, one light rAF) — it runs 24/7 behind your icons. */
+  :root{
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    /* DARK (default) */
+    --bg1:#0b0d16; --bg2:#141428; --ink:#eef1fb; --mut:#aab2d0; --faint:#6a7196;
+    --b1:120,110,245; --b2:90,150,235; --b3:150,95,220; --b4:210,120,150;  /* bloom colours (rgb) */
+    --logo-op:.16; --grain-op:.05; --vig:rgba(4,5,12,.55);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg1:#eef1fb; --bg2:#dfe6fb; --ink:#20263a; --mut:#5a6488; --faint:#98a0c0;
+      --b1:150,170,255; --b2:130,200,240; --b3:200,175,255; --b4:255,200,180;
+      --logo-op:.12; --grain-op:.035; --vig:rgba(120,130,180,.28);
+    }
+  }
+  /* the OS theme is authoritative, but honour an explicit override too */
+  :root[data-theme="dark"]{ color-scheme:dark; }
+  :root[data-theme="light"]{ color-scheme:light; }
+
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%; overflow:hidden;}
+  body{font-family:var(--sans); color:var(--ink);
+    background:linear-gradient(160deg,var(--bg1),var(--bg2)); -webkit-user-select:none; user-select:none;}
+
+  /* drifting colour blooms — pure CSS, GPU-composited transforms, very light */
+  .blooms{position:fixed; inset:-20%; z-index:0; filter:blur(10px);}
+  .bloom{position:absolute; border-radius:50%; mix-blend-mode:screen; opacity:.55;}
+  @media (prefers-color-scheme: light){ .bloom{mix-blend-mode:multiply; opacity:.5;} }
+  .b1{width:60vw; height:60vw; left:-8vw; top:-10vw; background:radial-gradient(circle,rgba(var(--b1),.9),transparent 62%); animation:drift1 34s ease-in-out infinite;}
+  .b2{width:55vw; height:55vw; right:-6vw; top:6vw; background:radial-gradient(circle,rgba(var(--b2),.85),transparent 62%); animation:drift2 42s ease-in-out infinite;}
+  .b3{width:52vw; height:52vw; left:14vw; bottom:-16vw; background:radial-gradient(circle,rgba(var(--b3),.8),transparent 62%); animation:drift3 38s ease-in-out infinite;}
+  .b4{width:38vw; height:38vw; right:12vw; bottom:-6vw; background:radial-gradient(circle,rgba(var(--b4),.7),transparent 62%); animation:drift4 46s ease-in-out infinite;}
+  @keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(6vw,4vw) scale(1.12)}}
+  @keyframes drift2{0%,100%{transform:translate(0,0) scale(1.05)}50%{transform:translate(-5vw,5vw) scale(.95)}}
+  @keyframes drift3{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(4vw,-5vw) scale(1.1)}}
+  @keyframes drift4{0%,100%{transform:translate(0,0) scale(.95)}50%{transform:translate(-4vw,-4vw) scale(1.08)}}
+
+  .vignette{position:fixed; inset:0; z-index:1; pointer-events:none;
+    background:radial-gradient(130% 120% at 50% 42%, transparent 40%, var(--vig) 100%);}
+  .grain{position:fixed; inset:0; z-index:2; pointer-events:none; opacity:var(--grain-op); mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+
+  /* centre: the big recessed Collie watermark + wordmark, gently floating */
+  .center{position:fixed; inset:0; z-index:3; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; pointer-events:none;}
+  .logo{width:min(30vh,300px); height:min(30vh,300px); opacity:var(--logo-op); animation:bob 9s ease-in-out infinite;
+    filter:drop-shadow(0 20px 60px rgba(0,0,0,.25));}
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-14px)}}
+  .word{margin-top:2vh; font-weight:250; letter-spacing:.06em; font-size:clamp(28px,5vh,54px); color:var(--ink); opacity:.5;}
+  .word b{font-weight:600;}
+  .tag{margin-top:.6vh; font-size:clamp(12px,1.7vh,17px); color:var(--faint); letter-spacing:.18em; text-transform:uppercase;}
+
+  /* clock cluster — bottom-right, clear of the top-left desktop icons and the taskbar */
+  .clock{position:fixed; right:5vw; bottom:12vh; z-index:4; text-align:right; text-shadow:0 2px 24px rgba(0,0,0,.25);}
+  .time{font-size:clamp(48px,11vh,120px); font-weight:200; letter-spacing:-.02em; line-height:.95; color:var(--ink);}
+  .time .ampm{font-size:.3em; font-weight:500; color:var(--mut); margin-left:.3em; letter-spacing:.05em;}
+  .date{margin-top:.8vh; font-size:clamp(15px,2.4vh,24px); font-weight:400; color:var(--mut);}
+  .wx{margin-top:1.4vh; font-size:clamp(14px,2vh,20px); color:var(--faint); display:flex; align-items:center; gap:10px; justify-content:flex-end; min-height:1.2em;}
+  .wx .ic{font-size:1.25em;}
+  .wx .t{color:var(--mut); font-weight:500;}
+</style>
+</head>
+<body>
+  <div class="blooms"><div class="bloom b1"></div><div class="bloom b2"></div><div class="bloom b3"></div><div class="bloom b4"></div></div>
+  <div class="vignette"></div>
+  <div class="grain"></div>
+
+  <div class="center">
+    <img class="logo" id="logo" src="/logo.svg" alt="">
+    <div class="word"><b>Collie</b></div>
+    <div class="tag">humans' best AI friend</div>
+  </div>
+
+  <div class="clock">
+    <div class="time" id="time">--:--</div>
+    <div class="date" id="date"></div>
+    <div class="wx" id="wx"></div>
+  </div>
+
+<script>
+(function () {
+  // --- clock + date ---------------------------------------------------------------------------
+  function two(n) { return (n < 10 ? "0" : "") + n; }
+  function tick() {
+    var d = new Date();
+    var h = d.getHours(), ap = h < 12 ? "AM" : "PM", h12 = h % 12; if (h12 === 0) h12 = 12;
+    document.getElementById("time").innerHTML = h12 + ":" + two(d.getMinutes()) +
+      '<span class="ampm">' + ap + "</span>";
+    try {
+      document.getElementById("date").textContent =
+        d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+    } catch (e) {
+      document.getElementById("date").textContent = d.toDateString();
+    }
+  }
+  tick(); setInterval(tick, 10000);
+
+  // --- weather (best-effort, no API key) ------------------------------------------------------
+  // geolocate by IP -> current weather from open-meteo. Fails silently to just the clock.
+  var WX = { 0:["☀️","Clear"],1:["🌤️","Mainly clear"],2:["⛅","Partly cloudy"],3:["☁️","Overcast"],
+    45:["🌫️","Fog"],48:["🌫️","Fog"],51:["🌦️","Drizzle"],53:["🌦️","Drizzle"],55:["🌦️","Drizzle"],
+    61:["🌧️","Rain"],63:["🌧️","Rain"],65:["🌧️","Heavy rain"],66:["🌧️","Freezing rain"],67:["🌧️","Freezing rain"],
+    71:["🌨️","Snow"],73:["🌨️","Snow"],75:["🌨️","Heavy snow"],77:["🌨️","Snow grains"],
+    80:["🌦️","Showers"],81:["🌦️","Showers"],82:["⛈️","Violent showers"],
+    85:["🌨️","Snow showers"],86:["🌨️","Snow showers"],95:["⛈️","Thunderstorm"],96:["⛈️","Thunderstorm"],99:["⛈️","Thunderstorm"] };
+  function showWx(code, temp, city) {
+    var w = WX[code] || ["", ""];
+    document.getElementById("wx").innerHTML =
+      '<span class="ic">' + w[0] + '</span><span class="t">' + Math.round(temp) + "°</span>" +
+      "<span>" + w[1] + (city ? " · " + city : "") + "</span>";
+  }
+  function loadWeather() {
+    fetch("https://ipapi.co/json/").then(function (r) { return r.json(); }).then(function (g) {
+      if (!g || g.latitude == null) return;
+      var u = "https://api.open-meteo.com/v1/forecast?latitude=" + g.latitude + "&longitude=" +
+        g.longitude + "&current=temperature_2m,weather_code&temperature_unit=celsius";
+      fetch(u).then(function (r) { return r.json(); }).then(function (d) {
+        var c = d && d.current;
+        if (c) showWx(c.weather_code, c.temperature_2m, g.city);
+      }).catch(function () {});
+    }).catch(function () {});
+  }
+  loadWeather(); setInterval(loadWeather, 30 * 60 * 1000);   // refresh every 30 min
+
+  // logo may 404 on an odd build — hide it rather than showing a broken image
+  document.getElementById("logo").addEventListener("error", function () { this.style.display = "none"; });
+})();
+</script>
+</body>
+</html>

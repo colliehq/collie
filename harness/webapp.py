@@ -299,6 +299,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("map.html", "text/html; charset=utf-8")
             if path == "/wallpaper":
                 return self._serve_static("wallpaper.html", "text/html; charset=utf-8")
+            if path == "/ambient":
+                return self._serve_static("ambient.html", "text/html; charset=utf-8")
             if path == "/meadow":
                 return self._serve_static("meadow.html", "text/html; charset=utf-8")
             if path == "/remote":

@@ -148,7 +148,9 @@ def launch_engine(port: int) -> bool:
     exe = build_engine()
     if not exe:
         return False
-    env = dict(os.environ, COLLIE_WALLPAPER_URL="http://127.0.0.1:%d/wallpaper" % port)
+    # /ambient is the calm, theme-adaptive live wallpaper (clock + weather + Collie watermark). The
+    # older /wallpaper (dark galaxy + on-desktop chat) stays available for anyone who navigates to it.
+    env = dict(os.environ, COLLIE_WALLPAPER_URL="http://127.0.0.1:%d/ambient" % port)
     try:
         subprocess.Popen([exe], cwd=src_dir(), env=env)
         return True
