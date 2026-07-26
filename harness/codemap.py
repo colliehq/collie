@@ -23,8 +23,11 @@ _SKIP = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"
          ".collie", "dist", "build", ".tox", ".next", ".wrangler", "logs", ".cache", "site-packages",
          # benchmark fixtures / vendored / generated trees are not this project's own code
          "testdata", "fixtures", "vendor", "third_party", "target", "coverage", "polyglot", "sandbox"}
-# pruned only as a DIRECT child of the user's home (see discover_repos) — OS stores, never projects
-_HOME_SKIP = {"Library", "Applications", "Music", "Pictures", "Movies"}
+# Pruned only as a DIRECT child of the user's home (see discover_repos). Deliberately just the macOS
+# system stores: neither name exists in a Windows user profile, so this cannot change behaviour there,
+# and ~/Library alone was the whole cost. (Windows has the same shape of problem in ~/AppData, but
+# that's a separate change and one to measure on Windows rather than infer from here.)
+_HOME_SKIP = {"Library", "Applications"}
 _EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".html", ".css", ".md", ".toml")
 MAX_FILES = 600            # a request must stay snappy; bigger repos are sampled by size
 _DEF_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?(?:function|def|class|func|fn)\s+([A-Za-z_$][\w$]*)")
