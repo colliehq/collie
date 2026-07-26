@@ -1,6 +1,6 @@
 site_name: Collie
 site_description: A lean coding-agent harness that proves its work.
-site_url: https://wudaming00.github.io/collie/
+site_url: https://colliehq.github.io/collie/
 repo_url: https://github.com/colliehq/collie
 repo_name: colliehq/collie
 copyright: MIT-licensed · runs locally · no telemetry

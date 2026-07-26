@@ -4,7 +4,7 @@
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 # fall back to whatever interpreter this OS actually ships. Use the BARE command name (not the
-# `command -v` path — that resolves to spaces like "C:\Users\Sining Xu\..." which split an unquoted
+# `command -v` path — that resolves to spaces like "C:\Users\First Last\..." which split an unquoted
 # $PY, and to the broken Windows-Store python3 stub) and VERIFY it's a real Python 3 before picking
 # it — so the Store stub is skipped and `python` wins on Windows, `python3` on Linux/macOS.
 if [ ! -x "$PY" ]; then

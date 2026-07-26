@@ -69,10 +69,12 @@ build/
 dist_check/
 dist/
 *.egg-info/
+*.vsix
+# raw/intermediate wallpaper art (only the processed *_cut frames are shipped)
+meadow_assets/*_raw/
 
 # ── scratch / experiments / vendored deps — NOT for release ──────────────────
 vendor/
-bench/
 data/rebench/
 data/*.jsonl
 data/*.txt
