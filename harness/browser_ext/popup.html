@@ -42,6 +42,19 @@
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
   button:hover { filter:brightness(1.05); }
   button:active { transform:translateY(1px); }
+  .toggle { display:flex; align-items:flex-start; gap:10px; margin:11px 12px 0; padding:11px 13px;
+    border-radius:11px; background:var(--panel); border:1px solid var(--line); cursor:pointer; }
+  .toggle input { margin:2px 0 0; width:15px; height:15px; accent-color:var(--accent); flex:none; cursor:pointer; }
+  .toggle .tg-text { line-height:1.35; }
+  .toggle .tg-text b { display:block; font-weight:620; font-size:12.5px; }
+  .toggle .tg-text span { color:var(--muted); font-size:11px; }
+  .site { margin:9px 12px 0; }
+  .site-h { font-size:11px; color:var(--faint); margin:0 2px 6px;
+    font-family:ui-monospace,Consolas,monospace; word-break:break-all; }
+  .seg { display:flex; gap:6px; }
+  .seg button { flex:1; padding:6px 3px; font-size:11px; border-radius:8px; border:1px solid var(--line);
+    background:var(--panel); color:var(--muted); cursor:pointer; }
+  .seg button.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
   .hint { padding:0 15px 13px; font-size:11.5px; color:var(--muted); line-height:1.45; }
   .hint code { font-family:ui-monospace,Consolas,monospace; background:var(--panel);
     padding:1px 4px; border-radius:4px; }
@@ -63,6 +76,23 @@
     <div class="row"><div class="k">Bridge</div><div class="v" id="rBridge">127.0.0.1:8677</div></div>
     <div class="row"><div class="k">Last poll</div><div class="v" id="rPoll">—</div></div>
     <div class="row"><div class="k">Active tab</div><div class="v" id="rTab">—</div></div>
+  </div>
+
+  <label class="toggle" for="hiFi">
+    <input type="checkbox" id="hiFi">
+    <span class="tg-text"><b>High-fidelity input <span style="font-weight:400">(default)</span></b>
+      <span>Real clicks via chrome.debugger — for sites that ignore synthetic ones (eBay, banking).
+      Shows a debug banner while active.</span></span>
+  </label>
+
+  <div class="site">
+    <div class="site-h">This site · <span id="siteOrigin">—</span></div>
+    <div class="seg" id="siteSeg">
+      <button data-scope="default">Default</button>
+      <button data-scope="always">Always</button>
+      <button data-scope="session">Session</button>
+      <button data-scope="off">Off</button>
+    </div>
   </div>
 
   <div class="acts">

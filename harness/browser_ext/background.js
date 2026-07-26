@@ -93,6 +93,7 @@ async function adoptTabForUrl(url) {
 
 // Forget the collie tab if the user closes it, so the next `open` makes a fresh one.
 chrome.tabs.onRemoved.addListener((id) => {
+  if (id === dbgTab) dbgTab = null;   // Chrome auto-detaches the debugger on close; drop our handle too
   rememberedTabId().then((savedId) => { if (id === savedId) return forgetTabId(); });
 });
 
@@ -144,6 +145,25 @@ function pageClick(text, selector) {
   if (!el) return { error: "no element for " + (selector || text) };
   el.scrollIntoView(); el.click();
   return { clicked: (el.innerText || el.value || selector || text).trim().slice(0, 80) };
+}
+
+// Resolve an element (same finder as pageClick) and return the viewport-CENTER point to click, in CSS
+// px relative to the viewport — exactly what CDP Input.dispatchMouseEvent consumes to place a real,
+// isTrusted click. Used only by the trusted-input path. Self-contained (injected into the page).
+function pagePoint(text, selector) {
+  let el = null;
+  if (selector) el = document.querySelector(selector);
+  else if (text) {
+    const t = text.toLowerCase();
+    el = [...document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button]")]
+      .find((e) => ((e.innerText || e.value || "").trim().toLowerCase()).includes(t));
+  }
+  if (!el) return { error: "no element for " + (selector || text) };
+  el.scrollIntoView({ block: "center", inline: "center" });
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+  return { x, y, inView, label: (el.innerText || el.value || selector || text || "").trim().slice(0, 80) };
 }
 
 function pageType(selector, text, submit) {
@@ -344,6 +364,134 @@ async function evalExpr(expr) {
   return await execMain(pageEval, [expr]);
 }
 
+// --- trusted input via chrome.debugger (CDP) -----------------------------------------------------
+// el.click()/dispatchEvent produce isTrusted=false events; sites with real bot mitigation (eBay's
+// add-to-cart, banking, some "prove you're human" gestures) gate sensitive actions on a genuine user
+// gesture and silently ignore synthetic ones. When high-fidelity mode is on (popup toggle, persisted
+// in storage) or a single command sets trusted:true, we place a REAL click through the DevTools
+// Protocol — isTrusted=true, indistinguishable from hardware. Cost: Chrome shows a "collie has
+// started debugging this browser" banner while attached, so we attach ONLY around the action and
+// detach immediately (the banner flashes rather than persists), and never leak a session.
+// Authorization model: a GLOBAL default (ON — high-fidelity input is the point of this build) plus
+// optional PER-ORIGIN overrides. Resolved in order: session override -> permanent override -> global.
+// - permanent overrides live in storage.local  ({ "https://ebay.com": "on"|"off" })
+// - session overrides live in storage.session   (cleared when the browser closes = "just this session")
+// Off only when EXPLICITLY disabled (popup, `mode` command, or dismissing the debug banner).
+async function trustedGlobal() {
+  try { const s = await chrome.storage.local.get("trustedInput"); return s.trustedInput !== false; }
+  catch (e) { return true; }
+}
+function originOf(tab) { try { return new URL(tab.url).origin; } catch (e) { return ""; } }
+
+async function trustedForOrigin(origin) {
+  if (origin) {
+    try { const ses = (await chrome.storage.session.get("siteMode")).siteMode || {};
+      if (ses[origin]) return ses[origin] === "on"; } catch (e) {}
+    try { const loc = (await chrome.storage.local.get("siteMode")).siteMode || {};
+      if (loc[origin]) return loc[origin] === "on"; } catch (e) {}
+  }
+  return await trustedGlobal();
+}
+
+// scope: 'always'|'off' (permanent) · 'session'|'sessionoff' (this browser session) · 'default' (clear)
+async function setSiteMode(origin, scope) {
+  if (!origin) return;
+  const loc = (await chrome.storage.local.get("siteMode")).siteMode || {};
+  const ses = (await chrome.storage.session.get("siteMode")).siteMode || {};
+  delete loc[origin]; delete ses[origin];
+  if (scope === "always") loc[origin] = "on";
+  else if (scope === "off") loc[origin] = "off";
+  else if (scope === "session") ses[origin] = "on";
+  else if (scope === "sessionoff") ses[origin] = "off";
+  await chrome.storage.local.set({ siteMode: loc });
+  await chrome.storage.session.set({ siteMode: ses });
+}
+
+function dbgAttach(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.attach({ tabId }, "1.3", () => {
+      const e = chrome.runtime.lastError;
+      if (e && !/already attached/i.test(e.message || "")) reject(new Error(e.message)); else resolve();
+    });
+  });
+}
+function dbgSend(tabId, method, params) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand({ tabId }, method, params || {}, (res) => {
+      const e = chrome.runtime.lastError;
+      if (e) reject(new Error(e.message)); else resolve(res);
+    });
+  });
+}
+function dbgDetach(tabId) {
+  return new Promise((resolve) => {
+    try { chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(); }); }
+    catch (e) { resolve(); }
+  });
+}
+// Hold ONE debugger session on the collie tab (persistent) rather than attach/detach per action — a
+// steady banner instead of a flashing one, and faster. onDetach fires when the tab closes OR the user
+// clicks the banner's "Cancel": we treat an explicit cancel as "turn high-fidelity off" and respect it.
+let dbgTab = null;
+chrome.debugger.onDetach.addListener((src, reason) => {
+  if (src && src.tabId === dbgTab) dbgTab = null;
+  if (reason === "canceled_by_user") { try { chrome.storage.local.set({ trustedInput: false }); } catch (e) {} }
+});
+async function ensureAttached(tabId) {
+  if (dbgTab === tabId) return;
+  if (dbgTab != null) { const old = dbgTab; dbgTab = null; await dbgDetach(old); }
+  await dbgAttach(tabId);
+  dbgTab = tabId;
+}
+
+async function trustedClick(text, selector) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const pt = await exec(pagePoint, [text || "", selector || ""]);
+  if (!pt || pt.error) return pt || { error: "no element for " + (selector || text) };
+  if (!pt.inView) return { error: "element found but off-screen after scroll — cannot place a real click there" };
+  try {
+    await ensureAttached(tab.id);
+    const b = { x: pt.x, y: pt.y, button: "left" };
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x, y: b.y, buttons: 0 });
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
+    return { clicked: pt.label, trusted: true };
+  } catch (e) {                          // devtools open / attach blocked — NEVER regress below synthetic
+    if (dbgTab === tab.id) dbgTab = null;
+    const r = await exec(pageClick, [text || "", selector || ""]);
+    return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic click: " + String((e && e.message) || e) }, r);
+  }
+}
+
+async function trustedType(selector, text, submit) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const pt = await exec(pagePoint, ["", selector]);
+  if (!pt || pt.error) return pt || { error: "no field " + selector };
+  try {
+    await ensureAttached(tab.id);
+    if (pt.inView) {   // click to focus the field first
+      const b = { x: pt.x, y: pt.y, button: "left" };
+      await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
+      await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
+    }
+    // select-all (Ctrl+A) so we replace rather than append, then type as real keystrokes
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.insertText", { text: text || "" });
+    if (submit) {
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    }
+    return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+    const r = await exec(pageType, [selector, text, !!submit]);
+    return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
+  }
+}
+
 async function handle(cmd) {
   try {
     if (cmd.action === "open") {
@@ -364,14 +512,33 @@ async function handle(cmd) {
     }
     if (cmd.action === "read") return await exec(pageRead, []);
     if (cmd.action === "links") return await exec(pageLinks, [cmd.filter || ""]);
+    if (cmd.action === "mode") {   // read/set high-fidelity input from the bridge/CLI
+      if (typeof cmd.trusted === "boolean") await chrome.storage.local.set({ trustedInput: cmd.trusted });
+      if (cmd.origin && cmd.scope) await setSiteMode(cmd.origin, cmd.scope);
+      const t = await targetTab(false);
+      const origin = t ? originOf(t) : "";
+      return { global: await trustedGlobal(), origin, effective: await trustedForOrigin(origin) };
+    }
+    // Decide trusted vs synthetic for THIS action: a command can force it (trusted:true/false),
+    // otherwise resolve the per-origin authorization (session -> permanent -> global default ON).
+    async function wantTrusted() {
+      if (cmd.trusted === true) return true;
+      if (cmd.trusted === false) return false;
+      const t = await activeTab();
+      return await trustedForOrigin(t ? originOf(t) : "");
+    }
     if (cmd.action === "click") {
-      const r = await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
+      const r = (await wantTrusted()) ? await trustedClick(cmd.text || "", cmd.selector || "")
+                                      : await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
       await new Promise((z) => setTimeout(z, 800));
       return { click: r, page: await exec(pageRead, []) };
     }
-    if (cmd.action === "type") return cmd.label
-      ? await exec(pageTypeLabel, [cmd.label, cmd.text])
-      : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
+    if (cmd.action === "type") {
+      if ((await wantTrusted()) && cmd.selector) return await trustedType(cmd.selector, cmd.text, !!cmd.submit);
+      return cmd.label
+        ? await exec(pageTypeLabel, [cmd.label, cmd.text])
+        : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
+    }
     if (cmd.action === "pick") return await exec(pagePick, [cmd.label, cmd.option]);
     if (cmd.action === "fields") return await exec(pageFields, []);
     if (cmd.action === "upload") return await exec(pageUpload, [cmd.selector, cmd.files || []]);
