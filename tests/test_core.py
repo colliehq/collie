@@ -120,6 +120,33 @@ def test_multimodal_run_through_composer():
     assert isinstance(system, str)
 
 
+def test_response_language_pinned_to_lang():
+    """RESPONSE LANGUAGE pins the reply language to the LANG setting, so short CJK-mixed inputs like
+    "打开collie dashboard" (Han chars + English) stop being misdetected as Japanese and answered in
+    Japanese. The line must ride in the STABLE tier AND survive a wholesale identity override — the
+    desktop persona replaces composer.identity outright, so the line lives OUTSIDE identity on
+    purpose. LANG=auto -> no hard pin, fall back to mirroring the user."""
+    from harness.cli import make_harness
+    from harness.context import _response_language_line
+    old = os.environ.get("COLLIE_LANG")
+    try:
+        os.environ["COLLIE_LANG"] = "zh"
+        line = _response_language_line()
+        assert "简体中文" in line and "regardless" in line, line
+        h = make_harness(os.getcwd(), provider="mock", project="lang", embed="hash")
+        h.composer.identity = "You are collie, the user's live desktop assistant."   # wholesale override
+        system, _msgs, _meta = h.composer.build({"messages": []}, "打开collie dashboard", os.getcwd(), "lang")
+        assert "RESPONSE LANGUAGE" in system and "简体中文" in system, \
+            "pinned reply language must survive the identity override"
+        os.environ["COLLIE_LANG"] = "auto"
+        assert "same language the user writes in" in _response_language_line(), "auto must not hard-pin"
+    finally:
+        if old is None:
+            os.environ.pop("COLLIE_LANG", None)
+        else:
+            os.environ["COLLIE_LANG"] = old
+
+
 def test_webedit_write_checked():
     # the Map editor's write-back: compile-gate, run relevant tests, keep-if-green / revert-if-red.
     from harness import webedit
