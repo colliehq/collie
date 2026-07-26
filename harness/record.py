@@ -667,21 +667,14 @@ def _safe_path(name):
 def play(name):
     p = _safe_path(name)
     if p and os.path.exists(p):
-        try:
-            os.startfile(p)   # opens in the default video player
-            return True
-        except Exception:
-            return False
+        return plat.open_with_default(p)          # default video player, whatever the OS uses
     return False
 
 
 def reveal(name=None):
-    """Open the recordings folder (Explorer)."""
-    try:
-        os.startfile(_default_outdir())
-        return True
-    except Exception:
-        return False
+    """Show the recordings in the desktop's file manager (Explorer / Finder / xdg)."""
+    p = _safe_path(name) if name else None
+    return plat.reveal_in_file_manager(p if (p and os.path.exists(p)) else _default_outdir())
 
 
 def delete_recording(name):

@@ -86,6 +86,42 @@ def rmtree(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def open_with_default(path: str) -> bool:
+    """Hand a file to whatever the OS opens it with (a video in the default player, say).
+    os.startfile does NOT exist outside Windows, so calling it directly — as `collie record play`
+    used to — is an AttributeError everywhere else, not a fallback."""
+    try:
+        if is_windows():
+            os.startfile(path)                                  # noqa: B606 (Windows-only API)
+        else:
+            subprocess.Popen(["open" if is_macos() else "xdg-open", path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def reveal_in_file_manager(path: str) -> bool:
+    """Show a file/folder in Explorer / Finder / the desktop's file manager. Given a FILE, macOS
+    and Windows select it in its folder; Linux has no portable 'select', so its folder is opened."""
+    try:
+        if is_windows():
+            # /select, needs the file; for a directory plain startfile opens it
+            if os.path.isdir(path):
+                os.startfile(path)                              # noqa: B606 (Windows-only API)
+            else:
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        elif is_macos():
+            subprocess.Popen(["open"] + ([] if os.path.isdir(path) else ["-R"]) + [path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", path if os.path.isdir(path) else os.path.dirname(path)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
 def open_excl(path: str, mode: int = 0o600) -> int:
     """os.open with O_CREAT|O_EXCL|O_WRONLY, plus O_NOFOLLOW where the platform has
     it (a symlink-planting guard on POSIX; simply absent on Windows). Returns an fd.

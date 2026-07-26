@@ -505,7 +505,7 @@ def cmd_record(args):
             print("windows:\n  " + ("\n  ".join(rec.list_windows()) or "(none)"))
         elif action == "list":
             recs = rec.list_recordings()
-            print("recordings in ~/Videos/Collie:\n  " + ("\n  ".join(
+            print("recordings in %s:\n  " % rec._default_outdir() + ("\n  ".join(
                 "%s  (%.1f MB)" % (r["name"], r["mb"]) for r in recs) or "(none)"))
         else:  # start
             print(rec.start(webcam=args.webcam, mic=args.mic, sysaudio=args.sys_audio,
@@ -1433,7 +1433,7 @@ def main(argv=None):
     prc.add_argument("--cam-size", dest="cam_size", type=int, default=240,
                      help="webcam bubble diameter in px (default 240)")
     prc.add_argument("--margin", type=int, default=40, help="bubble margin from the corner in px (default 40)")
-    prc.add_argument("--out", default=None, help="output file (default ~/Videos/Collie/collie-<ts>.mkv)")
+    prc.add_argument("--out", default=None, help="output file (default: the Collie folder under your videos dir)")
     prc.set_defaults(fn=cmd_record)
 
     # loop: autonomous goal-directed iteration — run the agent repeatedly toward a goal, stopping
