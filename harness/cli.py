@@ -407,10 +407,13 @@ def cmd_wallpaper(args):
             return wp.stop()
         return wp.run(port_pref=args.port, boot=getattr(args, "boot", False))
 
-    # non-Windows: no Progman/WebView2 — fall back to a borderless browser window at /wallpaper
+    # non-Windows: no Progman/WebView2 — fall back to a borderless browser window. Same page the
+    # Windows engine loads (wallpaper.py sets COLLIE_WALLPAPER_URL to /ambient): the calm
+    # theme-adaptive desktop, not the older /wallpaper galaxy, which only stayed the default here
+    # because this branch hardcoded its own URL and the switch never reached it.
     import time, threading, urllib.request
     port = args.port
-    url = "http://127.0.0.1:%d/wallpaper" % port
+    url = "http://127.0.0.1:%d/ambient" % port
 
     def _up():
         try:

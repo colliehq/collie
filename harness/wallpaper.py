@@ -197,12 +197,12 @@ def run(port_pref: int = 8787, boot: bool = False) -> int:
         return 1
     if not engine_running():
         ok = launch_engine(port)
-        print("collie wallpaper · http://127.0.0.1:%d/wallpaper · %s"
+        print("collie wallpaper · http://127.0.0.1:%d/ambient · %s"
               % (port, "engine launched" if ok else "engine failed to build/launch"), flush=True)
         if not ok:
             return 1
     else:
-        print("collie wallpaper · already running · http://127.0.0.1:%d/wallpaper" % port)
+        print("collie wallpaper · already running · http://127.0.0.1:%d/ambient" % port)
     return 0
 
 
