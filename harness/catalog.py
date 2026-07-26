@@ -148,9 +148,10 @@ def probe_auth(provider: str) -> str:
     if provider == "mock":
         return "ok"
     if provider == "anthropic-oauth":
-        cred = os.path.expanduser("~/.claude/.credentials.json")
-        return "ok" if (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.path.exists(cred)) \
-            else "not-logged-in"
+        # not os.path.exists(~/.claude/.credentials.json): macOS keeps the same credentials in the
+        # Keychain and writes no file, so a file check reported every logged-in Mac as logged-out.
+        from .providers import _read_oauth_token
+        return "ok" if _read_oauth_token() else "not-logged-in"
     if provider == "codex-oauth":
         return "ok" if os.path.exists(
             os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"),

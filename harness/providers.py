@@ -569,15 +569,42 @@ def _claude_version():
     return _cc_ver
 
 
+def claude_credentials():
+    """Claude Code's OAuth credential blob, or {}.
+
+    WHERE it lives is per-OS, which is the whole point of this function: Linux and WSL get
+    ~/.claude/.credentials.json, but on macOS Claude Code stores the same JSON in the login
+    Keychain (service "Claude Code-credentials") and writes no file at all. Reading only the file
+    meant a macOS user with a perfectly good Max/Pro login was reported `not-logged-in`, so the
+    one-click "connect your subscription" path never worked there.
+
+    Same schema either way — {"claudeAiOauth": {accessToken, refreshToken, expiresAt, ...}} — so
+    only the source differs. `security` may raise a Keychain prompt the first time.
+    """
+    from . import plat
+    if plat.is_macos():
+        try:
+            import subprocess
+            out = subprocess.run(["security", "find-generic-password",
+                                  "-s", "Claude Code-credentials", "-w"],
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+            if out:
+                return json.loads(out)
+        except Exception:
+            pass
+        # fall through: a file may still exist if the user pointed CLAUDE_CONFIG_DIR at one
+    try:
+        with open(os.path.expanduser("~/.claude/.credentials.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def _read_oauth_token():
     t = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
     if t:
         return t
-    try:
-        d = json.load(open(os.path.expanduser("~/.claude/.credentials.json")))
-        return d.get("claudeAiOauth", {}).get("accessToken", "")
-    except Exception:
-        return ""
+    return (claude_credentials().get("claudeAiOauth") or {}).get("accessToken", "")
 
 
 class AnthropicOAuthProvider(AnthropicProvider):
