@@ -17,18 +17,25 @@ CollieIOS (`PairCode.swift`); `tests/test_paircode.py` asserts the JS copy match
              non-zero syndromes is dropped and the next one tried, so the check bytes only have to
              make a misread implausible (~2^-56), not repairable.
   geometry   normalised to the code's outer radius R = 1.0
-               1.00 .. 0.90   locator: a solid dark annulus (what the decoder finds first)
-               0.90 .. 0.86   quiet gap
+               1.00 .. 0.93   locator: a solid dark annulus (what the decoder finds first)
+               0.93 .. 0.86   quiet gap
                0.86 .. 0.78   data ring 0   (bit 0 is the most significant of byte 0)
                0.78 .. 0.70   data ring 1
                0.70 .. 0.62   data ring 2
                0.62 .. 0.54   data ring 3
-               0.42 .. 0.00   brand disc (carries nothing; the decoder never samples here)
+               0.42 .. 0.00   brand disc (carries nothing; the decoder never samples here, which is
+                              what lets the /pair page lay the real logo over it)
   sectors    52, clockwise from 12 o'clock. Sector 0 is dark on all four rings and sector 1 is light
              on all four: that pair is the orientation spoke. Sectors 2..51 carry the 200 data bits,
              ring-major (ring 0 sector 2, ring 1 sector 2, … — so one damaged ring loses 1 bit in 4
              rather than the first 50 bits in a row).
   dark = 1
+
+Cosmetics are deliberately confined to what the decoder provably ignores: cells are drawn rounded and
+inset (it samples the middle 60% of each), the brand disc holds the logo (no data), and the data
+field is inked in the pine accent while the locator stays near-black (it thresholds, it does not read
+hue). Nothing is drawn outside the locator at all, so any ink out there is a reflection or another
+symbol and the ring finder is right to discard it.
 """
 from __future__ import annotations
 
@@ -50,17 +57,24 @@ DATA_BITS = RINGS * DATA_SECTORS          # 200
 PAYLOAD_BYTES = 18
 ECC_BYTES = 7                             # detection only — see the module docstring
 # radial band edges, outer -> inner, as fractions of the outer radius
-LOCATOR = (1.00, 0.90)
+LOCATOR = (1.00, 0.93)
 GAP = (0.90, 0.86)
 RING_BANDS = ((0.86, 0.78), (0.78, 0.70), (0.70, 0.62), (0.62, 0.54))
 BRAND_RADIUS = 0.42
-# Decoration, not protocol: two pointed ears above the locator make the symbol read as the collie
-# head from the logo. They sit outside the locator on purpose — the decoder locates the ring by the
-# median edge radius and discards outliers, so ears cannot be mistaken for it.
-EAR_ANGLE = 41.0            # degrees either side of 12 o'clock, at the base
-EAR_HALF_WIDTH = 14.0       # angular half-width at the base
-EAR_TIP = 1.36              # tip radius, in units of the outer radius
-EAR_LEAN = 11.0             # degrees the tip leans outward — what makes it a collie ear, not a cone
+# Cosmetics — the decoder samples the middle 60% of each cell, so anything that covers that box is
+# free. CELL_FILL leaves a hairline between neighbours (a dotted field reads as designed rather than
+# as noise) and CELL_ROUND rounds the corners.
+CELL_FILL = 0.94            # fraction of the cell the ink occupies (a hairline gap, not a moat)
+CELL_ROUND = 0.42           # corner rounding, as a fraction of the half-cell
+# Ears used to be drawn outside the locator, back when the middle held a crude drawn face. Now the
+# real logo sits in the middle with its own ears, so a second pair outside read as horns. Removing
+# them also removes the only thing that put ink beyond the locator, which is one less outlier for the
+# ring finder to reject — the design change and the robustness change point the same way.
+DRAW_EARS = False
+EAR_ANGLE = 41.0
+EAR_HALF_WIDTH = 14.0
+EAR_TIP = 1.36
+EAR_LEAN = 11.0
 EAR_BASE = 0.93
 
 
@@ -195,6 +209,8 @@ def _ear(nx, ny):
     the decoder's circle finder keeps only edge points near the median radius — otherwise an ear
     would be mistaken for the ring."""
     import math
+    if not DRAW_EARS:
+        return False
     r = math.hypot(nx, ny)
     if r < EAR_BASE or r > EAR_TIP:
         return False
@@ -209,6 +225,24 @@ def _ear(nx, ny):
         if offset <= span:
             return True
     return False
+
+
+def _in_cell(u: float, v: float) -> bool:
+    """Is this point inside the drawn (rounded) cell? `u` is the radial fraction of the band and `v`
+    the angular fraction of the sector, both 0..1.
+
+    A rounded-rectangle mask in that unit square: it always contains the middle 60%, which is exactly
+    what the decoder averages, so rounding is free.
+    """
+    half = CELL_FILL / 2.0
+    du, dv = abs(u - 0.5), abs(v - 0.5)
+    if du > half or dv > half:
+        return False
+    radius = CELL_ROUND * half
+    cu, cv = half - radius, half - radius
+    if du <= cu or dv <= cv:
+        return True
+    return ((du - cu) ** 2 + (dv - cv) ** 2) <= radius ** 2
 
 
 def raster(payload: bytes, size: int = 512, background: int = 255, ink: int = 0):
@@ -241,8 +275,11 @@ def raster(payload: bytes, size: int = 512, background: int = 255, ink: int = 0)
                 for ring, (r_out, r_in) in enumerate(RING_BANDS):
                     if r_in <= r <= r_out:
                         angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
-                        sector = int(angle / (360.0 / SECTORS)) % SECTORS
-                        value = ink if grid[ring][sector] else background
+                        step = 360.0 / SECTORS
+                        sector = int(angle / step) % SECTORS
+                        if grid[ring][sector] and _in_cell(
+                                (r - r_in) / (r_out - r_in), (angle % step) / step):
+                            value = ink
                         break
             rows.append(value)
     return size, bytes(rows)
@@ -285,6 +322,8 @@ _PAGE = """<!doctype html>
   .stage { position:relative; width:min(74vmin,560px); aspect-ratio:1; background:#FBFCFE;
            border-radius:24px; padding:14px; box-sizing:border-box; }
   canvas { width:100%%; height:100%%; display:block; }
+  .face { position:absolute; inset:0; margin:auto; width:27%%; height:27%%; object-fit:contain;
+          pointer-events:none; }
   .mark { position:absolute; inset:0; margin:auto; width:26%%; height:26%%;
           display:flex; align-items:center; justify-content:center; pointer-events:none; }
   .mark img { width:100%%; height:100%%; }
@@ -301,6 +340,9 @@ _PAGE = """<!doctype html>
      carries a one-time secret — never your token.</p>
   <div class="stage" id="stage">
     <canvas id="code" width="1024" height="1024"></canvas>
+    <!-- the real logo, not a drawn approximation: the disc under it carries no data, so the decoder
+         never looks here. This is the one part of the symbol that is purely identity. -->
+    <img class="face" src="/logo.svg" alt="">
   </div>
   <div class="ttl" id="ttl"></div>
   <div><code>%(host)s</code></div>
@@ -312,6 +354,8 @@ const SECTORS = %(sectors)d, RINGS = %(rings)d;
 const LOCATOR = [%(loc_out).2f, %(loc_in).2f];
 const RING_BANDS = %(bands)s;
 const BRAND_RADIUS = %(brand).2f;
+const CELL_FILL = %(cell_fill).2f, CELL_ROUND = %(cell_round).2f;
+const DRAW_EARS = %(draw_ears)s;
 const EAR = {angle: %(ear_angle).1f, half: %(ear_half).1f, tip: %(ear_tip).2f, lean: %(ear_lean).1f, base: %(ear_base).2f};
 const GRID = %(grid)s;            // GRID[ring][sector], 1 = dark
 const TTL = %(ttl)d;
@@ -320,8 +364,10 @@ function draw() {
   const c = document.getElementById('code'), ctx = c.getContext('2d');
   const size = c.width, cx = size / 2, cy = size / 2, outer = size * 0.37;
   // Fixed polarity, NOT the page's theme colours: the code means "dark = 1", and rendering it
-  // inverted on a dark background makes every bit read backwards.
-  const dark = '#0F0E19', light = '#FBFCFE';
+  // inverted on a dark background makes every bit read backwards. Two inks, both far darker than the
+  // plate, so a luminance threshold still separates them cleanly: the logo's near-black for the
+  // structure, collie's pine for the data field.
+  const dark = '#0F0E19', data = '#3D4E8F', light = '#FBFCFE';
   ctx.fillStyle = light;
   ctx.fillRect(0, 0, size, size);
   // the locator annulus: one stroked circle, thickness = the band
@@ -332,21 +378,28 @@ function draw() {
   ctx.stroke();
   // data rings: one filled arc per dark sector
   const step = Math.PI * 2 / SECTORS;
-  ctx.fillStyle = dark;
+  ctx.fillStyle = data;
   for (let ring = 0; ring < RINGS; ring++) {
     const [rOut, rIn] = RING_BANDS[ring];
     for (let s = 0; s < SECTORS; s++) {
       if (!GRID[ring][s]) continue;
       // sector 0 starts at 12 o'clock and they run clockwise, matching the Python renderer
-      const a0 = -Math.PI / 2 + s * step, a1 = a0 + step;
+      // inset to CELL_FILL of the cell and round the ends: the decoder averages the middle 60%%,
+      // so the shape of the rest is free
+      const pad = (1 - CELL_FILL) / 2;
+      const a0 = -Math.PI / 2 + (s + pad) * step, a1 = -Math.PI / 2 + (s + 1 - pad) * step;
+      const band = rOut - rIn, rA = rIn + band * pad, rB = rOut - band * pad;
+      const thickness = (rB - rA) * outer;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = thickness * CELL_ROUND + thickness * (1 - CELL_ROUND);
       ctx.beginPath();
-      ctx.arc(cx, cy, rOut * outer, a0, a1);
-      ctx.arc(cx, cy, rIn * outer, a1, a0, true);
+      ctx.arc(cx, cy, rA * outer, a0, a1);
+      ctx.arc(cx, cy, rB * outer, a1, a0, true);
       ctx.closePath();
       ctx.fill();
     }
   }
-  drawEars(ctx, cx, cy, outer, dark);
+  if (DRAW_EARS) drawEars(ctx, cx, cy, outer, dark);
   drawFace(ctx, cx, cy, outer, dark, light);
 }
 
@@ -378,11 +431,14 @@ function drawEars(ctx, cx, cy, outer, dark) {
 }
 
 function drawFace(ctx, cx, cy, outer, dark, light) {
+  // Only the plate: the real logo is an <img> on top of the canvas. Drawing a face here as well would
+  // be a second, worse collie showing through.
   const u = (v) => v * outer;
-  ctx.fillStyle = dark;                       // the head
+  ctx.fillStyle = light;
   ctx.beginPath();
   ctx.arc(cx, cy, BRAND_RADIUS * outer, 0, Math.PI * 2);
   ctx.fill();
+  return;
 
   ctx.fillStyle = light;                      // the blaze: narrow at the crown, wide at the muzzle
   ctx.beginPath();
@@ -448,6 +504,9 @@ def page(payload: bytes, host: str, port: int, ttl: int) -> str:
         "loc_in": LOCATOR[1],
         "bands": "[" + ",".join("[%.2f,%.2f]" % b for b in RING_BANDS) + "]",
         "brand": BRAND_RADIUS,
+        "draw_ears": "true" if DRAW_EARS else "false",
+        "cell_fill": CELL_FILL,
+        "cell_round": CELL_ROUND,
         "grid": "[" + ",".join("[" + ",".join(str(v) for v in row) + "]" for row in grid) + "]",
         "ttl": ttl,
     }

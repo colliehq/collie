@@ -96,37 +96,44 @@ def decode(pixels, size, *, samples=5):
         return 1 if total / count < mid else 0
 
     step = 360.0 / paircode.SECTORS
-    grid = []
-    for r_out, r_in in paircode.RING_BANDS:
-        r_mid = (r_out + r_in) / 2.0
-        grid.append([dark_at(r_mid, r_out - r_in, (s + 0.5) * step)
-                     for s in range(paircode.SECTORS)])
 
-    # find the orientation spoke: an all-dark sector followed by an all-light one. More than one
-    # candidate is normal (data can imitate it), so every candidate is tried and RS decides.
-    candidates = [s for s in range(paircode.SECTORS)
-                  if all(grid[r][s] for r in range(paircode.RINGS))
-                  and not any(grid[r][(s + 1) % paircode.SECTORS] for r in range(paircode.RINGS))]
-    if not candidates:
-        raise ValueError("no orientation spoke found")
-
+    # Sweep the sub-sector phase, exactly as the shipping decoder does: a rotation is almost never a
+    # whole number of sectors (17 deg is 2.46 of them), and with rounded cells an off-centre sample
+    # lands in the gap between two of them rather than on a neighbour's ink.
     last = None
+    for eighth in range(8):
+        phase = eighth / 8.0
+        grid = []
+        for r_out, r_in in paircode.RING_BANDS:
+            r_mid = (r_out + r_in) / 2.0
+            grid.append([dark_at(r_mid, r_out - r_in, (s + 0.5 + phase) * step)
+                         for s in range(paircode.SECTORS)])
+
+        candidates = [s for s in range(paircode.SECTORS)
+                      if all(grid[r][s] for r in range(paircode.RINGS))
+                      and not any(grid[r][(s + 1) % paircode.SECTORS] for r in range(paircode.RINGS))]
+        got = _try_offsets(grid, candidates)
+        if got is not None:
+            return got
+        last = "no candidate decoded at phase %.3f" % phase
+    raise ValueError("no orientation spoke decoded cleanly (%s)" % last)
+
+
+def _try_offsets(grid, candidates):
+    """Try each rotation the spoke could imply; Reed-Solomon decides which one was real."""
     for offset in candidates:
         rotated = [[ring[(offset + s) % paircode.SECTORS] for s in range(paircode.SECTORS)]
                    for ring in grid]
         words = paircode.bits_from_rings(rotated)
-        syn = _syndromes(list(words), paircode.ECC_BYTES)
+        if any(_syndromes(list(words), paircode.ECC_BYTES)):
+            continue
         payload = words[:paircode.PAYLOAD_BYTES]
         try:
             host, port, secret = paircode.read_payload(payload)
-        except ValueError as e:
-            last = e
-            continue
-        if any(syn):
-            last = ValueError("syndromes non-zero: %r" % syn)
+        except ValueError:
             continue
         return host, port, secret, True
-    raise ValueError("no candidate decoded cleanly (%s)" % last)
+    return None
 
 
 # ---------------------------------------------------------------- image abuse a camera would cause
@@ -216,6 +223,20 @@ def test_payload_layout():
         check(False, "refuses a short secret")
     except ValueError:
         check(True, "refuses a short secret")
+
+
+def test_ears_are_off_by_default():
+    """The ears are the only thing that ever drew ink outside the locator; with the real logo in the
+    middle they are redundant, and their absence is one less outlier for the ring finder."""
+    import math
+    check(not paircode.DRAW_EARS, "ears are off")
+    size, pixels = paircode.raster(PAYLOAD, 256)
+    c = (size - 1) / 2.0
+    outer = size * 0.37
+    stray = sum(1 for y in range(size) for x in range(size)
+                if pixels[y * size + x] < 128
+                and math.hypot(x - c, y - c) > outer * 1.02)
+    check(stray == 0, "no ink at all beyond the locator (%d stray pixels)" % stray)
 
 
 def test_orientation_spoke():
@@ -322,6 +343,9 @@ def test_js_constants_match():
     m = re.search(r"const BRAND_RADIUS = ([\d.]+);", html)
     check(m is not None and float(m.group(1)) == paircode.BRAND_RADIUS,
           "JS BRAND_RADIUS matches Python")
+    m = re.search(r"const DRAW_EARS = (true|false);", html)
+    check(m is not None and (m.group(1) == "true") == paircode.DRAW_EARS,
+          "JS and Python agree on whether ears are drawn (%s)" % paircode.DRAW_EARS)
     m = re.search(r"const EAR = \{angle: ([\d.]+), half: ([\d.]+), tip: ([\d.]+), "
                   r"lean: ([\d.]+), base: ([\d.]+)\};", html)
     check(m is not None, "the page declares the ear geometry")
@@ -358,6 +382,7 @@ def test_png_is_valid():
 
 def main():
     test_payload_layout()
+    test_ears_are_off_by_default()
     test_orientation_spoke()
     test_clean_render()
     test_survives_camera_conditions()
