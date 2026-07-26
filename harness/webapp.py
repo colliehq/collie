@@ -46,6 +46,121 @@ if not os.path.exists(LOGO_SVG):
 # served HTML (same-origin, so cross-site JS can't read it), and required on every state-changing /
 # code-executing route. Same-origin requests from our own page carry it; cross-site ones can't.
 TOKEN = os.urandom(16).hex()
+# Extra Host values `_host_ok` accepts, populated only by `collie web --lan` with this machine's own
+# addresses. Empty by default: loopback-only, exactly as before.
+LAN_HOSTS = set()
+# Pairing: a phone never receives TOKEN over the network. It reads a one-shot secret off a code shown
+# on THIS machine's screen and trades it at /api/pair. Secrets are 8 bytes (64 bits — unguessable),
+# live for _PAIR_TTL seconds, and are burned on first use.
+_PAIR_TTL = 180
+_PAIR_LOCK = threading.Lock()
+_PAIR_LIVE = {}                      # secret(hex) -> expiry timestamp
+_PAIR_FAILS = []                     # timestamps of failed redemptions, for a crude rate limit
+
+
+def _pair_mint():
+    """A fresh pairing secret. Also expires stale ones, so the dict can't grow."""
+    import time as _time
+    secret = os.urandom(8).hex()
+    now = _time.time()
+    with _PAIR_LOCK:
+        for old, expiry in list(_PAIR_LIVE.items()):
+            if expiry <= now:
+                _PAIR_LIVE.pop(old, None)
+        if len(_PAIR_LIVE) > 8:                      # only the newest few screens can be live
+            for old in sorted(_PAIR_LIVE, key=_PAIR_LIVE.get)[:-8]:
+                _PAIR_LIVE.pop(old, None)
+        _PAIR_LIVE[secret] = now + _PAIR_TTL
+    return secret
+
+
+def _pair_kdf(secret_hex, label, nonce_hex):
+    """HMAC-SHA256(secret, "collie-pair-v1|<label>|<nonce>") — one derivation for proofs and keys."""
+    import hashlib
+    import hmac
+    key = bytes.fromhex(secret_hex)
+    msg = ("collie-pair-v1|%s|%s" % (label, nonce_hex)).encode("ascii")
+    return hmac.new(key, msg, hashlib.sha256).digest()
+
+
+def _pair_redeem(secret):
+    """(ok, detail). Constant-time compare, one shot, TTL, and a 10-per-minute failure ceiling.
+
+    Kept for the plain path and for tests; the wire protocol uses `_pair_prove` so the secret itself
+    never travels."""
+    import hmac
+    import time as _time
+    now = _time.time()
+    with _PAIR_LOCK:
+        _PAIR_FAILS[:] = [t for t in _PAIR_FAILS if now - t < 60]
+        if len(_PAIR_FAILS) >= 10:
+            return False, "too many pairing attempts, wait a minute"
+        match = None
+        for live, expiry in list(_PAIR_LIVE.items()):
+            if expiry <= now:
+                _PAIR_LIVE.pop(live, None)
+                continue
+            if hmac.compare_digest(live, secret or ""):
+                match = live
+        if match is None:
+            _PAIR_FAILS.append(now)
+            return False, "unknown or expired pairing code"
+        _PAIR_LIVE.pop(match, None)                  # burn it: one code, one pairing
+    return True, "ok"
+
+
+def _pair_prove(nonce_hex, proof_hex):
+    """Challenge–response redemption: the client proves it knows a live secret without sending it.
+
+    Why not just POST the secret: pairing happens over plain HTTP on a LAN, so anyone able to
+    ARP-spoof the server would collect the secret and pair themselves. Here the client sends a fresh
+    nonce plus HMAC(secret, "client"|nonce); the server answers with HMAC(secret, "server"|nonce) —
+    which proves it is the real collie, since an impostor cannot compute it — and returns the token
+    XORed with HMAC(secret, "token"|nonce), so a passive listener (and an active impostor) get
+    nothing usable. The secret is burned either way.
+
+    Returns (ok, detail_or_payload).
+    """
+    import hmac
+    import time as _time
+    if len(nonce_hex or "") < 16 or len(proof_hex or "") != 64:
+        return False, "malformed pairing challenge"
+    try:
+        bytes.fromhex(nonce_hex)
+        bytes.fromhex(proof_hex)
+    except ValueError:
+        return False, "malformed pairing challenge"
+
+    now = _time.time()
+    with _PAIR_LOCK:
+        _PAIR_FAILS[:] = [t for t in _PAIR_FAILS if now - t < 60]
+        if len(_PAIR_FAILS) >= 10:
+            return False, "too many pairing attempts, wait a minute"
+        match = None
+        for live, expiry in list(_PAIR_LIVE.items()):
+            if expiry <= now:
+                _PAIR_LIVE.pop(live, None)
+                continue
+            expected = _pair_kdf(live, "client", nonce_hex).hex()
+            if hmac.compare_digest(expected, proof_hex):
+                match = live
+        if match is None:
+            _PAIR_FAILS.append(now)
+            return False, "unknown or expired pairing code"
+        _PAIR_LIVE.pop(match, None)
+
+    raw = bytes.fromhex(TOKEN)
+    stream = _pair_kdf(match, "token", nonce_hex)
+    sealed = bytes(a ^ b for a, b in zip(raw, stream)).hex()
+    return True, {"server_proof": _pair_kdf(match, "server", nonce_hex).hex(),
+                  "sealed_token": sealed}
+
+
+def _pair_advertised_host():
+    """The address the phone should dial: this machine's LAN IP under --lan, else loopback."""
+    for host in sorted(LAN_HOSTS):
+        return host
+    return "127.0.0.1"
 # Non-secret per-process id. Injected into served HTML and returned by /api/ver so a long-lived
 # desktop/wallpaper page can detect a server restart and auto-reload itself (picking up the fresh
 # token + latest front-end/behaviour). Safe to expose: it's not a credential.
@@ -290,9 +405,13 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if not self._host_ok():
             return self._send_json({"error": "forbidden host"}, 403)
+        if not self._peer_ok(parsed):
+            return self._send_json({"error": "pairing required"}, 403)
         try:
             if path in ("/", "/index.html"):
                 return self._serve_index()
+            if path == "/pair":
+                return self._serve_pair_page()
             if path in ("/logo.svg", "/favicon.ico", "/favicon.svg"):
                 return self._serve_logo()
             if path == "/map":
@@ -460,7 +579,11 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if not self._host_ok():
             return self._send_json({"error": "forbidden host"}, 403)
+        if not self._peer_ok(parsed):
+            return self._send_json({"error": "pairing required"}, 403)
         try:
+            if path == "/api/pair":
+                return self._serve_pair_exchange()
             if path.startswith("/api/remote/"):      # desktop control panel actions (local only)
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -728,7 +851,12 @@ class Handler(BaseHTTPRequestHandler):
             # inject the CSRF secret so same-origin JS can read it (cross-site JS can't reach it).
             # Robust anchor: prefer the charset meta, else the <head>/doctype, else prepend — a
             # silent no-op would give JS an empty token and 403 every /api/* call (whole app dead).
-            meta = ('<meta name="collie-token" content="%s">\n' % TOKEN).encode()
+            #
+            # LOOPBACK ONLY. Under `--lan` this page is otherwise a token dispenser for the whole
+            # network, and the token runs bash. A non-loopback client that already has a token got
+            # past _peer_ok, so it needs no second copy; one that doesn't gets the page tokenless.
+            token = TOKEN if self._peer_is_loopback() else ""
+            meta = ('<meta name="collie-token" content="%s">\n' % token).encode()
             for anchor in (b'<meta charset="utf-8">', b'<head>', b'<!doctype html>', b'<!DOCTYPE html>'):
                 if anchor in html:
                     html = html.replace(anchor, anchor + b"\n" + meta, 1)
@@ -822,10 +950,74 @@ class Handler(BaseHTTPRequestHandler):
         127.0.0.1 alone doesn't stop rebinding — a page on attacker.com can lower its TTL and
         re-resolve attacker.com -> 127.0.0.1, becoming same-origin with this server and reading the
         CSRF token out of the served HTML. Rejecting a non-loopback Host closes that: the browser
-        always sends the navigated hostname (attacker.com) as Host, which never matches loopback."""
+        always sends the navigated hostname (attacker.com) as Host, which never matches loopback.
+
+        `--lan` widens this by exactly the machine's own addresses (LAN_HOSTS), because a phone on the
+        same Wi-Fi necessarily sends `Host: 192.168.x.y:8787`. Still a closed set, never "any host"."""
         h = (self.headers.get("Host", "") or "").strip()
         host = h.rsplit(":", 1)[0].strip("[]").lower() if h else ""
-        return host in ("", "127.0.0.1", "localhost", "::1", "collie.localhost")
+        return host in ("", "127.0.0.1", "localhost", "::1", "collie.localhost") or host in LAN_HOSTS
+
+    def _peer_is_loopback(self) -> bool:
+        peer = (self.client_address[0] if self.client_address else "") or ""
+        return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1") or peer.startswith("127.")
+
+    def _peer_ok(self, parsed) -> bool:
+        """Everything a NON-loopback client asks for must carry the token.
+
+        Why the peer address and not the route: `/` embeds the token for same-origin JS, so leaving
+        it ungated under `--lan` handed the token — and therefore `bash` on this machine — to anyone
+        on the Wi-Fi. Gating by peer keeps the local browser untouched (it is loopback, so nothing
+        changes for it) while a phone must present a token it can only obtain by pairing.
+
+        `/api/pair` is the one pre-token route: it trades a one-shot secret, shown as a code on THIS
+        machine's screen, for the token. That is the whole "you must physically see the screen" step.
+        """
+        if self._peer_is_loopback() or parsed.path == "/api/pair":
+            return True
+        return self._authed(parsed)
+
+    def _serve_pair_exchange(self):
+        """POST /api/pair {"nonce","proof"} -> {"server_proof","sealed_token"}.
+
+        One shot, short-lived, rate-limited, and the secret never appears on the wire — see
+        `_pair_prove` for why that matters on a LAN."""
+        try:
+            n = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4096:
+            return self._send_json({"error": "bad body"}, 400)
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except Exception:
+            return self._send_json({"error": "bad json"}, 400)
+        nonce = (body.get("nonce") or "").strip()
+        proof = (body.get("proof") or "").strip()
+        ok, detail = _pair_prove(nonce, proof)
+        if not ok:
+            return self._send_json({"error": detail}, 403)
+        detail.update({"cwd": os.getcwd(), "provider": _provider()})
+        return self._send_json(detail)
+
+    def _serve_pair_page(self):
+        """The pairing screen: shows the collie pair code for a phone camera to read.
+
+        Loopback only — the page carries a live pairing secret, so serving it to the network would
+        undo the handshake it exists to protect."""
+        if not self._peer_is_loopback():
+            return self._send_json({"error": "pairing page is loopback-only"}, 403)
+        from . import paircode
+        secret = _pair_mint()
+        host = _pair_advertised_host()
+        try:
+            payload = paircode.payload_bytes(host, self.server.server_address[1], secret)
+        except Exception as e:
+            return self._send_html(("cannot build a pair code: %s" % e).encode(), 500,
+                                   "text/plain; charset=utf-8")
+        html = paircode.page(payload, host=host, port=self.server.server_address[1],
+                             ttl=_PAIR_TTL)
+        self._send_html(html.encode("utf-8"))
 
     def _authed(self, parsed) -> bool:
         """State-changing / code-executing routes require the per-process token (query param).
@@ -1076,8 +1268,9 @@ class Handler(BaseHTTPRequestHandler):
 def bind_server(port=8787):
     """Bind the local GUI server on 127.0.0.1, scanning a few ports if the preferred one is busy.
     Returns (httpd, actual_port). Used by `collie web --remote`, which needs the httpd + chosen port
-    up front (to serve in a background thread while the relay client runs). main() keeps its own
-    identical inline bind for the plain `collie web` path."""
+    up front (to serve in a background thread while the relay client runs), and which always wants
+    loopback — the relay client replays a phone's requests to 127.0.0.1. main() has its own inline
+    bind because `--lan` can widen it to 0.0.0.0; the two are otherwise the same."""
     ThreadingHTTPServer.allow_reuse_address = True
     for cand in range(port, port + 12):
         try:
@@ -1094,6 +1287,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     port = 8787
     open_browser = True
+    lan = False
+    want_qr = False
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1101,6 +1296,10 @@ def main(argv=None):
             port = int(argv[i + 1]); i += 2; continue
         if a == "--no-open":
             open_browser = False; i += 1; continue
+        if a == "--lan":
+            lan = True; i += 1; continue
+        if a == "--qr":
+            want_qr = True; i += 1; continue
         i += 1
 
     if not os.path.exists(INDEX_HTML):
@@ -1112,9 +1311,15 @@ def main(argv=None):
     ThreadingHTTPServer.allow_reuse_address = True
     requested = port
     httpd = None
+    # Default: loopback only — nothing on the network can even connect. `--lan` is the opt-in a phone
+    # needs (CollieIOS talks straight to this server), and it also teaches _host_ok this machine's own
+    # addresses, since a phone necessarily sends the LAN IP as Host.
+    bind = "0.0.0.0" if lan else "127.0.0.1"
+    lan_ips = _own_ipv4() if lan else []
+    LAN_HOSTS.update(lan_ips)
     for cand in range(requested, requested + 12):
         try:
-            httpd = ThreadingHTTPServer(("127.0.0.1", cand), Handler)
+            httpd = ThreadingHTTPServer((bind, cand), Handler)
             port = cand
             break
         except OSError as e:
@@ -1143,6 +1348,19 @@ def main(argv=None):
             print("collie remote · on (setting) · panel %s remote" % url, flush=True)
     except Exception as e:                       # never let remote block the normal web server
         print("collie remote: auto-start failed: %s" % e, flush=True)
+
+    if lan:
+        for ip in lan_ips:
+            print("            http://%s:%d/   ← this device is reachable on your network" % (ip, port),
+                  flush=True)
+        print("  [lan] network clients get NOTHING until they pair: every route needs the token, and "
+              "the token is only handed to loopback. Pair by showing the code below to the app.",
+              flush=True)
+        if sys.platform == "darwin" and _macos_firewall_on():
+            print("  [lan] macOS's firewall is ON, so it will silently drop these incoming "
+                  "connections until you allow python: System Settings → Network → Firewall → "
+                  "Options, or turn the firewall off while you pair.", flush=True)
+        _print_pair_hint(lan_ips[0] if lan_ips else "127.0.0.1", port, want_qr)
     if open_browser:
         # open the browser a beat after the server is actually accepting connections
         threading.Timer(0.6, lambda: _open(url)).start()
@@ -1153,6 +1371,64 @@ def main(argv=None):
     finally:
         httpd.server_close()
     return 0
+
+
+def _print_pair_hint(ip, port, want_qr):
+    """Tell the user how to pair a phone. The pairing CODE is never printed with a token in it: it
+    carries a one-shot secret that /api/pair trades for the token, so a photo of your terminal (or a
+    screen share) is worth nothing a minute later.
+
+    Default is the collie pair code, drawn on the /pair screen — a private format no generic scanner
+    reads. `--qr` is the fallback for when a camera can't manage the ring code; it encodes the same
+    one-shot secret as a collie:// URL, which only CollieIOS can act on."""
+    print("\n  pair the phone app (CollieIOS): open  http://127.0.0.1:%d/pair" % port, flush=True)
+    if not want_qr:
+        return
+    secret = _pair_mint()
+    pair_url = "collie://pair?h=%s&p=%d&s=%s" % (ip, port, secret)
+    try:
+        from . import qr
+        code = qr.ansi(pair_url)
+    except Exception as e:                       # a fallback code is a convenience, never a blocker
+        print("  [qr] unavailable (%s); use the /pair screen" % e, flush=True)
+        return
+    print("\n  fallback code (valid %ds, one use):\n" % _PAIR_TTL, flush=True)
+    print(code, flush=True)
+
+
+def _macos_firewall_on():
+    """True when macOS's application firewall is enabled — it drops inbound connections to an
+    unlisted python, which looks exactly like `--lan` not working. Best-effort; never raises."""
+    try:
+        import subprocess
+        out = subprocess.run(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"],
+                             capture_output=True, text=True, timeout=4).stdout
+        return "State = 1" in out or "enabled" in out.lower()
+    except Exception:
+        return False
+
+
+def _own_ipv4():
+    """This machine's own LAN IPv4 addresses, for `--lan`'s Host allow-list. The UDP-connect trick
+    gets the address the default route would use without sending a packet; hostname resolution adds
+    any others. No third-party deps, and a failure just yields fewer allowed hosts."""
+    import socket
+    ips = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ips.append(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.append(info[4][0])
+    except OSError:
+        pass
+    return sorted({ip for ip in ips if ip and not ip.startswith("127.")})
 
 
 def _open(url):

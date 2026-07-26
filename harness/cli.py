@@ -216,6 +216,10 @@ def cmd_web(args):
     argv = ["--port", str(args.port)]
     if not args.open:
         argv.append("--no-open")
+    if getattr(args, "lan", False):
+        argv.append("--lan")
+    if getattr(args, "qr", False):
+        argv.append("--qr")
     return web_main(argv)
 
 
@@ -1275,6 +1279,12 @@ def main(argv=None):
     pw.add_argument("--remote", action="store_true",
                     help="also dial the public relay so a phone can drive this desktop from anywhere "
                          "(relay via $COLLIE_RELAY, default wss://collie.run)")
+    pw.add_argument("--lan", action="store_true",
+                    help="also listen on this machine's network address, so a phone on the same Wi-Fi "
+                         "can reach it directly, no relay (CollieIOS); pairing is still required")
+    pw.add_argument("--qr", action="store_true",
+                    help="with --lan, also print a QR fallback of the one-shot pairing secret "
+                         "(for when a camera can't read the ring code)")
     pw.set_defaults(open=True, fn=cmd_web)
 
     # wallpaper: collie owns its own live desktop window (no third-party wallpaper engine)

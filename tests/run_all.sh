@@ -62,6 +62,15 @@ else
   echo "  (playwright not found — skipping GUI suite)"
 fi
 
+echo "── pair code (collie's own optical format) ──────────────"
+if $PY tests/test_paircode.py >/dev/null 2>&1; then echo "  paircode OK"; else echo "  paircode FAIL"; rc=1; fi
+
+echo "── QR encoder (fallback pairing code) ───────────────────"
+if $PY tests/test_qr.py >/dev/null 2>&1; then echo "  qr OK"; else echo "  qr FAIL"; rc=1; fi
+
+echo "── web --lan host guard (phone pairing) ─────────────────"
+if $PY tests/test_web_lan.py >/dev/null 2>&1; then echo "  web --lan OK"; else echo "  web --lan FAIL"; rc=1; fi
+
 echo "── CLI surfaces (run/dashboard/repl/tui/acp/bridge, mock) ─"
 $PY tests/surfaces_test.py 2>&1 | grep -E "PASS|FAIL|SURFACES:"
 [ "${PIPESTATUS[0]}" = "0" ] || rc=1
