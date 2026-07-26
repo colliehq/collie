@@ -62,7 +62,23 @@ bash installer/build_mac.sh                 # build + ad-hoc sign (local use)
 bash installer/build_mac.sh --sign          # sign with the best identity in the keychain
 bash installer/build_mac.sh --sign --dmg    # …and wrap it in Collie-<ver>.dmg
 bash installer/build_mac.sh --sign --dmg --notarize <profile>
+
+# standalone — bundles a private CPython, so it runs on a Mac with no Python at all
+bash installer/build_mac.sh --bundle-python --sign --dmg
+#   --arch arm64|x86_64      (defaults to this machine; see below)
+#   --extras local,tui,desktop
 ```
+
+`--bundle-python` calls `build_mac_payload.sh`, the counterpart of `build_payload.ps1`: it stages a
+relocatable CPython from python-build-standalone into `Contents/Resources/python` and installs
+collie into it. ~225 MB staged, ~98 MB as a dmg, and every one of the ~198 nested Mach-O binaries
+gets signed before the enclosing bundle (the hardened runtime requires it, and signing the outside
+first would just be invalidated by the inner writes — `codesign --deep` is Apple-discouraged, so
+the script walks them itself). The tarball is cached in `~/.cache/collie-build`, so a rebuild is a
+re-extract, not a re-download.
+
+**One dmg per architecture.** python-build-standalone ships per-arch builds and no universal2, so a
+full release is `Collie-<ver>-arm64.dmg` *and* `Collie-<ver>-x86_64.dmg` rather than one fat app.
 
 **Why a bundle when `pip install collie-harness` already works: identity.** macOS attaches TCC
 permissions to the *application*, so a pip install makes `collie record` ask for Screen Recording on

@@ -5,6 +5,8 @@
 #   bash installer/build_mac.sh --sign          # sign with a Developer ID / Development identity
 #   bash installer/build_mac.sh --sign --dmg    # …and wrap it in Collie-<ver>.dmg
 #   bash installer/build_mac.sh --sign --dmg --notarize collie   # …and notarise via a stored profile
+#   bash installer/build_mac.sh --bundle-python --sign --dmg      # standalone: no Python required
+#        --arch arm64|x86_64   --extras local,tui,desktop
 #
 # WHY a bundle at all, when `pip install collie-harness` already works: identity. macOS attaches
 # TCC permissions (Screen Recording, Camera, Microphone) to the *application*, so a pip install
@@ -12,19 +14,23 @@
 # blanket screen access forever, and System Settings lists "Terminal", not Collie. A bundle asks as
 # Collie, and the desktop wallpaper stops showing up in the window list as "Python".
 #
-# This builds the DEVELOPER bundle: it runs the collie already on this machine. Bundling a private
-# CPython (what build_payload.ps1 does on Windows, for users with no Python) is a separate step.
+# Without --bundle-python this is the DEVELOPER bundle: it runs the collie already on this machine.
+# With it, build_mac_payload.sh stages a private CPython inside the app (the counterpart of
+# build_payload.ps1) so it runs on a Mac that has never had Python.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"',open('harness/__init__.py').read()).group(1))")
 APP="installer/Output/Collie.app"
-SIGN=0; DMG=0; NOTARY_PROFILE=""
+SIGN=0; DMG=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop"
 while [ $# -gt 0 ]; do
   case "$1" in
     --sign) SIGN=1 ;;
     --dmg) DMG=1 ;;
     --notarize) NOTARY_PROFILE="${2:-}"; shift ;;
+    --bundle-python) BUNDLE_PY=1 ;;
+    --arch) ARCH="${2:?}"; shift ;;
+    --extras) EXTRAS="${2:?}"; shift ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
   shift
@@ -54,16 +60,30 @@ else
   echo "  icon: skipped (no rsvg-convert — brew install librsvg for a real app icon)"
 fi
 
-# ── launcher: exec the collie already installed, inside the bundle's identity ───────────────────
-COLLIE_BIN="$(command -v collie || echo "$PWD/.venv/bin/collie")"
-cat > "$APP/Contents/MacOS/Collie" <<LAUNCHER
+# ── runtime + launcher ───────────────────────────────────────────────────────────────────────────
+if [ "$BUNDLE_PY" = "1" ]; then
+  bash installer/build_mac_payload.sh "$APP" "$ARCH" "$EXTRAS"
+  # $0's own dir, resolved at run time: the app must work from /Applications, a dmg, or anywhere
+  # the user dragged it, so nothing here may bake in a build-machine path.
+  cat > "$APP/Contents/MacOS/Collie" <<'LAUNCHER'
+#!/bin/bash
+# Bundle entry point — runs the private runtime inside this .app. No system Python involved.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export COLLIE_BUNDLED=1
+exec "$HERE/Resources/python/bin/python3" -m harness.cli app "$@"
+LAUNCHER
+  echo "  launcher -> bundled runtime"
+else
+  COLLIE_BIN="$(command -v collie || echo "$PWD/.venv/bin/collie")"
+  cat > "$APP/Contents/MacOS/Collie" <<LAUNCHER
 #!/bin/bash
 # Bundle entry point. Everything the app does is collie; the bundle exists to give it a stable
 # identity for TCC, the Dock and the window list.
 exec "$COLLIE_BIN" app "\$@"
 LAUNCHER
+  echo "  launcher -> $COLLIE_BIN (developer bundle; --bundle-python for a standalone app)"
+fi
 chmod +x "$APP/Contents/MacOS/Collie"
-echo "  launcher -> $COLLIE_BIN"
 
 # ── Info.plist. The NS*UsageDescription strings are NOT optional: without them macOS kills the
 #    process the instant it touches the camera or microphone, instead of prompting. ─────────────
@@ -107,6 +127,19 @@ cat > "$ENTITLEMENTS" <<ENT
 </dict></plist>
 ENT
 
+# Every Mach-O inside the bundle must carry its own signature under the hardened runtime, and they
+# must be signed BEFORE the enclosing bundle — sign the outside first and the inner writes
+# invalidate it. (`codesign --deep` is Apple-discouraged and skips entitlements, so: do it by hand.)
+sign_nested() {
+  local id="$1"; shift
+  local n=0
+  while IFS= read -r f; do
+    codesign --force --options runtime "$@" --sign "$id" "$f" 2>/dev/null && n=$((n+1)) || true
+  done < <(find "$APP/Contents/Resources" -type f \( -name "*.so" -o -name "*.dylib" -o -perm -u+x \) 2>/dev/null \
+           | while IFS= read -r f; do file -b "$f" | grep -q "Mach-O" && echo "$f"; done)
+  [ "$n" -gt 0 ] && echo "  signed $n nested binaries" || true
+}
+
 if [ "$SIGN" = "1" ]; then
   ID=$(security find-identity -v -p codesigning | { grep "Developer ID Application" || true; } \
        | head -1 | sed -E 's/.*"(.*)"/\1/')
@@ -119,10 +152,12 @@ if [ "$SIGN" = "1" ]; then
     echo "     Settings -> Accounts -> Manage Certificates -> + ; team Account Holder only)."
   fi
   [ -n "$ID" ] || { echo "  no codesigning identity at all" >&2; exit 1; }
+  sign_nested "$ID" --timestamp
   codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" \
            --sign "$ID" "$APP"
   echo "  signed: $ID"
 else
+  sign_nested -
   codesign --force --sign - "$APP"        # ad-hoc: enough for a stable local TCC identity
   echo "  signed: ad-hoc (local only)"
 fi
