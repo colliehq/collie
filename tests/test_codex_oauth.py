@@ -132,4 +132,12 @@ cf = p._consume(stream_fail, None)
 check("failed stream -> error stop", cf.stop_reason == "error" and "boom" in cf.error_detail)
 
 print("\n%s" % ("ALL PASS" if ok else "SOME FAILED"))
-raise SystemExit(0 if ok else 1)
+
+
+def test_codex_oauth_checks_pass():
+    """Gate for a bare `pytest` run — see the note in test_catalog.py."""
+    assert ok, "see the FAIL lines in captured stdout"
+
+
+if __name__ == "__main__":                 # script mode; a bare SystemExit here aborts collection
+    raise SystemExit(0 if ok else 1)

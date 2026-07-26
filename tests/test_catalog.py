@@ -58,4 +58,17 @@ json.dumps({"entries": ents})
 check("catalog JSON-serializable", True)
 
 print("\n%s" % ("ALL PASS" if ok else "SOME FAILED"))
-raise SystemExit(0 if ok else 1)
+
+
+def test_catalog_checks_pass():
+    """Gate for a bare `pytest` run. The checks above execute at import (script style, the way
+    run_all.sh drives this file); this just reports their verdict to a collector."""
+    assert ok, "see the FAIL lines in captured stdout"
+
+
+# Script mode only. At module level this SystemExit escaped during pytest's COLLECTION, which
+# pytest reports as an INTERNALERROR and which aborts the whole session — so one script-style
+# file took down every other test in tests/. Under a collector we hand the verdict to
+# test_catalog_checks_pass instead.
+if __name__ == "__main__":
+    raise SystemExit(0 if ok else 1)
