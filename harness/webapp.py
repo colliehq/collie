@@ -421,16 +421,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("wallpaper.html", "text/html; charset=utf-8")
             if path == "/ambient":
                 return self._serve_static("ambient.html", "text/html; charset=utf-8")
-            if path == "/meadow":
-                return self._serve_static("meadow.html", "text/html; charset=utf-8")
             if path == "/remote":
                 return self._serve_static("remote.html", "text/html; charset=utf-8")
             if path == "/m":                          # mobile client (served to phones via the relay)
                 return self._serve_static("mobile.html", "text/html; charset=utf-8")
             if path == "/map/three.min.js":
                 return self._serve_static("three.min.js", "application/javascript; charset=utf-8")
-            if path in ("/dog_sprite.png", "/sheep_sprite.png"):
-                return self._serve_static(path.lstrip("/"), "image/png")
             if path == "/api/ver":
                 # non-secret per-process id; a long-lived desktop page polls this and reloads when it changes
                 return self._send_html(BOOT.encode(), 200, "text/plain; charset=utf-8")

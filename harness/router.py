@@ -96,7 +96,8 @@ def prefix_override(text: str):
     if not m:
         return None
     word = m.group(1).lower()
-    kind = "mission" if word in ("mission", "delegate") else word
+    # the mission route is disabled (unmanageable in the UI) — '/mission' and '/delegate' run as chat
+    kind = "chat" if word in ("mission", "delegate") else word
     return kind, m.group(2).strip()
 
 
@@ -132,11 +133,11 @@ def _decide(comp, text: str) -> dict:
     conf = max(0.0, min(1.0, conf))
     goal = (plan.get("goal") or text).strip()
     reason = (plan.get("reason") or "")[:200]
-    # gate ONLY the irreversible route (RouteLLM α, highest bar). Below it, abstain
-    # to chat (reversible) and tell the UI it could be promoted to a mission.
-    if kind == "mission" and conf < MISSION_THRESHOLD:
+    # the mission route is DISABLED (its live view/kill/manage UI wasn't usable) — anything the model
+    # would have called a mission just runs as chat, with no "promote to mission" affordance.
+    if kind == "mission":
         return {"kind": "chat", "goal": text, "confidence": conf, "reason": reason,
-                "source": "model", "abstained": True, "suggested": "mission"}
+                "source": "model", "abstained": False}
     return {"kind": kind, "goal": goal, "confidence": conf, "reason": reason,
             "source": "model", "abstained": False}
 

@@ -166,6 +166,35 @@ function pagePoint(text, selector) {
   return { x, y, inView, label: (el.innerText || el.value || selector || text || "").trim().slice(0, 80) };
 }
 
+// Injected (MAIN world): show a visible pointer that GLIDES to (x,y) and pulses a ring — so you can
+// watch Collie operate the page instead of things just changing on their own. Self-contained.
+function pageCursor(x, y) {
+  const D = document, ID = "__collieCursor";
+  let c = D.getElementById(ID);
+  if (!c) {
+    c = D.createElement("div"); c.id = ID;
+    c.style.cssText = "position:fixed;left:0;top:0;z-index:2147483647;width:26px;height:26px;margin:-3px 0 0 -3px;" +
+      "pointer-events:none;opacity:0;will-change:transform,opacity;" +
+      "transition:transform .32s cubic-bezier(.22,.61,.36,1),opacity .25s;" +
+      "filter:drop-shadow(0 1px 3px rgba(0,0,0,.5));" +
+      "background:center/contain no-repeat url(\"data:image/svg+xml;utf8," +
+      "<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 24 24'>" +
+      "<path d='M4 2l6.5 17 2.4-6.8L20 9.5z' fill='%23ffffff' stroke='%23202020' stroke-width='1.4' stroke-linejoin='round'/></svg>\")";
+    (D.body || D.documentElement).appendChild(c);
+  }
+  requestAnimationFrame(function () { c.style.opacity = "1"; c.style.transform = "translate(" + x + "px," + y + "px)"; });
+  setTimeout(function () {                                   // click ring, timed to when the pointer arrives
+    const r = D.createElement("div");
+    r.style.cssText = "position:fixed;left:" + x + "px;top:" + y + "px;z-index:2147483646;width:16px;height:16px;" +
+      "margin:-8px 0 0 -8px;border-radius:50%;pointer-events:none;border:2px solid rgba(70,200,140,.95);" +
+      "transform:scale(.3);opacity:1;transition:transform .5s ease-out,opacity .5s;";
+    (D.body || D.documentElement).appendChild(r);
+    requestAnimationFrame(function () { r.style.transform = "scale(2.6)"; r.style.opacity = "0"; });
+    setTimeout(function () { r.remove(); }, 520);
+  }, 300);
+  return true;
+}
+
 function pageType(selector, text, submit) {
   const el = document.querySelector(selector);
   if (!el) return { error: "no field " + selector };
@@ -566,6 +595,7 @@ async function trustedClick(text, selector) {
   const pt = await exec(pagePoint, [text || "", selector || ""]);
   if (!pt || pt.error) return pt || { error: "no element for " + (selector || text) };
   if (!pt.inView) return { error: "element found but off-screen after scroll — cannot place a real click there" };
+  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
   try {
     await ensureAttached(tab.id);
     const b = { x: pt.x, y: pt.y, button: "left" };
@@ -585,6 +615,7 @@ async function trustedType(selector, text, submit) {
   if (!tab) return { error: NO_TAB };
   const pt = await exec(pagePoint, ["", selector]);
   if (!pt || pt.error) return pt || { error: "no field " + selector };
+  if (pt.inView) { try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {} }
   try {
     await ensureAttached(tab.id);
     if (pt.inView) {   // click to focus the field first
@@ -617,6 +648,7 @@ async function trustedClickRef(ref) {
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no element for ref " + ref };
   if (!pt.inView) return { error: "element " + ref + " off-screen after scroll — cannot place a real click there" };
+  try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
   try {
     await ensureAttached(tab.id);
     const b = { x: pt.x, y: pt.y, button: "left" };
@@ -636,6 +668,7 @@ async function trustedTypeRef(ref, text, submit) {
   if (!tab) return { error: NO_TAB };
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no field for ref " + ref };
+  if (pt.inView) { try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {} }
   try {
     await ensureAttached(tab.id);
     if (pt.inView) {   // click to focus the field first
