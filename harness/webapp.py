@@ -1356,7 +1356,8 @@ def main(argv=None):
         print("  [lan] network clients get NOTHING until they pair: every route needs the token, and "
               "the token is only handed to loopback. Pair by showing the code below to the app.",
               flush=True)
-        if sys.platform == "darwin" and _macos_firewall_on():
+        from . import plat
+        if plat.is_macos() and _macos_firewall_on():
             print("  [lan] macOS's firewall is ON, so it will silently drop these incoming "
                   "connections until you allow python: System Settings → Network → Firewall → "
                   "Options, or turn the firewall off while you pair.", flush=True)

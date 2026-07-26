@@ -283,44 +283,69 @@ def _cmd_web_remote(args):
     return 0
 
 
-_MAC_BROWSERS = ("Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium", "Vivaldi")
+# ── the desktop window ───────────────────────────────────────────────────────────────────────────
+# One contract on every OS: a Chromium-family browser in --app mode under collie's own profile dir,
+# which is what makes it a real borderless window instead of a tab (and stops Chrome from handing the
+# request to an already-running instance that would ignore --app).
+#
+# Only two things genuinely vary, and neither is "which OS":
+#   where the binary lives  — a .app bundle on macOS, PATH everywhere else
+#   whose desktop it opens on — on WSL the user is looking at the WINDOWS desktop, so the browser has
+#                               to be launched over there; everywhere else "local" is the right screen
+# So supporting one more OS should be an entry in a tuple, not another branch.
+_BROWSERS_BUNDLE = ("Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium", "Vivaldi")
+_BROWSERS_PATH = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                  "microsoft-edge", "microsoft-edge-stable", "brave-browser", "vivaldi-stable")
 
 
-def _desktop_window_macos(url, kiosk=False):
-    """Borderless app window on macOS: any Chromium browser opened with --app=<url>. Its own
-    --user-data-dir keeps this window out of the user's normal session (and stops Chrome from
-    reusing an already-running instance instead of honouring --app). Returns (ok, detail)."""
-    import subprocess
-    for name in _MAC_BROWSERS:
-        for root in ("/Applications", os.path.expanduser("~/Applications")):
-            exe = os.path.join(root, name + ".app", "Contents", "MacOS", name)
-            if not os.path.exists(exe):
-                continue
-            argv = [exe, "--app=%s" % url,
-                    "--user-data-dir=" + os.path.join(os.path.expanduser("~"), ".collie", "desktop")]
-            argv += ["--kiosk", "--start-fullscreen"] if kiosk else ["--start-maximized"]
-            try:
-                subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception as e:
-                return False, "launch error (%s): %s" % (name, e)
-            return True, "opened in %s" % name
-    return False, ("no Chromium-family browser found in /Applications (looked for %s) — Safari has "
-                   "no --app mode, so open %s in a tab instead" % (", ".join(_MAC_BROWSERS), url))
+def _app_window_flags(url, kiosk):
+    """The window contract — byte-identical on every OS."""
+    profile = os.path.join(os.path.expanduser("~"), ".collie", "desktop")
+    return (["--app=%s" % url, "--user-data-dir=%s" % profile]
+            + (["--kiosk", "--start-fullscreen"] if kiosk else ["--start-maximized"]))
 
 
-def _desktop_window(url, kiosk=False):
-    """Pop a borderless browser window showing `url` — a *real* window, so clicks/typing are 100%
-    reliable (unlike a behind-icons wallpaper, where the shell eats clicks). From WSL that means
-    Edge on the Windows desktop, driven over powershell.exe, using the user's own logged-in
-    profile; on macOS, a local Chromium in --app mode. Returns (ok, detail)."""
-    import shutil, subprocess
+def _find_browser():
+    """(path, label) of a local Chromium-family browser, or (None, why-not)."""
     from . import plat
     if plat.is_macos():
-        return _desktop_window_macos(url, kiosk=kiosk)
+        for name in _BROWSERS_BUNDLE:
+            for root in ("/Applications", os.path.expanduser("~/Applications")):
+                exe = os.path.join(root, name + ".app", "Contents", "MacOS", name)
+                if os.path.exists(exe):
+                    return exe, name
+        return None, ("no Chromium-family browser in /Applications (looked for %s), and Safari has "
+                      "no --app mode" % ", ".join(_BROWSERS_BUNDLE))
+    import shutil
+    for name in _BROWSERS_PATH:
+        exe = shutil.which(name)
+        if exe:
+            return exe, name
+    return None, "no Chromium-family browser on PATH (looked for %s)" % ", ".join(_BROWSERS_PATH)
+
+
+def _open_window_local(url, kiosk):
+    """The window on THIS machine's desktop — macOS and Linux."""
+    import subprocess
+    exe, label = _find_browser()
+    if not exe:
+        return False, "%s — open %s in a browser instead" % (label, url)
+    try:
+        subprocess.Popen([exe] + _app_window_flags(url, kiosk),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        return False, "launch error (%s): %s" % (label, e)
+    return True, "opened in %s" % label
+
+
+def _open_window_wsl(url, kiosk):
+    """WSL only, and the one case that can't be done locally: the desktop the user is looking at
+    belongs to Windows, so the browser is launched over there through powershell.exe, in their own
+    logged-in Edge profile. A Linux-side window would open in WSLg, not on that desktop."""
+    import shutil, subprocess
     ps = shutil.which("powershell.exe")
     if not ps:
-        return False, ("no powershell.exe — `collie wallpaper` drives a Windows desktop from WSL; "
-                       "on native Windows just open %s in a browser" % url)
+        return False, "no powershell.exe"
     flags = ["'--kiosk'", "'--edge-kiosk-type=fullscreen'"] if kiosk else ["'--start-maximized'"]
     argl = ",".join(["'--app=%s'" % url] + flags) + \
         ",('--user-data-dir=' + $env:LOCALAPPDATA + '\\collie-desktop')"
@@ -338,6 +363,22 @@ def _desktop_window(url, kiosk=False):
     if r.returncode != 0:
         return False, (r.stderr or r.stdout or ("powershell exit %d" % r.returncode)).strip()
     return True, "opened"
+
+
+def _desktop_window(url, kiosk=False):
+    """Pop a borderless browser window showing `url` — a *real* window, so clicks and typing are 100%
+    reliable (unlike a behind-icons wallpaper, where the shell eats clicks). Returns (ok, detail).
+
+    Only ever reached off native Windows: there `collie app` / `collie wallpaper` drive the WebView2
+    engine instead, so the cases here are WSL, macOS and Linux."""
+    from . import plat
+    if plat.is_wsl():
+        ok, detail = _open_window_wsl(url, kiosk)
+        if ok:
+            return ok, detail
+        # fall through rather than give up: WSLg puts a Linux window on the Windows desktop too, so
+        # a WSL box with no powershell.exe still has a way to show this.
+    return _open_window_local(url, kiosk)
 
 
 def cmd_app(args):

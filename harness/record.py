@@ -194,7 +194,7 @@ def _avf_camera_rate(idx, want):
 def _monitors():
     """[(x, y, w, h), ...] for each display in virtual-desktop coordinates (Windows). Best-effort;
     the process is made DPI-aware first so the rects match what gdigrab captures."""
-    if os.name != "nt":
+    if not plat.is_windows():
         return []
     import ctypes
     from ctypes import wintypes
@@ -493,7 +493,7 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
         print("  recording in %d..." % n, flush=True)
         time.sleep(1)
 
-    flags = (subprocess.CREATE_NEW_PROCESS_GROUP | _NOWIN) if os.name == "nt" else 0
+    flags = (subprocess.CREATE_NEW_PROCESS_GROUP | _NOWIN) if plat.is_windows() else 0
     # capture ffmpeg's stderr to a log so a failure (busy device, filter stall) is diagnosable instead
     # of a silent 0-byte file. The child keeps its own inherited handle, so closing ours here is fine.
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -604,7 +604,7 @@ def status():
 
 def list_windows():
     """Visible top-level window titles, for the record-source picker (gdigrab captures by title)."""
-    if os.name != "nt":
+    if not plat.is_windows():
         return []
     import ctypes
     from ctypes import wintypes
