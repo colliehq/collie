@@ -26,6 +26,38 @@ from dataclasses import dataclass, field
 from .providers import content_text, est_tokens
 
 
+# Reply-language display names, keyed by the LANG setting's option values (settings.py SCHEMA).
+_LANG_NAMES = {
+    "en": "English", "zh": "简体中文 (Simplified Chinese)",
+    "zh-tw": "繁體中文 (Traditional Chinese)", "ja": "日本語 (Japanese)",
+    "ko": "한국어 (Korean)", "es": "Español (Spanish)", "fr": "Français (French)",
+    "de": "Deutsch (German)", "pt": "Português (Portuguese)", "ru": "Русский (Russian)",
+}
+
+
+def _response_language_line() -> str:
+    """RESPONSE LANGUAGE directive for the STABLE tier. The model must WRITE in the user's chosen
+    language (the LANG setting), NOT in whichever language the current message happens to be in:
+    short CJK-mixed inputs like "打开collie dashboard" were being misdetected as Japanese and
+    answered in Japanese. Pinning to LANG kills the per-message guesswork. Byte-stable per session
+    (LANG doesn't change mid-run), so it stays inside the cached prefix. LANG=auto/unknown -> no
+    pin; fall back to mirroring the user's own language."""
+    try:
+        from . import settings
+        lang = (settings.get("LANG", "auto") or "auto").lower()
+    except Exception:
+        lang = "auto"
+    name = _LANG_NAMES.get(lang)
+    if not name:
+        return ("RESPONSE LANGUAGE: Reply in the same language the user writes in. When a short "
+                "input is ambiguous between Chinese and Japanese (they share Han characters), "
+                "prefer the language the user has been using earlier in this conversation.")
+    return ("RESPONSE LANGUAGE: Always write your reply in %s, regardless of what language the "
+            "user's message is written in. The ONE exception: if the user's CURRENT message "
+            "explicitly asks you to answer in another language, honor that for that one reply "
+            "only, then go back to %s on the next message." % (name, name))
+
+
 @dataclass
 class ComposeMeta:
     prefix_tokens: int = 0
@@ -121,7 +153,9 @@ class ContextComposer:
         # Cached per cwd so it's byte-stable within a session (a skill installed mid-session won't
         # show until the next process — documented trade-off, keeps the cached prefix intact).
         skill_index = self._skill_index(cwd)
-        stable_parts = [self.identity, mode_role, tool_names]
+        # RESPONSE LANGUAGE sits right after identity so it survives identity overrides (the desktop
+        # persona in webapp.py replaces self.identity wholesale but never touches this line).
+        stable_parts = [self.identity, _response_language_line(), mode_role, tool_names]
         if skill_index:
             stable_parts.append(skill_index)         # after tools, before workdir (STABLE slot)
         stable_parts.append(workdir)
