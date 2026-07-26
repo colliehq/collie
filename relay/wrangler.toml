@@ -1,0 +1,13 @@
+name = "collie-relay"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayRoom"
+
+# SQLite-backed DO class → works on the Workers free plan (we don't use storage, just WS + memory).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayRoom"]

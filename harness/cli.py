@@ -210,11 +210,78 @@ def cmd_tui(args):
 
 def cmd_web(args):
     """Serve the local web GUI (streams the verification gate live over SSE)."""
+    if getattr(args, "remote", False):
+        return _cmd_web_remote(args)
     from .webapp import main as web_main
     argv = ["--port", str(args.port)]
     if not args.open:
         argv.append("--no-open")
     return web_main(argv)
+
+
+def _print_qr(data: str):
+    """Print a scannable ASCII QR of the pairing link to the terminal, so a phone can just scan the
+    screen. Uses `segno` (pure-python, optional: pip install segno); silently degrades to the plain
+    link if it's not installed."""
+    try:
+        import segno
+    except ImportError:
+        print("  (pip install collie-harness[remote] for a scannable QR here)", flush=True)
+        return
+    try:
+        segno.make(data, error="m").terminal(compact=True)
+    except TypeError:
+        try:
+            segno.make(data, error="m").terminal()      # older segno without compact=
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _cmd_web_remote(args):
+    """collie web --remote — run the local GUI server AND dial the public relay so a phone can
+    drive this desktop from anywhere. The local server still binds 127.0.0.1 only; the relay client
+    replays the phone's requests to it with the CSRF token injected (see harness/remote.py)."""
+    import threading, time
+    from . import webapp
+    from .remote import RemoteState
+
+    relay = os.environ.get("COLLIE_RELAY", "wss://collie.run").rstrip("/")
+
+    try:
+        httpd, port = webapp.bind_server(args.port)
+    except OSError as e:
+        print("collie web --remote: %s (pass --port <free port>)" % e)
+        return 1
+    threading.Thread(target=httpd.serve_forever, name="collie-web", daemon=True).start()
+
+    state = RemoteState(relay, port, webapp.TOKEN, logf=lambda *a: print(*a, flush=True))
+    webapp.REMOTE = state                           # expose to the web server's /api/remote/* + panel
+    state.start()
+    n_dev = len(state.identity.devices())
+
+    print("collie web · local http://127.0.0.1:%d/ · provider=%s" % (port, webapp._provider()), flush=True)
+    print("collie remote · relay=%s · %d paired device(s)" % (relay, n_dev), flush=True)
+    print("  Control panel (on this computer):  http://127.0.0.1:%d/remote" % port, flush=True)
+    print("─" * 60, flush=True)
+    print("  Open on your phone:  %s" % state.link(), flush=True)
+    _print_qr(state.link())
+    print("  Pairing code: %s   (only needed to add a NEW device)" % state.paircode, flush=True)
+    if n_dev:
+        print("  Already-paired devices reconnect automatically — no code needed.", flush=True)
+    print("─" * 60, flush=True)
+    print("  Ctrl-C to stop (this instantly cuts off all remote access).", flush=True)
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        state.stop()
+        httpd.shutdown()
+    return 0
 
 
 def _desktop_window(url, kiosk=False):
@@ -1199,6 +1266,9 @@ def main(argv=None):
     pw = sub.add_parser("web", help="serve the local web GUI (streams the verification gate live)")
     pw.add_argument("--port", type=int, default=8787)
     pw.add_argument("--no-open", dest="open", action="store_false", help="don't auto-open a browser")
+    pw.add_argument("--remote", action="store_true",
+                    help="also dial the public relay so a phone can drive this desktop from anywhere "
+                         "(relay via $COLLIE_RELAY, default wss://collie.run)")
     pw.set_defaults(open=True, fn=cmd_web)
 
     # wallpaper: collie owns its own live desktop window (no third-party wallpaper engine)

@@ -51,6 +51,23 @@ TOKEN = os.urandom(16).hex()
 # token + latest front-end/behaviour). Safe to expose: it's not a credential.
 BOOT = os.urandom(8).hex()
 
+# Set by `collie web --remote` (cli._cmd_web_remote) to a harness.remote.RemoteState. Powers the
+# desktop control panel at /remote and the local-only /api/remote/* routes. None in plain `collie web`
+# until the panel's "开启远程" toggle lazily creates one via _ensure_remote().
+REMOTE = None
+
+
+def _ensure_remote(port):
+    """Lazily build the RemoteState so ANY `collie web` (incl. the desktop app) can turn remote on
+    from the /remote panel — no `--remote` flag, no separate process, no second port. The relay URL
+    comes from $COLLIE_RELAY (default wss://collie.run)."""
+    global REMOTE
+    if REMOTE is None:
+        from .remote import RemoteState
+        relay = os.environ.get("COLLIE_RELAY", "wss://collie.run")
+        REMOTE = RemoteState(relay, port, TOKEN)
+    return REMOTE
+
 
 def _provider() -> str:
     """Zero-config stays mock ($0 local dev): settings.apply() runs per query, so a Provider
@@ -72,6 +89,12 @@ class Handler(BaseHTTPRequestHandler):
     # time. Subscribers are plain queues; a run publishes, each /api/live connection drains its queue.
     _live_lock = threading.Lock()
     _live_subs: list = []
+
+    # session-scoped MIRROR bus. _live (above) carries structural events for ALL runs (the Map);
+    # this carries the FULL stream — INCLUDING tokens — for ONE session, so a second window (a phone
+    # + the desktop) can mirror a run token-by-token in real time. sid -> list[queue].
+    _mirror_lock = threading.Lock()
+    _mirror_subs: dict = {}
 
     # attached-image store: the composer POSTs an image to /api/upload, gets an id back, then the
     # next /api/stream?imgs=<id> references it. Kept in memory (a run consumes it right away), bounded
@@ -159,6 +182,48 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     pass
 
+    @classmethod
+    def _mirror_pub(cls, sid, kind, data):
+        """Fan one event of session `sid`'s run to every window mirroring that session."""
+        with cls._mirror_lock:
+            subs = list(cls._mirror_subs.get(sid, ()))
+        for q in subs:
+            try:
+                q.put_nowait((kind, data))
+            except queue.Full:
+                pass
+
+    def _serve_mirror(self, sid):
+        """GET /api/mirror?session=<sid> -> SSE feed of that session's live run (tokens + structural),
+        so another open window mirrors it. The window that STARTED the run renders from its own
+        /api/stream; every other window renders from here."""
+        if not sid:
+            return self._send_json({"error": "session required"}, 400)
+        q: queue.Queue = queue.Queue(maxsize=1024)
+        with Handler._mirror_lock:
+            Handler._mirror_subs.setdefault(sid, []).append(q)
+        self._sse_open()
+        try:
+            self._sse("mirror_hello", {"session": sid})
+            while True:
+                try:
+                    kind, data = q.get(timeout=15)
+                    self._sse(kind, data)
+                except queue.Empty:
+                    self._sse("ping", {})
+        except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+            pass
+        finally:
+            with Handler._mirror_lock:
+                subs = Handler._mirror_subs.get(sid)
+                if subs is not None:
+                    try:
+                        subs.remove(q)
+                    except ValueError:
+                        pass
+                    if not subs:
+                        Handler._mirror_subs.pop(sid, None)
+
     # ------------------------------------------------------------------ helpers
     def _send_html(self, body: bytes, code: int = 200, ctype: str = "text/html; charset=utf-8"):
         self.send_response(code)
@@ -236,6 +301,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("wallpaper.html", "text/html; charset=utf-8")
             if path == "/meadow":
                 return self._serve_static("meadow.html", "text/html; charset=utf-8")
+            if path == "/remote":
+                return self._serve_static("remote.html", "text/html; charset=utf-8")
+            if path == "/m":                          # mobile client (served to phones via the relay)
+                return self._serve_static("mobile.html", "text/html; charset=utf-8")
             if path == "/map/three.min.js":
                 return self._serve_static("three.min.js", "application/javascript; charset=utf-8")
             if path in ("/dog_sprite.png", "/sheep_sprite.png"):
@@ -342,6 +411,20 @@ class Handler(BaseHTTPRequestHandler):
                     # 403 is fine and the drive-by never starts the agent.
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_stream(urllib.parse.parse_qs(parsed.query))
+            if path == "/api/mirror":                 # live token-by-token mirror of one session's run
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._serve_mirror(urllib.parse.parse_qs(parsed.query).get("session", [""])[0].strip())
+            if path == "/api/remote/status":         # desktop control panel: pairing + device list
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                if REMOTE is None:
+                    return self._send_json({"available": False})
+                return self._send_json(dict(available=True, **REMOTE.status()))
+            if path == "/api/remote/qr":             # SVG QR of the pairing link (segno, optional)
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._serve_remote_qr()
             self._send_html(b"not found", 404, "text/plain; charset=utf-8")
         except BrokenPipeError:
             pass
@@ -357,6 +440,29 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._send_json({"error": "forbidden host"}, 403)
         try:
+            if path.startswith("/api/remote/"):      # desktop control panel actions (local only)
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                action = path[len("/api/remote/"):]
+                if action == "enable":                # lazily create the relay client if needed
+                    rs = _ensure_remote(self.server.server_address[1])
+                    rs.start()
+                    return self._send_json(dict(ok=True, **rs.status()))
+                if REMOTE is None:
+                    return self._send_json({"error": "remote not available"}, 503)
+                if action == "disable":
+                    REMOTE.stop()
+                    return self._send_json(dict(ok=True, **REMOTE.status()))
+                if action == "rotate":
+                    return self._send_json({"ok": True, "paircode": REMOTE.rotate_code(), "link": REMOTE.link()})
+                if action == "forget":
+                    body = self._read_json(4096) or {}
+                    return self._send_json({"ok": REMOTE.forget(body.get("device_id", ""))})
+                if action == "rename":
+                    body = self._read_json(4096) or {}
+                    name = (body.get("name") or "").strip()[:60]
+                    return self._send_json({"ok": REMOTE.rename(body.get("device_id", ""), name)})
+                return self._send_json({"error": "unknown action"}, 404)
             if path == "/api/settings":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -694,6 +800,34 @@ class Handler(BaseHTTPRequestHandler):
         got = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
         return hmac.compare_digest(got, TOKEN)     # constant-time compare
 
+    def _serve_remote_qr(self):
+        """Render the current pairing link as an SVG QR (segno, optional dep). Transparent bg + light
+        modules so it sits on the dark control panel. 501 if segno isn't installed, 404 if no link."""
+        link = REMOTE.link() if REMOTE else None
+        if not link:
+            return self._send_json({"error": "no pairing link"}, 404)
+        try:
+            import io
+            import segno
+            buff = io.BytesIO()
+            segno.make(link, error="m").save(buff, kind="svg", scale=5, border=2,
+                                             dark="#c9d1e6", light=None)
+            svg = buff.getvalue()
+        except ImportError:
+            return self._send_json({"error": "segno not installed",
+                                    "hint": "pip install collie-harness[remote]"}, 501)
+        except Exception as e:
+            return self._send_json({"error": str(e)}, 500)
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(svg)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(svg)
+        except BrokenPipeError:
+            pass
+
     def _serve_sessions(self, qs=None):
         from . import sessions
         # ?n= (the Map asks for more so it can surface older runs that actually edited code, sorting
@@ -752,6 +886,7 @@ class Handler(BaseHTTPRequestHandler):
                    "prior_turns": sum(1 for m in history if m.get("role") == "user")}
         self._sse("start", start_d)
         Handler._live_pub("start", start_d)   # let open Maps enter live mode for this run
+        Handler._mirror_pub(sid, "start", start_d)   # + any window mirroring this session
 
         # PACK mode (🎯 best-of-N): run the task N times in isolation, pick the winner by what
         # actually PASSES. No token stream — each attempt runs silently; we push a `pack_attempt`
@@ -834,8 +969,10 @@ class Handler(BaseHTTPRequestHandler):
                 h.max_turns = 40                     # raised default; the Settings panel / env still wins
             # every structural event hits BOTH the starting client's socket and the live bus (so the
             # Map / mini-map render it in real time); the token firehose stays client-only.
-            h.emit = lambda kind, d: (self._sse(kind, d), Handler._live_pub(kind, d))
-            h.stream_cb = lambda piece: self._sse("token", {"t": piece})  # real token streaming
+            h.emit = lambda kind, d: (self._sse(kind, d), Handler._live_pub(kind, d),
+                                      Handler._mirror_pub(sid, kind, d))
+            h.stream_cb = lambda piece: (self._sse("token", {"t": piece}),
+                                         Handler._mirror_pub(sid, "token", {"t": piece}))  # real token streaming
             # mid-run steering: register a per-session queue; the loop drains it at each turn boundary.
             # POST /api/steer pushes onto it. Text typed while Collie works becomes the next user turn.
             steer_q = Handler._steer_open(sid)
@@ -871,7 +1008,7 @@ class Handler(BaseHTTPRequestHandler):
                 stop_hb.set()                  # end the heartbeat before we send `done`
             sessions.save(sid, res.messages, project="web", cwd=cwd, answer=res.answer or "")
             Handler._live_pub("done", {"session": sid, "turns": res.turns})   # live map: run finished
-            self._sse("done", {
+            done_d = {
                 "session": sid, "answer": res.answer or "", "error": res.error,
                 "model": res.model, "prefix_tokens": res.prefix_tokens,
                 "input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
@@ -882,7 +1019,9 @@ class Handler(BaseHTTPRequestHandler):
                 # flat-subscription paths draw a fixed bucket, so the real charge is $0 — cost_usd is
                 # only a per-token ESTIMATE of what it'd cost on the metered API. Flag it so the UI
                 # doesn't present the estimate as a real charge.
-                "subscription": _provider() in ("anthropic-oauth", "claude-cli")})
+                "subscription": _provider() in ("anthropic-oauth", "claude-cli")}
+            self._sse("done", done_d)
+            Handler._mirror_pub(sid, "done", done_d)   # mirroring windows see the run finish too
         except BrokenPipeError:
             pass
         except Exception as e:

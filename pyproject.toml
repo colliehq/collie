@@ -20,6 +20,7 @@ dependencies = []                       # core is stdlib-only
 local = ["onnxruntime", "tokenizers", "huggingface-hub", "numpy"]
 fastembed = ["fastembed"]               # opt-in: jina-v3 / other fastembed models (jina is CC-BY-NC)
 browser = ["playwright"]
+remote = ["segno"]                      # QR for `collie web --remote` (works without it — prints the link)
 tui = ["rich"]                          # the full-experience terminal chat (collie tui)
 acp = ["agent-client-protocol"]         # editor integration (collie acp)
 search = ["ddgs"]                        # keyless web_search (DuckDuckGo JSON API)

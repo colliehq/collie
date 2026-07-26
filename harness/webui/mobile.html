@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1220">
+<title>Collie</title>
+<style>
+  :root { --bg:#0f1220; --bar:#141827; --card:#1a1f33; --line:#272c44; --ink:#e7ecf7; --dim:#8791ad;
+          --brand:#6f7fd6; --brand2:#3D4E8F; --user:#2b3566; --good:#3fbf7f; --bad:#e0576b;
+          --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+         display:flex; flex-direction:column; overflow:hidden; }
+  .top { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:calc(8px + var(--safe-t)) 10px 8px;
+         background:var(--bar); border-bottom:1px solid var(--line); }
+  .top .title { flex:1; text-align:center; font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; justify-content:center; gap:7px; }
+  .top .title img { width:18px; height:18px; }
+  .iconbtn { width:40px; height:40px; border:none; background:transparent; color:var(--ink); font-size:20px; border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .iconbtn:active { background:var(--card); }
+  .log { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:14px 12px 8px; -webkit-overflow-scrolling:touch; }
+  .turn { margin:0 0 16px; }
+  .bubble { max-width:86%; padding:10px 13px; border-radius:16px; font-size:15.5px; word-wrap:break-word; overflow-wrap:anywhere; }
+  .user .bubble { background:var(--user); margin-left:auto; border-bottom-right-radius:5px; }
+  .asst .who { font-size:12px; color:var(--dim); margin:0 2px 5px; display:flex; align-items:center; gap:6px; }
+  .asst .who img { width:16px; height:16px; }
+  .asst .bubble { background:var(--card); border:1px solid var(--line); border-bottom-left-radius:5px; }
+  .steps { margin:0 2px 7px; display:flex; flex-direction:column; gap:3px; }
+  .step { font-size:12.5px; color:var(--dim); display:flex; gap:7px; align-items:baseline; }
+  .step .v { color:var(--brand); font-weight:600; }
+  .step.bad .v { color:var(--bad); }
+  .md p { margin:0 0 8px; } .md p:last-child { margin-bottom:0; }
+  .md pre { background:#0b0e1a; border:1px solid var(--line); border-radius:9px; padding:10px; overflow-x:auto; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; margin:8px 0; }
+  .md code { background:#0b0e1a; border-radius:5px; padding:1px 5px; font:13px ui-monospace,monospace; }
+  .md pre code { background:none; padding:0; }
+  .cursor { display:inline-block; width:7px; height:16px; background:var(--brand); border-radius:1px; vertical-align:-2px; animation:blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .empty { color:var(--dim); text-align:center; margin-top:22vh; font-size:15px; }
+  .empty img { width:52px; height:52px; opacity:.95; display:block; margin:0 auto 12px; }
+  .banner { margin:0 auto 12px; max-width:86%; background:rgba(111,127,214,.14); color:var(--brand); border:1px solid var(--line); border-radius:12px; padding:8px 12px; font-size:13px; text-align:center; }
+  .composer { flex:0 0 auto; padding:8px 10px calc(8px + var(--safe-b)); background:var(--bar); border-top:1px solid var(--line); }
+  .inrow { display:flex; align-items:flex-end; gap:8px; background:var(--card); border:1px solid var(--line); border-radius:22px; padding:6px 6px 6px 14px; }
+  textarea { flex:1; border:none; background:transparent; color:var(--ink); font:16px/1.4 inherit; resize:none; max-height:140px; outline:none; padding:7px 0; }
+  textarea::placeholder { color:var(--dim); }
+  .send { flex:0 0 auto; width:38px; height:38px; border:none; border-radius:50%; background:var(--brand2); color:#fff; font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .send:disabled { opacity:.4; }
+  .send.stop { background:var(--bad); }
+  .scrim { position:fixed; inset:0; background:rgba(0,0,0,.5); opacity:0; pointer-events:none; transition:opacity .2s; z-index:20; }
+  .scrim.on { opacity:1; pointer-events:auto; }
+  .drawer { position:fixed; top:0; left:0; bottom:0; width:82%; max-width:320px; background:var(--bar); border-right:1px solid var(--line);
+            transform:translateX(-102%); transition:transform .22s ease; z-index:30; display:flex; flex-direction:column; padding-top:var(--safe-t); }
+  .drawer.on { transform:none; }
+  .drawer h3 { margin:0; padding:16px 16px 10px; font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
+  .newbtn { margin:0 12px 8px; padding:11px; border:1px dashed var(--line); background:transparent; color:var(--ink); border-radius:11px; font-size:15px; font-weight:600; cursor:pointer; }
+  .threads { flex:1; overflow-y:auto; padding:4px 8px calc(12px + var(--safe-b)); }
+  .thread { padding:11px 12px; border-radius:11px; cursor:pointer; }
+  .thread.active { background:var(--card); }
+  .thread .tt { font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .thread .tn { font-size:12px; color:var(--dim); margin-top:2px; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <button class="iconbtn" id="menuBtn" aria-label="menu">☰</button>
+    <div class="title" id="title"><img src="logo.svg" alt="">Collie</div>
+    <button class="iconbtn" id="newBtn" aria-label="new">✎</button>
+  </div>
+  <div class="log" id="log"></div>
+  <div class="composer">
+    <div class="inrow">
+      <textarea id="input" rows="1" autocomplete="off"></textarea>
+      <button class="send" id="send" aria-label="send">↑</button>
+    </div>
+  </div>
+  <div class="scrim" id="scrim"></div>
+  <nav class="drawer" id="drawer">
+    <h3 id="drawerTitle">Chats</h3>
+    <button class="newbtn" id="newBtn2">＋ New chat</button>
+    <div class="threads" id="threads"></div>
+  </nav>
+
+<script>
+var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
+var LOGO = "logo.svg";
+function api(p){ return p + (p.indexOf('?')<0?'?':'&') + 'token=' + encodeURIComponent(CT); }
+function $(id){ return document.getElementById(id); }
+function esc(s){ return (s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ---- i18n: English source, translated to the DESKTOP's UI language (settings LANG) ----
+var UI_LANG="en", SUPPORTED=["en","zh-tw","zh","ja","ko","es","fr","de","pt","ru"];
+function resolveLang(v){ if(v&&v!=="auto"&&SUPPORTED.indexOf(v)>=0) return v;
+  var b=(navigator.language||"").toLowerCase(); for(var i=1;i<SUPPORTED.length;i++) if(b.indexOf(SUPPORTED[i])===0) return SUPPORTED[i]; return "en"; }
+var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New chat":"＋ 新对话",
+  "Ask Collie to fix code, run commands, or investigate":"让 Collie 帮你改代码、跑命令、查问题",
+  "No chats yet":"还没有对话","turn":"轮","turns":"轮","Desktop is running…":"桌面正在运行…",
+  "Edit":"编辑","Read":"读取","Run":"运行","Search":"搜索","Steer":"插话","Error":"错误","[image]":"[图片]" };
+function t(en){ return UI_LANG.indexOf("zh")===0 ? (ZH[en]||en) : en; }
+
+var currentSession=null, running=false, externalRunning=false;
+var runES=null, mirrorES=null, curTurn=null, curText="";
+function scrollDown(){ var l=$("log"); l.scrollTop=l.scrollHeight; }
+function addUser(text){ var d=document.createElement('div'); d.className='turn user'; d.innerHTML='<div class="bubble">'+esc(text)+'</div>'; $("log").appendChild(d); scrollDown(); }
+function addAsst(){ var d=document.createElement('div'); d.className='turn asst';
+  d.innerHTML='<div class="steps"></div><div class="who"><img src="'+LOGO+'" alt="">Collie</div><div class="bubble"><span class="md"></span><span class="cursor"></span></div>';
+  $("log").appendChild(d); scrollDown(); return d; }
+function setMd(turn,text){ turn.querySelector('.md').innerHTML=md(text); scrollDown(); }
+function addStep(turn,verb,target,bad){ var s=document.createElement('div'); s.className='step'+(bad?' bad':'');
+  s.innerHTML='<span class="v">'+esc(verb)+'</span><span>'+esc(target||"")+'</span>'; turn.querySelector('.steps').appendChild(s); scrollDown(); }
+function endCursor(turn){ var c=turn&&turn.querySelector('.cursor'); if(c) c.remove(); }
+function md(t){ t=t||""; var out=[],parts=t.split(/```/);
+  for(var i=0;i<parts.length;i++){ if(i%2===1){ out.push('<pre><code>'+esc(parts[i].replace(/^\w*\n/,''))+'</code></pre>'); continue; }
+    var seg=esc(parts[i]).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+    seg.split(/\n{2,}/).forEach(function(p){ if(p.trim()) out.push('<p>'+p.replace(/\n/g,'<br>')+'</p>'); }); }
+  return out.join(''); }
+function toolLine(turn,d){ var nm=String(d.name||'').toLowerCase(),a=d.args||{};
+  var verb=nm.indexOf('edit')>=0||nm.indexOf('write')>=0?t('Edit'):nm.indexOf('read')>=0?t('Read'):nm.indexOf('bash')>=0||nm.indexOf('exec')>=0?t('Run'):nm.indexOf('search')>=0?t('Search'):d.name;
+  var tgt=a.path||a.file_path||a.file||a.command||a.query||a.pattern||""; if(typeof tgt!=="string") tgt=JSON.stringify(tgt);
+  addStep(turn,verb,String(tgt).slice(0,120),d.ok===false); }
+
+function onEvent(kind,data){
+  if(kind==="start"){ curTurn=addAsst(); curText=""; }
+  else if(kind==="token"){ if(!curTurn) curTurn=addAsst(); curText+=(data.t||""); setMd(curTurn,curText); }
+  else if(kind==="tool"){ if(!curTurn) curTurn=addAsst(); toolLine(curTurn,data); }
+  else if(kind==="steer"){ if(curTurn) addStep(curTurn,t('Steer'),(data.text||"").slice(0,80)); }
+  else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.error) addStep(curTurn,t('Error'),data.error,true); endCursor(curTurn); curTurn=null; }
+}
+function runStream(q){ addUser(q); running=true; curTurn=null; setSendMode();
+  var url=api('/api/stream?q='+encodeURIComponent(q)+'&mode=normal'+(currentSession?'&session='+encodeURIComponent(currentSession):''));
+  runES=new EventSource(url);
+  ["start","token","tool","steer","done"].forEach(function(ev){ runES.addEventListener(ev,function(e){ var d={}; try{d=JSON.parse(e.data);}catch(_){} if(ev==="start"&&d.session){currentSession=d.session; loadSessions();} onEvent(ev,d); if(ev==="done") endRun(); }); });
+  runES.onerror=function(){ if(running) endCursor(curTurn); };
+}
+function endRun(){ running=false; if(runES){runES.close(); runES=null;} setSendMode(); loadSessions(); }
+function subscribeMirror(sid){ if(mirrorES){ mirrorES.close(); mirrorES=null; } if(!sid) return;
+  mirrorES=new EventSource(api('/api/mirror?session='+encodeURIComponent(sid)));
+  ["start","token","tool","steer","done"].forEach(function(ev){ mirrorES.addEventListener(ev,function(e){ if(running) return; var d={}; try{d=JSON.parse(e.data);}catch(_){}
+    if(ev==="start"){ externalRunning=true; setSendMode(); showBanner(t('Desktop is running…')); }
+    onEvent(ev,d); if(ev==="done"){ externalRunning=false; setSendMode(); hideBanner(); loadSessions(); } }); });
+}
+var bannerEl=null;
+function showBanner(x){ hideBanner(); bannerEl=document.createElement('div'); bannerEl.className='banner'; bannerEl.textContent=x; $("log").appendChild(bannerEl); scrollDown(); }
+function hideBanner(){ if(bannerEl){bannerEl.remove(); bannerEl=null;} }
+function setSendMode(){ var b=$("send"); if(running){ b.classList.add('stop'); b.textContent='■'; b.disabled=false; }
+  else if(externalRunning){ b.classList.remove('stop'); b.textContent='↑'; b.disabled=true; } else { b.classList.remove('stop'); b.textContent='↑'; b.disabled=false; } }
+function doSend(){ var inp=$("input"); var qv=inp.value.trim(); if(!qv) return;
+  if(running){ fetch(api('/api/steer'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,text:qv})}); if(curTurn) addStep(curTurn,t('Steer'),qv.slice(0,80)); }
+  else { runStream(qv); } inp.value=''; autosize(); }
+function stopRun(){ if(runES){runES.close(); runES=null;} running=false; endCursor(curTurn); setSendMode(); }
+function autosize(){ var i=$("input"); i.style.height='auto'; i.style.height=Math.min(i.scrollHeight,140)+'px'; }
+function newChat(){ if(running) return; currentSession=null; $("log").innerHTML=''; $("title").innerHTML='<img src="'+LOGO+'" alt="">Collie'; welcome(); subscribeMirror(null); closeDrawer(); loadSessions(); }
+function welcome(){ $("log").innerHTML='<div class="empty"><img src="'+LOGO+'" alt="">'+t('Ask Collie to fix code, run commands, or investigate')+'</div>'; }
+function titleText(msgs){ for(var i=0;i<msgs.length;i++){ if(msgs[i].role==='user'&&typeof msgs[i].content==='string') return msgs[i].content.replace(/\s+/g,' ').slice(0,40); } return ''; }
+function openSession(id){ if(running) return; currentSession=id; $("log").innerHTML=''; closeDrawer(); running=false; curTurn=null;
+  fetch(api('/api/session/'+encodeURIComponent(id))).then(function(r){return r.json();}).then(function(s){
+    var msgs=(s&&s.messages)||[]; var tt=titleText(msgs); $("title").innerHTML='<img src="'+LOGO+'" alt="">'+esc(tt||'Collie');
+    msgs.forEach(function(m){ if(m.role==='user'){ addUser(typeof m.content==='string'?m.content:t('[image]')); }
+      else if(m.role==='assistant'&&m.content){ var tu=addAsst(); endCursor(tu); setMd(tu, typeof m.content==='string'?m.content:''); } });
+    scrollDown(); subscribeMirror(id); loadSessions(); }).catch(function(){}); }
+function loadSessions(){ fetch(api('/api/sessions')).then(function(r){return r.json();}).then(function(d){
+    var box=$("threads"); box.innerHTML=''; var list=(d&&d.sessions)||[];
+    if(!list.length){ box.innerHTML='<div class="thread tn">'+t('No chats yet')+'</div>'; return; }
+    list.forEach(function(s){ var el=document.createElement('div'); el.className='thread'+(s.id===currentSession?' active':'');
+      var n=s.turns||0; el.innerHTML='<div class="tt">'+esc(s.title||s.last||'(…)')+'</div><div class="tn">'+n+' '+t(n===1?'turn':'turns')+'</div>';
+      el.onclick=function(){ openSession(s.id); }; box.appendChild(el); }); }).catch(function(){}); }
+function openDrawer(){ $("drawer").classList.add('on'); $("scrim").classList.add('on'); }
+function closeDrawer(){ $("drawer").classList.remove('on'); $("scrim").classList.remove('on'); }
+
+$("menuBtn").onclick=openDrawer; $("scrim").onclick=closeDrawer; $("newBtn").onclick=newChat; $("newBtn2").onclick=newChat;
+$("send").onclick=function(){ if(running) stopRun(); else doSend(); };
+$("input").addEventListener('input',autosize);
+$("input").addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); doSend(); } });
+
+function applyStatic(){ document.documentElement.lang=UI_LANG; $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); }
+fetch(api('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
+  .catch(function(){ UI_LANG=resolveLang(null); })
+  .finally(function(){ applyStatic(); welcome(); loadSessions(); });
+</script>
+</body>
+</html>

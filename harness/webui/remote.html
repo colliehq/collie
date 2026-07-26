@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collie Remote</title>
+<style>
+  :root { --bg:#0f1220; --card:#171b2e; --line:#272c44; --ink:#c9d1e6; --dim:#8791ad;
+          --brand:#6f7fd6; --brand2:#3D4E8F; --good:#3fbf7f; --bad:#e0576b; --warn:#e3a94b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:760px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:20px; margin:0 0 2px; display:flex; align-items:center; gap:10px; }
+  h1 img { width:26px; height:26px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:22px; }
+  .pill { font-size:12px; font-weight:600; padding:3px 10px; border-radius:999px; }
+  .pill.on { background:rgba(63,191,127,.16); color:var(--good); }
+  .pill.off { background:rgba(224,87,107,.16); color:var(--bad); }
+  .pill.idle { background:rgba(227,169,75,.16); color:var(--warn); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin-bottom:18px; }
+  .card h2 { font-size:14px; margin:0 0 14px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
+  .pairgrid { display:flex; gap:22px; flex-wrap:wrap; align-items:center; }
+  .qr { background:transparent; width:180px; height:180px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; }
+  .qr img { width:100%; height:100%; }
+  .qr .none { color:var(--dim); font-size:12px; text-align:center; }
+  .pairinfo { flex:1 1 240px; min-width:220px; }
+  .lbl { color:var(--dim); font-size:12px; margin:0 0 4px; }
+  .link { word-break:break-all; background:#0c0f1c; border:1px solid var(--line); border-radius:9px; padding:9px 11px; font-family:ui-monospace,monospace; font-size:12.5px; }
+  .code { font-family:ui-monospace,monospace; font-size:22px; letter-spacing:.14em; color:#fff; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+  button { font:inherit; font-size:13px; font-weight:600; color:var(--ink); background:#222741; border:1px solid var(--line); border-radius:9px; padding:8px 14px; cursor:pointer; }
+  button:hover { border-color:var(--brand); }
+  button.primary { background:var(--brand2); border-color:var(--brand2); color:#fff; }
+  button.danger { color:var(--bad); }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:9px 6px; border-bottom:1px solid var(--line); font-size:13px; }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  td.act { text-align:right; }
+  .empty { color:var(--dim); font-size:13px; padding:10px 6px; }
+  .foot { color:var(--dim); font-size:12.5px; }
+  .foot code { background:#0c0f1c; padding:1px 6px; border-radius:5px; }
+  .toast { position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:#222741; border:1px solid var(--line); color:var(--ink); padding:9px 16px; border-radius:10px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><img src="logo.svg" alt="Collie"> <span data-i="Collie Remote">Collie Remote</span> <span id="statuspill" class="pill idle">…</span></h1>
+  <div class="sub" data-i="Control this computer's Collie from your phone. This panel is visible only on this machine; pairing can't be managed from a phone.">Control this computer's Collie from your phone. This panel is visible only on this machine; pairing can't be managed from a phone.</div>
+
+  <div class="card" id="offcard" style="display:none">
+    <span data-i="Remote is off. Start with collie web --remote, or turn it on below.">Remote is off. Start with collie web --remote, or turn it on below.</span>
+    <div class="row"><button class="primary" onclick="act('enable')" data-i="Turn on remote">Turn on remote</button></div>
+  </div>
+
+  <div class="card" id="paircard">
+    <h2 data-i="Pairing">Pairing</h2>
+    <div class="pairgrid">
+      <div class="qr" id="qrbox"><span class="none">—</span></div>
+      <div class="pairinfo">
+        <p class="lbl" data-i="Scan on your phone, or open this link:">Scan on your phone, or open this link:</p>
+        <div class="link" id="link">—</div>
+        <p class="lbl" style="margin-top:14px" data-i="Pairing code (only for a new device)">Pairing code (only for a new device)</p>
+        <div class="code" id="code">—</div>
+        <div class="row">
+          <button onclick="copyLink()" data-i="Copy link">Copy link</button>
+          <button onclick="act('rotate')" data-i="New pairing code">New pairing code</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 data-i="Paired devices">Paired devices</h2>
+    <table>
+      <thead><tr><th data-i="Device">Device</th><th data-i="Paired">Paired</th><th></th></tr></thead>
+      <tbody id="devs"><tr><td class="empty" data-i="Loading…" colspan="3">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card foot" id="foot">
+    <div id="relayline"></div>
+    <div style="margin-top:8px"><span data-i="Paired devices reconnect automatically after a restart — no need to re-pair.">Paired devices reconnect automatically after a restart — no need to re-pair.</span>
+      <span data-i="Press Ctrl-C or">Press Ctrl-C or</span>
+      <a href="#" onclick="act('disable');return false" style="color:var(--brand)" data-i="turn off remote">turn off remote</a>
+      <span data-i="to cut all remote access instantly.">to cut all remote access instantly.</span></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
+function q(p){ return p + (p.indexOf('?')<0?'?':'&') + 'token=' + encodeURIComponent(CT); }
+
+// ---- i18n: English source strings, translated to the DESKTOP's UI language (settings LANG) ----
+var UI_LANG = "en";
+var SUPPORTED = ["en","zh-tw","zh","ja","ko","es","fr","de","pt","ru"];
+function resolveLang(v){ if(v&&v!=="auto"&&SUPPORTED.indexOf(v)>=0) return v;
+  var b=(navigator.language||"").toLowerCase(); for(var i=1;i<SUPPORTED.length;i++) if(b.indexOf(SUPPORTED[i])===0) return SUPPORTED[i]; return "en"; }
+var ZH = {
+  "Control this computer's Collie from your phone. This panel is visible only on this machine; pairing can't be managed from a phone.":"从手机控制这台电脑上的 Collie。此面板只在本机可见，配对无法从手机管理。",
+  "Remote is off. Start with collie web --remote, or turn it on below.":"远程未启用。用 collie web --remote 启动，或点下面的按钮开启。",
+  "Turn on remote":"开启远程","Pairing":"配对","Scan on your phone, or open this link:":"手机扫码，或打开此链接：",
+  "Pairing code (only for a new device)":"配对码（仅新设备需要）","Copy link":"复制链接","New pairing code":"换新配对码",
+  "Paired devices":"已配对设备","Device":"设备","Paired":"配对时间","Loading…":"加载中…","Rename":"改备注","Kick":"踢除",
+  "No paired devices yet. Scan the code on your phone to add one.":"还没有已配对的设备。手机扫码即可添加。",
+  "Paired devices reconnect automatically after a restart — no need to re-pair.":"已配对设备在电脑重开后会自动恢复，无需重新配对。",
+  "Press Ctrl-C or":"按 Ctrl-C 或","turn off remote":"关闭远程","to cut all remote access instantly.":"可立即切断所有远程访问。",
+  "Collie Remote":"Collie 远程","On":"在线","Connecting…":"连接中…","Off":"已关闭","Not enabled":"未启用",
+  "Turned on":"已开启","Turned off":"已关闭","Pairing code updated":"已更新配对码","Kicked":"已踢除","Renamed":"已改备注",
+  "Link copied":"链接已复制","Action failed":"操作失败","Install a QR lib to show a QR here":"装 QR 库可显示二维码",
+  "Kick this device? It will need to scan again to pair.":"踢除该设备？它需要重新扫码配对。","Device label:":"设备备注：",
+  "relay":"relay","room":"房间","turn":"轮","turns":"轮"
+};
+var ZHTW = {}; // falls back to zh where missing (see t())
+function t(en){ if(UI_LANG==="zh") return ZH[en]||en; if(UI_LANG==="zh-tw") return ZHTW[en]||ZH[en]||en; return en; }
+function applyStatic(){ document.querySelectorAll("[data-i]").forEach(function(el){ el.textContent=t(el.getAttribute("data-i")); }); document.documentElement.lang=UI_LANG; }
+
+function toast(m){ var el=document.getElementById('toast'); el.textContent=m; el.classList.add('show'); setTimeout(function(){el.classList.remove('show');},1600); }
+function fmt(ts){ if(!ts) return '—'; try{ return new Date(ts*1000).toLocaleString(); }catch(e){ return '—'; } }
+
+var LINK = "";
+function render(s){
+  var pill=document.getElementById('statuspill'), off=document.getElementById('offcard'), pc=document.getElementById('paircard');
+  if(!s.available || !s.enabled){ pill.className='pill off'; pill.textContent=t(s.available?'Off':'Not enabled'); off.style.display='block'; pc.style.opacity=.5; }
+  else { pill.className=s.connected?'pill on':'pill idle'; pill.textContent=t(s.connected?'On':'Connecting…'); off.style.display='none'; pc.style.opacity=1; }
+  LINK=s.link||"";
+  document.getElementById('link').textContent=s.link||'—';
+  document.getElementById('code').textContent=s.paircode||'—';
+  document.getElementById('relayline').textContent=t('relay')+'：'+(s.relay||'—')+'  ·  '+t('room')+'：'+(s.room||'—');
+  var box=document.getElementById('qrbox');
+  if(s.link){ box.innerHTML=''; var img=new Image(); img.src=q('/api/remote/qr')+'&v='+Date.now();
+    img.onerror=function(){ box.innerHTML='<span class="none">'+t('Install a QR lib to show a QR here')+'<br>pip install collie-harness[remote]</span>'; };
+    box.appendChild(img); } else box.innerHTML='<span class="none">—</span>';
+  var tb=document.getElementById('devs'); tb.innerHTML=''; var ds=s.devices||[];
+  if(!ds.length){ tb.innerHTML='<tr><td class="empty" colspan="3">'+t('No paired devices yet. Scan the code on your phone to add one.')+'</td></tr>'; return; }
+  ds.forEach(function(d){
+    var tr=document.createElement('tr');
+    tr.innerHTML='<td>'+esc(d.name||'device')+'</td><td>'+fmt(d.paired_at)+'</td>'+
+      '<td class="act"><button class="ren">'+t('Rename')+'</button> <button class="danger">'+t('Kick')+'</button></td>';
+    tr.querySelector('.ren').onclick=function(){ renameDev(d.device_id, d.name||''); };
+    tr.querySelector('.danger').onclick=function(){ kick(d.device_id); };
+    tb.appendChild(tr);
+  });
+}
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function load(){ fetch(q('/api/remote/status')).then(function(r){return r.json();}).then(render).catch(function(){}); }
+function act(a){ fetch(q('/api/remote/'+a),{method:'POST'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(x){ toast(x.ok?t({enable:'Turned on',disable:'Turned off',rotate:'Pairing code updated'}[a]||'OK'):((x.j&&x.j.error)||t('Action failed'))); load(); }).catch(function(){ toast(t('Action failed')); }); }
+function kick(id){ if(!confirm(t('Kick this device? It will need to scan again to pair.'))) return;
+  fetch(q('/api/remote/forget'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:id})}).then(function(r){return r.json();}).then(function(){ toast(t('Kicked')); load(); }); }
+function renameDev(id,cur){ var n=prompt(t('Device label:'),cur||''); if(n==null) return;
+  fetch(q('/api/remote/rename'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:id,name:n})}).then(function(r){return r.json();}).then(function(){ toast(t('Renamed')); load(); }); }
+function copyLink(){ if(!LINK) return; navigator.clipboard.writeText(LINK).then(function(){ toast(t('Link copied')); }); }
+
+// resolve the desktop's UI language, then translate + start polling
+fetch(q('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
+  .catch(function(){ UI_LANG=resolveLang(null); })
+  .finally(function(){ applyStatic(); load(); setInterval(load,4000); });
+</script>
+</body>
+</html>
