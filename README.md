@@ -85,6 +85,7 @@ extension:
 |---|---|---|
 | **Terminal** | `collie` (TUI) · `collie -p "task"` | anywhere — SSH, CI, tmux |
 | **Browser GUI** | `collie web` | chat + the live verification gate, diffs, the star-map, settings |
+| **iPhone** | `collie web --lan` (same Wi-Fi, direct) or `--remote` (anywhere, via the relay) + [CollieIOS](https://github.com/wudaming00/collie-ios) | scan the pair code once, then tail runs and start new ones from the phone |
 | **VS Code** | the bundled `vscode-collie` extension | Collie docked in a sidebar panel (manages its own server) |
 | **Streaming / CI** | `collie run "task" --stream-json` | NDJSON events (tool · edit · repro-gate · receipt) for scripts & editors |
 | **Editors (ACP)** | `collie acp` | Zed · JetBrains · neovim · VS Code (via the ACP client) — one adapter, every editor |

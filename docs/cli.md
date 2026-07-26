@@ -10,6 +10,7 @@ onboarding when nothing is configured. Full help for any command: `collie <comma
 | `collie` | Terminal chat (TUI). First run picks a provider. |
 | `collie -p "<task>"` / `collie run "<task>"` | Run one task headlessly. |
 | `collie web` | Serve the browser GUI — streams the verification gate live. |
+| `collie web --lan` | Same, but also listen on this machine's network address so the iOS app (CollieIOS) can pair. Network clients get **nothing** until they pair: the token is handed to loopback only, and `/pair` shows a one-shot code the phone trades for it at `/api/pair` (HMAC challenge/response — the secret never crosses the wire). Add `--qr` for a QR fallback of the same one-shot secret. |
 | `collie app` | Open the native desktop window (Windows). |
 | `collie tui` | Rich terminal chat with a live tool/gate/diff timeline. |
 | `collie repl` | Interactive REPL that keeps the conversation thread. |
