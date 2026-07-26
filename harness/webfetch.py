@@ -62,7 +62,7 @@ _pin = threading.local()
 _orig_getaddrinfo = socket.getaddrinfo
 
 
-def _pinned_getaddrinfo(host, *a, **k):
+def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
     infos = getattr(_pin, "infos", None)
     if infos is not None:
         # case-INSENSITIVE compare + FAIL CLOSED: urllib passes the original-case
@@ -72,9 +72,21 @@ def _pinned_getaddrinfo(host, *a, **k):
         # answer the connect lookup with 169.254.169.254 / 127.0.0.1). Once pinned,
         # any unexpected host is refused, never re-resolved.
         if str(host).lower() == getattr(_pin, "host", None):
-            return infos
+            # HONOUR THE CALLER'S FILTERS. socket.create_connection asks for
+            # (host, port, 0, SOCK_STREAM); handing back the unfiltered pin ignored
+            # that. On macOS/BSD an unhinted lookup leads with the SOCK_DGRAM entry,
+            # so create_connection built a *UDP* socket — connect() succeeds silently
+            # (UDP just binds a peer) and http.client's next line,
+            # setsockopt(IPPROTO_TCP, TCP_NODELAY), then failed with EINVAL, killing
+            # every fetch. Linux's resolver leads with SOCK_STREAM, which is why this
+            # only ever showed up off-Linux.
+            out = [i for i in infos
+                   if (not family or i[0] == family)
+                   and (not type or i[1] == type)
+                   and (not proto or i[2] == proto)]
+            return out or infos          # never narrow to nothing: fail like we used to, not worse
         raise socket.gaierror("SSRF: unexpected host %r during a pinned fetch" % (host,))
-    return _orig_getaddrinfo(host, *a, **k)
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
 
 socket.getaddrinfo = _pinned_getaddrinfo   # transparent unless a fetch has pinned this thread
@@ -84,7 +96,10 @@ def _resolve_validated(host, port):
     """Resolve host ONCE and return its addrinfo list iff every address is public (or local is
     explicitly allowed). Returns None on failure or any private/loopback/link-local/etc address."""
     try:
-        infos = _orig_getaddrinfo(host, port)
+        # SOCK_STREAM: pin exactly the TCP entries the connection will use. Unhinted, macOS/BSD
+        # also return UDP/RAW rows for the same address — same addresses to validate, but the
+        # extra rows are what the connect-time lookup used to trip over (see _pinned_getaddrinfo).
+        infos = _orig_getaddrinfo(host, port, 0, socket.SOCK_STREAM)
     except socket.gaierror:
         return None
     if os.environ.get("COLLIE_WEBFETCH_ALLOW_LOCAL") == "1":
