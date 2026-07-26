@@ -62,6 +62,13 @@ else
   echo "  (playwright not found — skipping GUI suite)"
 fi
 
+echo "── remote E2E crypto (zero-knowledge relay) ─────────────"
+if $PY -c "import cryptography" >/dev/null 2>&1; then
+  if $PY tests/test_e2e.py >/dev/null 2>&1; then echo "  e2e OK"; else echo "  e2e FAIL"; rc=1; fi
+else
+  echo "  e2e SKIP (needs collie-harness[remote])"
+fi
+
 echo "── pair code (collie's own optical format) ──────────────"
 if $PY tests/test_paircode.py >/dev/null 2>&1; then echo "  paircode OK"; else echo "  paircode FAIL"; rc=1; fi
 
