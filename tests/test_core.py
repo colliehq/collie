@@ -147,6 +147,37 @@ def test_response_language_pinned_to_lang():
             os.environ["COLLIE_LANG"] = old
 
 
+def test_browser_snapshot_ref_wiring():
+    """browser_snapshot enqueues a 'snapshot' command and renders the extension's ref list;
+    browser_click / browser_type forward a snapshot `ref` so the agent acts on an EXACT element
+    through the trusted-input path, not a guessed text/selector. Wiring only (no live extension) —
+    the bridge transport is monkeypatched to capture the command each tool sends."""
+    from harness import browserbridge as bb
+    sent = {}
+    def fake_call(cmd, timeout=60):
+        sent.clear(); sent.update(cmd)
+        return {"ok": True, "data": {"count": 1, "snapshot": '[e1] button "Go"'}}
+    orig = bb._call
+    bb._call = fake_call
+    try:
+        ctx = types.SimpleNamespace(cwd=".")
+        out = bb.BrowserSnapshot().run({}, ctx)
+        assert sent["action"] == "snapshot" and sent["max"] == 200, sent
+        assert '[e1] button "Go"' in out and "interactive elements" in out, out
+        bb.BrowserClick().run({"ref": "e1"}, ctx)
+        assert sent["action"] == "click" and sent["ref"] == "e1", sent
+        bb.BrowserType().run({"ref": "e2", "text": "hi", "submit": True}, ctx)
+        assert sent == {"action": "type", "ref": "e2", "label": None, "selector": None,
+                        "text": "hi", "submit": True}, sent
+        # browser_snapshot must be registered alongside the other browser_* tools
+        names = []
+        reg = types.SimpleNamespace(register=lambda t: names.append(t.name))
+        bb.register_browser_bridge(reg)
+        assert "browser_snapshot" in names, names
+    finally:
+        bb._call = orig
+
+
 def test_webedit_write_checked():
     # the Map editor's write-back: compile-gate, run relevant tests, keep-if-green / revert-if-red.
     from harness import webedit

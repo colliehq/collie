@@ -455,31 +455,62 @@ class BrowserRead(Tool):
         return _fence(out[:int(args.get("max_chars", 8000))])
 
 
-class BrowserClick(Tool):
-    name, tier = "browser_click", "always"
-    description = ("Click a link/button in collie's tab by its visible text (or a CSS selector). "
-                   "Returns the resulting page text. Args: text (visible text) OR selector.")
-    schema = {"type": "object", "properties": {
-        "text": {"type": "string"}, "selector": {"type": "string"}}}
+class BrowserSnapshot(Tool):
+    name, tier = "browser_snapshot", "always"
+    description = ("Snapshot collie's tab as a compact, numbered list of its VISIBLE interactive "
+                   "elements — buttons, links, form fields — each with a stable ref id and its "
+                   "accessible name, e.g. `[e5] button \"Add to cart\"`. PREFER this over guessing "
+                   "CSS selectors or matching by text: pass a ref to browser_click / browser_type to "
+                   "act on that exact element with a REAL, trusted click. Refs are valid until the "
+                   "page changes — re-snapshot after navigating or after the DOM updates. Optional "
+                   "args: max (cap on elements, default 200).")
+    schema = {"type": "object", "properties": {"max": {"type": "integer"}}}
 
     def run(self, args, ctx):
-        return _fence(_fmt(_call({"action": "click", "text": args.get("text"),
-                                  "selector": args.get("selector")})))
+        try:
+            mx = int(args.get("max", 200))
+        except (TypeError, ValueError):
+            mx = 200
+        res = _call({"action": "snapshot", "max": mx})
+        if not res.get("ok", True) and res.get("error"):
+            return "ERROR(browser): %s" % res["error"]
+        d = res.get("data", res)
+        if isinstance(d, dict) and d.get("error"):
+            return "ERROR(browser): %s" % d["error"]
+        if isinstance(d, dict) and "snapshot" in d:
+            head = ("%d interactive elements (act on one by passing its ref to browser_click / "
+                    "browser_type):\n" % d.get("count", 0))
+            return _fence(head + str(d["snapshot"]))
+        return _fmt(res)
+
+
+class BrowserClick(Tool):
+    name, tier = "browser_click", "always"
+    description = ("Click an element in collie's tab. PREFER `ref` from browser_snapshot (most "
+                   "reliable — a real trusted click on that exact element). Otherwise target by "
+                   "visible `text` or a CSS `selector`. Returns the resulting page text. Args: ref "
+                   "OR text OR selector.")
+    schema = {"type": "object", "properties": {
+        "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"}}}
+
+    def run(self, args, ctx):
+        return _fence(_fmt(_call({"action": "click", "ref": args.get("ref"),
+                                  "text": args.get("text"), "selector": args.get("selector")})))
 
 
 class BrowserType(Tool):
     name, tier = "browser_type", "always"
-    description = ("Type text into a form field. Target it by `label` (the field's visible "
-                   "label text — robust on obfuscated forms like Facebook where CSS selectors "
-                   "aren't stable) OR by `selector` (CSS). Args: label OR selector, text, "
-                   "optional submit (bool).")
+    description = ("Type text into a form field. Target it by `ref` (from browser_snapshot — "
+                   "preferred, unambiguous) OR by `label` (the field's visible label text — robust "
+                   "on obfuscated forms like Facebook where CSS selectors aren't stable) OR by "
+                   "`selector` (CSS). Args: ref OR label OR selector, text, optional submit (bool).")
     schema = {"type": "object", "properties": {
-        "label": {"type": "string"}, "selector": {"type": "string"},
+        "ref": {"type": "string"}, "label": {"type": "string"}, "selector": {"type": "string"},
         "text": {"type": "string"}, "submit": {"type": "boolean"}},
         "required": ["text"]}
 
     def run(self, args, ctx):
-        return _fmt(_call({"action": "type", "label": args.get("label"),
+        return _fmt(_call({"action": "type", "ref": args.get("ref"), "label": args.get("label"),
                            "selector": args.get("selector"), "text": args.get("text"),
                            "submit": bool(args.get("submit"))}))
 
@@ -542,7 +573,7 @@ class BrowserEval(Tool):
 
 
 def register_browser_bridge(registry):
-    for t in (BrowserOpen(), BrowserRead(), BrowserClick(), BrowserType(), BrowserPick(),
-              BrowserFields(), BrowserLinks(), BrowserConsole(), BrowserEval()):
+    for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserType(),
+              BrowserPick(), BrowserFields(), BrowserLinks(), BrowserConsole(), BrowserEval()):
         registry.register(t)
     return True
