@@ -18,6 +18,12 @@ import time
 STATE_DIR = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
 STATE = os.path.join(STATE_DIR, "record.json")
 
+# CREATE_NO_WINDOW — every helper subprocess (ffmpeg probe, tasklist, taskkill, remux) MUST run
+# windowless. Without it, a GUI/pythonw caller (the web record button, the desktop app) with no console
+# of its own pops a black CMD window on every call — and the status poll + stop loop make them flash
+# "frantically". The recording ffmpeg gets it too (see start()).
+_NOWIN = 0x08000000 if os.name == "nt" else 0
+
 
 def _ffmpeg():
     exe = shutil.which("ffmpeg")
@@ -46,7 +52,7 @@ def list_dshow_devices():
     """(cameras, microphones) as ffmpeg sees them — the exact names dshow needs. Windows only."""
     exe = _ffmpeg()
     p = subprocess.run([exe, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, creationflags=_NOWIN)
     text = (p.stderr or "") + (p.stdout or "")
     cams, mics = [], []
     for line in text.splitlines():
@@ -219,7 +225,7 @@ def _alive(pid):
         return False
     try:
         out = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/NH"],
-                             capture_output=True, text=True).stdout or ""
+                             capture_output=True, text=True, creationflags=_NOWIN).stdout or ""
         return ("ffmpeg" in out.lower()) and (str(pid) in out)
     except Exception:
         return False
@@ -253,7 +259,7 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
         print("  recording in %d..." % n, flush=True)
         time.sleep(1)
 
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    flags = (subprocess.CREATE_NEW_PROCESS_GROUP | _NOWIN) if os.name == "nt" else 0
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, creationflags=flags)
     # give ffmpeg a moment to fail fast on a bad device/filter, so we don't report a phantom success
@@ -300,7 +306,7 @@ def stop(remux_mp4=True):
             pass
     if not _wait_gone(pid, 5):
         try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=_NOWIN)
         except Exception:
             pass
         _wait_gone(pid, 4)
@@ -311,7 +317,7 @@ def stop(remux_mp4=True):
         mp4 = out[:-4] + ".mp4"
         try:
             subprocess.run([_ffmpeg(), "-hide_banner", "-y", "-i", out, "-c", "copy", mp4],
-                           capture_output=True)
+                           capture_output=True, creationflags=_NOWIN)
             if os.path.exists(mp4):
                 lines.append("mp4   -> %s" % mp4)
         except Exception:

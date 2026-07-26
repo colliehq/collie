@@ -268,8 +268,20 @@ def install() -> int:
                 "q = Chr(34)\n"
                 'CreateObject("WScript.Shell").Run q & "%s" & q & " " & q & "%s" & q, 0, False\n'
                 % (pythonw(), boot_pyw))
-    print("collie wallpaper: autostart installed (runs at next logon)\n"
-          "  launcher: %s\n  startup : %s\n  disable : collie wallpaper --uninstall" % (boot_pyw, vbs))
+    # Also START it now, not only at the next logon — someone who just ticked "enable the wallpaper"
+    # (in Setup or via this command) expects to SEE it immediately, not after a reboot. Spawn the very
+    # same windowless launcher the .vbs fires at logon, detached so it outlives this process.
+    started = False
+    try:
+        flags = 0x00000008 | 0x08000000   # DETACHED_PROCESS | CREATE_NO_WINDOW
+        subprocess.Popen([pythonw(), boot_pyw], creationflags=flags,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        started = True
+    except Exception:
+        pass
+    print("collie wallpaper: autostart installed%s\n"
+          "  launcher: %s\n  startup : %s\n  disable : collie wallpaper --uninstall"
+          % (" + started now" if started else " (starts at next logon)", boot_pyw, vbs))
     return 0
 
 
