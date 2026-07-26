@@ -225,22 +225,17 @@ def cmd_web(args):
 
 def _print_qr(data: str):
     """Print a scannable ASCII QR of the pairing link to the terminal, so a phone can just scan the
-    screen. Uses `segno` (pure-python, optional: pip install segno); silently degrades to the plain
-    link if it's not installed."""
+    screen.
+
+    Uses collie's own stdlib encoder (harness/qr.py) rather than `segno`: the core ships no
+    dependencies, and an optional one meant this printed "pip install …" instead of a code on a
+    plain install — precisely when someone is trying to pair a phone for the first time."""
+    from . import qr
     try:
-        import segno
-    except ImportError:
-        print("  (pip install collie-harness[remote] for a scannable QR here)", flush=True)
-        return
-    try:
-        segno.make(data, error="m").terminal(compact=True)
-    except TypeError:
-        try:
-            segno.make(data, error="m").terminal()      # older segno without compact=
-        except Exception:
-            pass
-    except Exception:
-        pass
+        print(qr.ansi(data), flush=True)
+    except ValueError:
+        # the encoder tops out at 106 bytes (v6-M); a longer link is still printed above as text
+        print("  (link too long for a terminal QR — open it on the phone directly)", flush=True)
 
 
 def _cmd_web_remote(args):
