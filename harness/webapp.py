@@ -375,7 +375,26 @@ class Handler(BaseHTTPRequestHandler):
                 st = rec._load()
                 on = bool(st and rec._alive(st.get("pid")))
                 return self._send_json({"recording": on, "out": (st or {}).get("out"),
-                                        "since": (st or {}).get("started")})
+                                        "since": (st or {}).get("started"),
+                                        "window": (st or {}).get("window")})
+            if path == "/api/record/sources":
+                # everything the record panel needs to populate its pickers
+                from . import record as rec
+                cams, mics = [], []
+                try:
+                    cams, mics = rec.list_dshow_devices()
+                except Exception:
+                    pass
+                mons = []
+                try:
+                    mons = [{"w": w, "h": h, "x": x, "y": y} for (x, y, w, h) in rec._monitors()]
+                except Exception:
+                    pass
+                return self._send_json({"windows": rec.list_windows(), "cameras": cams,
+                                        "microphones": mics, "monitors": mons})
+            if path == "/api/record/list":
+                from . import record as rec
+                return self._send_json({"recordings": rec.list_recordings()})
             if path.startswith("/api/delete/"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -495,7 +514,8 @@ class Handler(BaseHTTPRequestHandler):
                 ok = bb.start_background()
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
-            if path in ("/api/record/start", "/api/record/stop"):
+            if path in ("/api/record/start", "/api/record/stop", "/api/record/play",
+                        "/api/record/reveal", "/api/record/delete"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 from . import record as rec
@@ -508,11 +528,19 @@ class Handler(BaseHTTPRequestHandler):
                         body = json.loads(self.rfile.read(n).decode("utf-8") or "{}") or {}
                 except Exception:
                     body = {}
+                if path.endswith("/play"):
+                    return self._send_json({"ok": rec.play(body.get("name") or "")})
+                if path.endswith("/reveal"):
+                    return self._send_json({"ok": rec.reveal()})
+                if path.endswith("/delete"):
+                    return self._send_json({"ok": rec.delete_recording(body.get("name") or "")})
                 try:
                     msg = rec.start(no_cam=bool(body.get("no_cam")), no_mic=bool(body.get("no_mic")),
                                     sysaudio=body.get("sys_audio") or None,
+                                    webcam=body.get("webcam") or None, mic=body.get("mic") or None,
                                     position=body.get("position") or "bl",
-                                    region=body.get("region") or None, monitor=body.get("monitor") or None,
+                                    window=body.get("window") or None, region=body.get("region") or None,
+                                    monitor=body.get("monitor") or None,
                                     countdown=int(body.get("countdown") or 0))
                 except Exception as e:
                     return self._send_json({"error": str(e)}, 400)

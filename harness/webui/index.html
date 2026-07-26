@@ -836,6 +836,51 @@
   .br-dot.ok { background: var(--meadow); box-shadow: 0 0 0 3px var(--meadow-bg); }
   @keyframes brpulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .ob-card { animation: none; } .ob-brain { transition: none; } }
+  /* --- record panel --- */
+  .rec-overlay{position:fixed; inset:0; z-index:200; background:rgba(0,0,0,.5);
+    display:flex; align-items:center; justify-content:center; padding:20px;}
+  .rec-overlay[hidden]{display:none;}
+  .rec-modal{width:430px; max-width:100%; max-height:88vh; overflow-y:auto;
+    background:var(--surface,#181b22); color:var(--ink,#e7e9f0); border:1px solid var(--line,#2a2f3a);
+    border-radius:16px; box-shadow:var(--shadow-lg,0 24px 60px -12px rgba(0,0,0,.6));}
+  .rec-head{display:flex; align-items:center; padding:15px 18px 12px; border-bottom:1px solid var(--line,#2a2f3a);}
+  .rec-title{font-weight:650; font-size:15px;}
+  .rec-x{margin-left:auto; background:none; border:none; color:var(--muted,#969cad); font-size:16px; cursor:pointer; line-height:1;}
+  .rec-body{padding:14px 18px;}
+  .rec-row{display:flex; align-items:center; gap:12px; margin-bottom:12px; font-size:13px;}
+  .rec-row>label{width:96px; flex:none; color:var(--muted,#969cad);}
+  .rec-row select,.rec-row input{flex:1; min-width:0; background:var(--surface-2,#1c2029); color:var(--ink,#e7e9f0);
+    border:1px solid var(--line,#2a2f3a); border-radius:9px; padding:8px 10px; font:inherit; font-size:12.5px;}
+  .rec-seg{display:flex; gap:6px; flex:1;}
+  .rec-seg button{flex:1; padding:7px 4px; font-size:12px; border-radius:8px; border:1px solid var(--line,#2a2f3a);
+    background:var(--surface-2,#1c2029); color:var(--muted,#969cad); cursor:pointer;}
+  .rec-seg button.on{background:var(--pine,#3d4e8f); border-color:var(--pine,#3d4e8f); color:var(--on-accent,#fff); font-weight:600;}
+  .rec-switch{width:42px; height:24px; border-radius:99px; background:var(--line-2,#3a3f4a); position:relative; cursor:pointer; flex:none; transition:.18s;}
+  .rec-switch::after{content:""; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.4); transition:.18s;}
+  .rec-switch.on{background:var(--pine,#3d4e8f);} .rec-switch.on::after{left:21px;}
+  .rec-cam{display:none; gap:12px; margin:0 0 12px; align-items:center;}
+  .rec-cam.show{display:flex;}
+  #recPreview{width:150px; height:112px; border-radius:12px; object-fit:cover; background:#000; transform:scaleX(-1); border:1px solid var(--line,#2a2f3a);}
+  #recPreview.nomir{transform:none;}
+  .rec-cam-side{flex:1;}
+  .rec-mini{font-size:11px; color:var(--faint,#666c7c); margin-bottom:6px;}
+  .rec-pos{display:grid; grid-template-columns:1fr 1fr; gap:6px; max-width:88px; flex:none;}
+  .rec-pos button{font-size:15px; flex:none; padding:6px;}
+  .rec-start{width:100%; margin-top:4px;}
+  .rec-live{display:flex; align-items:center; gap:9px; font-size:15px; font-weight:600; margin-bottom:6px;}
+  .rec-dot{width:11px; height:11px; border-radius:50%; background:var(--coral,#e0574a); animation:recpulse 1.2s infinite;}
+  @keyframes recpulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
+  .rec-live-sub{font-size:12px; color:var(--muted,#969cad); margin-bottom:14px; line-height:1.4;}
+  .rec-stop{width:100%;}
+  .rec-list-wrap{padding:8px 18px 16px; border-top:1px solid var(--line,#2a2f3a);}
+  .rec-list-h{display:flex; align-items:center; font-size:12px; color:var(--faint,#666c7c); margin:6px 2px 8px;}
+  .rec-reveal{margin-left:auto; background:none; border:none; cursor:pointer; font-size:13px;}
+  .rec-item{display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:9px; background:var(--surface-2,#1c2029); margin-bottom:6px; font-size:12px;}
+  .rec-item .rn{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono,monospace);}
+  .rec-item .rsz{color:var(--faint,#666c7c); font-size:11px; flex:none;}
+  .rec-item button{background:none; border:none; cursor:pointer; font-size:14px; color:var(--muted,#969cad); padding:2px 4px;}
+  .rec-item button:hover{color:var(--ink,#e7e9f0);}
+  .rec-empty{color:var(--faint,#666c7c); font-size:12px; padding:4px 2px;}
 </style>
 
 <div class="app">
@@ -1108,6 +1153,45 @@
   </div>
 </div>
 
+<div class="rec-overlay" id="recOverlay" hidden>
+  <div class="rec-modal">
+    <div class="rec-head"><span class="rec-title">Record</span><button class="rec-x" id="recClose">✕</button></div>
+    <div class="rec-body" id="recSetup">
+      <div class="rec-row"><label>Source</label>
+        <div class="rec-seg" id="recSourceSeg">
+          <button data-src="window" class="on">Window</button>
+          <button data-src="screen">Full screen</button>
+          <button data-src="region">Region</button>
+        </div>
+      </div>
+      <div class="rec-row" id="recWindowRow"><label>Window</label><select id="recWindow"></select></div>
+      <div class="rec-row" id="recRegionRow" hidden><label>Region</label><input id="recRegion" placeholder="X,Y,W,H  e.g. 0,0,1920,1080"></div>
+      <div class="rec-row"><label>Webcam</label><span class="rec-switch on" id="recCam"></span></div>
+      <div class="rec-cam show" id="recCamOpts">
+        <video id="recPreview" autoplay muted playsinline></video>
+        <div class="rec-cam-side">
+          <div class="rec-mini">Bubble corner</div>
+          <div class="rec-seg rec-pos" id="recPosSeg">
+            <button data-pos="tl" title="top-left">◰</button><button data-pos="tr" title="top-right">◳</button>
+            <button data-pos="bl" class="on" title="bottom-left">◱</button><button data-pos="br" title="bottom-right">◲</button>
+          </div>
+        </div>
+      </div>
+      <div class="rec-row"><label>Microphone</label><span class="rec-switch on" id="recMic"></span></div>
+      <div class="rec-row"><label>System audio</label><select id="recSys"><option value="">Off</option></select></div>
+      <button class="btn primary rec-start" id="recStart">● Start recording</button>
+    </div>
+    <div class="rec-body" id="recActive" hidden>
+      <div class="rec-live"><span class="rec-dot"></span>Recording&nbsp;<span id="recTimer">0:00</span></div>
+      <div class="rec-live-sub" id="recLiveSub"></div>
+      <button class="btn ghost rec-stop" id="recStop">■ Stop &amp; save</button>
+    </div>
+    <div class="rec-list-wrap">
+      <div class="rec-list-h">Recordings<button class="rec-reveal" id="recReveal" title="open folder">📂 folder</button></div>
+      <div class="rec-list" id="recList"></div>
+    </div>
+  </div>
+</div>
 <script>
 (function () {
   "use strict";
@@ -2975,38 +3059,143 @@
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
-  // --- screen record toggle (topbar): start/stop the Loom-style recorder via /api/record ---------
+  // --- record panel: window/screen/region + live webcam preview + recordings list ---------------
   (function () {
     var btn = document.getElementById("recordBtn"), ic = document.getElementById("recordIcon");
     if (!btn) return;
-    var recording = false, busy = false;
-    function paint() {
-      ic.innerHTML = recording
-        ? '<circle cx="12" cy="12" r="7" fill="#e0574a" stroke="#e0574a"/>'
-        : '<circle cx="12" cy="12" r="7"/>';
-      btn.title = recording ? "Stop recording" : "Screen record (webcam bubble + mic)";
+    var $ = function (id) { return document.getElementById(id); };
+    var overlay = $("recOverlay");
+    var recording = false, busy = false, timer = null, startedAt = 0, camStream = null;
+    var src = "window", pos = "bl", cam = true, mic = true;
+
+    function paintBtn() {
+      ic.innerHTML = recording ? '<circle cx="12" cy="12" r="7" fill="#e0574a" stroke="#e0574a"/>'
+                               : '<circle cx="12" cy="12" r="7"/>';
+      btn.title = recording ? "Recording — click to manage" : "Record (window / screen)";
     }
-    function refresh() {
-      fetch("/api/record/status").then(function (r) { return r.json(); })
-        .then(function (d) { recording = !!(d && d.recording); paint(); }).catch(function () {});
+    function post(url, body) {
+      return fetch(url + "?token=" + encodeURIComponent(CT),
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) })
+        .then(function (r) { return r.json(); });
     }
-    btn.addEventListener("click", function () {
-      if (busy) return; busy = true;
-      var stop = recording;
-      fetch((stop ? "/api/record/stop" : "/api/record/start") + "?token=" + encodeURIComponent(CT),
-            { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-          if (d && d.error) alert("record: " + d.error);
-          else if (!stop && d && !d.ok && d.message) alert(d.message);
-        })
-        .catch(function (e) { alert("record: " + e); })
-        .then(function () { busy = false; refresh(); });
+    function startPreview() {
+      stopPreview();
+      if (!cam || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        .then(function (s) { camStream = s; var v = $("recPreview"); if (v) v.srcObject = s; })
+        .catch(function () {});   // camera busy/denied -> preview just stays black
+    }
+    function stopPreview() {
+      if (camStream) { try { camStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} camStream = null; }
+      var v = $("recPreview"); if (v) v.srcObject = null;
+    }
+    function loadSources() {
+      fetch("/api/record/sources").then(function (r) { return r.json(); }).then(function (d) {
+        var sel = $("recWindow"); sel.innerHTML = "";
+        (d.windows || []).forEach(function (w) {
+          var o = document.createElement("option"); o.value = w; o.textContent = w; sel.appendChild(o);
+        });
+        if (!(d.windows || []).length) sel.innerHTML = '<option value="">(no windows open)</option>';
+        var sy = $("recSys"); sy.innerHTML = '<option value="">Off</option>';
+        (d.microphones || []).forEach(function (m) {
+          var o = document.createElement("option"); o.value = m; o.textContent = m; sy.appendChild(o);
+        });
+      }).catch(function () {});
+    }
+    function loadList() {
+      fetch("/api/record/list").then(function (r) { return r.json(); }).then(function (d) {
+        var box = $("recList"); box.innerHTML = "";
+        var recs = (d && d.recordings) || [];
+        if (!recs.length) { box.innerHTML = '<div class="rec-empty">No recordings yet.</div>'; return; }
+        recs.forEach(function (r) {
+          var el = document.createElement("div"); el.className = "rec-item";
+          el.innerHTML = '<span class="rn"></span><span class="rsz">' + r.mb + ' MB</span>' +
+            '<button title="play">▶</button><button title="delete">🗑</button>';
+          el.querySelector(".rn").textContent = r.name;
+          var b = el.querySelectorAll("button");
+          b[0].onclick = function () { post("/api/record/play", { name: r.name }); };
+          b[1].onclick = function () { if (confirm("Delete " + r.name + "?")) post("/api/record/delete", { name: r.name }).then(loadList); };
+          box.appendChild(el);
+        });
+      }).catch(function () {});
+    }
+    function tick() {
+      if (timer) clearInterval(timer);
+      function upd() {
+        var s = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
+        $("recTimer").textContent = Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
+      }
+      upd(); timer = setInterval(upd, 1000);
+    }
+    function reflect() {
+      $("recSetup").hidden = recording;
+      $("recActive").hidden = !recording;
+      if (recording) {
+        stopPreview(); tick();
+        var st = $("recWindow"); $("recLiveSub").textContent = "Saving to ~/Videos/Collie · your webcam is in the bubble";
+      } else { if (timer) { clearInterval(timer); timer = null; } startPreview(); }
+    }
+    function open() { overlay.hidden = false; loadSources(); loadList(); reflect(); }
+    function close() { overlay.hidden = true; stopPreview(); if (timer) { clearInterval(timer); timer = null; } }
+
+    function seg(id, cb) {
+      document.querySelectorAll("#" + id + " button").forEach(function (b) {
+        b.onclick = function () {
+          b.parentNode.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+          b.classList.add("on"); cb(b);
+        };
+      });
+    }
+    function sw(id, cb) { var el = $(id); el.onclick = function () { el.classList.toggle("on"); cb(el.classList.contains("on")); }; }
+    seg("recSourceSeg", function (b) {
+      src = b.dataset.src;
+      $("recWindowRow").hidden = src !== "window";
+      $("recRegionRow").hidden = src !== "region";
     });
-    refresh(); setInterval(refresh, 5000);
+    seg("recPosSeg", function (b) { pos = b.dataset.pos; });
+    sw("recCam", function (on) { cam = on; $("recCamOpts").classList.toggle("show", on); on ? startPreview() : stopPreview(); });
+    sw("recMic", function (on) { mic = on; });
+
+    $("recStart").onclick = function () {
+      if (busy) return; busy = true;
+      var body = { position: pos, no_cam: !cam, no_mic: !mic, sys_audio: $("recSys").value || null };
+      if (src === "window") body.window = $("recWindow").value || null;
+      else if (src === "region") body.region = ($("recRegion").value || "").trim() || null;
+      stopPreview();   // release the camera so ffmpeg can grab it
+      $("recStart").textContent = "starting…";
+      post("/api/record/start", body).then(function (d) {
+        $("recStart").textContent = "● Start recording";
+        if (d && d.error) { alert("record: " + d.error); if (cam) startPreview(); }
+        else if (d && !d.ok) { alert(d.message || "could not start"); if (cam) startPreview(); }
+        else { startedAt = Date.now(); recording = true; paintBtn(); reflect(); }
+      }).catch(function (e) { alert("record: " + e); $("recStart").textContent = "● Start recording"; })
+        .then(function () { busy = false; });
+    };
+    $("recStop").onclick = function () {
+      if (busy) return; busy = true;
+      post("/api/record/stop", {}).then(function (d) {
+        recording = false; startedAt = 0; paintBtn(); reflect(); loadList();
+        if (d && d.message && d.message.indexOf("FAILED") >= 0) alert(d.message);
+      }).catch(function (e) { alert("record: " + e); }).then(function () { busy = false; });
+    };
+    $("recReveal").onclick = function () { post("/api/record/reveal", {}); };
+    $("recClose").onclick = close;
+    overlay.onclick = function (e) { if (e.target === overlay) close(); };
+    btn.addEventListener("click", open);
+
+    function poll() {
+      fetch("/api/record/status").then(function (r) { return r.json(); }).then(function (d) {
+        var was = recording; recording = !!(d && d.recording); paintBtn();
+        if (recording && !startedAt && d.since) startedAt = d.since * 1000;
+        if (!recording) startedAt = 0;
+        if (!overlay.hidden && was !== recording) reflect();
+      }).catch(function () {});
+    }
+    poll(); setInterval(poll, 5000);
   })();
 
   loadSessions();
   input.focus();
 })();
 </script>
+

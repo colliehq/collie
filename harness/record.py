@@ -148,17 +148,23 @@ def _bubble_post_filter(cam_size, mirror, position, margin):
     ).format(flip=flip, d=d, rr=rr, s2=s2, d2=d2, x=x, y=y)
 
 
-def _build_cmd(exe, out, fps, webcam, mic, sysaudio, region):
-    """CAPTURE command: record screen + (optional) webcam + (optional) mic / system audio as SEPARATE
-    streams, with NO filtering. Compositing two live captures through one overlay in real time stalls
-    the whole pipeline to ~2fps on Windows (gdigrab + dshow), so the circular bubble is composited
-    afterwards in stop(), from the recorded file (fast). Output is MPEG-TS with a per-packet flush, so a
-    hard kill on stop loses nothing (Matroska would buffer frames into clusters and lose them)."""
+def _build_cmd(exe, out, fps, webcam, mic, sysaudio, region, window):
+    """CAPTURE command: record the source (a specific window / a region / the whole desktop) + optional
+    webcam + optional mic / system audio as SEPARATE streams, no filtering. Compositing two live
+    captures through one overlay in real time stalls the pipeline to ~2fps on Windows (gdigrab + dshow),
+    so the circular bubble is composited afterwards in stop() from the recorded file (fast). Output is
+    MPEG-TS with a per-packet flush, so a hard kill on stop loses nothing.
+
+    A single WINDOW is also the smooth path: it's far smaller than a 5120x1440 desktop, so it captures
+    at a real 30fps."""
     args = [exe, "-hide_banner", "-y", "-f", "gdigrab", "-framerate", str(fps)]
-    if region:
-        rx, ry, rw, rh = region
-        args += ["-offset_x", str(rx), "-offset_y", str(ry), "-video_size", "%dx%d" % (rw, rh)]
-    args += ["-i", "desktop"]
+    if window:
+        args += ["-i", "title=" + window]           # capture just that window (gdigrab title=)
+    else:
+        if region:
+            rx, ry, rw, rh = region
+            args += ["-offset_x", str(rx), "-offset_y", str(ry), "-video_size", "%dx%d" % (rw, rh)]
+        args += ["-i", "desktop"]
     if webcam:
         args += ["-f", "dshow", "-framerate", str(fps), "-i", "video=" + webcam]
     if mic:
@@ -166,7 +172,11 @@ def _build_cmd(exe, out, fps, webcam, mic, sysaudio, region):
     if sysaudio:
         args += ["-f", "dshow", "-i", "audio=" + sysaudio]
 
-    args += ["-map", "0:v", "-c:v:0", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
+    # crop the source to EVEN width/height — a captured window is often an odd size (e.g. 1263x1415),
+    # and libx264 with yuv420p refuses odd dimensions ("width not divisible by 2"). No-op when already
+    # even (full desktop / most regions).
+    args += ["-map", "0:v", "-filter:v:0", "crop=trunc(iw/2)*2:trunc(ih/2)*2",
+             "-c:v:0", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
     if webcam:
         args += ["-map", "1:v", "-c:v:1", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
     abase = 2 if webcam else 1
@@ -249,7 +259,7 @@ def _alive(pid):
 
 
 def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
-          position="bl", mirror=True, monitor=None, region=None, out=None,
+          position="bl", mirror=True, monitor=None, region=None, window=None, out=None,
           no_cam=False, no_mic=False, countdown=0):
     exe = _ffmpeg()
     st = _load()
@@ -270,7 +280,10 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
     if out is None:
         out = os.path.join(_default_outdir(), time.strftime("collie-%Y%m%d-%H%M%S.ts"))
 
-    cmd = _build_cmd(exe, out, fps, webcam, mic, sysaudio, reg)
+    # a window source and a region are mutually exclusive; a chosen window wins.
+    if window:
+        reg = None
+    cmd = _build_cmd(exe, out, fps, webcam, mic, sysaudio, reg, window)
 
     for n in range(int(countdown or 0), 0, -1):
         print("  recording in %d..." % n, flush=True)
@@ -294,8 +307,8 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
         time.sleep(0.4)
         if p.poll() is not None:              # ffmpeg died (bad device, etc.)
             break
-        if os.path.exists(out) and os.path.getsize(out) > 65536:
-            started_ok = True
+        if os.path.exists(out) and os.path.getsize(out) > 8192:   # low: a small window is low-bitrate;
+            started_ok = True                                     # a real stall stays at 0 bytes
             break
     if not started_ok:
         try:
@@ -310,9 +323,14 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
         return ("recording didn't start — no frames were written (a device may be busy or the name "
                 "wrong).\n  check your devices:  collie record devices\n  ffmpeg log: %s" % logpath)
     _save({"pid": p.pid, "out": out, "started": time.time(),
-           "webcam": webcam, "mic": mic, "sysaudio": sysaudio, "region": reg,
+           "webcam": webcam, "mic": mic, "sysaudio": sysaudio, "region": reg, "window": window,
            "cam_size": cam_size, "margin": margin, "position": position, "mirror": mirror})
-    bits = "screen" + (" [%dx%d]" % (reg[2], reg[3]) if reg else " [full desktop]")
+    if window:
+        bits = "window “%s”" % (window[:40])
+    elif reg:
+        bits = "region [%dx%d]" % (reg[2], reg[3])
+    else:
+        bits = "screen [full desktop]"
     if webcam:
         bits += " + webcam bubble @%s (%s)" % (position, webcam)
     if mic and sysaudio:
@@ -376,3 +394,96 @@ def status():
         return ("recording -> %s  (%.0fs, pid %s)"
                 % (st.get("out"), time.time() - st.get("started", time.time()), st.get("pid")))
     return "not recording"
+
+
+def list_windows():
+    """Visible top-level window titles, for the record-source picker (gdigrab captures by title)."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    titles = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _lp):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            t = (buf.value or "").strip()
+            if t and t != "Program Manager" and t not in titles:
+                titles.append(t)
+        except Exception:
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(proc(_cb), 0)
+    except Exception:
+        return []
+    return titles
+
+
+def list_recordings():
+    """Recordings in the output dir, newest first: [{name, size, mb, mtime}]."""
+    d = _default_outdir()
+    out = []
+    try:
+        for name in os.listdir(d):
+            if name.lower().endswith((".mp4", ".ts", ".mkv")):
+                p = os.path.join(d, name)
+                try:
+                    stt = os.stat(p)
+                    out.append({"name": name, "size": stt.st_size,
+                                "mb": round(stt.st_size / 1048576.0, 1), "mtime": stt.st_mtime})
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    out.sort(key=lambda r: r["mtime"], reverse=True)
+    return out
+
+
+def _safe_path(name):
+    """A path inside the output dir for `name` (basename only, blocks traversal), or None."""
+    d = _default_outdir()
+    p = os.path.join(d, os.path.basename(name or ""))
+    if os.path.dirname(os.path.abspath(p)) != os.path.abspath(d):
+        return None
+    return p
+
+
+def play(name):
+    p = _safe_path(name)
+    if p and os.path.exists(p):
+        try:
+            os.startfile(p)   # opens in the default video player
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def reveal(name=None):
+    """Open the recordings folder (Explorer)."""
+    try:
+        os.startfile(_default_outdir())
+        return True
+    except Exception:
+        return False
+
+
+def delete_recording(name):
+    p = _safe_path(name)
+    if not p or not os.path.exists(p):
+        return False
+    try:
+        os.remove(p)
+        return True
+    except Exception:
+        return False

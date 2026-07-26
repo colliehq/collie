@@ -402,12 +402,18 @@ def cmd_record(args):
                 print("monitors:")
                 for i, (x, y, w, h) in enumerate(mons, 1):
                     print("  %d: %dx%d @ %d,%d" % (i, w, h, x, y))
+        elif action == "windows":
+            print("windows:\n  " + ("\n  ".join(rec.list_windows()) or "(none)"))
+        elif action == "list":
+            recs = rec.list_recordings()
+            print("recordings in ~/Videos/Collie:\n  " + ("\n  ".join(
+                "%s  (%.1f MB)" % (r["name"], r["mb"]) for r in recs) or "(none)"))
         else:  # start
             print(rec.start(webcam=args.webcam, mic=args.mic, sysaudio=args.sys_audio,
                             fps=args.fps, cam_size=args.cam_size, margin=args.margin,
                             position=args.position, mirror=not args.no_mirror,
-                            monitor=args.monitor, region=args.region, out=args.out,
-                            no_cam=args.no_cam, no_mic=args.no_mic, countdown=args.countdown))
+                            monitor=args.monitor, region=args.region, window=args.window,
+                            out=args.out, no_cam=args.no_cam, no_mic=args.no_mic, countdown=args.countdown))
         return 0
     except Exception as e:
         print("record: %s" % e)
@@ -1296,8 +1302,10 @@ def main(argv=None):
     prc = sub.add_parser("record", help="screen recording with a circular webcam bubble + mic "
                                         "(start / stop / status / devices)")
     prc.add_argument("record_action", nargs="?", default="start",
-                     choices=["start", "stop", "status", "devices"],
-                     help="start (default), stop, status, or list devices")
+                     choices=["start", "stop", "status", "devices", "windows", "list"],
+                     help="start (default), stop, status, devices, windows, or list recordings")
+    prc.add_argument("--window", default=None,
+                     help="record just this window (by title; see `record windows`) — small + smooth 30fps")
     prc.add_argument("--webcam", default=None,
                      help="camera device name (default: first found; see `record devices`)")
     prc.add_argument("--mic", default=None, help="microphone device name (default: first found)")
