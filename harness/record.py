@@ -118,85 +118,102 @@ def resolve_region(monitor=None, region=None):
     return None
 
 
-def _bubble_filter(cam_idx, cam_size, mirror, position, margin):
-    """filter_complex fragment that turns input `cam_idx` into a circular webcam bubble with a white
-    ring + soft drop shadow, overlaid on [0:v] at the chosen corner. Ends producing [v]."""
+def _bubble_post_filter(cam_size, mirror, position, margin):
+    """OFFLINE filter_complex: the webcam stream [0:v:1] -> a circular bubble with a white ring + soft
+    drop shadow, overlaid on the screen stream [0:v:0] at the chosen corner, producing [v]. Runs in
+    stop() on the recorded file, where the two streams are already frame-aligned — no live-capture sync,
+    so it composites fast (~8x realtime) and the shadow is affordable."""
     s = int(cam_size)
-    ring = max(3, s // 48)          # white border thickness
-    d = s + 2 * ring               # full bubble diameter
+    ring = max(3, s // 48)
+    d = s + 2 * ring
     s2, d2 = s / 2.0, d / 2.0
-    rr = "((X-{d2})*(X-{d2})+(Y-{d2})*(Y-{d2}))".format(d2=d2)   # squared dist from bubble centre
+    rr = "((X-{d2})*(X-{d2})+(Y-{d2})*(Y-{d2}))".format(d2=d2)
     flip = "hflip," if mirror else ""
-    xy = {
+    x, y = {
         "bl": ("%d" % margin, "H-h-%d" % margin),
         "br": ("W-w-%d" % margin, "H-h-%d" % margin),
         "tl": ("%d" % margin, "%d" % margin),
         "tr": ("W-w-%d" % margin, "%d" % margin),
     }.get(position, ("%d" % margin, "H-h-%d" % margin))
-    x, y = xy
-    # one geq at diameter d: camera inside radius s2, white in the ring band s2..d2, transparent outside
-    bubble = (
-        "[{ci}:v]{flip}scale={d}:{d}:force_original_aspect_ratio=increase,crop={d}:{d},format=rgba,"
-        "geq="
+    return (
+        "[0:v:1]{flip}scale={d}:{d}:force_original_aspect_ratio=increase,crop={d}:{d},format=rgba,geq="
         "r='if(gt({rr},{s2}*{s2}),255,r(X,Y))':"
         "g='if(gt({rr},{s2}*{s2}),255,g(X,Y))':"
         "b='if(gt({rr},{s2}*{s2}),255,b(X,Y))':"
         "a='if(gt({rr},{d2}*{d2}),0,255)'[bub];"
-    ).format(ci=cam_idx, flip=flip, d=d, rr=rr, s2=s2, d2=d2)
-    # split off a black, blurred silhouette as the drop shadow, offset a few px behind the bubble
-    shadow = ("[bub]split[bs][bm];"
-              "[bs]format=rgba,geq=r=0:g=0:b=0:a='0.45*alpha(X,Y)',boxblur=6:1[sh];")
-    compose = ("[0:v][sh]overlay=x={x}+5:y={y}+5[t];"
-               "[t][bm]overlay=x={x}:y={y}[v]").format(x=x, y=y)
-    return bubble + shadow + compose
+        "[bub]split[bs][bm];"
+        "[bs]format=rgba,geq=r=0:g=0:b=0:a='0.5*alpha(X,Y)',boxblur=7:1[sh];"
+        "[0:v:0][sh]overlay=x={x}+5:y={y}+5[t];"
+        "[t][bm]overlay=x={x}:y={y}[v]"
+    ).format(flip=flip, d=d, rr=rr, s2=s2, d2=d2, x=x, y=y)
 
 
-def _build_cmd(exe, out, fps, webcam, mic, sysaudio, cam_size, margin, position, mirror, region):
+def _build_cmd(exe, out, fps, webcam, mic, sysaudio, region):
+    """CAPTURE command: record screen + (optional) webcam + (optional) mic / system audio as SEPARATE
+    streams, with NO filtering. Compositing two live captures through one overlay in real time stalls
+    the whole pipeline to ~2fps on Windows (gdigrab + dshow), so the circular bubble is composited
+    afterwards in stop(), from the recorded file (fast). Output is MPEG-TS with a per-packet flush, so a
+    hard kill on stop loses nothing (Matroska would buffer frames into clusters and lose them)."""
     args = [exe, "-hide_banner", "-y", "-f", "gdigrab", "-framerate", str(fps)]
     if region:
         rx, ry, rw, rh = region
         args += ["-offset_x", str(rx), "-offset_y", str(ry), "-video_size", "%dx%d" % (rw, rh)]
     args += ["-i", "desktop"]
-
-    cam_idx = None
     if webcam:
-        cam_idx = 1
         args += ["-f", "dshow", "-framerate", str(fps), "-i", "video=" + webcam]
-    nxt = (2 if webcam else 1)
-    mic_idx = sys_idx = None
     if mic:
-        mic_idx = nxt; nxt += 1
         args += ["-f", "dshow", "-i", "audio=" + mic]
     if sysaudio:
-        sys_idx = nxt; nxt += 1
         args += ["-f", "dshow", "-i", "audio=" + sysaudio]
 
-    parts = []
+    args += ["-map", "0:v", "-c:v:0", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
     if webcam:
-        parts.append(_bubble_filter(cam_idx, cam_size, mirror, position, margin))
-        vmap = "[v]"
-    else:
-        vmap = "0:v"
-    amap = None
-    if mic_idx is not None and sys_idx is not None:
-        parts.append("[%d:a][%d:a]amix=inputs=2:duration=longest:dropout_transition=0,"
-                     "dynaudnorm[a]" % (mic_idx, sys_idx))
-        amap = "[a]"
-    elif mic_idx is not None:
-        amap = "%d:a" % mic_idx
-    elif sys_idx is not None:
-        amap = "%d:a" % sys_idx
+        args += ["-map", "1:v", "-c:v:1", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
+    abase = 2 if webcam else 1
+    n_a = 0
+    if mic:
+        args += ["-map", "%d:a" % abase]; n_a += 1
+    if sysaudio:
+        args += ["-map", "%d:a" % (abase + (1 if mic else 0))]; n_a += 1
+    if n_a:
+        args += ["-c:a", "aac", "-b:a", "160k"]
+    args += ["-flush_packets", "1", out]
+    return args
 
+
+def _postprocess(src, webcam, has_mic, has_sys, cam_size, margin, position, mirror):
+    """Turn the raw multi-stream .ts into a clean .mp4: composite the circular webcam bubble (if a cam
+    was recorded) and mix mic+system audio. Returns the .mp4 path on success, else None."""
+    dst = src[:-3] + ".mp4" if src.lower().endswith(".ts") else src + ".mp4"
+    args = [_ffmpeg(), "-hide_banner", "-y", "-i", src]
+    parts = []
+    vmap = "0:v:0"
+    if webcam:
+        parts.append(_bubble_post_filter(cam_size, mirror, position, margin))
+        vmap = "[v]"
+    amap = None
+    if has_mic and has_sys:
+        parts.append("[0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0,dynaudnorm[a]")
+        amap = "[a]"
+    elif has_mic or has_sys:
+        amap = "0:a:0"
     if parts:
         args += ["-filter_complex", ";".join(parts)]
     args += ["-map", vmap]
     if amap:
         args += ["-map", amap]
-    args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
+    if webcam:
+        args += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"]
+    else:
+        args += ["-c:v", "copy"]      # no bubble to composite — just remux the screen stream, instant
     if amap:
         args += ["-c:a", "aac", "-b:a", "160k"]
-    args += [out]
-    return args
+    args += ["-movflags", "+faststart", dst]
+    try:
+        subprocess.run(args, capture_output=True, creationflags=_NOWIN)
+    except Exception:
+        return None
+    return dst if (os.path.exists(dst) and os.path.getsize(dst) > 1024) else None
 
 
 def _load():
@@ -251,26 +268,50 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
     reg = resolve_region(monitor=monitor, region=region)   # raises with a clear message on bad input
 
     if out is None:
-        out = os.path.join(_default_outdir(), time.strftime("collie-%Y%m%d-%H%M%S.mkv"))
+        out = os.path.join(_default_outdir(), time.strftime("collie-%Y%m%d-%H%M%S.ts"))
 
-    cmd = _build_cmd(exe, out, fps, webcam, mic, sysaudio, cam_size, margin, position, mirror, reg)
+    cmd = _build_cmd(exe, out, fps, webcam, mic, sysaudio, reg)
 
     for n in range(int(countdown or 0), 0, -1):
         print("  recording in %d..." % n, flush=True)
         time.sleep(1)
 
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | _NOWIN) if os.name == "nt" else 0
+    # capture ffmpeg's stderr to a log so a failure (busy device, filter stall) is diagnosable instead
+    # of a silent 0-byte file. The child keeps its own inherited handle, so closing ours here is fine.
+    os.makedirs(STATE_DIR, exist_ok=True)
+    logf = open(os.path.join(STATE_DIR, "record-ffmpeg.log"), "w", encoding="utf-8", errors="replace")
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, creationflags=flags)
-    # give ffmpeg a moment to fail fast on a bad device/filter, so we don't report a phantom success
-    time.sleep(1.2)
-    if p.poll() is not None:
+                         stderr=logf, creationflags=flags)
+    logf.close()
+    # Confirm the pipeline actually STARTS WRITING before we call it a recording. The webcam-bubble
+    # composite has a ~2s cold start on a big desktop, and on a very large one it can stall at frame 0
+    # forever (the real-time overlay can't keep up). Watch the output grow for a few seconds; if it
+    # doesn't, kill it and tell the user NOW instead of letting them record into a 0-byte void.
+    logpath = os.path.join(STATE_DIR, "record-ffmpeg.log")
+    started_ok = False
+    for _ in range(15):                       # ~6s grace
+        time.sleep(0.4)
+        if p.poll() is not None:              # ffmpeg died (bad device, etc.)
+            break
+        if os.path.exists(out) and os.path.getsize(out) > 65536:
+            started_ok = True
+            break
+    if not started_ok:
+        try:
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, creationflags=_NOWIN)
+        except Exception:
+            pass
         _clear()
-        return ("failed to start (ffmpeg exited immediately — likely a bad device name or a system-"
-                "audio device that isn't a loopback).\n  see your devices:  collie record devices\n"
-                "  cmd: %s" % " ".join('"%s"' % a if " " in a else a for a in cmd))
+        try:
+            os.remove(out)
+        except Exception:
+            pass
+        return ("recording didn't start — no frames were written (a device may be busy or the name "
+                "wrong).\n  check your devices:  collie record devices\n  ffmpeg log: %s" % logpath)
     _save({"pid": p.pid, "out": out, "started": time.time(),
-           "webcam": webcam, "mic": mic, "sysaudio": sysaudio, "region": reg})
+           "webcam": webcam, "mic": mic, "sysaudio": sysaudio, "region": reg,
+           "cam_size": cam_size, "margin": margin, "position": position, "mirror": mirror})
     bits = "screen" + (" [%dx%d]" % (reg[2], reg[3]) if reg else " [full desktop]")
     if webcam:
         bits += " + webcam bubble @%s (%s)" % (position, webcam)
@@ -297,32 +338,36 @@ def stop(remux_mp4=True):
         _clear()
         return "not recording"
     pid, out = st["pid"], st.get("out")
-    # graceful finalize first (CTRL_BREAK == pressing q), then force. The .mkv stays playable either way.
-    if os.name == "nt":
-        try:
-            import signal
-            os.kill(int(pid), signal.CTRL_BREAK_EVENT)
-        except Exception:
-            pass
-    if not _wait_gone(pid, 5):
-        try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=_NOWIN)
-        except Exception:
-            pass
-        _wait_gone(pid, 4)
+    # ffmpeg runs windowless (CREATE_NO_WINDOW) so a CTRL_BREAK can't reach it — that old graceful path
+    # just wasted ~5s before the red dot cleared. Kill it outright; the .ts (per-packet flushed) holds
+    # every captured frame regardless.
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=_NOWIN)
+    except Exception:
+        pass
+    _wait_gone(pid, 3)
     _clear()
     dur = time.time() - st.get("started", time.time())
-    lines = ["saved -> %s  (%.0fs)" % (out, dur)]
-    if remux_mp4 and out and out.lower().endswith(".mkv") and os.path.exists(out):
-        mp4 = out[:-4] + ".mp4"
+    sz = os.path.getsize(out) if (out and os.path.exists(out)) else 0
+    if sz < 16384:   # header only / nothing captured — tell the truth, not a phantom "saved"
+        return ("recording FAILED — no frames were captured (%d bytes; a device may have been busy).\n"
+                "  ffmpeg log: %s" % (sz, os.path.join(STATE_DIR, "record-ffmpeg.log")))
+    # OFFLINE composite: bubble + audio mix from the raw multi-stream .ts into a clean .mp4 (fast, since
+    # the streams are already frame-aligned). Drop the .ts on success; keep it if the composite failed.
+    if not remux_mp4:
+        return "saved -> %s  (%.0fs, %.1f MB)" % (out, dur, sz / 1048576.0)
+    mp4 = _postprocess(out, bool(st.get("webcam")), bool(st.get("mic")), bool(st.get("sysaudio")),
+                       st.get("cam_size", 240), st.get("margin", 40),
+                       st.get("position", "bl"), st.get("mirror", True))
+    if mp4:
         try:
-            subprocess.run([_ffmpeg(), "-hide_banner", "-y", "-i", out, "-c", "copy", mp4],
-                           capture_output=True, creationflags=_NOWIN)
-            if os.path.exists(mp4):
-                lines.append("mp4   -> %s" % mp4)
+            os.remove(out)
         except Exception:
             pass
-    return "\n".join(lines)
+        return "saved -> %s  (%.0fs, %.1f MB)" % (mp4, dur, os.path.getsize(mp4) / 1048576.0)
+    return ("saved (raw) -> %s  (%.0fs, %.1f MB)\n  note: the bubble/audio composite step failed — the "
+            "raw .ts is intact.\n  ffmpeg log: %s"
+            % (out, dur, sz / 1048576.0, os.path.join(STATE_DIR, "record-ffmpeg.log")))
 
 
 def status():
