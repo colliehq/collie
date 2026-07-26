@@ -60,7 +60,6 @@
 <div id="brand"><b>collie</b> · live desktop</div>
 <div id="hlab"></div>
 <div id="labels"></div>
-<div id="dbg" style="position:fixed;left:8px;top:8px;z-index:20;font:12px monospace;color:#8fe;background:rgba(0,0,0,.6);padding:4px 8px;pointer-events:none;border-radius:4px"></div>
 
 <script src="/map/three.min.js"></script>
 <script>
@@ -246,7 +245,14 @@
   cv.addEventListener("mousemove",e=>{mx=e.clientX;my=e.clientY;dMove++;});
   cv.addEventListener("mouseleave",()=>{mx=-1;dLeave++;});
   cv.addEventListener("mouseenter",()=>{dEnter++;});
-  const dbg=document.getElementById("dbg");
+  // hover-tuning counters. This used to be a hardcoded div, so the numbers sat on the live
+  // wallpaper — on Windows, behind your icons, permanently. Opt in with ?dbg=1; the per-frame
+  // writer below is already null-guarded, so absent means silent.
+  const dbg=new URLSearchParams(location.search).has("dbg")?(()=>{
+    const d=document.createElement("div");
+    d.style.cssText="position:fixed;left:8px;top:8px;z-index:20;font:12px monospace;color:#8fe;"
+      +"background:rgba(0,0,0,.6);padding:4px 8px;pointer-events:none;border-radius:4px";
+    document.body.appendChild(d); return d;})():null;
   // user camera control — wheel zoom + drag rotate (mouse events are forwarded into the wallpaper by collie's engine)
   let uDrag=false,uLX=0,uLY=0,uManual=-99;
   cv.addEventListener("wheel",e=>{ e.preventDefault(); radGoal=Math.max(40,Math.min(1000,radGoal*(e.deltaY>0?1.12:0.89))); uManual=TT.v; },{passive:false});
