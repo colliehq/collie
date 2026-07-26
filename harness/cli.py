@@ -415,6 +415,35 @@ def cmd_wallpaper(args):
     port = args.port
     url = "http://127.0.0.1:%d/ambient" % port
 
+    # macOS has a real behind-the-icons path (window levels, via PyObjC) — the counterpart to the
+    # Windows Progman engine. Use it when it's installed; a browser window sits *over* the desktop
+    # and is only the fallback. --front asks for the plain interactive window on purpose.
+    if plat.is_macos() and not getattr(args, "front", False):
+        from . import desktop_mac
+        if getattr(args, "stop", False):
+            print(desktop_mac.stop())
+            return 0
+        ok, why = desktop_mac.available()
+        if ok:
+            if desktop_mac.running_pid():
+                print("collie wallpaper: already running (pid %s) · stop it with:  collie wallpaper --stop"
+                      % desktop_mac.running_pid())
+                return 0
+            # AppKit must own the main thread, so the server goes to a daemon thread — the same
+            # split the Windows engine gets by launching the server as its own pythonw process.
+            from .webapp import main as web_main
+            threading.Thread(target=web_main, args=(["--port", str(port), "--no-open"],),
+                             daemon=True).start()
+            for _ in range(60):
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % port, timeout=0.8).read()
+                    break
+                except Exception:
+                    time.sleep(0.2)
+            return desktop_mac.run(url, behind=True)
+        print("collie wallpaper: %s" % why, file=sys.stderr)
+        print("  falling back to a borderless browser window over the desktop.\n", file=sys.stderr)
+
     def _up():
         try:
             urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % port, timeout=0.8).read()
@@ -1358,6 +1387,8 @@ def main(argv=None):
                                            "--install autostarts it at logon")
     pwp.add_argument("--port", type=int, default=8787, help="preferred port (a free one is picked if busy)")
     pwp.add_argument("--kiosk", action="store_true", help="non-Windows: immersive full-screen window")
+    pwp.add_argument("--front", action="store_true",
+                     help="macOS: an ordinary interactive window instead of the behind-the-icons desktop")
     pwp.add_argument("--install", action="store_true", help="autostart the wallpaper at every logon")
     pwp.add_argument("--uninstall", action="store_true", help="remove the logon autostart")
     pwp.add_argument("--stop", action="store_true", help="cleanly stop the running wallpaper engine")
