@@ -41,13 +41,18 @@ export class RelayRoom {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    this.agent = null;
-    this.paircode = null;          // current code for adding a NEW device (from agent hello)
-    this.valid = new Set();        // valid session-token hashes (hello set + this-session pairings)
-    this.seq = 0;
-    this.pending = new Map();
-    this.pairAttempts = [];        // timestamps, for rate-limit
+    this.seq = 0;                  // request-id counter (per alive instance; resets after hibernation — fine)
+    this.pending = new Map();      // id -> {controller,…}; only non-empty while a request is in flight
+    this.pairAttempts = [];        // pair rate-limit timestamps (in-memory; the DO stays alive during any attack burst)
   }
+
+  // Hibernation: an idle room is evicted from memory (→ no duration billing) while its WebSocket stays
+  // open at the edge. So the agent socket + its pairing state must survive eviction: find the socket via
+  // getWebSockets("agent"), and stash {paircode, devices} on it with serializeAttachment (persisted),
+  // instead of in-memory fields the constructor would wipe on wake.
+  _agent() { const ws = this.state.getWebSockets("agent"); return ws.length ? ws[0] : null; }
+  _astate(ws) { try { return ws.deserializeAttachment() || {}; } catch (e) { return {}; } }
+  _setAstate(ws, s) { try { ws.serializeAttachment(s); } catch (e) {} }
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -72,33 +77,31 @@ export class RelayRoom {
 
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    server.accept();
-    this.agent = server;
-    server.addEventListener("message", (ev) => this.onAgentMessage(ev.data));
-    server.addEventListener("close", () => this.onAgentClose());
-    server.addEventListener("error", () => this.onAgentClose());
+    this.state.acceptWebSocket(server, ["agent"]);        // hibernatable — an idle room costs ~nothing
+    server.serializeAttachment({ paircode: null, devices: [] });
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  onAgentClose() {
-    this.agent = null;
+  // ---- hibernation handlers (called by the runtime, survive DO eviction) ----
+  webSocketClose(ws) { this._dropPending("agent disconnected"); }
+  webSocketError(ws) { this._dropPending("agent error"); }
+  _dropPending(why) {
     for (const [, slot] of this.pending) {
-      try { slot.opened ? slot.controller.error(new Error("agent disconnected"))
-                        : slot.headReject(new Error("agent disconnected")); } catch (e) {}
+      try { slot.opened ? slot.controller.error(new Error(why)) : slot.headReject(new Error(why)); } catch (e) {}
     }
     this.pending.clear();
   }
 
-  onAgentMessage(data) {
+  webSocketMessage(ws, message) {
     let msg;
-    try { msg = JSON.parse(typeof data === "string" ? data : ""); } catch (e) { return; }
+    try { msg = JSON.parse(typeof message === "string" ? message : ""); } catch (e) { return; }
+    // pairing state lives on the socket attachment (survives hibernation), not in memory
     if (msg.t === "hello") {
-      this.paircode = (msg.paircode || "").toUpperCase();
-      this.valid = new Set(msg.devices || []);      // returning devices validate against this
+      this._setAstate(ws, { paircode: (msg.paircode || "").toUpperCase(), devices: msg.devices || [] });
       return;
     }
-    if (msg.t === "devices") { this.valid = new Set(msg.devices || []); return; }  // live refresh (kick)
-    if (msg.t === "paircode") { this.paircode = (msg.paircode || "").toUpperCase(); return; } // rotated
+    if (msg.t === "devices") { const s = this._astate(ws); s.devices = msg.devices || []; this._setAstate(ws, s); return; }
+    if (msg.t === "paircode") { const s = this._astate(ws); s.paircode = (msg.paircode || "").toUpperCase(); this._setAstate(ws, s); return; }
     const slot = this.pending.get(msg.id);
     if (!slot) return;
     if (msg.t === "res") {
@@ -118,7 +121,8 @@ export class RelayRoom {
 
   // ---------------------------------------------------------------- phone side
   async pair(request) {
-    if (!this.agent) return json({ ok: false, error: "desktop offline" }, 503);
+    const agent = this._agent();
+    if (!agent) return json({ ok: false, error: "desktop offline" }, 503);
     const now = Date.now();
     this.pairAttempts = this.pairAttempts.filter((t) => now - t < PAIR_WINDOW_MS);
     if (this.pairAttempts.length >= PAIR_MAX)
@@ -126,19 +130,21 @@ export class RelayRoom {
 
     let body = {};
     try { body = await request.json(); } catch (e) {}
+    const st = this._astate(agent);
     const code = (body.paircode || "").toUpperCase();
-    if (!this.paircode || code !== this.paircode) {
+    if (!st.paircode || code !== st.paircode) {
       this.pairAttempts.push(now);
       return json({ ok: false, error: "bad pairing code" }, 403);
     }
     this.pairAttempts = [];                              // reset on success
     const token = randToken();
     const hash = await sha256hex(token);
-    this.valid.add(hash);
+    st.devices = [...(st.devices || []), hash];          // optimistic; the desktop's refresh confirms it
+    this._setAstate(agent, st);
     const name = String(body.name || shortUA(request.headers.get("User-Agent") || "")).slice(0, 60);
     // device_id: a client-supplied STABLE id (localStorage / Keychain) so re-pairing the same client
     // updates its device row instead of duplicating. device_added carries it + the token hash + name.
-    this.sendAgent({ t: "device_added", device_id: String(body.device_id || ""), hash, name });
+    this.sendAgent(agent, { t: "device_added", device_id: String(body.device_id || ""), hash, name });
     // token in the body too → a NATIVE app (no cookie jar) stores it in the Keychain and sends it as
     // `Authorization: Bearer <token>`. A browser/WKWebView just uses the Secure cookie below.
     return new Response(JSON.stringify({ ok: true, token }), {
@@ -152,11 +158,12 @@ export class RelayRoom {
   }
 
   async proxyToAgent(request, path, search) {
-    if (!this.agent) return offlinePage();
+    const agent = this._agent();
+    if (!agent) return offlinePage();
     if (path.startsWith("/api/remote/")) return json({ error: "pairing is managed on the desktop" }, 403);
 
     const needsAuth = path.startsWith("/api/");
-    if (needsAuth && !(await this.checkSession(request)))
+    if (needsAuth && !(await this.checkSession(request, agent)))
       return json({ error: "not paired" }, 401);
 
     const id = ++this.seq;
@@ -173,8 +180,8 @@ export class RelayRoom {
         const slot = { controller, opened: false };
         slot.headPromise = new Promise((res, rej) => { slot.headResolve = res; slot.headReject = rej; });
         this.pending.set(id, slot);
-        this.sendAgent({ t: "req", id, session: "s1", method: request.method, path: path + search, headers, hasBody });
-        if (hasBody) { this.sendAgent({ t: "body", id, data: bodyB64 }); this.sendAgent({ t: "body_end", id }); }
+        this.sendAgent(agent, { t: "req", id, session: "s1", method: request.method, path: path + search, headers, hasBody });
+        if (hasBody) { this.sendAgent(agent, { t: "body", id, data: bodyB64 }); this.sendAgent(agent, { t: "body_end", id }); }
       },
     });
 
@@ -192,7 +199,7 @@ export class RelayRoom {
     return new Response(stream, { status: slot.status, headers: respHeaders });
   }
 
-  async checkSession(request) {
+  async checkSession(request, agent) {
     let tok = null;
     const auth = request.headers.get("Authorization") || "";
     const mb = auth.match(/^Bearer\s+([A-Za-z0-9_\-]+)$/);   // native app path
@@ -202,10 +209,11 @@ export class RelayRoom {
       if (m) tok = m[1];
     }
     if (!tok) return false;
-    return this.valid.has(await sha256hex(tok));
+    const devices = this._astate(agent).devices || [];
+    return devices.includes(await sha256hex(tok));
   }
 
-  sendAgent(obj) { try { this.agent.send(JSON.stringify(obj)); } catch (e) {} }
+  sendAgent(agent, obj) { try { agent.send(JSON.stringify(obj)); } catch (e) {} }
 }
 
 // ---------------------------------------------------------------- helpers
