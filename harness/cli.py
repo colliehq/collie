@@ -283,11 +283,40 @@ def _cmd_web_remote(args):
     return 0
 
 
+_MAC_BROWSERS = ("Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium", "Vivaldi")
+
+
+def _desktop_window_macos(url, kiosk=False):
+    """Borderless app window on macOS: any Chromium browser opened with --app=<url>. Its own
+    --user-data-dir keeps this window out of the user's normal session (and stops Chrome from
+    reusing an already-running instance instead of honouring --app). Returns (ok, detail)."""
+    import subprocess
+    for name in _MAC_BROWSERS:
+        for root in ("/Applications", os.path.expanduser("~/Applications")):
+            exe = os.path.join(root, name + ".app", "Contents", "MacOS", name)
+            if not os.path.exists(exe):
+                continue
+            argv = [exe, "--app=%s" % url,
+                    "--user-data-dir=" + os.path.join(os.path.expanduser("~"), ".collie", "desktop")]
+            argv += ["--kiosk", "--start-fullscreen"] if kiosk else ["--start-maximized"]
+            try:
+                subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                return False, "launch error (%s): %s" % (name, e)
+            return True, "opened in %s" % name
+    return False, ("no Chromium-family browser found in /Applications (looked for %s) — Safari has "
+                   "no --app mode, so open %s in a tab instead" % (", ".join(_MAC_BROWSERS), url))
+
+
 def _desktop_window(url, kiosk=False):
-    """From WSL, pop a borderless Edge window on the Windows desktop showing `url` — a *real* window,
-    so clicks/typing are 100% reliable (unlike a behind-icons wallpaper, where the shell eats clicks).
-    Uses the user's own Edge profile (logged-in). Returns (ok, detail)."""
+    """Pop a borderless browser window showing `url` — a *real* window, so clicks/typing are 100%
+    reliable (unlike a behind-icons wallpaper, where the shell eats clicks). From WSL that means
+    Edge on the Windows desktop, driven over powershell.exe, using the user's own logged-in
+    profile; on macOS, a local Chromium in --app mode. Returns (ok, detail)."""
     import shutil, subprocess
+    from . import plat
+    if plat.is_macos():
+        return _desktop_window_macos(url, kiosk=kiosk)
     ps = shutil.which("powershell.exe")
     if not ps:
         return False, ("no powershell.exe — `collie wallpaper` drives a Windows desktop from WSL; "
