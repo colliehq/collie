@@ -1367,12 +1367,21 @@ def test_web_fetch_ssrf_and_registration():
     from harness.webfetch import WebFetchTool, _to_text
     class C: cwd="."; project="x"; memory=None; recorder=None
     t = WebFetchTool(); ctx = C()
-    # SSRF guard: loopback / private / link-local / metadata all refused by default
-    for u in ("http://localhost/", "http://127.0.0.1/", "http://192.168.0.1/",
-              "http://10.0.0.5/", "http://169.254.169.254/latest/meta-data/"):
-        assert "SSRF" in t.run({"url": u}, ctx), "must refuse local url %s" % u
-    assert t.run({"url": "file:///etc/passwd"}, ctx).startswith("ERROR"), "non-http refused"
-    assert t.run({}, ctx).startswith("ERROR"), "missing url -> clean error"
+    # Own the precondition. test_observe.py opts into loopback with a module-level
+    # COLLIE_WEBFETCH_ALLOW_LOCAL=1, and under a collector (bare `pytest`) every test module shares
+    # one process — so that flag leaked in here and disarmed the very guard this test asserts, which
+    # read as a failing SSRF test rather than as ambient state. A security test sets its own env.
+    _allow = os.environ.pop("COLLIE_WEBFETCH_ALLOW_LOCAL", None)
+    try:
+        # SSRF guard: loopback / private / link-local / metadata all refused by default
+        for u in ("http://localhost/", "http://127.0.0.1/", "http://192.168.0.1/",
+                  "http://10.0.0.5/", "http://169.254.169.254/latest/meta-data/"):
+            assert "SSRF" in t.run({"url": u}, ctx), "must refuse local url %s" % u
+        assert t.run({"url": "file:///etc/passwd"}, ctx).startswith("ERROR"), "non-http refused"
+        assert t.run({}, ctx).startswith("ERROR"), "missing url -> clean error"
+    finally:
+        if _allow is not None:
+            os.environ["COLLIE_WEBFETCH_ALLOW_LOCAL"] = _allow
     # html -> text: scripts/head dropped, blocks broken, entities decoded
     title, text = _to_text(b"<html><head><title>Doc &amp; API</title></head><body>"
                            b"<script>evil()</script><h1>H</h1><p>a  b</p><li>x</li></body></html>", "text/html")
