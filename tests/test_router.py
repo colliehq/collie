@@ -64,8 +64,8 @@ class Boom:
 def test_three_kinds():
     print("test_three_kinds")
     d = classify("sell my 2018 corolla, local only", Prov('{"kind":"mission","goal":"sell corolla","confidence":0.95}'))
-    check(d["kind"] == "mission" and d["goal"] == "sell corolla" and not d["abstained"],
-          "a clear world errand -> mission")
+    check(d["kind"] == "chat" and not d["abstained"],
+          "mission route disabled -> even a clear world errand runs as chat")
     check(classify("add a --json flag", Prov('{"kind":"code","confidence":0.9}'))["kind"] == "code",
           "a workspace change -> code")
     check(classify("why is this flaky?", Prov('{"kind":"chat","confidence":0.9}'))["kind"] == "chat",
@@ -74,13 +74,14 @@ def test_three_kinds():
           "research/find-out -> chat (epistemic, not a mission)")
 
 
-def test_mission_threshold_abstains():
-    print("test_mission_threshold_abstains")
-    low = 0.5
-    check(low < MISSION_THRESHOLD, "test assumes 0.5 is below the mission bar")
-    d = classify("maybe post this somewhere?", Prov(f'{{"kind":"mission","confidence":{low}}}'))
-    check(d["kind"] == "chat" and d["abstained"] is True and d.get("suggested") == "mission",
-          "a low-confidence mission abstains to chat and offers to promote")
+def test_mission_route_disabled():
+    print("test_mission_route_disabled")
+    # the mission route was removed from the UX — any 'mission' label collapses to chat, at ANY
+    # confidence, with no abstain/promote affordance.
+    for conf in (0.5, 0.99):
+        d = classify("maybe post this somewhere?", Prov(f'{{"kind":"mission","confidence":{conf}}}'))
+        check(d["kind"] == "chat" and not d["abstained"] and "suggested" not in d,
+              f"mission@{conf} -> plain chat, no promote-to-mission affordance")
 
 
 def test_unparsed_falls_back_to_chat():
@@ -107,7 +108,7 @@ def test_transient_overload_retries_then_succeeds():
     prov = Prov(None, status=529, detail="overloaded", fail_times=2,
                 then='{"kind":"mission","goal":"sell car","confidence":0.9}')
     d = classify("sell my car", prov, retries=3, _sleep=_NOSLEEP)
-    check(d["kind"] == "mission", "recovers to the real classification after transient 529s")
+    check(d["kind"] == "chat", "recovers after transient 529s (mission label now coerced to chat)")
     check(prov.calls == 3, f"retried the 2 overloads then succeeded, calls={prov.calls}")
 
 
@@ -125,18 +126,18 @@ def test_prefix_override_skips_model():
     print("test_prefix_override_skips_model")
     boom = Boom()                                   # would raise if the model were called
     d = classify("/mission sell my car", boom)
-    check(d["kind"] == "mission" and d["goal"] == "sell my car" and d["source"] == "override",
-          "/mission overrides to mission without a model call")
+    check(d["kind"] == "chat" and d["goal"] == "sell my car" and d["source"] == "override",
+          "/mission is disabled -> runs as chat, still without a model call")
     check(boom.calls == 0, "an explicit prefix must NOT call the model")
     check(classify("/code fix the bug", boom)["kind"] == "code", "/code -> code")
     check(classify("/chat what is X", boom)["kind"] == "chat", "/chat -> chat")
-    check(classify("/delegate book a table", boom)["kind"] == "mission", "/delegate == mission")
+    check(classify("/delegate book a table", boom)["kind"] == "chat", "/delegate is disabled -> chat")
     check(prefix_override("no prefix here") is None, "a bare message has no override")
 
 
 def main():
     test_three_kinds()
-    test_mission_threshold_abstains()
+    test_mission_route_disabled()
     test_unparsed_falls_back_to_chat()
     test_model_unavailable_raises()
     test_transient_overload_retries_then_succeeds()

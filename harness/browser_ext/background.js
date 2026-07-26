@@ -615,10 +615,11 @@ async function trustedType(selector, text, submit) {
   if (!tab) return { error: NO_TAB };
   const pt = await exec(pagePoint, ["", selector]);
   if (!pt || pt.error) return pt || { error: "no field " + selector };
-  if (pt.inView) { try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {} }
+  if (!pt.inView) return { error: "field '" + selector + "' off-screen after scroll — cannot type there" };
+  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
   try {
     await ensureAttached(tab.id);
-    if (pt.inView) {   // click to focus the field first
+    {   // click to focus the field first
       const b = { x: pt.x, y: pt.y, button: "left" };
       await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
       await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
@@ -668,10 +669,11 @@ async function trustedTypeRef(ref, text, submit) {
   if (!tab) return { error: NO_TAB };
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no field for ref " + ref };
-  if (pt.inView) { try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {} }
+  if (!pt.inView) return { error: "field " + ref + " off-screen after scroll — cannot type there" };
+  try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
   try {
     await ensureAttached(tab.id);
-    if (pt.inView) {   // click to focus the field first
+    {   // click to focus the field first
       const b = { x: pt.x, y: pt.y, button: "left" };
       await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
       await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));

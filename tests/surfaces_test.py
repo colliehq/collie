@@ -178,9 +178,11 @@ def test_map_web():
         html = urllib.request.urlopen(base + "/map", timeout=3).read().decode("utf-8", "ignore")
         check("map web: /map serves the galaxy page",
               "/map/three.min.js" in html and "/api/tree" in html)
-        meadow = urllib.request.urlopen(base + "/meadow", timeout=3).read().decode("utf-8", "ignore")
-        check("map web: /meadow serves the sheepdog meadow page",
-              "Sheepdog Meadow" in meadow and "/api/tree" in meadow and "/api/live" in meadow)
+        try:                                          # the sheepdog meadow scene was removed
+            urllib.request.urlopen(base + "/meadow", timeout=3)
+            check("map web: /meadow is removed (404)", False)
+        except Exception as e:
+            check("map web: /meadow is removed (404)", getattr(e, "code", None) == 404)
         tree = json.load(urllib.request.urlopen(base + "/api/tree", timeout=3))
         check("map web: /api/tree builds the map", len(tree.get("files", [])) > 10)
         f = json.load(urllib.request.urlopen(base + "/api/file?path=harness/pack.py", timeout=3))

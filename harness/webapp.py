@@ -555,16 +555,22 @@ class Handler(BaseHTTPRequestHandler):
                     target = base64.urlsafe_b64decode((qs.get("u") or [""])[0]).decode("utf-8")
                 except Exception:
                     return self._send_json({"error": "bad url"}, 400)
-                host = urllib.parse.urlparse(target).hostname or ""
+                host = (urllib.parse.urlparse(target).hostname or "").lower()
                 _ok_hosts = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaized.net", "hdslb.com")
-                if not (target.startswith("https://") and any(host.endswith(h) for h in _ok_hosts)):
+                # exact host or a DOTTED subdomain — "evilgooglevideo.com" must NOT pass a bare endswith
+                if not (target.startswith("https://") and any(host == h or host.endswith("." + h) for h in _ok_hosts)):
                     return self._send_json({"error": "forbidden host"}, 403)
                 hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                 rng = self.headers.get("Range")
                 if rng:
                     hdrs["Range"] = rng
                 try:
-                    up = urllib.request.urlopen(urllib.request.Request(target, headers=hdrs), timeout=25)
+                    # do NOT follow redirects — a 30x could send us to an unvalidated (internal) host
+                    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                        def redirect_request(self, *a, **k):
+                            return None
+                    up = urllib.request.build_opener(_NoRedirect).open(
+                        urllib.request.Request(target, headers=hdrs), timeout=25)
                 except Exception as e:
                     return self._send_json({"error": str(e)}, 502)
                 try:
@@ -963,7 +969,9 @@ class Handler(BaseHTTPRequestHandler):
             # LOOPBACK ONLY. Under `--lan` this page is otherwise a token dispenser for the whole
             # network, and the token runs bash. A non-loopback client that already has a token got
             # past _peer_ok, so it needs no second copy; one that doesn't gets the page tokenless.
-            token = TOKEN if self._peer_is_loopback() else ""
+            # ...and NOT to a relay-replayed request: the relay injects ?token= server-side, so the
+            # phone never needs (or should get) the raw token embedded in the page it receives.
+            token = TOKEN if (self._peer_is_loopback() and not self._is_relay()) else ""
             meta = ('<meta name="collie-token" content="%s">\n' % token).encode()
             for anchor in (b'<meta charset="utf-8">', b'<head>', b'<!doctype html>', b'<!DOCTYPE html>'):
                 if anchor in html:
@@ -984,7 +992,10 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(HERE, "webui", name), "rb") as f:
                 data = f.read()
             if name.endswith(".html"):
-                meta = ('<meta name="collie-token" content="%s">\n<meta name="collie-boot" content="%s">\n' % (TOKEN, BOOT)).encode()
+                # same rule as the index: embed the CSRF token only for a DIRECT loopback page load,
+                # never for a relay-replayed request (the phone gets ?token= injected server-side).
+                tok = TOKEN if (self._peer_is_loopback() and not self._is_relay()) else ""
+                meta = ('<meta name="collie-token" content="%s">\n<meta name="collie-boot" content="%s">\n' % (tok, BOOT)).encode()
                 for anchor in (b'<meta charset="utf-8">', b'<head>', b'<!doctype html>', b'<!DOCTYPE html>'):
                     if anchor in data:
                         data = data.replace(anchor, anchor + b"\n" + meta, 1)
@@ -1069,6 +1080,14 @@ class Handler(BaseHTTPRequestHandler):
     def _peer_is_loopback(self) -> bool:
         peer = (self.client_address[0] if self.client_address else "") or ""
         return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1") or peer.startswith("127.")
+
+    def _is_relay(self) -> bool:
+        # the relay client replays a phone's request from 127.0.0.1 (so it looks loopback) but tags it
+        # with this header — used to withhold the embedded CSRF token from pages sent to a phone.
+        try:
+            return (self.headers.get("X-Collie-Relay") or "") == "1"
+        except Exception:
+            return False
 
     def _peer_ok(self, parsed) -> bool:
         """Everything a NON-loopback client asks for must carry the token.

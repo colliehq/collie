@@ -319,7 +319,7 @@ def _pick_song(exe, terms, source, exclude=()):
     pref = _SEARCH.get(source, "ytsearch")
     try:
         r = subprocess.run([exe, "-J", "--flat-playlist", pref + "8:" + terms],
-                           creationflags=_NOWIN, timeout=25, capture_output=True, text=True,
+                           creationflags=_NOWIN, timeout=20, capture_output=True, text=True,
                            encoding="utf-8", errors="ignore")
         entries = (json.loads(r.stdout or "{}").get("entries")) or []
     except Exception:
@@ -351,7 +351,7 @@ def _extract_one(exe, terms, source, exclude=()):
     try:
         r = subprocess.run(
             [exe, "-j", "-f", "bestaudio[acodec!=none]/bestaudio/best", "--no-playlist", target],
-            creationflags=_NOWIN, timeout=45, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+            creationflags=_NOWIN, timeout=35, capture_output=True, text=True, encoding="utf-8", errors="ignore")
         line = (r.stdout or "").strip().splitlines()
         return json.loads(line[0]) if line else None
     except Exception:
@@ -365,9 +365,13 @@ def resolve_audio(query, artist="", title="", region="", exclude=()):
     exe = _ensure_ytdlp()
     if not exe:
         return {"ok": False, "error": "yt-dlp unavailable"}
+    import time
     terms = ((artist + " " + title).strip() if title else _clean_terms(query))
     order = ["bilibili", "youtube"] if (region or "").upper() == "CN" else ["youtube", "bilibili"]
+    deadline = time.monotonic() + 60          # hard cap for the whole request (~one source, then stop)
     for source in order:
+        if time.monotonic() >= deadline:
+            return {"ok": False, "error": "timeout", "terms": terms}   # don't start a 2nd slow source
         d = _extract_one(exe, terms, source, exclude)
         if not d:
             continue

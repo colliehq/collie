@@ -292,6 +292,7 @@ class RelayClient:
 
             # generous timeout: an SSE run can have long quiet gaps (e.g. a slow bash tool call)
             # between frames; a short timeout would sever the phone's stream mid-run.
+            headers["X-Collie-Relay"] = "1"   # tag as relay-replayed so the server withholds the raw CSRF token from pages
             conn = http.client.HTTPConnection(self.local_host, self.local_port, timeout=3600)
             conn.request(method, path, body=body or None, headers=headers)
             resp = conn.getresponse()

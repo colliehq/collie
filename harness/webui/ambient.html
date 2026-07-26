@@ -309,9 +309,12 @@
     try {
       actx = new (window.AudioContext || window.webkitAudioContext)();
       var src = actx.createMediaElementSource(au);      // same-origin proxy → NOT tainted → real data
-      analyser = actx.createAnalyser(); analyser.fftSize = 64; analyser.smoothingTimeConstant = 0.75;
-      src.connect(analyser); analyser.connect(actx.destination);
-      freqData = new Uint8Array(analyser.frequencyBinCount);
+      src.connect(actx.destination);                    // audio ALWAYS reaches output first (no silence trap)
+      try {                                             // analyser is a side-tap: if it fails, audio still plays
+        analyser = actx.createAnalyser(); analyser.fftSize = 64; analyser.smoothingTimeConstant = 0.75;
+        src.connect(analyser);                          // src → analyser (data) AND src → destination (sound)
+        freqData = new Uint8Array(analyser.frequencyBinCount);
+      } catch(_){ analyser = null; freqData = null; }
     } catch(_){ actx = null; }
   }
   var USE_ANALYSER = true;    // real spectrum viz (falls back to the simulated wave if the analyser fails)
