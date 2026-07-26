@@ -269,6 +269,122 @@ function pageUpload(selector, files) {
   return { uploaded: transfer.files.length, names: [...transfer.files].map((file) => file.name) };
 }
 
+// --- ref-indexed accessibility snapshot (MAIN world) ---------------------------------------------
+// A compact "[e5] button \"Add to cart\"" list of the visible, interactive elements — the view the
+// model acts on instead of guessing CSS selectors. Built in injected JS (NOT CDP getFullAXTree) so
+// there is no extra debugger surface and it composes with the existing trusted-click path: each kept
+// element is stashed on window.__collieRefs (a real element handle), and a later click/type by ref
+// pulls THAT element back and clicks its live getBoundingClientRect centre through CDP — a real,
+// isTrusted click. Traverses OPEN shadow roots (el.shadowRoot); cross-origin iframes are unreachable
+// from page JS (accepted limit — a CDP OOPIF path is the documented follow-up). Self-contained.
+function pageSnapshot(maxN) {
+  const CAP = maxN || 200;
+  const out = [];
+  const refs = (window.__collieRefs = new Map());   // fresh map each snapshot -> stale refs drop
+  let n = 0;
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    const s = getComputedStyle(el);
+    return s.visibility !== "hidden" && s.display !== "none" && s.opacity !== "0";
+  };
+  const roleOf = (el) => {
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "a") return el.hasAttribute("href") ? "link" : "";
+    if (tag === "button") return "button";
+    if (tag === "select") return "combobox";
+    if (tag === "textarea") return "textbox";
+    if (tag === "input") {
+      const t = (el.getAttribute("type") || "text").toLowerCase();
+      if (["button", "submit", "reset", "image"].includes(t)) return "button";
+      if (t === "checkbox") return "checkbox";
+      if (t === "radio") return "radio";
+      if (t === "hidden") return "";
+      return "textbox";
+    }
+    return "";
+  };
+  const nameOf = (el) => {
+    let nm = el.getAttribute("aria-label") || "";
+    if (!nm) {
+      const ids = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+      nm = ids.map((id) => { const e = document.getElementById(id); return e ? e.innerText : ""; }).join(" ").trim();
+    }
+    if (!nm) { const l = el.closest("label"); if (l) nm = (l.innerText || "").trim(); }
+    if (!nm && el.id) {
+      try { const lf = document.querySelector('label[for="' + CSS.escape(el.id) + '"]'); if (lf) nm = (lf.innerText || "").trim(); } catch (e) {}
+    }
+    if (!nm) nm = (el.innerText || el.value || el.getAttribute("placeholder") || el.getAttribute("alt") || el.getAttribute("title") || "").trim();
+    return nm.replace(/\s+/g, " ").slice(0, 80);
+  };
+  const INTERACTIVE = ["link", "button", "textbox", "combobox", "checkbox", "radio", "switch",
+                       "menuitem", "menuitemcheckbox", "tab", "option", "slider", "spinbutton"];
+  const interactive = (el, role) => {
+    if (INTERACTIVE.includes(role)) return true;
+    if (el.getAttribute("tabindex") !== null && el.tabIndex >= 0) return true;
+    return typeof el.onclick === "function";
+  };
+  const walk = (root) => {
+    let els;
+    try { els = root.querySelectorAll("*"); } catch (e) { return; }
+    for (const el of els) {
+      if (n >= CAP) return;
+      const role = roleOf(el);
+      if (role && interactive(el, role) && visible(el)) {
+        const ref = "e" + (++n);
+        refs.set(ref, el);
+        const name = nameOf(el);
+        const dis = (el.disabled || el.getAttribute("aria-disabled") === "true") ? " (disabled)" : "";
+        out.push("[" + ref + "] " + role + (name ? ' "' + name + '"' : "") + dis);
+      }
+      if (el.shadowRoot) walk(el.shadowRoot);   // open shadow DOM only
+    }
+  };
+  walk(document);
+  return { count: n, snapshot: out.join("\n") || "(no interactive elements found)" };
+}
+
+// Resolve a ref from the last snapshot to its live element. Shared shape with pagePoint so the
+// trusted-click path is identical. MAIN world (the refs Map lives on the page window).
+function pagePointRef(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+  el.scrollIntoView({ block: "center", inline: "center" });
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+  return { x, y, inView, label: (el.innerText || el.value || ref || "").trim().slice(0, 80) };
+}
+
+function pageClickRef(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+  el.scrollIntoView({ block: "center" }); el.click();
+  return { clicked: (el.innerText || el.value || ref).trim().slice(0, 80) };
+}
+
+function pageTypeRef(ref, text, submit) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+  el.focus();
+  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  const d = Object.getOwnPropertyDescriptor(proto, "value");
+  if (d && d.set) d.set.call(el, text); else el.value = text;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  if (submit) {
+    const form = el.form;
+    if (form) form.submit();
+    else el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  }
+  return { typed: (text || "").slice(0, 40), submit: !!submit };
+}
+
 async function exec(func, args) {
   const tab = await activeTab();
   if (!tab) return { error: "no dedicated Collie tab — call browser_open first" };
@@ -492,6 +608,56 @@ async function trustedType(selector, text, submit) {
   }
 }
 
+// Trusted click/type addressed by a snapshot `ref` (instead of text/selector). Same CDP mechanism
+// as trustedClick/trustedType — only the element-locating step differs (pagePointRef pulls the exact
+// element the snapshot handed the model, so there is no ambiguous text/selector match).
+async function trustedClickRef(ref) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const pt = await execMain(pagePointRef, [ref]);
+  if (!pt || pt.error) return pt || { error: "no element for ref " + ref };
+  if (!pt.inView) return { error: "element " + ref + " off-screen after scroll — cannot place a real click there" };
+  try {
+    await ensureAttached(tab.id);
+    const b = { x: pt.x, y: pt.y, button: "left" };
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x, y: b.y, buttons: 0 });
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
+    return { clicked: pt.label, trusted: true };
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+    const r = await execMain(pageClickRef, [ref]);
+    return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic click: " + String((e && e.message) || e) }, r);
+  }
+}
+
+async function trustedTypeRef(ref, text, submit) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const pt = await execMain(pagePointRef, [ref]);
+  if (!pt || pt.error) return pt || { error: "no field for ref " + ref };
+  try {
+    await ensureAttached(tab.id);
+    if (pt.inView) {   // click to focus the field first
+      const b = { x: pt.x, y: pt.y, button: "left" };
+      await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
+      await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
+    }
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.insertText", { text: text || "" });
+    if (submit) {
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    }
+    return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+    const r = await execMain(pageTypeRef, [ref, text, !!submit]);
+    return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
+  }
+}
+
 async function handle(cmd) {
   try {
     if (cmd.action === "open") {
@@ -511,6 +677,7 @@ async function handle(cmd) {
       return { shown: true, title: shown.title || "", url: shown.url || "" };
     }
     if (cmd.action === "read") return await exec(pageRead, []);
+    if (cmd.action === "snapshot") return await execMain(pageSnapshot, [cmd.max || 200]);
     if (cmd.action === "links") return await exec(pageLinks, [cmd.filter || ""]);
     if (cmd.action === "mode") {   // read/set high-fidelity input from the bridge/CLI
       if (typeof cmd.trusted === "boolean") await chrome.storage.local.set({ trustedInput: cmd.trusted });
@@ -528,12 +695,21 @@ async function handle(cmd) {
       return await trustedForOrigin(t ? originOf(t) : "");
     }
     if (cmd.action === "click") {
-      const r = (await wantTrusted()) ? await trustedClick(cmd.text || "", cmd.selector || "")
-                                      : await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
+      let r;
+      if (cmd.ref) {                                  // act on the exact element from a browser_snapshot
+        r = (await wantTrusted()) ? await trustedClickRef(cmd.ref) : await execMain(pageClickRef, [cmd.ref]);
+      } else {
+        r = (await wantTrusted()) ? await trustedClick(cmd.text || "", cmd.selector || "")
+                                  : await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
+      }
       await new Promise((z) => setTimeout(z, 800));
       return { click: r, page: await exec(pageRead, []) };
     }
     if (cmd.action === "type") {
+      if (cmd.ref) {                                  // act on the exact field from a browser_snapshot
+        return (await wantTrusted()) ? await trustedTypeRef(cmd.ref, cmd.text, !!cmd.submit)
+                                     : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
+      }
       if ((await wantTrusted()) && cmd.selector) return await trustedType(cmd.selector, cmd.text, !!cmd.submit);
       return cmd.label
         ? await exec(pageTypeLabel, [cmd.label, cmd.text])
