@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import time
 
+from . import plat
+
 STATE_DIR = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
 STATE = os.path.join(STATE_DIR, "record.json")
 
@@ -23,6 +25,17 @@ STATE = os.path.join(STATE_DIR, "record.json")
 # of its own pops a black CMD window on every call — and the status poll + stop loop make them flash
 # "frantically". The recording ffmpeg gets it too (see start()).
 _NOWIN = 0x08000000 if os.name == "nt" else 0
+
+
+def _require_capture_os():
+    """Capture is gdigrab (screen) + dshow (camera/mic) — both Windows-only ffmpeg devices. On
+    macOS/Linux they simply don't exist, so without this the user got a raw ffmpeg parse error
+    ("Unknown input format: 'gdigrab'") instead of an answer. Say so plainly, like `wallpaper` does."""
+    if not plat.is_windows():
+        raise RuntimeError(
+            "collie record needs the Windows capture backend (ffmpeg gdigrab + dshow) and this is "
+            "%s — screen recording isn't supported here yet. Everything else (`collie`, `collie web`, "
+            "`collie app`) runs natively." % plat.os_label())
 
 
 def _ffmpeg():
@@ -37,12 +50,15 @@ def _ffmpeg():
         hits = glob.glob(pat, recursive=True)
         if hits:
             return hits[0]
-    raise RuntimeError("ffmpeg not found — install it:  winget install Gyan.FFmpeg  "
-                       "(then reopen your terminal, or collie will find it automatically)")
+    how = ("winget install Gyan.FFmpeg  (then reopen your terminal, or collie will find it "
+           "automatically)" if plat.is_windows() else
+           "brew install ffmpeg" if plat.is_macos() else "your package manager, e.g. apt install ffmpeg")
+    raise RuntimeError("ffmpeg not found — install it:  %s" % how)
 
 
 def _default_outdir():
-    vids = os.path.join(os.path.expanduser("~"), "Videos")
+    # ~/Videos on Windows/Linux; macOS names the same folder ~/Movies.
+    vids = os.path.join(os.path.expanduser("~"), "Movies" if plat.is_macos() else "Videos")
     d = os.path.join(vids if os.path.isdir(vids) else os.path.expanduser("~"), "Collie")
     os.makedirs(d, exist_ok=True)
     return d
@@ -50,6 +66,7 @@ def _default_outdir():
 
 def list_dshow_devices():
     """(cameras, microphones) as ffmpeg sees them — the exact names dshow needs. Windows only."""
+    _require_capture_os()
     exe = _ffmpeg()
     p = subprocess.run([exe, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
                        capture_output=True, text=True, creationflags=_NOWIN)
@@ -261,6 +278,7 @@ def _alive(pid):
 def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
           position="bl", mirror=True, monitor=None, region=None, window=None, out=None,
           no_cam=False, no_mic=False, countdown=0):
+    _require_capture_os()
     exe = _ffmpeg()
     st = _load()
     if st and _alive(st.get("pid")):
