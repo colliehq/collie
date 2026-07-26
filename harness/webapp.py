@@ -301,6 +301,12 @@ class Handler(BaseHTTPRequestHandler):
                                         "extension_connected": bool(health.get("extension_connected")),
                                         "ext_version": health.get("extension_version"),
                                         "ext_path": ext, "browsers": browsers})
+            if path == "/api/record/status":
+                from . import record as rec
+                st = rec._load()
+                on = bool(st and rec._alive(st.get("pid")))
+                return self._send_json({"recording": on, "out": (st or {}).get("out"),
+                                        "since": (st or {}).get("started")})
             if path.startswith("/api/delete/"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -379,6 +385,28 @@ class Handler(BaseHTTPRequestHandler):
                 ok = bb.start_background()
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
+            if path in ("/api/record/start", "/api/record/stop"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import record as rec
+                if path.endswith("/stop"):
+                    return self._send_json({"ok": True, "message": rec.stop()})
+                body = {}
+                try:
+                    n = int(self.headers.get("content-length") or 0)
+                    if 0 < n <= 8192:
+                        body = json.loads(self.rfile.read(n).decode("utf-8") or "{}") or {}
+                except Exception:
+                    body = {}
+                try:
+                    msg = rec.start(no_cam=bool(body.get("no_cam")), no_mic=bool(body.get("no_mic")),
+                                    sysaudio=body.get("sys_audio") or None,
+                                    position=body.get("position") or "bl",
+                                    region=body.get("region") or None, monitor=body.get("monitor") or None,
+                                    countdown=int(body.get("countdown") or 0))
+                except Exception as e:
+                    return self._send_json({"error": str(e)}, 400)
+                return self._send_json({"ok": msg.startswith("recording"), "message": msg})
             if path == "/api/model":
                 # Model picker's one-click switch: merge PROVIDER+MODEL into settings (never
                 # clobbers other keys) and apply, so the next run uses the chosen model.
@@ -870,6 +898,23 @@ class Handler(BaseHTTPRequestHandler):
                     h.memory.close(); h.recorder.close()
                 except Exception:
                     pass
+
+
+def bind_server(port=8787):
+    """Bind the local GUI server on 127.0.0.1, scanning a few ports if the preferred one is busy.
+    Returns (httpd, actual_port). Used by `collie web --remote`, which needs the httpd + chosen port
+    up front (to serve in a background thread while the relay client runs). main() keeps its own
+    identical inline bind for the plain `collie web` path."""
+    ThreadingHTTPServer.allow_reuse_address = True
+    for cand in range(port, port + 12):
+        try:
+            httpd = ThreadingHTTPServer(("127.0.0.1", cand), Handler)
+            return httpd, cand
+        except OSError as e:
+            if e.errno in (98, 48, 10048):     # in use: Linux 98 / macOS 48 / Windows 10048
+                continue
+            raise
+    raise OSError("ports %d–%d are all in use" % (port, port + 11))
 
 
 def main(argv=None):

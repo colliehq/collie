@@ -330,10 +330,17 @@ def cmd_record(args):
             cams, mics = rec.list_dshow_devices()
             print("cameras:\n  " + ("\n  ".join(cams) or "(none found)"))
             print("microphones:\n  " + ("\n  ".join(mics) or "(none found)"))
+            mons = rec._monitors()
+            if mons:
+                print("monitors:")
+                for i, (x, y, w, h) in enumerate(mons, 1):
+                    print("  %d: %dx%d @ %d,%d" % (i, w, h, x, y))
         else:  # start
-            print(rec.start(webcam=args.webcam, mic=args.mic, fps=args.fps,
-                            cam_size=args.cam_size, margin=args.margin, out=args.out,
-                            no_cam=args.no_cam, no_mic=args.no_mic))
+            print(rec.start(webcam=args.webcam, mic=args.mic, sysaudio=args.sys_audio,
+                            fps=args.fps, cam_size=args.cam_size, margin=args.margin,
+                            position=args.position, mirror=not args.no_mirror,
+                            monitor=args.monitor, region=args.region, out=args.out,
+                            no_cam=args.no_cam, no_mic=args.no_mic, countdown=args.countdown))
         return 0
     except Exception as e:
         print("record: %s" % e)
@@ -1226,6 +1233,17 @@ def main(argv=None):
     prc.add_argument("--mic", default=None, help="microphone device name (default: first found)")
     prc.add_argument("--no-cam", dest="no_cam", action="store_true", help="screen only, no webcam bubble")
     prc.add_argument("--no-mic", dest="no_mic", action="store_true", help="no microphone audio")
+    prc.add_argument("--sys-audio", dest="sys_audio", default=None,
+                     help="also record system audio from this loopback device, mixed with the mic "
+                          "(see `record devices`; needs Stereo Mix or a virtual audio cable)")
+    prc.add_argument("--monitor", type=int, default=None,
+                     help="record only display N (1-based, left-to-right; see `record devices`)")
+    prc.add_argument("--region", default=None, help="record only a region, 'X,Y,W,H'")
+    prc.add_argument("--position", default="bl", choices=["bl", "br", "tl", "tr"],
+                     help="webcam bubble corner: bl/br/tl/tr (default bl)")
+    prc.add_argument("--no-mirror", dest="no_mirror", action="store_true",
+                     help="don't mirror the webcam (default: mirrored, like a selfie)")
+    prc.add_argument("--countdown", type=int, default=0, help="3-2-1 countdown seconds before start")
     prc.add_argument("--fps", type=int, default=30, help="frame rate (default 30)")
     prc.add_argument("--cam-size", dest="cam_size", type=int, default=240,
                      help="webcam bubble diameter in px (default 240)")
