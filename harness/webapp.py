@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -397,6 +398,94 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/record/list":
                 from . import record as rec
                 return self._send_json({"recordings": rec.list_recordings()})
+            if path == "/api/desktop/config":
+                from . import desktop as dt
+                return self._send_json(dt.load_config())
+            if path == "/api/desktop/sys":
+                from . import desktop as dt
+                return self._send_json(dt.sysinfo())
+            if path == "/api/desktop/nowplaying":
+                from . import desktop as dt
+                return self._send_json({"track": dt.nowplaying()})
+            if path == "/api/desktop/projects":
+                from . import desktop as dt
+                return self._send_json({"projects": dt.projects()})
+            if path == "/api/desktop/resolve":
+                from . import desktop as dt
+                qs = urllib.parse.parse_qs(parsed.query)
+                return self._send_json(dt.resolve((qs.get("q") or [""])[0]))
+            if path == "/api/desktop/lyrics":
+                from . import desktop as dt
+                qs = urllib.parse.parse_qs(parsed.query)
+                return self._send_json(dt.lyrics((qs.get("q") or [""])[0], (qs.get("a") or [""])[0],
+                                                 (qs.get("d") or ["0"])[0], (qs.get("t") or [""])[0]))
+            if path == "/api/desktop/resolve_audio":
+                from . import desktop as dt
+                import base64
+                qs = urllib.parse.parse_qs(parsed.query)
+                _excl = [x for x in ((qs.get("exclude") or [""])[0]).split(",") if x]
+                info = dt.resolve_audio((qs.get("q") or [""])[0], (qs.get("artist") or [""])[0],
+                                        (qs.get("title") or [""])[0], (qs.get("region") or [""])[0], _excl)
+                if info.get("ok") and info.get("url"):
+                    info["src"] = "/api/desktop/audio?u=" + urllib.parse.quote(
+                        base64.urlsafe_b64encode(info["url"].encode()).decode())
+                    info.pop("url", None)          # play through the same-origin proxy (enables the analyser)
+                return self._send_json(info)
+            if path == "/api/desktop/audio":
+                # stream-proxy the (IP+time-locked) googlevideo audio so playback is same-origin
+                # (Web Audio analyser works) and Range/seek is forwarded. Host-locked against SSRF.
+                import base64
+                qs = urllib.parse.parse_qs(parsed.query)
+                try:
+                    target = base64.urlsafe_b64decode((qs.get("u") or [""])[0]).decode("utf-8")
+                except Exception:
+                    return self._send_json({"error": "bad url"}, 400)
+                host = urllib.parse.urlparse(target).hostname or ""
+                _ok_hosts = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaized.net", "hdslb.com")
+                if not (target.startswith("https://") and any(host.endswith(h) for h in _ok_hosts)):
+                    return self._send_json({"error": "forbidden host"}, 403)
+                hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                rng = self.headers.get("Range")
+                if rng:
+                    hdrs["Range"] = rng
+                try:
+                    up = urllib.request.urlopen(urllib.request.Request(target, headers=hdrs), timeout=25)
+                except Exception as e:
+                    return self._send_json({"error": str(e)}, 502)
+                try:
+                    self.send_response(getattr(up, "status", 200) or 200)
+                    for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                        v = up.headers.get(h)
+                        if v:
+                            self.send_header(h, v)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    while True:
+                        chunk = up.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        up.close()
+                    except Exception:
+                        pass
+                return
+            if path == "/api/desktop/icon":
+                from . import desktop as dt
+                qs = urllib.parse.parse_qs(parsed.query)
+                png = dt.icon_png((qs.get("path") or [""])[0])
+                if not png:
+                    return self._send_json({"error": "no icon"}, 404)
+                try:
+                    with open(png, "rb") as f:
+                        return self._send_html(f.read(), 200, "image/png")
+                except Exception:
+                    return self._send_json({"error": "read"}, 404)
             if path.startswith("/api/delete/"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -547,6 +636,29 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send_json({"error": str(e)}, 400)
                 return self._send_json({"ok": msg.startswith("recording"), "message": msg})
+            if path.startswith("/api/desktop/"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import desktop as dt
+                action = path[len("/api/desktop/"):]
+                body = {}
+                try:
+                    n = int(self.headers.get("content-length") or 0)
+                    if 0 < n <= 65536:
+                        body = json.loads(self.rfile.read(n).decode("utf-8") or "{}") or {}
+                except Exception:
+                    body = {}
+                if action == "config":
+                    return self._send_json(dt.save_config(body))
+                if action == "launch":
+                    return self._send_json({"ok": dt.launch(body.get("target") or "")})
+                if action == "media":
+                    return self._send_json({"ok": dt.media(body.get("cmd") or "")})
+                if action == "open":
+                    return self._send_json({"ok": dt.open_project(body.get("root") or "")})
+                if action == "intent":
+                    return self._send_json(dt.music_intent(body.get("text") or ""))
+                return self._send_json({"error": "unknown action"}, 404)
             if path == "/api/model":
                 # Model picker's one-click switch: merge PROVIDER+MODEL into settings (never
                 # clobbers other keys) and apply, so the next run uses the chosen model.
