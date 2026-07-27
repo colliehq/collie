@@ -15,6 +15,13 @@ others are one multi-window process, so killing the pid takes the user's other w
 close only the specific window via WindowPattern.Close. And `set_value` REPLACES a field's whole
 contents, so it's treated as destructive by callers.
 """
+
+# Declared, not implied — tests/test_platform_purity.py reads this. Everything below is PowerShell
+# plus .NET System.Windows.Automation; there is no macOS or Linux path here at all.
+PLATFORM = "windows"
+
+from . import plat
+
 import json
 import os
 import subprocess
@@ -190,7 +197,19 @@ def _ensure_driver():
     return _DRIVER
 
 
+def available():
+    """(ok, why). UI Automation is a Windows API; say so once, here, instead of letting every entry
+    point fail in its own way."""
+    if not plat.is_windows():
+        return False, "native app control is Windows-only (UI Automation); not available on " + \
+                      plat.os_label()
+    return True, ""
+
+
 def _run(action, match="", pid=0, index=-1, aid="", text="", timeout=20):
+    ok, why = available()
+    if not ok:
+        return {"ok": False, "error": why}
     """Invoke the UIA driver and return its parsed JSON (always a dict)."""
     _ensure_driver()
     cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _DRIVER,
@@ -250,7 +269,13 @@ def close_window(match="", pid=0):
 
 def launch(target):
     """Start an app (path or shell target). Returns True on success. Window discovery is by name via
-    windows()/tree() afterward (Win11 packaged apps run under a different pid than the launcher)."""
+    windows()/tree() afterward (Win11 packaged apps run under a different pid than the launcher).
+
+    Off Windows this defers to desktop.launch, which knows `open` and `xdg-open` — so a caller that
+    reaches here on a Mac opens the app instead of silently returning False."""
+    if not plat.is_windows():
+        from . import desktop
+        return desktop.launch(target)
     try:
         os.startfile(target)  # noqa: S606 - launching a user app is the point
         return True
