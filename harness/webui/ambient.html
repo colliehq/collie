@@ -153,6 +153,17 @@
   .galaxy.on{opacity:1;}
   body.coding .slot.tr{z-index:9;}                        /* keep clock/date/weather visible over the galaxy */
   body.coding .clock{text-shadow:0 2px 20px rgba(0,0,0,.8);}   /* legible on the dark star-map */
+  /* Coding mode swaps the background for the near-black star-map, but the palette follows
+     prefers-color-scheme and knew nothing about it. On a light system that left a 72%-WHITE panel
+     floating on black — the composer and the reply box came out as a flat grey film with a visible
+     edge, which reads as a rendering fault rather than a design. The clock already carried a
+     one-line fix for exactly this (the text-shadow above); the panels never got one. The dark
+     tokens are not a theme here, they are what "the background is now black" requires. */
+  body.coding{
+    --ink:#eef1ff; --mut:#aab3d8; --faint:#7d87b4;
+    --panel:rgba(20,24,42,.62); --panel-line:rgba(255,255,255,.13); --panel-ink:#f2f4ff;
+    --hover:rgba(255,255,255,.10);
+  }
 
   /* ── karaoke lyrics — docked on the RIGHT (centre stays clear for work) ───────────────────────── */
   .lyrics{position:fixed; top:0; bottom:0; right:0; width:min(44vw,620px); padding-right:3vw; z-index:5; display:none;
