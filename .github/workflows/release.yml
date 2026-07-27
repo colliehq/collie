@@ -2,8 +2,8 @@ name: Release
 
 # Cut a release by pushing a version tag that matches harness/__init__.py:
 #   git tag v0.19.0 && git push origin v0.19.0
-# Produces a GitHub Release with the Windows one-click installer (Collie-Setup.exe), both macOS disk
-# images (arm64 + x86_64) and the Python wheel + sdist attached.
+# Produces a GitHub Release with the Windows one-click installer (Collie-Setup.exe), the macOS disk
+# image (arm64) and the Python wheel + sdist attached.
 #
 # The macOS job signs and notarises only if these repository secrets are set; without them it still
 # builds, and says plainly that the result is not shippable:
@@ -84,24 +84,18 @@ jobs:
           path: installer/Output/Collie-Setup.exe
 
 
-  # macOS: the counterpart of the `installer` job. Two runners because python-build-standalone ships
-  # per-arch builds and no universal2 — macos-14 is Apple Silicon, macos-13 is Intel — so a complete
-  # release is two disk images, not one fat app.
+  # macOS: the counterpart of the `installer` job. arm64 only, deliberately — see installer/README.md.
+  # One dmg means one download link and no "which Mac do I have?" put to the user; macOS 26 Tahoe is
+  # the last release that runs on Intel, and Intel Macs stopped shipping in 2023. (The Intel runner
+  # pool is also deeply queued, so a matrix would have made every release wait on a machine nobody is
+  # building for.)
   #
   # Signing is conditional, not assumed. Without the secrets this still produces an ad-hoc dmg (useful
   # for testing the build itself), and build_mac.sh refuses to pretend it is shippable: it asks
   # Gatekeeper for a verdict and exits non-zero if a notarised build is still refused.
   dmg:
     needs: check-version
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            arch: arm64
-          - runner: macos-13
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14        # Apple Silicon
     # A step's own `env:` block is NOT in scope for that step's `if:`, so testing the secret there
     # would evaluate to false forever and the build would quietly ship unsigned. Job-level env can
     # read `secrets`, and step-level `if` can read job-level env.
@@ -150,17 +144,21 @@ jobs:
                 --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID"
           rm -f "$RUNNER_TEMP/asc.p8"
 
-      - name: Build Collie-${{ matrix.arch }}.dmg
+      - name: Build Collie-arm64.dmg
+        env:
+          # the payload builder asks the GitHub API which python-build-standalone release to use, and
+          # an anonymous call from a shared runner IP gets rate-limited to a 403
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          args=(--bundle-python --dmg --arch "${{ matrix.arch }}")
+          args=(--bundle-python --dmg --arch arm64)
           [ "$HAVE_CERT" = "true" ] && args+=(--sign)
           [ "$HAVE_ASC" = "true" ] && args+=(--notarize collie)
           bash installer/build_mac.sh "${args[@]}"
-          mv installer/Output/Collie-*.dmg "installer/Output/Collie-${{ matrix.arch }}.dmg"
+          mv installer/Output/Collie-*.dmg installer/Output/Collie-arm64.dmg
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: macos-dmg-${{ matrix.arch }}
-          path: installer/Output/Collie-${{ matrix.arch }}.dmg
+          name: macos-dmg-arm64
+          path: installer/Output/Collie-arm64.dmg
 
   release:
     needs: [wheel, installer, dmg]
@@ -178,5 +176,4 @@ jobs:
           files: |
             artifacts/windows-installer/Collie-Setup.exe
             artifacts/macos-dmg-arm64/*.dmg
-            artifacts/macos-dmg-x86_64/*.dmg
             artifacts/python-dist/*

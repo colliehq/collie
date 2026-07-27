@@ -26,14 +26,43 @@ case "$ARCH" in
   *) echo "unsupported arch: $ARCH (expected arm64 or x86_64)" >&2; exit 2 ;;
 esac
 
+# Cross-building is refused rather than quietly attempted. It "works" — the host pip resolves wheels
+# for the other platform — but nothing about the result can be run, imported or smoke-tested on this
+# machine, and this build has already shipped twice with a payload whose extensions did not load. An
+# untestable artifact is worse than no artifact. Releases are arm64 only (installer/README.md); an
+# Intel Mac can still build for itself, on itself.
+if [ "$ARCH" != "$(uname -m)" ]; then
+  echo "refusing to cross-build: --arch $ARCH on a $(uname -m) machine." >&2
+  echo "The payload could be staged, but not run — so the smoke test that catches a broken" >&2
+  echo "payload cannot run either. Build on a $ARCH machine." >&2
+  exit 2
+fi
+
 mkdir -p "$CACHE"
 echo "── runtime payload · $PBS_ARCH · extras=[$EXTRAS] ──"
 
 # ── resolve + fetch the relocatable CPython ─────────────────────────────────────────────────────
-URL=$(curl -fsSL -m 60 "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" \
-  | python3 -c "
+# The GitHub API rate-limits by IP, and CI runners share theirs — an anonymous call from a hosted
+# runner gets a 403 while the same call from a laptop is fine, so this is a failure that only ever
+# appears in CI. Authenticate when a token is around (Actions always provides one), and say what
+# happened rather than feeding an empty body to a JSON parser:
+#     curl: (56) The requested URL returned error: 403
+#     json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+API="https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
+AUTH=(); TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+[ -n "$TOKEN" ] && AUTH=(-H "Authorization: Bearer $TOKEN")
+RELEASE=$(curl -fsSL -m 60 "${AUTH[@]}" -H "X-GitHub-Api-Version: 2022-11-28" "$API") || {
+  echo "  cannot reach the python-build-standalone release API." >&2
+  echo "  A 403 here is almost always the anonymous rate limit — set GITHUB_TOKEN and retry." >&2
+  exit 1
+}
+
+URL=$(printf '%s' "$RELEASE" | python3 -c "
 import sys, json
-rel = json.load(sys.stdin)
+try:
+    rel = json.load(sys.stdin)
+except json.JSONDecodeError:
+    sys.exit('the release API returned something that is not JSON (rate limited?)')
 want = [a for a in rel['assets']
         if a['name'].startswith('cpython-$PYVER.')
         and '$PBS_ARCH' in a['name']
