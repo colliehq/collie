@@ -6,10 +6,11 @@
 #
 #   bash installer/build_mac_payload.sh <app-path> [arch] [extras]
 #
-# arch defaults to this machine's. python-build-standalone ships one build per architecture and no
-# universal2, so a distributable really is two disk images (Collie-<ver>-arm64.dmg and -x86_64.dmg)
-# rather than one fat app — cross-staging works because nothing here has to *run* the staged python
-# except pip, which we run through the host interpreter when the arch isn't ours.
+# arch defaults to this machine's, and collie SHIPS arm64 ONLY. python-build-standalone has no
+# universal2 build, so covering Intel would mean either a second download or lipo-merging every
+# Mach-O in the payload — and macOS 26 Tahoe is the last release to run on Intel Macs at all, which
+# Apple stopped selling in 2023. --arch stays so an Intel user can still build for their own
+# machine; what it will not do is build for an architecture that cannot be tested here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -57,21 +58,18 @@ tar -xzf "$TARBALL" -C "$RES"          # unpacks to ./python
 echo "  cpython: staged $("$RES/python/bin/python3" -V 2>&1 || echo "(foreign arch)")"
 
 # ── install collie into it ───────────────────────────────────────────────────────────────────────
-# Use the staged interpreter when it can run here; otherwise drive pip from the host with --target,
-# which is what makes cross-arch staging possible at all (pure-Python collie, wheels resolved for
-# the target platform).
-if "$RES/python/bin/python3" -c "pass" 2>/dev/null; then
-  "$RES/python/bin/python3" -m pip install --quiet --upgrade pip
-  "$RES/python/bin/python3" -m pip install --quiet --no-warn-script-location ".[$EXTRAS]"
-  echo "  collie:  installed via the staged interpreter"
-else
-  SITE=$("$RES/python/bin/python3" -c "import sys;print(sys.version_info[:2])" 2>/dev/null || echo "")
-  python3 -m pip install --quiet --target "$RES/python/lib/python$PYVER/site-packages" \
-      --platform macosx_11_0_$( [ "$PBS_ARCH" = "aarch64-apple-darwin" ] && echo arm64 || echo x86_64 ) \
-      --only-binary=:all: ".[$EXTRAS]" 2>/dev/null \
-    || python3 -m pip install --quiet --target "$RES/python/lib/python$PYVER/site-packages" "."
-  echo "  collie:  installed cross-arch via the host pip"
+# Build on a machine of the architecture you are building FOR. Cross-staging via the host pip is
+# possible in principle (--target --platform), but it can neither run compileall for the staged
+# interpreter's magic number nor be smoke-tested here, and collie ships arm64 only — so refuse
+# loudly rather than emit a bundle nobody has ever executed.
+if ! "$RES/python/bin/python3" -c "pass" 2>/dev/null; then
+  echo "  the staged $PBS_ARCH interpreter cannot run on this $(uname -m) machine." >&2
+  echo "  Build the payload on a $ARCH Mac (or in a $ARCH runner)." >&2
+  exit 2
 fi
+"$RES/python/bin/python3" -m pip install --quiet --upgrade pip
+"$RES/python/bin/python3" -m pip install --quiet --no-warn-script-location ".[$EXTRAS]"
+echo "  collie:  installed via the staged interpreter"
 
 rm -rf "$RES/python/lib/python$PYVER/test" "$RES/python/lib/python$PYVER/idlelib" \
        "$RES/python/lib/python$PYVER/tkinter" "$RES/python/share" 2>/dev/null || true
@@ -86,14 +84,8 @@ rm -rf "$RES/python/lib/python$PYVER/test" "$RES/python/lib/python$PYVER/idlelib
 # the app is copied out of the dmg.
 find "$RES/python" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$RES/python" -name "*.pyc" -delete 2>/dev/null || true
-if "$RES/python/bin/python3" -c "pass" 2>/dev/null; then
-  "$RES/python/bin/python3" -m compileall -q -f --invalidation-mode unchecked-hash \
-      "$RES/python/lib/python$PYVER" >/dev/null 2>&1 || true
-  echo "  bytecode: precompiled $(find "$RES/python" -name '*.pyc' | wc -l | tr -d ' ') files (sealed, so runtime never writes)"
-else
-  # cross-arch staging: host python's magic number would not match the staged one, so the bundle
-  # ships without bytecode and the launcher's PYTHONDONTWRITEBYTECODE keeps the seal intact.
-  echo "  bytecode: skipped (cross-arch) — launcher runs with PYTHONDONTWRITEBYTECODE=1"
-fi
+"$RES/python/bin/python3" -m compileall -q -f --invalidation-mode unchecked-hash \
+    "$RES/python/lib/python$PYVER" >/dev/null 2>&1 || true
+echo "  bytecode: precompiled $(find "$RES/python" -name '*.pyc' | wc -l | tr -d ' ') files (sealed, so runtime never writes)"
 
 echo "  payload: $(du -sh "$RES/python" | cut -f1)"

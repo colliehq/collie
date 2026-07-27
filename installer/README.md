@@ -77,8 +77,12 @@ first would just be invalidated by the inner writes — `codesign --deep` is App
 the script walks them itself). The tarball is cached in `~/.cache/collie-build`, so a rebuild is a
 re-extract, not a re-download.
 
-**One dmg per architecture.** python-build-standalone ships per-arch builds and no universal2, so a
-full release is `Collie-<ver>-arm64.dmg` *and* `Collie-<ver>-x86_64.dmg` rather than one fat app.
+**Releases are arm64 only** — one dmg, one download link, no "which Mac do I have?" question put to
+the user. python-build-standalone has no universal2 build, so covering Intel would mean either a
+second download or lipo-merging every Mach-O in the payload (~1.5x the size, plus a build step whose
+Intel half can't be smoke-tested on an Apple Silicon machine). Against that: macOS 26 Tahoe is the
+last release that runs on Intel Macs, and Apple stopped selling them in 2023. `--arch` remains, so
+someone on an Intel Mac can still build for their own machine; it refuses to cross-build.
 
 **Why a bundle when `pip install collie-harness` already works: identity.** macOS attaches TCC
 permissions to the *application*, so a pip install makes `collie record` ask for Screen Recording on
