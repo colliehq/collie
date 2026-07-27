@@ -30,6 +30,16 @@ STATE_DIR = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie"
 STATE = os.path.join(STATE_DIR, "desktop-mac.json")
 
 
+def reveal_desktop(show=True):
+    """Hide every other app so the collie desktop is what you see (or bring them all back).
+    Returns False when the wallpaper is not running in this process."""
+    fn = globals().get("_REVEAL")
+    if not fn:
+        return False
+    fn("reveal" if show else "unreveal")
+    return True
+
+
 def available():
     """(ok, reason) — is the native path usable on this machine?"""
     if not plat.is_macos():
@@ -212,6 +222,28 @@ def run(url, behind=True):
             nothing ever runs them and SIGTERM from `collie wallpaper --stop` was swallowed. This
             timer hands control back to Python a few times a second, which is all the interpreter
             needs to notice a pending signal."""
+
+    # "Show desktop" for a desktop that IS a window.
+    #
+    # Sitting one level above the Finder icons means collie now receives the click that used to
+    # reach the wallpaper, so macOS's own click-wallpaper-to-reveal never fires. hideOtherApplications
+    # is the same thing by another route (it is what Cmd-Opt-H does) and needs no Accessibility
+    # permission, unlike synthesising a key press. AppKit is main-thread-only and the web server
+    # runs in a daemon thread, hence the hop.
+    class _Reveal(NSObject):
+        def reveal_(self, _arg):
+            NSApplication.sharedApplication().hideOtherApplications_(None)
+
+        def unreveal_(self, _arg):
+            NSApplication.sharedApplication().unhideAllApplications_(None)
+
+    _revealer = _Reveal.alloc().init()
+
+    def _do(which):
+        _revealer.performSelectorOnMainThread_withObject_waitUntilDone_(
+            which + ":", None, False)
+
+    globals()["_REVEAL"] = _do
 
     watcher = _Watcher.alloc().init()
     app.setDelegate_(watcher)

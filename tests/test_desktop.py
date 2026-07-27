@@ -200,13 +200,16 @@ def test_pick_song_scoring():
 # ── resolve_audio: source fallback, formats fallback, exclude passthrough, hard time cap ──────
 def test_resolve_audio_unavailable():
     print("test_resolve_audio_unavailable")
-    real = desktop._ensure_ytdlp
-    desktop._ensure_ytdlp = lambda: None
+    # ytdlp_cmd() is the single entry point now: it returns the argv prefix (the zipapp needs an
+    # interpreter in front of it) and falls back PATH -> zipapp -> platform binary, so stubbing
+    # _ensure_ytdlp no longer reaches this path.
+    real = desktop.ytdlp_cmd
+    desktop.ytdlp_cmd = lambda: []
     try:
         r = desktop.resolve_audio("放点lofi")
         check(r == {"ok": False, "error": "yt-dlp unavailable"}, "no yt-dlp -> a clear error, no crash")
     finally:
-        desktop._ensure_ytdlp = real
+        desktop.ytdlp_cmd = real
 
 
 def test_resolve_audio_fallback_and_exclude():

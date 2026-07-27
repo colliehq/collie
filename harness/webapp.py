@@ -797,8 +797,26 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"ok": dt.media(body.get("cmd") or "")})
                 if action == "open":
                     return self._send_json({"ok": dt.open_project(body.get("root") or "")})
+                if action == "reveal":
+                    # macOS only: collie sits above the Finder icons, so it eats the click that
+                    # used to reveal the desktop. This is that gesture, given back.
+                    try:
+                        from . import desktop_mac
+                        ok = desktop_mac.reveal_desktop(bool(body.get("show", True)))
+                    except Exception:
+                        ok = False
+                    return self._send_json({"ok": ok})
                 if action == "intent":
-                    return self._send_json(dt.music_intent(body.get("text") or ""))
+                    # Routes to app/system/project/stop/music, and to `agent` for everything else.
+                    # `music` is still in the reply so an older page keeps working unchanged.
+                    r = dt.desktop_intent(body.get("text") or "")
+                    if r.get("action") == "music":
+                        m = dt.music_intent(body.get("text") or "")
+                        r.update({k: v for k, v in m.items() if k != "action"})
+                    r["music"] = r.get("action") == "music" and bool(r.get("query") or r.get("arg"))
+                    if r["music"] and not r.get("query"):
+                        r["query"] = r.get("arg") or ""
+                    return self._send_json(r)
                 return self._send_json({"error": "unknown action"}, 404)
             if path == "/api/model":
                 # Model picker's one-click switch: merge PROVIDER+MODEL into settings (never

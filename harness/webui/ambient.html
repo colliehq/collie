@@ -534,6 +534,15 @@
   document.addEventListener("click", function(e){
     if (editMode && e.target.closest && e.target.closest(".slot .widget")) { e.preventDefault(); e.stopPropagation(); }
   }, true);
+
+  // Double-click empty space = show desktop. macOS reveals the desktop when you click the
+  // wallpaper, but collie is a window sitting above the Finder icons and takes that click itself,
+  // so the gesture is handed back here. Double, not single, so it never fights the page's own
+  // controls; ignored entirely when the click landed on a widget or the composer.
+  document.addEventListener("dblclick", function(e){
+    if (e.target.closest && e.target.closest(".slot, .composer, .reply, .editbtn")) return;
+    api("/api/desktop/reveal", {show: true});
+  });
   var PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
   var CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   $("editbtn").onclick = function(){ editMode = !editMode; document.body.classList.toggle("editing", editMode); $("editbtn").innerHTML = editMode ? CHECK : PENCIL; };
@@ -685,9 +694,30 @@
     showReply("", '<span class="status">…</span>');
     api("/api/desktop/intent", {text: q}).then(function(r){
       pending = false;
-      if (r && r.music && r.query) playMusic(r.query, r.artist, r.title);
-      else streamAgent(q);
+      var a = (r && r.action) || "agent";
+      if (a === "music" && r.query) { playMusic(r.query, r.artist, r.title); return; }
+      // The desktop actions already RAN on the server — the reply just reports what happened.
+      // Anything unrecognised still goes to the full agent, so nothing that worked stops working.
+      if (a === "app")     { showReply(r.ok ? "" : "err", r.ok ? ("Opened " + esc(r.arg))
+                              : (esc(r.error || "Could not open that")
+                                 + (r.suggest && r.suggest.length
+                                    ? " — did you mean " + esc(r.suggest.join(", ")) + "?" : ""))); return; }
+      if (a === "project") { showReply(r.ok ? "" : "err", r.ok ? ("Opened " + esc(r.arg))
+                              : esc(r.error || "No such project")); return; }
+      if (a === "system")  { showReply("", sysLine(r.info || {})); return; }
+      if (a === "stop")    { if (curTrack) { au.pause(); } else { api("/api/desktop/media", {cmd: "playpause"}); }
+                             showReply("", "Stopped."); return; }
+      streamAgent(q);
     }).catch(function(){ pending = false; streamAgent(q); });
+  }
+  function sysLine(i){
+    var bits = [];
+    if (i.cpu != null)  bits.push("CPU " + Math.round(i.cpu) + "%");
+    if (i.mem != null)  bits.push("Memory " + Math.round(i.mem) + "%");
+    if (i.disk != null) bits.push("Disk " + Math.round(i.disk) + "%");
+    if (i.battery != null) bits.push("Battery " + Math.round(i.battery) + "%");
+    if (i.nowplaying) bits.push("Playing " + esc(String(i.nowplaying)));
+    return bits.length ? bits.join(" · ") : "Nothing to report.";
   }
   function streamAgent(q){
     curQ = q; var acc = "", answering = false; showReply("", '<span class="status">Collie is thinking…</span>');

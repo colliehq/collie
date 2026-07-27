@@ -19,11 +19,18 @@ _NOWIN = 0x08000000  # CREATE_NO_WINDOW — never flash a console
 
 # ── config ──────────────────────────────────────────────────────────────────────────────────
 # slots: tl tr bl br  (four corners) + center.  The input/composer is a fixed element, not a slot.
+def _is_mac():
+    return plat.is_macos()
+
+
 DEFAULT_CONFIG = {
     "widgets": {
         "brand":    {"on": True,  "slot": "center"},
         "clock":    {"on": True,  "slot": "tr"},
-        "launcher": {"on": True,  "slot": "bl", "apps": []},   # apps auto-seeded on first load
+        # Off on macOS: the Dock already is the app launcher, always visible and always in the same
+        # place, so a second row of the same icons on the wallpaper is clutter. Windows has no
+        # equivalent for a behind-the-icons desktop, so it keeps it.
+        "launcher": {"on": not _is_mac(), "slot": "bl", "apps": []},
         "music":    {"on": True,  "slot": "tr"},               # stacks under the clock, top-right
         "system":   {"on": False, "slot": "br"},               # CPU chip off by default
         "projects": {"on": False, "slot": "bl"},
@@ -33,10 +40,6 @@ DEFAULT_CONFIG = {
 
 APP_DIRS = ("/Applications", "/System/Applications", "/System/Applications/Utilities",
             os.path.join(HOME, "Applications"))
-
-
-def _is_mac():
-    return plat.is_macos()
 
 
 def apps(limit=0):
@@ -375,20 +378,63 @@ _MOODS = [
 _PLAY_VERBS = ("帮我", "放点", "放首", "放一首", "放一点", "来点", "来首", "播放", "放", "put on", "play some", "play")
 
 
-# yt-dlp ships one standalone build per platform. Downloading the .exe on a Mac gets you an 18 MB
-# PE32+ binary that cannot run, and every "play <song>" then fails as "Couldn't find that" — a
-# lookup failure, which is not what went wrong.
+# yt-dlp publishes a standalone binary per platform AND a pure-Python zipapp. Use the zipapp
+# wherever a Python is around — which, inside collie, is always.
+#
+# The platform binaries are PyInstaller onefile: they unpack ~38 MB to a temp dir on EVERY run.
+# Measured here, `yt-dlp_macos --version` takes 20 SECONDS before it does anything, and one song
+# request makes two or three calls — so "play a song" sat there for a minute while the actual
+# YouTube search took about a second. The zipapp starts in 0.5s and is 2.9 MB.
+#
+# Downloading the .exe on a Mac was the older bug: an 18 MB PE32+ binary that cannot run at all,
+# reported to the user as "Couldn't find that".
+_YTDLP_ZIPAPP = os.path.join(COLLIE_DIR, "yt-dlp.pyz")
 _YTDLP_ASSET = ("yt-dlp_macos" if sys.platform == "darwin"
                 else "yt-dlp.exe" if os.name == "nt" else "yt-dlp")
 _YTDLP = os.path.join(COLLIE_DIR, _YTDLP_ASSET)
 
 
+def ytdlp_cmd():
+    """The argv prefix that runs yt-dlp, fastest form first.
+
+    Returns a list, because the zipapp needs an interpreter in front of it. Prefer, in order:
+    a yt-dlp already on PATH, the cached zipapp, the platform binary. Only the last one pays the
+    20-second PyInstaller unpack.
+    """
+    onpath = shutil.which("yt-dlp")
+    if onpath:
+        return [onpath]
+    if os.path.exists(_YTDLP_ZIPAPP) and os.path.getsize(_YTDLP_ZIPAPP) > 500_000:
+        return [sys.executable, _YTDLP_ZIPAPP]
+    if os.path.exists(_YTDLP) and os.path.getsize(_YTDLP) > 1_000_000:
+        return [_YTDLP]
+    got = _ensure_ytdlp()
+    if not got:
+        return []
+    return [sys.executable, got] if got.endswith(".pyz") else [got]
+
+
 def _ensure_ytdlp():
-    """The standalone yt-dlp for THIS platform, in ~/.collie; fetched once (~18MB) if missing.
-    A yt-dlp already on PATH wins — no reason to download a second copy."""
+    """Fetch yt-dlp once. The zipapp (2.9 MB, needs a Python — we have one) beats the platform
+    binary (38 MB, unpacks itself on every run) by a factor of forty at startup."""
     onpath = shutil.which("yt-dlp")
     if onpath:
         return onpath
+    if os.path.exists(_YTDLP_ZIPAPP) and os.path.getsize(_YTDLP_ZIPAPP) > 500_000:
+        return _YTDLP_ZIPAPP
+    os.makedirs(COLLIE_DIR, exist_ok=True)
+    import urllib.request
+    tmp = _YTDLP_ZIPAPP + ".part"
+    try:
+        urllib.request.urlretrieve(
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp", tmp)
+        os.replace(tmp, _YTDLP_ZIPAPP)
+        return _YTDLP_ZIPAPP
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
     if os.path.exists(_YTDLP) and os.path.getsize(_YTDLP) > 1_000_000:
         return _YTDLP
     os.makedirs(COLLIE_DIR, exist_ok=True)
@@ -446,7 +492,7 @@ def _pick_song(exe, terms, source, exclude=()):
     Skips any id in `exclude` (used by autoplay-next so it never repeats a track)."""
     pref = _SEARCH.get(source, "ytsearch")
     try:
-        r = subprocess.run([exe, "-J", "--flat-playlist"] + _js_runtime_args()
+        r = subprocess.run(list(exe) + ["-J", "--flat-playlist"] + _js_runtime_args()
                            + [pref + "8:" + terms],
                            **plat.no_window_kwargs(), timeout=45, capture_output=True, text=True,
                            encoding="utf-8", errors="ignore")
@@ -462,7 +508,7 @@ def _pick_song(exe, terms, source, exclude=()):
         stripped = " ".join(stripped.split())
         if stripped and stripped != low:
             try:
-                r2 = subprocess.run([exe, "-J", "--flat-playlist"] + _js_runtime_args()
+                r2 = subprocess.run(list(exe) + ["-J", "--flat-playlist"] + _js_runtime_args()
                                     + [pref + "8:" + stripped],
                                     **plat.no_window_kwargs(), timeout=45, capture_output=True,
                                     text=True, encoding="utf-8", errors="ignore")
@@ -504,7 +550,7 @@ def _extract_one(exe, terms, source, exclude=()):
     target = _pick_song(exe, terms, source, exclude) or (_SEARCH.get(source, "ytsearch") + "1:" + terms)
     try:
         r = subprocess.run(
-            [exe, "-j", "-f", "bestaudio[acodec!=none]/bestaudio/best", "--no-playlist"]
+            list(exe) + ["-j", "-f", "bestaudio[acodec!=none]/bestaudio/best", "--no-playlist"]
             + _js_runtime_args() + [target],
             **plat.no_window_kwargs(), timeout=35, capture_output=True, text=True, encoding="utf-8", errors="ignore")
         line = (r.stdout or "").strip().splitlines()
@@ -517,7 +563,7 @@ def resolve_audio(query, artist="", title="", region="", exclude=()):
     """Search (music-biased) + extract a DIRECT audio stream URL. Region-aware: mainland China prefers
     Bilibili (YouTube is blocked there), elsewhere YouTube — and either falls back to the other.
     `exclude` = ids already played (autoplay-next skips them)."""
-    exe = _ensure_ytdlp()
+    exe = ytdlp_cmd()
     if not exe:
         return {"ok": False, "error": "yt-dlp unavailable"}
     import time
@@ -729,6 +775,99 @@ def music_intent(text):
         return {"music": False, "query": ""}
     except Exception as e:
         return {"music": False, "query": "", "error": str(e)}
+
+
+_DESKTOP_SYS = (
+    "You are a desktop command classifier for a Mac/Windows desktop assistant. Decide which ACTION "
+    "the user's message asks for, and extract its argument. Reply with JSON only.\n"
+    "actions:\n"
+    "- music   : play a song / genre / artist / playlist / mood. arg = search terms, play-verb removed.\n"
+    "- app     : open, launch or switch to an application. arg = the app NAME only, in English if you "
+    "know it (打开微信→WeChat, 开一下chrome→Google Chrome, launch vscode→Visual Studio Code).\n"
+    "- system  : a question about THIS machine's state — cpu, memory, disk, battery, what is playing.\n"
+    "- project : open a code project / repo / folder in the editor. arg = the project name.\n"
+    "- stop    : stop the music, or close/quit the wallpaper itself.\n"
+    "- agent   : ANYTHING ELSE — questions, coding, explanations, writing. This is the default; when "
+    "in doubt use agent, because it can do everything the others can and more.\n"
+    "Examples: '放点周杰伦'→{action:'music',arg:'周杰伦'}; '打开 Chrome'→{action:'app',arg:'Google Chrome'}; "
+    "'cpu 占用多少'→{action:'system',arg:''}; '开一下 collie 这个项目'→{action:'project',arg:'collie'}; "
+    "'别放了'→{action:'stop',arg:''}; '帮我改下这个函数'→{action:'agent',arg:''}.\n"
+    'Reply: {"action":"...","arg":"..."}')
+
+
+def _match_app(name):
+    """An installed app whose name the user actually said. Exact, then prefix, then substring —
+    so "chrome" finds "Google Chrome" without "Chromium" winning on length."""
+    n = (name or "").strip().lower()
+    if not n:
+        return None
+    installed = apps()
+    for pred in (lambda l: l == n,
+                 lambda l: l.startswith(n),
+                 lambda l: n in l,
+                 lambda l: l.replace(" ", "") == n.replace(" ", "")):
+        hits = [a for a in installed if pred(a["label"].lower())]
+        if hits:
+            return sorted(hits, key=lambda a: len(a["label"]))[0]
+    return None
+
+
+def desktop_intent(text):
+    """Route a desktop utterance to an action. {'action': str, 'arg': str, ...}
+
+    The composer used to ask one question — "is this music?" — and hand everything else to the full
+    coding agent. On a wallpaper that is the wrong default: "打开 Chrome" spawned a coding session
+    that reasoned about opening Chrome instead of opening Chrome, and "cpu 占用多少" went looking for
+    a repo to inspect. The capabilities were all already here (launch, apps, sysinfo, open_project,
+    nowplaying) — the composer simply could not reach them.
+
+    `agent` stays the default for everything unrecognised, so nothing that used to work stops.
+    """
+    text = (text or "").strip()
+    if not text:
+        return {"action": "agent", "arg": ""}
+    try:
+        comp = _router_provider().complete(_DESKTOP_SYS, [{"role": "user", "content": text[:600]}], [])
+        obj = _json_obj(getattr(comp, "text", "") or "") or {}
+    except Exception as e:
+        return {"action": "agent", "arg": "", "error": str(e)}
+
+    action = (obj.get("action") or "agent").strip().lower()
+    arg = (obj.get("arg") or "").strip()
+    if action not in ("music", "app", "system", "project", "stop", "agent"):
+        action = "agent"
+
+    if action == "app":
+        hit = _match_app(arg)
+        if not hit:
+            # Say which name failed and offer near matches — "nothing happened" was the old answer.
+            near = [a["label"] for a in apps()
+                    if arg and arg.lower()[:3] in a["label"].lower()][:5]
+            return {"action": "app", "arg": arg, "ok": False,
+                    "error": "No installed app matching %r." % arg,
+                    "suggest": near}
+        return {"action": "app", "arg": hit["label"], "path": hit["path"],
+                "ok": bool(launch(hit["path"]))}
+
+    if action == "system":
+        info = sysinfo() or {}
+        now = nowplaying() or {}
+        if now.get("track"):
+            info["nowplaying"] = now["track"]
+        return {"action": "system", "arg": arg, "ok": True, "info": info}
+
+    if action == "project":
+        want = arg.lower()
+        for p in (projects(limit=40) or {}).get("projects", []):
+            if want and (want in p["name"].lower() or p["name"].lower() in want):
+                return {"action": "project", "arg": p["name"], "ok": bool(open_project(p["root"])),
+                        "root": p["root"]}
+        return {"action": "project", "arg": arg, "ok": False,
+                "error": "No project named %r under your usual folders." % arg}
+
+    if action == "music":
+        return {"action": "music", "arg": arg or text}
+    return {"action": action, "arg": arg}
 
 
 def resolve(query):
