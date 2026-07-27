@@ -432,6 +432,15 @@ def _js_runtime_args():
     return []
 
 
+def _is_live(e):
+    return bool(e.get("is_live")) or e.get("live_status") in ("is_live", "is_upcoming")
+
+
+# Words that pull 24/7 radio streams to the top of a music search. Dropped on the retry, never on
+# the first attempt — "radio" is a real thing to ask for, it just cannot be played here.
+_LIVE_BAIT = ("radio", "live", "24/7", "24-7", "livestream", "live stream", "直播", "电台")
+
+
 def _pick_song(exe, terms, source, exclude=()):
     """Flat-search several candidates and pick the most song-like target URL (fast, metadata only).
     Skips any id in `exclude` (used by autoplay-next so it never repeats a track)."""
@@ -445,10 +454,30 @@ def _pick_song(exe, terms, source, exclude=()):
     except Exception:
         return None
     exclude = set(exclude or ())
+    if not [e for e in entries if not _is_live(e)]:
+        low = terms.lower()
+        stripped = low
+        for w in _LIVE_BAIT:
+            stripped = stripped.replace(w, " ")
+        stripped = " ".join(stripped.split())
+        if stripped and stripped != low:
+            try:
+                r2 = subprocess.run([exe, "-J", "--flat-playlist"] + _js_runtime_args()
+                                    + [pref + "8:" + stripped],
+                                    **plat.no_window_kwargs(), timeout=45, capture_output=True,
+                                    text=True, encoding="utf-8", errors="ignore")
+                entries = (json.loads(r2.stdout or "{}").get("entries")) or entries
+            except Exception:
+                pass
     def score(e):
         t = (e.get("title") or "").lower()
         ch = (e.get("channel") or e.get("uploader") or "").lower()
         d = e.get("duration") or 0; s = 0
+        # A 24/7 livestream is unplayable here whatever its title says: it offers only muxed HLS,
+        # never an audio-only format, so `-f bestaudio` fails and the user is told "Couldn't find
+        # that" — a lookup error for something that was found and simply cannot be played. "lofi"
+        # lands on one every single time, since the famous radio stream outranks every track.
+        if not d: s -= 60                       # flat-playlist gives live entries no duration
         if any(b in t for b in _NOT_MUSIC): s -= 100
         if 45 <= d <= 720: s += 12
         elif d > 1800: s -= 40
@@ -457,7 +486,12 @@ def _pick_song(exe, terms, source, exclude=()):
         if any(k in t for k in ("music video", "official video", "m/v", " mv", "live", "performance",
                                 "cover", "remix", "sped up", "slowed", "8d", "nightcore")): s -= 10
         return s
-    cands = [e for e in entries if e.get("id") and e.get("id") not in exclude]
+    # Livestreams are DROPPED, not down-ranked. They offer only muxed HLS — no audio-only format —
+    # so `-f bestaudio` fails and the user is told "Couldn't find that" about something that was
+    # found. Down-ranking is not enough: search "lofi hip hop radio" and all eight results are 24/7
+    # radio streams, so the best of a bad set is still unplayable.
+    cands = [e for e in entries
+             if e.get("id") and e.get("id") not in exclude and not _is_live(e)]
     if not cands:
         return None
     cands.sort(key=score, reverse=True)
