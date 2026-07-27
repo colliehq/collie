@@ -485,18 +485,23 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     health = {}
 
-                def _found(cmd, paths):
-                    for p in paths:
+                def _found(cmd, paths, mac=()):
+                    # The Windows paths just miss elsewhere, and `which` does not rescue macOS
+                    # either: browsers there are .app bundles and are never on PATH. So this
+                    # answered "no browsers installed" on every Mac, however many were installed.
+                    for p in tuple(paths) + (tuple(mac) if plat.is_macos() else ()):
                         if p and os.path.exists(os.path.expandvars(p)):
                             return True
                     return bool(shutil.which(cmd))
                 browsers = []
                 if _found("chrome", [r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
                                      r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
-                                     r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"]):
+                                     r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"],
+                          mac=["/Applications/Google Chrome.app"]):
                     browsers.append("Chrome")
                 if _found("msedge", [r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
-                                     r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"]):
+                                     r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"],
+                          mac=["/Applications/Microsoft Edge.app"]):
                     browsers.append("Edge")
                 return self._send_json({"bridge_running": bool(health),
                                         "extension_connected": bool(health.get("extension_connected")),

@@ -14,6 +14,8 @@ pip/pipx install) on any machine:
 Windows only (it pins a WebView2 window under Progman). On macOS/Linux it degrades to a borderless
 full-screen browser window (see cli._desktop_window).
 """
+PLATFORM = "windows"   # declared, not implied: tests/test_platform_purity.py reads this
+
 import os
 import socket
 import subprocess

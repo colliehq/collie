@@ -43,6 +43,7 @@ if $PY tests/test_mission.py >/dev/null 2>&1; then echo "  mission (multi-step c
 if $PY tests/test_missionweb.py >/dev/null 2>&1; then echo "  mission web (NL front-door service: start/confirm/resume) OK"; else echo "  mission web FAIL"; rc=1; fi
 if $PY tests/test_primitives.py >/dev/null 2>&1; then echo "  primitives (real: research/compose/observe/web.submit+verify/web.send) OK"; else echo "  primitives FAIL"; rc=1; fi
 if $PY tests/test_router.py >/dev/null 2>&1; then echo "  router (front-door classify: chat/code/mission + threshold/abstain/override) OK"; else echo "  router FAIL"; rc=1; fi
+if $PY tests/test_platform_purity.py >/dev/null 2>&1; then echo "  platform purity (one codebase, three OSes: no unguarded Windows-only API) OK"; else echo "  platform purity FAIL"; rc=1; fi
 if $PY tests/test_desktop.py >/dev/null 2>&1; then echo "  desktop (ambient widgets/music: clean/lrc/intent/config/pick/resolve caps) OK"; else echo "  desktop FAIL"; rc=1; fi
 if $PY tests/test_desktopweb.py >/dev/null 2>&1; then echo "  desktop web (audio-proxy SSRF allow-list + relay CSRF-token gate) OK"; else echo "  desktop web FAIL"; rc=1; fi
 

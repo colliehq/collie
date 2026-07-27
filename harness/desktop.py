@@ -8,7 +8,8 @@ on and where they sit. It's plain JSON on purpose: Collie itself can edit it in 
 "put the clock bottom-left" / "add a music widget", and the wallpaper page polls it and
 re-renders — so the desktop is agent-manageable, not hard-coded.
 """
-import os, json, hashlib, subprocess, ctypes, time
+import os, json, hashlib, shutil, subprocess, sys, ctypes, time
+from . import plat
 
 HOME = os.path.expanduser("~")
 COLLIE_DIR = os.path.join(HOME, ".collie")
@@ -30,9 +31,45 @@ DEFAULT_CONFIG = {
 }
 
 
-def _seed_apps():
-    """A sensible starter dock: the user's real, present apps — never invent paths that 404."""
-    cands = [
+APP_DIRS = ("/Applications", "/System/Applications", "/System/Applications/Utilities",
+            os.path.join(HOME, "Applications"))
+
+
+def _is_mac():
+    return plat.is_macos()
+
+
+def apps(limit=0):
+    """Every installed application, so the launcher can offer all of them rather than a hardcoded
+    handful. macOS keeps them as .app bundles in a few well-known directories; Windows has no such
+    list, so there it stays the curated set."""
+    out, seen = [], set()
+    if _is_mac():
+        for d in APP_DIRS:
+            try:
+                names = sorted(os.listdir(d))
+            except OSError:
+                continue
+            for n in names:
+                if not n.endswith(".app"):
+                    continue
+                path = os.path.join(d, n)
+                label = n[:-4]
+                if label.lower() in seen:
+                    continue
+                seen.add(label.lower())
+                out.append({"label": label, "path": path})
+    else:
+        for p in _win_candidates():
+            if p and os.path.exists(p) and p.lower() not in seen:
+                seen.add(p.lower())
+                out.append({"label": os.path.splitext(os.path.basename(p))[0], "path": p})
+    out.sort(key=lambda a: a["label"].lower())
+    return out[:limit] if limit else out
+
+
+def _win_candidates():
+    return [
         os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Microsoft VS Code\Code.exe"),
         os.path.join(os.environ.get("PROGRAMFILES", ""), r"Google\Chrome\Application\chrome.exe"),
         os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), r"Microsoft\Edge\Application\msedge.exe"),
@@ -40,12 +77,24 @@ def _seed_apps():
         r"C:\Windows\System32\WindowsTerminal.exe",
         os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Microsoft\WindowsApps\wt.exe"),
     ]
-    out, seen = [], set()
-    for p in cands:
-        if p and os.path.exists(p) and p.lower() not in seen:
-            seen.add(p.lower())
-            out.append({"label": os.path.splitext(os.path.basename(p))[0], "path": p})
-    return out
+
+
+def _seed_apps():
+    """A sensible starter dock: the user's real, present apps — never invent paths that 404."""
+    if not _is_mac():
+        out, seen = [], set()
+        for p in _win_candidates():
+            if p and os.path.exists(p) and p.lower() not in seen:
+                seen.add(p.lower())
+                out.append({"label": os.path.splitext(os.path.basename(p))[0], "path": p})
+        return out
+    # macOS: seed from what is actually installed, preferring the everyday ones. The full list is
+    # available via apps(); this is only the starter row.
+    prefer = ["Visual Studio Code", "Google Chrome", "Safari", "Terminal", "iTerm",
+              "Notes", "Music", "Messages", "Mail", "Finder"]
+    have = {a["label"].lower(): a for a in apps()}
+    out = [have[n.lower()] for n in prefer if n.lower() in have]
+    return out[:6]
 
 
 def load_config():
@@ -84,24 +133,38 @@ def config_mtime():
 
 # ── launcher ────────────────────────────────────────────────────────────────────────────────
 def launch(target):
-    """Open an app path or a URL. Returns True on success."""
+    """Open an app path or a URL. Returns True on success.
+
+    os.startfile does not exist outside Windows, so the previous version raised AttributeError on
+    every macOS call and the bare except turned that into a silent False — clicking an app in the
+    launcher did nothing at all, with no error anywhere. macOS gets `open`, which handles .app
+    bundles, plain files and URLs alike."""
     if not target:
         return False
+    is_url = target.lower().startswith(("http://", "https://"))
+    if not is_url and not os.path.exists(target):
+        return False
     try:
-        if target.lower().startswith(("http://", "https://")):
-            os.startfile(target)
-        elif os.path.exists(target):
-            os.startfile(target)
+        if _is_mac():
+            subprocess.Popen(["/usr/bin/open", target],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif hasattr(os, "startfile"):
+            os.startfile(target)                                   # noqa: S606 (Windows only)
         else:
-            return False
+            subprocess.Popen(["xdg-open", target],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception:
         return False
 
 
 def icon_png(path):
-    """Extract an app's icon to a cached 48px PNG (via .NET); return the file path or None.
-    Cheap after the first call — keyed by the exe path so it's extracted once."""
+    """Extract an app's icon to a cached 48px PNG; return the file path or None.
+    Cheap after the first call — keyed by the app path so it's extracted once.
+
+    Was PowerShell + System.Drawing only, so on macOS every icon failed and the launcher fell back
+    to rendering the app's first letter. macOS keeps the icon as an .icns inside the bundle, named
+    by CFBundleIconFile in Info.plist; sips converts it without any pip install."""
     if not path or not os.path.exists(path):
         return None
     os.makedirs(ICON_DIR, exist_ok=True)
@@ -109,6 +172,16 @@ def icon_png(path):
     out = os.path.join(ICON_DIR, key + ".png")
     if os.path.exists(out) and os.path.getsize(out) > 0:
         return out
+    if _is_mac():
+        icns = _mac_icns(path)
+        if not icns:
+            return None
+        try:
+            subprocess.run(["/usr/bin/sips", "-s", "format", "png", "-Z", "128", icns, "--out", out],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        except Exception:
+            return None
+        return out if os.path.exists(out) and os.path.getsize(out) > 0 else None
     ps = (
         "$ErrorActionPreference='SilentlyContinue';"
         "Add-Type -AssemblyName System.Drawing;"
@@ -118,7 +191,7 @@ def icon_png(path):
     )
     try:
         subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                       creationflags=_NOWIN, timeout=8,
+                       **plat.no_window_kwargs(), timeout=8,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         return None
@@ -128,6 +201,30 @@ def icon_png(path):
 # ── media control ───────────────────────────────────────────────────────────────────────────
 _VK = {"playpause": 0xB3, "next": 0xB0, "prev": 0xB1, "stop": 0xB2,
        "mute": 0xAD, "volup": 0xAF, "voldown": 0xAE}
+
+
+def _mac_icns(app_path):
+    """The .icns inside a bundle. Info.plist names it in CFBundleIconFile, sometimes without the
+    extension and sometimes not at all — fall back to whatever single .icns is in Resources."""
+    res = os.path.join(app_path, "Contents", "Resources")
+    plist = os.path.join(app_path, "Contents", "Info.plist")
+    name = ""
+    try:
+        out = subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Print CFBundleIconFile", plist],
+                             capture_output=True, text=True, timeout=10)
+        name = (out.stdout or "").strip()
+    except Exception:
+        name = ""
+    if name:
+        for cand in (name, name + ".icns"):
+            p = os.path.join(res, cand)
+            if os.path.exists(p):
+                return p
+    try:
+        icns = [f for f in os.listdir(res) if f.endswith(".icns")]
+    except OSError:
+        return None
+    return os.path.join(res, icns[0]) if icns else None
 
 
 def media(cmd):
@@ -170,7 +267,7 @@ if($s){ $p=AW ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSy
 '''
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           creationflags=_NOWIN, timeout=6,
+                           **plat.no_window_kwargs(), timeout=6,
                            capture_output=True, text=True)
         out = (r.stdout or "").strip()
         v = json.loads(out) if out.startswith("{") else None
@@ -278,20 +375,31 @@ _MOODS = [
 _PLAY_VERBS = ("帮我", "放点", "放首", "放一首", "放一点", "来点", "来首", "播放", "放", "put on", "play some", "play")
 
 
-_YTDLP = os.path.join(COLLIE_DIR, "yt-dlp.exe")
+# yt-dlp ships one standalone build per platform. Downloading the .exe on a Mac gets you an 18 MB
+# PE32+ binary that cannot run, and every "play <song>" then fails as "Couldn't find that" — a
+# lookup failure, which is not what went wrong.
+_YTDLP_ASSET = ("yt-dlp_macos" if sys.platform == "darwin"
+                else "yt-dlp.exe" if os.name == "nt" else "yt-dlp")
+_YTDLP = os.path.join(COLLIE_DIR, _YTDLP_ASSET)
 
 
 def _ensure_ytdlp():
-    """yt-dlp.exe lives in ~/.collie; fetch the standalone build once (~18MB) if missing."""
+    """The standalone yt-dlp for THIS platform, in ~/.collie; fetched once (~18MB) if missing.
+    A yt-dlp already on PATH wins — no reason to download a second copy."""
+    onpath = shutil.which("yt-dlp")
+    if onpath:
+        return onpath
     if os.path.exists(_YTDLP) and os.path.getsize(_YTDLP) > 1_000_000:
         return _YTDLP
     os.makedirs(COLLIE_DIR, exist_ok=True)
     import urllib.request
-    url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+    url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + _YTDLP_ASSET
     tmp = _YTDLP + ".part"
     try:
         urllib.request.urlretrieve(url, tmp)
         os.replace(tmp, _YTDLP)
+        if sys.platform != "win32":
+            os.chmod(_YTDLP, 0o755)          # the release asset arrives without the exec bit
         return _YTDLP
     except Exception:
         try:
@@ -313,13 +421,25 @@ _SEARCH = {"youtube": "ytsearch", "bilibili": "bilisearch"}
 _WATCH = {"youtube": "https://www.youtube.com/watch?v=%s", "bilibili": "https://www.bilibili.com/video/%s"}
 
 
+def _js_runtime_args():
+    """yt-dlp needs a JavaScript runtime to get YouTube's audio formats, and since 2026 it enables
+    only deno by default. Without one every extraction comes back "Requested format is not
+    available", which collie then reported as "Couldn't find that" — as if the search had failed.
+    Any of these will do, and node is on far more machines than deno."""
+    for rt in ("deno", "node", "bun"):
+        if shutil.which(rt):
+            return ["--js-runtimes", rt]
+    return []
+
+
 def _pick_song(exe, terms, source, exclude=()):
     """Flat-search several candidates and pick the most song-like target URL (fast, metadata only).
     Skips any id in `exclude` (used by autoplay-next so it never repeats a track)."""
     pref = _SEARCH.get(source, "ytsearch")
     try:
-        r = subprocess.run([exe, "-J", "--flat-playlist", pref + "8:" + terms],
-                           creationflags=_NOWIN, timeout=20, capture_output=True, text=True,
+        r = subprocess.run([exe, "-J", "--flat-playlist"] + _js_runtime_args()
+                           + [pref + "8:" + terms],
+                           **plat.no_window_kwargs(), timeout=45, capture_output=True, text=True,
                            encoding="utf-8", errors="ignore")
         entries = (json.loads(r.stdout or "{}").get("entries")) or []
     except Exception:
@@ -350,8 +470,9 @@ def _extract_one(exe, terms, source, exclude=()):
     target = _pick_song(exe, terms, source, exclude) or (_SEARCH.get(source, "ytsearch") + "1:" + terms)
     try:
         r = subprocess.run(
-            [exe, "-j", "-f", "bestaudio[acodec!=none]/bestaudio/best", "--no-playlist", target],
-            creationflags=_NOWIN, timeout=35, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+            [exe, "-j", "-f", "bestaudio[acodec!=none]/bestaudio/best", "--no-playlist"]
+            + _js_runtime_args() + [target],
+            **plat.no_window_kwargs(), timeout=35, capture_output=True, text=True, encoding="utf-8", errors="ignore")
         line = (r.stdout or "").strip().splitlines()
         return json.loads(line[0]) if line else None
     except Exception:
@@ -599,13 +720,28 @@ def resolve(query):
 
 
 def open_project(root):
-    """Open a repo in VS Code if available, else its folder."""
+    """Open a repo in VS Code if available, else its folder. Windows-only until now: it looked for
+    Code.exe under %LOCALAPPDATA% and fell back to os.startfile, so on macOS both branches failed."""
     if not root or not os.path.isdir(root):
         return False
-    code = os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Microsoft VS Code\Code.exe")
     try:
+        if _is_mac():
+            import shutil
+            cli = shutil.which("code")
+            if cli:
+                subprocess.Popen([cli, root],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif os.path.isdir("/Applications/Visual Studio Code.app"):
+                subprocess.Popen(["/usr/bin/open", "-a", "Visual Studio Code", root],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["/usr/bin/open", root],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        code = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                            r"Programs\Microsoft VS Code\Code.exe")
         if os.path.exists(code):
-            subprocess.Popen([code, root], creationflags=_NOWIN)
+            subprocess.Popen([code, root], **plat.no_window_kwargs())
         else:
             os.startfile(root)
         return True

@@ -426,10 +426,16 @@ def cmd_wallpaper(args):
     port = args.port
     url = "http://127.0.0.1:%d/ambient" % port
 
-    # macOS has a real behind-the-icons path (window levels, via PyObjC) — the counterpart to the
-    # Windows Progman engine. Use it when it's installed; a browser window sits *over* the desktop
-    # and is only the fallback. --front asks for the plain interactive window on purpose.
-    if plat.is_macos() and not getattr(args, "front", False):
+    # macOS has a real native path (window levels, via PyObjC) — the counterpart to the Windows
+    # Progman engine — and it serves BOTH modes:
+    #   default   desktop level, ignores mouse: a wallpaper you look at, clicks reach Finder
+    #   --front   normal level, interactive, sized to visibleFrame so the Dock and menu bar stay
+    #             clear — the composer lives at the bottom of the page and the Dock sat on it
+    # --front used to skip this branch entirely and fall through to a borderless *browser* window,
+    # which made desktop_mac's behind=False half dead code and meant asking for an interactive
+    # desktop got you a browser instead of an app. A browser window is now only the fallback for
+    # when PyObjC is not installed.
+    if plat.is_macos():
         from . import desktop_mac
         if getattr(args, "stop", False):
             print(desktop_mac.stop())
@@ -451,7 +457,7 @@ def cmd_wallpaper(args):
                     break
                 except Exception:
                     time.sleep(0.2)
-            return desktop_mac.run(url, behind=True)
+            return desktop_mac.run(url, behind=not getattr(args, "front", False))
         print("collie wallpaper: %s" % why, file=sys.stderr)
         print("  falling back to a borderless browser window over the desktop.\n", file=sys.stderr)
 

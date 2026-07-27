@@ -62,6 +62,19 @@ def new_group_kwargs() -> dict:
     return {} if is_windows() else {"start_new_session": True}
 
 
+def no_window_kwargs() -> dict:
+    """Popen kwargs that keep a child from flashing a console window.
+
+    CREATE_NO_WINDOW is a Windows-only flag, and passing `creationflags` anywhere else raises
+    ValueError: creationflags is only supported on Windows platforms. Spread inline across the
+    codebase and wrapped in the usual `except Exception`, that turned into six separate features
+    that silently did nothing on macOS — app launching, icon extraction, music search. One helper,
+    used everywhere, is the difference between "this platform is unsupported" and "this platform
+    fails quietly".
+    """
+    return {"creationflags": 0x08000000} if is_windows() else {}
+
+
 def kill_tree(proc) -> None:
     """Kill a Popen AND every descendant. A backgrounded grandchild that inherited
     the stdout pipe would otherwise hold its write end open and wedge a follow-up

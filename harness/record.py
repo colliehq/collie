@@ -76,7 +76,7 @@ def list_dshow_devices():
     """(cameras, microphones) as ffmpeg sees them — the exact names dshow needs. Windows only."""
     exe = _ffmpeg()
     p = subprocess.run([exe, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-                       capture_output=True, text=True, creationflags=_NOWIN)
+                       capture_output=True, text=True, **plat.no_window_kwargs())
     text = (p.stderr or "") + (p.stdout or "")
     cams, mics = [], []
     for line in text.splitlines():
@@ -175,7 +175,7 @@ def _avf_camera_rate(idx, want):
     try:
         p = subprocess.run([_ffmpeg(), "-hide_banner", "-f", "avfoundation", "-framerate", "1",
                             "-i", "%d:" % idx, "-t", "0.1", "-f", "null", "-"],
-                           capture_output=True, text=True, timeout=20, creationflags=_NOWIN)
+                           capture_output=True, text=True, timeout=20, **plat.no_window_kwargs())
     except Exception:
         return 30
     rates = set()
@@ -393,7 +393,7 @@ def _postprocess(src, webcam, has_mic, has_sys, cam_size, margin, position, mirr
         args += ["-c:a", "aac", "-b:a", "160k"]
     args += ["-movflags", "+faststart", dst]
     try:
-        subprocess.run(args, capture_output=True, creationflags=_NOWIN)
+        subprocess.run(args, capture_output=True, **plat.no_window_kwargs())
     except Exception:
         return None
     return dst if (os.path.exists(dst) and os.path.getsize(dst) > 1024) else None
@@ -432,7 +432,7 @@ def _alive(pid):
                                  capture_output=True, text=True).stdout or ""
             return "ffmpeg" in out.lower()
         out = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/NH"],
-                             capture_output=True, text=True, creationflags=_NOWIN).stdout or ""
+                             capture_output=True, text=True, **plat.no_window_kwargs()).stdout or ""
         return ("ffmpeg" in out.lower()) and (str(pid) in out)
     except Exception:
         return False
@@ -444,7 +444,7 @@ def _kill(pid):
     try:
         if plat.is_windows():
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, creationflags=_NOWIN)
+                           capture_output=True, **plat.no_window_kwargs())
         else:
             os.kill(int(pid), signal.SIGKILL)
     except Exception:
