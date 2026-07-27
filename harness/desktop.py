@@ -616,6 +616,30 @@ def _lyric_queries(title, artist):
     return out[:6]
 
 
+def _cjk(s):
+    """The CJK characters in a string."""
+    return {c for c in (s or "") if "\u3400" <= c <= "\u9fff"}
+
+
+def _same_song(want, song, want_raw="", song_raw=""):
+    """Does this lyrics hit name the song we are playing?
+
+    Token intersection alone cannot answer that for Chinese. Chinese has no spaces, so a whole
+    title is ONE token, and YouTube titles are usually traditional while the request is usually
+    simplified — 太阳之子 vs 太陽之子 share no token at all, one character apart. Every correct hit
+    was rejected, the loop fell through to a looser query, and a different song's lyrics came back.
+
+    So for CJK compare characters, not tokens: 太阳之子/太陽之子 overlap 3 of 4, while 太阳之子/七里香
+    overlap none. Latin text keeps the exact token rule, where it works.
+    """
+    if want & song:
+        return True
+    a, b = _cjk(want_raw), _cjk(song_raw)
+    if not a or not b:
+        return False
+    return len(a & b) / float(min(len(a), len(b))) >= 0.5
+
+
 def _tokens(s):
     import re
     return set(re.findall(r"[0-9a-z]{2,}|[一-鿿぀-ヿ가-힣]{2,}", (s or "").lower()))
@@ -690,8 +714,10 @@ def lyrics(query, artist="", duration=0, title=""):
                 continue
             # the SONG name must match — share a token with the trackName, not merely the artist
             # (else every 周杰伦 song "matches" 周杰伦 and duration-sort grabs the wrong one).
-            song = _tokens(hit.get("trackName") or "")
-            if want and song and not (want & song):
+            track_name = hit.get("trackName") or ""
+            song = _tokens(track_name)
+            if want and song and not _same_song(want, song, q + " " + (title or query or ""),
+                                                track_name):
                 continue
             valid.append(hit)
         if not valid:

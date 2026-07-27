@@ -659,9 +659,13 @@
   function activity(){ enterCoding(); bumpHard(); if (activeRuns <= 0) armGrace(); else clearTimeout(codeGrace); }
   try {
     var live = new EventSource("/api/live");
-    live.addEventListener("start", function(){ activeRuns++; enterCoding(); bumpHard(); clearTimeout(codeGrace); });
+    // The star-map IS the code map, so it belongs to runs that touch code — not to every
+    // answer. Entering on `start` meant "计算一下24*24" swapped the whole desktop into the
+    // coding view in order to say 576, and `tool` did the same for a web search. Counting
+    // still begins at `start` so the grace timer stays right; only the visual now waits for
+    // an edit or a reproduction — actual code work.
+    live.addEventListener("start", function(){ activeRuns++; bumpHard(); clearTimeout(codeGrace); });
     live.addEventListener("edit", activity);
-    live.addEventListener("tool", activity);
     live.addEventListener("repro", activity);
     live.addEventListener("done",  function(){ activeRuns = Math.max(0, activeRuns - 1); bumpHard(); if (activeRuns <= 0) armGrace(); });
     live.onerror = function(){};
