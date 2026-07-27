@@ -73,10 +73,27 @@ else
   echo "  collie:  installed cross-arch via the host pip"
 fi
 
-# strip build detritus that would otherwise be signed and shipped
-find "$RES/python" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
-find "$RES/python" -name "*.pyc" -delete 2>/dev/null || true
 rm -rf "$RES/python/lib/python$PYVER/test" "$RES/python/lib/python$PYVER/idlelib" \
        "$RES/python/lib/python$PYVER/tkinter" "$RES/python/share" 2>/dev/null || true
+
+# ── bytecode: precompile it INTO the bundle, do not strip it ─────────────────────────────────────
+# Stripping .pyc looks tidy and is actively harmful here. A signed .app is sealed: every file is
+# hashed into the signature. If the bundle ships without bytecode, the first run writes 242 .pyc
+# files into it and the seal breaks —
+#     spctl: rejected, "a sealed resource is missing or invalid"
+# — on the user's machine, after they installed it. So compile everything first, and compile it with
+# `unchecked-hash` invalidation so the .pyc stay valid no matter what happens to source mtimes when
+# the app is copied out of the dmg.
+find "$RES/python" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+find "$RES/python" -name "*.pyc" -delete 2>/dev/null || true
+if "$RES/python/bin/python3" -c "pass" 2>/dev/null; then
+  "$RES/python/bin/python3" -m compileall -q -f --invalidation-mode unchecked-hash \
+      "$RES/python/lib/python$PYVER" >/dev/null 2>&1 || true
+  echo "  bytecode: precompiled $(find "$RES/python" -name '*.pyc' | wc -l | tr -d ' ') files (sealed, so runtime never writes)"
+else
+  # cross-arch staging: host python's magic number would not match the staged one, so the bundle
+  # ships without bytecode and the launcher's PYTHONDONTWRITEBYTECODE keeps the seal intact.
+  echo "  bytecode: skipped (cross-arch) — launcher runs with PYTHONDONTWRITEBYTECODE=1"
+fi
 
 echo "  payload: $(du -sh "$RES/python" | cut -f1)"

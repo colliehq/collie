@@ -64,3 +64,48 @@ bash installer/build_mac.sh --sign --dmg --bundle-python --notarize collie
 It signs with the Developer ID cert, notarises, staples, and then asks Gatekeeper for its verdict on
 both the `.app` and the `.dmg` — exiting non-zero if either is still refused, so a rejected build
 cannot be mistaken for a shippable one.
+
+## Getting it into CI
+
+The release workflow's `dmg` job signs and notarises only if these repository secrets exist, and
+builds an unsigned dmg (that it refuses to call shippable) if they don't. Export the certificate
+*with its private key* — Keychain Access → My Certificates → right-click the **Developer ID
+Application** entry → Export → `.p12`, and pick a password:
+
+```sh
+# from the exported file, never pasted into a terminal that logs history
+base64 -i ~/Downloads/DeveloperID.p12 | pbcopy      # -> secret MACOS_CERT_P12
+```
+
+| Secret | What it is |
+|---|---|
+| `MACOS_CERT_P12` | base64 of the exported `.p12` (certificate **and** private key) |
+| `MACOS_CERT_PASSWORD` | the password you chose during that export |
+| `ASC_KEY_P8` | base64 of the App Store Connect API key `.p8` |
+| `ASC_KEY_ID` | the key id — the `XXXX` in `AuthKey_XXXX.p8` |
+| `ASC_ISSUER_ID` | the issuer UUID from App Store Connect → Users and Access → Integrations |
+
+```sh
+gh secret set MACOS_CERT_P12 --repo colliehq/collie < <(base64 -i ~/Downloads/DeveloperID.p12)
+gh secret set ASC_KEY_P8     --repo colliehq/collie < <(base64 -i ~/.appstoreconnect/private_keys/AuthKey_XXXX.p8)
+gh secret set MACOS_CERT_PASSWORD --repo colliehq/collie
+gh secret set ASC_KEY_ID          --repo colliehq/collie
+gh secret set ASC_ISSUER_ID       --repo colliehq/collie
+```
+
+The `.p12` is the private key that signs software as you. Treat it like the Global API Key: it lives
+in a file, it goes into a secret store, and it never appears in a chat, a commit or a log line.
+
+## What a complete macOS release looks like
+
+| Piece | State |
+|---|---|
+| Standalone bundle (private CPython, no system Python) | done — `--bundle-python` |
+| Extensions actually load inside it | done — needed the nested-entitlements fix |
+| Signature survives first launch | done — bytecode is precompiled, so the seal is never broken |
+| App icon | done — rsvg-convert, else Chrome |
+| Both architectures | done in CI — `macos-14` (arm64) + `macos-13` (Intel) |
+| Developer ID signature + notarisation | **needs the certificate above** |
+| Published next to `Collie-Setup.exe` | done in CI — the `dmg` job feeds the same release |
+| Landing page download button | still says "coming soon"; flip it when the first signed dmg ships |
+| Auto-update | not built. Homebrew users get `brew upgrade`; dmg users re-download. |
