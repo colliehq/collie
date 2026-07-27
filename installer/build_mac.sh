@@ -41,24 +41,75 @@ echo "── Collie.app $VERSION ───────────────�
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # ── icon: the shipped SVG -> .icns, every size Finder asks for ──────────────────────────────────
+# An app with no icon is a generic white page in the Dock and the Finder, which is not a detail on a
+# download page — so this tries hard before giving up. rsvg-convert is the clean path; Chrome is the
+# fallback, because a browser is a very good SVG rasteriser that most Macs already have and nobody
+# has to `brew install librsvg` to get a branded build.
 ICONSET=$(mktemp -d)/collie.iconset; mkdir -p "$ICONSET"
-if command -v rsvg-convert >/dev/null 2>&1; then RENDER=rsvg
-elif command -v sips >/dev/null 2>&1 && command -v qlmanage >/dev/null 2>&1; then RENDER=ql
-else RENDER=none; fi
-for sz in 16 32 64 128 256 512 1024; do
-  case "$RENDER" in
-    rsvg) rsvg-convert -w $sz -h $sz assets/collie-logo.svg -o "$ICONSET/icon_${sz}x${sz}.png" ;;
-    *)    : ;;   # no SVG rasteriser -> skip the icon rather than fail the build
-  esac
+CHROME_BIN=""
+for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+         "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"; do
+  [ -x "$c" ] && { CHROME_BIN="$c"; break; }
 done
-if [ "$RENDER" = "rsvg" ]; then
+if command -v rsvg-convert >/dev/null 2>&1; then RENDER=rsvg
+elif [ -n "$CHROME_BIN" ]; then RENDER=chrome
+else RENDER=none; fi
+
+render_icon() {   # <size> <out.png>
+  local sz="$1" out="$2"
+  case "$RENDER" in
+    rsvg)   rsvg-convert -w "$sz" -h "$sz" assets/collie-logo.svg -o "$out" ;;
+    chrome)
+      local d; d=$(mktemp -d)
+      cp assets/collie-logo.svg "$d/logo.svg"
+      printf '<style>html,body{margin:0;padding:0;background:transparent}img{display:block;width:%spx;height:%spx}</style><img src="logo.svg">' "$sz" "$sz" > "$d/i.html"
+      # Headless Chrome writes the screenshot and then, often, does not exit — instances survive for
+      # hours. Called synchronously it would hang the build forever, so: run it in the background,
+      # wait for the file, and kill it. --default-background-color=00000000 is what keeps the alpha;
+      # without it every icon lands on an opaque white square.
+      "$CHROME_BIN" --headless --disable-gpu --user-data-dir="$d/prof" --no-sandbox \
+        --screenshot="$out" --window-size="$sz,$sz" --default-background-color=00000000 \
+        --virtual-time-budget=3000 "file://$d/i.html" >/dev/null 2>&1 &
+      local pid=$! i=0
+      while [ "$i" -lt 90 ]; do
+        [ -s "$out" ] && { sleep 1; break; }          # let the write settle before killing it
+        kill -0 "$pid" 2>/dev/null || break           # it exited on its own — fine either way
+        sleep 1; i=$((i+1))
+      done
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -rf "$d" ;;
+  esac
+  [ -s "$out" ]
+}
+
+if [ "$RENDER" != "none" ]; then
+  ok=1
+  if [ "$RENDER" = "chrome" ]; then
+    # One Chrome launch, not seven: headless startup dominates (~20s each), so render the largest
+    # size once and let sips — which is in-box and instant — do the downscales.
+    if render_icon 1024 "$ICONSET/icon_1024x1024.png"; then
+      for sz in 16 32 64 128 256 512; do
+        sips -z "$sz" "$sz" "$ICONSET/icon_1024x1024.png" --out "$ICONSET/icon_${sz}x${sz}.png" \
+          >/dev/null 2>&1 || { ok=0; break; }
+      done
+    else ok=0; fi
+  else
+    for sz in 16 32 64 128 256 512 1024; do
+      render_icon "$sz" "$ICONSET/icon_${sz}x${sz}.png" || { ok=0; break; }
+    done
+  fi
   # iconutil wants the @2x names too
   for sz in 16 32 128 256 512; do
     cp "$ICONSET/icon_$((sz*2))x$((sz*2)).png" "$ICONSET/icon_${sz}x${sz}@2x.png" 2>/dev/null || true
   done
-  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/collie.icns" && echo "  icon: collie.icns"
+  if [ "$ok" = "1" ] && iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/collie.icns" 2>/dev/null
+  then echo "  icon: collie.icns (via $RENDER)"
+  else echo "  icon: FAILED to rasterise with $RENDER — the app will show a blank document icon" >&2
+  fi
 else
-  echo "  icon: skipped (no rsvg-convert — brew install librsvg for a real app icon)"
+  echo "  icon: skipped — no rasteriser (brew install librsvg, or install Chrome)" >&2
 fi
 
 # ── runtime + launcher ───────────────────────────────────────────────────────────────────────────
@@ -71,6 +122,9 @@ if [ "$BUNDLE_PY" = "1" ]; then
 # Bundle entry point — runs the private runtime inside this .app. No system Python involved.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export COLLIE_BUNDLED=1
+# The bundle is code-signed, which means sealed: a single .pyc written in here invalidates the
+# signature on the user's own machine. The bytecode is precompiled at build time instead.
+export PYTHONDONTWRITEBYTECODE=1
 exec "$HERE/Resources/python/bin/python3" -m harness.cli app "$@"
 LAUNCHER
   echo "  launcher -> bundled runtime"
@@ -128,17 +182,42 @@ cat > "$ENTITLEMENTS" <<ENT
 </dict></plist>
 ENT
 
+# The bundled interpreter needs its own entitlements, and this is not cosmetic: it is the process,
+# so IT is what library validation judges — the outer bundle's entitlements never reach it. Signed
+# with the hardened runtime and nothing else, python3 refuses to dlopen any extension whose signature
+# comes from a different signer, which is every wheel with a compiled extension in it:
+#
+#   ImportError: dlopen(onnxruntime_pybind11_state.so): code signature not valid for use in
+#   process: mapping process and mapped file (non-platform) have different Team IDs
+#
+# That silently gutted --bundle-python builds: onnxruntime, tokenizers and all of pyobjc failed to
+# import, so the app fell back to keyword memory and could never show a native window, while the
+# build log said "installed" for all of them. Camera/mic stay off this one — a library's entitlements
+# are ignored anyway, and the process inherits what it needs from the bundle it lives in.
+ENT_NESTED=$(mktemp).plist
+cat > "$ENT_NESTED" <<ENT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.cs.allow-jit</key>                  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key> <true/>
+</dict></plist>
+ENT
+
 # Every Mach-O inside the bundle must carry its own signature under the hardened runtime, and they
 # must be signed BEFORE the enclosing bundle — sign the outside first and the inner writes
 # invalidate it. (`codesign --deep` is Apple-discouraged and skips entitlements, so: do it by hand.)
 sign_nested() {
   local id="$1"; shift
-  local n=0
+  local n=0 bad=0
   while IFS= read -r f; do
-    codesign --force --options runtime "$@" --sign "$id" "$f" 2>/dev/null && n=$((n+1)) || true
+    if codesign --force --options runtime --entitlements "$ENT_NESTED" "$@" --sign "$id" "$f" 2>/dev/null
+    then n=$((n+1)); else bad=$((bad+1)); echo "  !! codesign failed: ${f#"$APP/"}" >&2; fi
   done < <(find "$APP/Contents/Resources" -type f \( -name "*.so" -o -name "*.dylib" -o -perm -u+x \) 2>/dev/null \
            | while IFS= read -r f; do file -b "$f" | grep -q "Mach-O" && echo "$f"; done)
   [ "$n" -gt 0 ] && echo "  signed $n nested binaries" || true
+  # a swallowed codesign failure is how a bundle ships with an unloadable extension inside it
+  [ "$bad" = "0" ] || { echo "  $bad nested binaries could not be signed" >&2; return 1; }
 }
 
 if [ "$SIGN" = "1" ]; then
@@ -170,6 +249,34 @@ else
   echo "  signed: ad-hoc (local only)"
 fi
 codesign --verify --deep --strict --verbose=1 "$APP" 2>&1 | sed 's/^/  verify: /'
+
+# ── does the payload actually import? ────────────────────────────────────────────────────────────
+# Signing is what breaks this, so it has to run after signing, and it has to run through the BUNDLED
+# interpreter with a cleared environment — the developer's own PYTHONPATH would hide exactly the
+# failure this is looking for. `pip install` reporting success says nothing about whether the
+# extension loads; that is the gap this build shipped through for two releases.
+if [ "$BUNDLE_PY" = "1" ]; then
+  PYBIN="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")/Contents/Resources/python/bin/python3"
+  env -i PYTHONDONTWRITEBYTECODE=1 "$PYBIN" -B - "$EXTRAS" <<'SMOKE' || { echo "  payload is broken — not shipping it" >&2; exit 1; }
+import sys
+WANTED = {"local": ["onnxruntime", "tokenizers", "huggingface_hub", "numpy"],
+          "tui": ["rich"], "desktop": ["objc", "Cocoa", "WebKit", "Quartz"],
+          "remote": ["cryptography"], "browser": ["playwright"], "search": ["ddgs"]}
+mods = ["harness"]
+for extra in (sys.argv[1] or "").split(","):
+    mods += WANTED.get(extra.strip(), [])
+bad = []
+for m in mods:
+    try:
+        __import__(m)
+    except Exception as e:
+        bad.append("    %-18s %s: %s" % (m, type(e).__name__, str(e).split("\n")[0][:120]))
+print("  payload imports: %d/%d modules" % (len(mods) - len(bad), len(mods)))
+if bad:
+    print("  these are installed but do NOT load:"); print("\n".join(bad))
+sys.exit(1 if bad else 0)
+SMOKE
+fi
 
 # ── dmg ──────────────────────────────────────────────────────────────────────────────────────────
 if [ "$DMG" = "1" ]; then

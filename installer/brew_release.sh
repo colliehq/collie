@@ -1,51 +1,50 @@
 #!/usr/bin/env bash
-# Cut a Homebrew release of collie: build the sdist, publish it as a release asset on the tap, and
-# rewrite the formula's url + sha256 to match.
+# Point the Homebrew formula at a published collie release and push the tap.
 #
-#   bash installer/brew_release.sh            # dry run: build + rewrite the formula, publish nothing
-#   bash installer/brew_release.sh --publish  # …and create the tag, release and asset via gh
+#   bash installer/brew_release.sh              # latest release; rewrite the formula, publish nothing
+#   bash installer/brew_release.sh v0.20.0      # a specific tag
+#   bash installer/brew_release.sh v0.20.0 --publish     # …and commit + push the tap
 #
-# WHY the tarball lives on the tap rather than on the source repo: wudaming00/collie is private, so
-# `brew install` cannot fetch from it and Homebrew will not prompt for credentials. The tap repo is
-# public, and a release asset there is a plain public URL. If the source repo is ever made public,
-# point `url` at its tag tarball and delete this indirection.
+# It deliberately does NOT build a tarball. The release workflow already publishes
+# collie_harness-<ver>.tar.gz on every tag, and the formula has to name the artifact users actually
+# download. Building a second sdist here would hash something nobody else has — sdists are not
+# byte-reproducible, so the local one and the published one differ, and `brew install` would fail the
+# checksum on a file that is otherwise perfectly fine.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 TAP="${TAP_DIR:-$HOME/projects/homebrew-collie}"
-PUBLISH=0; [ "${1:-}" = "--publish" ] && PUBLISH=1
+REPO="${COLLIE_REPO:-colliehq/collie}"
 
-# The default python3 here is a 3.8 framework build with no 'build' module, so probe for one that
-# has it. The BUILDER's version does not matter — an sdist is source plus metadata, and the 3.10+
-# floor is declared in the metadata and enforced by pip at install time, not at build time.
-#
-# The probe must run from a neutral cwd: this repo has a build/ directory, and `import build` here
-# resolves to it as a namespace package — the check would pass and `-m build` would then fail. That
-# is the same trap the builder itself is run from elsewhere to avoid.
-PY=""
-for c in "${PYTHON:-}" python3.13 python3.12 python3.11 python3 "$HOME/opt/anaconda3/bin/python"; do
-  [ -n "$c" ] || continue
-  (cd / && "$c" -m build --version) >/dev/null 2>&1 || continue
-  PY="$c"; break
+PUBLISH=0; TAG=""
+for a in "$@"; do
+  case "$a" in
+    --publish) PUBLISH=1 ;;
+    v*)        TAG="$a" ;;
+    *)         echo "unknown argument: $a" >&2; exit 2 ;;
+  esac
 done
-[ -n "$PY" ] || { echo "no python with the 'build' module (pip install build; or set PYTHON=)" >&2; exit 1; }
-echo "== using $PY ($("$PY" -V 2>&1))"
 
-VERSION=$("$PY" -c "import re;print(re.search(r'__version__ = \"(.*?)\"',open('harness/__init__.py').read()).group(1))")
+if [ -z "$TAG" ]; then
+  TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+        | python3 -c "import json,sys;print(json.load(sys.stdin)['tag_name'])") \
+    || { echo "could not read the latest release of $REPO" >&2; exit 1; }
+fi
+
+VERSION="${TAG#v}"
 TARBALL="collie_harness-$VERSION.tar.gz"
-echo "== collie $VERSION"
+URL="https://github.com/$REPO/releases/download/$TAG/$TARBALL"
+echo "== collie $VERSION  ($REPO $TAG)"
 
-# `python -m build` resolves 'build' from the cwd, and this repo HAS a build/ directory that shadows
-# the module — so run the builder from somewhere else and point it back here.
-rm -rf dist && (cd "$(mktemp -d)" && "$PY" -m build --sdist --outdir "$OLDPWD/dist" "$OLDPWD" >/dev/null)
-[ -f "dist/$TARBALL" ] || { echo "no dist/$TARBALL" >&2; exit 1; }
-SHA=$(shasum -a 256 "dist/$TARBALL" | cut -d' ' -f1)
-echo "   $TARBALL  sha256 $SHA"
+# Hash exactly what a user will download, by downloading it.
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+curl -fsSL -o "$TMP/$TARBALL" "$URL" || { echo "no such release asset: $URL" >&2; exit 1; }
+SHA=$(shasum -a 256 "$TMP/$TARBALL" | cut -d' ' -f1)
+echo "   $TARBALL  $(du -h "$TMP/$TARBALL" | cut -f1)  sha256 $SHA"
 
-URL="https://github.com/wudaming00/homebrew-collie/releases/download/v$VERSION/$TARBALL"
 F="$TAP/Formula/collie.rb"
 [ -f "$F" ] || { echo "no formula at $F (set TAP_DIR)" >&2; exit 1; }
-"$PY" - "$F" "$URL" "$SHA" <<'PY'
+python3 - "$F" "$URL" "$SHA" <<'PY'
 import re, sys
 path, url, sha = sys.argv[1:4]
 s = open(path).read()
@@ -56,7 +55,11 @@ PY
 echo "   formula updated: $F"
 
 if [ "$PUBLISH" != "1" ]; then
-  echo "== dry run. Re-run with --publish to tag, release and upload."
+  echo "== dry run. Re-run with --publish to commit and push the tap."
+  echo "   test it first, without publishing anything:"
+  echo "     brew tap-new wudaming00/collie --no-git"
+  echo "     cp $F \"\$(brew --repository)/Library/Taps/wudaming00/homebrew-collie/Formula/\""
+  echo "     brew install --build-from-source wudaming00/collie/collie && brew test wudaming00/collie/collie"
   exit 0
 fi
 
@@ -68,10 +71,8 @@ gh repo view wudaming00/homebrew-collie >/dev/null 2>&1 || {
   gh repo create wudaming00/homebrew-collie --public --source "$TAP" --push \
      --description "Homebrew tap for collie"
 }
-gh release view "v$VERSION" --repo wudaming00/homebrew-collie >/dev/null 2>&1 \
-  && gh release upload "v$VERSION" "dist/$TARBALL" --repo wudaming00/homebrew-collie --clobber \
-  || gh release create "v$VERSION" "dist/$TARBALL" --repo wudaming00/homebrew-collie \
-       --title "collie $VERSION" --notes "collie $VERSION"
-
-git -C "$TAP" add -A && git -C "$TAP" commit -q -m "collie $VERSION" && git -C "$TAP" push -q
+git -C "$TAP" add -A
+git -C "$TAP" diff --cached --quiet && { echo "== formula already at $VERSION, nothing to push."; exit 0; }
+git -C "$TAP" commit -q -m "collie $VERSION"
+git -C "$TAP" push -q
 echo "== published. Install with:  brew install wudaming00/collie/collie"
