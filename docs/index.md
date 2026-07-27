@@ -1,8 +1,8 @@
 # Collie
 
-**A lean coding-agent harness that proves its work.** Collie writes a reproduction, runs it, and
-finishes only when an executed assertion passes — at roughly a sixth the tokens of comparable
-agents. Terminal-first, model-agnostic, and honestly measured.
+**A coding agent that lives on your computer — and can actually run it.** Local and private, Collie
+reaches your real environment — your logged-in browser, your desktop, your screen, your files — and
+proves its work by running it.
 
 <div class="grid cards" markdown>
 
@@ -14,7 +14,18 @@ agents. Terminal-first, model-agnostic, and honestly measured.
 
 </div>
 
-## The signature: the verification gate
+## Why it's different
+
+Most coding agents live in a cloud tab or an editor pane and can only touch the files you hand them.
+Collie runs on **your** machine, so it works the way you do: it drives your *real* logged-in browser,
+arranges your desktop, records your screen, takes tasks from your phone, and edits your code — all
+locally, all under your control.
+
+And the range is the proof. The desktop console, the browser control, the screen recorder, the phone
+remote — Collie's coding agent **built all of it.** A harness strong enough to ship its own desktop
+app and iOS companion is strong enough for your bug.
+
+## It proves its work: the verification gate
 
 When Collie fixes something it writes a reproduction that **must fail on the broken code**, makes the
 smallest edit that flips it, and re-runs the assertion. A run isn't "done" — it's **verified ✓**.

@@ -1,5 +1,5 @@
 site_name: Collie
-site_description: A lean coding-agent harness that proves its work.
+site_description: A coding agent that lives on your computer — local, private, and able to run your real environment.
 site_url: https://colliehq.github.io/collie/
 repo_url: https://github.com/colliehq/collie
 repo_name: colliehq/collie
