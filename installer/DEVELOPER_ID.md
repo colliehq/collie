@@ -96,6 +96,29 @@ gh secret set ASC_ISSUER_ID       --repo colliehq/collie
 The `.p12` is the private key that signs software as you. Treat it like the Global API Key: it lives
 in a file, it goes into a secret store, and it never appears in a chat, a commit or a log line.
 
+## The dmg has to be signed too, and in this order
+
+Signing the app is not enough. A dmg containing a perfectly notarised app is still refused, because
+assessing a *disk image* means assessing the disk image's own signature:
+
+```
+spctl -a -t exec  Collie.app       accepted, source=Notarized Developer ID
+spctl -a -t open  Collie.dmg       rejected, source=no usable signature
+```
+
+Every step in between reports success — `notarytool` returns **Accepted**, `stapler staple` works,
+`stapler validate` says "The validate action worked!" — on a dmg that nobody can open. Only `spctl`
+tells you.
+
+The order matters, because signing rewrites the file and throws away any ticket already stapled to it:
+
+```
+hdiutil create  ->  codesign the dmg  ->  notarytool submit  ->  stapler staple
+```
+
+Get it backwards and `stapler validate` answers "does not have a ticket stapled to it", which at
+least fails loudly. `build_mac.sh` does this in the right order and then asks Gatekeeper anyway.
+
 ## What a complete macOS release looks like
 
 | Piece | State |
@@ -105,7 +128,7 @@ in a file, it goes into a secret store, and it never appears in a chat, a commit
 | Signature survives first launch | done — bytecode is precompiled, so the seal is never broken |
 | App icon | done — rsvg-convert, else Chrome |
 | Both architectures | done in CI — `macos-14` (arm64) + `macos-13` (Intel) |
-| Developer ID signature + notarisation | **needs the certificate above** |
+| Developer ID signature + notarisation | done — cert `58Y98W3QQK`, notarised and stapled |
 | Published next to `Collie-Setup.exe` | done in CI — the `dmg` job feeds the same release |
 | Landing page download button | still says "coming soon"; flip it when the first signed dmg ships |
 | Auto-update | not built. Homebrew users get `brew upgrade`; dmg users re-download. |

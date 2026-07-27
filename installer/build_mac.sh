@@ -285,6 +285,19 @@ if [ "$DMG" = "1" ]; then
   rm -f "$DMG_PATH"
   hdiutil create -volname "Collie" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH" >/dev/null
   echo "  dmg: $DMG_PATH"
+
+  # Sign the disk image itself, before notarising it. Notarisation and stapling both succeed on an
+  # unsigned dmg — Apple accepts it, the ticket staples, `stapler validate` says it worked — and
+  # Gatekeeper still refuses the download, because assessing a dmg means assessing ITS signature and
+  # there isn't one:
+  #     spctl: rejected, source=no usable signature   (while the .app inside says "Notarized Developer ID")
+  # Everything about that failure looks like success until you ask spctl, which is why the check at
+  # the end of this script exists.
+  if [ "$SIGN" = "1" ] && [ -n "${ID:-}" ]; then
+    codesign --force --timestamp --sign "$ID" "$DMG_PATH"
+    echo "  dmg signed: $ID"
+  fi
+
   if [ -n "$NOTARY_PROFILE" ]; then
     echo "  notarising (profile: $NOTARY_PROFILE) …"
     xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
