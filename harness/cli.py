@@ -64,7 +64,7 @@ def _embedder(embed="auto"):
 
 
 def make_harness(cwd, provider="mock", model=None, project="demo",
-                 embed="auto", prefix_ceiling=6000, browser=None, code_search=False,
+                 embed="auto", prefix_ceiling=6000, code_search=False,
                  rerank=None, distill=None, web_search=None, exec_code=False, delegate=False):
     from .embeddings import make_reranker
     from .distill import make_distiller
@@ -72,11 +72,9 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     rr = make_reranker(rerank or os.environ.get("COLLIE_RERANK"))   # opt-in cross-encoder
     ds = make_distiller(distill or os.environ.get("COLLIE_DISTILL"))  # opt-in extraction
     memory = SqliteMemory(mem_db, embedder=_embedder(embed), reranker=rr, distiller=ds)
-    if browser is None:                       # off | headless | headed | 1 | on  (Settings panel)
-        browser = os.environ.get("COLLIE_BROWSER", "off") not in ("0", "off", "false", "")
     if web_search is None:
         web_search = os.environ.get("COLLIE_WEBSEARCH", "") in ("1", "on", "true")
-    registry = default_registry(browser=browser, code_search=code_search, web_search=web_search,
+    registry = default_registry(code_search=code_search, web_search=web_search,
                                 exec_code=exec_code, delegate=delegate)
     composer = ContextComposer(memory, registry, TokenBudgeter(prefix_ceiling))
     recorder = Recorder(runs_db)
@@ -555,7 +553,6 @@ def cmd_run(args):
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
     h = make_harness(cwd, provider=provider, model=args.model, project=args.project,
-                     browser=getattr(args, "browser", None),
                      web_search=True if getattr(args, "web_search", False) else None,
                      exec_code=True, delegate=True)
     if getattr(args, "goal", None):              # pin a standing goal into CORE memory (every turn)
@@ -1330,8 +1327,6 @@ def main(argv=None):
     pr.add_argument("--stream-json", action="store_true", dest="stream_json",
                     help="stream NDJSON events (tool/edit/repro/receipt) to stderr as they "
                          "happen — for live UX / editor extension / ACP adapter")
-    pr.add_argument("--browser", action="store_true", default=None,
-                    help="enable Playwright browser tools (else COLLIE_BROWSER=1)")
     pr.add_argument("--web-search", action="store_true", dest="web_search",
                     help="enable the web_search tool (keyless DuckDuckGo, or a browser-extension "
                          "bridge via COLLIE_WEBSEARCH_BRIDGE)")

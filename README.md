@@ -85,8 +85,10 @@ run without any key, and memory works out of the box on BM25 keyword recall.
 
 Optional extras: `pip install ".[local,tui,search]"` — `local` (semantic memory: granite-107m via
 onnxruntime, ~55MB, multilingual), `tui` (rich terminal chat), `search` (keyless web search), `acp`
-(editor protocol), `browser` (Playwright). Per-OS setup — especially the real-browser bridge
-(`collie browser-bridge` + `harness/browser_ext/`) — is in **[docs/PLATFORMS.md](docs/PLATFORMS.md)**.
+(editor protocol), `browser` (Playwright — only for `collie browser-bridge --browser`, a managed
+Chromium with the extension preloaded, for CI or when you'd rather not use your own Chrome). Per-OS
+setup — especially the real-browser bridge (`collie browser-bridge` + `harness/browser_ext/`) — is in
+**[docs/PLATFORMS.md](docs/PLATFORMS.md)**.
 
 ## Quickstart
 

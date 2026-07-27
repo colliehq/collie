@@ -45,7 +45,7 @@ collie           # opens the terminal chat
 |---|---|
 | `local` | Semantic memory — granite-107m via onnxruntime (~55 MB, multilingual). What `collie setup` installs. |
 | `tui` | The rich terminal chat (`collie tui`). |
-| `browser` | Playwright, for the browser tool. |
+| `browser` | Playwright — only for `collie browser-bridge --browser` (a managed Chromium with the extension preloaded, for CI / no-login use). The everyday real-browser control uses your own Chrome + the extension and needs no extra. |
 | `search` | Keyless web search (DuckDuckGo). |
 | `acp` | Editor integration over the Agent Client Protocol (`collie acp`). |
 | `fastembed` | Opt-in jina-v3 and other fastembed models. |

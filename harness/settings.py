@@ -82,8 +82,6 @@ SCHEMA = [
          {"value": "1", "label": "Always on"},
          {"value": "0", "label": "Off"}],
      "hint": "Drive your REAL logged-in Chrome through the browser extension, so pages you're signed into (search, docs) just work. Auto is recommended."},
-    {"group": "Tools", "key": "BROWSER", "label": "Managed browser (Playwright)", "type": "bool", "default": "off",
-     "hint": "Spin up a throwaway headless browser with NO login state. Prefer the local-Chrome bridge above for anything that needs a login."},
     {"group": "Tools", "key": "PLAN_FIRST", "label": "Plan before multi-file edits", "type": "bool", "default": "off",
      "hint": "On larger SWE tasks, write and commit a scope/plan before touching files. Slower but steadier on sprawling changes."},
 
@@ -154,7 +152,6 @@ _ZH = {
     "BROWSER_BRIDGE": {"label": "用我的本地 Chrome(扩展桥)",
                        "hint": "通过浏览器扩展驱动你真实登录的 Chrome,登录态页面(搜索、文档)直接可用。推荐 Auto。",
                        "options": {"auto": "自动 — 扩展在线就用", "1": "总是开", "0": "关"}},
-    "BROWSER": {"label": "托管浏览器(Playwright)", "hint": "起一个无登录态的一次性 headless 浏览器。需要登录的场景请优先上面的 Chrome 桥。"},
     "PLAN_FIRST": {"label": "多文件编辑前先计划", "hint": "大型任务先写好范围/计划再动文件。更慢但在牵连面大的改动上更稳。"},
     "EMBED": {"label": "语义模型",
               "hint": "记忆召回背后的语义模型。auto 用 granite(进程内 ONNX),依赖/模型不可用时降级为 BM25 关键词召回——绝不退回 hash(实测比 BM25 还差)。改动后需要 `collie mem reembed`。",

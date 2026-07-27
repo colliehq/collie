@@ -1314,7 +1314,7 @@ class Handler(BaseHTTPRequestHandler):
             # (the advertised real path), and the SSE headers are already committed — so a
             # provider error must arrive as a clean `done{error}` frame, not an escaped 500.
             h = make_harness(cwd, provider=_provider(), project="web",
-                             browser=True, code_search=True, web_search=True, exec_code=True, delegate=True)
+                             code_search=True, web_search=True, exec_code=True, delegate=True)
             # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
             # shell + the user's logged-in browser. Nudge it to ACT on local/system questions (time, tz,
             # hardware, status, location) via bash/powershell.exe instead of refusing for "lack of a tool".

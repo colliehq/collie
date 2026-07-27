@@ -85,9 +85,9 @@ def _live_runner(query: str) -> str:
     from .cli import make_harness
     from . import settings as _s
     _s.apply()
-    # browser=None -> default_registry auto-enables the real browser bridge when it
-    # is live (that is the whole point). web_search/web_fetch are force-registered
-    # below so they exist as a fallback even when the bridge suppresses them.
+    # default_registry auto-enables the real browser bridge when it is live (that is
+    # the whole point). web_search/web_fetch are force-registered below so they exist
+    # as a fallback even when the bridge suppresses them.
     h = make_harness(_notes_dir(), provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
                      project="research", embed="hash", web_search=True)
     from .websearch import register_web_search

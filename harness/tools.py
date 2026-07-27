@@ -789,7 +789,7 @@ class LoadToolsTool(Tool):
         return "\n".join(lines)
 
 
-def default_registry(browser: bool = False, code_search: bool = False,
+def default_registry(code_search: bool = False,
                      web_search: bool = False, exec_code: bool = False,
                      delegate: bool = False) -> ToolRegistry:
     r = ToolRegistry()
@@ -819,12 +819,9 @@ def default_registry(browser: bool = False, code_search: bool = False,
     if delegate and os.environ.get("COLLIE_SUBAGENT") != "1":  # single-depth: no nesting
         from .delegate import register_delegate
         register_delegate(r)
-    if bridge_on:
-        from .browserbridge import register_browser_bridge
-        register_browser_bridge(r)
-    if browser:                                  # opt-in Playwright browser tools
-        from .browser import register_browser
-        register_browser(r)
+    if bridge_on:                                # the ONE browser path: the user's real logged-in
+        from .browserbridge import register_browser_bridge   # Chrome via the extension (or a managed
+        register_browser_bridge(r)                           # Chromium launched with it — same tools)
     # external MCP servers -> deferred tier (advertised by name, schema loaded on demand). Kept
     # last so a broken server can't stop the core tools from registering.
     try:

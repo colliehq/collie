@@ -207,7 +207,7 @@ def _real_web_submit(actuator=None):
         submit_sel = a.get("submit") or a.get("submit_selector") or ""
         act = actuator or _live_actuator()
         if act is None:
-            return {"submitted": False, "error": "no browser available (install playwright / connect your browser)"}
+            return {"submitted": False, "error": "no browser available (start `collie browser-bridge` and connect the extension)"}
         try:
             act.open(url)
             for sel, text in (fields.items() if isinstance(fields, dict) else []):
