@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.20.2 — the macOS desktop actually works
+
+The macOS bundle shipped with its whole desktop backend inert: six features were written
+against Windows-only APIs and wrapped in `except Exception`, so they returned False without
+a word. Opening an app, opening a project, the launcher's contents, every icon, and the
+yt-dlp download were all affected, plus fourteen call sites passing a Windows-only
+`creationflags`.
+
+- **Apps open.** `/usr/bin/open` and `xdg-open`; `/Applications` is scanned (103 apps on the
+  machine this was found on) instead of a list of `C:\` paths; icons come from the bundle's
+  `.icns` via `sips` rather than PowerShell.
+- **Music is 10x faster and finds playable tracks.** The platform yt-dlp binaries unpack 38MB
+  on every run — `--version` alone took 20 seconds — so the pure-Python zipapp is used
+  instead: 40s+ down to 4.3s. 24/7 livestreams are dropped rather than down-ranked, since
+  they offer no audio-only format and "lofi" matches nothing else.
+- **The composer routes desktop intents** — open an app, ask about this machine, open a
+  project, stop the music — instead of handing everything to the coding agent.
+- **Chinese lyrics match the song playing.** The guard compared word tokens, which Chinese
+  does not have, so 太阳之子 and 太陽之子 looked unrelated and another song's lyrics came back.
+- **The desktop is a desktop.** It sits one level below every app window, so it can never
+  cover your work; double-clicking empty space reveals the desktop, which the window would
+  otherwise have swallowed.
+- **`tests/test_platform_purity.py`** refuses unguarded Windows-only APIs outside `plat.py`.
+  It caught new code on its first day.
+
 ## v0.20.1 — the macOS download
 
 A signed, notarised **`Collie-arm64.dmg`** now ships alongside `Collie-Setup.exe`: double-click,
