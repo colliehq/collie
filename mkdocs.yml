@@ -46,6 +46,8 @@ nav:
   - Providers: providers.md
   - CLI reference: cli.md
   - The desktop app: desktop.md
+  - Code signing: signing.md
+  - Privacy: privacy.md
 
 validation:
   omitted_files: ignore
