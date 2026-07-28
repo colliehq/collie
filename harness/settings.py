@@ -84,7 +84,7 @@ SCHEMA = [
      "hint": "Drive your REAL logged-in Chrome through the browser extension, so pages you're signed into (search, docs) just work. Auto is recommended."},
     {"group": "Tools", "key": "PLAN_FIRST", "label": "Plan before multi-file edits", "type": "bool", "default": "off",
      "hint": "On larger SWE tasks, write and commit a scope/plan before touching files. Slower but steadier on sprawling changes."},
-    {"group": "Desktop", "key": "WALLPAPER", "label": "Ambient desktop at login", "label_zh": "登录时启动靠近桌面", "type": "bool", "default": "on",
+    {"group": "Desktop", "key": "WALLPAPER", "label": "Ambient desktop at login", "label_zh": "登录时启动靠近桌面", "type": "bool", "default": "off",
      "hint": "Run Collie's live wallpaper (clock, weather, music, an app dock, and a command bar) behind your desktop icons, started automatically when you log in. Turn OFF to remove the autostart and keep your normal wallpaper — Windows only."},
 
     {"group": "Retrieval", "key": "EMBED", "label": "Embedder", "type": "select", "default": "auto",

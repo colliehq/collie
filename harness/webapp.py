@@ -599,7 +599,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_sessions(urllib.parse.parse_qs(parsed.query))
             if path == "/api/settings":
                 from . import settings
-                return self._send_json({"schema": settings.SCHEMA, "values": settings.all_values()})
+                vals = settings.all_values()
+                # Make the ambient-desktop toggle tell the TRUTH: it's ON iff the logon autostart file
+                # actually exists (the main installer never creates it — onboarding or this toggle do),
+                # so the switch can never disagree with what's really running. Windows-only feature.
+                try:
+                    from . import plat
+                    if plat.is_windows():
+                        from . import wallpaper as _wp
+                        vals["WALLPAPER"] = "on" if os.path.exists(_wp._startup_vbs()) else "off"
+                except Exception:
+                    pass
+                return self._send_json({"schema": settings.SCHEMA, "values": vals})
             if path == "/api/models":
                 # The model-picker catalog: one flat list of runnable (provider, model) entries
                 # with auth badge + price. ?discover=1 also queries each authed provider's model

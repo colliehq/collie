@@ -1132,6 +1132,23 @@
   </div>
 </div>
 
+<!-- ============================================ ambient desktop (optional, Windows; after pick-a-brain) -->
+<div class="ob-overlay" id="amOverlay" role="dialog" aria-modal="true" aria-labelledby="amTitle">
+  <div class="ob-card">
+    <div class="ob-hero">
+      <div class="br-badge" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4.5" width="18" height="13" rx="2"/><path d="M8 20.5h8M12 17.5v3"/></svg>
+      </div>
+      <h1 id="amTitle">Ambient desktop</h1>
+      <p class="ob-sub">Put Collie right behind your desktop icons — a live clock, weather, your music, an app dock, and a command bar to talk to Collie from anywhere. You can toggle it any time in Settings.</p>
+    </div>
+    <div class="ob-foot" style="justify-content:center;gap:12px;margin-top:6px">
+      <button class="ob-ghost" id="amSkip">Not now</button>
+      <button class="ob-brain is-rec" id="amEnable" style="padding:11px 20px;min-width:auto">Turn it on →</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============================================ settings modal -->
 <div class="modal-overlay" id="setOverlay">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
@@ -1571,7 +1588,9 @@
       try {
         modelCurrentId = p.provider + ":" + p.model; updateModelTrigger();
         obClose();
-        if (window.collieConnectBrowser) window.collieConnectBrowser();   // optional next step
+        // next steps: ambient desktop (Windows) → connect browser; each is optional and self-chains
+        if (window.collieAmbientStep) window.collieAmbientStep();
+        else if (window.collieConnectBrowser) window.collieConnectBrowser();
         else obDone();
       } catch (e) {
         obClose();          // saved and usable; the next screen just did not come up
@@ -1704,6 +1723,29 @@
   $("brSkip").addEventListener("click", brFinish);
   $("brDone").addEventListener("click", brFinish);
   brOverlay.addEventListener("click", function (ev) { if (ev.target === brOverlay) brFinish(); });
+
+  // ---- ambient desktop (optional; Windows only; offered between pick-a-brain and connect-browser) --
+  var amOverlay = $("amOverlay");
+  function amClose() { amOverlay.classList.remove("open"); }
+  function amNext() { amClose(); if (window.collieConnectBrowser) window.collieConnectBrowser(); else obDone(); }
+  function amOpen() {
+    // The ambient desktop is a Windows feature — on anything else, skip straight to the browser step.
+    var isWin = /Win/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "");
+    if (!isWin) { amNext(); return; }
+    amOverlay.classList.add("open");
+  }
+  window.collieAmbientStep = amOpen;   // the pick-a-brain step chains here first
+  function amSet(on, then) {
+    fetch("/api/settings?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ WALLPAPER: on ? "on" : "off" })
+    }).then(function () { then(); }, function () { then(); });
+  }
+  $("amEnable").addEventListener("click", function () {
+    var b = $("amEnable"); b.textContent = "Turning on…"; b.disabled = true;
+    amSet(true, amNext);            // install() creates the logon autostart AND starts it now
+  });
+  $("amSkip").addEventListener("click", function () { amSet(false, amNext); });
+  amOverlay.addEventListener("click", function (ev) { if (ev.target === amOverlay) amNext(); });
 
   $("setClose").onclick = closeSettings;
   $("setCancel").onclick = closeSettings;
