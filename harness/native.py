@@ -393,9 +393,8 @@ def _dt_elements(d):
     return "\n".join(lines)
 
 
-def register_native(registry):
-    """Register the desktop_* tools (Windows UI Automation). Called from tools.default_registry only
-    when COLLIE_DESKTOP_CONTROL is on and the platform can actually drive apps."""
+def _register_windows(registry):
+    """Register the Windows desktop_* tools — UI Automation, addressed by index / automationId."""
     from .tools import Tool
 
     class DesktopApps(Tool):
@@ -505,3 +504,114 @@ def register_native(registry):
     for t in (DesktopApps(), DesktopInspect(), DesktopClick(), DesktopType(),
               DesktopRead(), DesktopLaunch(), DesktopFocus()):
         registry.register(t)
+
+
+def _register_mac(registry):
+    """Register the macOS desktop_* tools — System Events / Accessibility, addressed by control NAME
+    (label). Same tool names as Windows so the agent's model is identical; the difference is you click
+    by label instead of index/aid, and macOS adds desktop_menu (where most Mac functionality lives)."""
+    from .tools import Tool
+    from . import native_mac as nm
+    from . import desktop as _desktop
+
+    def _err(d):
+        if isinstance(d, dict) and d.get("ok") is False:
+            return "ERROR(desktop): %s" % (d.get("error") or "failed")
+        return None
+
+    class DesktopApps(Tool):
+        name, tier = "desktop_apps", "always"
+        description = ("List the native macOS apps that have a UI (Safari, Notes, Finder, …). START "
+                       "HERE to see what's open before inspecting or acting. No args.")
+        schema = {"type": "object", "properties": {}}
+
+        def run(self, args, ctx):
+            d = nm.apps(); e = _err(d)
+            if e:
+                return e
+            return _dt_fence("\n".join(a.get("name", "") for a in d.get("apps", [])) or "(none)")
+
+    class DesktopInspect(Tool):
+        name, tier = "desktop_inspect", "always"
+        description = ("List the controls of an app's FRONT window as `role \"name\"` lines. The name "
+                       "is the handle you pass to desktop_click / desktop_type. Needs macOS Accessibility "
+                       "permission for Collie. Args: match (the app name, e.g. \"Safari\"); optional max.")
+        schema = {"type": "object", "properties": {
+            "match": {"type": "string"}, "max": {"type": "integer"}}, "required": ["match"]}
+
+        def run(self, args, ctx):
+            d = nm.tree(args.get("match", ""), max_items=int(args.get("max", 60) or 60)); e = _err(d)
+            if e:
+                return e
+            items = d.get("items", [])
+            if not items:
+                return "(no controls — grant Accessibility to Collie, or the app has no front window)"
+            return _dt_fence("\n".join('%s "%s"' % (i.get("role", "?"), i.get("name", "")) for i in items))
+
+    class DesktopClick(Tool):
+        name, tier = "desktop_click", "always"
+        description = ("Click a control (button, menu item) by its NAME in an app's front window (from "
+                       "desktop_inspect). Args: match (app name), label (the control's name).")
+        schema = {"type": "object", "properties": {
+            "match": {"type": "string"}, "label": {"type": "string"}}, "required": ["match", "label"]}
+
+        def run(self, args, ctx):
+            return _err(nm.click(args.get("match", ""), args.get("label", ""))) or "ok — clicked"
+
+    class DesktopType(Tool):
+        name, tier = "desktop_type", "always"
+        description = ("Type text into an app — into whatever control currently has focus, so click the "
+                       "field first with desktop_click if needed. Brings the app to the front. Args: "
+                       "match (app name), text.")
+        schema = {"type": "object", "properties": {
+            "match": {"type": "string"}, "text": {"type": "string"}}, "required": ["match", "text"]}
+
+        def run(self, args, ctx):
+            return _err(nm.type_text(args.get("match", ""), args.get("text", ""))) or "ok — typed"
+
+    class DesktopMenu(Tool):
+        name, tier = "desktop_menu", "always"
+        description = ("Drive an app's menu bar — where most macOS functionality actually lives, and "
+                       "more stable than on-screen controls, e.g. match=\"Safari\" menu=\"File\" "
+                       "item=\"New Window\". Args: match (app name), menu (top-level menu), item.")
+        schema = {"type": "object", "properties": {
+            "match": {"type": "string"}, "menu": {"type": "string"}, "item": {"type": "string"}},
+            "required": ["match", "menu", "item"]}
+
+        def run(self, args, ctx):
+            return _err(nm.menu(args.get("match", ""), args.get("menu", ""), args.get("item", ""))) or "ok — menu"
+
+    class DesktopFocus(Tool):
+        name, tier = "desktop_focus", "always"
+        description = ("Bring a macOS app to the front by name. Args: name.")
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+
+        def run(self, args, ctx):
+            return _err(nm.focus(args.get("name", ""))) or "ok — focused"
+
+    class DesktopLaunch(Tool):
+        name, tier = "desktop_launch", "always"
+        description = ("Open/launch a macOS app by name or path (e.g. \"Safari\", \"Notes\"). After "
+                       "launching, call desktop_apps / desktop_inspect to work with it. Args: target.")
+        schema = {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}
+
+        def run(self, args, ctx):
+            try:
+                ok = _desktop.launch(args.get("target", ""))
+            except Exception as ex:
+                return "ERROR(desktop): %s" % ex
+            return "ok — launched" if ok else "ERROR(desktop): could not launch %r" % args.get("target", "")
+
+    for t in (DesktopApps(), DesktopInspect(), DesktopClick(), DesktopType(),
+              DesktopMenu(), DesktopFocus(), DesktopLaunch()):
+        registry.register(t)
+
+
+def register_native(registry):
+    """Register the desktop_* app-control tools for THIS platform: Windows UI Automation (by index /
+    automationId) or macOS System Events (by control name/label, plus desktop_menu). Same tool names
+    on both, so the agent drives native apps the same way regardless of OS."""
+    if plat.is_macos():
+        _register_mac(registry)
+    elif plat.is_windows():
+        _register_windows(registry)

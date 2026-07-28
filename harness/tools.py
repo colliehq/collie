@@ -827,8 +827,8 @@ def default_registry(code_search: bool = False,
     # apps" setting) AND the platform can actually drive apps.
     if os.environ.get("COLLIE_DESKTOP_CONTROL") == "1":
         try:
-            from .native import register_native, available as _native_available
-            if _native_available()[0]:
+            from .native import register_native, backend as _native_backend
+            if _native_backend() is not None:      # Windows (UIA) or macOS (System Events); None on Linux
                 register_native(r)
         except Exception:
             pass

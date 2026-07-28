@@ -87,7 +87,7 @@ SCHEMA = [
     {"group": "Desktop", "key": "WALLPAPER", "label": "Ambient desktop at login", "label_zh": "登录时启动靠近桌面", "type": "bool", "default": "off",
      "hint": "Run Collie's live wallpaper (clock, weather, music, an app dock, and a command bar) behind your desktop icons, started automatically when you log in. Turn OFF to remove the autostart and keep your normal wallpaper — Windows only."},
     {"group": "Desktop", "key": "DESKTOP_CONTROL", "label": "Control desktop apps", "label_zh": "控制桌面应用", "type": "bool", "default": "off",
-     "hint": "Let Collie drive your native apps — click buttons, read and fill fields, launch apps — via Windows UI Automation, in the background with no focus theft. Adds the desktop_* tools. Powerful, so off by default. Windows only."},
+     "hint": "Let Collie drive your native apps — click buttons, fill fields, launch apps, use menus — via Windows UI Automation or macOS System Events, in the background. Adds the desktop_* tools. Powerful, so off by default. Windows & macOS (macOS needs Accessibility permission)."},
 
     {"group": "Retrieval", "key": "EMBED", "label": "Embedder", "type": "select", "default": "auto",
      "options": [
@@ -158,7 +158,7 @@ _ZH = {
                        "options": {"auto": "自动 — 扩展在线就用", "1": "总是开", "0": "关"}},
     "PLAN_FIRST": {"label": "多文件编辑前先计划", "hint": "大型任务先写好范围/计划再动文件。更慢但在牵连面大的改动上更稳。"},
     "WALLPAPER": {"label": "登录时启动靠近桌面", "hint": "把 Collie 的动态壁纸(时钟、天气、音乐、应用坞、命令栏)贴在桌面图标背后,开机自动启动。关掉就移除自启、恢复你原来的壁纸——仅 Windows。"},
-    "DESKTOP_CONTROL": {"label": "控制桌面应用", "hint": "让 Collie 通过 Windows UI Automation 驱动你的原生应用——点按钮、读/填输入框、启动应用,后台执行、不抢焦点。会加上 desktop_* 工具。很强,默认关。仅 Windows。"},
+    "DESKTOP_CONTROL": {"label": "控制桌面应用", "hint": "让 Collie 驱动你的原生应用——点按钮、填输入框、启动应用、用菜单——Windows 走 UI Automation,macOS 走 System Events,后台执行。会加上 desktop_* 工具。很强,默认关。Windows 和 macOS 都支持(macOS 需授予辅助功能权限)。"},
     "EMBED": {"label": "语义模型",
               "hint": "记忆召回背后的语义模型。auto 用 granite(进程内 ONNX),依赖/模型不可用时降级为 BM25 关键词召回——绝不退回 hash(实测比 BM25 还差)。改动后需要 `collie mem reembed`。",
               "options": {"auto": "自动(granite 语义 → 不可用则 BM25)", "granite": "granite-107m(Apache,55MB,多语言 — 默认)",
