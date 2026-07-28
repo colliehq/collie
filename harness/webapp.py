@@ -406,7 +406,12 @@ class Handler(BaseHTTPRequestHandler):
     # A run that outlives the person's attention is the whole reason the phone exists. Short runs are
     # not worth a buzz — you are still looking at the screen — so this only fires past a threshold, or
     # when the run failed, which is worth knowing however fast it happened.
-    NOTIFY_AFTER_MS = 45_000
+    # Configurable because the right answer differs per person: 0 notifies for every run, a very
+    # large number for none but failures.
+    try:
+        NOTIFY_AFTER_MS = int(os.environ.get("COLLIE_NOTIFY_AFTER_MS") or 45_000)
+    except ValueError:
+        NOTIFY_AFTER_MS = 45_000
 
     @staticmethod
     def _notify_done(sid, res, wall_ms=None):
@@ -1627,6 +1632,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._sse("done", {"session": sid, "answer": "",
                                    "error": "%s: %s" % (type(e).__name__, e)})
+            except Exception:
+                pass
+            # A run that CRASHED is the one most worth being told about, and it never reaches the
+            # success path above — so notify from here too.
+            try:
+                if REMOTE is not None:
+                    REMOTE.notify("Run failed", "%s: %s" % (type(e).__name__, e),
+                                  session=sid, thread=sid)
             except Exception:
                 pass
         finally:

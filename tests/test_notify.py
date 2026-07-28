@@ -116,6 +116,48 @@ def main():
         print("    raised:", e)
     check(ok, "a relay that throws does not fail the run that just succeeded")
 
+    # ---- the message that actually goes down the socket ------------------------------------------
+    # relay_push_test.js feeds this same shape into the worker's handler, so the two halves meet on a
+    # message format both sides have been checked against rather than on one side's assumption.
+    import json as _json
+
+    from harness import remote as remote_mod
+
+    class FakeWS(object):
+        def __init__(self, explode=False):
+            self.sent = []
+            self.explode = explode
+
+        def send_text(self, s):
+            if self.explode:
+                raise OSError("socket closed under us")
+            self.sent.append(_json.loads(s))
+
+    client = remote_mod.RelayClient.__new__(remote_mod.RelayClient)
+    ws = FakeWS()
+    client._ws = ws
+    check(client.notify("Run finished", "all green", session="s9") is True,
+          "the client reports it sent")
+    msg = ws.sent[0] if ws.sent else {}
+    check(msg.get("t") == "notify", "the socket message is a `notify`")
+    check(msg.get("title") == "Run finished" and msg.get("body") == "all green",
+          "carrying the title and body the desktop chose")
+    check(msg.get("session") == "s9", "and the session id")
+
+    # Long text must be cut here, not at the phone: an alert silently truncates and the useful part
+    # is at the start.
+    ws = FakeWS()
+    client._ws = ws
+    client.notify("t" * 500, "b" * 900)
+    check(ws.sent and len(ws.sent[0]["title"]) <= 120 and len(ws.sent[0]["body"]) <= 300,
+          "title and body are bounded before they leave the machine")
+
+    # Not connected, and a socket that dies mid-send: both are a quiet false, never an exception.
+    client._ws = None
+    check(client.notify("x", "y") is False, "with no socket, notifying is a quiet false")
+    client._ws = FakeWS(explode=True)
+    check(client.notify("x", "y") is False, "a socket that throws mid-send is caught")
+
     print("\n  " + ("%d FAILED" % len(_fails) if _fails else "notify: all green"))
     return 1 if _fails else 0
 
