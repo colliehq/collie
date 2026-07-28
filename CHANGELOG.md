@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.20.12 — the Dock said "python3"
+
+- **The app is called Collie everywhere now.** The bundle hands off to its private interpreter
+  directly, and macOS names a process after the file it executed — so the Dock, the Force-Quit
+  list and Activity Monitor all said "python3", undoing the reason this is a bundle at all.
+  The interpreter gets a second name beside itself and the launcher execs that. Setting the name
+  from inside (NSProcessInfo, CFBundleName) changes nothing System Events reports, and a hard
+  link takes the name but kills the interpreter — CPython finds its stdlib by walking up from the
+  path it was executed as. A symlink resolves back to the real file first, so the prefix comes out
+  right and the name still sticks.
+- **Windows: a command could no longer be killed by one character.** `print` raises on a console
+  that cannot encode what it is given — cp1252 has no U+2713 — so a single tick mark in
+  "✓ codemap:" ended `collie init` with exit 1 and half a line written. Output is reconfigured
+  before anything prints. This was never about init: any command with a glyph was one console
+  away from dying.
+
 ## v0.20.11 — the app window was pointed at a dead port
 
 - **`collie app` opened, bounced, and showed nothing.** The server scans forward when its
