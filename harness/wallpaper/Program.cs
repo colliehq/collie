@@ -173,6 +173,10 @@ class CollieWallpaper : Form
         Controls.Add(_web);
         Load += delegate { InitWeb(); };
         FormClosed += delegate { Cleanup(); };
+        // Also tear the hook + input attachment down on ANY process exit / unhandled crash, not only a
+        // clean FormClosed — a half-installed hook or a dangling AttachThreadInput must never outlive us.
+        AppDomain.CurrentDomain.ProcessExit += delegate { Cleanup(); };
+        AppDomain.CurrentDomain.UnhandledException += delegate { Cleanup(); };
         // Clean-shutdown channel: another process Sets this named event -> we Close() gracefully, which
         // disposes WebView2 (browser process exits cleanly) instead of being -Force killed (which orphans
         // COM/GPU processes -> DCOM 10010 storm -> the Hyper-V/WSL network cascade).
@@ -358,8 +362,11 @@ class CollieWallpaper : Form
         return true;
     }
 
+    static System.Threading.SynchronizationContext _uiCtx;   // the UI message loop, for deferring focus
+
     void InstallHooks()
     {
+        _uiCtx = System.Threading.SynchronizationContext.Current;
         IntPtr hMod = GetModuleHandleW(null);
         _mouseProc = new HookProc(MouseProc);
         _mouseHook = SetWindowsHookExW(WH_MOUSE_LL, _mouseProc, hMod, 0);
@@ -404,12 +411,30 @@ class CollieWallpaper : Form
         for (int i = 0; i < a.Length; i++) if (sx >= a[i].left && sx < a[i].right && sy >= a[i].top && sy < a[i].bottom) return true;
         return false;
     }
+    static void DetachInput()
+    {
+        // Undo the AttachThreadInput(mt, it, true) EnsureFocus made — a cross-process input attachment
+        // left dangling when our thread dies is a classic way to wedge the system input queue.
+        try
+        {
+            if (_attached && _input != IntPtr.Zero)
+            {
+                uint ipid; uint it = GetWindowThreadProcessId(_input, out ipid);
+                uint mt = GetCurrentThreadId();
+                if (it != mt) AttachThreadInput(mt, it, false);
+            }
+        }
+        catch { }
+        _attached = false;
+    }
+
     static bool _cleaned;
     void Cleanup()
     {
         if (_cleaned) return; _cleaned = true;
         if (_mouseHook != IntPtr.Zero) UnhookWindowsHookEx(_mouseHook);
         if (_keyHook != IntPtr.Zero) UnhookWindowsHookEx(_keyHook);
+        DetachInput();
         try { if (_web != null) { _web.Dispose(); } } catch { }   // dispose WebView2 -> browser process exits cleanly (no orphaned COM)
     }
 
@@ -487,7 +512,11 @@ class CollieWallpaper : Form
                     }
                     else
                     {
-                        if (msg == WM_LBUTTONDOWN) { _buttons |= MK_LBUTTON; if (InChat(m.pt.x, m.pt.y)) EnsureFocus(); }
+                        // DEFER focus off the hook callback. EnsureFocus() does a synchronous, cross-process
+                        // AttachThreadInput+SetFocus; running it INSIDE a WH_MOUSE_LL callback stalls the
+                        // SYSTEM-WIDE mouse queue (a slow/blocked call froze left-click everywhere). BeginInvoke
+                        // queues it onto our message loop, so the hook returns immediately.
+                        if (msg == WM_LBUTTONDOWN) { _buttons |= MK_LBUTTON; if (InChat(m.pt.x, m.pt.y)) { var ctx = _uiCtx; if (ctx != null) { try { ctx.Post(delegate { EnsureFocus(); }, null); } catch { } } } }
                         else if (msg == WM_LBUTTONUP) _buttons &= ~MK_LBUTTON;
                         else if (msg == WM_RBUTTONDOWN) _buttons |= MK_RBUTTON;
                         else if (msg == WM_RBUTTONUP) _buttons &= ~MK_RBUTTON;

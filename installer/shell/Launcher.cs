@@ -7,6 +7,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Diagnostics;
 using System.Reflection;
+using System.Collections.Generic;
 
 class Launcher
 {
@@ -23,9 +24,27 @@ class Launcher
             using (var z = new ZipArchive(s, ZipArchiveMode.Read))
                 z.ExtractToDirectory(tmp);
 
-            var shell = Path.Combine(tmp, "Collie-Shell.exe");
-            var p = Process.Start(new ProcessStartInfo(shell)
-            { UseShellExecute = false, WorkingDirectory = tmp });
+            // A SILENT invocation (`collie update`, scripted upgrade) must NOT pop the GUI shell —
+            // it would just sit there. Forward the Inno flags straight to the backend installer.
+            // Without this, `Collie-Setup.exe /SILENT` launched the interactive shell and "succeeded"
+            // (exit 0) without installing anything — self-update was a silent no-op.
+            var passthru = new List<string>();
+            bool silent = false;
+            var argv = Environment.GetCommandLineArgs();     // [0] = this exe
+            for (int i = 1; i < argv.Length; i++)
+            {
+                passthru.Add(argv[i]);
+                string u = argv[i].ToUpperInvariant();
+                if (u == "/SILENT" || u == "/VERYSILENT") silent = true;
+            }
+
+            var psi = silent
+                ? new ProcessStartInfo(Path.Combine(tmp, "Collie-Setup-backend.exe"))
+                  { Arguments = string.Join(" ", passthru.ToArray()) }
+                : new ProcessStartInfo(Path.Combine(tmp, "Collie-Shell.exe"));
+            psi.UseShellExecute = false;
+            psi.WorkingDirectory = tmp;
+            var p = Process.Start(psi);
             p.WaitForExit();
         }
         catch { }
