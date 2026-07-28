@@ -763,6 +763,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_mirror(urllib.parse.parse_qs(parsed.query).get("session", [""])[0].strip())
+            if path == "/api/remote/pending":        # a phone waiting on a human — GET, it's a read
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                # Polled by BOTH the pairing screen and the control panel: whoever just scanned is
+                # looking at the pairing screen, not at a panel they would have to go and find.
+                cl = REMOTE.client if REMOTE else None
+                p = getattr(cl, "pending_pair", None) if cl else None
+                if not p:
+                    return self._send_json({"pending": None})
+                return self._send_json({"pending": {
+                    "id": p.get("id"), "num": p.get("num"), "name": p.get("name"),
+                    "device_id": p.get("device_id"), "age": int(time.time() - p.get("at", 0))}})
             if path == "/api/remote/status":         # desktop control panel: pairing + device list
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -804,15 +816,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(dict(ok=True, **rs.status()))
                 if REMOTE is None:
                     return self._send_json({"error": "remote not available"}, 503)
-                if action == "pending":
-                    # Polled by BOTH the pairing screen and the control panel, because the person
-                    # who just scanned is looking at the pairing screen, not at the panel.
-                    p = getattr(REMOTE.client, "pending_pair", None) if REMOTE.client else None
-                    if not p:
-                        return self._send_json({"pending": None})
-                    return self._send_json({"pending": {
-                        "id": p.get("id"), "num": p.get("num"), "name": p.get("name"),
-                        "device_id": p.get("device_id"), "age": int(time.time() - p.get("at", 0))}})
                 if action in ("approve", "deny"):
                     ok = REMOTE.decide_pair(action == "approve")
                     return self._send_json({"ok": bool(ok)})

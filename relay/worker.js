@@ -48,7 +48,8 @@ export class RelayRoom {
     this.pending = new Map();      // id -> {controller,…}; only non-empty while a request is in flight
     this.pairAttempts = [];
     // pair rate-limit timestamps (in-memory; the DO stays alive during any attack burst)
-    this.pendingApproval = new Map();   // pair requests waiting on the desktop to say yes
+    // Pending pair approvals live in DO STORAGE ("pend:<ticket>"), not here — see pair(). A request
+    // that is waiting for a human is precisely the state most likely to outlive an eviction.
     this.pendingE2E = new Map();   // in-flight E2E handshakes: id -> resolve (one request each, short-lived)
   }
 
@@ -131,8 +132,18 @@ export class RelayRoom {
     if (msg.t === "pair_decision") {
       // Record the verdict; the phone collects it on its next poll. Nothing is awaiting this, so a
       // desktop that answers after the phone gave up simply leaves a decided ticket that expires.
-      const p = this.pendingApproval.get(msg.id);
-      if (p) { p.state = msg.ok ? "approved" : "denied"; p.error = msg.error || ""; }
+      // Find the ticket this decision belongs to. Few enough at a time that a scan is cheaper than
+      // a second index, and the list is bounded by the rate limit.
+      this.state.storage.list({ prefix: "pend:" }).then((all) => {
+        for (const [k, v] of all) {
+          if (v && v.rid === msg.id) {
+            v.state = msg.ok ? "approved" : "denied";
+            v.error = msg.error || "";
+            this.state.storage.put(k, v);
+            break;
+          }
+        }
+      }).catch(() => {});
       return;
     }
     if (msg.t === "devices") { const s = this._astate(ws); s.devices = msg.devices || []; this._setAstate(ws, s); return; }
@@ -234,11 +245,14 @@ export class RelayRoom {
       const rid = ++this.seq;
       const num = String(Math.floor(Math.random() * 9000) + 1000);
       const ticket = randToken();
-      this.pendingApproval.set(rid, { ticket, num, at: now, state: "pending",
-                                      device_id: String(body.device_id || ""),
-                                      body, e2e });
-      this.tickets = this.tickets || new Map();
-      this.tickets.set(ticket, rid);
+      // DO STORAGE, not an in-memory Map. This file's own header warns that an idle room is
+      // evicted and the constructor runs again on wake — and a pairing request is defined by
+      // waiting for a human, so it is exactly the state most likely to span an eviction. Stored in
+      // memory it survived the POST and was gone by the first poll seconds later.
+      await this.state.storage.put("pend:" + ticket, {
+        rid, num, at: now, state: "pending",
+        device_id: String(body.device_id || ""), body, e2e,
+      });
       this.sendAgent(agent, {
         t: "pair_request", id: rid, num,
         device_id: String(body.device_id || ""),
@@ -253,20 +267,19 @@ export class RelayRoom {
   /** Mint the session token and tell the desktop. Shared by the approve-first and the legacy path. */
   /** Phase two: has the desktop decided about this ticket yet? */
   async pairWait(ticket, request) {
-    this.tickets = this.tickets || new Map();
-    const rid = ticket && this.tickets.get(ticket);
-    const p = rid && this.pendingApproval.get(rid);
+    const key = "pend:" + ticket;
+    const p = ticket ? await this.state.storage.get(key) : null;
     if (!p) return json({ ok: false, error: "unknown or expired pairing request" }, 404);
 
     // Expire on read rather than on a timer: an abandoned request should not stay approvable, and a
     // Durable Object has no reliable place to run a sweep.
     if (Date.now() - p.at > PAIR_APPROVE_MS) {
-      this.pendingApproval.delete(rid); this.tickets.delete(ticket);
+      await this.state.storage.delete(key);
       return json({ ok: false, error: "this pairing request expired — scan again" }, 408);
     }
     if (p.state === "pending") return json({ ok: false, pending: true, num: p.num }, 202);
 
-    this.pendingApproval.delete(rid); this.tickets.delete(ticket);
+    await this.state.storage.delete(key);
     if (p.state !== "approved") {
       this.pairAttempts.push(Date.now());
       return json({ ok: false, error: p.error || "the desktop refused this device" }, 403);
@@ -425,10 +438,25 @@ function injectBase(stream, headers, status, base) {
     `if(pc){document.documentElement.style.visibility='hidden';` +
     `var did=localStorage.getItem('collie_did');if(!did){did=(self.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());localStorage.setItem('collie_did',did);}` +
     `var ua=navigator.userAgent,nm=/iPhone|iPad/.test(ua)?'iPhone':/Android/.test(ua)?'Android':/Mac/.test(ua)?'Mac':'device';` +
-    `of(B+'pair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({paircode:pc,device_id:did,name:nm})})` +
-    `.then(function(r){return r.json();}).then(function(d){if(d&&d.ok){location.replace(B);}` +
-    `else{document.documentElement.style.visibility='';document.body.innerHTML='<p style=\\'font:16px system-ui;padding:2rem\\'>配对失败或链接已过期，请在电脑上重新运行 collie web --remote 获取新链接。</p>';}})` +
-    `.catch(function(){location.reload();});}` +
+      `of(B+'pair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({paircode:pc,device_id:did,name:nm})})` +
+    `.then(function(r){return r.json();}).then(function(d){` +
+    // Two phases. A 202 means the desktop has been asked and is holding this: show the number so
+    // the person at the computer can check it matches THIS phone, then poll until they answer.
+    // Short polls, so nothing depends on a connection staying open while a human decides.
+    `if(d&&d.pending&&d.ticket){show(d.num);poll(d.ticket);return;}` +
+    `if(d&&d.ok){location.replace(B);return;}fail(d&&d.error);})` +
+    `.catch(function(){location.reload();});` +
+    `function show(n){document.documentElement.style.visibility='';document.body.innerHTML=` +
+    `'<div style=\\'font:16px/1.6 system-ui;padding:2.5rem 1.5rem;text-align:center\\'>' +` +
+    `'<p style=\\'opacity:.7\\'>Approve this on your computer</p>' +` +
+    `'<p style=\\'font-size:44px;font-weight:700;letter-spacing:.14em;margin:.4em 0\\'>'+n+'</p>' +` +
+    `'<p style=\\'opacity:.7\\'>Check the same number is showing there.</p></div>';}` +
+    `function fail(m){document.documentElement.style.visibility='';document.body.innerHTML=` +
+    `'<p style=\\'font:16px system-ui;padding:2rem\\'>'+(m||'Pairing failed or the link expired — get a fresh one on your computer.')+'</p>';}` +
+    `function poll(tk){of(B+'pair/wait?ticket='+encodeURIComponent(tk)).then(function(r){return r.json();})` +
+    `.then(function(d){if(d&&d.ok){location.replace(B);return;}` +
+    `if(d&&d.pending){setTimeout(function(){poll(tk);},1500);return;}fail(d&&d.error);})` +
+    `.catch(function(){setTimeout(function(){poll(tk);},2500);});}}` +
     `})();</script>`;
   const out = new ReadableStream({
     async pull(controller) {
