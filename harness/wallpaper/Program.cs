@@ -64,6 +64,8 @@ class CollieWallpaper : Form
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr res);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr VirtualAllocEx(IntPtr proc, IntPtr addr, IntPtr size, uint type, uint protect);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, IntPtr size, out IntPtr wrote);
@@ -340,6 +342,12 @@ class CollieWallpaper : Form
     void Pin()
     {
         _progman = FindWindowW("Progman", null);
+        // Win10/11: ask Progman to spawn the "behind the icons" WorkerW. On builds where the desktop
+        // wallpaper is painted on top of a plain Progman child, this splits the paint onto a WorkerW
+        // BELOW us — without it a SetParent-to-Progman child stays hidden under the wallpaper (the
+        // "engine runs but the desktop is blank/shows the default wallpaper" case). Harmless if already split.
+        IntPtr smRes;
+        SendMessageTimeoutW(_progman, 0x052C, IntPtr.Zero, IntPtr.Zero, 0x0002 /*SMTO_ABORTIFHUNG*/, 1000, out smRes);
         IntPtr defview = FindWindowExW(_progman, IntPtr.Zero, "SHELLDLL_DefView", null);
         IntPtr hwnd = this.Handle;
         long style = (long)GetWindowLongPtrW(hwnd, GWL_STYLE);
