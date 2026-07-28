@@ -104,12 +104,21 @@ class CollieWallpaper : Form
     // shortcut launches, so a non-technical user gets a real program instead of a browser tab that
     // shows 127.0.0.1:8787 in the address bar and gets lost among their other tabs.
     static bool _windowMode;
+    static Mutex _instanceMutex;   // held for the life of the process — keeps duplicate launches out
 
     [STAThread]
     static void Main(string[] args)
     {
         for (int i = 0; args != null && i < args.Length; i++)
             if (args[i] == "--window" || args[i] == "-w") _windowMode = true;
+        // SINGLE-INSTANCE, per mode. The logon autostart + a `collie wallpaper` invocation could each
+        // fire the engine, and two instances then fought over the ONE shared WebView2 profile lock —
+        // the loser died with exit -1 and the desktop was left BLANK ("the wallpaper won't come back").
+        // A named mutex makes every duplicate exit cleanly (0) before it ever touches the profile.
+        bool fresh;
+        try { _instanceMutex = new Mutex(true, _windowMode ? "collie-wallpaper-window" : "collie-wallpaper-bg", out fresh); }
+        catch { fresh = true; }
+        if (!fresh) { Log("another " + (_windowMode ? "window" : "wallpaper") + " instance is already running — exiting"); return; }
         try { File.Delete(_log); } catch { }
         Log("start M4 mode=" + (_windowMode ? "window" : "wallpaper"));
         SetProcessDpiAwarenessContext((IntPtr)(-4));
@@ -193,7 +202,11 @@ class CollieWallpaper : Form
     {
         try
         {
-            string udf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "collie", "webview2");
+            // Per-mode profile dir: the wallpaper and the app-window are DIFFERENT processes that may run
+            // at the same time; one shared profile means whichever starts second can't lock it and comes
+            // up blank. Separate dirs let both live.
+            string udf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                      "collie", _windowMode ? "webview2-win" : "webview2");
             var opts = new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required");
             var env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
             await _web.EnsureCoreWebView2Async(env);
