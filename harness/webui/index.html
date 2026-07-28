@@ -523,6 +523,15 @@
   .welcome .wc-title { font-family: var(--sans); font-size: 25px; color: var(--ink);
     margin-bottom: 10px; text-wrap: balance; }
   .welcome .wc-sub { color: var(--muted); font-size: 14px; line-height: 1.6; text-wrap: pretty; }
+  .wc-examples { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 560px; margin: 24px auto 0; }
+  .wc-card { text-align: left; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+             background: var(--surface); cursor: pointer; font: inherit;
+             transition: transform .12s, box-shadow .12s, border-color .12s; }
+  .wc-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: var(--pine); }
+  .wc-card:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+  .wc-card .wc-ct { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .wc-card .wc-cd { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+  @media (max-width: 620px) { .wc-examples { grid-template-columns: 1fr; } }
   .workpanel { border-top: 1px solid var(--line); background: var(--surface); }
   .workpanel[hidden] { display: none; }
   .model-trigger {
@@ -958,6 +967,16 @@
           <img class="wc-logo" src="/logo.svg" alt="" />
           <div class="wc-title">Ask Collie to fix, build, or explain</div>
           <div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>
+          <div class="wc-examples">
+            <button type="button" class="wc-card" data-fill="Run the tests, find the one that's failing, and fix it.">
+              <div class="wc-ct">🔧 Fix a failing test</div><div class="wc-cd">Reproduce, patch, and re-run until it's green.</div></button>
+            <button type="button" class="wc-card" data-fill="Give me a tour of this repo — what each part does and where to start.">
+              <div class="wc-ct">🧭 Tour this codebase</div><div class="wc-cd">Get oriented in an unfamiliar project fast.</div></button>
+            <button type="button" class="wc-card" data-fill="Add a small feature and prove it works with a new test.">
+              <div class="wc-ct">✨ Build a feature</div><div class="wc-cd">Ship it with a check that proves it works.</div></button>
+            <button type="button" class="wc-card" data-fill="Open my browser and summarize the page I have open.">
+              <div class="wc-ct">🖥️ Drive an app</div><div class="wc-cd">Collie lives on your computer, not just the repo.</div></button>
+          </div>
         </div>
       </div>
     </div>
@@ -2450,11 +2469,22 @@
     }).catch(function () {});
   }
 
+  var WC_EXAMPLES = '<div class="wc-examples">'
+    + '<button type="button" class="wc-card" data-fill="Run the tests, find the one that\'s failing, and fix it.">'
+    + '<div class="wc-ct">🔧 Fix a failing test</div><div class="wc-cd">Reproduce, patch, and re-run until it\'s green.</div></button>'
+    + '<button type="button" class="wc-card" data-fill="Give me a tour of this repo — what each part does and where to start.">'
+    + '<div class="wc-ct">🧭 Tour this codebase</div><div class="wc-cd">Get oriented in an unfamiliar project fast.</div></button>'
+    + '<button type="button" class="wc-card" data-fill="Add a small feature and prove it works with a new test.">'
+    + '<div class="wc-ct">✨ Build a feature</div><div class="wc-cd">Ship it with a check that proves it works.</div></button>'
+    + '<button type="button" class="wc-card" data-fill="Open my browser and summarize the page I have open.">'
+    + '<div class="wc-ct">🖥️ Drive an app</div><div class="wc-cd">Collie lives on your computer, not just the repo.</div></button>'
+    + '</div>';
   var WELCOME_HTML = '<div class="welcome" id="welcome"><img class="wc-logo" src="/logo.svg" alt="" />'
     + '<div class="wc-title">Ask Collie to fix, build, or explain</div>'
     + '<div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes '
     + 'green — at a fraction of the tokens. The answer streams here; tools and '
-    + 'diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div></div>';
+    + 'diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>'
+    + WC_EXAMPLES + '</div>';
   function newThread() {
     if (running) return;
     currentSession = null;
@@ -2462,6 +2492,19 @@
     loadSessions(); $("input").focus();
   }
   $("newChat").onclick = newThread;
+
+  // Starter cards in the empty state: click one to drop a ready-made prompt into the composer (so a
+  // first-timer sees what Collie is FOR). Delegated on #log so it works for both the initial welcome
+  // and the one re-rendered by newThread().
+  $("log").addEventListener("click", function (e) {
+    var card = e.target && e.target.closest ? e.target.closest(".wc-card") : null;
+    if (!card || !card.getAttribute("data-fill")) return;
+    var inp = $("input");
+    inp.value = card.getAttribute("data-fill");
+    inp.focus();
+    try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (_) {}
+    try { inp.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}  // autosize + enable send
+  });
 
   // ---- run --------------------------------------------------------------
   function stopRun() {
