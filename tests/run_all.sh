@@ -59,6 +59,13 @@ else
   echo "  (node not found — skipping renderer suite)"
 fi
 
+echo "── relay pairing handshake (JS) ─────────────────────────"
+if command -v node >/dev/null 2>&1; then
+  node tests/relay_pairing_test.js || rc=1
+else
+  echo "  (node not found — skipping relay suite)"
+fi
+
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then
   # Keep the output when it fails. Piping through grep and reporting only the exit status meant a

@@ -132,18 +132,20 @@ export class RelayRoom {
     if (msg.t === "pair_decision") {
       // Record the verdict; the phone collects it on its next poll. Nothing is awaiting this, so a
       // desktop that answers after the phone gave up simply leaves a decided ticket that expires.
-      // Find the ticket this decision belongs to. Few enough at a time that a scan is cheaper than
-      // a second index, and the list is bounded by the rate limit.
-      this.state.storage.list({ prefix: "pend:" }).then((all) => {
-        for (const [k, v] of all) {
-          if (v && v.rid === msg.id) {
-            v.state = msg.ok ? "approved" : "denied";
-            v.error = msg.error || "";
-            this.state.storage.put(k, v);
-            break;
-          }
-        }
-      }).catch(() => {});
+      //
+      // Look the ticket up through the "rq:" index instead of scanning for a matching id. The id is
+      // random, so it names exactly the request the human answered. A scan keyed on a per-instance
+      // counter matched whichever ABANDONED request was stored first under the same number — it
+      // marked that one approved and left the live phone polling until it expired.
+      (async () => {
+        const ticket = await this.state.storage.get("rq:" + msg.id);
+        if (!ticket) return;
+        const v = await this.state.storage.get("pend:" + ticket);
+        if (!v) return;
+        v.state = msg.ok ? "approved" : "denied";
+        v.error = msg.error || "";
+        await this.state.storage.put("pend:" + ticket, v);
+      })().catch(() => {});
       return;
     }
     if (msg.t === "devices") { const s = this._astate(ws); s.devices = msg.devices || []; this._setAstate(ws, s); return; }
@@ -242,7 +244,10 @@ export class RelayRoom {
     // So: answer immediately with the number and a ticket, let the phone show the number and poll.
     // Any single step can time out and be retried without the pairing ending up half-done.
     if (st.approve) {
-      const rid = ++this.seq;
+      await this.sweepPending();
+      // RANDOM, not ++this.seq. The counter restarts at zero every time an idle room is evicted and
+      // woken, so ids repeat across abandoned requests and a decision cannot tell them apart.
+      const rid = randToken();
       const num = String(Math.floor(Math.random() * 9000) + 1000);
       const ticket = randToken();
       // DO STORAGE, not an in-memory Map. This file's own header warns that an idle room is
@@ -253,6 +258,7 @@ export class RelayRoom {
         rid, num, at: now, state: "pending",
         device_id: String(body.device_id || ""), body, e2e,
       });
+      await this.state.storage.put("rq:" + rid, ticket);   // decision -> ticket, without a scan
       this.sendAgent(agent, {
         t: "pair_request", id: rid, num,
         device_id: String(body.device_id || ""),
@@ -264,6 +270,20 @@ export class RelayRoom {
     return this.issueToken(agent, st, body, e2e, request);
   }
 
+  /**
+   * Drop pairing requests nobody came back for. Without this they accumulate for the life of the
+   * room: a phone that is closed mid-pairing never reads its ticket again, and expiry-on-read never
+   * runs. Called on each new pairing attempt, where the rate limit already bounds the work.
+   */
+  async sweepPending() {
+    const now = Date.now();
+    const dead = [];
+    for (const [k, v] of await this.state.storage.list({ prefix: "pend:" })) {
+      if (!v || now - v.at > PAIR_APPROVE_MS) { dead.push(k); if (v && v.rid) dead.push("rq:" + v.rid); }
+    }
+    if (dead.length) await this.state.storage.delete(dead);
+  }
+
   /** Mint the session token and tell the desktop. Shared by the approve-first and the legacy path. */
   /** Phase two: has the desktop decided about this ticket yet? */
   async pairWait(ticket, request) {
@@ -271,15 +291,15 @@ export class RelayRoom {
     const p = ticket ? await this.state.storage.get(key) : null;
     if (!p) return json({ ok: false, error: "unknown or expired pairing request" }, 404);
 
-    // Expire on read rather than on a timer: an abandoned request should not stay approvable, and a
-    // Durable Object has no reliable place to run a sweep.
+    // Expire on read: an abandoned request must not stay approvable. A request nobody ever reads
+    // again is cleared by sweepPending() on the next pairing attempt.
     if (Date.now() - p.at > PAIR_APPROVE_MS) {
-      await this.state.storage.delete(key);
+      await this.state.storage.delete([key, "rq:" + p.rid]);
       return json({ ok: false, error: "this pairing request expired — scan again" }, 408);
     }
     if (p.state === "pending") return json({ ok: false, pending: true, num: p.num }, 202);
 
-    await this.state.storage.delete(key);
+    await this.state.storage.delete([key, "rq:" + p.rid]);
     if (p.state !== "approved") {
       this.pairAttempts.push(Date.now());
       return json({ ok: false, error: p.error || "the desktop refused this device" }, 403);
