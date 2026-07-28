@@ -1016,6 +1016,16 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         ok = False
                     return self._send_json({"ok": ok})
+                if action == "play":
+                    # Play it HERE, on the computer. The existing music path resolves a stream and
+                    # hands the URL to the caller's own audio element, which a phone does not have —
+                    # so "play Cruel Summer" found the track and then nothing happened.
+                    return self._send_json(dt.play_here(
+                        body.get("q") or body.get("query") or "",
+                        artist=body.get("artist") or "", title=body.get("title") or "",
+                        region=body.get("region") or ""))
+                if action == "stopaudio":
+                    return self._send_json(dt.stop_here())
                 if action == "intent":
                     # Routes to app/system/project/stop/music, and to `agent` for everything else.
                     # `music` is still in the reply so an older page keeps working unchanged.

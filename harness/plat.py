@@ -135,6 +135,57 @@ def reveal_in_file_manager(path: str) -> bool:
         return False
 
 
+def play_stream(url: str):
+    """Play an audio URL ON THIS MACHINE, in the background, and return the process (or None).
+
+    collie could already FIND music — yt-dlp resolves a stream in a second — but only ever handed the
+    URL to whichever screen asked, so a phone saying "play Cruel Summer" got a correct answer and
+    silence. This is the missing half: the computer plays it.
+
+    Headless players first (ffplay, mpv) because they make no window and can be stopped by killing
+    them. Failing that, the platform's own opener, which always exists but takes over a window.
+    """
+    for argv in (["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", url],
+                 ["mpv", "--no-video", "--really-quiet", url]):
+        if shutil.which(argv[0]):
+            try:
+                return subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                        **new_group_kwargs())
+            except Exception:
+                continue
+    try:
+        if is_windows():
+            os.startfile(url)                                 # noqa: B606 (Windows-only API)
+            return None
+        if is_macos():
+            # QuickTime takes a URL directly and is always installed; `open <url>` would hand an
+            # http link to the browser instead.
+            subprocess.Popen(["osascript", "-e",
+                              'tell application "QuickTime Player" to (open location %s)'
+                              % _as_str(url), "-e",
+                              'tell application "QuickTime Player" to play document 1'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return None
+        subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return None
+    except Exception:
+        return None
+
+
+def stop_stream(proc) -> bool:
+    """Stop what play_stream started. Only the headless players are ours to kill; a URL handed to
+    QuickTime or a browser belongs to that app, and killing those would close a window someone may
+    be using for something else."""
+    if proc is None:
+        return False
+    try:
+        kill_tree(proc)
+        return True
+    except Exception:
+        return False
+
+
 def ask_allow_deny(title: str, message: str, allow: str = "Allow", deny: str = "Not me",
                    timeout: int = 150) -> "bool | None":
     """Put a yes/no question in front of the person AT THE MACHINE, and wait for an answer.

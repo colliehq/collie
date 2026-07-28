@@ -595,6 +595,55 @@ def _extract_one(exe, terms, source, exclude=()):
         return None
 
 
+_playing = {"proc": None, "track": None}
+
+
+def play_here(query, artist="", title="", region=""):
+    """Resolve a track and play it ON THIS COMPUTER.
+
+    resolve_audio only ever found the music; playing it was left to whichever screen asked, so a
+    client with no audio element — a phone, `collie web` in a terminal — got a correct answer and
+    silence. This closes that: same search, but the sound comes out of the machine you asked.
+
+    One track at a time: a second request replaces the first rather than layering over it.
+    """
+    from . import plat
+
+    info = resolve_audio(query, artist=artist, title=title, region=region)
+    if not info.get("ok") or not info.get("url"):
+        return {"ok": False, "error": info.get("error") or "couldn't find that"}
+
+    stop_here()
+    proc = plat.play_stream(info["url"])
+    _playing["proc"] = proc
+    _playing["track"] = {"title": info.get("title") or query,
+                         "uploader": info.get("uploader") or "",
+                         "duration": info.get("duration")}
+    return {"ok": True, "title": _playing["track"]["title"],
+            "uploader": _playing["track"]["uploader"],
+            "duration": _playing["track"]["duration"],
+            # A URL handed to QuickTime or a browser is not ours to kill, so say whether stopping
+            # from here will actually work rather than offering a button that does nothing.
+            "stoppable": proc is not None}
+
+
+def stop_here():
+    """Stop what play_here started."""
+    from . import plat
+
+    proc, _playing["proc"] = _playing["proc"], None
+    _playing["track"] = None
+    return {"ok": plat.stop_stream(proc)}
+
+
+def playing_here():
+    """What play_here is currently playing, if anything is still alive."""
+    proc = _playing["proc"]
+    if proc is not None and proc.poll() is not None:      # it finished on its own
+        _playing["proc"], _playing["track"] = None, None
+    return {"track": _playing["track"]}
+
+
 def resolve_audio(query, artist="", title="", region="", exclude=()):
     """Search (music-biased) + extract a DIRECT audio stream URL. Region-aware: mainland China prefers
     Bilibili (YouTube is blocked there), elsewhere YouTube — and either falls back to the other.
