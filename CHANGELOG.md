@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.20.4 — the app is an app, and collie can drive your other ones
+
+- **`collie app` opens an ordinary window.** v0.20.3 fixed it opening nothing by reusing the
+  desktop's window, which over-corrected: borderless, no close button, no Dock tile. It now
+  has its own — titled, closable, in the Dock and in Cmd-Tab, closing it quits. The live
+  desktop stays opt-in, under `collie wallpaper`.
+- **App control on macOS.** The Windows build has driven apps through UI Automation for a
+  while; macOS now does the same through System Events, with no new dependency. Listing your
+  apps and windows, switching to one, quitting one and hiding the rest need **no permission
+  at all**; only reading or clicking a window's controls asks for Accessibility, and a denial
+  says so by name instead of returning an empty result.
+- **The desktop composer understands more.** "switch to Xcode", "quit Safari", "what do I
+  have open" now do the thing rather than starting a coding session about it.
+
 ## v0.20.3 — the app opens, and collie can update itself
 
 - **Double-clicking Collie.app now opens a window.** It never did on macOS: `collie app`

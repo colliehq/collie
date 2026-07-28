@@ -720,6 +720,20 @@
       if (a === "project") { showReply(r.ok ? "" : "err", r.ok ? ("Opened " + esc(r.arg))
                               : esc(r.error || "No such project")); return; }
       if (a === "system")  { showReply("", sysLine(r.info || {})); return; }
+      if (a === "focus" || a === "quit") {
+        showReply(r.ok ? "" : "err", r.ok
+          ? ((a === "focus" ? "Switched to " : "Quit ") + esc(r.arg))
+          : (esc(r.error || "Could not do that")
+             + (r.suggest && r.suggest.length ? " Running: " + esc(r.suggest.join(", ")) : "")));
+        return;
+      }
+      if (a === "windows") {
+        var ws = r.windows || [];
+        showReply("", ws.length
+          ? ws.map(function(w){ return esc(w.app) + " — " + esc(w.title); }).join("<br>")
+          : "Nothing with a window title is open.");
+        return;
+      }
       if (a === "stop")    { if (curTrack) { au.pause(); } else { api("/api/desktop/media", {cmd: "playpause"}); }
                              showReply("", "Stopped."); return; }
       streamAgent(q);

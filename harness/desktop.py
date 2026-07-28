@@ -808,14 +808,20 @@ _DESKTOP_SYS = (
     "the user's message asks for, and extract its argument. Reply with JSON only.\n"
     "actions:\n"
     "- music   : play a song / genre / artist / playlist / mood. arg = search terms, play-verb removed.\n"
-    "- app     : open, launch or switch to an application. arg = the app NAME only, in English if you "
-    "know it (打开微信→WeChat, 开一下chrome→Google Chrome, launch vscode→Visual Studio Code).\n"
+    "- app     : OPEN or LAUNCH an application that is not running. arg = the app NAME only, in "
+    "English if you know it (打开微信→WeChat, 开一下chrome→Google Chrome, launch vscode→Visual "
+    "Studio Code).\n"
+    "- focus   : switch to / bring forward an app that is ALREADY running. arg = the app name.\n"
+    "- quit    : close or quit an application. arg = the app name.\n"
+    "- windows : what is open / what am I running / list my windows. arg = empty.\n"
     "- system  : a question about THIS machine's state — cpu, memory, disk, battery, what is playing.\n"
     "- project : open a code project / repo / folder in the editor. arg = the project name.\n"
     "- stop    : stop the music, or close/quit the wallpaper itself.\n"
     "- agent   : ANYTHING ELSE — questions, coding, explanations, writing. This is the default; when "
     "in doubt use agent, because it can do everything the others can and more.\n"
     "Examples: '放点周杰伦'→{action:'music',arg:'周杰伦'}; '打开 Chrome'→{action:'app',arg:'Google Chrome'}; "
+    "'切到 Xcode'→{action:'focus',arg:'Xcode'}; '把 Safari 退了'→{action:'quit',arg:'Safari'}; "
+    "'我现在开着什么'→{action:'windows',arg:''}; "
     "'cpu 占用多少'→{action:'system',arg:''}; '开一下 collie 这个项目'→{action:'project',arg:'collie'}; "
     "'别放了'→{action:'stop',arg:''}; '帮我改下这个函数'→{action:'agent',arg:''}.\n"
     'Reply: {"action":"...","arg":"..."}')
@@ -860,8 +866,33 @@ def desktop_intent(text):
 
     action = (obj.get("action") or "agent").strip().lower()
     arg = (obj.get("arg") or "").strip()
-    if action not in ("music", "app", "system", "project", "stop", "agent"):
+    if action not in ("music", "app", "focus", "quit", "windows", "system", "project", "stop",
+                      "agent"):
         action = "agent"
+
+    # focus / quit / windows need no permission at all — NSWorkspace and Apple Events answer them —
+    # so they work the moment collie is installed, unlike anything that drives a window's controls.
+    if action in ("focus", "quit", "windows"):
+        from . import native
+        be = native.backend()
+        if not be:
+            return {"action": action, "arg": arg, "ok": False,
+                    "error": "app control is not available on this platform"}
+        if action == "windows":
+            r = be.windows()
+            wins = [w for w in (r.get("windows") or []) if (w.get("title") or "").strip()]
+            return {"action": "windows", "arg": "", "ok": bool(r.get("ok")),
+                    "windows": wins[:12], "error": r.get("error", "")}
+        running = {a["name"].lower(): a["name"] for a in (be.apps().get("apps") or [])}
+        target = running.get(arg.lower()) or next(
+            (n for k, n in running.items() if arg and arg.lower() in k), "")
+        if not target:
+            return {"action": action, "arg": arg, "ok": False,
+                    "error": "%r is not running." % arg,
+                    "suggest": sorted(running.values())[:6]}
+        r = be.focus(target) if action == "focus" else be.quit_app(target)
+        return {"action": action, "arg": target, "ok": bool(r.get("ok")),
+                "error": r.get("error", "")}
 
     if action == "app":
         hit = _match_app(arg)
