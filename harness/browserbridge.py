@@ -400,6 +400,22 @@ def _call(cmd, timeout=60):
         with urllib.request.urlopen(req, timeout=timeout + 5) as r:
             return json.loads(r.read())
     except Exception as e:
+        # No extension answering. On macOS we can still drive the user's real
+        # browser through Apple Events, which needs nothing installed — worth
+        # trying before telling someone to go and load an unpacked extension.
+        # Opt out with COLLIE_NO_APPLE_EVENTS=1.
+        if os.environ.get("COLLIE_NO_APPLE_EVENTS") != "1":
+            try:
+                from . import browserapple
+                if browserapple.available():
+                    res = browserapple.call(cmd, timeout=timeout)
+                    if res.get("ok"):
+                        return res
+                    # Report the Apple Events problem, which is the actionable
+                    # one (a settings toggle), not "bridge unreachable".
+                    return res
+            except Exception:
+                pass    # fall through to the extension instructions
         return {"ok": False, "error": "bridge unreachable (%s). Is the collie extension loaded "
                 "in Chrome? chrome://extensions -> Load unpacked -> harness/browser_ext/" % e}
 

@@ -41,7 +41,7 @@ structurally, so the same test is meaningful on Linux, macOS, and Windows).
 | OS | Core agent | Browser bridge | Notes |
 |---|---|---|---|
 | **Linux (native)** | ✅ | ✅ same-OS localhost | the primary development target |
-| **macOS (native)** | ✅ | ✅ same-OS localhost | POSIX; the *simplest* bridge setup |
+| **macOS (native)** | ✅ | ✅ same-OS localhost, or **no extension at all** via Apple Events | POSIX; the *simplest* bridge setup |
 | **Windows (native)** | ✅ (Git Bash) | ✅ same-OS localhost | full parity with Git Bash; degrades without it — see "Windows" below |
 | **WSL2** | ✅ | ⚠️ cross-OS | Windows Chrome ↔ WSL server; see "WSL" below |
 
@@ -59,6 +59,21 @@ sit relative to each other is the only thing that changes:
   3. run Collie with `COLLIE_BROWSER_BRIDGE=1`
   (or `collie browser-bridge --browser` to launch a managed Chromium with the extension
   pre-loaded — a fresh profile, not your login, for dev/CI.)
+
+- **macOS, without installing anything** — Apple Events can drive your already-open,
+  already-logged-in tab, so the extension is optional here. If no extension answers, collie
+  falls back to it automatically. One-time setup, in place of loading an extension:
+  **Chrome → View → Developer → Allow JavaScript from Apple Events** (Safari: *Develop →
+  Allow JavaScript from Apple Events*), plus the macOS Automation prompt on first use.
+  That toggle is a security setting — it lets local processes run JavaScript in your
+  logged-in browser — so it is deliberately left for you to enable.
+
+  The fallback is a *transport*, not a second implementation: the page-side functions are
+  read out of `browser_ext/background.js` and injected as-is, so the two paths cannot drift.
+  `browser_console`, `browser_eval`, `browser_pick` and upload still need the extension —
+  console requires Chrome's `debugger` permission (CDP), and the others are async page
+  functions that Apple Events cannot await. They say so rather than returning something wrong.
+  Disable the fallback with `COLLIE_NO_APPLE_EVENTS=1`.
 
 - **WSL2** — the *hardest* case, because Collie runs in WSL (Linux) while Chrome is Windows.
   WSL2's `localhost` forwarding is one-directional and flaky, so:
