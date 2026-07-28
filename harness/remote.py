@@ -102,6 +102,26 @@ class RelayClient:
             except Exception:
                 pass
 
+    def notify(self, title, body, session="", thread="collie"):
+        """Ask the relay to push a notice to every phone paired with this desktop.
+
+        Through the relay rather than straight to Apple: the APNs key is a credential for the whole
+        app, and putting it on every user's machine would mean shipping it. The relay already holds
+        the devices, and it is the piece that stays up when this machine sleeps.
+
+        Best effort by design — a run must never fail because a notification could not be sent.
+        """
+        ws = self._ws
+        if ws is None:
+            return False
+        try:
+            ws.send_text(json.dumps({"t": "notify", "title": str(title)[:120],
+                                     "body": str(body)[:300], "session": str(session or ""),
+                                     "thread": str(thread or "collie")}))
+            return True
+        except Exception:
+            return False
+
     def refresh_paircode(self):
         """Tell the relay the pairing code rotated, so the old code stops working right away."""
         ws = self._ws
@@ -479,6 +499,17 @@ class RemoteState:
         self._log("relay: %s %s" % (p.get("name") or "device", "approved" if allow else "denied"))
         cl.pending_pair = None
         return True
+
+    def notify(self, title, body, session="", thread="collie") -> bool:
+        """Push a notice to the paired phones. Silent no-op when remote is off or nothing is paired —
+        the caller is a run finishing, and a run must not care whether anyone is listening."""
+        cl = self.client
+        if not self.enabled or cl is None:
+            return False
+        try:
+            return bool(cl.notify(title, body, session=session, thread=thread))
+        except Exception:
+            return False
 
     def rotate_code(self):
         import time

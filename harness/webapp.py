@@ -403,6 +403,28 @@ class Handler(BaseHTTPRequestHandler):
             except queue.Full:
                 pass          # a stalled listener drops frames rather than blocking the run
 
+    # A run that outlives the person's attention is the whole reason the phone exists. Short runs are
+    # not worth a buzz — you are still looking at the screen — so this only fires past a threshold, or
+    # when the run failed, which is worth knowing however fast it happened.
+    NOTIFY_AFTER_MS = 45_000
+
+    @staticmethod
+    def _notify_done(sid, res, wall_ms=None):
+        if REMOTE is None:
+            return
+        failed = bool(getattr(res, "error", None))
+        if not failed and (wall_ms or 0) < Handler.NOTIFY_AFTER_MS:
+            return
+        answer = (getattr(res, "answer", "") or "").strip().replace("\n", " ")
+        try:
+            REMOTE.notify(
+                "Run failed" if failed else "Run finished",
+                (getattr(res, "error", "") or "")[:200] if failed
+                else (answer[:180] or "No answer text."),
+                session=sid, thread=sid)
+        except Exception:
+            pass                      # a notification is never worth failing a finished run over
+
     def _serve_live(self):
         """GET /api/live -> an SSE feed of every run's structural events, for live map rendering."""
         q: queue.Queue = queue.Queue(maxsize=256)
@@ -1598,6 +1620,7 @@ class Handler(BaseHTTPRequestHandler):
                 "subscription": _provider() in ("anthropic-oauth", "claude-cli")}
             self._sse("done", done_d)
             Handler._mirror_pub(sid, "done", done_d)   # mirroring windows see the run finish too
+            Handler._notify_done(sid, res, wall_ms=res.wall_ms)
         except BrokenPipeError:
             pass
         except Exception as e:

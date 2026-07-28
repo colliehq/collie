@@ -79,6 +79,9 @@ export class RelayRoom {
     if (rest === "/pair/wait" && request.method === "GET") {
       return this.pairWait(url.searchParams.get("ticket") || "", request);
     }
+    // A paired phone leaves its APNs token here so the desktop can reach it when the app is closed.
+    // Session-authenticated: only a device this desktop already let in can be pushed to.
+    if (rest === "/push/register" && request.method === "POST") return this.registerPush(request);
     // phones get the dedicated mobile client, not the desktop index — room root → desktop /m
     const fwd = (rest === "/" || rest === "") ? "/m" : rest;
     return this.proxyToAgent(request, fwd, url.search);
@@ -146,6 +149,13 @@ export class RelayRoom {
         v.error = msg.error || "";
         await this.state.storage.put("pend:" + ticket, v);
       })().catch(() => {});
+      return;
+    }
+    if (msg.t === "notify") {
+      // The desktop has something worth interrupting a person for. Fire and forget: a push that
+      // fails must never stall the socket the run itself is streaming over.
+      this.pushAll({ title: msg.title, body: msg.body, thread: msg.thread, session: msg.session })
+        .catch(() => {});
       return;
     }
     if (msg.t === "devices") { const s = this._astate(ws); s.devices = msg.devices || []; this._setAstate(ws, s); return; }
@@ -397,6 +407,82 @@ export class RelayRoom {
     return devices.includes(await sha256hex(tok));
   }
 
+  // ---------------------------------------------------------------- push
+  //
+  // The phone is only useful away from the desk if it can be TOLD something happened. An app that
+  // has to be open to find out is a worse version of walking back to the computer.
+  //
+  // Tokens live here rather than on the desktop because the desktop may well be the thing that is
+  // busy, asleep, or on another network when the moment comes; the relay is the piece that is always
+  // up. They are keyed by the hash of the session token, so forgetting a device on the desktop also
+  // strands its pushes: no session, no delivery.
+
+  async registerPush(request) {
+    const agent = this._agent();
+    if (!agent) return json({ ok: false, error: "desktop offline" }, 503);
+    if (!(await this.checkSession(request, agent))) return json({ ok: false, error: "not paired" }, 401);
+    const body = await request.json().catch(() => null);
+    const token = String((body && body.token) || "");
+    if (!/^[0-9a-fA-F]{64,200}$/.test(token)) return json({ ok: false, error: "bad device token" }, 400);
+    const auth = (request.headers.get("Authorization") || "").match(/^Bearer\s+([A-Za-z0-9_\-]+)$/);
+    const cookie = (request.headers.get("Cookie") || "").match(/collie_sess=([A-Za-z0-9_\-]+)/);
+    const sess = await sha256hex((auth && auth[1]) || (cookie && cookie[1]) || "");
+    await this.state.storage.put("push:" + sess, {
+      token: token.toLowerCase(),
+      // TestFlight and the App Store are both the production gateway; only a locally built debug
+      // app is on sandbox. The app says which one it was built as, because the relay cannot tell.
+      sandbox: !!(body && body.sandbox),
+      name: String((body && body.name) || "").slice(0, 60),
+      at: Date.now(),
+    });
+    return json({ ok: true });
+  }
+
+  /// Fan a desktop notice out to every phone paired with this room.
+  async pushAll(note) {
+    const rows = await this.state.storage.list({ prefix: "push:" });
+    if (!rows.size) return;
+    const stale = [];
+    for (const [key, row] of rows) {
+      const status = await this.apns(row, note);
+      // 410 Gone is APNs telling us this install is finished with — deleting it is the documented
+      // obligation, and keeping it would mean signing a request per notification forever.
+      if (status === 410 || status === 400) stale.push(key);
+    }
+    if (stale.length) await this.state.storage.delete(stale);
+  }
+
+  async apns(row, note) {
+    const env = this.env;
+    if (!env.APNS_KEY || !env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_TOPIC) return 0;
+    const host = row.sandbox ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+    let jwt;
+    try {
+      jwt = await apnsJWT(env.APNS_KEY, env.APNS_KEY_ID, env.APNS_TEAM_ID);
+    } catch (e) {
+      return 0;
+    }
+    const payload = {
+      aps: {
+        alert: { title: note.title || "Collie", body: note.body || "" },
+        sound: "default",
+        "thread-id": note.thread || "collie",
+      },
+    };
+    if (note.session) payload.session = note.session;
+    const res = await fetch("https://" + host + "/3/device/" + row.token, {
+      method: "POST",
+      headers: {
+        authorization: "bearer " + jwt,
+        "apns-topic": env.APNS_TOPIC,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+      },
+      body: JSON.stringify(payload),
+    }).catch(() => null);
+    return res ? res.status : 0;
+  }
+
   sendAgent(agent, obj) { try { agent.send(JSON.stringify(obj)); } catch (e) {} }
 }
 
@@ -409,6 +495,40 @@ function randToken() {
   const a = new Uint8Array(32); crypto.getRandomValues(a);
   return btoa(String.fromCharCode(...a)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+/**
+ * The bearer token APNs wants: an ES256 JWT signed with the team's .p8 key.
+ *
+ * Cached because APNs REFUSES a token minted more than once every 20 minutes (TooManyProviderTokenUpdates)
+ * and rejects one older than an hour — so the window is genuinely narrow at both ends, and a fresh
+ * signature per notification is a way to get throttled rather than a way to be safe.
+ *
+ * WebCrypto's ECDSA signature is already the raw r‖s pair a JWT wants; there is no DER to unwrap.
+ */
+let apnsCache = { jwt: "", at: 0, kid: "" };
+async function apnsJWT(pem, keyID, teamID) {
+  const now = Math.floor(Date.now() / 1000);
+  if (apnsCache.jwt && apnsCache.kid === keyID && now - apnsCache.at < 1800) return apnsCache.jwt;
+
+  const body = pem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, "");
+  const key = await crypto.subtle.importKey(
+    "pkcs8", b64ToBytes(body).buffer,
+    { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+
+  const enc = (obj) => b64url(new TextEncoder().encode(JSON.stringify(obj)));
+  const signing = enc({ alg: "ES256", kid: keyID }) + "." + enc({ iss: teamID, iat: now });
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key,
+                                       new TextEncoder().encode(signing));
+  const jwt = signing + "." + b64url(new Uint8Array(sig));
+  apnsCache = { jwt, at: now, kid: keyID };
+  return jwt;
+}
+
+function b64url(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 function shortUA(ua) {
   if (/iPhone|iPad/.test(ua)) return "iPhone/iPad";
   if (/Android/.test(ua)) return "Android";

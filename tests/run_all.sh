@@ -66,6 +66,16 @@ else
   echo "  (node not found — skipping relay suite)"
 fi
 
+echo "── relay push + APNs bearer token (JS) ──────────────────"
+if command -v node >/dev/null 2>&1; then
+  node tests/relay_push_test.js || rc=1
+else
+  echo "  (node not found — skipping push suite)"
+fi
+
+echo "── phone notifications: when a run is worth a buzz ──────"
+if $PY tests/test_notify.py >/dev/null 2>&1; then echo "  notify OK"; else echo "  notify FAIL"; rc=1; fi
+
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then
   # Keep the output when it fails. Piping through grep and reporting only the exit status meant a
