@@ -1229,6 +1229,12 @@ class Handler(BaseHTTPRequestHandler):
         # With Collie Remote on, the phone is going to reach us THROUGH the relay, so the code has to
         # carry the room + relay pair code rather than a LAN address it cannot route to. Same symbol,
         # different payload type.
+        # Expire before showing. Checking here rather than only on a timer is what makes the window
+        # real: a pairing screen left open overnight refreshes its code the moment it is reloaded,
+        # instead of displaying one that has been valid — and readable over someone's shoulder, or
+        # in a screenshot — for hours.
+        if REMOTE and REMOTE.enabled:
+            REMOTE._maybe_expire()
         remote = REMOTE if (REMOTE and REMOTE.enabled and REMOTE.paircode) else None
         try:
             if remote is not None:

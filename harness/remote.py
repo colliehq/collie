@@ -371,6 +371,7 @@ class RemoteState:
         self._log = logf or (lambda *a: None)
         self.identity = remote_identity.load_or_create()
         self.paircode = None
+        self._paircode_at = 0.0
         self.client: RelayClient | None = None
         self._thread = None
         self.enabled = False
@@ -389,6 +390,7 @@ class RemoteState:
         return client.last_error if client else None
 
     def link(self):
+        self._maybe_expire()
         if not self.paircode:
             return None
         return "%s/r/%s#%s" % (self.web_base, self.identity.room, self.paircode)
@@ -411,9 +413,33 @@ class RemoteState:
             self.client.stop()
         self.enabled = False
 
+    # The LAN pairing secret has expired after 180s since it existed; the relay code never did. It
+    # was only ever invalidated by being USED, so a code shown on screen at 9am still paired a phone
+    # at 9pm — and it is written in plain text in a URL, which means a screenshot, a screen share or
+    # the phone's own history is enough. What one scan buys is every /api/* on the desktop: run
+    # commands, read and write files, drive the logged-in browser. That is too much to leave lying
+    # around indefinitely, so the two paths now expire the same way.
+    CODE_TTL = 180
+
+    def code_age(self):
+        import time
+        return time.time() - (self._paircode_at or 0)
+
+    def _maybe_expire(self):
+        """Rotate a code that has gone stale. Called wherever the code is read or shown, so the
+        window is real rather than nominal: an unattended pairing screen refreshes itself."""
+        if self.enabled and self.paircode and self.code_age() > self.CODE_TTL:
+            self.rotate_code()
+            self._log("relay: pairing code expired after %ds — a fresh one is on the pairing screen"
+                      % self.CODE_TTL)
+            return True
+        return False
+
     def rotate_code(self):
+        import time
         from . import remote_identity
         self.paircode = remote_identity.gen_paircode()
+        self._paircode_at = time.time()
         if self.client:
             self.client.paircode = self.paircode
             self.client.refresh_paircode()
@@ -429,7 +455,10 @@ class RemoteState:
         return self.identity.rename(device_id, name)
 
     def status(self) -> dict:
+        self._maybe_expire()      # the control panel is a read of the code, so it expires here too
         return {
+            "code_age": int(self.code_age()) if self.paircode else 0,
+            "code_ttl": self.CODE_TTL,
             "enabled": self.enabled,
             "connected": bool(self.client and self.client._ws is not None and self.enabled),
             "relay": self.relay_url,
