@@ -176,7 +176,7 @@ def _esc(t):
             .replace('"', "&quot;"))
 
 
-def _relay_qr_page(link, room, code):
+def _relay_qr_page(link, room, code, ttl=0):
     """The pairing screen when Collie Remote is on: a plain QR of the relay link.
 
     Deliberately a standard QR rather than collie's own ring code. The ring can only be read by
@@ -201,7 +201,10 @@ def _relay_qr_page(link, room, code):
       font-family:system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif;padding:32px 20px}
  h1{margin:0;font-size:21px;font-weight:650;letter-spacing:-.01em}
  p{margin:0;color:var(--mut);font-size:14.5px;line-height:1.6;max-width:34rem;text-align:center}
- .card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:26px;
+ /* ALWAYS light, never var(--card): a camera needs dark modules on a light quiet zone. Following
+    the theme here painted a near-black symbol on a near-black card in dark mode — the page looked
+    fine and simply could not be scanned. */
+ .card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:26px;
        box-shadow:0 18px 50px rgba(20,30,70,.10);display:grid;place-items:center}
  .card svg{display:block;width:min(62vw,300px);height:auto}
  code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px;
@@ -222,10 +225,10 @@ def _relay_qr_page(link, room, code):
 <h1>Point your phone camera here</h1>
 <p>Any camera works — you do not need the app first. Scanning opens Collie on your phone
    and pairs it with this computer.</p>
-<div class="card">%(svg)s</div>
-<code>%(link)s</code>
-<p class="note">The code is <b>one-shot</b>: it is spent the moment a phone pairs, and this page
-   shows a fresh one. Room <b>%(room)s</b>.</p>
+<div class="card" id="card">%(svg)s</div>
+<code id="link">%(link)s</code>
+<p class="note">The code is <b>one-shot</b> and expires after <b>%(ttl)s seconds</b>; this page keeps
+   showing a live one. Room <b>%(room)s</b>.</p>
 
 <div class="ask" id="ask" hidden>
   <div class="who" id="who"></div>
@@ -263,9 +266,23 @@ def _relay_qr_page(link, room, code):
       else if (cur) hide();
     }).catch(function(){});
   }, 1200);
+
+  // The code expires, so a page left open would otherwise be showing a symbol that no longer pairs
+  // anything — and the phone would report a failure that looks like the feature is broken.
+  var code = %(code)s;
+  setInterval(function(){
+    fetch(q("/api/remote/status")).then(function(r){ return r.json(); }).then(function(j){
+      if (!j || !j.paircode || j.paircode === code) return;
+      code = j.paircode;
+      document.getElementById("link").textContent = j.link || "";
+      fetch(q("/api/remote/qr.svg")).then(function(r){ return r.text(); })
+        .then(function(s){ document.getElementById("card").innerHTML = s; }).catch(function(){});
+    }).catch(function(){});
+  }, 3000);
 })();
 </script>
-</body></html>""" % {"svg": svg, "link": _esc(link), "room": _esc(room)}
+</body></html>""" % {"svg": svg, "link": _esc(link), "room": _esc(room),
+                     "ttl": ttl or 180, "code": json.dumps(code or "")}
 
 
 def _pair_advertised_host():
@@ -763,6 +780,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_mirror(urllib.parse.parse_qs(parsed.query).get("session", [""])[0].strip())
+            if path == "/api/remote/qr.svg":
+                # The pairing code expires, so the symbol on screen has to be able to catch up. The
+                # page re-fetches this when the code rotates; rendering server-side means the page
+                # needs no QR encoder of its own, and the symbol always matches the live link.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                link = REMOTE.link() if REMOTE else ""
+                if not link:
+                    return self._send_json({"error": "remote not available"}, 503)
+                from . import qr as _qr
+                svg = _qr.svg(link, quiet=2, scale=6, dark="#0F0E19")
+                self.send_response(200)
+                self.send_header("content-type", "image/svg+xml; charset=utf-8")
+                self.send_header("cache-control", "no-store")
+                self.send_header("content-length", str(len(svg)))
+                self.end_headers()
+                return self.wfile.write(svg)
             if path == "/api/remote/pending":        # a phone waiting on a human — GET, it's a read
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -1321,7 +1355,8 @@ class Handler(BaseHTTPRequestHandler):
                 # both audiences. The ring stays available for in-app scanning, where it is faster.
                 link = remote.link() or ""
                 if link:
-                    html = _relay_qr_page(link, remote.identity.room, remote.paircode)
+                    html = _relay_qr_page(link, remote.identity.room, remote.paircode,
+                                          getattr(remote, "CODE_TTL", 180))
                     return self._send_html(html.encode("utf-8"), 200)
                 payload = paircode.relay_payload_bytes(remote.identity.room, remote.paircode)
                 target, ttl = "the relay", 0
