@@ -8,6 +8,8 @@ wants **pip**.
 The friendliest path: no Python, no terminal, no configuration.
 
 1. Download **`Collie-Setup.exe`** from the [latest release](https://github.com/colliehq/collie/releases/latest).
+   Windows installers are code-signed through the [SignPath Foundation](https://signpath.org/)'s free
+   code-signing program for open-source projects.
 2. Double-click it. Pick your language on the first screen (Simplified/Traditional Chinese, English,
    Spanish, and ~30 more) — the language you choose becomes Collie's own interface language too.
 3. Click through. When it finishes, open **Collie** from the Start menu or the desktop icon.
