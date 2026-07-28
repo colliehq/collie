@@ -208,6 +208,16 @@ def _relay_qr_page(link, room, code):
       color:var(--mut);word-break:break-all;text-align:center;max-width:34rem}
  .note{font-size:12.5px;color:var(--mut)}
  .note b{color:var(--ink);font-weight:600}
+ .ask{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:22px 26px;
+      display:grid;gap:10px;place-items:center;box-shadow:0 18px 50px rgba(20,30,70,.14)}
+ .ask[hidden]{display:none}
+ .who{font-size:15.5px;font-weight:600}
+ .num{font-size:40px;font-weight:700;letter-spacing:.14em;font-variant-numeric:tabular-nums}
+ .row{display:flex;gap:10px;margin-top:4px}
+ .row button{font:inherit;font-size:14.5px;font-weight:600;border-radius:11px;padding:9px 20px;
+             border:1px solid var(--line);cursor:pointer}
+ .yes{background:#12a150;border-color:#12a150;color:#fff}
+ .no{background:transparent;color:var(--mut)}
 </style></head><body>
 <h1>Point your phone camera here</h1>
 <p>Any camera works — you do not need the app first. Scanning opens Collie on your phone
@@ -216,6 +226,45 @@ def _relay_qr_page(link, room, code):
 <code>%(link)s</code>
 <p class="note">The code is <b>one-shot</b>: it is spent the moment a phone pairs, and this page
    shows a fresh one. Room <b>%(room)s</b>.</p>
+
+<div class="ask" id="ask" hidden>
+  <div class="who" id="who"></div>
+  <div class="num" id="num"></div>
+  <p>Check this number matches the one on the phone, then let it in.</p>
+  <div class="row">
+    <button class="no"  id="deny">Not me</button>
+    <button class="yes" id="allow">Allow</button>
+  </div>
+</div>
+<script>
+// The approval prompt belongs HERE, not only in the control panel: whoever just scanned is looking
+// at this page. Polling rather than a socket because the page is trivial and the window is short.
+(function(){
+  var tok = new URLSearchParams(location.search).get("token") || "";
+  var q = function(p){ return p + (tok ? "?token=" + encodeURIComponent(tok) : ""); };
+  var ask = document.getElementById("ask"), cur = null;
+  function show(p){
+    cur = p;
+    document.getElementById("who").textContent = (p.name || "A device") + " wants to pair";
+    document.getElementById("num").textContent = p.num || "";
+    ask.hidden = false;
+  }
+  function hide(){ cur = null; ask.hidden = true; }
+  function decide(yes){
+    if (!cur) return;
+    fetch(q("/api/remote/" + (yes ? "approve" : "deny")), {method:"POST"})
+      .then(function(){ hide(); }).catch(hide);
+  }
+  document.getElementById("allow").onclick = function(){ decide(true); };
+  document.getElementById("deny").onclick  = function(){ decide(false); };
+  setInterval(function(){
+    fetch(q("/api/remote/pending")).then(function(r){ return r.json(); }).then(function(j){
+      if (j && j.pending) { if (!cur || cur.num !== j.pending.num) show(j.pending); }
+      else if (cur) hide();
+    }).catch(function(){});
+  }, 1200);
+})();
+</script>
 </body></html>""" % {"svg": svg, "link": _esc(link), "room": _esc(room)}
 
 

@@ -41,6 +41,17 @@
   .foot code { background:#0c0f1c; padding:1px 6px; border-radius:5px; }
   .toast { position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:#222741; border:1px solid var(--line); color:var(--ink); padding:9px 16px; border-radius:10px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; }
   .toast.show { opacity:1; }
+  .pendcard{border:1px solid rgba(18,161,80,.45);background:rgba(18,161,80,.08);border-radius:16px;
+             padding:18px;margin:0 0 16px;display:grid;gap:8px;place-items:center;text-align:center}
+  .pendcard[hidden]{display:none}
+  .pwho{font-weight:650;font-size:15px}
+  .pnum{font-size:34px;font-weight:700;letter-spacing:.14em;font-variant-numeric:tabular-nums}
+  .phint{font-size:12.5px;opacity:.72}
+  .prow{display:flex;gap:10px;margin-top:4px}
+  .prow button{font:inherit;font-weight:600;border-radius:10px;padding:8px 18px;cursor:pointer;
+               border:1px solid rgba(127,127,127,.35)}
+  .pyes{background:#12a150;border-color:#12a150;color:#fff}
+  .pno{background:transparent;color:inherit;opacity:.8}
 </style>
 </head>
 <body>
@@ -56,6 +67,15 @@
   <div class="card" id="paircard">
     <h2 data-i="Pairing">Pairing</h2>
     <div class="pairgrid">
+      <div class="pendcard" id="pendingbox" hidden>
+        <div class="pwho" id="pwho"></div>
+        <div class="pnum" id="pnum"></div>
+        <div class="phint">Check this matches the number on the phone.</div>
+        <div class="prow">
+          <button class="pno" onclick="decide(false)">Not me</button>
+          <button class="pyes" onclick="decide(true)">Allow</button>
+        </div>
+      </div>
       <div class="qr" id="qrbox"><span class="none">—</span></div>
       <div class="pairinfo">
         <p class="lbl" data-i="Scan on your phone, or open this link:">Scan on your phone, or open this link:</p>
@@ -144,6 +164,21 @@ function render(s){
   });
 }
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function pollPending(){
+  fetch(q('/api/remote/pending')).then(function(r){return r.json();}).then(function(j){
+    var box=document.getElementById('pendingbox');
+    if(!box) return;
+    if(j && j.pending){
+      box.hidden=false;
+      document.getElementById('pnum').textContent=j.pending.num||'';
+      document.getElementById('pwho').textContent=(j.pending.name||t('A device'));
+    } else { box.hidden=true; }
+  }).catch(function(){});
+}
+function decide(yes){
+  fetch(q('/api/remote/'+(yes?'approve':'deny')),{method:'POST'})
+    .then(function(){ document.getElementById('pendingbox').hidden=true; load(); }).catch(function(){});
+}
 function load(){ fetch(q('/api/remote/status')).then(function(r){return r.json();}).then(render).catch(function(){}); }
 function act(a){ fetch(q('/api/remote/'+a),{method:'POST'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(x){ toast(x.ok?t({enable:'Turned on',disable:'Turned off',rotate:'Pairing code updated'}[a]||'OK'):((x.j&&x.j.error)||t('Action failed'))); load(); }).catch(function(){ toast(t('Action failed')); }); }
 function kick(id){ if(!confirm(t('Kick this device? It will need to scan again to pair.'))) return;
@@ -155,7 +190,8 @@ function copyLink(){ if(!LINK) return; navigator.clipboard.writeText(LINK).then(
 // resolve the desktop's UI language, then translate + start polling
 fetch(q('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
   .catch(function(){ UI_LANG=resolveLang(null); })
-  .finally(function(){ applyStatic(); load(); setInterval(load,4000); });
+  .finally(function(){ applyStatic(); load(); setInterval(load,4000);
+                       pollPending(); setInterval(pollPending,1500); });
 </script>
 </body>
 </html>
