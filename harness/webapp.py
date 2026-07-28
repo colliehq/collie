@@ -171,6 +171,54 @@ def _pair_prove(nonce_hex, proof_hex):
                   "sealed_token": sealed}
 
 
+def _esc(t):
+    return (str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _relay_qr_page(link, room, code):
+    """The pairing screen when Collie Remote is on: a plain QR of the relay link.
+
+    Deliberately a standard QR rather than collie's own ring code. The ring can only be read by
+    collie, which is fine once the app is installed and useless before — a phone camera pointed at
+    it reports nothing, and the person has no way to tell whether the code is broken or they are.
+    A URL in a normal QR is read by every camera, and the app reads the same URL, so one symbol
+    serves someone who has collie and someone who does not.
+    """
+    from . import qr
+    svg = qr.svg(link, quiet=2, scale=6, dark="#0F0E19").decode("utf-8")
+    return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pair a phone — Collie</title>
+<style>
+ :root{color-scheme:light dark;--bg:#f5f7fd;--ink:#141a2e;--mut:#5a638a;--card:#ffffff;
+       --line:rgba(40,55,110,.14)}
+ @media (prefers-color-scheme:dark){:root{--bg:#0b0e18;--ink:#eef1ff;--mut:#98a1c8;
+       --card:#141a2b;--line:rgba(255,255,255,.12)}}
+ *{box-sizing:border-box}
+ body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;
+      justify-content:center;gap:18px;background:var(--bg);color:var(--ink);
+      font-family:system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif;padding:32px 20px}
+ h1{margin:0;font-size:21px;font-weight:650;letter-spacing:-.01em}
+ p{margin:0;color:var(--mut);font-size:14.5px;line-height:1.6;max-width:34rem;text-align:center}
+ .card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:26px;
+       box-shadow:0 18px 50px rgba(20,30,70,.10);display:grid;place-items:center}
+ .card svg{display:block;width:min(62vw,300px);height:auto}
+ code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px;
+      color:var(--mut);word-break:break-all;text-align:center;max-width:34rem}
+ .note{font-size:12.5px;color:var(--mut)}
+ .note b{color:var(--ink);font-weight:600}
+</style></head><body>
+<h1>Point your phone camera here</h1>
+<p>Any camera works — you do not need the app first. Scanning opens Collie on your phone
+   and pairs it with this computer.</p>
+<div class="card">%(svg)s</div>
+<code>%(link)s</code>
+<p class="note">The code is <b>one-shot</b>: it is spent the moment a phone pairs, and this page
+   shows a fresh one. Room <b>%(room)s</b>.</p>
+</body></html>""" % {"svg": svg, "link": _esc(link), "room": _esc(room)}
+
+
 def _pair_advertised_host():
     """The address the phone should dial: this machine's LAN IP under --lan, else loopback."""
     for host in sorted(LAN_HOSTS):
@@ -1184,8 +1232,20 @@ class Handler(BaseHTTPRequestHandler):
         remote = REMOTE if (REMOTE and REMOTE.enabled and REMOTE.paircode) else None
         try:
             if remote is not None:
+                # A STANDARD QR of the relay link, not the collie ring code.
+                #
+                # The ring code is unreadable by anything but collie — which was the point when the
+                # only reader was the app. But a phone that has not got the app yet, or has an older
+                # build, points its camera at the ring and gets nothing at all, with no clue why.
+                # The relay link is a URL; a plain QR of it is read by every camera on earth, opens
+                # the phone client, and the app scans the same URL when it is installed. One symbol,
+                # both audiences. The ring stays available for in-app scanning, where it is faster.
+                link = remote.link() or ""
+                if link:
+                    html = _relay_qr_page(link, remote.identity.room, remote.paircode)
+                    return self._send_html(html.encode("utf-8"), 200)
                 payload = paircode.relay_payload_bytes(remote.identity.room, remote.paircode)
-                target, ttl = remote.link() or "the relay", 0
+                target, ttl = "the relay", 0
             else:
                 secret = _pair_mint()
                 host = _pair_advertised_host()
