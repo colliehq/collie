@@ -511,12 +511,49 @@ def _collie_procs():
 
 
 def cmd_app(args):
-    """collie app — open collie in a native desktop window (WebView2) with the server behind it."""
+    """collie app — open collie in a native desktop window, with the server behind it.
+
+    Double-clicking Collie.app runs exactly this. It used to print "native window is Windows-only"
+    and fall through to cmd_web, which starts a server and opens a browser — except the bundle
+    launches with no controlling terminal and nothing to attach a browser to, so it created ZERO
+    windows. The Dock icon bounced, and nothing ever appeared.
+
+    macOS has had a real window all along; it was only ever wired to `collie wallpaper`. Same
+    NSWindow + WKWebView, at the ordinary window level: an app you can Cmd-Tab to and close.
+    """
     from . import plat
     if plat.is_windows():
         from . import wallpaper as wp
         return wp.run_app(port_pref=args.port)
-    print("collie app: native window is Windows-only — falling back to the browser GUI.")
+
+    if plat.is_macos():
+        from . import desktop_mac
+        ok, why = desktop_mac.available()
+        if ok:
+            import threading, time, urllib.request
+            port = args.port
+            from .webapp import main as web_main
+            # AppKit owns the main thread, so the server goes to a daemon thread — the same split
+            # the Windows engine gets by launching the server as its own pythonw process.
+            threading.Thread(target=web_main, args=(["--port", str(port), "--no-open"],),
+                             daemon=True).start()
+            for _ in range(60):
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % port, timeout=0.8).read()
+                    break
+                except Exception:
+                    time.sleep(0.2)
+            # Deliberately the same window `collie wallpaper --front` uses, which is the one that
+            # has been proven to work. A titled, Dock-visible app window crashes on launch —
+            # -[WKWebView dealloc] on a run loop that is not up yet — and four attempts at it
+            # (retaining the views, reordering the delegate, dropping
+            # applicationShouldTerminateAfterLastWindowClosed_, going back to .accessory) all still
+            # segfaulted. A working window now beats a titled one that never opens.
+            return desktop_mac.run("http://127.0.0.1:%d/" % port, behind=False)
+        print("collie app: %s" % why, file=sys.stderr)
+        print("  falling back to the browser GUI.", file=sys.stderr)
+    else:
+        print("collie app: native window is Windows/macOS only — falling back to the browser GUI.")
     return cmd_web(args)
 
 

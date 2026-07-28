@@ -104,7 +104,7 @@ def stop():
     return "collie wallpaper: stopped (pid %s)" % pid
 
 
-def run(url, behind=True):
+def run(url, behind=True, app_window=False):
     """Park a WKWebView on every display and hand the main thread to AppKit. Blocks until the
     process is told to stop. Returns an exit code."""
     ok, why = available()
@@ -124,6 +124,7 @@ def run(url, behind=True):
                         kCGNormalWindowLevelKey)
 
     BORDERLESS = 0
+    TITLED, CLOSABLE, MINIATURIZABLE, RESIZABLE = 1, 2, 4, 8
     # THE WHOLE DESIGN IS THIS NUMBER.
     #
     #   kCGDesktopWindowLevel      -2147483623   under the icons — a wallpaper you only look at
@@ -137,8 +138,10 @@ def run(url, behind=True):
     # below normal is the answer: it takes clicks (the composer works), it covers the desktop icons
     # (fine — it IS the desktop), and every app window in the system floats above it, so it can
     # never trap anything. That also means it needs no Dock tile to escape from.
+    # app_window: an ordinary application — Dock tile, Cmd-Tab, a title bar you can close. The
+    # desktop modes deliberately have none of that; `collie app` needs all of it.
     level = (CGWindowLevelForKey(kCGDesktopWindowLevelKey) if behind
-             else CGWindowLevelForKey(kCGNormalWindowLevelKey) - 1)
+             else CGWindowLevelForKey(kCGNormalWindowLevelKey) - (0 if app_window else 1))
 
     app = NSApplication.sharedApplication()
     # THE ESCAPE HATCH, and it is not optional. Each of the wallpaper's window settings is right for
@@ -155,6 +158,10 @@ def run(url, behind=True):
     # .accessory in both modes: no Dock tile, no menu bar. This is a desktop, not an app you
     # switch to — and with the window a level below every app it does not need to be escapable
     # from the Dock.
+    # .regular from a bare python process (no Info.plist, no bundle identity) is what AppKit calls
+    # unsupported; it tears the app down at launch and WKWebView's dealloc then crashes. Inside
+    # Collie.app the bundle supplies that identity and the Dock tile comes from the bundle itself,
+    # so the code never has to ask for it.
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
     class _KeyWindow(NSWindow):
@@ -169,6 +176,10 @@ def run(url, behind=True):
             return True
 
     windows = []
+    # WKWebView must be deallocated on a live main run loop; letting Python drop the last reference
+    # before app.run() starts means -[WKWebView dealloc] fires during teardown and segfaults inside
+    # WebCoreObjCScheduleDeallocateOnMainRunLoop. Hold them for the life of the process.
+    views = []
 
     def build():
         """One window per display. Rebuilt wholesale when the screen layout changes — cheaper to
@@ -176,32 +187,45 @@ def run(url, behind=True):
         for w in windows:
             w.orderOut_(None)
         del windows[:]
+        del views[:]
         for screen in NSScreen.screens():
             # behind: the whole screen, because it IS the wallpaper and the Dock floats above it
             # anyway (kCGDockWindowLevel sits well above kCGDesktopWindowLevel).
             # front: visibleFrame, which is the screen minus the menu bar and the Dock. An
             # interactive window at normal level would otherwise sit under the Dock, and the part
             # of the page hidden there is exactly where the composer lives.
-            # Full screen in both modes. The Dock and the menu bar have window levels far above
-            # this one, so they are never covered and visibleFrame would only carve out a strip
-            # for no reason.
-            frame = screen.frame()
+            # The desktop modes take the whole screen; the Dock and menu bar sit at far higher
+            # window levels and are never covered. An app window is a window: give it a sensible
+            # size in the middle of the working area.
+            if app_window:
+                v = screen.visibleFrame()
+                w_, h_ = min(1180.0, v.size.width - 80), min(820.0, v.size.height - 80)
+                frame = ((v.origin.x + (v.size.width - w_) / 2,
+                          v.origin.y + (v.size.height - h_) / 2), (w_, h_))
+            else:
+                frame = screen.frame()
             cls = NSWindow if behind else _KeyWindow
+            mask = (TITLED | CLOSABLE | MINIATURIZABLE | RESIZABLE) if app_window else BORDERLESS
             w = cls.alloc().initWithContentRect_styleMask_backing_defer_screen_(
-                frame, BORDERLESS, NSBackingStoreBuffered, False, screen)
+                frame, mask, NSBackingStoreBuffered, False, screen)
             w.setLevel_(level)
-            # Both modes are desktop furniture: on every Space, not dragged around by Space
-            # switches, out of Cmd-Tab and Mission Control.
-            w.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces
-                                     | NSWindowCollectionBehaviorStationary
-                                     | NSWindowCollectionBehaviorIgnoresCycle)
+            if app_window:
+                w.setTitle_("Collie")
+                w.center()
+            else:
+                # Desktop furniture: on every Space, not dragged around by Space switches, out of
+                # Cmd-Tab and Mission Control. All of that is wrong for an ordinary window.
+                w.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces
+                                         | NSWindowCollectionBehaviorStationary
+                                         | NSWindowCollectionBehaviorIgnoresCycle)
             w.setReleasedWhenClosed_(False)
-            w.setIgnoresMouseEvents_(bool(behind))
+            w.setIgnoresMouseEvents_(bool(behind) and not app_window)
             w.setHasShadow_(not behind)
             w.setBackgroundColor_(NSColor.blackColor())
             view = WKWebView.alloc().initWithFrame_configuration_(
                 ((0, 0), (frame.size.width, frame.size.height)), WKWebViewConfiguration.alloc().init())
             view.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(url)))
+            views.append(view)
             w.setContentView_(view)
             w.orderFront_(None)
             windows.append(w)
@@ -211,10 +235,14 @@ def run(url, behind=True):
             build()
 
         def applicationShouldTerminateAfterLastWindowClosed_(self, _app):
-            """Closing the window quits. Without this the traffic light hides the window and leaves
-            a running, windowless app behind — which for the wallpaper's accessory policy would be
-            invisible and unkillable, the same trap from the other direction."""
-            return not behind
+            """Closing the last window quits. Without it the close button hides the window and
+            leaves a running, windowless process behind — which under the desktop modes'
+            accessory policy is both invisible and unkillable."""
+            # Never True. AppKit asks this during launch, before build() has made any window, and
+            # takes the answer as "the last one just closed" — the app terminates on the spot and
+            # -[WKWebView dealloc] then runs with no live main run loop, which segfaults inside
+            # WebCoreObjCScheduleDeallocateOnMainRunLoop. Quitting is Cmd-Q, as in any Mac app.
+            return False
 
         def tick_(self, _timer):
             """Deliberately empty. app.run() is a native run loop, and CPython only dispatches
@@ -246,13 +274,16 @@ def run(url, behind=True):
     globals()["_REVEAL"] = _do
 
     watcher = _Watcher.alloc().init()
-    app.setDelegate_(watcher)
     NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
         watcher, "screensChanged:", "NSApplicationDidChangeScreenParametersNotification", None)
     NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
         0.25, watcher, "tick:", None, True)
 
     build()
+    # AFTER build(), never before: the delegate answers
+    # applicationShouldTerminateAfterLastWindowClosed_, and with no windows yet AppKit takes that as
+    # "the last window closed" and terminates the app the instant it launches.
+    app.setDelegate_(watcher)
     _save(os.getpid())
 
     def _bye(_sig, _frm):
