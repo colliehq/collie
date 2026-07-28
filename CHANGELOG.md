@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.20.3 — the app opens, and collie can update itself
+
+- **Double-clicking Collie.app now opens a window.** It never did on macOS: `collie app`
+  gave up on a native window off Windows and fell through to the browser path, which has
+  no terminal and nothing to attach a browser to when launched from a bundle — so the
+  server started, zero windows were created, and the Dock icon bounced until macOS gave up.
+- **`collie update`** checks for a newer release and installs it with `--yes`, into whichever
+  install this is (app / Windows setup / brew / pip). Nothing installs unverified: on macOS
+  the dmg must satisfy Gatekeeper *and* carry our Developer ID, and the app inside is checked
+  again after mounting; on Windows, where the installer is not code-signed, GitHub's published
+  sha256 is required. An unsigned image, a dmg with 64 bytes changed, and an exe with 8 bytes
+  changed are all refused, each saying what was wrong.
+- **`collie uninstall`** — macOS had no uninstaller, so dragging the app to the Trash left
+  ~/.collie behind (179 MB on the machine this was written on) plus the Screen Recording,
+  Camera and Microphone grants, listed under an app that no longer existed. It lists
+  everything first and deletes nothing without `--yes`.
+
 ## v0.20.2 — the macOS desktop actually works
 
 The macOS bundle shipped with its whole desktop backend inert: six features were written
