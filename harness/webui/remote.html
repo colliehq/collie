@@ -108,7 +108,7 @@ var ZH = {
   "Press Ctrl-C or":"按 Ctrl-C 或","turn off remote":"关闭远程","to cut all remote access instantly.":"可立即切断所有远程访问。",
   "Collie Remote":"Collie 远程","On":"在线","Connecting…":"连接中…","Off":"已关闭","Not enabled":"未启用",
   "Turned on":"已开启","Turned off":"已关闭","Pairing code updated":"已更新配对码","Kicked":"已踢除","Renamed":"已改备注",
-  "Link copied":"链接已复制","Action failed":"操作失败","Install a QR lib to show a QR here":"装 QR 库可显示二维码",
+  "Link copied":"链接已复制","Action failed":"操作失败","QR unavailable — use the link below":"二维码暂不可用，用下方链接配对",
   "Kick this device? It will need to scan again to pair.":"踢除该设备？它需要重新扫码配对。","Device label:":"设备备注：",
   "relay":"relay","room":"房间","turn":"轮","turns":"轮"
 };
@@ -130,7 +130,7 @@ function render(s){
   document.getElementById('relayline').textContent=t('relay')+'：'+(s.relay||'—')+'  ·  '+t('room')+'：'+(s.room||'—');
   var box=document.getElementById('qrbox');
   if(s.link){ box.innerHTML=''; var img=new Image(); img.src=q('/api/remote/qr')+'&v='+Date.now();
-    img.onerror=function(){ box.innerHTML='<span class="none">'+t('Install a QR lib to show a QR here')+'<br>pip install collie-harness[remote]</span>'; };
+    img.onerror=function(){ box.innerHTML='<span class="none">'+t('QR unavailable — use the link below')+'</span>'; };
     box.appendChild(img); } else box.innerHTML='<span class="none">—</span>';
   var tb=document.getElementById('devs'); tb.innerHTML=''; var ds=s.devices||[];
   if(!ds.length){ tb.innerHTML='<tr><td class="empty" colspan="3">'+t('No paired devices yet. Scan the code on your phone to add one.')+'</td></tr>'; return; }

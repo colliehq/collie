@@ -1,7 +1,7 @@
 # Build the installer payload — the self-contained runtime that ships inside Collie-Setup.exe.
 #
 # Recreates installer\payload\ reproducibly so a CI runner (or any maintainer) gets the exact same
-# bundle: an embeddable CPython with collie-harness[local] + its ONNX semantic-memory deps already
+# bundle: an embeddable CPython with collie-harness[local,remote] + its ONNX semantic-memory deps already
 # installed, plus the WebView2 bootstrapper. Idempotent; pass -Clean to rebuild from scratch.
 #
 #   powershell -File installer\build_payload.ps1                 # build/refresh the payload
@@ -66,8 +66,11 @@ if ($LASTEXITCODE -ne 0) {
 #    setuptools/wheel first (the [local] deps build from sdist on some platforms), then the repo.
 Step "pip install setuptools wheel"
 & (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location setuptools wheel
-Step "pip install collie-harness[local] from the repo"
-& (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location "$repo[local]"
+Step "pip install collie-harness[local,remote] from the repo"
+# [remote] = cryptography, for the phone-remote E2E handshake. WITHOUT it the packaged app reports
+# e2e.available()=False and the desktop refuses every pairing — the whole Collie Remote feature is
+# dead in a release build. It's a compiled wheel, but pip pulls the matching cp/win_amd64 wheel here.
+& (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location "$repo[local,remote]"
 
 # 5) WebView2 Evergreen bootstrapper (tiny; installs the runtime only if the machine lacks it) ---
 $wv = Join-Path $payload "MicrosoftEdgeWebView2Setup.exe"

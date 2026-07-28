@@ -55,6 +55,7 @@ class RelayClient:
         self._stop = False
         self.connected = threading.Event()   # set once the agent socket is actually up
         self.last_error = None               # why the last attempt failed, for the CLI to report
+        self.on_pair = None                  # set by Remote: rotate the paircode after a device pairs (one-shot)
         # E2E state. The keypair is per process: a restart re-pairs any E2E device, which is the
         # honest tradeoff until the device store persists K_dev (E2E_DESIGN.md §7).
         self._e2e_keys = self._make_e2e_keys()   # (private, public), advertised in `hello`
@@ -176,6 +177,15 @@ class RelayClient:
             self.identity.add_or_update(msg.get("device_id", ""), msg.get("hash", ""), msg.get("name", ""))
             self.refresh_devices()
             self._log("relay: device paired (%s)" % (msg.get("name") or msg.get("device_id", "")[:8]))
+            # ONE-SHOT pairing code: a code that just paired a device must not pair a second one. Rotate
+            # it now so a leaked link (room#code) is spent the instant it's used — the panel live-updates
+            # to the new code, and re-opening the old link lands on "link expired". Already-paired devices
+            # keep working (they authenticate by session token, not the code).
+            if self.on_pair:
+                try:
+                    self.on_pair()
+                except Exception:
+                    pass
         # ping/pong are handled at the WS control-frame layer (wsclient auto-pongs)
 
     # ------------------------------------------------------------------ E2E
@@ -391,6 +401,7 @@ class RemoteState:
         self.paircode = remote_identity.gen_paircode()
         self.client = RelayClient(self.relay_url, self.identity, self.paircode,
                                   "127.0.0.1", self.local_port, self.local_token, self._log)
+        self.client.on_pair = self.rotate_code       # one-shot: rotate the code the moment a device pairs
         self._thread = threading.Thread(target=self.client.run_forever, name="collie-relay", daemon=True)
         self._thread.start()
         self.enabled = True
