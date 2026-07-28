@@ -477,6 +477,12 @@ class Harness:
                     meta.prefix_tokens, int((time.time() - tt) * 1000),
                     cache_read=u.cache_read, cache_miss=mt, miss_cause=c_str)
 
+                # Track the ACTUAL stop reason of this completion for the truncation marker + the
+                # memory-consolidation gate. Latching only "length" (and never resetting) meant a run
+                # that recovered from a mid-way truncation and then finished cleanly still got a false
+                # "[answer truncated]" marker and had its correct answer silently dropped from memory.
+                last_stop = comp.stop_reason
+
                 # a provider/transport error is NOT the model's answer: don't finalize it
                 # as `answer` and don't consolidate it into durable memory as a "fact".
                 if comp.stop_reason == "error":
@@ -489,7 +495,6 @@ class Harness:
                 # can't tell which one was cut) and never execute them; for a truncated plain answer,
                 # nudge to continue. Bounded by trunc_rounds (like verify_max) so it can't spin.
                 if comp.stop_reason == "length":
-                    last_stop = "length"
                     trunc_rounds += 1
                     if comp.tool_calls:
                         session["messages"].append(

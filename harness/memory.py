@@ -300,7 +300,11 @@ class SqliteMemory:
                 r = by_id.get(rid)
                 age_days = max(0, now - ((r["created_at"] if r else None) or now)) / 86400.0
                 boost = 1.0 + 0.5 * (0.5 ** (age_days / half))
-                rescored.append((rid, (1.0 / (60 + pos)) * boost))
+                # Multiply the ACTUAL fused/reranker relevance score by the recency boost (≤1.5x), so
+                # relevance keeps dominating and margins are preserved. Rebuilding on pure rank position
+                # (1/(60+pos)) threw away the relevance gaps, letting a fresh low-relevance distractor
+                # leapfrog the true top hit — and, since top-k truncation runs after this, evict it.
+                rescored.append((rid, float(_s) * boost))
             ranked = sorted(rescored, key=lambda x: x[1], reverse=True)
         ranked = ranked[:k]
 

@@ -492,8 +492,13 @@ class RemoteState:
 
     def forget(self, device_id: str) -> bool:
         ok = self.identity.forget_device(device_id)
-        if ok and self.client and self.enabled:
-            self.client.refresh_devices()     # push the shrunk hash set → kicked device 401s at once
+        if ok and self.client:
+            # Drop it from the in-memory approved set too — else a kicked (or compromised) device
+            # replaying its stable device_id with a live pairing code is auto-approved with NO human
+            # number-match prompt until the desktop restarts, defeating the whole point of the kick.
+            self.client.approved_devices.discard(device_id)
+            if self.enabled:
+                self.client.refresh_devices()   # push the shrunk hash set → kicked device 401s at once
         return ok
 
     def rename(self, device_id: str, name: str) -> bool:

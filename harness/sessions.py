@@ -109,8 +109,10 @@ def save(sid, messages, project="demo", cwd="", answer=""):
 
 def _atomic_dump(obj, p):
     # write to a temp file then os.replace() so a concurrent reader never sees a truncated file and
-    # two near-simultaneous writers to the same session id can't interleave into corruption.
-    tmp = p + ".%d.tmp" % os.getpid()
+    # two near-simultaneous writers to the same session id can't interleave into corruption. The temp
+    # name MUST be unique per writer: under ThreadingHTTPServer two threads saving the same session id
+    # share a pid, so a pid-only name collided and corrupted the file the comment claims to protect.
+    tmp = "%s.%d.%s.tmp" % (p, os.getpid(), os.urandom(6).hex())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, default=str)
     os.replace(tmp, p)

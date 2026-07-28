@@ -189,6 +189,11 @@ export class RelayRoom {
       return json({ ok: false, error: "bad pairing code" }, 403);
     }
     this.pairAttempts = [];                              // reset on success
+    // BURN the code the instant it matches — one-shot enforced at the relay, not dependent on the
+    // desktop's async rotate. Closes the sub-second window where a leaked code redeemed twice. The
+    // current pairing continues via the E2E handshake below (which uses body.pub/confirm, not the code).
+    st.paircode = null;
+    this._setAstate(agent, st);
 
     // E2E (optional, opt-in per client): the phone sends its X25519 public key and an HMAC over the
     // transcript keyed by the pairing code. We cannot check that tag — we do not know the code, which
