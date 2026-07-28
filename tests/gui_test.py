@@ -51,6 +51,22 @@ def main():
             # --- welcome empty state ---
             check("welcome state shown", pg.query_selector("#welcome") is not None)
 
+            # --- first run shows the onboarding, and it must be dismissable ---
+            # This is why the suite broke: CI runs with COLLIE_PROVIDER=mock, so there is no working
+            # brain and the onboarding overlay opens over everything — correctly. Every later
+            # pg.click() then waited 30s for an element it could see but could not reach, and the
+            # 30s timeout was the FIRST sign, with the reason nowhere in the log. So assert the
+            # overlay behaves, then dismiss it the way a real first-run user does.
+            ov = pg.query_selector("#obOverlay")
+            check("onboarding appears when no provider is authed",
+                  ov is not None and "open" in (ov.get_attribute("class") or ""))
+            if ov and "open" in (ov.get_attribute("class") or ""):
+                pg.click("#obSkip")
+                pg.wait_for_selector("#obOverlay.open", state="detached", timeout=3000)
+            check("onboarding dismisses and stops blocking the page",
+                  "open" not in ((pg.query_selector("#obOverlay").get_attribute("class") or "")
+                                 if pg.query_selector("#obOverlay") else ""))
+
             # --- CSRF token injected ---
             tok = pg.eval_on_selector('meta[name="collie-token"]', "e => e.content")
             check("CSRF token injected", bool(tok) and len(tok) == 32, "token=%r" % tok)

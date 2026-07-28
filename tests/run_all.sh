@@ -61,7 +61,18 @@ fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then
-  "$PY" tests/gui_test.py 2>&1 | grep -E "PASS|FAIL|GUI:" ; [ "${PIPESTATUS[0]}" = "0" ] || rc=1
+  # Keep the output when it fails. Piping through grep and reporting only the exit status meant a
+  # GUI suite that died before printing a single PASS line left NOTHING in the log — CI showed the
+  # section header, the next header, and "SOME SUITES FAILED" with no reason anywhere. The filter is
+  # for the happy path; a failure gets the whole thing.
+  gui_out=$("$PY" tests/gui_test.py 2>&1); gui_rc=$?
+  if [ "$gui_rc" = "0" ]; then
+    echo "$gui_out" | grep -E "PASS|FAIL|GUI:"
+  else
+    echo "  GUI suite FAILED (exit $gui_rc) — full output follows:"
+    echo "$gui_out" | tail -40 | sed "s/^/    /"
+    rc=1
+  fi
 else
   echo "  (playwright not found — skipping GUI suite)"
 fi
