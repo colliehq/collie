@@ -18,6 +18,8 @@ contents, so it's treated as destructive by callers.
 
 # Declared, not implied — tests/test_platform_purity.py reads this. Everything below is PowerShell
 # plus .NET System.Windows.Automation; there is no macOS or Linux path here at all.
+import sys
+
 PLATFORM = "windows"
 
 from . import plat
@@ -198,12 +200,25 @@ def _ensure_driver():
 
 
 def available():
-    """(ok, why). UI Automation is a Windows API; say so once, here, instead of letting every entry
-    point fail in its own way."""
+    """(ok, why). UI Automation is a Windows API. macOS has its own surface in native_mac (System
+    Events, the same Accessibility tree), so say where to go rather than only that this is not it."""
+    if plat.is_macos():
+        return False, "use harness.native_mac on macOS (System Events, not UI Automation)"
     if not plat.is_windows():
-        return False, "native app control is Windows-only (UI Automation); not available on " + \
-                      plat.os_label()
+        return False, "native app control needs Windows (UI Automation) or macOS (System Events); " \
+                      "not available on " + plat.os_label()
     return True, ""
+
+
+def backend():
+    """The module that can actually drive apps here, or None. One import for callers that do not
+    want to care which platform they are on."""
+    if plat.is_windows():
+        return sys.modules[__name__]
+    if plat.is_macos():
+        from . import native_mac
+        return native_mac
+    return None
 
 
 def _run(action, match="", pid=0, index=-1, aid="", text="", timeout=20):
