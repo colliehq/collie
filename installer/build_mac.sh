@@ -115,6 +115,19 @@ fi
 # ── runtime + launcher ───────────────────────────────────────────────────────────────────────────
 if [ "$BUNDLE_PY" = "1" ]; then
   bash installer/build_mac_payload.sh "$APP" "$ARCH" "$EXTRAS"
+  # macOS names a process after the FILE it executed, and this bundle hands off to the interpreter
+  # directly — so everything the user sees called the app "python3": the Dock, Force Quit, Activity
+  # Monitor. Naming a second entry for the same binary fixes it — measured: launching this very
+  # interpreter through a link called "Collie" makes System Events report "Collie".
+  #
+  # A SYMLINK, not a hard link or a copy. CPython locates its own stdlib by walking up from the path
+  # it was executed as; a symlink resolves back to the real file first, so the prefix still comes out
+  # right. A hard link has no target to resolve — tried it, and the interpreter died with
+  # "No module named 'encodings'" before it ran a line.
+  if [ -e "$APP/Contents/Resources/python/bin/python3" ]; then
+    ln -sf python3 "$APP/Contents/Resources/python/bin/Collie"
+    echo "  process name: Collie (interpreter linked under its own name)"
+  fi
   # $0's own dir, resolved at run time: the app must work from /Applications, a dmg, or anywhere
   # the user dragged it, so nothing here may bake in a build-machine path.
   cat > "$APP/Contents/MacOS/Collie" <<'LAUNCHER'
@@ -125,7 +138,15 @@ export COLLIE_BUNDLED=1
 # The bundle is code-signed, which means sealed: a single .pyc written in here invalidates the
 # signature on the user's own machine. The bytecode is precompiled at build time instead.
 export PYTHONDONTWRITEBYTECODE=1
-exec "$HERE/Resources/python/bin/python3" -m harness.cli app "$@"
+# Exec the interpreter under the name `Collie`, not `python3`. macOS takes a process's name from the
+# file it executed, and this bundle hands off to the interpreter directly — so the Dock, the
+# Force-Quit list and Activity Monitor all called it "python3". The link is a real file inside the
+# bundle, so it is covered by the signature like everything else.
+# Prefer the interpreter under its own name (see build_mac.sh) so the Dock does not say "python3".
+# Fall back if it is missing: a bundle that will not start is a far worse bug than a wrong label.
+PY="$HERE/Resources/python/bin/Collie"
+[ -x "$PY" ] || PY="$HERE/Resources/python/bin/python3"
+exec "$PY" -m harness.cli app "$@"
 LAUNCHER
   echo "  launcher -> bundled runtime"
 else
