@@ -91,6 +91,16 @@ def install_kind():
         root = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Collie")
         if root and here.lower().startswith(root.lower()):
             return "setup"
+        # A custom install dir (the shell offers a folder picker) won't match the default path, so
+        # also look for the Inno uninstaller that sits at the install root (…/<install>/python/python.exe
+        # -> <install>). Without this, a custom-dir install misdetects as 'pip' and update does nothing.
+        try:
+            inst = os.path.dirname(os.path.dirname(here))
+            if any(f.lower().startswith("unins") and f.lower().endswith(".exe")
+                   for f in os.listdir(inst)):
+                return "setup"
+        except OSError:
+            pass
         return "pip"
     if os.environ.get("COLLIE_BUNDLED") or "/Collie.app/Contents/" in here:
         return "app"

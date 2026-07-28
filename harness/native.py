@@ -245,9 +245,57 @@ def _run(action, match="", pid=0, index=-1, aid="", text="", timeout=20):
 
 
 # ── public API ────────────────────────────────────────────────────────────────────────────────
-def windows():
-    """List top-level windows: [{title, class, pid}]."""
-    return _run("windows").get("windows", [])
+# CONTRACT: these mirror harness/native_mac.py so harness/desktop.py's composer works identically on
+# both OSes — windows()/apps() return {"ok":bool, ...} dicts, focus()/quit_app() return {"ok":bool}.
+# (This parity was missing: desktop_intent was coded to the mac shape and 500'd on Windows.)
+def _ps(script, timeout=10):
+    """Run a PowerShell snippet, return its trimmed stdout (or '')."""
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                           creationflags=_NOWIN, timeout=timeout, capture_output=True, text=True,
+                           encoding="utf-8", errors="ignore")
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def windows(match=""):
+    """Top-level windows: {"ok":bool, "windows":[{title, class, pid}]}. Matches native_mac.windows()."""
+    return _run("windows")
+
+
+def apps():
+    """Running apps that have a visible window: {"ok":True, "apps":[{"name":...}]}. 'name' is the
+    process name (chrome, Notepad, Code) so a user's word matches. Mirrors native_mac.apps()."""
+    out = _ps("Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } | "
+              "Select-Object -ExpandProperty ProcessName -Unique")
+    seen, apps_ = set(), []
+    for nm in out.splitlines():
+        nm = nm.strip()
+        if nm and nm.lower() not in seen:
+            seen.add(nm.lower()); apps_.append({"name": nm})
+    return {"ok": True, "apps": apps_}
+
+
+def _find_ps(name):
+    """PowerShell that selects the first process matching `name` by process name or window title."""
+    n = (name or "").replace("'", "''")
+    return ("Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and "
+            "($_.ProcessName -eq '%s' -or $_.MainWindowTitle -like '*%s*') } | Select-Object -First 1" % (n, n))
+
+
+def focus(name):
+    """Bring a running app's main window to the foreground. Mirrors native_mac.focus()."""
+    out = _ps("$p = %s; if ($p) { (New-Object -ComObject WScript.Shell).AppActivate($p.Id) | Out-Null; 'ok' }"
+              % _find_ps(name))
+    return {"ok": True} if out.strip().endswith("ok") else {"ok": False, "error": "%r is not running" % name}
+
+
+def quit_app(name):
+    """Gracefully close an app's main window (CloseMainWindow = WM_CLOSE, lets it prompt to save) —
+    NEVER Stop-Process. Mirrors native_mac.quit_app()."""
+    out = _ps("$p = %s; if ($p) { [void]$p.CloseMainWindow(); 'ok' }" % _find_ps(name))
+    return {"ok": True} if out.strip().endswith("ok") else {"ok": False, "error": "%r is not running" % name}
 
 
 def foreground_pid():

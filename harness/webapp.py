@@ -685,6 +685,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": sessions.set_title(sid, title)})
             if path.startswith("/api/session/"):
                 return self._serve_session(path[len("/api/session/"):])
+            # Missions are disabled (the router rewrites mission->chat). Enforce that HERE too — not
+            # only in router+UI — so the endpoints can't be driven directly. Delete to re-enable.
+            if path in ("/api/mission", "/api/missions"):
+                return self._send_json({"error": "missions are disabled"}, 404)
             if path == "/api/mission":                    # delegate: one mission's live status
                 from .missionweb import MissionService
                 mid = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
@@ -905,6 +909,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": True, "provider": provider, "model": model or ""})
             if path in ("/api/mission", "/api/mission/confirm", "/api/mission/resume",
                         "/api/mission/tick"):
+                # Missions are disabled (the router rewrites mission->chat). Enforce it server-side so
+                # a CSRF-token holder still can't start a durable model-driven campaign the product
+                # says is impossible. Delete this guard (and the router rewrite) to re-enable.
+                return self._send_json({"error": "missions are disabled"}, 404)
+            if path in ("/api/_mission_disabled",):
                 # The NL front door: start/gate/carry a delegate mission from the chat.
                 # CSRF-gated like every state-changing route — a mission runs the model
                 # and can fire (gated) real-world actions, so a drive-by must never start one.

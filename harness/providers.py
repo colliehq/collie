@@ -610,9 +610,12 @@ def _read_oauth_token():
 class AnthropicOAuthProvider(AnthropicProvider):
     name = "anthropic-oauth"
 
-    def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 4096):
+    def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 0):
         self.model = model
-        self.max_tokens = max_tokens
+        # honour the shared COLLIE_MAX_TOKENS knob (Settings "Max output tokens/turn"), like the parent
+        # and every sibling provider — pinning 4096 here made big write_file edits truncate on the
+        # subscription path (the user's default), then churn on retries.
+        self.max_tokens = max_tokens or int(os.environ.get("COLLIE_MAX_TOKENS", "8192"))
         self.api_key = ""                       # not used; OAuth token read per-call (stays fresh)
         if not _read_oauth_token():
             raise RuntimeError("no Claude OAuth token (run `claude` login or set "

@@ -41,12 +41,15 @@ def test_version_compare():
 def test_install_kind_detects_the_bundle():
     print("test_install_kind_detects_the_bundle")
     old = os.environ.get("COLLIE_BUNDLED")
-    try:
+    real_isw = up.plat.is_windows
+    up.plat.is_windows = lambda: False     # COLLIE_BUNDLED/.app is a macOS concept — test the mac path
+    try:                                    # (else on Windows install_kind() short-circuits to setup/pip)
         os.environ["COLLIE_BUNDLED"] = "1"
         check(up.install_kind() == "app", "COLLIE_BUNDLED marks an .app install")
         os.environ.pop("COLLIE_BUNDLED", None)
         check(up.install_kind() in ("pip", "brew"), "otherwise pip or brew (%s)" % up.install_kind())
     finally:
+        up.plat.is_windows = real_isw
         if old is None:
             os.environ.pop("COLLIE_BUNDLED", None)
         else:

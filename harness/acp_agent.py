@@ -128,6 +128,8 @@ class CollieAgent(acp.Agent):
         # env > settings.json > API default — the ACP entry never calls settings.apply(), so read
         # settings directly to keep the web Settings panel authoritative here too.
         provider = settings.get("PROVIDER", "anthropic")
+        model = settings.get("MODEL") or None      # settings.get is env > settings.json > default;
+        #                                            reading COLLIE_MODEL directly ignored the panel
         # Bridge the SYNC emit callback (fired from the worker thread) onto THIS event loop.
         # The receipt is captured, not streamed inline, so we can render it AFTER the final
         # answer (metadata reads better below the substance it summarizes).
@@ -143,7 +145,7 @@ class CollieAgent(acp.Agent):
         try:
             # build INSIDE the try — make_harness -> AnthropicOAuth raises on a missing token, and
             # that must reach the user as a chat message, not an escaped JSON-RPC error.
-            h = make_harness(cwd, provider=provider, model=os.environ.get("COLLIE_MODEL"),
+            h = make_harness(cwd, provider=provider, model=model,
                              project="acp", code_search=True, embed="hash",
                              exec_code=True, delegate=True)
             h.emit = _bridge

@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 
 VERSION=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"',open('harness/__init__.py').read()).group(1))")
 APP="installer/Output/Collie.app"
-SIGN=0; DMG=0; ALLOW_DEV=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop"
+SIGN=0; DMG=0; ALLOW_DEV=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop,remote"
 while [ $# -gt 0 ]; do
   case "$1" in
     --sign) SIGN=1 ;;

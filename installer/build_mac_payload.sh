@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 
 APP="${1:?usage: build_mac_payload.sh <app-path> [arch] [extras]}"
 ARCH="${2:-$(uname -m)}"
-EXTRAS="${3:-local,tui,desktop}"
+EXTRAS="${3:-local,tui,desktop,remote}"
 CACHE="${COLLIE_BUILD_CACHE:-$HOME/.cache/collie-build}"
 PYVER="3.12"
 

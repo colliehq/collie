@@ -230,12 +230,48 @@ def _mac_icns(app_path):
     return os.path.join(res, icns[0]) if icns else None
 
 
-def media(cmd):
-    """Send a global media key — controls Spotify / YouTube / any player, no focus needed."""
-    vk = _VK.get(cmd)
-    if not vk:
+_MAC_MEDIA = {"playpause": "playpause", "next": "next track", "prev": "previous track", "stop": "pause"}
+
+
+def _mac_media(cmd):
+    """Drive playback on macOS via AppleScript against whichever of Spotify/Music is running (there
+    is no clean generic media-key from osascript). Volume keys go through `set volume`."""
+    if cmd in ("mute", "volup", "voldown"):
+        s = {"mute": "set volume with output muted",
+             "volup": "set volume output volume (output volume of (get volume settings) + 10)",
+             "voldown": "set volume output volume (output volume of (get volume settings) - 10)"}[cmd]
+        try:
+            subprocess.run(["osascript", "-e", s], timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+    act = _MAC_MEDIA.get(cmd)
+    if not act:
         return False
+    for app in ("Spotify", "Music"):
+        try:
+            r = subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to (name of processes) contains "%s"' % app],
+                capture_output=True, text=True, timeout=5)
+            if (r.stdout or "").strip() == "true":
+                subprocess.run(["osascript", "-e", 'tell application "%s" to %s' % (app, act)],
+                               timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def media(cmd):
+    """Send a global media command — controls Spotify / any player, no focus needed."""
+    if cmd not in _VK:
+        return False
+    if _is_mac():
+        return _mac_media(cmd)
     try:
+        vk = _VK[cmd]
         u = ctypes.windll.user32
         u.keybd_event(vk, 0, 1, 0)      # KEYEVENTF_EXTENDEDKEY
         u.keybd_event(vk, 0, 1 | 2, 0)  # + KEYEVENTF_KEYUP
