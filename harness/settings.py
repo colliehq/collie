@@ -84,6 +84,8 @@ SCHEMA = [
      "hint": "Drive your REAL logged-in Chrome through the browser extension, so pages you're signed into (search, docs) just work. Auto is recommended."},
     {"group": "Tools", "key": "PLAN_FIRST", "label": "Plan before multi-file edits", "type": "bool", "default": "off",
      "hint": "On larger SWE tasks, write and commit a scope/plan before touching files. Slower but steadier on sprawling changes."},
+    {"group": "Desktop", "key": "WALLPAPER", "label": "Ambient desktop at login", "label_zh": "登录时启动靠近桌面", "type": "bool", "default": "on",
+     "hint": "Run Collie's live wallpaper (clock, weather, music, an app dock, and a command bar) behind your desktop icons, started automatically when you log in. Turn OFF to remove the autostart and keep your normal wallpaper — Windows only."},
 
     {"group": "Retrieval", "key": "EMBED", "label": "Embedder", "type": "select", "default": "auto",
      "options": [
@@ -153,6 +155,7 @@ _ZH = {
                        "hint": "通过浏览器扩展驱动你真实登录的 Chrome,登录态页面(搜索、文档)直接可用。推荐 Auto。",
                        "options": {"auto": "自动 — 扩展在线就用", "1": "总是开", "0": "关"}},
     "PLAN_FIRST": {"label": "多文件编辑前先计划", "hint": "大型任务先写好范围/计划再动文件。更慢但在牵连面大的改动上更稳。"},
+    "WALLPAPER": {"label": "登录时启动靠近桌面", "hint": "把 Collie 的动态壁纸(时钟、天气、音乐、应用坞、命令栏)贴在桌面图标背后,开机自动启动。关掉就移除自启、恢复你原来的壁纸——仅 Windows。"},
     "EMBED": {"label": "语义模型",
               "hint": "记忆召回背后的语义模型。auto 用 granite(进程内 ONNX),依赖/模型不可用时降级为 BM25 关键词召回——绝不退回 hash(实测比 BM25 还差)。改动后需要 `collie mem reembed`。",
               "options": {"auto": "自动(granite 语义 → 不可用则 BM25)", "granite": "granite-107m(Apache,55MB,多语言 — 默认)",

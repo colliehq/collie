@@ -232,6 +232,16 @@ class CollieWallpaper : Form
                 if (_windowMode) OpenChildWindow(e2.Uri);
                 else _web.CoreWebView2.Navigate(e2.Uri);   // wallpaper has no window manager: navigate in place
             };
+            // SELF-HEAL the startup race: right after login the engine can load before the local
+            // server binds its port, and WebView2 would then sit on a blank error page FOREVER — the
+            // "wallpaper is running but the desktop is blank" bug. Retry every ~2s until it loads.
+            _web.CoreWebView2.NavigationCompleted += delegate (object sN, CoreWebView2NavigationCompletedEventArgs eN)
+            {
+                if (eN.IsSuccess) return;
+                var rt = new Timer(); rt.Interval = 2000;
+                rt.Tick += delegate { rt.Stop(); rt.Dispose(); try { _web.CoreWebView2.Navigate(url); } catch { } };
+                rt.Start();
+            };
             _web.CoreWebView2.Navigate(url);
         }
         catch (Exception ex) { Log("navigate EXCEPTION: " + ex.Message); }

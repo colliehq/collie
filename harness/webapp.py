@@ -911,8 +911,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(body, dict):
                     return self._send_json({"error": "expected object"}, 400)
                 from . import settings
+                prev_wp = (settings.get("WALLPAPER", "off") or "off").lower() in ("on", "1", "true")
                 saved = settings.save(body)
                 settings.apply()                              # take effect for the next query now
+                # Ambient-desktop autostart is now USER-controlled (not silently forced by the
+                # installer): toggling WALLPAPER creates/removes the logon launcher — and install()
+                # also starts it now, uninstall() stops it. Only act on an actual change.
+                if "WALLPAPER" in body:
+                    want_wp = str(body.get("WALLPAPER") or "").lower() in ("on", "1", "true")
+                    if want_wp != prev_wp:
+                        try:
+                            from . import wallpaper as wp
+                            wp.install() if want_wp else wp.uninstall()
+                        except Exception:
+                            pass
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
             if path == "/api/browser/start":
                 # onboarding "connect your browser": bring the localhost bridge up (windowless), so the

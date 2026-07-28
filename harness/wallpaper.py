@@ -124,10 +124,17 @@ def webview2_present() -> bool:
 
 def build_engine(force: bool = False) -> "str | None":
     """Build collie-wallpaper.exe from the shipped C# source using the in-box .NET Framework csc
-    (present on every Windows — NO .NET SDK needed). Cached: skipped if the exe already exists."""
+    (present on every Windows — NO .NET SDK needed). Cached: reused unless the C# source is newer."""
     exe = exe_path()
     if os.path.exists(exe) and not force:
-        return exe
+        # Reuse the cached exe ONLY if it's at least as new as the source. An UPDATE ships a newer
+        # Program.cs; without this check the stale exe from the previous version was reused forever and
+        # C# fixes (mouse-hook, load-retry, …) never actually reached the running wallpaper.
+        try:
+            if os.path.getmtime(exe) >= os.path.getmtime(os.path.join(src_dir(), "Program.cs")):
+                return exe
+        except OSError:
+            return exe
     if not plat.is_windows():
         return None
     csc = os.path.join(os.environ.get("WINDIR", r"C:\Windows"),
