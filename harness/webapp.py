@@ -176,6 +176,40 @@ def _esc(t):
             .replace('"', "&quot;"))
 
 
+def _intent_summary(r):
+    """One line describing what the desktop just did, for the transcript."""
+    name = r.get("arg") or r.get("query") or ""
+    if r.get("ok") is False:
+        return "Couldn\u2019t do that%s%s" % (": " + name if name else "",
+                                               " \u2014 " + r["error"] if r.get("error") else "")
+    # Every action the router can return — music/app/focus/quit/windows/system/project/stop/agent.
+    # A missing one falls through to "Done", which tells the reader nothing about what happened to
+    # their machine; that is worth less than no entry at all.
+    action = r.get("action")
+    if action == "app":
+        return "Opened %s." % (name or "it")
+    if action == "focus":
+        return "Switched to %s." % (name or "it")
+    if action == "quit":
+        return "Quit %s." % (name or "it")
+    if action == "windows":
+        return "Arranged the windows%s." % (" for " + name if name else "")
+    if action == "system":
+        return "%s." % (name or "Done").capitalize()
+    if action == "project":
+        return "Opened the project %s." % name if name else "Opened the project."
+    if action == "stop":
+        return "Stopped."
+    return "Done."
+
+
+def _play_summary(r):
+    if not r.get("ok"):
+        return "Couldn\u2019t find that%s" % (" \u2014 " + r["error"] if r.get("error") else ".")
+    who = r.get("uploader") or ""
+    return "\u25b6 Playing %s%s." % (r.get("title") or "it", " \u2014 " + who if who else "")
+
+
 def _relay_qr_page(link, room, code, ttl=0):
     """The pairing screen when Collie Remote is on: a plain QR of the relay link.
 
@@ -412,6 +446,28 @@ class Handler(BaseHTTPRequestHandler):
         NOTIFY_AFTER_MS = int(os.environ.get("COLLIE_NOTIFY_AFTER_MS") or 45_000)
     except ValueError:
         NOTIFY_AFTER_MS = 45_000
+
+    @staticmethod
+    def _record_command(sid, said, answer):
+        """Write a fast-path command into the conversation it was typed in.
+
+        The intent router is an optimisation — instant and free where a model call is neither — but
+        it is not a different place for things to happen. A chat that cannot show you the thing you
+        just asked for is one you stop believing.
+        """
+        said = (said or "").strip()
+        if not said or not answer:
+            return None
+        try:
+            from . import sessions            # imported per-use here, as everywhere else in this file
+            # No session yet means this command is the first thing said in a new chat. Start one, and
+            # hand the id back so the client continues in it — otherwise the very first thing a
+            # person does is the one thing the history cannot show them.
+            sid = str(sid or "").strip() or sessions.new_id()
+            sessions.append_exchange(sid, said, answer, cwd=os.getcwd())
+            return sid
+        except Exception:
+            return None                 # the command already happened; logging it is not worth failing
 
     @staticmethod
     def _notify_done(sid, res, wall_ms=None):
@@ -1020,10 +1076,15 @@ class Handler(BaseHTTPRequestHandler):
                     # Play it HERE, on the computer. The existing music path resolves a stream and
                     # hands the URL to the caller's own audio element, which a phone does not have —
                     # so "play Cruel Summer" found the track and then nothing happened.
-                    return self._send_json(dt.play_here(
+                    r = dt.play_here(
                         body.get("q") or body.get("query") or "",
                         artist=body.get("artist") or "", title=body.get("title") or "",
-                        region=body.get("region") or ""))
+                        region=body.get("region") or "")
+                    sid = Handler._record_command(body.get("session"), body.get("said"),
+                                                  _play_summary(r))
+                    if sid:
+                        r["session"] = sid
+                    return self._send_json(r)
                 if action == "stopaudio":
                     return self._send_json(dt.stop_here())
                 if action == "intent":
@@ -1036,6 +1097,13 @@ class Handler(BaseHTTPRequestHandler):
                     r["music"] = r.get("action") == "music" and bool(r.get("query") or r.get("arg"))
                     if r["music"] and not r.get("query"):
                         r["query"] = r.get("arg") or ""
+                    # A command carried out here is still something that happened in a conversation.
+                    # Music is recorded by /play instead, once it knows what it actually started.
+                    if r.get("action") not in ("agent", "music"):
+                        sid = Handler._record_command(body.get("session"), body.get("text"),
+                                                      _intent_summary(r))
+                        if sid:
+                            r["session"] = sid
                     return self._send_json(r)
                 return self._send_json({"error": "unknown action"}, 404)
             if path == "/api/model":

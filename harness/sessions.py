@@ -107,6 +107,27 @@ def save(sid, messages, project="demo", cwd="", answer=""):
     return sid
 
 
+def append_exchange(sid, user_text, answer, project="web", cwd=""):
+    """Add one question-and-answer to a session without running a model.
+
+    A command the desktop carried out itself — "open Xcode", "play Cruel Summer" — is still something
+    that happened in a conversation, and a conversation that cannot remember it is one people will not
+    trust. The fast path is an optimisation, not a different place for things to happen, so what it
+    does is written where everything else is.
+
+    Creates the session when it does not exist yet, so the first thing said in a new chat can be a
+    command.
+    """
+    if not sid:
+        return sid
+    existing = load(sid) or {}
+    messages = list(existing.get("messages") or [])
+    messages.append({"role": "user", "content": user_text})
+    messages.append({"role": "assistant", "content": answer})
+    return save(sid, messages, project=existing.get("project") or project,
+                cwd=existing.get("cwd") or cwd, answer=answer)
+
+
 def _atomic_dump(obj, p):
     # write to a temp file then os.replace() so a concurrent reader never sees a truncated file and
     # two near-simultaneous writers to the same session id can't interleave into corruption. The temp
