@@ -392,6 +392,124 @@ def _desktop_window(url, kiosk=False):
     return _open_window_local(url, kiosk)
 
 
+# Config worth not destroying by accident: an API key, a paired phone, MCP logins.
+_KEEP = ("settings.json", "mcp.json", "remote.json", "desktop.json")
+
+
+def cmd_uninstall(args):
+    """Remove collie. Lists first, deletes only with --yes.
+
+    macOS has no uninstaller, so "drag it to the Trash" leaves ~/.collie behind — which is mostly a
+    browser profile and can run to hundreds of megabytes — and leaves the Screen Recording, Camera
+    and Microphone grants sitting in System Settings under an app that no longer exists. Both are
+    invisible until you go looking, so this names every path and every grant before touching any.
+    """
+    import shutil as _sh
+    from . import plat
+
+    home = os.path.expanduser("~")
+    cdir = os.path.join(home, ".collie")
+    targets, kept = [], []
+
+    app = "/Applications/Collie.app"
+    if plat.is_macos() and os.path.isdir(app):
+        targets.append((app, _dirsize(app)))
+
+    if os.path.isdir(cdir):
+        for name in sorted(os.listdir(cdir)):
+            path = os.path.join(cdir, name)
+            if args.keep_config and name in _KEEP:
+                kept.append(name); continue
+            targets.append((path, _dirsize(path)))
+
+    procs = _collie_procs()
+    total = sum(sz for _, sz in targets)
+
+    print("collie uninstall%s" % ("" if args.yes else "  (dry run — nothing will be deleted)"))
+    if procs:
+        print("\n  running processes to stop:")
+        for pid, what in procs:
+            print("    pid %-7s %s" % (pid, what[:76]))
+    if targets:
+        print("\n  to remove (%s):" % _human(total))
+        for path, sz in sorted(targets, key=lambda t: -t[1]):
+            print("    %8s  %s" % (_human(sz), path.replace(home, "~")))
+    if kept:
+        print("\n  kept (--keep-config): %s" % ", ".join(kept))
+    if plat.is_macos():
+        print("\n  macOS permission grants to reset (they outlive the app):")
+        print("    ScreenCapture, Camera, Microphone, AppleEvents  for run.collie.desktop")
+    if not targets and not procs:
+        print("\n  nothing to remove — collie is not installed here.")
+        return 0
+    if not args.yes:
+        print("\n  re-run with --yes to do it:  collie uninstall --yes")
+        return 0
+
+    for pid, _what in procs:
+        try:
+            os.kill(int(pid), 15)
+        except Exception:
+            pass
+    for path, _sz in targets:
+        try:
+            _sh.rmtree(path) if os.path.isdir(path) else os.remove(path)
+        except Exception as e:
+            print("  could not remove %s: %s" % (path, e), file=sys.stderr)
+    if plat.is_macos():
+        for svc in ("ScreenCapture", "Camera", "Microphone", "AppleEvents"):
+            try:
+                subprocess.run(["tccutil", "reset", svc, "run.collie.desktop"],
+                               capture_output=True, timeout=15)
+            except Exception:
+                pass
+    if not args.keep_config and os.path.isdir(cdir) and not os.listdir(cdir):
+        try:
+            os.rmdir(cdir)
+        except OSError:
+            pass
+    print("\ncollie removed. `pip uninstall collie-harness` if you installed it that way.")
+    return 0
+
+
+def _dirsize(path):
+    if os.path.isfile(path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+    n = 0
+    for root, _d, files in os.walk(path):
+        for f in files:
+            try:
+                n += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return n
+
+
+def _human(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%.0f%s" % (n, unit)
+        n /= 1024.0
+
+
+def _collie_procs():
+    """collie processes started from anywhere — the wallpaper, a web server, the browser bridge."""
+    out = []
+    try:
+        r = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=10)
+        for line in (r.stdout or "").splitlines()[1:]:
+            pid, _, cmd = line.strip().partition(" ")
+            if ("harness.cli" in cmd or "/collie " in cmd or cmd.endswith("/collie")) \
+               and "uninstall" not in cmd and pid.isdigit() and int(pid) != os.getpid():
+                out.append((pid, cmd.strip()))
+    except Exception:
+        pass
+    return out
+
+
 def cmd_app(args):
     """collie app — open collie in a native desktop window (WebView2) with the server behind it."""
     from . import plat
@@ -1207,7 +1325,7 @@ def cmd_mcp(args):
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "record", "mcp", "init",
-        "setup", "jobs", "config"}
+        "setup", "jobs", "config", "uninstall"}
 
 
 def _setup_wizard(force=False):
@@ -1547,6 +1665,13 @@ def main(argv=None):
     ps.set_defaults(fn=cmd_setup)
 
     # config: scriptable settings.json access (the installer uses it to seed the UI language)
+    pu = sub.add_parser("uninstall", help="remove collie: the app bundle, ~/.collie, and the "
+                                          "permissions macOS keeps after the app is gone")
+    pu.add_argument("--yes", action="store_true", help="actually delete (without this it only lists)")
+    pu.add_argument("--keep-config", action="store_true",
+                    help="keep settings.json / mcp.json / remote.json — remove only caches and the app")
+    pu.set_defaults(fn=cmd_uninstall)
+
     pc = sub.add_parser("config", help="read/write settings (config | config KEY | config KEY VALUE)")
     pc.add_argument("key", nargs="?", default="")
     pc.add_argument("value", nargs="?", default=None)
