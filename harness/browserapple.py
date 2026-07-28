@@ -117,6 +117,34 @@ def _as_string(text):
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _profile_hint():
+    """Name the Chrome profiles where the switch is already on, if we can tell.
+
+    Chrome keys this setting per profile, and every profile shows the same menu
+    item, so "I already turned that on" and "the browser refuses" are routinely
+    both true at once. Reading the on-disk prefs turns that into a specific
+    statement instead of a puzzle.
+    """
+    base = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    if not os.path.isdir(base):
+        return ""
+    enabled = []
+    for entry in sorted(os.listdir(base)):
+        prefs = os.path.join(base, entry, "Preferences")
+        if not os.path.exists(prefs):
+            continue
+        try:
+            with open(prefs, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            continue
+        if d.get("browser", {}).get("allow_javascript_apple_events"):
+            enabled.append("%s (%s)" % (d.get("profile", {}).get("name", entry), entry))
+    if not enabled:
+        return "It is currently off in every Chrome profile on this Mac."
+    return "It is currently on only in: %s." % ", ".join(enabled)
+
+
 def _run_osascript(script, timeout=45):
     p = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
     out, err = p.stdout.strip(), p.stderr.strip()
@@ -125,9 +153,12 @@ def _run_osascript(script, timeout=45):
         # browser but JavaScript execution is switched off.
         if "-1723" in err or "Access not allowed" in err:
             raise AppleEventsUnavailable(
-                "the browser refused JavaScript from Apple Events. Enable it once: "
-                "Chrome -> View -> Developer -> Allow JavaScript from Apple Events "
-                "(Safari: Develop -> Allow JavaScript from Apple Events)."
+                "the browser refused JavaScript from Apple Events. Enable it in the window "
+                "you actually browse in: Chrome -> View -> Developer -> Allow JavaScript from "
+                "Apple Events (Safari: Develop -> Allow JavaScript from Apple Events). "
+                "NOTE: Chrome stores this PER PROFILE, so having switched it on in another "
+                "profile does not count — and it is easy to miss, because every profile shows "
+                "the same menu. " + _profile_hint()
             )
         if "-1743" in err or "Not authorized" in err:
             raise AppleEventsUnavailable(
