@@ -64,7 +64,10 @@ class RelayClient:
         # E2E state. The keypair is per process: a restart re-pairs any E2E device, which is the
         # honest tradeoff until the device store persists K_dev (E2E_DESIGN.md §7).
         self._e2e_keys = self._make_e2e_keys()   # (private, public), advertised in `hello`
-        self._e2e_devices = {}               # device_id -> K_dev
+        # K_dev per device, RELOADED from the device store. The keypair above is per process, but the
+        # session keys are not: a restart used to leave every encrypted phone unable to talk to this
+        # desktop at all, which is the opposite of what E2E_DESIGN.md §7 promises.
+        self._e2e_devices = self._load_device_keys()
         self._e2e_seq = {}                   # (device_id, rid) -> next outbound seq
 
     # ------------------------------------------------------------------ lifecycle
@@ -321,6 +324,14 @@ class RelayClient:
                 return self._e2e_refuse(ws, rid, "confirm tag mismatch")
             k_dev = e2e.device_key(e2e.shared_secret(priv, phone_pub), self.room)
             self._e2e_devices[device_id] = k_dev
+            # Persist it, or the next `collie web` start strands this phone: the keypair is per
+            # process, so without a stored K_dev every sealed frame it sends fails to open and the
+            # person is left with a 5xx and no idea they need to scan again (E2E_DESIGN.md §7).
+            try:
+                self.identity.set_device_key(
+                    device_id, base64.b64encode(k_dev).decode("ascii"))
+            except Exception:
+                pass                       # a device that works now beats one that failed to save
             ws.send_text(json.dumps({
                 "t": "e2e_pair_result", "id": rid, "ok": True,
                 "pub": base64.b64encode(pub).decode("ascii"),
@@ -331,6 +342,19 @@ class RelayClient:
             self._log("relay: E2E paired (%s)" % (device_id[:8] or "device"))
         except Exception as exc:                                   # noqa: BLE001
             self._e2e_refuse(ws, rid, str(exc))
+
+    def _load_device_keys(self) -> dict:
+        """K_dev for every device that paired with encryption, from the last run of this desktop."""
+        out = {}
+        try:
+            for device_id, b64 in (self.identity.device_keys() or {}).items():
+                try:
+                    out[device_id] = base64.b64decode(b64)
+                except Exception:
+                    continue               # a corrupt entry re-pairs; it must not stop the others
+        except Exception:
+            pass
+        return out
 
     def _e2e_refuse(self, ws, rid, why: str):
         self._log("relay: E2E handshake refused — %s" % why)
@@ -370,8 +394,22 @@ class RelayClient:
             key, session = self._e2e_key_for(req)
             cid = str(req.get("cid") or rid)
             if req.get("enc") and key is None:
-                # a sealed frame we cannot open is not something to guess at
-                raise ValueError("no paired E2E key opens this frame")
+                # A sealed frame we cannot open is not something to guess at — but it is also not a
+                # server fault, and reporting it as one left people staring at a 5xx. It means this
+                # device's key is gone from here (forgotten, or paired against an install whose
+                # store was wiped), and the only thing that fixes it is scanning again. Say that, in
+                # plaintext, since by definition we cannot seal a reply to them.
+                ws.send_text(json.dumps({
+                    "t": "res", "id": rid, "status": 409,
+                    "headers": {"content-type": "application/json"}}))
+                ws.send_text(json.dumps({
+                    "t": "chunk", "id": rid,
+                    "data": base64.b64encode(json.dumps({
+                        "error": "repair_required",
+                        "message": "This computer no longer has the key for this device. "
+                                   "Scan the pairing code again."}).encode()).decode("ascii")}))
+                ws.send_text(json.dumps({"t": "end", "id": rid}))
+                return
             if key is not None:
                 from . import e2e
                 envelope = e2e.open_request(key, json.loads(req["enc"]), room=self.room,

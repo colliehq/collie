@@ -88,6 +88,31 @@ class Identity:
                                "paired_at": now, "last_seen": now}
         self._save()
 
+    def set_device_key(self, device_id: str, k_dev_b64: str) -> None:
+        """Remember a paired device's K_dev, so restarting `collie web` does not strand it.
+
+        E2E_DESIGN.md §7: "Desktop restart: K_dev persists (in the device store) → returning device
+        keeps working, no re-pair." Without this the desktop generates a fresh keypair on every start
+        and every sealed frame from an already-paired phone fails to open — surfacing as an opaque
+        5xx rather than as anything a person could act on.
+
+        It lives beside the token hash in the same 0600 file. That is a real step up in what the file
+        is worth: this key decrypts that device's traffic, where the hash only recognises it. The
+        alternative is re-pairing every phone on every restart, which people would answer by not
+        using encryption at all.
+        """
+        if not device_id:
+            return
+        e = self._d.setdefault("devices", {}).get(device_id)
+        if e is None:
+            return
+        e["k_dev"] = k_dev_b64
+        self._save()
+
+    def device_keys(self) -> dict:
+        """device_id -> K_dev (base64), for every device that paired with encryption."""
+        return {k: v["k_dev"] for k, v in self._d.get("devices", {}).items() if v.get("k_dev")}
+
     def rename(self, device_id: str, name: str) -> bool:
         e = self._d.get("devices", {}).get(device_id)
         if e is None:
