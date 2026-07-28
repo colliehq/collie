@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.20.11 — the app window was pointed at a dead port
+
+- **`collie app` opened, bounced, and showed nothing.** The server scans forward when its
+  preferred port is busy, and kept the port it settled on to itself — so the window was sent to
+  the one that was *asked for*, which by then belonged to nobody. It probed that port for twelve
+  seconds before giving up, which is the bouncing. Relaunching made it worse, not better: the
+  abandoned server held its port, so the next launch landed one further along and missed by one
+  more. `main()` now reports the port it bound.
+- **Music plays on this computer.** collie could already find a track in about a second, but only
+  ever handed the URL to whichever screen asked — so a phone saying "play Cruel Summer" got the
+  right answer and silence. `/api/desktop/play` plays it here, and stops it.
+- **Commands go into the conversation.** A request the intent router carried out itself left no
+  trace anywhere. It is a fast path, not a separate place for things to happen, so what it does is
+  now written into the chat it was typed in — starting one if the command came first.
+- **An encrypted phone survives a desktop restart.** `K_dev` lived only in memory while the
+  keypair was regenerated per process, so restarting `collie web` left every paired phone unable
+  to open a single frame — reported as an opaque 5xx. It persists in the device store now, as
+  E2E_DESIGN.md §7 always said it should, and a device whose key is genuinely gone is told to pair
+  again instead of being shown a number.
+- **Pairing asks on this screen.** The approval card lived on a page nobody has open at the moment
+  a phone scans. A device asking for the run of your computer now interrupts, once.
+- **`desktop_*` tools on macOS.** The driver was already there; only Windows was wired to it.
+
 ## v0.20.4 — the app is an app, and collie can drive your other ones
 
 - **`collie app` opens an ordinary window.** v0.20.3 fixed it opening nothing by reusing the
