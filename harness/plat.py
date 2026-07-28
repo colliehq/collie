@@ -135,6 +135,30 @@ def reveal_in_file_manager(path: str) -> bool:
         return False
 
 
+def make_output_safe() -> None:
+    """Stop a character from killing a command.
+
+    Windows consoles hand Python whatever the active code page is — cp1252 on the GitHub runners —
+    and printing a character it cannot encode raises UnicodeEncodeError from inside `print`. That is
+    not a degraded line: it is an unhandled exception that ends the command. `collie init` died on a
+    single U+2713 in "✓ codemap:", exiting 1 with its last line half-written, and every check that
+    read its output failed for what looked like an unrelated reason.
+
+    Prefer UTF-8, which modern Windows terminals render; fall back to replacing the characters that
+    do not fit. Either way the command survives its own output.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+            if enc in ("utf8", "utf8mb4"):
+                # Already fine, but a lone unencodable byte should still never be fatal.
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass                       # a stream that cannot be reconfigured (a pipe, a test double)
+
+
 def play_stream(url: str):
     """Play an audio URL ON THIS MACHINE, in the background, and return the process (or None).
 

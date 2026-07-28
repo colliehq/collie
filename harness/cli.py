@@ -1573,6 +1573,10 @@ def _first_run_wizard():
 
 
 def main(argv=None):
+    from . import plat as _plat
+    # Before anything prints: on a console that cannot encode what collie writes, `print` raises and
+    # the command dies. One ✓ was enough to make `collie init` exit 1 with half a line written.
+    _plat.make_output_safe()
     from . import settings as _settings
     _settings.apply()   # inject saved Settings-panel values into os.environ (real env vars still win)
     argv = list(sys.argv[1:] if argv is None else argv)
