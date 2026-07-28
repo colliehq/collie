@@ -1563,12 +1563,23 @@
     fetch("/api/model?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: entry.id })
     }).then(function (r) { return r.json(); }).then(function (p) {
-      if (!p.ok) throw new Error(p.error || "failed");
-      try { modelCurrentId = p.provider + ":" + p.model; updateModelTrigger(); } catch (e) {}
-      obClose();
-      if (window.collieConnectBrowser) window.collieConnectBrowser();   // optional next step
-      else obDone();
-    }).catch(function () { cta.textContent = "Try again →"; });
+      // The save either worked or it did not; everything after it is presentation. Wrapping both
+      // in one catch meant a throw in obClose/obDone/collieConnectBrowser surfaced as
+      // "Try again →" on a provider that HAD been saved — click it twice and it saves twice while
+      // telling you it failed both times.
+      if (!p.ok) { cta.textContent = (p.error || "Failed") + " — try again →"; return; }
+      try {
+        modelCurrentId = p.provider + ":" + p.model; updateModelTrigger();
+        obClose();
+        if (window.collieConnectBrowser) window.collieConnectBrowser();   // optional next step
+        else obDone();
+      } catch (e) {
+        obClose();          // saved and usable; the next screen just did not come up
+      }
+    }).catch(function (e) {
+      cta.textContent = "Could not reach collie — try again →";
+      try { console.error("obUse", e); } catch (_) {}
+    });
   }
   // Onboarding connects the SUBSCRIPTION/account, not a specific top model — and defaults to a
   // balanced mid model (change any time in the model picker). Picking "Claude Opus" up front was

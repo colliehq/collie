@@ -628,13 +628,10 @@ def cmd_app(args):
                     break
                 except Exception:
                     time.sleep(0.2)
-            # Deliberately the same window `collie wallpaper --front` uses, which is the one that
-            # has been proven to work. A titled, Dock-visible app window crashes on launch —
-            # -[WKWebView dealloc] on a run loop that is not up yet — and four attempts at it
-            # (retaining the views, reordering the delegate, dropping
-            # applicationShouldTerminateAfterLastWindowClosed_, going back to .accessory) all still
-            # segfaulted. A working window now beats a titled one that never opens.
-            return desktop_mac.run("http://127.0.0.1:%d/" % port, behind=False)
+            # An app window, not the desktop: titled, closable, in the Dock and in Cmd-Tab. The
+            # desktop is `collie wallpaper`, and it stays opt-in — opening the app should not take
+            # over your screen.
+            return desktop_mac.run_app_window("http://127.0.0.1:%d/" % port)
         print("collie app: %s" % why, file=sys.stderr)
         print("  falling back to the browser GUI.", file=sys.stderr)
     else:

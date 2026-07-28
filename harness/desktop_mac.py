@@ -104,6 +104,63 @@ def stop():
     return "collie wallpaper: stopped (pid %s)" % pid
 
 
+def run_app_window(url, title="Collie"):
+    """`collie app` — an ordinary application window. Titled, closable, in the Dock and in Cmd-Tab.
+
+    Deliberately NOT run() with a flag. run() is the desktop: it claims every Space, keeps a pid
+    file, installs a SIGTERM handler, rebuilds itself when displays change and stays out of the
+    window cycle. None of that belongs to an app window, and threading an app_window flag through
+    it segfaulted on launch four different ways — while a plain titled window with a WKWebView, on
+    its own, has never once crashed. The desktop and the app are different things; this is the
+    smallest correct version of the second one.
+    """
+    ok, why = available()
+    if not ok:
+        print("collie app: " + why, file=sys.stderr)
+        return 2
+
+    from AppKit import (NSApplication, NSWindow, NSScreen, NSObject, NSBackingStoreBuffered,
+                        NSApplicationActivationPolicyRegular)
+    from Foundation import NSURL, NSURLRequest
+    from WebKit import WKWebView, WKWebViewConfiguration
+
+    TITLED, CLOSABLE, MINIATURIZABLE, RESIZABLE = 1, 2, 4, 8
+
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)   # Dock tile, menu bar, Cmd-Tab
+
+    screen = NSScreen.screens()[0]
+    v = screen.visibleFrame()
+    w_, h_ = min(1180.0, v.size.width - 80), min(820.0, v.size.height - 80)
+    frame = ((v.origin.x + (v.size.width - w_) / 2, v.origin.y + (v.size.height - h_) / 2),
+             (w_, h_))
+
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_screen_(
+        frame, TITLED | CLOSABLE | MINIATURIZABLE | RESIZABLE, NSBackingStoreBuffered, False, screen)
+    win.setTitle_(title)
+    view = WKWebView.alloc().initWithFrame_configuration_(
+        ((0, 0), (w_, h_)), WKWebViewConfiguration.alloc().init())
+    view.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(url)))
+    win.setContentView_(view)
+    win.makeKeyAndOrderFront_(None)
+    app.activateIgnoringOtherApps_(True)
+
+    class _AppDelegate(NSObject):
+        def applicationShouldTerminateAfterLastWindowClosed_(self, _app):
+            return True          # closing the window quits, as in any single-window Mac app
+
+    delegate = _AppDelegate.alloc().init()
+    app.setDelegate_(delegate)
+    _hold.extend([win, view, delegate])       # nothing here may be collected while AppKit is live
+    app.run()
+    return 0
+
+
+# Module-level so the window, its web view and the delegate outlive the function frame. A WKWebView
+# freed while the main run loop is not yet up crashes inside WebCore's deallocate-on-main-loop hop.
+_hold = []
+
+
 def run(url, behind=True, app_window=False):
     """Park a WKWebView on every display and hand the main thread to AppKit. Blocks until the
     process is told to stop. Returns an exit code."""
