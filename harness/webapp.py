@@ -1780,7 +1780,11 @@ def bind_server(port=8787):
     raise OSError("ports %d–%d are all in use" % (port, port + 11))
 
 
-def main(argv=None):
+def main(argv=None, on_bound=None):
+    """Serve the web UI. `on_bound(port)` fires once the socket is up, with the port ACTUALLY
+    bound — which is not always the one asked for, since a busy port makes this scan forward.
+    A caller that needs to point something at the server (the native app window) has no other
+    way to learn where it landed."""
     argv = list(sys.argv[1:] if argv is None else argv)
     port = 8787
     open_browser = True
@@ -1830,6 +1834,11 @@ def main(argv=None):
     # a nicer local URL than a bare loopback IP: browsers resolve any *.localhost name to the
     # loopback address per RFC 6761 (zero setup, no /etc/hosts), so collie.localhost:PORT works
     # out of the box while the server still binds 127.0.0.1. VS Code parses the 127.0.0.1 line below.
+    if on_bound:
+        try:
+            on_bound(port)
+        except Exception:
+            pass                       # a caller's bookkeeping must never take the server down
     url = "http://collie.localhost:%d/" % port
     ip_url = "http://127.0.0.1:%d/" % port
     note = "" if port == requested else "  (%d was busy → auto-picked %d)" % (requested, port)

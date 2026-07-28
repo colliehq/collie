@@ -644,12 +644,24 @@ def cmd_app(args):
         ok, why = desktop_mac.available()
         if ok:
             import threading, time, urllib.request
-            port = args.port
             from .webapp import main as web_main
+            # Wait to be TOLD the port. web_main scans forward when the asked-for one is busy, and
+            # used to keep the port it settled on to itself: this asked for 8787, the server bound
+            # 8791, and the window was pointed at 8787 — a dead port. The app opened, bounced and
+            # showed nothing, and relaunching made it worse, because the abandoned server kept its
+            # port and the next one moved further along.
+            bound = {}
             # AppKit owns the main thread, so the server goes to a daemon thread — the same split
             # the Windows engine gets by launching the server as its own pythonw process.
-            threading.Thread(target=web_main, args=(["--port", str(port), "--no-open"],),
+            threading.Thread(target=web_main,
+                             args=(["--port", str(args.port), "--no-open"],),
+                             kwargs={"on_bound": lambda p: bound.setdefault("port", p)},
                              daemon=True).start()
+            for _ in range(60):
+                if "port" in bound:
+                    break
+                time.sleep(0.2)
+            port = bound.get("port", args.port)
             for _ in range(60):
                 try:
                     urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % port, timeout=0.8).read()

@@ -78,6 +78,7 @@ if $PY tests/test_notify.py >/dev/null 2>&1; then echo "  notify OK"; else echo 
 if $PY tests/test_pairprompt.py >/dev/null 2>&1; then echo "  pairprompt OK"; else echo "  pairprompt FAIL"; rc=1; fi
 if $PY tests/test_e2e_persist.py >/dev/null 2>&1; then echo "  e2e_persist OK"; else echo "  e2e_persist FAIL"; rc=1; fi
 if $PY tests/test_playhere.py >/dev/null 2>&1; then echo "  playhere OK"; else echo "  playhere FAIL"; rc=1; fi
+if $PY tests/test_app_port.py >/dev/null 2>&1; then echo "  app_port OK"; else echo "  app_port FAIL"; rc=1; fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then
