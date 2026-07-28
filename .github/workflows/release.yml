@@ -70,14 +70,19 @@ jobs:
         run: choco install innosetup --no-progress -y
       - name: Generator deps (Pillow for the wizard art)
         run: python -m pip install --upgrade pillow
-      - name: Build Collie-Setup.exe (WebView2 shell wrapping the Inno backend)
-        # pack.ps1 runs build.ps1 (art -> language data -> embeddable-python payload -> iscc) to make the
-        # silent Inno backend, then wraps the WebView2 "smart shell" (the dark app-grade UI) around it
-        # into one self-extracting Collie-Setup.exe. Without this the release shipped the raw Inno wizard
-        # and users never saw the shell. csc is the in-box .NET Framework compiler (no SDK needed); the
-        # WebView2 DLLs are committed under harness/wallpaper.
+      - name: Build Collie-Setup.exe (branded Inno installer)
+        # build.ps1 = art -> language data -> embeddable-python payload -> iscc, producing the
+        # Collie-branded Inno wizard (modern style, custom icon, wizard art at every DPI) directly as
+        # installer/Output/Collie-Setup.exe.
+        #
+        # We ship the plain Inno installer, NOT the WebView2 self-extracting "smart shell": that
+        # self-extractor pattern is a magnet for antivirus false positives (Chrome/Defender flagged the
+        # unsigned Collie-Setup.exe as a virus and blocked the download). A standard Inno installer is
+        # ubiquitous and rarely flagged, and it supports /SILENT natively (so `collie update` works
+        # without the shell launcher's arg-forwarding). To bring the dark shell UI back, sign the build
+        # (see docs/signing.md) and switch this step back to installer/shell/pack.ps1.
         shell: pwsh
-        run: ./installer/shell/pack.ps1
+        run: ./installer/build.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer
