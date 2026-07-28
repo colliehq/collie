@@ -11,6 +11,7 @@ import argparse
 import os
 import re
 import sys
+import tempfile
 
 from . import __version__
 from .providers import make_provider
@@ -394,6 +395,90 @@ def _desktop_window(url, kiosk=False):
 
 # Config worth not destroying by accident: an API key, a paired phone, MCP logins.
 _KEEP = ("settings.json", "mcp.json", "remote.json", "desktop.json")
+
+
+def cmd_update(args):
+    """Report a newer release, and install it with --yes.
+
+    Which install to touch is detected, not asked: the .app is replaced from the signed dmg, a pip
+    install upgrades from the release wheel, brew runs brew upgrade. On macOS the download must
+    satisfy Gatekeeper AND carry our Developer ID before anything is mounted — an updater that runs
+    whatever it fetched is a way to lose the machine.
+    """
+    from . import update as up
+    try:
+        info = up.check()
+    except Exception as e:
+        print("could not reach the release feed: %s" % e, file=sys.stderr)
+        return 1
+
+    print("collie %s   latest %s   (installed via %s)"
+          % (info["current"], info["latest"] or "?", info["kind"]))
+    if not info["newer"]:
+        print("already up to date." if info["latest"] else "no published release found.")
+        return 0
+
+    print("\n  a newer version is available: %s" % info["url"])
+    for line in (info["notes"] or "").splitlines()[:6]:
+        if line.strip():
+            print("    " + line.strip()[:100])
+    if not args.yes:
+        print("\n  install it with:  collie update --yes")
+        return 0
+
+    kind, assets = info["kind"], info["assets"]
+    digests = info.get("digests") or {}
+
+    def _fetch(name):
+        dest = os.path.join(tempfile.gettempdir(), name)
+        print("\n  downloading %s …" % name)
+        last = [0]
+
+        def prog(got, total):
+            pct = int(got * 100 / total)
+            if pct >= last[0] + 10:
+                last[0] = pct
+                print("    %d%%" % pct, flush=True)
+
+        up._download(assets[name], dest, prog)
+        return dest
+
+    if kind == "brew":
+        ok, why = up.apply_brew()
+    elif kind == "setup":
+        name = next((n for n in assets if n.endswith(".exe")), "")
+        if not name:
+            print("this release has no Windows installer", file=sys.stderr)
+            return 1
+        try:
+            exe = _fetch(name)
+        except Exception as e:
+            print("download failed: %s" % e, file=sys.stderr)
+            return 1
+        ok, why = up.apply_windows(exe, digests.get(name, ""), on_note=print)
+    elif kind == "app":
+        name = next((n for n in assets if n.endswith(".dmg")), "")
+        if not name:
+            print("this release has no macOS disk image", file=sys.stderr)
+            return 1
+        try:
+            dest = _fetch(name)
+        except Exception as e:
+            print("download failed: %s" % e, file=sys.stderr)
+            return 1
+        ok, why = up.apply_macos(dest, on_note=print)
+    else:
+        whl = next((n for n in assets if n.endswith(".whl")), "")
+        if not whl:
+            print("this release has no wheel", file=sys.stderr)
+            return 1
+        ok, why = up.apply_pip(assets[whl])
+
+    print(("\nupdated to %s — %s" % (info["latest"], why)) if ok
+          else ("\nupdate failed: %s" % why), file=sys.stdout if ok else sys.stderr)
+    if ok and kind in ("app", "setup"):
+        print("relaunch Collie to pick it up.")
+    return 0 if ok else 1
 
 
 def cmd_uninstall(args):
@@ -1362,7 +1447,7 @@ def cmd_mcp(args):
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "record", "mcp", "init",
-        "setup", "jobs", "config", "uninstall"}
+        "setup", "jobs", "config", "uninstall", "update"}
 
 
 def _setup_wizard(force=False):
@@ -1702,6 +1787,10 @@ def main(argv=None):
     ps.set_defaults(fn=cmd_setup)
 
     # config: scriptable settings.json access (the installer uses it to seed the UI language)
+    pup = sub.add_parser("update", help="check for a newer collie and install it (--yes to install)")
+    pup.add_argument("--yes", action="store_true", help="install it, not just report it")
+    pup.set_defaults(fn=cmd_update)
+
     pu = sub.add_parser("uninstall", help="remove collie: the app bundle, ~/.collie, and the "
                                           "permissions macOS keeps after the app is gone")
     pu.add_argument("--yes", action="store_true", help="actually delete (without this it only lists)")
