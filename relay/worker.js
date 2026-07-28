@@ -43,7 +43,9 @@ export class RelayRoom {
     this.env = env;
     this.seq = 0;                  // request-id counter (per alive instance; resets after hibernation — fine)
     this.pending = new Map();      // id -> {controller,…}; only non-empty while a request is in flight
-    this.pairAttempts = [];        // pair rate-limit timestamps (in-memory; the DO stays alive during any attack burst)
+    this.pairAttempts = [];
+    // pair rate-limit timestamps (in-memory; the DO stays alive during any attack burst)
+    this.pendingApproval = new Map();   // pair requests waiting on the desktop to say yes
     this.pendingE2E = new Map();   // in-flight E2E handshakes: id -> resolve (one request each, short-lived)
   }
 
@@ -105,13 +107,22 @@ export class RelayRoom {
     try { msg = JSON.parse(typeof message === "string" ? message : ""); } catch (e) { return; }
     // pairing state lives on the socket attachment (survives hibernation), not in memory
     if (msg.t === "hello") {
+      // `approve` is a CAPABILITY the desktop declares, not a policy the relay imposes. Desktops
+      // already installed do not send it, and for them pairing keeps working exactly as before — a
+      // relay that started demanding an approval nobody could give would lock every existing
+      // install out of its own phone. New desktops opt in and get the confirmation step.
       this._setAstate(ws, { paircode: (msg.paircode || "").toUpperCase(), devices: msg.devices || [],
-                            e2ePub: msg.e2ePub || "" });
+                            e2ePub: msg.e2ePub || "", approve: !!msg.approve });
       return;
     }
     if (msg.t === "e2e_pair_result") {
       const resolve = this.pendingE2E.get(msg.id);
       if (resolve) resolve({ ok: !!msg.ok, pub: msg.pub, confirm: msg.confirm, error: msg.error });
+      return;
+    }
+    if (msg.t === "pair_decision") {
+      const resolve = this.pendingApproval.get(msg.id);
+      if (resolve) resolve({ ok: !!msg.ok, error: msg.error });
       return;
     }
     if (msg.t === "devices") { const s = this._astate(ws); s.devices = msg.devices || []; this._setAstate(ws, s); return; }
@@ -184,6 +195,34 @@ export class RelayRoom {
       if (!e2e || !e2e.ok) {
         this.pairAttempts.push(now);
         return json({ ok: false, error: (e2e && e2e.error) || "e2e handshake refused" }, 403);
+      }
+    }
+
+    // ASK THE DESKTOP. The pairing code proves someone saw the screen at some point; it cannot
+    // prove they are at the machine now. Anyone who caught it over a shoulder, in a screenshot, in
+    // a screen share or in a recording holds a working credential — and one scan buys every /api/*
+    // on that desktop: run commands, read and write files, drive the logged-in browser. So the
+    // desktop confirms, with a number shown at BOTH ends, so the person approving knows which
+    // request they are approving and not another one arriving at the same moment.
+    if (st.approve) {
+      const rid = ++this.seq;
+      const num = String(Math.floor(Math.random() * 9000) + 1000);
+      const wait = new Promise((resolve) => { this.pendingApproval.set(rid, resolve); });
+      this.sendAgent(agent, {
+        t: "pair_request", id: rid, num,
+        device_id: String(body.device_id || ""),
+        name: String(body.name || shortUA(request.headers.get("User-Agent") || "")).slice(0, 60),
+      });
+      // Two minutes, because a human has to notice and answer. Unlike the capability check above,
+      // a timeout here IS a refusal: this desktop said it would answer.
+      const verdict = await Promise.race([wait,
+        new Promise((r) => setTimeout(() => r({ ok: false, error: "timed out waiting for approval" }),
+                                      120000))]);
+      this.pendingApproval.delete(rid);
+      if (!verdict || !verdict.ok) {
+        this.pairAttempts.push(now);
+        return json({ ok: false, num,
+                      error: (verdict && verdict.error) || "the desktop refused this device" }, 403);
       }
     }
 

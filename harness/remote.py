@@ -56,6 +56,11 @@ class RelayClient:
         self.connected = threading.Event()   # set once the agent socket is actually up
         self.last_error = None               # why the last attempt failed, for the CLI to report
         self.on_pair = None                  # set by Remote: rotate the paircode after a device pairs (one-shot)
+        # A device waiting on a human. The relay holds the pairing until _reply_pair answers, so this
+        # is at most one at a time — a second request while one is pending would be exactly the
+        # confusion the number on both screens exists to prevent.
+        self.pending_pair = None             # {id, num, device_id, name, at, ws}
+        self.approved_devices = set(identity.approved_ids())
         # E2E state. The keypair is per process: a restart re-pairs any E2E device, which is the
         # honest tradeoff until the device store persists K_dev (E2E_DESIGN.md §7).
         self._e2e_keys = self._make_e2e_keys()   # (private, public), advertised in `hello`
@@ -106,6 +111,13 @@ class RelayClient:
             except Exception:
                 pass
 
+    def _reply_pair(self, ws, rid, ok, error=""):
+        try:
+            ws.send_text(json.dumps({"t": "pair_decision", "id": rid, "ok": bool(ok),
+                                     "error": error}))
+        except Exception:
+            pass
+
     def _connect_and_serve(self):
         q = urllib.parse.urlencode({"room": self.room, "key": self.agent_key})
         url = "%s/relay/agent?%s" % (self.relay_url, q)
@@ -121,6 +133,10 @@ class RelayClient:
             "t": "hello", "v": 1, "room": self.room, "agentKey": self.agent_key,
             "e2ePub": self.e2e_public_b64(),
             "paircode": self.paircode, "devices": self.identity.device_hashes(),
+            # Tell the relay we can answer pair_request, so it will hold a new device until this
+            # desktop says yes. Declared rather than assumed: a relay that demanded approval from
+            # every desktop would lock out every install that predates this message.
+            "approve": True,
         }))
         self._log("relay: connected")
         stop_ka = self._start_keepalive(ws)
@@ -168,6 +184,21 @@ class RelayClient:
             slot = self._pending_bodies.pop(msg.get("id"), None)
             if slot is not None:
                 self._spawn(ws, slot["msg"], bytes(slot["buf"]))
+        elif t == "pair_request":
+            # A phone got the code right; the relay is holding it until this desktop agrees. Auto-
+            # approve a device that was approved before (re-pairing after a reinstall is not a new
+            # decision), otherwise park it for the control panel and say so on the console — someone
+            # running headless still needs to know why their phone is waiting.
+            did = str(msg.get("device_id") or "")
+            if did and did in self.approved_devices:
+                self._reply_pair(ws, msg.get("id"), True)
+                self._log("relay: %s re-paired (already approved)" % (msg.get("name") or did[:8]))
+                return
+            self.pending_pair = {"id": msg.get("id"), "num": str(msg.get("num") or ""),
+                                 "device_id": did, "name": str(msg.get("name") or ""),
+                                 "at": __import__("time").time(), "ws": ws}
+            self._log("relay: %s wants to pair · code %s · approve it at /remote"
+                      % (msg.get("name") or "a device", msg.get("num")))
         elif t == "e2e_pair":
             self._e2e_handshake(ws, msg)
         elif t == "device_added":

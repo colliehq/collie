@@ -64,6 +64,12 @@ class Identity:
         the relay on connect; a re-paired device's OLD hash is gone because it was replaced in place."""
         return [v.get("token_sha") for v in self._d.get("devices", {}).values() if v.get("token_sha")]
 
+    def approved_ids(self) -> set:
+        """Device ids a human has already let in. Re-pairing one of these — after a reinstall, or
+        after the desktop rotated its code — is not a new decision, so it does not ask again. A
+        device that was kicked is gone from `devices` entirely and has to be approved afresh."""
+        return {k for k in (self._d.get("devices") or {})}
+
     def add_or_update(self, device_id: str, token_sha: str, name: str = ""):
         """Pair or re-pair `device_id`. Re-pairing keeps the entry (and its custom name) and just
         swaps in the fresh token hash — so no duplicate row appears."""
