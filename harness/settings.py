@@ -177,8 +177,8 @@ _ZH = {
     "SKILL_DIRS": {"label": "额外 skill 目录", "hint": "冒号分隔的自定义 skill 目录,在内置之外加载(如 /home/me/skills:/team/skills)。"},
 }
 # group headers, for the panel
-GROUPS_ZH = {"General": "通用", "Model": "模型", "Tools": "工具", "Retrieval": "检索",
-             "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
+GROUPS_ZH = {"General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程",
+             "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
 for _s in SCHEMA:
     _t = _ZH.get(_s["key"])
     if not _t:
@@ -237,15 +237,20 @@ def apply():
         v = data.get(s["key"])
         if v is not None and v != "":
             os.environ[envk] = str(v)
+        else:
+            # Clearing a setting in the panel must REVERT within a long-lived process, not linger until
+            # restart — code that reads os.environ directly (COLLIE_MAX_TOKENS / _MAX_COST / force ratios)
+            # kept a stale cap otherwise. Only drop env WE injected; a hard-set env stays (guarded above).
+            os.environ.pop(envk, None)
 
 
 def save(values: dict) -> dict:
     """Persist only known keys (ignore junk); empty string clears a key back to its default."""
     clean = {k: v for k, v in (values or {}).items() if k in _KEYS and v not in (None, "")}
     os.makedirs(os.path.dirname(_PATH), exist_ok=True)
-    tmp = _PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(clean, f, indent=2)
+    tmp = "%s.%d.%s.tmp" % (_PATH, os.getpid(), os.urandom(4).hex())   # unique per writer: a fixed
+    with open(tmp, "w", encoding="utf-8") as f:                        # .tmp let concurrent panel saves
+        json.dump(clean, f, indent=2)                                  # interleave (fixed in sessions.py)
     os.replace(tmp, _PATH)
     _cache["mtime"] = -1.0    # force reload next get()
     return clean

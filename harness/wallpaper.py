@@ -142,14 +142,37 @@ def build_engine(force: bool = False) -> "str | None":
     if not os.path.exists(csc):
         return None
     d = src_dir()
-    cmd = [csc, "/nologo", "/target:winexe", "/platform:x64", "/out:collie-wallpaper.exe",
+    # Build to a UNIQUE temp name, then atomically swap it into place. Two builds can fire almost at
+    # once (the logon autostart AND the app-window shortcut, both after an update) — csc'ing into the
+    # same collie-wallpaper.exe races (sharing violation / truncated exe). And a FAILED compile must
+    # never replace a working exe, so we check csc's return code before the swap.
+    out = "cw-build-%d-%s.exe" % (os.getpid(), os.urandom(3).hex())
+    tmp = os.path.join(d, out)
+    cmd = [csc, "/nologo", "/target:winexe", "/platform:x64", "/out:" + out,
            "/reference:System.Windows.Forms.dll", "/reference:System.Drawing.dll",
            "/reference:Microsoft.Web.WebView2.Core.dll",
            "/reference:Microsoft.Web.WebView2.WinForms.dll", "Program.cs"]
     try:
-        subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=120)
     except Exception:
-        return None
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return exe if os.path.exists(exe) else None
+    if r.returncode != 0 or not os.path.exists(tmp):
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return exe if os.path.exists(exe) else None   # keep the working exe; don't hand back garbage
+    try:
+        os.replace(tmp, exe)                            # atomic swap
+    except OSError:
+        # the canonical exe is likely held open by a running engine — the fresh temp build still works
+        return tmp if os.path.exists(tmp) else (exe if os.path.exists(exe) else None)
     return exe if os.path.exists(exe) else None
 
 
@@ -310,6 +333,13 @@ def uninstall() -> int:
                 removed.append(p)
         except OSError:
             pass
+    # Symmetry with install() (which STARTS the engine now): turning the wallpaper off must also STOP
+    # the running one, not just delete the autostart — otherwise it stays on screen until next logoff,
+    # contradicting the "keep your normal wallpaper" promise. Graceful signal, never -Force.
+    try:
+        stop()
+    except Exception:
+        pass
     print("collie wallpaper: autostart removed" if removed else "collie wallpaper: autostart was not installed")
     return 0
 

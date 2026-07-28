@@ -270,9 +270,11 @@ class Harness:
                 "reply with exactly CORRECT. Otherwise reply with the single most important concrete "
                 "concern in 1-2 sentences, naming the exact case or behavior.")
         msg = "ISSUE:\n%s\n\nCANDIDATE DIFF:\n%s" % (str(issue)[:6000], str(diff)[:9000])
+        self._critic_usage = None
         try:
             comp = self.provider.complete(sysp, [{"role": "user", "content": msg}], [])
-            text = (comp.text or "").strip()
+            self._critic_usage = comp.usage   # the caller folds this into the run's token/$ total —
+            text = (comp.text or "").strip()   # a critic call spends real tokens; the receipt must show them
         except Exception:
             return True, ""            # a critic failure must never block a finish
         if not text or text.upper().lstrip("*# `").startswith("CORRECT"):
@@ -560,8 +562,9 @@ class Harness:
                                 # tool WRITES its args into durable memory.db (plaintext, and it
                                 # reaches every future prompt via prefetch), so restoring here would
                                 # persist a real credential the model only ever saw as a placeholder.
-                                # For memory writes we keep the placeholder; RememberTool re-redacts
-                                # defensively too (harness/tools.py), matching mem_import's store rule.
+                                # For memory writes we keep the placeholder unrestored — this is the SOLE
+                                # protection (RememberTool.run does no redaction of its own), so if this
+                                # skip ever regressed, a real credential would persist to memory.db.
                                 _skip_restore = tc.name == "remember"
                                 _run_args = (_redact.restore(tc.args, self._secret_vault)
                                              if (_redact_on and not _skip_restore) else tc.args)
@@ -794,6 +797,8 @@ class Harness:
                         _ok, _obj = (self.critic_fn(self.critic_issue, _cdiff, self.cwd)
                                      if self.critic_fn else
                                      self._run_critic(self.critic_issue, _cdiff))
+                        if getattr(self, "_critic_usage", None):   # count the critic's own tokens/$
+                            total.add(self._critic_usage); self._critic_usage = None
                         if not _ok:
                             session["messages"].append({"role": "assistant", "content": comp.text})
                             session["messages"].append({"role": "user", "content":

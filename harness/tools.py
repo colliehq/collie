@@ -434,8 +434,6 @@ class BashTool(Tool):
         "required": ["command"]}
 
     def run(self, args, ctx):
-        import os as _os
-        import signal as _sig
         # default 120s (the verify gate runs whole test suites — 30s killed them mid-run); clamp to
         # [1, 600] so a typo'd huge value can't wedge the loop. Either arg name works.
         _t = args.get("timeout_s", args.get("timeout"))

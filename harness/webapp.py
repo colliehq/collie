@@ -922,12 +922,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(body, dict):
                     return self._send_json({"error": "expected object"}, 400)
                 from . import settings
-                prev_wp = (settings.get("WALLPAPER", "off") or "off").lower() in ("on", "1", "true")
-                saved = settings.save(body)
+                # prev_wp must reflect what's REALLY running (the logon .vbs), not settings.json — the
+                # GET side reports WALLPAPER that way too, so the toggle the user flipped agrees. Reading
+                # settings.get() here let a pre-existing-autostart user's "off" flip no-op (vbs stayed).
+                prev_wp = False
+                try:
+                    from . import plat, wallpaper as _wp
+                    prev_wp = plat.is_windows() and os.path.exists(_wp._startup_vbs())
+                except Exception:
+                    pass
+                # MERGE, don't replace: a partial POST (e.g. the onboarding ambient step sending only
+                # {WALLPAPER}) must NOT wipe PROVIDER/MODEL/LANG. update() loads + merges + saves; a
+                # full modal payload merges to the same result as a replace.
+                saved = settings.update(body)
                 settings.apply()                              # take effect for the next query now
-                # Ambient-desktop autostart is now USER-controlled (not silently forced by the
-                # installer): toggling WALLPAPER creates/removes the logon launcher — and install()
-                # also starts it now, uninstall() stops it. Only act on an actual change.
+                # Ambient-desktop autostart is USER-controlled: toggling WALLPAPER creates/removes the
+                # logon launcher — install() also starts it now, uninstall() stops it. Only on a change.
                 if "WALLPAPER" in body:
                     want_wp = str(body.get("WALLPAPER") or "").lower() in ("on", "1", "true")
                     if want_wp != prev_wp:

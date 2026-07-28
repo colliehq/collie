@@ -221,7 +221,7 @@ def backend():
     return None
 
 
-def _run(action, match="", pid=0, index=-1, aid="", text="", timeout=20):
+def _run(action, match="", pid=0, index=-1, aid="", text="", max=60, timeout=20):
     ok, why = available()
     if not ok:
         return {"ok": False, "error": why}
@@ -229,7 +229,8 @@ def _run(action, match="", pid=0, index=-1, aid="", text="", timeout=20):
     _ensure_driver()
     cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _DRIVER,
            "-Action", action, "-Match", match or "", "-PidArg", str(int(pid or 0)),
-           "-Index", str(int(index)), "-Aid", aid or "", "-Text", text or ""]
+           "-Index", str(int(index)), "-Aid", aid or "", "-Text", text or "",
+           "-Max", str(int(max or 60))]
     try:
         r = subprocess.run(cmd, creationflags=_NOWIN, timeout=timeout,
                            capture_output=True, text=True, encoding="utf-8", errors="ignore")
@@ -306,7 +307,7 @@ def foreground_pid():
 def tree(match="", pid=0, max=60):
     """Accessibility tree of a window (by name substring or pid): capped list of elements with
     index / type / name / automationId / value / patterns / rect."""
-    return _run("tree", match=match, pid=pid, index=-1, aid="", text="")
+    return _run("tree", match=match, pid=pid, index=-1, aid="", text="", max=max)
 
 
 def invoke(match="", pid=0, index=-1, aid=""):
@@ -441,7 +442,7 @@ def _register_windows(registry):
 
         def run(self, args, ctx):
             d = invoke(match=args.get("match", ""), pid=int(args.get("pid", 0) or 0),
-                       index=int(args.get("index", -1)), aid=args.get("aid", ""))
+                       index=int(args.get("index") or -1), aid=args.get("aid", ""))
             err = _dt_err(d)
             return err if err else "ok — invoked"
 
@@ -457,7 +458,7 @@ def _register_windows(registry):
 
         def run(self, args, ctx):
             d = set_value(args.get("text", ""), match=args.get("match", ""),
-                          pid=int(args.get("pid", 0) or 0), index=int(args.get("index", -1)),
+                          pid=int(args.get("pid", 0) or 0), index=int(args.get("index") or -1),
                           aid=args.get("aid", ""))
             err = _dt_err(d)
             return err if err else "ok — set"
@@ -473,7 +474,7 @@ def _register_windows(registry):
 
         def run(self, args, ctx):
             d = get_text(match=args.get("match", ""), pid=int(args.get("pid", 0) or 0),
-                         index=int(args.get("index", -1)), aid=args.get("aid", ""))
+                         index=int(args.get("index") or -1), aid=args.get("aid", ""))
             err = _dt_err(d)
             if err:
                 return err

@@ -360,7 +360,12 @@ class CollieWallpaper : Form
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (IntPtr)(ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW));
         SetParent(hwnd, _progman);
         int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
-        SetWindowPos(hwnd, defview, 0, 0, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        // Z-order below the icons. If 0x052C reparented SHELLDLL_DefView under a WorkerW (a known
+        // Win10-vs-some-Win11 split), the lookup above returns Zero — and SetWindowPos treats Zero as
+        // HWND_TOP, which would slam the wallpaper OVER the icons and break double-click. Fall back to
+        // HWND_BOTTOM (1) so we can never land on top of the icons even when DefView isn't found.
+        IntPtr insertAfter = defview != IntPtr.Zero ? defview : (IntPtr)1;   // (IntPtr)1 = HWND_BOTTOM
+        SetWindowPos(hwnd, insertAfter, 0, 0, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         _pinned = true;   // from now on WndProc keeps us below the icons on every z-order change
         Log("pinned progman=" + _progman + " defview=" + defview + " hwnd=" + hwnd + " " + w + "x" + h);
     }

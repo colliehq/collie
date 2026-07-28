@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess     # module-level: cmd_uninstall (tccutil) and _collie_procs (ps) call it bare,
+                      # inside except-blocks that were silently swallowing the NameError
 import sys
 import tempfile
 
