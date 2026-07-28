@@ -344,3 +344,164 @@ def launch(target):
         return True
     except Exception:
         return False
+
+
+# ── agent tools ─────────────────────────────────────────────────────────────────────────────────
+# Wire the UI-Automation surface above into collie's tool registry, so the agent can DRIVE any native
+# app the way browser_* drives the browser: list apps → inspect a window's controls → click / type /
+# read by a stable index or automationId, all in the BACKGROUND (no focus theft). Opt-in and Windows-
+# only — powerful, so off unless COLLIE_DESKTOP_CONTROL=1 (the "Control desktop apps" setting).
+
+def _dt_fence(s):
+    return "```\n%s\n```" % s
+
+
+def _dt_err(d):
+    if isinstance(d, dict) and d.get("ok") is False:
+        e = d.get("error") or "failed"
+        if d.get("needs_foreground"):
+            e += " — the window must be in the foreground for this; call desktop_focus first"
+        return "ERROR(desktop): %s" % e
+    return None
+
+
+def _dt_elements(d):
+    """Render a UIA tree dict as a compact numbered control list the model acts on by index/aid —
+    the desktop analogue of browser_snapshot's `[e5] button \"Add to cart\"`."""
+    els = d.get("elements") or d.get("tree") or d.get("controls") or d.get("nodes") or []
+    if not els:
+        return "(no controls found — try a broader window match, or this window exposes no UIA tree)"
+    lines = []
+    for e in els:
+        typ = e.get("type") or e.get("controlType") or e.get("control") or "?"
+        name = e.get("name") or e.get("text") or ""
+        aid = e.get("automationId") or e.get("aid") or e.get("id") or ""
+        val = e.get("value")
+        pats = e.get("patterns") or e.get("actions") or ""
+        if isinstance(pats, list):
+            pats = ",".join(str(p) for p in pats)
+        parts = ["[%s]" % e.get("index", "?"), str(typ)]
+        if name:
+            parts.append('"%s"' % str(name)[:70])
+        if aid:
+            parts.append("aid=%s" % aid)
+        if val not in (None, ""):
+            parts.append("value=%s" % str(val)[:50])
+        if pats:
+            parts.append("<%s>" % pats)
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def register_native(registry):
+    """Register the desktop_* tools (Windows UI Automation). Called from tools.default_registry only
+    when COLLIE_DESKTOP_CONTROL is on and the platform can actually drive apps."""
+    from .tools import Tool
+
+    class DesktopApps(Tool):
+        name, tier = "desktop_apps", "always"
+        description = ("List the native desktop apps that currently have a visible window (Notepad, "
+                       "Chrome, Code, …). START HERE to see what's open before inspecting or acting. "
+                       "No args.")
+        schema = {"type": "object", "properties": {}}
+
+        def run(self, args, ctx):
+            d = apps()
+            err = _dt_err(d)
+            if err:
+                return err
+            names = [a.get("name", "") for a in d.get("apps", [])]
+            return _dt_fence("\n".join(names) if names else "(no apps with a visible window)")
+
+    class DesktopInspect(Tool):
+        name, tier = "desktop_inspect", "always"
+        description = ("Snapshot a native window's controls as a numbered list — each with a stable "
+                       "index, control type, accessible name, automationId, current value and its UIA "
+                       "patterns, e.g. `[7] Button \"Save\" aid=saveBtn <Invoke>`. PREFER this over "
+                       "guessing: pass an index or aid to desktop_click / desktop_type / desktop_read "
+                       "to act on that exact control. Match a window by title/process substring (from "
+                       "desktop_apps) or by pid. Args: match (window substring) OR pid; optional max.")
+        schema = {"type": "object", "properties": {
+            "match": {"type": "string"}, "pid": {"type": "integer"}, "max": {"type": "integer"}}}
+
+        def run(self, args, ctx):
+            d = tree(match=args.get("match", ""), pid=int(args.get("pid", 0) or 0),
+                     max=int(args.get("max", 60) or 60))
+            err = _dt_err(d)
+            return err if err else _dt_fence(_dt_elements(d))
+
+    class DesktopClick(Tool):
+        name, tier = "desktop_click", "always"
+        description = ("Invoke a control (button, menu item, link, checkbox) in a native window — a "
+                       "real UIA Invoke, in the BACKGROUND (no focus theft). Identify the control by "
+                       "the `index` or `aid` from desktop_inspect, plus the window `match`/`pid`. "
+                       "Args: match|pid, and index OR aid.")
+        schema = {"type": "object", "properties": {
+            "match": {"type": "string"}, "pid": {"type": "integer"},
+            "index": {"type": "integer"}, "aid": {"type": "string"}}}
+
+        def run(self, args, ctx):
+            d = invoke(match=args.get("match", ""), pid=int(args.get("pid", 0) or 0),
+                       index=int(args.get("index", -1)), aid=args.get("aid", ""))
+            err = _dt_err(d)
+            return err if err else "ok — invoked"
+
+    class DesktopType(Tool):
+        name, tier = "desktop_type", "always"
+        description = ("Set an editable field's value in a native window (DESTRUCTIVE — replaces the "
+                       "whole field, not append). Identify the field by `index`/`aid` from "
+                       "desktop_inspect plus the window `match`/`pid`. Args: text, match|pid, and "
+                       "index OR aid.")
+        schema = {"type": "object", "properties": {
+            "text": {"type": "string"}, "match": {"type": "string"}, "pid": {"type": "integer"},
+            "index": {"type": "integer"}, "aid": {"type": "string"}}, "required": ["text"]}
+
+        def run(self, args, ctx):
+            d = set_value(args.get("text", ""), match=args.get("match", ""),
+                          pid=int(args.get("pid", 0) or 0), index=int(args.get("index", -1)),
+                          aid=args.get("aid", ""))
+            err = _dt_err(d)
+            return err if err else "ok — set"
+
+    class DesktopRead(Tool):
+        name, tier = "desktop_read", "always"
+        description = ("Read a control's text/value in a native window (by `index`/`aid` from "
+                       "desktop_inspect + the window `match`/`pid`). Use to verify an action landed or "
+                       "to pull text out of an app. Args: match|pid, and index OR aid.")
+        schema = {"type": "object", "properties": {
+            "match": {"type": "string"}, "pid": {"type": "integer"},
+            "index": {"type": "integer"}, "aid": {"type": "string"}}}
+
+        def run(self, args, ctx):
+            d = get_text(match=args.get("match", ""), pid=int(args.get("pid", 0) or 0),
+                         index=int(args.get("index", -1)), aid=args.get("aid", ""))
+            err = _dt_err(d)
+            if err:
+                return err
+            return _dt_fence(str(d.get("text", d.get("value", ""))))
+
+    class DesktopLaunch(Tool):
+        name, tier = "desktop_launch", "always"
+        description = ("Start a native app by name or path (e.g. \"notepad\", \"calc\", or a full "
+                       "path). After launching, call desktop_apps / desktop_inspect to find its window "
+                       "(packaged apps run under a different pid than the launcher). Args: target.")
+        schema = {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}
+
+        def run(self, args, ctx):
+            return "ok — launched" if launch(args.get("target", "")) else "ERROR(desktop): could not launch %r" % args.get("target", "")
+
+    class DesktopFocus(Tool):
+        name, tier = "desktop_focus", "always"
+        description = ("Bring a native app's window to the foreground by name/title substring. Most "
+                       "desktop_* actions work in the background, but a few controls only respond when "
+                       "focused — call this if desktop_click reports it needs the foreground. Args: name.")
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+
+        def run(self, args, ctx):
+            d = focus(args.get("name", ""))
+            err = _dt_err(d)
+            return err if err else "ok — focused"
+
+    for t in (DesktopApps(), DesktopInspect(), DesktopClick(), DesktopType(),
+              DesktopRead(), DesktopLaunch(), DesktopFocus()):
+        registry.register(t)

@@ -822,6 +822,16 @@ def default_registry(code_search: bool = False,
     if bridge_on:                                # the ONE browser path: the user's real logged-in
         from .browserbridge import register_browser_bridge   # Chrome via the extension (or a managed
         register_browser_bridge(r)                           # Chromium launched with it — same tools)
+    # native desktop app control (Windows UI Automation): the desktop_* tools that let collie drive
+    # any native app. Opt-in — powerful, so only when COLLIE_DESKTOP_CONTROL=1 (the "Control desktop
+    # apps" setting) AND the platform can actually drive apps.
+    if os.environ.get("COLLIE_DESKTOP_CONTROL") == "1":
+        try:
+            from .native import register_native, available as _native_available
+            if _native_available()[0]:
+                register_native(r)
+        except Exception:
+            pass
     # external MCP servers -> deferred tier (advertised by name, schema loaded on demand). Kept
     # last so a broken server can't stop the core tools from registering.
     try:
