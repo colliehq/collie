@@ -466,6 +466,20 @@ class RemoteState:
             return True
         return False
 
+    def decide_pair(self, allow: bool) -> bool:
+        """Answer the phone that is waiting. Approving also remembers the device, so the same phone
+        re-pairing later — after a reinstall, or after the code rotated — is not asked about again."""
+        cl = self.client
+        p = getattr(cl, "pending_pair", None) if cl else None
+        if not p:
+            return False
+        cl._reply_pair(p["ws"], p["id"], allow)
+        if allow and p.get("device_id"):
+            cl.approved_devices.add(p["device_id"])
+        self._log("relay: %s %s" % (p.get("name") or "device", "approved" if allow else "denied"))
+        cl.pending_pair = None
+        return True
+
     def rotate_code(self):
         import time
         from . import remote_identity

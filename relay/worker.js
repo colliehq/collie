@@ -24,6 +24,9 @@ const HOP = new Set(["connection","keep-alive","transfer-encoding","upgrade","te
                      "proxy-authenticate","proxy-authorization","content-length","host"]);
 const PAIR_WINDOW_MS = 10 * 60 * 1000;
 const PAIR_MAX = 5;
+// How long a pairing request stays approvable. Long enough for someone to walk to the desk, short
+// enough that a request abandoned on a shared screen does not stay live.
+const PAIR_APPROVE_MS = 3 * 60 * 1000;
 
 export default {
   async fetch(request, env) {
@@ -69,6 +72,11 @@ export class RelayRoom {
       const agent = this._agent();
       if (!agent) return json({ error: "desktop offline" }, 503);
       return json({ pub: this._astate(agent).e2ePub || "" });
+    }
+    // Phase two: the phone shows the number and asks here until the desktop has decided. Short
+    // polls, so nothing depends on a connection staying open while a human makes up their mind.
+    if (rest === "/pair/wait" && request.method === "GET") {
+      return this.pairWait(url.searchParams.get("ticket") || "", request);
     }
     // phones get the dedicated mobile client, not the desktop index — room root → desktop /m
     const fwd = (rest === "/" || rest === "") ? "/m" : rest;
@@ -121,8 +129,10 @@ export class RelayRoom {
       return;
     }
     if (msg.t === "pair_decision") {
-      const resolve = this.pendingApproval.get(msg.id);
-      if (resolve) resolve({ ok: !!msg.ok, error: msg.error });
+      // Record the verdict; the phone collects it on its next poll. Nothing is awaiting this, so a
+      // desktop that answers after the phone gave up simply leaves a decided ticket that expires.
+      const p = this.pendingApproval.get(msg.id);
+      if (p) { p.state = msg.ok ? "approved" : "denied"; p.error = msg.error || ""; }
       return;
     }
     if (msg.t === "devices") { const s = this._astate(ws); s.devices = msg.devices || []; this._setAstate(ws, s); return; }
@@ -204,28 +214,64 @@ export class RelayRoom {
     // on that desktop: run commands, read and write files, drive the logged-in browser. So the
     // desktop confirms, with a number shown at BOTH ends, so the person approving knows which
     // request they are approving and not another one arriving at the same moment.
+    // Two phases, not one held request.
+    //
+    // The number only means anything if BOTH ends can see it — that is the whole point: whoever
+    // approves is confirming a specific request, not blessing whatever happened to arrive. A POST
+    // that returns only after the decision cannot show the phone anything to compare. And holding
+    // an HTTP request open for two minutes across a Worker, a Durable Object, a mobile network and
+    // whatever proxy sits in between is a good way to have it dropped somewhere in the middle,
+    // leaving the phone with an error while the desktop believes it approved.
+    //
+    // So: answer immediately with the number and a ticket, let the phone show the number and poll.
+    // Any single step can time out and be retried without the pairing ending up half-done.
     if (st.approve) {
       const rid = ++this.seq;
       const num = String(Math.floor(Math.random() * 9000) + 1000);
-      const wait = new Promise((resolve) => { this.pendingApproval.set(rid, resolve); });
+      const ticket = randToken();
+      this.pendingApproval.set(rid, { ticket, num, at: now, state: "pending",
+                                      device_id: String(body.device_id || ""),
+                                      body, e2e });
+      this.tickets = this.tickets || new Map();
+      this.tickets.set(ticket, rid);
       this.sendAgent(agent, {
         t: "pair_request", id: rid, num,
         device_id: String(body.device_id || ""),
         name: String(body.name || shortUA(request.headers.get("User-Agent") || "")).slice(0, 60),
       });
-      // Two minutes, because a human has to notice and answer. Unlike the capability check above,
-      // a timeout here IS a refusal: this desktop said it would answer.
-      const verdict = await Promise.race([wait,
-        new Promise((r) => setTimeout(() => r({ ok: false, error: "timed out waiting for approval" }),
-                                      120000))]);
-      this.pendingApproval.delete(rid);
-      if (!verdict || !verdict.ok) {
-        this.pairAttempts.push(now);
-        return json({ ok: false, num,
-                      error: (verdict && verdict.error) || "the desktop refused this device" }, 403);
-      }
+      return json({ ok: false, pending: true, num, ticket }, 202);
     }
 
+    return this.issueToken(agent, st, body, e2e, request);
+  }
+
+  /** Mint the session token and tell the desktop. Shared by the approve-first and the legacy path. */
+  /** Phase two: has the desktop decided about this ticket yet? */
+  async pairWait(ticket, request) {
+    this.tickets = this.tickets || new Map();
+    const rid = ticket && this.tickets.get(ticket);
+    const p = rid && this.pendingApproval.get(rid);
+    if (!p) return json({ ok: false, error: "unknown or expired pairing request" }, 404);
+
+    // Expire on read rather than on a timer: an abandoned request should not stay approvable, and a
+    // Durable Object has no reliable place to run a sweep.
+    if (Date.now() - p.at > PAIR_APPROVE_MS) {
+      this.pendingApproval.delete(rid); this.tickets.delete(ticket);
+      return json({ ok: false, error: "this pairing request expired — scan again" }, 408);
+    }
+    if (p.state === "pending") return json({ ok: false, pending: true, num: p.num }, 202);
+
+    this.pendingApproval.delete(rid); this.tickets.delete(ticket);
+    if (p.state !== "approved") {
+      this.pairAttempts.push(Date.now());
+      return json({ ok: false, error: p.error || "the desktop refused this device" }, 403);
+    }
+    const agent = this._agent();
+    if (!agent) return json({ ok: false, error: "desktop offline" }, 503);
+    return this.issueToken(agent, this._astate(agent), p.body, p.e2e, request);
+  }
+
+  async issueToken(agent, st, body, e2e, request) {
     const token = randToken();
     const hash = await sha256hex(token);
     st.devices = [...(st.devices || []), hash];          // optimistic; the desktop's refresh confirms it

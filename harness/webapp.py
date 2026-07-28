@@ -751,6 +751,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(dict(ok=True, **rs.status()))
                 if REMOTE is None:
                     return self._send_json({"error": "remote not available"}, 503)
+                if action == "pending":
+                    # Polled by BOTH the pairing screen and the control panel, because the person
+                    # who just scanned is looking at the pairing screen, not at the panel.
+                    p = getattr(REMOTE.client, "pending_pair", None) if REMOTE.client else None
+                    if not p:
+                        return self._send_json({"pending": None})
+                    return self._send_json({"pending": {
+                        "id": p.get("id"), "num": p.get("num"), "name": p.get("name"),
+                        "device_id": p.get("device_id"), "age": int(time.time() - p.get("at", 0))}})
+                if action in ("approve", "deny"):
+                    ok = REMOTE.decide_pair(action == "approve")
+                    return self._send_json({"ok": bool(ok)})
                 if action == "disable":
                     REMOTE.stop()
                     from . import settings as _s
