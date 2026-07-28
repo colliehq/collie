@@ -120,7 +120,7 @@ def run_app_window(url, title="Collie"):
         return 2
 
     from AppKit import (NSApplication, NSWindow, NSScreen, NSObject, NSBackingStoreBuffered,
-                        NSApplicationActivationPolicyRegular)
+                        NSApplicationActivationPolicyRegular, NSMenu, NSMenuItem)
     from Foundation import NSURL, NSURLRequest
     from WebKit import WKWebView, WKWebViewConfiguration
 
@@ -149,11 +149,58 @@ def run_app_window(url, title="Collie"):
         def applicationShouldTerminateAfterLastWindowClosed_(self, _app):
             return True          # closing the window quits, as in any single-window Mac app
 
+    app.setMainMenu_(_main_menu(NSMenu, NSMenuItem, title))
+
     delegate = _AppDelegate.alloc().init()
     app.setDelegate_(delegate)
     _hold.extend([win, view, delegate])       # nothing here may be collected while AppKit is live
     app.run()
     return 0
+
+
+def _main_menu(NSMenu, NSMenuItem, app_name):
+    """The menu bar. Not decoration — on macOS it is how key equivalents are routed.
+
+    Without a main menu there is no Edit menu, and without an Edit menu Cmd-C, Cmd-V, Cmd-X, Cmd-A
+    and Cmd-Z DO NOT WORK ANYWHERE IN THE APP, including inside the web view. Nor does Cmd-Q or
+    Cmd-W. The window looked native and could not be copied out of, which is a strange way to fail
+    and an easy one to miss, because everything else about it is fine.
+
+    The selectors are the standard responder-chain ones, so the web view handles them itself.
+    """
+    bar = NSMenu.alloc().init()
+
+    def menu(title, items):
+        holder = NSMenuItem.alloc().init()
+        m = NSMenu.alloc().initWithTitle_(title)
+        for label, sel, key in items:
+            if label == "-":
+                m.addItem_(NSMenuItem.separatorItem())
+                continue
+            it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(label, sel, key)
+            m.addItem_(it)
+        holder.setSubmenu_(m)
+        bar.addItem_(holder)
+        return m
+
+    menu(app_name, [("About " + app_name, "orderFrontStandardAboutPanel:", ""),
+                    ("-", None, ""),
+                    ("Hide " + app_name, "hide:", "h"),
+                    ("Hide Others", "hideOtherApplications:", ""),
+                    ("Show All", "unhideAllApplications:", ""),
+                    ("-", None, ""),
+                    ("Quit " + app_name, "terminate:", "q")])
+    menu("File", [("Close Window", "performClose:", "w")])
+    menu("Edit", [("Undo", "undo:", "z"), ("Redo", "redo:", "Z"),
+                  ("-", None, ""),
+                  ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"),
+                  ("Select All", "selectAll:", "a")])
+    menu("View", [("Reload", "reload:", "r"),
+                  ("Actual Size", "resetZoom:", "0"),
+                  ("Zoom In", "zoomIn:", "+"), ("Zoom Out", "zoomOut:", "-")])
+    menu("Window", [("Minimise", "performMiniaturize:", "m"),
+                    ("Zoom", "performZoom:", "")])
+    return bar
 
 
 # Module-level so the window, its web view and the delegate outlive the function frame. A WKWebView

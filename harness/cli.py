@@ -397,6 +397,32 @@ def _desktop_window(url, kiosk=False):
 _KEEP = ("settings.json", "mcp.json", "remote.json", "desktop.json")
 
 
+def cmd_menubar(args):
+    """collie as a menu-bar item: click, ask, click away. macOS only — Windows has the tray, which
+    is a different enough thing to deserve its own implementation rather than a shared pretence."""
+    from . import plat
+    if not plat.is_macos():
+        print("collie menubar is macOS-only for now.", file=sys.stderr)
+        return 2
+    from . import menubar_mac
+    ok, why = menubar_mac.available()
+    if not ok:
+        print("collie menubar: %s" % why, file=sys.stderr)
+        return 2
+    import threading, time, urllib.request
+    from .webapp import main as web_main
+    threading.Thread(target=web_main, args=(["--port", str(args.port), "--no-open"],),
+                     daemon=True).start()
+    for _ in range(60):
+        try:
+            urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % args.port, timeout=0.8).read()
+            break
+        except Exception:
+            time.sleep(0.2)
+    print("collie menubar · click the collie in your menu bar · Ctrl-C to stop", flush=True)
+    return menubar_mac.run("http://127.0.0.1:%d/" % args.port)
+
+
 def cmd_update(args):
     """Report a newer release, and install it with --yes.
 
@@ -1444,7 +1470,7 @@ def cmd_mcp(args):
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "record", "mcp", "init",
-        "setup", "jobs", "config", "uninstall", "update"}
+        "setup", "jobs", "config", "uninstall", "update", "menubar"}
 
 
 def _setup_wizard(force=False):
@@ -1784,6 +1810,10 @@ def main(argv=None):
     ps.set_defaults(fn=cmd_setup)
 
     # config: scriptable settings.json access (the installer uses it to seed the UI language)
+    pmb = sub.add_parser("menubar", help="collie in the menu bar — one click to ask, no Dock tile")
+    pmb.add_argument("--port", type=int, default=8787)
+    pmb.set_defaults(fn=cmd_menubar)
+
     pup = sub.add_parser("update", help="check for a newer collie and install it (--yes to install)")
     pup.add_argument("--yes", action="store_true", help="install it, not just report it")
     pup.set_defaults(fn=cmd_update)
