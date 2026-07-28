@@ -75,6 +75,7 @@ fi
 
 echo "── phone notifications: when a run is worth a buzz ──────"
 if $PY tests/test_notify.py >/dev/null 2>&1; then echo "  notify OK"; else echo "  notify FAIL"; rc=1; fi
+if $PY tests/test_pairprompt.py >/dev/null 2>&1; then echo "  pairprompt OK"; else echo "  pairprompt FAIL"; rc=1; fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then

@@ -102,6 +102,42 @@ class RelayClient:
             except Exception:
                 pass
 
+    def _ask_on_screen(self, pending):
+        """Put the pairing question in front of whoever is at this computer.
+
+        The card on /remote only asks someone who happens to have that page open, which at the moment
+        a phone scans is nobody. A device asking for the run of this machine has to interrupt — once,
+        at pairing — or the check is decoration.
+
+        On its own thread: this blocks on a human, and the socket it arrived on is the same one every
+        run streams over.
+        """
+        def run():
+            from . import plat
+            answer = plat.ask_allow_deny(
+                "Collie — a device wants to pair",
+                "%s is asking to control this computer.\n\nNumber shown on it: %s\n\n"
+                "Only allow it if that number matches, and if it is your device."
+                % (pending.get("name") or "A device", pending.get("num") or "?"))
+            if answer is None:
+                return                       # headless, dismissed, or timed out — leave it to the card
+            # The card on /remote may have answered while the dialog was up. Only decide if THIS
+            # request is still the one waiting, or a stale click would answer someone else's.
+            cur = self.pending_pair
+            if not cur or cur.get("id") != pending.get("id"):
+                return
+            try:
+                self._reply_pair(pending["ws"], pending["id"], answer)
+                if answer and pending.get("device_id"):
+                    self.approved_devices.add(pending["device_id"])
+                self.pending_pair = None
+                self._log("relay: %s %s (from the desktop prompt)"
+                          % (pending.get("name") or "device", "approved" if answer else "denied"))
+            except Exception:
+                pass
+
+        threading.Thread(target=run, name="collie-pair-prompt", daemon=True).start()
+
     def notify(self, title, body, session="", thread="collie"):
         """Ask the relay to push a notice to every phone paired with this desktop.
 
@@ -219,6 +255,7 @@ class RelayClient:
                                  "at": __import__("time").time(), "ws": ws}
             self._log("relay: %s wants to pair · code %s · approve it at /remote"
                       % (msg.get("name") or "a device", msg.get("num")))
+            self._ask_on_screen(self.pending_pair)
         elif t == "e2e_pair":
             self._e2e_handshake(ws, msg)
         elif t == "device_added":

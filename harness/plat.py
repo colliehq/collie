@@ -135,6 +135,67 @@ def reveal_in_file_manager(path: str) -> bool:
         return False
 
 
+def ask_allow_deny(title: str, message: str, allow: str = "Allow", deny: str = "Not me",
+                   timeout: int = 150) -> "bool | None":
+    """Put a yes/no question in front of the person AT THE MACHINE, and wait for an answer.
+
+    For decisions a page cannot carry: a pairing request is answered by whoever is sitting at this
+    computer, and a card on a web page they may not have open is not asking them anything. This
+    takes the front of the screen, which for a once-per-device security question is the point.
+
+    Returns True/False, or **None** when there is no one to ask — a headless box, a machine with no
+    GUI, or a timeout. None means "undecided", never "denied": the caller still has the in-app card,
+    and turning an unanswerable prompt into a refusal would break pairing on servers entirely.
+    """
+    try:
+        if is_macos():
+            # osascript rather than a native alert, so this works the same from `collie web` in a
+            # terminal as from the menu bar app; a bare Python process has no NSApplication to put
+            # an NSAlert on.
+            script = (
+                'display dialog %s with title %s buttons {%s, %s} default button %s '
+                'giving up after %d with icon caution'
+                % (_as_str(message), _as_str(title), _as_str(deny), _as_str(allow),
+                   _as_str(allow), timeout))
+            out = subprocess.run(["osascript", "-e", script], capture_output=True,
+                                 text=True, timeout=timeout + 15)
+            if out.returncode != 0:
+                return None                       # cancelled, no window server, or no one there
+            # osascript answers `button returned:Allow, gave up:false`. Compare with the spaces
+            # stripped from BOTH sides: stripping only the reply and then matching a needle that
+            # still has one silently turns "nobody was there" into "denied" — the one reading this
+            # must never produce, because it would refuse every pairing on an unattended machine.
+            reply = (out.stdout or "").replace(" ", "")
+            if "gaveup:true" in reply:
+                return None
+            return ("buttonreturned:" + allow.replace(" ", "")) in reply
+        if is_windows():
+            import ctypes
+            MB_YESNO, MB_ICONWARNING, MB_SYSTEMMODAL, IDYES = 0x4, 0x30, 0x1000, 6
+            # No timeout in the plain API; MessageBoxTimeoutW is undocumented, so this one waits.
+            r = ctypes.windll.user32.MessageBoxW(   # type: ignore[attr-defined]
+                None, "%s\n\n%s?" % (message, allow), title,
+                MB_YESNO | MB_ICONWARNING | MB_SYSTEMMODAL)
+            return True if r == IDYES else False
+        # Linux: whichever of these the desktop actually ships, and nothing if it is headless.
+        for argv in (["zenity", "--question", "--title", title, "--text", message,
+                      "--ok-label", allow, "--cancel-label", deny, "--timeout", str(timeout)],
+                     ["kdialog", "--title", title, "--yesno", message]):
+            if not shutil.which(argv[0]):
+                continue
+            out = subprocess.run(argv, capture_output=True, timeout=timeout + 15)
+            return out.returncode == 0
+        return None
+    except Exception:
+        return None
+
+
+def _as_str(s) -> str:
+    """An AppleScript string literal. Quotes and backslashes are the only things that can break out,
+    and a device name comes off the network — so it is escaped, not interpolated."""
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def open_excl(path: str, mode: int = 0o600) -> int:
     """os.open with O_CREAT|O_EXCL|O_WRONLY, plus O_NOFOLLOW where the platform has
     it (a symlink-planting guard on POSIX; simply absent on Windows). Returns an fd.
