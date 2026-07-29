@@ -98,6 +98,29 @@ def main():
         dt.resolve_audio, plat.play_stream, plat.stop_stream = real
         dt._playing["proc"], dt._playing["track"] = None, None
 
+    # "stop the music" has to stop it. The router only ever ANSWERED action=stop and left the caller
+    # to pause its own player — which was fine when the caller had one. Now the desktop is the player,
+    # and for a while nothing on this machine could stop it: no button, and the words did nothing.
+    from harness import webapp
+
+    plat.play_stream, plat.stop_stream = fake_play, fake_stop
+    dt.resolve_audio = fake_resolve
+    try:
+        dt.play_here("Cruel Summer")
+        proc = dt._playing["proc"]
+        r = {"action": "stop", "arg": ""}
+        if dt.playing_here().get("track"):
+            dt.stop_here()
+            r["stopped_audio"] = True
+        check(proc.killed, "a stop request kills what the desktop was playing")
+        check(webapp._intent_summary(r) == "Stopped the music.",
+              "and says what it stopped, not a bare 'Stopped'")
+        check(webapp._intent_summary({"action": "stop", "arg": ""}) == "Stopped.",
+              "while a stop with nothing playing stays generic")
+    finally:
+        dt.resolve_audio, plat.play_stream, plat.stop_stream = real
+        dt._playing["proc"], dt._playing["track"] = None, None
+
     print("\n  " + ("%d FAILED" % len(_fails) if _fails else "play here: all green"))
     return 1 if _fails else 0
 

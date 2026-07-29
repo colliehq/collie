@@ -199,7 +199,7 @@ def _intent_summary(r):
     if action == "project":
         return "Opened the project %s." % name if name else "Opened the project."
     if action == "stop":
-        return "Stopped."
+        return "Stopped the music." if r.get("stopped_audio") else "Stopped."
     return "Done."
 
 
@@ -1097,6 +1097,13 @@ class Handler(BaseHTTPRequestHandler):
                     r["music"] = r.get("action") == "music" and bool(r.get("query") or r.get("arg"))
                     if r["music"] and not r.get("query"):
                         r["query"] = r.get("arg") or ""
+                    # "stop the music" used to be a message TO the caller: the router returned
+                    # action=stop and the web page paused its own <audio>. Now that the desktop plays
+                    # music itself there was nothing on this machine that could stop it — no button
+                    # anywhere, and the words did nothing. If something is playing here, stop it.
+                    if r.get("action") == "stop" and dt.playing_here().get("track"):
+                        dt.stop_here()
+                        r["stopped_audio"] = True
                     # A command carried out here is still something that happened in a conversation.
                     # Music is recorded by /play instead, once it knows what it actually started.
                     if r.get("action") not in ("agent", "music"):
