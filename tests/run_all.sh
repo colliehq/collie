@@ -82,6 +82,7 @@ if $PY tests/test_app_port.py >/dev/null 2>&1; then echo "  app_port OK"; else e
 if $PY tests/test_output_encoding.py >/dev/null 2>&1; then echo "  output_encoding OK"; else echo "  output_encoding FAIL"; rc=1; fi
 if $PY tests/test_data_dir.py >/dev/null 2>&1; then echo "  data_dir OK"; else echo "  data_dir FAIL"; rc=1; fi
 if $PY tests/test_relay_keepalive.py >/dev/null 2>&1; then echo "  relay_keepalive OK"; else echo "  relay_keepalive FAIL"; rc=1; fi
+if $PY tests/test_repos_deadline.py >/dev/null 2>&1; then echo "  repos_deadline OK"; else echo "  repos_deadline FAIL"; rc=1; fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then

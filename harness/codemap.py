@@ -27,7 +27,14 @@ _SKIP = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"
 # system stores: neither name exists in a Windows user profile, so this cannot change behaviour there,
 # and ~/Library alone was the whole cost. (Windows has the same shape of problem in ~/AppData, but
 # that's a separate change and one to measure on Windows rather than infer from here.)
-_HOME_SKIP = {"Library", "Applications"}
+# Pruned at the TOP LEVEL of $HOME only (a repo's own Library/, Music/ etc. still resolve normally).
+# Music and Movies are not merely large: on macOS they are the Apple Music and TV libraries, and
+# walking one can BLOCK — cloud placeholders that never resolve, so os.walk stops returning at all.
+# One such directory hung /api/repos indefinitely, which on the phone is a screen that spins forever
+# and a server thread that never comes back. Photos and the cloud mirrors are the same shape.
+_HOME_SKIP = {"Library", "Applications", "Music", "Movies", "Pictures",
+              "Applications (Parallels)", "Creative Cloud Files", "Dropbox",
+              "Google Drive", "OneDrive", "iCloud Drive", "Public"}
 _EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".html", ".css", ".md", ".toml")
 MAX_FILES = 600            # a request must stay snappy; bigger repos are sampled by size
 _DEF_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?(?:function|def|class|func|fn)\s+([A-Za-z_$][\w$]*)")

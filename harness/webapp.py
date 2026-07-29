@@ -1358,12 +1358,39 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"cwd": cwd, "repo": os.path.basename(cwd), "files": Handler._TREE_CACHE[key]})
 
     _REPOS_CACHE: dict = {}
+    REPOS_BUDGET_S = 8.0
+
     def _serve_repos(self):
-        """GET /api/repos -> git projects under the user's home, one galaxy each."""
+        """GET /api/repos -> git projects under the user's home, one galaxy each.
+
+        Bounded by a deadline, because a directory walk can BLOCK rather than merely be slow: a
+        macOS media library full of cloud placeholders never returns from os.walk at all. That hung
+        this endpoint forever — a phone screen spinning with no timeout of its own, and a server
+        thread that never came back. Names known to do it are pruned in codemap, but the guarantee
+        has to be structural: an answer arrives either way.
+        """
         from . import codemap
-        home = os.path.expanduser("~")
+        import threading as _th
+
         if "repos" not in Handler._REPOS_CACHE:
-            Handler._REPOS_CACHE["repos"] = codemap.discover_repos(home)
+            home = os.path.expanduser("~")
+            box = {}
+
+            def scan():
+                try:
+                    box["repos"] = codemap.discover_repos(home)
+                except Exception:
+                    box["repos"] = []
+
+            t = _th.Thread(target=scan, name="collie-repos-scan", daemon=True)
+            t.start()
+            t.join(Handler.REPOS_BUDGET_S)
+            if "repos" not in box:
+                # Left running: it holds no locks, and if it ever finishes the next request is fast.
+                # Deliberately NOT cached — a truthful empty answer now must not become a permanent
+                # one.
+                return self._send_json({"cwd": os.getcwd(), "repos": [], "partial": True})
+            Handler._REPOS_CACHE["repos"] = box["repos"]
         self._send_json({"cwd": os.getcwd(), "repos": Handler._REPOS_CACHE["repos"]})
 
     def _serve_session_map(self, qs):
