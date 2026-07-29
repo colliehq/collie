@@ -24,6 +24,7 @@ import socket
 import ssl
 import struct
 import threading
+import time              # keepalive stamps last_pong = time.time() on every PONG (recv_message)
 import urllib.parse
 
 # RFC 6455 §1.3 — the magic GUID concatenated with the client key to derive the accept hash.

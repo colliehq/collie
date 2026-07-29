@@ -823,7 +823,7 @@ def default_registry(code_search: bool = False,
     # native desktop app control (Windows UI Automation): the desktop_* tools that let collie drive
     # any native app. Opt-in — powerful, so only when COLLIE_DESKTOP_CONTROL=1 (the "Control desktop
     # apps" setting) AND the platform can actually drive apps.
-    if os.environ.get("COLLIE_DESKTOP_CONTROL") == "1":
+    if os.environ.get("COLLIE_DESKTOP_CONTROL", "").lower() in ("1", "on", "true"):  # bool stored as "on"
         try:
             from .native import register_native, backend as _native_backend
             if _native_backend() is not None:      # Windows (UIA) or macOS (System Events); None on Linux

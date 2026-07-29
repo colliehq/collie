@@ -1358,6 +1358,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"cwd": cwd, "repo": os.path.basename(cwd), "files": Handler._TREE_CACHE[key]})
 
     _REPOS_CACHE: dict = {}
+    _REPOS_SCAN: dict = {}          # the ONE in-flight scan {box, thread}, hoisted to class scope so a
+    _REPOS_LOCK = None              # slow walk caches when it eventually finishes and never re-spawns
     REPOS_BUDGET_S = 8.0
 
     def _serve_repos(self):
@@ -1368,27 +1370,38 @@ class Handler(BaseHTTPRequestHandler):
         this endpoint forever — a phone screen spinning with no timeout of its own, and a server
         thread that never came back. Names known to do it are pruned in codemap, but the guarantee
         has to be structural: an answer arrives either way.
+
+        ONE scan, ever: the box + thread live at class scope. A blocking walk is joined with a budget
+        and reported `partial` — but the SAME thread is reused on every later poll (no per-request
+        thread leak), and its box is persistent, so if it eventually returns the result is cached then.
         """
         from . import codemap
         import threading as _th
 
+        if Handler._REPOS_LOCK is None:
+            Handler._REPOS_LOCK = _th.Lock()
+
         if "repos" not in Handler._REPOS_CACHE:
-            home = os.path.expanduser("~")
-            box = {}
+            with Handler._REPOS_LOCK:
+                scan = Handler._REPOS_SCAN
+                if scan.get("thread") is None:            # start the single scan exactly once
+                    home = os.path.expanduser("~")
+                    box = {}
+                    scan["box"] = box
 
-            def scan():
-                try:
-                    box["repos"] = codemap.discover_repos(home)
-                except Exception:
-                    box["repos"] = []
+                    def _run(b=box):
+                        try:
+                            b["repos"] = codemap.discover_repos(home)
+                        except Exception:
+                            b["repos"] = []
 
-            t = _th.Thread(target=scan, name="collie-repos-scan", daemon=True)
-            t.start()
-            t.join(Handler.REPOS_BUDGET_S)
+                    t = _th.Thread(target=_run, name="collie-repos-scan", daemon=True)
+                    scan["thread"] = t
+                    t.start()
+                t = scan["thread"]
+            t.join(Handler.REPOS_BUDGET_S)               # join outside the lock — concurrent polls wait together
+            box = Handler._REPOS_SCAN.get("box") or {}
             if "repos" not in box:
-                # Left running: it holds no locks, and if it ever finishes the next request is fast.
-                # Deliberately NOT cached — a truthful empty answer now must not become a permanent
-                # one.
                 return self._send_json({"cwd": os.getcwd(), "repos": [], "partial": True})
             Handler._REPOS_CACHE["repos"] = box["repos"]
         self._send_json({"cwd": os.getcwd(), "repos": Handler._REPOS_CACHE["repos"]})
@@ -1851,7 +1864,11 @@ def main(argv=None, on_bound=None):
             port = cand
             break
         except OSError as e:
-            if e.errno in (98, 48):        # address already in use (Linux 98 / macOS 48)
+            # address already in use / access denied → try the next port. Linux errno 98, macOS 48;
+            # on Windows this arrives as PermissionError(errno=13)/EADDRINUSE with the real code in
+            # .winerror (10048 WSAEADDRINUSE, 10013 WSAEACCES exclusive), so match winerror too — else
+            # the server crashed on a busy port on Windows and `collie app` pointed at a dead port.
+            if e.errno in (98, 48) or getattr(e, "winerror", None) in (10048, 10013):
                 continue
             raise
     if httpd is None:

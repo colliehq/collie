@@ -48,7 +48,41 @@ def _data_dir() -> str:
     if os.path.exists(os.path.join(ROOT, "pyproject.toml")):     # a source checkout, not an install
         return os.path.join(ROOT, "data")
     state = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
-    return os.path.join(state, "data")
+    new = os.path.join(state, "data")
+    _migrate_legacy_data(os.path.join(ROOT, "data"), new)        # rescue pre-0.20.13 install data (once)
+    return new
+
+
+def _migrate_legacy_data(old: str, new: str) -> None:
+    """One-time rescue of pre-0.20.13 data. Those installs kept sessions/memory.db/runs.db under
+    <install>/data — writable on the Windows installer, so real history accumulated there. The move to
+    ~/.collie/data (v0.20.13) would otherwise ORPHAN it — and a later uninstall deletes {app} outright,
+    destroying it. If the new store has no real content and the legacy one does, move it across once.
+    Best-effort and idempotent: a migration failure must never stop collie from starting."""
+    try:
+        if os.path.abspath(old) == os.path.abspath(new):
+            return
+
+        def _has(d):
+            try:
+                with os.scandir(d) as it:
+                    return any(True for _ in it)
+            except OSError:
+                return False
+
+        if not _has(old) or _has(new):        # nothing to rescue, or the new store is already in use
+            return
+        import shutil
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        if os.path.exists(new):               # new dir exists but empty — move each child in
+            for name in os.listdir(old):
+                dst = os.path.join(new, name)
+                if not os.path.exists(dst):
+                    shutil.move(os.path.join(old, name), dst)
+        else:
+            shutil.move(old, new)             # rename the whole legacy data dir into place
+    except Exception:
+        pass
 
 
 DATA = _data_dir()

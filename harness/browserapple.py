@@ -114,7 +114,11 @@ def page_function(name):
 # --------------------------------------------------------------------- osascript ------------
 def _as_string(text):
     """Escape a Python string for embedding in an AppleScript string literal."""
-    return text.replace("\\", "\\\\").replace('"', '\\"')
+    # AppleScript string literals can't contain raw newlines/tabs — a literal 0x0A inside
+    # `execute javascript "…"` is a COMPILE error, which killed every multi-line JS body. Escape them
+    # (AppleScript understands \n \r \t) in addition to backslash and quote.
+    return (text.replace("\\", "\\\\").replace('"', '\\"')
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t"))
 
 
 def _profile_hint():

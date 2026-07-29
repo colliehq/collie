@@ -47,7 +47,13 @@ def main():
     blockers = []
     for p in (base, base + 1):
         s = socket.socket()
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # HOLD the port so the server is forced to scan. On Windows SO_REUSEADDR means "share the
+        # port" (WSAEACCES/WSAEADDRINUSE only with exclusive use), so a REUSEADDR blocker would NOT
+        # block and the test couldn't exercise the scan at all — use SO_EXCLUSIVEADDRUSE there.
+        if sys.platform == "win32":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", p))
             s.listen(1)

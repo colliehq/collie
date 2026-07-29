@@ -442,7 +442,7 @@ def _register_windows(registry):
 
         def run(self, args, ctx):
             d = invoke(match=args.get("match", ""), pid=int(args.get("pid", 0) or 0),
-                       index=int(args.get("index") or -1), aid=args.get("aid", ""))
+                       index=(int(args["index"]) if args.get("index") not in (None, "") else -1), aid=args.get("aid", ""))
             err = _dt_err(d)
             return err if err else "ok — invoked"
 
@@ -458,7 +458,7 @@ def _register_windows(registry):
 
         def run(self, args, ctx):
             d = set_value(args.get("text", ""), match=args.get("match", ""),
-                          pid=int(args.get("pid", 0) or 0), index=int(args.get("index") or -1),
+                          pid=int(args.get("pid", 0) or 0), index=(int(args["index"]) if args.get("index") not in (None, "") else -1),
                           aid=args.get("aid", ""))
             err = _dt_err(d)
             return err if err else "ok — set"
@@ -474,7 +474,7 @@ def _register_windows(registry):
 
         def run(self, args, ctx):
             d = get_text(match=args.get("match", ""), pid=int(args.get("pid", 0) or 0),
-                         index=int(args.get("index") or -1), aid=args.get("aid", ""))
+                         index=(int(args["index"]) if args.get("index") not in (None, "") else -1), aid=args.get("aid", ""))
             err = _dt_err(d)
             if err:
                 return err
