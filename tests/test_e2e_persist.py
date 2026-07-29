@@ -74,10 +74,14 @@ def main():
     check("never-paired" not in remote_identity.load_or_create().device_keys(),
           "a key for an unknown device is ignored rather than inventing one")
 
-    # The file holds secrets; it must not be readable by anyone else.
+    # The file holds secrets; it must not be readable by anyone else. The 0600 assertion is POSIX-only:
+    # Windows has no 0600 mode bits (os.stat reports 0666 regardless), and chmod_private is a documented
+    # no-op there (access is controlled by NTFS ACLs / the per-user profile, not mode bits), so asserting
+    # 0600 on Windows is a false failure — the same non-portable assumption as the /tmp cwd bug.
     path = os.path.join(state, "remote.json")
-    mode = os.stat(path).st_mode & 0o777
-    check(mode == 0o600, "the device store stays 0600 now that it holds session keys (got %o)" % mode)
+    if sys.platform != "win32":
+        mode = os.stat(path).st_mode & 0o777
+        check(mode == 0o600, "the device store stays 0600 now that it holds session keys (got %o)" % mode)
 
     # And a corrupt entry must cost only that device, not every other one.
     data = json.load(open(path))

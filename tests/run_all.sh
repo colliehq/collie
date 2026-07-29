@@ -78,7 +78,7 @@ if $PY tests/test_notify.py >/dev/null 2>&1; then echo "  notify OK"; else echo 
 if $PY tests/test_pairprompt.py >/dev/null 2>&1; then echo "  pairprompt OK"; else echo "  pairprompt FAIL"; rc=1; fi
 if $PY tests/test_e2e_persist.py >/dev/null 2>&1; then echo "  e2e_persist OK"; else echo "  e2e_persist FAIL"; rc=1; fi
 if $PY tests/test_playhere.py >/dev/null 2>&1; then echo "  playhere OK"; else echo "  playhere FAIL"; rc=1; fi
-if $PY tests/test_app_port.py >/dev/null 2>&1; then echo "  app_port OK"; else echo "  app_port FAIL"; rc=1; fi
+if app_out=$($PY tests/test_app_port.py 2>&1); then echo "  app_port OK"; else echo "  app_port FAIL"; echo "$app_out" | tail -20 | sed 's/^/      /'; rc=1; fi
 if $PY tests/test_output_encoding.py >/dev/null 2>&1; then echo "  output_encoding OK"; else echo "  output_encoding FAIL"; rc=1; fi
 if $PY tests/test_data_dir.py >/dev/null 2>&1; then echo "  data_dir OK"; else echo "  data_dir FAIL"; rc=1; fi
 if $PY tests/test_relay_keepalive.py >/dev/null 2>&1; then echo "  relay_keepalive OK"; else echo "  relay_keepalive FAIL"; rc=1; fi
