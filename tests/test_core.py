@@ -1049,7 +1049,7 @@ def test_edit_bom_preserved():
 # ---------------------------------------------- Batch B #6: bash output spill-to-file
 def test_bash_spill_recovers_head():
     from harness.tools import BashTool
-    r = BashTool().run({"command": "seq 1 5000", "timeout_s": 20}, _ctx("/tmp"))
+    r = BashTool().run({"command": "seq 1 5000", "timeout_s": 20}, _ctx(tempfile.gettempdir()))
     assert "truncated" in r and "saved to" in r, "large output must spill with a pointer: %r" % r[:200]
     import re as _re
     m = _re.search(r"saved to ([^;\s]+)", r)
@@ -1068,23 +1068,23 @@ def test_bash_timeout_arg_and_alias():
     from harness.tools import BashTool
     bt = BashTool()
     # timeout_s honored: a 3s command with a 1s budget must be killed
-    r1 = bt.run({"command": "sleep 3", "timeout_s": 1}, _ctx("/tmp"))
+    r1 = bt.run({"command": "sleep 3", "timeout_s": 1}, _ctx(tempfile.gettempdir()))
     assert "timed out after 1s" in r1, r1[:120]
     # the ALIAS `timeout` must be honored identically (the actual regression)
-    r2 = bt.run({"command": "sleep 3", "timeout": 1}, _ctx("/tmp"))
+    r2 = bt.run({"command": "sleep 3", "timeout": 1}, _ctx(tempfile.gettempdir()))
     assert "timed out after 1s" in r2, "the `timeout` alias must be honored: %r" % r2[:120]
     # default is 120s now (not 30): a quick command with NO timeout arg just succeeds
-    r3 = bt.run({"command": "echo ok"}, _ctx("/tmp"))
+    r3 = bt.run({"command": "echo ok"}, _ctx(tempfile.gettempdir()))
     assert r3.strip() == "ok", r3
 
 def test_bash_spill_pointer_survives_elision():
     from harness.tools import BashTool
-    r = BashTool().run({"command": "seq 1 5000", "timeout_s": 20}, _ctx("/tmp"))
+    r = BashTool().run({"command": "seq 1 5000", "timeout_s": 20}, _ctx(tempfile.gettempdir()))
     assert "saved to" in r[:240], "spill pointer must live in the first 240 chars (survives elision stub)"
 
 def test_bash_timeout_spills():
     from harness.tools import BashTool
-    r = BashTool().run({"command": "seq 1 40000; sleep 30", "timeout_s": 2}, _ctx("/tmp"))
+    r = BashTool().run({"command": "seq 1 40000; sleep 30", "timeout_s": 2}, _ctx(tempfile.gettempdir()))
     assert "timed out" in r, r[:120]
     import re as _re
     m = _re.search(r"saved to ([^;\s]+)", r)
@@ -1092,7 +1092,7 @@ def test_bash_timeout_spills():
 
 def test_bash_no_spill_under_cap():
     from harness.tools import BashTool
-    r = BashTool().run({"command": "echo hi", "timeout_s": 10}, _ctx("/tmp"))
+    r = BashTool().run({"command": "echo hi", "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert "saved to" not in r and r.strip() == "hi", "small output must not spill: %r" % r
 
 def test_spill_sweep():
@@ -1128,21 +1128,21 @@ def test_bash_timeout_kills_fast():
     import time
     t0 = time.time()
     # a backgrounded grandchild holds the stdout pipe — the old code hung here forever
-    r = BashTool().run({"command": "(sleep 30 &) ; sleep 30", "timeout_s": 2}, _ctx("/tmp"))
+    r = BashTool().run({"command": "(sleep 30 &) ; sleep 30", "timeout_s": 2}, _ctx(tempfile.gettempdir()))
     dt = time.time() - t0
     assert dt < 12, "timeout must kill the process GROUP fast, took %.1fs" % dt
     assert "timed out" in r
 
 def test_bash_exit_code_surfaced():
     from harness.tools import BashTool
-    r = BashTool().run({"command": "echo oops; exit 3", "timeout_s": 10}, _ctx("/tmp"))
+    r = BashTool().run({"command": "echo oops; exit 3", "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert "[exit 3]" in r and "oops" in r, "non-zero exit must be surfaced, got: %r" % r
 
 def test_bash_python_shim():
     # `python -c` must work even where only python3 exists (else repros waste a turn + falsely fail
     # the gate). Where `python` already resolves, this is a no-op that still passes.
     from harness.tools import BashTool
-    r = BashTool().run({"command": 'python -c "print(6*7)"', "timeout_s": 10}, _ctx("/tmp"))
+    r = BashTool().run({"command": 'python -c "print(6*7)"', "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert r.strip() == "42", "python (shimmed to python3) must run, got: %r" % r
 
 # ------------------------------------------------------------------ execute_code RPC (progtool)
@@ -1784,8 +1784,8 @@ def test_prefix_cache_stability():
 def test_websearch_graceful():
     from harness.websearch import WebSearchTool
     ws = WebSearchTool()
-    assert isinstance(ws.run({"query": ""}, _ctx("/tmp")), str), "empty query must return a str, not crash"
-    assert isinstance(ws.run({}, _ctx("/tmp")), str), "MISSING query key must not crash the tool"
+    assert isinstance(ws.run({"query": ""}, _ctx(tempfile.gettempdir())), str), "empty query must return a str, not crash"
+    assert isinstance(ws.run({}, _ctx(tempfile.gettempdir())), str), "MISSING query key must not crash the tool"
 
 # ------------------------------------------------------------------ compare grading word-boundary
 def test_compare_num_in_boundary():

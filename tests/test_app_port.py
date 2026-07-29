@@ -47,13 +47,13 @@ def main():
     blockers = []
     for p in (base, base + 1):
         s = socket.socket()
-        # HOLD the port so the server is forced to scan. On Windows SO_REUSEADDR means "share the
-        # port" (WSAEACCES/WSAEADDRINUSE only with exclusive use), so a REUSEADDR blocker would NOT
-        # block and the test couldn't exercise the scan at all — use SO_EXCLUSIVEADDRUSE there.
+        # HOLD the port EXCLUSIVELY so the server (which sets SO_REUSEADDR) is forced to scan past it.
+        # Do NOT give the blocker SO_REUSEADDR: on Windows it means "share the port", and on macOS a
+        # SO_REUSEADDR server can then bind the same port too — either way the server never scans and
+        # the test can't exercise the fix. Windows needs SO_EXCLUSIVEADDRUSE; POSIX a plain bind holds
+        # it (SO_REUSEADDR only reuses TIME_WAIT, not an active listener).
         if sys.platform == "win32":
             s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        else:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", p))
             s.listen(1)
