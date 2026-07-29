@@ -27,7 +27,31 @@ from . import compare as cmp
 from . import dashboard as dash
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.path.join(ROOT, "data")
+
+
+def _data_dir() -> str:
+    """Where collie keeps what the user made: sessions, memory.db, runs.db, the sandbox.
+
+    This used to be `<wherever harness is installed>/data`, which is fine for a checkout and wrong
+    everywhere else. Installed from the .app it resolved INSIDE the bundle — read-only, so nothing
+    could be saved at all (the app showed "no chats yet" forever), and had it been writable every
+    update would have replaced the bundle and taken the history with it. From pip it landed in
+    site-packages, which the next upgrade deletes.
+
+    A checkout keeps using its own `data/`, so a dev box and the test suite see what they always saw
+    and nothing existing is orphaned. Anything else writes beside the rest of the user's collie
+    state.
+    """
+    override = os.environ.get("COLLIE_DATA_DIR")
+    if override:
+        return override
+    if os.path.exists(os.path.join(ROOT, "pyproject.toml")):     # a source checkout, not an install
+        return os.path.join(ROOT, "data")
+    state = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
+    return os.path.join(state, "data")
+
+
+DATA = _data_dir()
 
 
 def _paths():

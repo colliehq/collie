@@ -30,9 +30,22 @@ def main():
     os.environ.setdefault("COLLIE_PROVIDER", "mock")
     from harness.webapp import main as web_main                      # noqa: E402
 
+    # Pick a base port nothing else is using. Hardcoding 8787 made this fail whenever a real collie
+    # happened to be running — the test would then be measuring the machine, not the code.
+    base = 8787
+    for cand in range(8830, 8990, 3):
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", cand))
+            probe.close()
+            base = cand
+            break
+        except OSError:
+            probe.close()
+
     # Take the preferred port and the next one, so the scan has to move twice.
     blockers = []
-    for p in (8787, 8788):
+    for p in (base, base + 1):
         s = socket.socket()
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -43,7 +56,7 @@ def main():
             s.close()                       # already taken by something else; the test still holds
 
     bound = {}
-    threading.Thread(target=web_main, args=(["--port", "8787", "--no-open"],),
+    threading.Thread(target=web_main, args=(["--port", str(base), "--no-open"],),
                      kwargs={"on_bound": lambda p: bound.setdefault("port", p)},
                      daemon=True).start()
     for _ in range(75):
@@ -53,7 +66,7 @@ def main():
 
     check("port" in bound, "the server reports the port it bound")
     port = bound.get("port")
-    check(port is not None and port != 8787,
+    check(port is not None and port != base,
           "and it is NOT the one that was asked for, because that one was busy (got %s)" % port)
 
     def reachable(p, timeout=3):
@@ -65,7 +78,7 @@ def main():
 
     check(port is not None and reachable(port),
           "the reported port answers — a window pointed there shows the UI")
-    check(not reachable(8787, timeout=1.5),
+    check(not reachable(base, timeout=1.5),
           "the requested port does not answer, which is exactly where the window used to be sent")
 
     for s in blockers:
