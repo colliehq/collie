@@ -596,6 +596,50 @@ def _extract_one(exe, terms, source, exclude=()):
 
 
 _playing = {"proc": None, "track": None}
+_reaper_installed = False
+
+
+def _install_reaper():
+    """Stop the player when collie stops.
+
+    The player is started in its own session so a timeout can reap the whole tree — which also means
+    it does NOT die with us. Measured: kill collie while music is playing and the music keeps going,
+    with nothing left anywhere that can stop it. Whatever this process starts and keeps, it has to
+    put away.
+
+    SIGKILL is beyond anyone's reach; everything else is covered.
+    """
+    global _reaper_installed
+    if _reaper_installed:
+        return
+    _reaper_installed = True
+    import atexit
+    import signal
+
+    atexit.register(lambda: stop_here())
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            prev = signal.getsignal(sig)
+
+            def handler(signum, frame, _prev=prev):
+                try:
+                    stop_here()
+                except Exception:
+                    pass
+                # Chain: a library must not swallow the host's own shutdown.
+                if callable(_prev):
+                    _prev(signum, frame)
+                elif _prev == signal.SIG_DFL:
+                    signal.signal(signum, signal.SIG_DFL)
+                    os.kill(os.getpid(), signum)
+
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            # signal.signal() only works on the main thread. play_here() runs on an HTTP worker, so
+            # installing from there silently did nothing and music outlived collie anyway — which is
+            # why webapp calls this at startup, where we ARE the main thread.
+            pass
 
 
 def play_here(query, artist="", title="", region=""):
@@ -614,17 +658,22 @@ def play_here(query, artist="", title="", region=""):
         return {"ok": False, "error": info.get("error") or "couldn't find that"}
 
     stop_here()
+    _install_reaper()
     proc = plat.play_stream(info["url"])
     _playing["proc"] = proc
     _playing["track"] = {"title": info.get("title") or query,
                          "uploader": info.get("uploader") or "",
                          "duration": info.get("duration")}
+    # A menu-bar control, so stopping this never requires asking the agent again. Reported back, so
+    # the reply can tell the person where the button is — or not claim one exists when it does not.
+    indicator = _show_indicator(_playing["track"]["title"])
     return {"ok": True, "title": _playing["track"]["title"],
             "uploader": _playing["track"]["uploader"],
             "duration": _playing["track"]["duration"],
             # A URL handed to QuickTime or a browser is not ours to kill, so say whether stopping
             # from here will actually work rather than offering a button that does nothing.
-            "stoppable": proc is not None}
+            "stoppable": proc is not None,
+            "menubar": bool(indicator)}
 
 
 def stop_here():
@@ -633,7 +682,31 @@ def stop_here():
 
     proc, _playing["proc"] = _playing["proc"], None
     _playing["track"] = None
+    _hide_indicator()
     return {"ok": plat.stop_stream(proc)}
+
+
+def _show_indicator(title: str) -> bool:
+    """A visible, one-click way to stop this that is not the agent. macOS: the menu bar. Elsewhere the
+    UI's own now-playing strip is the control, so this simply reports that there is no menu-bar one."""
+    from . import plat
+    if not plat.is_macos():
+        return False
+    try:
+        from . import nowplaying_mac
+        return nowplaying_mac.show(title, stop_here)
+    except Exception:
+        return False
+
+
+def _hide_indicator() -> None:
+    try:
+        from . import plat
+        if plat.is_macos():
+            from . import nowplaying_mac
+            nowplaying_mac.hide()
+    except Exception:
+        pass
 
 
 def playing_here():

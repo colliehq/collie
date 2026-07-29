@@ -207,7 +207,15 @@ def _play_summary(r):
     if not r.get("ok"):
         return "Couldn\u2019t find that%s" % (" \u2014 " + r["error"] if r.get("error") else ".")
     who = r.get("uploader") or ""
-    return "\u25b6 Playing %s%s." % (r.get("title") or "it", " \u2014 " + who if who else "")
+    line = "\u25b6 Playing %s%s." % (r.get("title") or "it", " \u2014 " + who if who else "")
+    # Say where the off switch is, now, while they are looking. Anything the agent starts and leaves
+    # running must be stoppable without asking the agent a second time — and a control nobody can
+    # find is not a control.
+    if r.get("menubar"):
+        line += " Click \u266a in the menu bar to stop."
+    elif r.get("stoppable"):
+        line += " Say \u201cstop the music\u201d, or use the stop button in Collie."
+    return line
 
 
 def _relay_qr_page(link, room, code, ttl=0):
@@ -1885,6 +1893,15 @@ def main(argv=None, on_bound=None):
     # a nicer local URL than a bare loopback IP: browsers resolve any *.localhost name to the
     # loopback address per RFC 6761 (zero setup, no /etc/hosts), so collie.localhost:PORT works
     # out of the box while the server still binds 127.0.0.1. VS Code parses the 127.0.0.1 line below.
+    # Install the player reaper HERE: signal handlers can only be set from the main thread, and the
+    # request that starts music runs on an HTTP worker — so doing it there silently did nothing and
+    # the music outlived collie with no way left to stop it.
+    try:
+        from . import desktop as _dt
+        _dt._install_reaper()
+    except Exception:
+        pass
+
     if on_bound:
         try:
             on_bound(port)
