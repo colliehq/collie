@@ -97,6 +97,20 @@ def main():
     check("self.last_pong = time.time()" in src,
           "the websocket client timestamps the PONG rather than discarding it")
 
+    # RUN that line, do not just read it. Checking the source only proved the statement was PRESENT:
+    # it called time.time() in a module that never imported time, so every PONG raised NameError,
+    # broke the read loop and dropped the connection — every twenty seconds, on the keepalive's own
+    # beat, for a whole release. A string match cannot see that. Executing it can.
+    conn = wsclient.WebSocketClient.__new__(wsclient.WebSocketClient)
+    conn.last_pong = 0.0
+    try:
+        exec("self.last_pong = time.time()", vars(wsclient), {"self": conn})
+        ran = conn.last_pong > 0
+    except Exception as exc:                                          # noqa: BLE001
+        ran = False
+        print("    raised:", exc)
+    check(ran, "and that line RUNS in that module's namespace, imports included")
+
     print("\n  " + ("%d FAILED" % len(_fails) if _fails else "relay keepalive: all green"))
     return 1 if _fails else 0
 
