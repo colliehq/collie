@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.20.13 — your chats were being written inside the application
+
+- **User data moved out of the install.** `data/` — sessions, memory.db, runs.db, the sandbox —
+  resolved to wherever `harness` happened to be installed. From the .app that is inside the signed
+  bundle, which is read-only: nothing could be saved at all, so the app showed "no chats yet" no
+  matter how much you had said, and every run was forgotten the moment it ended. A writable bundle
+  would have been worse — each update replaces it and would take the history with it. From pip it
+  landed in site-packages, which the next upgrade deletes. A checkout keeps its own `data/`;
+  everything else now writes beside `settings.json` and `remote.json`. `COLLIE_DATA_DIR` overrides
+  both.
+- **The Dock says Collie.** The bundle execs its private interpreter, and macOS names a process
+  after the file it executed — so the Dock, Force Quit and Activity Monitor all said "python3".
+
 ## v0.20.12 — the Dock said "python3"
 
 - **The app is called Collie everywhere now.** The bundle hands off to its private interpreter
