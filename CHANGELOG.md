@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.20.14 — the desktop could not tell it had gone offline
+
+- **A dead relay socket is noticed now.** The desktop reported `connected: true` while the relay
+  answered "desktop offline" to the phone. Nothing had raised and nothing was wrong with the
+  network: the socket was still writable, so every keepalive ping succeeded and the client went on
+  believing it was connected, indefinitely, until someone restarted it by hand. Pinging only proves
+  the local socket accepts writes — the far end's PONG is the evidence, and the transport was
+  discarding it. It is timestamped now, and two missed replies close the socket so the existing
+  reconnect can do its job.
+
 ## v0.20.13 — your chats were being written inside the application
 
 - **User data moved out of the install.** `data/` — sessions, memory.db, runs.db, the sandbox —
