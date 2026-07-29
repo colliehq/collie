@@ -162,7 +162,9 @@ def test_map_web():
     """The Map's web surface: /map serves the galaxy, /api/tree + /api/file feed it, /api/file is
     guarded, and /api/session emits structured tool_calls the replay can parse."""
     port = 8791
-    p = subprocess.Popen(COLLIE + ["web", "--port", str(port)], cwd=ROOT, env=ENV,
+    # --no-open, or every run of the suite leaves a browser tab behind. They accumulate silently:
+    # the server exits with the test, so what is left is a row of tabs pointing at a dead port.
+    p = subprocess.Popen(COLLIE + ["web", "--port", str(port), "--no-open"], cwd=ROOT, env=ENV,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         base = "http://127.0.0.1:%d" % port
@@ -244,7 +246,9 @@ def test_image_upload():
     it as a multimodal message without crashing the (mock) run."""
     import re
     port = 8793
-    p = subprocess.Popen(COLLIE + ["web", "--port", str(port)], cwd=ROOT, env=ENV,
+    # --no-open, or every run of the suite leaves a browser tab behind. They accumulate silently:
+    # the server exits with the test, so what is left is a row of tabs pointing at a dead port.
+    p = subprocess.Popen(COLLIE + ["web", "--port", str(port), "--no-open"], cwd=ROOT, env=ENV,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         base = "http://127.0.0.1:%d" % port

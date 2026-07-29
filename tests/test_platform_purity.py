@@ -172,10 +172,30 @@ def test_the_desktop_backend_works_on_this_platform():
           "yt-dlp asset matches this platform (%s)" % dt._YTDLP_ASSET)
 
 
+def check_tests_never_open_a_browser():
+    """A test that starts `collie web` without --no-open opens a real browser tab on the machine
+    running it, every single time. The server dies with the test, so what is left behind is a row of
+    tabs pointing at a dead port — and nothing in the output says where they came from."""
+    import glob
+    bad = []
+    for path in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "*.py")):
+        src = open(path, encoding="utf-8").read()
+        for i, line in enumerate(src.splitlines(), 1):
+            if '"web"' not in line or "--no-open" in line:
+                continue
+            # the flag is often on the same call but a line or two down
+            window = "\n".join(src.splitlines()[i - 1:i + 2])
+            if "--no-open" not in window:
+                bad.append("%s:%d" % (os.path.basename(path), i))
+    check(not bad, "no test starts `collie web` without --no-open%s"
+          % ("" if not bad else " (" + ", ".join(bad) + ")"))
+
+
 if __name__ == "__main__":
     test_no_unguarded_platform_apis()
     test_no_hardcoded_windows_paths_outside_a_windows_branch()
     test_platform_helpers_answer_on_this_machine()
     test_the_desktop_backend_works_on_this_platform()
+    check_tests_never_open_a_browser()
     print("\n" + ("all green" if not failures else "%d FAILED" % len(failures)))
     sys.exit(1 if failures else 0)
