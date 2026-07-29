@@ -65,8 +65,8 @@ def main():
     threading.Thread(target=web_main, args=(["--port", str(base), "--no-open"],),
                      kwargs={"on_bound": lambda p: bound.setdefault("port", p)},
                      daemon=True).start()
-    for _ in range(75):
-        if "port" in bound:
+    for _ in range(200):                 # up to 40s: a cold CI runner imports the whole harness before
+        if "port" in bound:              # it can bind + call on_bound (macOS runners are slow to start)
             break
         time.sleep(0.2)
 
@@ -75,14 +75,21 @@ def main():
     check(port is not None and port != base,
           "and it is NOT the one that was asked for, because that one was busy (got %s)" % port)
 
-    def reachable(p, timeout=3):
-        try:
-            urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % p, timeout=timeout).read()
-            return True
-        except Exception:
-            return False
+    def reachable(p, timeout=3, wait=0.0):
+        # POLL up to `wait` seconds: on_bound fires at bind(), a beat before serve_forever is actually
+        # accepting, so a single-shot check right after can race the socket open — especially on a
+        # loaded CI runner. The negative check (base must NOT answer) passes wait=0 to stay a quick shot.
+        end = time.time() + wait
+        while True:
+            try:
+                urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % p, timeout=timeout).read()
+                return True
+            except Exception:
+                if time.time() >= end:
+                    return False
+                time.sleep(0.3)
 
-    check(port is not None and reachable(port),
+    check(port is not None and reachable(port, wait=10),
           "the reported port answers — a window pointed there shows the UI")
     check(not reachable(base, timeout=1.5),
           "the requested port does not answer, which is exactly where the window used to be sent")
