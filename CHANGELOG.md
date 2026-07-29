@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.20.15 — /api/repos could hang forever
+
+- **A directory walk that never returns no longer takes the endpoint with it.** `~/Music` and
+  `~/Movies` are the Apple Music and TV libraries; full of cloud placeholders, `os.walk` over one
+  does not come back. `/api/repos` had not finished after five minutes on a real machine — which
+  from the phone is a Code screen spinning with nothing to time it out, and a server thread gone
+  for good. Those names are pruned at the top of $HOME, and the endpoint answers within a deadline
+  whatever the filesystem does, because the next one will have a different name.
+
 ## v0.20.14 — the desktop could not tell it had gone offline
 
 - **A dead relay socket is noticed now.** The desktop reported `connected: true` while the relay
