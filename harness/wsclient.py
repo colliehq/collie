@@ -53,6 +53,9 @@ class WebSocketClosed(WebSocketError):
 
 class WebSocketClient:
     def __init__(self, sock: socket.socket, reader):
+        # When the far end last answered a ping. A socket can stay writable long after the
+        # other side stopped listening, so this is the only evidence anyone is still there.
+        self.last_pong = 0.0
         self._sock = sock
         self._reader = reader            # buffered BufferedReader over the (TLS) socket
         self._send_lock = threading.Lock()
@@ -216,7 +219,11 @@ class WebSocketClient:
             elif opcode == OP_PING:
                 self._send_frame(OP_PONG, payload)      # echo per RFC 6455 §5.5.2
             elif opcode == OP_PONG:
-                pass
+                # Remember WHEN, not just that it happened. A socket can stay writable long after the
+                # far end has stopped answering — pings keep succeeding, nothing raises, and the
+                # caller believes it is connected while no traffic reaches it. The reply is the only
+                # evidence anyone is still there.
+                self.last_pong = time.time()
             elif opcode == OP_CLOSE:
                 code, reason = None, None
                 if len(payload) >= 2:

@@ -215,11 +215,35 @@ class RelayClient:
             ws.close()
             self._ws = None
 
+    KEEPALIVE_S = 20.0
+    # Two missed replies, not one: a single slow round trip over a phone network is not a dead
+    # socket, and tearing the connection down for it would reconnect constantly.
+    PONG_GRACE_S = 55.0
+
     def _start_keepalive(self, ws) -> threading.Event:
+        """Ping, and REQUIRE an answer.
+
+        Pinging alone proves nothing: a socket stays writable long after the far end has stopped
+        treating it as this room's agent, so every ping succeeds, nothing raises, and the desktop
+        reports itself connected while the relay answers "desktop offline" to the phone. That state
+        is invisible from here and lasts until something restarts the client by hand.
+
+        The far end's PONG is the only evidence anyone is listening. Without one for long enough,
+        close the socket — the run loop reconnects, which is the whole point.
+        """
+        import time as _time
         stop = threading.Event()
 
         def beat():
-            while not stop.wait(20.0):
+            ws.last_pong = _time.time()          # a fresh socket has not gone quiet yet
+            while not stop.wait(self.KEEPALIVE_S):
+                if _time.time() - getattr(ws, "last_pong", 0.0) > self.PONG_GRACE_S:
+                    self._log("relay: no reply to keepalive — reconnecting")
+                    try:
+                        ws.close()               # wakes recv_message() → the run loop redials
+                    except Exception:
+                        pass
+                    return
                 try:
                     ws.send_ping()
                 except Exception:
