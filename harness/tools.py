@@ -787,6 +787,47 @@ class LoadToolsTool(Tool):
         return "\n".join(lines)
 
 
+# Capabilities that are powerful enough to be gated off by default, but that collie can turn ON at
+# runtime once the user agrees. Only capabilities whose tools are ALWAYS registered + gated at call
+# time belong here (so enabling takes effect live this session) — desktop_* fits; build-time-gated
+# ones (web_search) do not, since flipping their setting wouldn't register their tools mid-run.
+_GATED_CAPS = {
+    # capability key -> (settings key / COLLIE_<KEY> suffix, human label, what it grants)
+    "desktop_control": ("DESKTOP_CONTROL", "Desktop control",
+                        "drive any native app window — click controls, type into fields, "
+                        "including system dialogs like file pickers"),
+}
+
+
+class EnableCapabilityTool(Tool):
+    """Turn ON a gated-off capability — AFTER the user has agreed. collie's just-in-time consent seam:
+    when a gated tool (e.g. desktop_*) is needed but off, collie asks the user in plain language and,
+    only on a yes, calls this. The setting is applied to os.environ immediately, so the capability
+    works for the rest of this session, and saved so it stays on next time."""
+    name, tier = "enable_capability", "always"
+    description = ("Turn ON a capability that is currently gated off — ONLY after the user has "
+                   "explicitly agreed in the conversation. Never enable silently: ask first, and say "
+                   "what it grants. capability: one of " + ", ".join(_GATED_CAPS) + ". Takes effect "
+                   "immediately for the rest of this session. Args: capability.")
+    schema = {"type": "object", "properties": {"capability": {"type": "string"}},
+              "required": ["capability"]}
+
+    def run(self, args, ctx):
+        key = str((args or {}).get("capability", "")).strip().lower().replace("-", "_")
+        if key not in _GATED_CAPS:
+            return "ERROR: unknown capability %r. Known: %s" % (key, ", ".join(_GATED_CAPS))
+        skey, label, grants = _GATED_CAPS[key]
+        try:
+            from . import settings as _settings
+            _settings.update({skey: "on"})
+            _settings.apply()
+        except Exception as e:
+            os.environ["COLLIE_" + skey] = "on"       # at least make it live for this session
+            return "%s enabled for this session (couldn't persist: %s). Retry your action." % (label, e)
+        return ("✓ %s enabled — %s. On now for the rest of this session and saved for next "
+                "time (the user can turn it off in settings). Retry what you were doing." % (label, grants))
+
+
 def default_registry(code_search: bool = False,
                      web_search: bool = False, exec_code: bool = False,
                      delegate: bool = False) -> ToolRegistry:
@@ -820,16 +861,18 @@ def default_registry(code_search: bool = False,
     if bridge_on:                                # the ONE browser path: the user's real logged-in
         from .browserbridge import register_browser_bridge   # Chrome via the extension (or a managed
         register_browser_bridge(r)                           # Chromium launched with it — same tools)
-    # native desktop app control (Windows UI Automation): the desktop_* tools that let collie drive
-    # any native app. Opt-in — powerful, so only when COLLIE_DESKTOP_CONTROL=1 (the "Control desktop
-    # apps" setting) AND the platform can actually drive apps.
-    if os.environ.get("COLLIE_DESKTOP_CONTROL", "").lower() in ("1", "on", "true"):  # bool stored as "on"
-        try:
-            from .native import register_native, backend as _native_backend
-            if _native_backend() is not None:      # Windows (UIA) or macOS (System Events); None on Linux
-                register_native(r)
-        except Exception:
-            pass
+    # native desktop app control (Windows UIA / macOS System Events). ALWAYS registered so collie can
+    # SEE the capability exists — when the "Control desktop apps" setting is off the desktop_* tools
+    # ride the deferred tier and refuse to run until the user consents (collie asks, then calls
+    # enable_capability). No more silently missing a hand it actually has. Powerful, so still gated at
+    # call time by COLLIE_DESKTOP_CONTROL.
+    try:
+        from .native import register_native, backend as _native_backend
+        if _native_backend() is not None:          # Windows (UIA) or macOS (System Events); None on Linux
+            register_native(r)
+            r.register(EnableCapabilityTool())     # just-in-time consent seam for gated capabilities
+    except Exception:
+        pass
     # external MCP servers -> deferred tier (advertised by name, schema loaded on demand). Kept
     # last so a broken server can't stop the core tools from registering.
     try:

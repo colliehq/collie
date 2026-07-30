@@ -394,6 +394,41 @@ def _dt_elements(d):
     return "\n".join(lines)
 
 
+def _dc_enabled():
+    """The 'Control desktop apps' setting (COLLIE_DESKTOP_CONTROL), read live at call time."""
+    return os.environ.get("COLLIE_DESKTOP_CONTROL", "").lower() in ("1", "on", "true")
+
+
+# What a desktop_* tool returns when it's called while the capability is off. It does NOT fail hard —
+# it tells collie to get the user's consent, then flip it on via enable_capability. So collie always
+# SEES the desktop hand (the tools are always registered) and can reach for it the moment it's needed.
+_DC_CONSENT = (
+    "⛔ Desktop control is currently OFF. This is a powerful capability — it lets me drive ANY native "
+    "app window on this machine (click controls, type into fields, including system dialogs like file "
+    "pickers). I won't turn it on silently. Ask the user in plain words whether to enable it and what "
+    "it grants; if they agree, call enable_capability with capability=\"desktop_control\", then retry "
+    "this action. If they decline, tell them this step can't be done without it.")
+
+
+def _register_gated(registry, tools):
+    """Register the desktop_* tools ALWAYS, so collie can see the capability exists. When the setting
+    is off they ride the deferred tier (advertised by name, lean prompt) and refuse to run until the
+    user consents; when on, they're always-on and run normally. The gate is re-checked at call time,
+    so enable_capability takes effect for the rest of the session with no re-registration."""
+    on = _dc_enabled()
+    for t in tools:
+        t.tier = "always" if on else "deferred"
+        _orig = t.run
+
+        def gated(args, ctx, _orig=_orig):
+            if not _dc_enabled():
+                return _DC_CONSENT
+            return _orig(args, ctx)
+
+        t.run = gated
+        registry.register(t)
+
+
 def _register_windows(registry):
     """Register the Windows desktop_* tools — UI Automation, addressed by index / automationId."""
     from .tools import Tool
@@ -502,9 +537,8 @@ def _register_windows(registry):
             err = _dt_err(d)
             return err if err else "ok — focused"
 
-    for t in (DesktopApps(), DesktopInspect(), DesktopClick(), DesktopType(),
-              DesktopRead(), DesktopLaunch(), DesktopFocus()):
-        registry.register(t)
+    _register_gated(registry, [DesktopApps(), DesktopInspect(), DesktopClick(), DesktopType(),
+                               DesktopRead(), DesktopLaunch(), DesktopFocus()])
 
 
 def _register_mac(registry):
@@ -603,9 +637,8 @@ def _register_mac(registry):
                 return "ERROR(desktop): %s" % ex
             return "ok — launched" if ok else "ERROR(desktop): could not launch %r" % args.get("target", "")
 
-    for t in (DesktopApps(), DesktopInspect(), DesktopClick(), DesktopType(),
-              DesktopMenu(), DesktopFocus(), DesktopLaunch()):
-        registry.register(t)
+    _register_gated(registry, [DesktopApps(), DesktopInspect(), DesktopClick(), DesktopType(),
+                               DesktopMenu(), DesktopFocus(), DesktopLaunch()])
 
 
 def register_native(registry):
