@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.20.23 — the model you picked, and a release that arrives
+## v0.20.24 — the model you picked, and a release that arrives
 
 - **`mock` is no longer offered as a model.** It answers from canned text, which is
   indistinguishable from a model that has gone wrong, and it sat in the picker between real
