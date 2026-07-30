@@ -763,7 +763,10 @@ class Handler(BaseHTTPRequestHandler):
                 mine = dt.playing_here().get("track")
                 return self._send_json({
                     "track": dt.nowplaying(),
-                    "collie": ({"title": mine.get("title"), "uploader": mine.get("uploader"),
+                    # `ok` so this object is the same shape /api/desktop/play returns — one type on
+                    # the client for "what is playing", rather than two that differ by one field.
+                    "collie": ({"ok": True, "title": mine.get("title"),
+                                "uploader": mine.get("uploader"),
                                 "duration": mine.get("duration"), "stoppable": True}
                                if mine else None)})
             if path == "/api/desktop/projects":
