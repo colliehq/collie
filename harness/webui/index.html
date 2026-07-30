@@ -191,6 +191,17 @@
     border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
     display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2);
   }
+  /* The now-playing control. A button, not a label: the whole thing is the off switch, so there is
+     nothing to aim at and no second step. Reads as a status pill until you hover it, then as an
+     action — which is what it is. */
+  /* [hidden] loses to .pill's display:inline-flex — the attribute was set and the pill stayed on
+     screen anyway. An indicator that shows when nothing is playing is worse than none. */
+  .np-pill[hidden] { display: none; }
+  .np-pill { cursor: pointer; max-width: 320px; }
+  .np-pill:hover { border-color: var(--coral); color: var(--coral); }
+  .np-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .np-stop { font-weight: 600; opacity: .75; }
+  .np-pill:hover .np-stop { opacity: 1; }
   .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
   .pill.live .dot { background: var(--meadow); box-shadow: 0 0 0 0 var(--meadow); animation: pulse 1.4s infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--meadow) 60%,transparent);} 70%{box-shadow:0 0 0 7px transparent;} 100%{box-shadow:0 0 0 0 transparent;} }
@@ -938,6 +949,15 @@
       </button>
       <h1>Workbench</h1>
       <span class="pill" id="statePill"><span class="dot"></span><span id="stateText">idle</span></span>
+      <!-- What collie itself is playing, with the off switch. Shown only while something is playing.
+           Anything the agent starts and leaves running has to be stoppable without asking the agent
+           again, and on a machine with no menu bar this is the only place that can be. -->
+      <button type="button" class="pill np-pill" id="npPill" hidden
+              title="Stop the music collie is playing">
+        <span aria-hidden="true">♪</span>
+        <span class="np-title" id="npTitle"></span>
+        <span class="np-stop">Stop</span>
+      </button>
       <div class="spacer"></div>
       <button type="button" class="model-trigger" id="modelTrigger" title="Switch model (Ctrl/⌘ K)" aria-haspopup="dialog" aria-controls="modelOverlay" aria-expanded="false">
         <span class="model-trigger-dot"></span>
@@ -3282,6 +3302,42 @@
       }).catch(function () {});
     }
     poll(); setInterval(poll, 5000);
+  })();
+
+  /* ── now playing (collie's own audio) ────────────────────────────────────────────────────────
+     collie can start music and walk away, and for a while the only ways to stop it were to ask the
+     agent again or to kill a process in a terminal. Neither is a control. This is the one that is on
+     every platform — macOS also gets a menu-bar item, Windows a tray icon, but the pill is always
+     here. It shows only while collie itself is playing: the system's own music (Spotify, Music) is
+     not ours to stop, and offering to would be a lie. */
+  (function () {
+    var pill = $("npPill"), title = $("npTitle");
+    if (!pill) return;
+    var busy = false;
+
+    function paint(np) {
+      if (!np) { pill.hidden = true; return; }
+      var who = np.uploader ? " — " + np.uploader : "";
+      title.textContent = (np.title || "music") + who;
+      pill.hidden = false;
+    }
+
+    function poll() {
+      fetch("/api/desktop/nowplaying?token=" + encodeURIComponent(CT))
+        .then(function (r) { return r.json(); })
+        .then(function (d) { paint(d && d.collie); }).catch(function () {});
+    }
+
+    pill.onclick = function () {
+      if (busy) return;
+      busy = true;
+      pill.hidden = true;                       // answer the click immediately; poll confirms
+      fetch("/api/desktop/stopaudio?token=" + encodeURIComponent(CT), { method: "POST" })
+        .catch(function () {})
+        .then(function () { busy = false; poll(); });
+    };
+
+    poll(); setInterval(poll, 4000);
   })();
 
   loadSessions();

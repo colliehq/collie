@@ -756,7 +756,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(dt.sysinfo())
             if path == "/api/desktop/nowplaying":
                 from . import desktop as dt
-                return self._send_json({"track": dt.nowplaying()})
+                # Two different questions, and conflating them would be wrong. `track` is whatever
+                # the SYSTEM is playing (Spotify, Music — read-only, we can only send media keys).
+                # `collie` is what THIS process started and can therefore actually stop, which is the
+                # one a stop button may be offered for.
+                mine = dt.playing_here().get("track")
+                return self._send_json({
+                    "track": dt.nowplaying(),
+                    "collie": ({"title": mine.get("title"), "uploader": mine.get("uploader"),
+                                "duration": mine.get("duration"), "stoppable": True}
+                               if mine else None)})
             if path == "/api/desktop/projects":
                 from . import desktop as dt
                 return self._send_json({"projects": dt.projects()})
