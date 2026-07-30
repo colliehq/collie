@@ -134,36 +134,52 @@ function pageLinks(filter) {
     .slice(0, 100);
 }
 
+// Report AMBIGUITY, don't hide it. A page routinely carries several elements answering to the same
+// text or selector (old.reddit has a `button.save` in every comment box on the page); clicking the
+// first is a guess, and a wrong guess is indistinguishable from success in the return value. So the
+// caller is told how many matched — and can switch to a snapshot `ref`, which is exact.
 function pageClick(text, selector) {
-  let el = null;
-  if (selector) el = document.querySelector(selector);
+  let all = [];
+  if (selector) { try { all = [...document.querySelectorAll(selector)]; } catch (e) { return { error: "bad selector " + selector }; } }
   else if (text) {
     const t = text.toLowerCase();
-    el = [...document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button]")]
-      .find((e) => ((e.innerText || e.value || "").trim().toLowerCase()).includes(t));
+    all = [...document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button]")]
+      .filter((e) => ((e.innerText || e.value || "").trim().toLowerCase()).includes(t));
   }
+  const el = all[0];
   if (!el) return { error: "no element for " + (selector || text) };
   el.scrollIntoView(); el.click();
-  return { clicked: (el.innerText || el.value || selector || text).trim().slice(0, 80) };
+  const out = { clicked: (el.innerText || el.value || selector || text).trim().slice(0, 80) };
+  if (all.length > 1) {
+    out.matches = all.length;
+    out.candidates = all.slice(0, 5).map((e) => (e.innerText || e.value || e.tagName || "").trim().slice(0, 40));
+  }
+  return out;
 }
 
 // Resolve an element (same finder as pageClick) and return the viewport-CENTER point to click, in CSS
 // px relative to the viewport — exactly what CDP Input.dispatchMouseEvent consumes to place a real,
 // isTrusted click. Used only by the trusted-input path. Self-contained (injected into the page).
 function pagePoint(text, selector) {
-  let el = null;
-  if (selector) el = document.querySelector(selector);
+  let all = [];
+  if (selector) { try { all = [...document.querySelectorAll(selector)]; } catch (e) { return { error: "bad selector " + selector }; } }
   else if (text) {
     const t = text.toLowerCase();
-    el = [...document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button]")]
-      .find((e) => ((e.innerText || e.value || "").trim().toLowerCase()).includes(t));
+    all = [...document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button]")]
+      .filter((e) => ((e.innerText || e.value || "").trim().toLowerCase()).includes(t));
   }
+  const el = all[0];
   if (!el) return { error: "no element for " + (selector || text) };
   el.scrollIntoView({ block: "center", inline: "center" });
   const r = el.getBoundingClientRect();
   const x = r.left + r.width / 2, y = r.top + r.height / 2;
   const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
-  return { x, y, inView, label: (el.innerText || el.value || selector || text || "").trim().slice(0, 80) };
+  const out = { x, y, inView, label: (el.innerText || el.value || selector || text || "").trim().slice(0, 80) };
+  if (all.length > 1) {   // same ambiguity warning as pageClick — the trusted path picks the first too
+    out.matches = all.length;
+    out.candidates = all.slice(0, 5).map((e) => (e.innerText || e.value || e.tagName || "").trim().slice(0, 40));
+  }
+  return out;
 }
 
 // Injected (MAIN world): show a visible pointer that GLIDES to (x,y) and pulses a ring — so you can
@@ -272,30 +288,65 @@ function pageFields() {
   }).filter((x) => x.label && x.kind !== "hidden");
 }
 
-function pageUpload(selector, files) {
-  const input = document.querySelector(selector);
-  if (!input) return { error: "no file input " + selector };
+// Attach files by writing the <input type=file>'s FileList directly — never by clicking the page's
+// "choose file" button. That button opens the OS file picker, and Chrome only opens one for a
+// genuine user gesture: a synthetic or CDP-driven click produces NO dialog at all, so there is
+// nothing for the desktop hand to drive either. (Collie burned a whole Reddit launch on that dead
+// end.) Setting .files via DataTransfer is what Playwright/Puppeteer do and is the only path that
+// works from automation. Any media type — videos and PDFs upload the same way images do.
+// Self-contained (injected into the PAGE).
+function pageUpload(selector, files, ref) {
+  let input = null;
+  const seen = [];
+  if (ref) { const m = window.__collieRefs; input = m && m.get ? m.get(ref) : null; }
+  else if (selector) { try { input = document.querySelector(selector); } catch (e) { return { error: "bad selector " + selector }; } }
+  else {
+    // No target given: find the file inputs ourselves. They are usually display:none behind a
+    // styled button, so this deliberately does NOT filter by visibility. Open shadow roots are
+    // walked because component-based sites (Reddit's new UI) bury the real input inside one.
+    const walk = (root) => {
+      let els; try { els = root.querySelectorAll("*"); } catch (e) { return; }
+      for (const el of els) {
+        if (el instanceof HTMLInputElement && el.type === "file") seen.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    walk(document);
+    if (!seen.length) return { error: "no <input type=file> on this page — the upload control may be "
+                                      + "inside a cross-origin iframe, or the page may need a click to render it first" };
+    if (seen.length > 1) return { error: "several file inputs (" + seen.length + ") — say which one via "
+                                         + "selector or a snapshot ref",
+                                  candidates: seen.slice(0, 6).map((e, i) => (e.name || e.id || e.getAttribute("aria-label") || ("#" + i))) };
+    input = seen[0];
+  }
+  if (!input) return { error: "no file input " + (selector || ref || "") };
   if (!(input instanceof HTMLInputElement) || input.type !== "file")
-    return { error: "selector is not an input[type=file]: " + selector };
-  if (!Array.isArray(files) || !files.length) return { error: "no images supplied" };
-  if (files.length > 10) return { error: "at most 10 images can be uploaded at once" };
+    return { error: "target is not an input[type=file] (it is a <" + (input.tagName || "?").toLowerCase() + ">)" };
+  if (!Array.isArray(files) || !files.length) return { error: "no files supplied" };
+  if (files.length > 10) return { error: "at most 10 files can be attached at once" };
+  if (files.length > 1 && !input.multiple) return { error: "this input accepts a single file" };
   const transfer = new DataTransfer();
   for (const item of files) {
-    if (!item || typeof item.data !== "string" || !/^image\/(avif|gif|heic|heif|jpeg|png|webp)$/.test(item.media_type || ""))
-      return { error: "unsupported image data" };
+    if (!item || typeof item.data !== "string" || !/^[\w.+-]+\/[\w.+-]+$/.test(item.media_type || ""))
+      return { error: "unsupported file data" };
     try {
       const decoded = atob(item.data);
       const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
       const blob = new Blob([bytes], { type: item.media_type });
-      transfer.items.add(new File([blob], item.name || "collie-chat-image", { type: item.media_type }));
+      transfer.items.add(new File([blob], item.name || "collie-upload", { type: item.media_type }));
     } catch (error) {
-      return { error: "could not decode image: " + error };
+      return { error: "could not decode file: " + error };
     }
   }
   input.files = transfer.files;
   input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
   input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-  return { uploaded: transfer.files.length, names: [...transfer.files].map((file) => file.name) };
+  // Read the FileList back: assigning .files is silently refused in some contexts, and a refused
+  // upload otherwise looks identical to a successful one.
+  const landed = input.files ? input.files.length : 0;
+  return { uploaded: landed, attached: landed === transfer.files.length,
+           names: [...(input.files || [])].map((file) => file.name),
+           accept: input.getAttribute("accept") || "" };
 }
 
 // --- ref-indexed accessibility snapshot (MAIN world) ---------------------------------------------
@@ -310,7 +361,7 @@ function pageSnapshot(maxN) {
   const CAP = maxN || 200;
   const out = [];
   const refs = (window.__collieRefs = new Map());   // fresh map each snapshot -> stale refs drop
-  let n = 0;
+  let n = 0, cut = false;   // `cut`: we hit the cap, so the list below is NOT the whole page
   const visible = (el) => {
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
@@ -359,7 +410,7 @@ function pageSnapshot(maxN) {
     let els;
     try { els = root.querySelectorAll("*"); } catch (e) { return; }
     for (const el of els) {
-      if (n >= CAP) return;
+      if (n >= CAP) { cut = true; return; }
       const role = roleOf(el);
       if (role && interactive(el, role) && visible(el)) {
         const ref = "e" + (++n);
@@ -372,7 +423,10 @@ function pageSnapshot(maxN) {
     }
   };
   walk(document);
-  return { count: n, snapshot: out.join("\n") || "(no interactive elements found)" };
+  // Truncation must be visible. The walk is in document order, so what gets dropped is whatever
+  // sits LAST — and a dialog or modal that just opened is appended at the end of <body>. Reporting
+  // a silently-cut list as if it were the page is how a required control comes to look absent.
+  return { count: n, truncated: cut, snapshot: out.join("\n") || "(no interactive elements found)" };
 }
 
 // Resolve a ref from the last snapshot to its live element. Shared shape with pagePoint so the
@@ -412,6 +466,25 @@ function pageTypeRef(ref, text, submit) {
     else el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   }
   return { typed: (text || "").slice(0, 40), submit: !!submit };
+}
+
+// Read back what a field ACTUALLY holds — the post-condition every write needs. Setting `.value`
+// or pushing CDP keystrokes can land nowhere at all (focus went elsewhere; the field is a rich-text
+// editor that ignores value writes; the element was re-rendered mid-type) and every one of those
+// failures returns the same cheerful "typed" as a success. Collie once submitted three empty Reddit
+// comments in a row on exactly that blind spot, then invented a theory about server-side
+// anti-automation to explain it. Reading the field back is what tells the difference.
+// Self-contained (injected into the PAGE) and MAIN-world (window.__collieRefs lives there).
+function pageValue(ref, selector) {
+  let el = null;
+  if (ref) { const m = window.__collieRefs; el = m && m.get ? m.get(ref) : null; }
+  else if (selector) { try { el = document.querySelector(selector); } catch (e) { el = null; } }
+  if (!el) el = document.activeElement;    // the type paths all focus their target first
+  if (!el || el === document.body) return { error: "no element to read back" };
+  const v = (el.value !== undefined && el.value !== null) ? el.value
+          : (el.isContentEditable ? el.innerText : (el.textContent || ""));
+  return { value: String(v == null ? "" : v).slice(0, 500),
+           tag: (el.tagName || "").toLowerCase(), editable: !!el.isContentEditable };
 }
 
 async function exec(func, args) {
@@ -602,7 +675,7 @@ async function trustedClick(text, selector) {
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x, y: b.y, buttons: 0 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
     await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
-    return { clicked: pt.label, trusted: true };
+    return { clicked: pt.label, trusted: true, matches: pt.matches, candidates: pt.candidates };
   } catch (e) {                          // devtools open / attach blocked — NEVER regress below synthetic
     if (dbgTab === tab.id) dbgTab = null;
     const r = await exec(pageClick, [text || "", selector || ""]);
@@ -724,7 +797,24 @@ async function pageShot(fullPage, maxDim) {
   const tab = await targetTab(false);
   if (!tab) return { error: "no collie tab yet — call browser_open first" };
   let dataUrl = "", how = "";
-  if (fullPage) {
+  if (!fullPage) {
+    // Preferred path: no chrome.debugger, so no banner. But captureVisibleTab can only read pixels
+    // that are genuinely ON SCREEN — a minimised or fully covered Chrome window fails with "image
+    // readback failed" — so a failure here falls through to CDP rather than asking the caller to go
+    // and rearrange their windows.
+    try {
+      if (!tab.active) {
+        await chrome.tabs.update(tab.id, { active: true });
+        await new Promise((r) => setTimeout(r, 150));      // let it paint before reading back
+      }
+      dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+      how = "visible viewport";
+    } catch (e) {
+      dataUrl = "";
+      how = "";
+    }
+  }
+  if (!dataUrl) {
     // CDP reaches content below the fold and does not need the tab active, at the cost of the
     // debugger banner. Detach ONLY if we were the ones who attached — the trusted-input path holds
     // a deliberate persistent session and tearing it down here would silently disable real clicks.
@@ -738,14 +828,11 @@ async function pageShot(fullPage, maxDim) {
       const r = await dbgSend(tab.id, "Page.captureScreenshot",
                               { format: "png", captureBeyondViewport: true });
       dataUrl = "data:image/png;base64," + r.data;
-      how = "full page (CDP)";
+      how = fullPage ? "full page (CDP)"
+                     : "full page (CDP — the browser window was not on screen)";
     } finally {
       if (!preAttached) await dbgDetach(tab.id);
     }
-  } else {
-    if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
-    dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-    how = "visible viewport";
   }
   const small = await shrinkPng(dataUrl, maxDim || 1568);
   return { data: small.data, width: small.width, height: small.height, how,
@@ -801,18 +888,34 @@ async function handle(cmd) {
       return { click: r, page: await exec(pageRead, []) };
     }
     if (cmd.action === "type") {
+      let r;
       if (cmd.ref) {                                  // act on the exact field from a browser_snapshot
-        return (await wantTrusted()) ? await trustedTypeRef(cmd.ref, cmd.text, !!cmd.submit)
-                                     : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
+        r = (await wantTrusted()) ? await trustedTypeRef(cmd.ref, cmd.text, !!cmd.submit)
+                                  : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
+      } else if ((await wantTrusted()) && cmd.selector) {
+        r = await trustedType(cmd.selector, cmd.text, !!cmd.submit);
+      } else {
+        r = cmd.label ? await exec(pageTypeLabel, [cmd.label, cmd.text])
+                      : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
       }
-      if ((await wantTrusted()) && cmd.selector) return await trustedType(cmd.selector, cmd.text, !!cmd.submit);
-      return cmd.label
-        ? await exec(pageTypeLabel, [cmd.label, cmd.text])
-        : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
+      // Verify the write instead of trusting it. Skipped when submit was requested: submitting can
+      // navigate or clear the field, so an empty read-back there would be a false alarm.
+      if (r && !r.error && !cmd.submit) {
+        const want = String(cmd.text || "");
+        const back = await execMain(pageValue, [cmd.ref || "", cmd.selector || ""]);
+        if (back && !back.error) {
+          const got = String(back.value || "");
+          const probe = want.trim().slice(0, 60);
+          r = Object.assign({}, r, { value: got.slice(0, 120),
+                                     landed: !probe || got.indexOf(probe) >= 0 });
+        }
+      }
+      return r;
     }
     if (cmd.action === "pick") return await exec(pagePick, [cmd.label, cmd.option]);
     if (cmd.action === "fields") return await exec(pageFields, []);
-    if (cmd.action === "upload") return await exec(pageUpload, [cmd.selector, cmd.files || []]);
+    if (cmd.action === "upload")   // MAIN world: a snapshot ref resolves against window.__collieRefs
+      return await execMain(pageUpload, [cmd.selector || "", cmd.files || [], cmd.ref || ""]);
     if (cmd.action === "console") return await getConsole(!!cmd.clear);
     if (cmd.action === "eval") return await evalExpr(cmd.expr || "");
     return { error: "unknown action " + cmd.action };
