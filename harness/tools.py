@@ -108,6 +108,10 @@ class ToolCtx:
     # already know how to reshape those per API (Anthropic source / OpenAI image_url / Ollama
     # images), so this is the whole seam: `screenshot` is the first user.
     images: list = field(default_factory=list)
+    # The live ToolRegistry, so a tool that CHANGES what tools exist can make the change take effect
+    # in this session instead of asking for a restart — `mcp_add` registers the new server's tools
+    # straight away, the same way enable_capability makes a gated capability usable immediately.
+    registry: object = None
 
 
 class Tool:
@@ -808,6 +812,14 @@ _GATED_CAPS = {
     "screen_capture": ("SCREEN_CAPTURE", "Screen capture",
                        "see the screen — capture a window or the whole display as an image, which "
                        "is then sent to the model along with whatever happens to be visible"),
+    # Gated because this is the one capability that changes what the OTHER capabilities are: adding
+    # an MCP server hands collie a new set of tools, chosen by collie, running under the user's
+    # credentials. Reading the configuration (mcp_status) and switching a server OFF stay ungated —
+    # neither extends reach, and being able to disable a misbehaving server should never need a
+    # permission dance.
+    "mcp_manage": ("MCP_MANAGE", "MCP server management",
+                   "add, re-enable and delete MCP servers — which means granting collie whatever "
+                   "tools those servers expose, under your credentials for remote ones"),
 }
 
 
@@ -896,7 +908,8 @@ def default_registry(code_search: bool = False,
     # external MCP servers -> deferred tier (advertised by name, schema loaded on demand). Kept
     # last so a broken server can't stop the core tools from registering.
     try:
-        from .mcpclient import register_mcp_servers
+        from .mcpclient import register_mcp_management, register_mcp_servers
+        register_mcp_management(r)      # always — mcp_add matters most when nothing is set up yet
         register_mcp_servers(r)
     except Exception:
         pass

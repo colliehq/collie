@@ -63,6 +63,13 @@ _PAIR_FAILS = []                     # timestamps of failed redemptions, for a c
 # hosts are allowed, and only over https. Kept module-level so it is unit-testable.
 _AUDIO_OK_HOSTS = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaized.net", "hdslb.com")
 
+# MCP OAuth runs in a thread: it opens a browser and waits for the redirect, which can take a minute
+# of human time — far too long to hold a request open. The panel starts it and then watches the auth
+# state, so what it shows is the real outcome. Failures are kept here because otherwise a login that
+# quietly failed is indistinguishable from one the user simply has not finished.
+_MCP_LOGIN_ERR = {}                  # server name -> last login error
+_MCP_LOGIN_BUSY = set()              # server names with a login in flight
+
 
 def _audio_host_ok(target):
     """True only for an https URL whose host is one of _AUDIO_OK_HOSTS — matched EXACTLY or as a
@@ -675,6 +682,17 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 return self._send_json({"schema": settings.SCHEMA, "values": vals})
+            if path == "/api/mcp":
+                # The MCP control plane: what is configured and what state it is really in. Read-only
+                # and deliberately out-of-band — when a bad server is what is breaking collie, you
+                # cannot ask collie to fix it, so seeing and switching them has to work without it.
+                try:
+                    from . import mcpclient
+                    return self._send_json({"servers": mcpclient.status(),
+                                            "config": mcpclient._CONFIG,
+                                            "errors": dict(_MCP_LOGIN_ERR)})
+                except Exception as e:
+                    return self._send_json({"servers": [], "error": str(e)})
             if path == "/api/models":
                 # The model-picker catalog: one flat list of runnable (provider, model) entries
                 # with auth badge + price. ?discover=1 also queries each authed provider's model
@@ -952,6 +970,73 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/pair":
                 return self._serve_pair_exchange()
+            if path == "/api/mcp":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                try:
+                    n = int(self.headers.get("content-length") or 0)
+                except ValueError:
+                    n = 0
+                if n <= 0 or n > 8192:
+                    return self._send_json({"error": "bad body"}, 400)
+                try:
+                    body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+                except (ValueError, UnicodeDecodeError):
+                    return self._send_json({"error": "bad json"}, 400)
+                if not isinstance(body, dict):
+                    return self._send_json({"error": "expected object"}, 400)
+                from . import mcpclient
+                action = str(body.get("action") or "")
+                name = str(body.get("name") or "")
+                if action in ("enable", "disable"):
+                    if not mcpclient.set_enabled(name, action == "enable"):
+                        return self._send_json({"error": "no such server"}, 404)
+                    return self._send_json({"ok": True, "servers": mcpclient.status(),
+                                            "note": "takes effect on the next collie run"})
+                if action == "remove":
+                    if not mcpclient.remove_server(name):
+                        return self._send_json({"error": "no such server"}, 404)
+                    _MCP_LOGIN_ERR.pop(name, None)
+                    return self._send_json({"ok": True, "servers": mcpclient.status()})
+                if action == "logout":
+                    toks = mcpclient._load_tokens()
+                    had = toks.pop(name, None) is not None
+                    mcpclient._save_tokens(toks)
+                    _MCP_LOGIN_ERR.pop(name, None)
+                    return self._send_json({"ok": True, "had_token": had,
+                                            "servers": mcpclient.status()})
+                if action == "login":
+                    cfg = mcpclient._load_config().get(name)
+                    if not cfg:
+                        return self._send_json({"error": "no such server"}, 404)
+                    if name in _MCP_LOGIN_BUSY:
+                        return self._send_json({"ok": True, "busy": True})
+                    _MCP_LOGIN_ERR.pop(name, None)
+                    _MCP_LOGIN_BUSY.add(name)
+
+                    def _run_login(nm=name, c=cfg):
+                        try:
+                            mcpclient.login(nm, c)
+                            # Warm the tool cache while authorized, so the panel can show a real
+                            # count instead of "unknown" right after a successful login.
+                            try:
+                                conn = mcpclient._get_conn(nm, c)
+                                tools = [{"name": t.get("name"), "description": t.get("description", ""),
+                                          "inputSchema": t.get("inputSchema") or t.get("input_schema")}
+                                         for t in conn.list_tools() if t.get("name")]
+                                cache = mcpclient._read_cache()
+                                cache[nm] = {"hash": mcpclient._cfg_hash(c), "tools": tools}
+                                mcpclient._write_cache(cache)
+                            except Exception:
+                                pass
+                        except Exception as exc:
+                            _MCP_LOGIN_ERR[nm] = "%s: %s" % (type(exc).__name__, exc)
+                        finally:
+                            _MCP_LOGIN_BUSY.discard(nm)
+
+                    threading.Thread(target=_run_login, daemon=True).start()
+                    return self._send_json({"ok": True, "started": True})
+                return self._send_json({"error": "unknown action"}, 400)
             if path.startswith("/api/remote/"):      # desktop control panel actions (local only)
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

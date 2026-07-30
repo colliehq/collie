@@ -306,7 +306,7 @@ class Harness:
         res = RunResult(run_id=rid, task_id=task_id, harness="collie",
                         model=self.provider.model, provider=self.provider.name)
         ctx = ToolCtx(cwd=self.cwd, project=self.project, memory=self.memory,
-                      recorder=self.recorder)
+                      recorder=self.recorder, registry=self.registry)
         # history (prior thread) lets a session CONTINUE across CLI calls / repl turns; the
         # composer's own elision keeps a long continued thread from bloating the prefix.
         msgs0 = list(history) if history else []

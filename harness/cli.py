@@ -1479,22 +1479,50 @@ def cmd_mcp(args):
     servers = mc._load_config()
     if args.action == "list":
         if not servers:
-            print("(no MCP servers configured — create ~/.collie/mcp.json)")
+            print("(no MCP servers configured — add one with `collie mcp add <name> <url-or-command>`)")
             return 0
-        toks = mc._load_tokens()
-        for name, cfg in servers.items():
-            if not isinstance(cfg, dict):
-                continue
-            if mc._is_remote(cfg):
-                if any(k.lower() == "authorization" for k in (cfg.get("headers") or {})):
-                    auth = "static-header"
-                elif name in toks:
-                    auth = "oauth ✓"
-                else:
-                    auth = "oauth (run: collie mcp login %s)" % name
-                print("  %-16s remote  %s  [%s]" % (name, cfg.get("url"), auth))
-            else:
-                print("  %-16s stdio   %s" % (name, cfg.get("command")))
+        for s in mc.status():
+            tools = "?" if s["tools"] is None else str(s["tools"])
+            state = "" if s["enabled"] else "  OFF"
+            auth = {"none": "", "header": "  [static-header]", "oauth": "  [oauth ✓]",
+                    "login-needed": "  [oauth — run: collie mcp login %s]" % s["name"]}[s["auth"]]
+            print("  %-16s %-6s %-40s %s tools%s%s"
+                  % (s["name"], s["kind"], s["target"][:40], tools, auth, state))
+        return 0
+    if args.action == "add":
+        # `collie mcp add linear https://mcp.linear.app/mcp` (remote), or
+        # `collie mcp add fs "npx -y @modelcontextprotocol/server-filesystem /tmp"` (stdio).
+        if not args.name or not args.value:
+            print("usage: collie mcp add <name> <https://url | shell command>")
+            return 1
+        if args.value.startswith(("http://", "https://")):
+            cfg = {"url": args.value}
+        else:
+            parts = args.value.split()
+            cfg = {"command": parts[0], "args": parts[1:]} if len(parts) > 1 else {"command": parts[0]}
+        err = mc.add_server(args.name, cfg, replace=bool(getattr(args, "force", False)))
+        if err:
+            print(err)
+            return 1
+        print("added %s" % args.name)
+        if cfg.get("url"):
+            print("  if it needs OAuth: collie mcp login %s" % args.name)
+        return 0
+    if args.action in ("remove", "enable", "disable"):
+        if not args.name:
+            print("usage: collie mcp %s <name>" % args.action)
+            return 1
+        if args.action == "remove":
+            if not mc.remove_server(args.name):
+                print("no such server: %r" % args.name)
+                return 1
+            print("removed %s (config, cached tool list and stored token)" % args.name)
+            return 0
+        on = args.action == "enable"
+        if not mc.set_enabled(args.name, on):
+            print("no such server: %r" % args.name)
+            return 1
+        print("%s %s — takes effect on the next collie run" % ("enabled" if on else "disabled", args.name))
         return 0
     cfg = servers.get(args.name) if args.name else None
     if args.action in ("login", "tools") and not cfg:
@@ -1907,9 +1935,14 @@ def main(argv=None):
     pc.set_defaults(fn=cmd_config)
 
     # mcp: manage MCP servers — list configured ones, OAuth-login to a remote, logout, or list tools
-    pmcp = sub.add_parser("mcp", help="manage MCP servers (list | login <name> | logout <name> | tools <name>)")
-    pmcp.add_argument("action", choices=["list", "login", "logout", "tools"])
+    pmcp = sub.add_parser("mcp", help="manage MCP servers (list | add | remove | enable | disable | "
+                                      "login | logout | tools)")
+    pmcp.add_argument("action", choices=["list", "add", "remove", "enable", "disable",
+                                         "login", "logout", "tools"])
     pmcp.add_argument("name", nargs="?", default="")
+    pmcp.add_argument("value", nargs="?", default="",
+                      help="for `add`: an https:// URL (remote server) or a shell command (stdio)")
+    pmcp.add_argument("--force", action="store_true", help="for `add`: overwrite an existing server")
     pmcp.set_defaults(fn=cmd_mcp)
 
     args = p.parse_args(argv)

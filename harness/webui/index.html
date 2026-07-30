@@ -243,6 +243,28 @@
     font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
     color: var(--muted); margin: 0 0 10px;
   }
+  /* MCP control plane. Deliberately NOT a form: adding a server means typing a command line or a
+     URL, which is the part conversation does better ("add the Linear server" and collie wires it
+     up). What a panel is for is the part conversation is bad at — seeing what is configured, what
+     is authenticated, what is broken, and being able to switch one off when it is the thing
+     breaking collie, which is exactly when you cannot ask collie to do it for you. */
+  .mcp-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: var(--surface-2); }
+  .mcp-top { display: flex; align-items: center; gap: 8px; }
+  .mcp-name { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .mcp-badge { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase;
+               color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
+  .mcp-badge.warn { color: #d08700; border-color: color-mix(in srgb, #d08700 45%, transparent); }
+  .mcp-badge.off  { color: var(--faint); }
+  .mcp-target { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-top: 4px;
+                overflow-wrap: anywhere; }
+  .mcp-acts { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+  .mcp-acts button { font-size: 11.5px; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--line);
+                     background: var(--surface); color: var(--ink); cursor: pointer; }
+  .mcp-acts button:hover { border-color: var(--muted); }
+  .mcp-acts button.danger { color: #c0392b; }
+  .mcp-acts button[disabled] { opacity: .5; cursor: default; }
+  .mcp-empty { font-size: 12.5px; color: var(--faint); padding: 4px 0 8px; }
+  .mcp-err { font-size: 11.5px; color: #c0392b; margin-top: 6px; overflow-wrap: anywhere; }
   .set-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
   .set-row label { flex: 1; font-size: 13.5px; color: var(--ink); }
   .set-row .hint { display: block; font-size: 11.5px; color: var(--faint); margin-top: 1px; }
@@ -1293,6 +1315,12 @@
     return "en";
   }
   var ZH = {
+    "MCP servers": "MCP 服务器",
+    "No MCP servers configured. Ask Collie to add one — or run: collie mcp add <name> <url-or-command>": "还没有配置 MCP 服务器。可以让 Collie 帮你加，或运行：collie mcp add <名称> <URL 或命令>",
+    "tools": "个工具", "not signed in": "未登录", "signed in": "已登录", "static token": "静态令牌",
+    "OFF": "已关闭", "Switch off": "关闭", "Switch on": "开启", "Sign in": "登录",
+    "Sign in again": "重新登录", "Sign out": "退出登录", "Remove": "删除",
+    "Remove the MCP server": "删除 MCP 服务器", "Its stored sign-in is deleted too.": "保存的登录凭据也会一并删除。",
     "Ask Collie to fix, build, or explain": "让 Collie 修复、构建或解释",
     "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.":
       "它会先写一个复现、真的跑起来,直到检查变绿才收工——只用同类 agent 的一小部分 tokens。回答在这里流式出现;工具与 diff 在下方的运行抽屉里,验证门在左下角守着。",
@@ -1601,15 +1629,87 @@
     setBody.innerHTML = html;
   }
 
+  // ---- MCP control plane (inside the settings modal) --------------------
+  var mcpPollTimer = null;
+  function mcpRender(d) {
+    var box = document.getElementById("mcpBox");
+    if (!box) return;
+    var servers = (d && d.servers) || [], errs = (d && d.errors) || {};
+    if (!servers.length) {
+      box.innerHTML = '<div class="mcp-empty">' + setEsc(t("No MCP servers configured. Ask Collie to add one — or run: collie mcp add <name> <url-or-command>")) + "</div>";
+      return;
+    }
+    box.innerHTML = servers.map(function (s) {
+      var badges = '<span class="mcp-badge">' + setEsc(s.kind) + "</span>";
+      badges += '<span class="mcp-badge">' + (s.tools == null ? "? " + t("tools") : s.tools + " " + t("tools")) + "</span>";
+      if (s.auth === "login-needed") badges += '<span class="mcp-badge warn">' + setEsc(t("not signed in")) + "</span>";
+      else if (s.auth === "oauth") badges += '<span class="mcp-badge">' + setEsc(t("signed in")) + "</span>";
+      else if (s.auth === "header") badges += '<span class="mcp-badge">' + setEsc(t("static token")) + "</span>";
+      if (!s.enabled) badges += '<span class="mcp-badge off">' + setEsc(t("OFF")) + "</span>";
+      var acts = '<button data-mcp="' + (s.enabled ? "disable" : "enable") + '" data-name="' + setEsc(s.name) + '">'
+               + setEsc(s.enabled ? t("Switch off") : t("Switch on")) + "</button>";
+      if (s.kind === "remote" && s.auth !== "header") {
+        acts += '<button data-mcp="login" data-name="' + setEsc(s.name) + '">'
+             + setEsc(s.auth === "oauth" ? t("Sign in again") : t("Sign in")) + "</button>";
+        if (s.auth === "oauth")
+          acts += '<button data-mcp="logout" data-name="' + setEsc(s.name) + '">' + setEsc(t("Sign out")) + "</button>";
+      }
+      acts += '<button class="danger" data-mcp="remove" data-name="' + setEsc(s.name) + '">' + setEsc(t("Remove")) + "</button>";
+      var err = errs[s.name] ? '<div class="mcp-err">' + setEsc(err_short(errs[s.name])) + "</div>" : "";
+      return '<div class="mcp-item"><div class="mcp-top"><span class="mcp-name">' + setEsc(s.name) + "</span>"
+           + badges + '</div><div class="mcp-target">' + setEsc(s.target) + "</div>"
+           + err + '<div class="mcp-acts">' + acts + "</div></div>";
+    }).join("");
+  }
+  function err_short(e) { return String(e).length > 160 ? String(e).slice(0, 160) + "…" : String(e); }
+
+  function mcpLoad() {
+    return fetch("/api/mcp").then(function (r) { return r.json(); }).then(mcpRender).catch(function () {});
+  }
+  function mcpPost(action, name) {
+    return fetch("/api/mcp?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: action, name: name })
+    }).then(function (r) { return r.json(); });
+  }
+  // Delegated so it survives every re-render, and bound once rather than per row.
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest ? e.target.closest("[data-mcp]") : null;
+    if (!b) return;
+    var action = b.getAttribute("data-mcp"), name = b.getAttribute("data-name");
+    if (action === "remove" && !confirm(t("Remove the MCP server") + ' "' + name + '"? ' + t("Its stored sign-in is deleted too."))) return;
+    b.disabled = true;
+    mcpPost(action, name).then(function (p) {
+      if (p && p.servers) mcpRender({ servers: p.servers });
+      // Sign-in opens a browser tab and finishes on human time, so watch the state rather than
+      // claiming it worked: poll until the badge actually changes (or the error shows up).
+      if (action === "login") {
+        var n = 0;
+        clearInterval(mcpPollTimer);
+        mcpPollTimer = setInterval(function () {
+          if (++n > 40 || !setOverlay.classList.contains("open")) return clearInterval(mcpPollTimer);
+          mcpLoad();
+        }, 3000);
+      } else {
+        mcpLoad();
+      }
+    }).catch(function () { b.disabled = false; });
+  });
+
   function openSettings() {
     setStatus.textContent = t("loading…"); setStatus.className = "set-status";
     setOverlay.classList.add("open");
     fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
       renderSettings(d.schema || [], d.values || {});
+      // The MCP panel is appended AFTER the schema-driven groups: it is not a setting with a value,
+      // it is a list of things with their own live state.
+      setBody.insertAdjacentHTML("beforeend",
+        '<div class="set-group"><h3>' + setEsc(t("MCP servers")) + '</h3><div id="mcpBox"></div></div>');
+      mcpLoad();
       setStatus.textContent = "";
     }).catch(function () { setStatus.textContent = t("failed to load"); setStatus.className = "set-status err"; });
   }
-  function closeSettings() { setOverlay.classList.remove("open"); }
+  function closeSettings() { setOverlay.classList.remove("open"); clearInterval(mcpPollTimer); }
 
   $("settingsBtn").onclick = openSettings;
 

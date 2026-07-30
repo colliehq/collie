@@ -122,7 +122,140 @@ def _load_config():
     return servers if isinstance(servers, dict) else {}
 
 
+def _load_raw():
+    """The whole config document and which key holds the servers, so a rewrite preserves the file's
+    existing shape — both `servers` and the Claude-style `mcpServers` are accepted on read, and
+    anything else in the file is left alone."""
+    try:
+        with open(_CONFIG, encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except (OSError, ValueError):
+        return {}, "servers"
+    if not isinstance(data, dict):
+        return {}, "servers"
+    key = "mcpServers" if (isinstance(data.get("mcpServers"), dict)
+                           and not isinstance(data.get("servers"), dict)) else "servers"
+    return data, key
+
+
+def save_config(servers):
+    """Write the server map back, atomically and owner-only. mcp.json can carry `Authorization`
+    headers, so it is treated as a secret file the same way the token store is."""
+    data, key = _load_raw()
+    data[key] = servers
+    os.makedirs(os.path.dirname(_CONFIG), exist_ok=True)
+    tmp = _CONFIG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    try:
+        from . import plat
+        plat.chmod_private(tmp)
+    except Exception:
+        pass
+    os.replace(tmp, _CONFIG)
+
+
+def enabled(cfg):
+    """Servers are on unless explicitly switched off. Absent means enabled, so every config written
+    before this existed keeps working untouched — only `"enabled": false` disables."""
+    return not (isinstance(cfg, dict) and cfg.get("enabled") is False)
+
+
+def set_enabled(name, on):
+    """Turn a server off without losing how it was configured — the point of a switch rather than a
+    delete: 'is this server what is breaking startup' is answered by toggling, not by rebuilding the
+    entry afterwards."""
+    servers = _load_config()
+    if name not in servers or not isinstance(servers[name], dict):
+        return False
+    cfg = dict(servers[name])
+    if on:
+        cfg.pop("enabled", None)          # back to the default rather than an explicit true
+    else:
+        cfg["enabled"] = False
+    servers[name] = cfg
+    save_config(servers)
+    return True
+
+
+def add_server(name, cfg, replace=False):
+    """Add (or replace) one server. Returns an error string, or "" when it was written."""
+    name = (name or "").strip()
+    if not name or not name.replace("_", "").replace("-", "").isalnum():
+        return "server name must be alphanumeric (dashes and underscores allowed), got %r" % name
+    if not isinstance(cfg, dict) or not (cfg.get("url") or cfg.get("command")):
+        return "a server needs either `url` (remote) or `command` (stdio)"
+    if cfg.get("url") and not str(cfg["url"]).startswith(("http://", "https://")):
+        return "url must be http(s), got %r" % cfg.get("url")
+    servers = _load_config()
+    if name in servers and not replace:
+        return "server %r already exists — pass replace to overwrite it" % name
+    servers[name] = cfg
+    save_config(servers)
+    return ""
+
+
+def remove_server(name):
+    servers = _load_config()
+    if name not in servers:
+        return False
+    servers.pop(name)
+    save_config(servers)
+    cache = _read_cache()                 # drop the advertised tool names with it
+    if cache.pop(name, None) is not None:
+        _write_cache(cache)
+    toks = _load_tokens()                 # and the credential, so removing really removes
+    if toks.pop(name, None) is not None:
+        _save_tokens(toks)
+    return True
+
+
+def status():
+    """What is configured and what state it is actually in — the one description of MCP that the CLI,
+    the agent tools and the settings UI all read, so the three can never disagree."""
+    servers = _load_config()
+    toks = _load_tokens()
+    cache = _read_cache()
+    out = []
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        remote = _is_remote(cfg)
+        static = any(str(k).lower() == "authorization" for k in (cfg.get("headers") or {}))
+        if not remote:
+            auth = "none"
+        elif static:
+            auth = "header"
+        elif name in toks:
+            auth = "oauth"
+        else:
+            auth = "login-needed"
+        entry = cache.get(name) or {}
+        fresh = entry.get("hash") == _cfg_hash(cfg)
+        # The whole command line, not just the executable: "npx" says nothing about which server this
+        # actually is, and identifying it is the entire point of the listing.
+        target = cfg.get("url") or " ".join(
+            [str(cfg.get("command") or "")] + [str(a) for a in (cfg.get("args") or [])]).strip()
+        out.append({
+            "name": name,
+            "kind": "remote" if remote else "stdio",
+            "target": str(target),
+            "enabled": enabled(cfg),
+            "auth": auth,
+            # None (not 0) when the cache does not match this config: the tool count is genuinely
+            # unknown until it is listed, and reporting 0 would read as "this server has no tools".
+            "tools": len(entry.get("tools") or []) if fresh else None,
+        })
+    out.sort(key=lambda s: s["name"])
+    return out
+
+
 def _cfg_hash(cfg):
+    # The `enabled` switch is presentation, not identity: toggling a server off and on again must not
+    # invalidate its cached tool list and force a re-spawn.
+    if isinstance(cfg, dict) and "enabled" in cfg:
+        cfg = {k: v for k, v in cfg.items() if k != "enabled"}
     return hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -664,6 +797,159 @@ class MCPTool(Tool):
         return _fmt_result(result)
 
 
+# --------------------------------------------------------------- managing servers (agent-facing) --
+# Adding an MCP server is not an ordinary edit: it hands collie a new set of tools, which is collie
+# extending its OWN reach, and for a remote server it does so under the user's credentials. So the
+# read is free and every write is gated behind the same just-in-time consent as desktop control —
+# collie can propose a server and wire it up, but only after the user has said yes in words.
+_MCP_CONSENT = (
+    "REFUSED: managing MCP servers is gated off. This would %s, which changes the set of tools you "
+    "yourself can call — and for a remote server it runs under the user's credentials. Ask the user "
+    "in plain language whether to allow MCP management, say which server and what it grants, and "
+    "ONLY if they agree call enable_capability(capability=\"mcp_manage\") and retry. Do not enable "
+    "it on your own initiative.")
+
+
+def _mcp_manage_on():
+    return os.environ.get("COLLIE_MCP_MANAGE", "").lower() in ("1", "on", "true")
+
+
+def _register_live(registry, name, cfg):
+    """Put a newly added server's tools into the RUNNING registry, so it is usable this turn rather
+    than after a restart. Returns a human summary, never raises: a server that cannot be listed is a
+    normal outcome (not installed yet, needs OAuth) and must not undo the config change."""
+    if registry is None:
+        return "It will be available on the next collie run."
+    try:
+        conn = _get_conn(name, cfg)
+        tools = [{"name": t.get("name"), "description": t.get("description", ""),
+                  "inputSchema": t.get("inputSchema") or t.get("input_schema")}
+                 for t in conn.list_tools() if t.get("name")]
+    except Exception as e:
+        return ("Could not list its tools yet (%s: %s) — if it is a remote server this usually means "
+                "it needs `collie mcp login %s` first. The config is saved either way."
+                % (type(e).__name__, e, name))
+    if not tools:
+        return "It connected but exposes no tools."
+    cache = _read_cache()
+    cache[name] = {"hash": _cfg_hash(cfg), "tools": tools}
+    _write_cache(cache)
+    for t in tools:
+        registry.register(MCPTool(name, cfg, t["name"], t.get("description", ""), t.get("inputSchema")))
+    return ("%d tools are live NOW (no restart): %s. They are deferred — call load_tools with a name "
+            "to get its schema." % (len(tools), ", ".join("mcp__%s__%s" % (name, t["name"])
+                                                          for t in tools[:8])))
+
+
+class MCPStatusTool(Tool):
+    name, tier = "mcp_status", "always"
+    description = ("List the MCP servers configured on this machine and what state each is in: "
+                   "stdio or remote, its command/URL, whether it is switched on, whether it is "
+                   "authenticated, and how many tools it advertises. Use this before assuming a "
+                   "server is missing or broken — a server that is present but switched OFF, or "
+                   "present but not logged in, looks identical to an absent one from the tool list "
+                   "alone. No args.")
+    schema = {"type": "object", "properties": {}}
+
+    def run(self, args, ctx):
+        rows = status()
+        if not rows:
+            return ("No MCP servers are configured (%s does not exist or is empty)." % _CONFIG)
+        out = []
+        for s in rows:
+            bits = [s["kind"], s["target"][:70]]
+            bits.append("ON" if s["enabled"] else "OFF (switched off — contributes no tools)")
+            if s["auth"] == "login-needed":
+                bits.append("NOT authenticated — needs `collie mcp login %s`" % s["name"])
+            elif s["auth"] in ("oauth", "header"):
+                bits.append("authenticated (%s)" % s["auth"])
+            bits.append("%s tools" % ("unknown, not listed yet" if s["tools"] is None else s["tools"]))
+            out.append("%s: %s" % (s["name"], " · ".join(bits)))
+        return "\n".join(out)
+
+
+class MCPAddTool(Tool):
+    name, tier = "mcp_add", "always"
+    description = ("Add an MCP server, giving yourself the tools it exposes. Provide `url` for a "
+                   "remote server (https://…) or `command` (plus optional `args`) for a stdio one. "
+                   "The server's tools are registered immediately, so you can use them in this same "
+                   "session. Requires the user's explicit agreement first — this expands what you "
+                   "can do. Args: name, url OR command, optional args (array), optional env "
+                   "(object), optional headers (object).")
+    schema = {"type": "object", "properties": {
+        "name": {"type": "string"}, "url": {"type": "string"}, "command": {"type": "string"},
+        "args": {"type": "array", "items": {"type": "string"}},
+        "env": {"type": "object"}, "headers": {"type": "object"}},
+        "required": ["name"]}
+
+    def run(self, args, ctx):
+        a = args if isinstance(args, dict) else {}
+        name = str(a.get("name", "")).strip()
+        if not _mcp_manage_on():
+            return _MCP_CONSENT % ("add the MCP server %r and register its tools for you" % name)
+        cfg = {}
+        for k in ("url", "command"):
+            if a.get(k):
+                cfg[k] = str(a[k])
+        for k in ("args", "env", "headers"):
+            if a.get(k):
+                cfg[k] = a[k]
+        err = add_server(name, cfg, replace=False)
+        if err:
+            return "ERROR: %s" % err
+        return "Added MCP server %r. %s" % (name, _register_live(getattr(ctx, "registry", None), name, cfg))
+
+
+class MCPSetEnabledTool(Tool):
+    name, tier = "mcp_set_enabled", "always"
+    description = ("Switch a configured MCP server on or off without deleting how it was set up. "
+                   "Switching one OFF is the safe way to test whether it is what is causing a "
+                   "problem. Switching one ON expands the tools you can call, so it needs the user's "
+                   "agreement the same way adding one does. Takes effect on the next collie run. "
+                   "Args: name, enabled (bool).")
+    schema = {"type": "object", "properties": {
+        "name": {"type": "string"}, "enabled": {"type": "boolean"}},
+        "required": ["name", "enabled"]}
+
+    def run(self, args, ctx):
+        a = args if isinstance(args, dict) else {}
+        name, on = str(a.get("name", "")).strip(), bool(a.get("enabled"))
+        # Switching OFF only ever reduces reach, so it does not need consent — being able to disable
+        # a misbehaving server without a permission dance is the point of having a switch.
+        if on and not _mcp_manage_on():
+            return _MCP_CONSENT % ("switch the MCP server %r back on and give you its tools" % name)
+        if not set_enabled(name, on):
+            return "ERROR: no MCP server named %r (call mcp_status to see what exists)" % name
+        return ("MCP server %r is now %s. This takes effect on the next collie run — the tools "
+                "available in THIS session are unchanged." % (name, "ON" if on else "OFF"))
+
+
+class MCPRemoveTool(Tool):
+    name, tier = "mcp_remove", "always"
+    description = ("Delete an MCP server's configuration, its cached tool list and any stored OAuth "
+                   "token. This is irreversible — the user has to set the server up again. Prefer "
+                   "mcp_set_enabled with enabled=false to switch one off temporarily. Requires the "
+                   "user's explicit agreement. Args: name.")
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+
+    def run(self, args, ctx):
+        name = str((args if isinstance(args, dict) else {}).get("name", "")).strip()
+        if not _mcp_manage_on():
+            return _MCP_CONSENT % ("delete the MCP server %r, including its stored credential" % name)
+        if not remove_server(name):
+            return "ERROR: no MCP server named %r (call mcp_status to see what exists)" % name
+        return ("Removed MCP server %r — config, cached tool list and stored token. Its tools stay in "
+                "this session's registry until the next run." % name)
+
+
+def register_mcp_management(registry):
+    """The manage-MCP tools. Registered ALWAYS, including when no server is configured — `mcp_add`
+    with nothing set up yet is the case that matters most."""
+    for t in (MCPStatusTool(), MCPAddTool(), MCPSetEnabledTool(), MCPRemoveTool()):
+        registry.register(t)
+    return True
+
+
 def register_mcp_servers(registry):
     """Read config, advertise every server's tools in the DEFERRED tier. Uses the tool-list cache to
     avoid spawning servers at startup; a cache miss does a one-time synchronous list."""
@@ -674,8 +960,8 @@ def register_mcp_servers(registry):
     dirty = False
     n = 0
     for name, cfg in servers.items():
-        if not isinstance(cfg, dict):
-            continue
+        if not isinstance(cfg, dict) or not enabled(cfg):
+            continue        # switched off: contribute no tools, and never get spawned to list them
         h = _cfg_hash(cfg)
         entry = cache.get(name)
         tools = entry.get("tools") if entry and entry.get("hash") == h else None
