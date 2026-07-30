@@ -14,7 +14,9 @@ Run the server:  collie browser-bridge         (persistent; the extension polls 
 Load the extension: harness/browser_ext/ (see docs), then set COLLIE_BROWSER_BRIDGE=1 so the
 browser_* tools register in a collie run and talk to the server over localhost.
 """
+import base64
 import json
+import mimetypes
 import os
 import queue
 import threading
@@ -420,6 +422,15 @@ def _call(cmd, timeout=60):
                 "in Chrome? chrome://extensions -> Load unpacked -> harness/browser_ext/" % e}
 
 
+def _data(res):
+    """The extension's payload, or None if the call failed — for tools that must INSPECT the result
+    (did the text land? did several elements match?) rather than just format it."""
+    if not isinstance(res, dict) or (not res.get("ok", True) and res.get("error")):
+        return None
+    d = res.get("data", res)
+    return d if isinstance(d, dict) and not d.get("error") else None
+
+
 def _fmt(res):
     if not res.get("ok", True) and res.get("error"):
         return "ERROR(browser): %s" % res["error"]
@@ -496,6 +507,14 @@ class BrowserSnapshot(Tool):
         if isinstance(d, dict) and "snapshot" in d:
             head = ("%d interactive elements (act on one by passing its ref to browser_click / "
                     "browser_type):\n" % d.get("count", 0))
+            if d.get("truncated"):
+                # Do not let a partial list read as the whole page: the elements dropped are the ones
+                # LAST in document order, which is exactly where a just-opened dialog/modal lives.
+                head = ("WARNING: this list is CUT OFF at the %d-element cap — the page has more, and "
+                        "what is missing is whatever comes last in the document, which is where a "
+                        "dialog or modal that just opened sits. If a control you expected is absent, "
+                        "it is probably below this cut, NOT absent: re-run browser_snapshot with a "
+                        "larger `max` (e.g. 600) before concluding it cannot be reached.\n" % mx) + head
             return _fence(head + str(d["snapshot"]))
         return _fmt(res)
 
@@ -506,18 +525,31 @@ class BrowserClick(Tool):
                    "reliable — a real trusted click on that exact element). Otherwise target by "
                    "visible `text` or a CSS `selector`. Returns the resulting page text. Args: ref "
                    "OR text OR selector. "
-                   "NOTE: if a click opens a NATIVE OS dialog — a file picker (upload/attach), "
-                   "print, save-as, or an OS auth prompt — that window is NOT part of the page and "
-                   "browser_* CANNOT touch it. Switch hands: use the desktop_* tools (desktop_inspect "
-                   "to find the dialog, desktop_type the path into its field, desktop_click its "
-                   "button). If desktop control is off, call enable_capability(\"desktop_control\") "
-                   "first. Don't give up at the dialog — reach for the desktop hand.")
+                   "NOTE on uploads: do NOT click a page's \"choose file\" / attach button to upload "
+                   "something — Chrome opens the OS file picker only for a genuine human gesture, so "
+                   "an automated click opens NO dialog at all and there is nothing to drive. Use "
+                   "browser_upload, which attaches the file directly. "
+                   "For a native OS window that DOES appear on its own (print, save-as, an OS auth "
+                   "prompt), browser_* cannot touch it — switch hands to the desktop_* tools "
+                   "(desktop_inspect / desktop_type / desktop_click), calling "
+                   "enable_capability(\"desktop_control\") first if desktop control is off.")
     schema = {"type": "object", "properties": {
         "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"}}}
 
     def run(self, args, ctx):
-        return _fence(_fmt(_call({"action": "click", "ref": args.get("ref"),
-                                  "text": args.get("text"), "selector": args.get("selector")})))
+        res = _call({"action": "click", "ref": args.get("ref"),
+                     "text": args.get("text"), "selector": args.get("selector")})
+        out = _fence(_fmt(res))
+        d = _data(res) or {}
+        click = d.get("click") if isinstance(d.get("click"), dict) else d
+        if isinstance(click, dict) and (click.get("matches") or 0) > 1:
+            # Clicking the first of several identical matches is a coin flip that returns the same
+            # result either way. Say so, and point at the addressing mode that cannot be ambiguous.
+            out = ("WARNING: %d elements matched — this clicked the FIRST one (%s), which may not be "
+                   "the one you meant. Verify the click had the effect you wanted; if not, take a "
+                   "browser_snapshot and click by `ref`, which is exact.\n%s"
+                   % (click["matches"], ", ".join(str(c) for c in (click.get("candidates") or [])[:5]), out))
+        return out
 
 
 class BrowserType(Tool):
@@ -525,16 +557,31 @@ class BrowserType(Tool):
     description = ("Type text into a form field. Target it by `ref` (from browser_snapshot — "
                    "preferred, unambiguous) OR by `label` (the field's visible label text — robust "
                    "on obfuscated forms like Facebook where CSS selectors aren't stable) OR by "
-                   "`selector` (CSS). Args: ref OR label OR selector, text, optional submit (bool).")
+                   "`selector` (CSS). The field is read back afterwards and this FAILS if the text "
+                   "did not actually land, so a reported success means the text is really in the "
+                   "field. Args: ref OR label OR selector, text, optional submit (bool).")
     schema = {"type": "object", "properties": {
         "ref": {"type": "string"}, "label": {"type": "string"}, "selector": {"type": "string"},
         "text": {"type": "string"}, "submit": {"type": "boolean"}},
         "required": ["text"]}
 
     def run(self, args, ctx):
-        return _fmt(_call({"action": "type", "ref": args.get("ref"), "label": args.get("label"),
-                           "selector": args.get("selector"), "text": args.get("text"),
-                           "submit": bool(args.get("submit"))}))
+        res = _call({"action": "type", "ref": args.get("ref"), "label": args.get("label"),
+                     "selector": args.get("selector"), "text": args.get("text"),
+                     "submit": bool(args.get("submit"))})
+        d = _data(res)
+        if isinstance(d, dict) and d.get("landed") is False:
+            # The write silently did nothing. Reporting this as success is how an empty form gets
+            # submitted and believed — so it is an ERROR, with the routes that actually work.
+            return ("ERROR(browser): the text did NOT land — after typing, the field reads %r. "
+                    "Do not submit and do not treat this as done. Likely causes and fixes: (1) the "
+                    "target was wrong or focus moved — take a browser_snapshot and type by `ref`; "
+                    "(2) it is a rich-text editor (contenteditable, e.g. Reddit's or Slack's "
+                    "composer) that ignores value writes — click it first, then type, or set the "
+                    "content with browser_eval and dispatch an 'input' event; (3) the page re-rendered "
+                    "mid-type — re-snapshot and retry. Confirm the field is non-empty before moving on."
+                    % (d.get("value") or ""))
+        return _fmt(res)
 
 
 class BrowserPick(Tool):
@@ -549,6 +596,65 @@ class BrowserPick(Tool):
     def run(self, args, ctx):
         return _fmt(_call({"action": "pick", "label": args.get("label"),
                            "option": args.get("option")}))
+
+
+class BrowserUpload(Tool):
+    name, tier = "browser_upload", "always"
+    description = ("Upload a file from this computer to the page — profile picture, banner, video, "
+                   "attachment, anything. THIS is how uploading works from automation: it attaches "
+                   "the file straight to the page's file input. Do NOT click the page's "
+                   "\"choose file\" / upload button and wait for a picker — Chrome opens the OS file "
+                   "picker only for a real human gesture, so an automated click opens nothing at all "
+                   "and the desktop_* tools have no window to drive. If the file input only appears "
+                   "after a step (opening the upload panel or an editor dialog), do that step first, "
+                   "then call this. With no selector/ref it finds the page's file input itself, "
+                   "including inside open shadow roots, and tells you if there are several. "
+                   "Args: path (a local file path, or a list of them), optional selector or ref "
+                   "identifying the file input.")
+    schema = {"type": "object", "properties": {
+        "path": {"type": ["string", "array"], "items": {"type": "string"}},
+        "selector": {"type": "string"}, "ref": {"type": "string"}},
+        "required": ["path"]}
+
+    MAX_BYTES = 24 * 1024 * 1024      # the whole payload rides one localhost JSON round-trip
+
+    def run(self, args, ctx):
+        paths = args.get("path")
+        if isinstance(paths, str):
+            paths = [paths]
+        if not isinstance(paths, list) or not paths:
+            return "ERROR(browser): 'path' must be a file path or a list of file paths"
+        files, total = [], 0
+        for p in paths:
+            p = os.path.expanduser(str(p))
+            if not os.path.isfile(p):
+                return "ERROR(browser): no such file: %s" % p
+            try:
+                with open(p, "rb") as fh:
+                    blob = fh.read()
+            except OSError as e:
+                return "ERROR(browser): could not read %s: %s" % (p, e)
+            total += len(blob)
+            if total > self.MAX_BYTES:
+                return ("ERROR(browser): upload is too large (%.1f MB; the limit is %d MB because the "
+                        "bytes travel through one localhost request). Use a smaller or compressed file."
+                        % (total / 1048576.0, self.MAX_BYTES // 1048576))
+            mime = mimetypes.guess_type(p)[0] or "application/octet-stream"
+            files.append({"name": os.path.basename(p), "media_type": mime,
+                          "data": base64.b64encode(blob).decode()})
+        res = _call({"action": "upload", "selector": args.get("selector"),
+                     "ref": args.get("ref"), "files": files}, timeout=120)
+        d = _data(res)
+        if isinstance(d, dict) and d.get("attached") is False:
+            return ("ERROR(browser): the page refused the file — its input still holds %d file(s). "
+                    "The upload control may be re-rendered by the page; re-snapshot and target the "
+                    "input by ref." % (d.get("uploaded") or 0))
+        out = _fmt(res)
+        if isinstance(d, dict) and d.get("uploaded"):
+            out += ("\nAttached. The page has been given the file, but that is not the same as the "
+                    "upload finishing — confirm the page shows a preview / progress / filename before "
+                    "submitting.")
+        return out
 
 
 class BrowserFields(Tool):
@@ -647,7 +753,7 @@ class BrowserScreenshot(Tool):
 
 def register_browser_bridge(registry):
     for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserType(),
-              BrowserPick(), BrowserFields(), BrowserLinks(), BrowserConsole(), BrowserEval(),
-              BrowserScreenshot()):
+              BrowserPick(), BrowserUpload(), BrowserFields(), BrowserLinks(), BrowserConsole(),
+              BrowserEval(), BrowserScreenshot()):
         registry.register(t)
     return True
