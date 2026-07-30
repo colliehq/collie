@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.20.19 — collie can look at things
+
+- **It can see the screen.** Every perception collie had was a TREE — `browser_snapshot` returns the
+  accessibility tree, `desktop_inspect` returns the UI Automation tree. That is the right primitive
+  for acting, since you click a stable element rather than a pixel that moves with DPI and scroll,
+  and it is why driving apps works at all. But it meant collie could never see what anything LOOKED
+  like: whether a rendering is correct, whether a layout broke, what an app with no accessibility
+  tree is showing. Two new tools close that, and the image genuinely reaches the model rather than
+  being described to it — on a vision-capable model it is looked at; on a text-only one it degrades
+  to a note instead of failing.
+  - `screenshot` captures a native window — even one behind others or off-screen, without stealing
+    focus — or the whole display. Zero new dependencies.
+  - `browser_screenshot` captures the page as rendered. This is the right tool for anything web:
+    the OS-level capture cannot see Chromium page content at all (it renders the window frame and an
+    empty page, because the page is composited by the GPU process), and it needs the window
+    unobscured, while this reads the page directly.
+- **It will not hand you a picture of the wrong thing.** The fallback capture path reads screen
+  pixels, so with another window in front it would return that window's contents labelled as the
+  target — verified: capturing a covered browser returned the editor sitting on top of it. It now
+  detects the occlusion and refuses, naming what to do instead. A wrong image presented as right is
+  worse than no image.
+- **Seeing is gated separately from acting**, and off by default. Desktop control can act, but a
+  capture can read whatever happens to be on screen — a password manager, a bank tab, a private
+  message — and the image then travels to whatever model is configured. Consent is asked for that
+  specifically, in those words, rather than folded into the existing desktop permission.
+- **Capabilities ask to be turned on when they are needed.** Gated tools are always registered now,
+  so collie can see it HAS a hand or eyes and reach for them: it explains what the capability grants,
+  and enables it only after you agree. Previously an off capability was simply invisible to it.
+- **Clicks and uploads admit when they were a guess.** A page often has many elements matching the
+  same text, and clicking the first was indistinguishable from clicking the right one — the tools now
+  report how many matched. File uploads find the input themselves (including inside shadow roots),
+  refuse when several exist rather than picking one, and read the result back, because assigning a
+  file list is silently refused in some contexts and a refused upload looked exactly like a
+  successful one. When a click opens a native OS dialog, collie is pointed at the desktop tools,
+  which are the only thing that can drive one.
+
 ## v0.20.18 — the download Windows used to refuse
 
 - **The Windows installer is signed.** Unsigned, Chrome and Microsoft Defender did not merely warn
