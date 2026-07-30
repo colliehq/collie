@@ -505,7 +505,13 @@ class BrowserClick(Tool):
     description = ("Click an element in collie's tab. PREFER `ref` from browser_snapshot (most "
                    "reliable — a real trusted click on that exact element). Otherwise target by "
                    "visible `text` or a CSS `selector`. Returns the resulting page text. Args: ref "
-                   "OR text OR selector.")
+                   "OR text OR selector. "
+                   "NOTE: if a click opens a NATIVE OS dialog — a file picker (upload/attach), "
+                   "print, save-as, or an OS auth prompt — that window is NOT part of the page and "
+                   "browser_* CANNOT touch it. Switch hands: use the desktop_* tools (desktop_inspect "
+                   "to find the dialog, desktop_type the path into its field, desktop_click its "
+                   "button). If desktop control is off, call enable_capability(\"desktop_control\") "
+                   "first. Don't give up at the dialog — reach for the desktop hand.")
     schema = {"type": "object", "properties": {
         "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"}}}
 
