@@ -272,14 +272,29 @@ def call(cmd, timeout=45):
         if action == "type":
             text, submit = cmd.get("text", ""), bool(cmd.get("submit"))
             if cmd.get("ref"):
-                js = _wrapped(["pageTypeRef"], "pageTypeRef(%s,%s,%s)"
-                              % (json.dumps(cmd["ref"]), json.dumps(text), json.dumps(submit)))
+                call = "pageTypeRef(%s,%s,%s)" % (json.dumps(cmd["ref"]), json.dumps(text),
+                                                  json.dumps(submit))
+                fns = ["pageTypeRef"]
             elif cmd.get("label"):
-                js = _wrapped(["pageTypeLabel"], "pageTypeLabel(%s,%s)"
-                              % (json.dumps(cmd["label"]), json.dumps(text)))
+                call = "pageTypeLabel(%s,%s)" % (json.dumps(cmd["label"]), json.dumps(text))
+                fns = ["pageTypeLabel"]
             else:
-                js = _wrapped(["pageType"], "pageType(%s,%s,%s)"
-                              % (json.dumps(cmd.get("selector", "")), json.dumps(text), json.dumps(submit)))
+                call = "pageType(%s,%s,%s)" % (json.dumps(cmd.get("selector", "")), json.dumps(text),
+                                               json.dumps(submit))
+                fns = ["pageType"]
+            # Read the field back here too, exactly as the extension's `type` does. Both transports
+            # must agree on what "typed" means: a write that landed nowhere reports the same success
+            # as one that worked, and the harness decides based on `landed`. Skipped when submitting,
+            # which can navigate or clear the field. Sync JS — Apple Events cannot await.
+            if not submit:
+                fns.append("pageValue")
+                probe = json.dumps((text or "").strip()[:60])
+                call = ("(function(){var r=%s; if(r&&!r.error){var b=pageValue(%s,%s);"
+                        "if(b&&!b.error){var g=String(b.value||''); var p=%s;"
+                        "r.landed=!p||g.indexOf(p)>=0; r.value=g.slice(0,120);}} return r;})()"
+                        % (call, json.dumps(cmd.get("ref", "")), json.dumps(cmd.get("selector", "")),
+                           probe))
+            js = _wrapped(fns, call)
             return _unwrap(_js_in_browser(browser, js))
 
         return {"ok": False, "error": "unknown action %s" % action}

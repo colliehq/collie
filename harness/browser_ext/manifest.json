@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "collie browser bridge",
-  "version": "1.4",
+  "version": "1.5",
   "description": "Lets the collie agent drive THIS browser (navigate / read / click / type) via a localhost bridge, using your real logged-in session.",
   "permissions": [
     "scripting",
@@ -19,6 +19,15 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["shadow.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ],
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

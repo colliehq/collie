@@ -308,7 +308,8 @@ function pageUpload(selector, files, ref) {
       let els; try { els = root.querySelectorAll("*"); } catch (e) { return; }
       for (const el of els) {
         if (el instanceof HTMLInputElement && el.type === "file") seen.push(el);
-        if (el.shadowRoot) walk(el.shadowRoot);
+        const sub = el.shadowRoot || (window.__collieClosedRoots ? window.__collieClosedRoots.get(el) : null);
+        if (sub) walk(sub);
       }
     };
     walk(document);
@@ -355,8 +356,9 @@ function pageUpload(selector, files, ref) {
 // there is no extra debugger surface and it composes with the existing trusted-click path: each kept
 // element is stashed on window.__collieRefs (a real element handle), and a later click/type by ref
 // pulls THAT element back and clicks its live getBoundingClientRect centre through CDP — a real,
-// isTrusted click. Traverses OPEN shadow roots (el.shadowRoot); cross-origin iframes are unreachable
-// from page JS (accepted limit — a CDP OOPIF path is the documented follow-up). Self-contained.
+// isTrusted click. Traverses shadow roots: open ones off el.shadowRoot, closed ones via the WeakMap
+// shadow.js records at document_start. Cross-origin iframes are unreachable from page JS (accepted
+// limit — a CDP OOPIF path is the documented follow-up). Self-contained.
 function pageSnapshot(maxN) {
   const CAP = maxN || 200;
   const out = [];
@@ -419,7 +421,10 @@ function pageSnapshot(maxN) {
         const dis = (el.disabled || el.getAttribute("aria-disabled") === "true") ? " (disabled)" : "";
         out.push("[" + ref + "] " + role + (name ? ' "' + name + '"' : "") + dis);
       }
-      if (el.shadowRoot) walk(el.shadowRoot);   // open shadow DOM only
+      // Open roots come off the element; closed ones are recovered from the WeakMap shadow.js
+      // filled in at document_start (el.shadowRoot stays null for those, by design).
+      const sub = el.shadowRoot || (window.__collieClosedRoots ? window.__collieClosedRoots.get(el) : null);
+      if (sub) walk(sub);
     }
   };
   walk(document);
