@@ -2404,19 +2404,45 @@
     })();
   }
   function nearBottom() { var s = $("scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 130; }
-  // smart auto-scroll: follow new content ONLY when the user is already near the bottom, so
-  // scrolling up to read isn't yanked away. Pass true to force (e.g. when the user sends).
+  // Smart auto-scroll: follow new output, but never yank the page away from someone who scrolled up
+  // to read. `stick` is that follow state, and it is turned OFF only by the user scrolling UP — it is
+  // never re-derived from "are we near the bottom?" after we have appended.
+  //
+  // Re-deriving it was the bug. A sealed text segment or a tool card lands in ONE DOM insert, so if
+  // that block is taller than the 130px threshold, by the time scrollDown() ran the view was already
+  // further than 130px from the end, nearBottom() read that as "the user scrolled away", and the
+  // follow stopped for the rest of the run — each later block pushing it further out, so it could
+  // never recover on its own. Long answers and tool traces are exactly the tall-block case.
+  var stick = true, lastTop = 0;
   function scrollDown(force) {
     var s = $("scroll");
-    if (force || nearBottom()) s.scrollTop = s.scrollHeight;
+    if (force) stick = true;
+    // "instant", NOT "auto": `auto` means "use the CSS", and the container sets
+    // `scroll-behavior: smooth`. Smooth is right for the jump-to-latest button and wrong here —
+    // output arrives faster than the animation lands, so a smooth follow chases the bottom forever
+    // without reaching it (and each frame of that animation fires a scroll event, a second reason
+    // not to read scroll events as user intent).
+    if (stick) s.scrollTo({ top: s.scrollHeight, behavior: "instant" });
     updateScrollBtn();
   }
   function updateScrollBtn() {
     var btn = $("scrollDownBtn"); if (!btn) return;
     btn.classList.toggle("show", !nearBottom());
   }
-  $("scroll").addEventListener("scroll", updateScrollBtn, { passive: true });
-  $("scrollDownBtn").onclick = function () { var s = $("scroll"); s.scrollTop = s.scrollHeight; updateScrollBtn(); };
+  $("scroll").addEventListener("scroll", function () {
+    var s = $("scroll"), top = s.scrollTop;
+    // An UPWARD move is the one thing we never do ourselves — following and the button both move
+    // down — so it identifies the user without needing a "was that scroll mine?" flag.
+    if (top < lastTop - 2) stick = false;
+    if (nearBottom()) stick = true;          // scrolled back to the end -> start following again
+    lastTop = top;
+    updateScrollBtn();
+  }, { passive: true });
+  $("scrollDownBtn").onclick = function () {
+    var s = $("scroll"); stick = true;
+    s.scrollTo({ top: s.scrollHeight, behavior: "smooth" });
+    updateScrollBtn();
+  };
 
   // typewriter reveal for the final answer (providers return the whole text at done)
   function typeInto(el, text) {
