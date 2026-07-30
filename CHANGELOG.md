@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.20.18 — the download Windows used to refuse
+
+- **The Windows installer is signed.** Unsigned, Chrome and Microsoft Defender did not merely warn
+  about `Collie-Setup.exe` — they called it a virus and blocked the download outright, which is the
+  whole reason this project ships a plain Inno installer instead of the WebView2 shell it used to
+  have. It is signed now, by Azure Artifact Signing, chaining to the Microsoft Identity Verification
+  Root, so Windows names a publisher instead of refusing the file. SmartScreen still builds its
+  reputation from real installs; what signing changes is that the reputation accumulates against one
+  identity instead of starting from nothing with every release.
+- **Nothing long-lived had to be stored to do it.** The release job authenticates to Azure over
+  OIDC: GitHub mints a short-lived token, Azure exchanges it, and the identity behind it can do
+  exactly one thing — sign with one certificate profile. The client and tenant ids in the workflow
+  are identifiers, not secrets, which is what makes them safe to keep in a public workflow file. A
+  stored client secret would not be: leaking one would let anybody sign code as the certificate
+  holder.
+- **The build will not publish an unsigned installer.** Signing can report success and leave a file
+  untouched — that is how the macOS chain fooled us once — so a verify step runs
+  `signtool verify /pa` afterwards and fails the build rather than letting the release through.
+- **An empty search is no longer mistaken for proof.** Asked about a project living elsewhere on the
+  machine, collie grepped the working directory alone, found nothing, and reported that the thing did
+  not exist — while it sat two directories away, edited minutes earlier. Three rules now ride in the
+  system prompt: widen the search and say what was actually searched before claiming absence, treat
+  auto-recalled memory as a lead rather than a fact, and answer what you can determine yourself
+  instead of opening with a list of questions.
+
 ## v0.20.17 — music you can stop without asking the agent
 
 - **Three ways to stop the music, none of them a conversation.** Anything the agent starts that
