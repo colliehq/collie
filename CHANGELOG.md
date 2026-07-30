@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.20.21 — MCP you can see, an extension that updates itself, settings you can navigate
+
+- **MCP servers have a place in Settings.** Which servers exist, which are switched on, which are
+  signed in, how many tools each one advertises — and a switch, a sign-in, and a remove. Previously
+  the only way to manage MCP was to hand-write `~/.collie/mcp.json`; the panel did not mention it.
+  You can add a server here too: one field that takes an `https://` URL or a command line.
+  - Servers can now be switched **off** without deleting how they were set up, which is what you
+    want when you are working out whether one of them is the thing causing a problem.
+  - Collie can set servers up itself when a task needs one, but only after asking: adding a server
+    means Collie choosing its own tools, and for a remote one, using your credentials. Reading the
+    list and switching a server **off** never need permission — being able to disable something
+    that is misbehaving should not require a permission dance.
+  - A server added this way is usable immediately, without restarting Collie.
+- **Collie can finish its own update.** Updating Collie updates the browser extension's files, and
+  Chrome would go on running the old one — it never re-reads an unpacked extension by itself, and
+  its extensions page cannot be automated. New browser tools appeared to be missing for no visible
+  reason. Collie now reloads the extension and confirms which version came back, so "I updated" and
+  "the browser changed" cannot come apart silently. One manual reload is still needed to adopt this,
+  once.
+- **Settings is a two-pane panel.** Twenty-six settings in a single scroll, cut into ten groups —
+  four of which held a single row — meant scrolling past everything to reach anything. There is now
+  a category rail and a search that spans all of it, following what desktop tools do here, because
+  matching the habit matters more than being original.
+- **It can see inside closed shadow roots.** Component-based sites put real controls in shadow roots
+  created in "closed" mode, where the standard way of looking inside returns nothing — so those
+  controls did not appear at all, and "not in the snapshot" reads exactly like "not on the page".
+  Your pages are unaffected: nothing is forced open and `shadowRoot` still reads as the site built
+  it.
+
 ## v0.20.20 — the browser tools stop reporting success they never had
 
 This release comes out of watching collie try to work a real, unfamiliar web flow end to end and

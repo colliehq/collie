@@ -72,11 +72,20 @@ jobs:
 
   installer:
     needs: check-version
-    # The Windows box, once a runner is registered on it with the label
-    # `collie-win`. Until then this job queues rather than fails, and a queued
-    # job is recoverable — the tag is not lost, it starts when the machine
-    # appears.
-    runs-on: [self-hosted, windows, collie-win]
+    # GitHub-hosted, because the hosted runner demonstrably works for this job and no `collie-win`
+    # runner exists to move it to. The Windows box has exactly one runner registered and it belongs
+    # to wudaming00/vocalcode with the label `vocalcode-win`, so a job asking for `collie-win` waits
+    # for a machine that is never going to appear.
+    #
+    # Correcting the record this reverts (a7761d3): "0.20.18, 0.20.19 and 0.20.20 each got a tag and
+    # none of them produced anything" is not what happened. Every Release run from v0.20.16 to
+    # v0.20.20 completed successfully on hosted runners and published four assets each — the
+    # v0.20.20 run finished at 08:07:33Z, four minutes BEFORE that commit was authored, and its
+    # Collie-Setup.exe was downloaded and verified. Hosted minutes are not gone.
+    #
+    # The macOS jobs stay self-hosted on purpose: their signing now reads the Developer ID out of
+    # that machine's login keychain, which a hosted runner does not have.
+    runs-on: windows-latest
     # Overrides the workflow-level `contents: write`: this job only reads the repo and uploads an
     # artifact, and id-token is what lets it exchange a GitHub OIDC token for an Azure one.
     permissions:
