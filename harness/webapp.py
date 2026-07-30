@@ -993,6 +993,25 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send_json({"error": "no such server"}, 404)
                     return self._send_json({"ok": True, "servers": mcpclient.status(),
                                             "note": "takes effect on the next collie run"})
+                if action == "add":
+                    # One field, not a form of them: an https:// URL means remote, anything else is
+                    # the stdio command line — the same rule `collie mcp add` uses, so the two ways
+                    # in cannot disagree about what you typed.
+                    target = str(body.get("target") or "").strip()
+                    if not target:
+                        return self._send_json({"error": "need a URL or a command"}, 400)
+                    if target.startswith(("http://", "https://")):
+                        cfg = {"url": target}
+                    else:
+                        parts = target.split()
+                        cfg = {"command": parts[0]}
+                        if len(parts) > 1:
+                            cfg["args"] = parts[1:]
+                    err = mcpclient.add_server(name, cfg, replace=False)
+                    if err:
+                        return self._send_json({"error": err}, 400)
+                    return self._send_json({"ok": True, "servers": mcpclient.status(),
+                                            "note": "takes effect on the next collie run"})
                 if action == "remove":
                     if not mcpclient.remove_server(name):
                         return self._send_json({"error": "no such server"}, 404)

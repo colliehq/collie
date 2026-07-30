@@ -232,6 +232,38 @@
   }
   .modal-head h2 { font-size: 15px; margin: 0; flex: 1; }
   .modal-body { padding: 8px 20px 4px; max-height: 62vh; overflow-y: auto; }
+  /* Two-pane settings. 26 settings in one scroll, cut into 10 groups (four of them holding a single
+     row), read as an undifferentiated wall — you could not find anything without scrolling past
+     everything. A category rail is what desktop tools do, and matching that habit matters more here
+     than being clever. The groups are folded into six categories on the way in. */
+  .modal.modal-wide { max-width: 880px; }
+  .modal-wide .modal-body { padding: 0; max-height: 66vh; overflow: hidden; display: flex; }
+  .set-rail {
+    width: 208px; flex: none; border-right: 1px solid var(--line); background: var(--surface-2);
+    padding: 12px; overflow-y: auto;
+  }
+  .set-pane-wrap { flex: 1; min-width: 0; padding: 4px 22px 16px; overflow-y: auto; }
+  .set-search {
+    width: 100%; margin-bottom: 10px; border: 1px solid var(--line); background: var(--raise);
+    color: var(--ink); border-radius: 9px; padding: 7px 10px; font: inherit; font-size: 12.5px;
+  }
+  .set-nav {
+    display: flex; width: 100%; align-items: center; gap: 8px; border: 0; background: none;
+    color: var(--muted); font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 9px;
+    cursor: pointer; text-align: left;
+  }
+  .set-nav:hover { background: var(--raise); }
+  .set-nav.on { background: var(--raise); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .set-nav .n { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+  .set-pane { display: none; }
+  .set-pane.on { display: block; }
+  .set-pane > h3 { font-size: 16px; margin: 16px 0 2px; }
+  .set-none { font-size: 12.5px; color: var(--faint); padding: 18px 0; }
+  @media (max-width: 720px) {          /* the rail costs more than it gives on a narrow window */
+    .modal-wide .modal-body { display: block; }
+    .set-rail { width: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    .set-rail .set-nav { display: inline-flex; width: auto; }
+  }
   .modal-foot {
     display: flex; align-items: center; gap: 10px; padding: 14px 20px;
     border-top: 1px solid var(--line); background: var(--surface-2);
@@ -239,10 +271,11 @@
   .modal-foot .spacer { flex: 1; }
   .set-group { padding: 14px 0 6px; }
   .set-group + .set-group { border-top: 1px dashed var(--line); }
-  .set-group h3 {
+  .set-group h3, .set-group h4 {
     font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
     color: var(--muted); margin: 0 0 10px;
   }
+  .set-group h4 { margin-top: 16px; }
   /* MCP control plane. Deliberately NOT a form: adding a server means typing a command line or a
      URL, which is the part conversation does better ("add the Linear server" and collie wires it
      up). What a panel is for is the part conversation is bad at — seeing what is configured, what
@@ -264,6 +297,14 @@
   .mcp-acts button.danger { color: #c0392b; }
   .mcp-acts button[disabled] { opacity: .5; cursor: default; }
   .mcp-empty { font-size: 12.5px; color: var(--faint); padding: 4px 0 8px; }
+  .mcp-addbtn {
+    width: 100%; font-size: 12.5px; padding: 9px; border-radius: 11px; border: 1px dashed var(--line);
+    background: none; color: var(--muted); cursor: pointer;
+  }
+  .mcp-addbtn:hover { border-color: var(--muted); color: var(--ink); }
+  .mcp-form { border: 1px solid var(--line); border-radius: 11px; padding: 11px 12px; background: var(--raise); }
+  .mcp-form input { width: 100%; margin-bottom: 7px; border: 1px solid var(--line); background: var(--surface-2);
+                    color: var(--ink); border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 12.5px; }
   .mcp-err { font-size: 11.5px; color: #c0392b; margin-top: 6px; overflow-wrap: anywhere; }
   .set-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
   .set-row label { flex: 1; font-size: 13.5px; color: var(--ink); }
@@ -1212,7 +1253,7 @@
 
 <!-- ============================================ settings modal -->
 <div class="modal-overlay" id="setOverlay">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="setTitle">
     <div class="modal-head">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:var(--pine)"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82M4.6 9a1.65 1.65 0 0 0-.33-1.82"/></svg>
       <h2 id="setTitle">Settings</h2>
@@ -1316,7 +1357,15 @@
   }
   var ZH = {
     "MCP servers": "MCP 服务器",
-    "No MCP servers configured. Ask Collie to add one — or run: collie mcp add <name> <url-or-command>": "还没有配置 MCP 服务器。可以让 Collie 帮你加，或运行：collie mcp add <名称> <URL 或命令>",
+    "No MCP servers configured yet.": "还没有配置 MCP 服务器。",
+    "MCP servers give Collie tools from outside. Adding one hands Collie whatever tools that server exposes.": "MCP 服务器给 Collie 接上外部工具。加一个，等于把该服务器暴露的工具都交给 Collie 用。",
+    "Search settings…": "搜索设置…", "No setting matches.": "没有匹配的设置。",
+    "Essentials": "常用", "Capabilities": "能力", "Memory": "记忆检索", "Limits": "限额可靠",
+    "Privacy": "隐私远程", "Other": "其他",
+    "+ Add server": "+ 添加服务器", "Add": "添加", "Cancel": "取消",
+    "name, e.g. linear": "名称，例如 linear",
+    "https://… URL, or a command like: npx -y some-mcp-server": "https:// 开头的 URL，或一条命令，例如：npx -y some-mcp-server",
+    "Could not reach Collie.": "连不上 Collie。",
     "tools": "个工具", "not signed in": "未登录", "signed in": "已登录", "static token": "静态令牌",
     "OFF": "已关闭", "Switch off": "关闭", "Switch on": "开启", "Sign in": "登录",
     "Sign in again": "重新登录", "Sign out": "退出登录", "Remove": "删除",
@@ -1586,6 +1635,61 @@
   function setEsc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
+  // Six categories over the schema's ten groups. Four of those groups hold one row each, which is
+  // why the old single scroll had no shape. `groups: null` marks the category that is not
+  // schema-driven at all (MCP is a list of servers with their own live state, not a value).
+  var SET_CATS = [
+    { id: "essentials", label: "Essentials", zh: "常用",     groups: ["General", "Model"] },
+    { id: "caps",       label: "Capabilities", zh: "能力",   groups: ["Tools", "Desktop"] },
+    { id: "mcp",        label: "MCP",        zh: "MCP",      groups: null },
+    { id: "memory",     label: "Memory",     zh: "记忆检索", groups: ["Retrieval", "Skills"] },
+    { id: "limits",     label: "Limits",     zh: "限额可靠", groups: ["Limits", "Reliability"] },
+    { id: "privacy",    label: "Privacy",    zh: "隐私远程", groups: ["Privacy", "Remote"] }
+  ];
+  var setActiveCat = "essentials";
+
+  function setPick(id) {
+    setActiveCat = id;
+    setBody.querySelectorAll(".set-nav").forEach(function (n) { n.classList.toggle("on", n.dataset.cat === id); });
+    setBody.querySelectorAll(".set-pane").forEach(function (p) { p.classList.toggle("on", p.dataset.cat === id); });
+  }
+
+  // Search spans every category — a setting you cannot name the category of is exactly the one you
+  // need to search for. Rows are hidden in place rather than re-rendered, so the controls keep their
+  // edited-but-unsaved values and Save still reads them all.
+  function setFilter(q) {
+    q = (q || "").trim().toLowerCase();
+    var panes = setBody.querySelectorAll(".set-pane");
+    if (!q) {
+      // Clearing has to undo BOTH kinds of hiding the search does. Clearing .set-none's inline
+      // display to "" does not restore it — it was hidden by that inline style in the first place,
+      // so emptying it reveals "no setting matches" over a perfectly good pane.
+      setBody.querySelectorAll(".set-row, .set-hint").forEach(function (el) { el.style.display = ""; });
+      panes.forEach(function (p) { p.style.display = ""; });
+      var n0 = setBody.querySelector(".set-none");
+      if (n0) n0.style.display = "none";
+      setPick(setActiveCat);
+      return;
+    }
+    var total = 0;
+    panes.forEach(function (p) {
+      var hits = 0;
+      p.querySelectorAll(".set-row").forEach(function (row) {
+        var hint = row.nextElementSibling && row.nextElementSibling.classList.contains("set-hint") ? row.nextElementSibling : null;
+        var hay = (row.textContent + " " + (hint ? hint.textContent : "") + " " + (row.dataset.key || "")).toLowerCase();
+        var hit = hay.indexOf(q) >= 0;
+        row.style.display = hit ? "" : "none";
+        if (hint) hint.style.display = hit ? "" : "none";
+        if (hit) hits++;
+      });
+      p.classList.add("on");                    // show every category while searching
+      p.style.display = hits ? "" : "none";
+      total += hits;
+    });
+    var none = setBody.querySelector(".set-none");
+    if (none) none.style.display = total ? "none" : "";
+  }
+
   function renderSettings(schema, values) {
     var groups = [], seen = {};
     schema.forEach(function (s) { if (!seen[s.group]) { seen[s.group] = []; groups.push(s.group); } seen[s.group].push(s); });
@@ -1594,9 +1698,10 @@
     // panel labels — the chrome above is already proper Traditional via ZHTW; this is the secondary
     // surface, and 简体 labels beat English ones for a zh-tw reader.
     var L = (UI_LANG === "zh-tw") ? "zh" : UI_LANG, loc = L !== "en";
-    groups.forEach(function (g) {
-      html += '<div class="set-group"><h3>' + setEsc(loc && GROUPS_I18N[L] && GROUPS_I18N[L][g] || g) + "</h3>";
-      seen[g].forEach(function (s) {
+
+    function groupHtml(g) {
+      var html = '<div class="set-group"><h4>' + setEsc(loc && GROUPS_I18N[L] && GROUPS_I18N[L][g] || g) + "</h4>";
+      (seen[g] || []).forEach(function (s) {
         var v = values[s.key], id = "set_" + s.key, ctl;
         if (s.type === "select") {
           ctl = '<select id="' + id + '" data-key="' + s.key + '">' + (s.options || []).map(function (o) {
@@ -1620,13 +1725,45 @@
           }
           ctl = '<input id="' + id + '" data-key="' + s.key + '" type="' + t + '" value="' + setEsc(v) + '"' + extra + ">" + dl;
         }
-        html += '<div class="set-row"><label for="' + id + '">' + setEsc(loc && s["label_" + L] || s.label) + "</label>" + ctl + "</div>";
+        html += '<div class="set-row" data-key="' + setEsc(s.key) + '"><label for="' + id + '">'
+              + setEsc(loc && s["label_" + L] || s.label) + "</label>" + ctl + "</div>";
         var hn = loc && s["hint_" + L] || s.hint;
         if (hn) html += '<div class="set-hint">' + setEsc(hn) + "</div>";
       });
-      html += "</div>";
+      return html + "</div>";
+    }
+
+    // Any group the categories do not claim still has to appear — a setting added to settings.py
+    // later must not silently vanish from the panel because nobody updated a list over here.
+    var claimed = {};
+    SET_CATS.forEach(function (c) { (c.groups || []).forEach(function (g) { claimed[g] = 1; }); });
+    var orphans = groups.filter(function (g) { return !claimed[g]; });
+    var cats = SET_CATS.slice();
+    if (orphans.length) cats.push({ id: "other", label: "Other", zh: "其他", groups: orphans });
+
+    var rail = '<input class="set-search" id="setSearch" placeholder="' + setEsc(t("Search settings…")) + '">';
+    var panes = "";
+    cats.forEach(function (c) {
+      var count = c.groups ? c.groups.reduce(function (n, g) { return n + ((seen[g] || []).length); }, 0) : 0;
+      var on = c.id === setActiveCat ? " on" : "";
+      rail += '<button class="set-nav' + on + '" data-cat="' + c.id + '">'
+            + setEsc(loc && c.zh ? c.zh : c.label)
+            + (c.groups ? '<span class="n">' + count + "</span>" : "") + "</button>";
+      var body = c.groups
+        ? c.groups.map(groupHtml).join("")
+        : '<p class="set-hint" style="margin:12px 0 10px">'
+          + setEsc(t("MCP servers give Collie tools from outside. Adding one hands Collie whatever tools that server exposes."))
+          + '</p><div id="mcpBox"></div>';
+      panes += '<div class="set-pane' + on + '" data-cat="' + c.id + '"><h3>'
+             + setEsc(loc && c.zh ? c.zh : c.label) + "</h3>" + body + "</div>";
     });
-    setBody.innerHTML = html;
+    setBody.innerHTML = '<aside class="set-rail">' + rail + '</aside><div class="set-pane-wrap">'
+                      + panes + '<div class="set-none" style="display:none">' + setEsc(t("No setting matches.")) + "</div></div>";
+    setBody.querySelectorAll(".set-nav").forEach(function (n) {
+      n.onclick = function () { var s = document.getElementById("setSearch"); if (s) s.value = ""; setFilter(""); setPick(n.dataset.cat); };
+    });
+    var box = document.getElementById("setSearch");
+    if (box) box.oninput = function () { setFilter(box.value); };
   }
 
   // ---- MCP control plane (inside the settings modal) --------------------
@@ -1635,8 +1772,16 @@
     var box = document.getElementById("mcpBox");
     if (!box) return;
     var servers = (d && d.servers) || [], errs = (d && d.errors) || {};
+    var addForm = '<div class="mcp-add"><button class="mcp-addbtn" id="mcpAddOpen">'
+                + setEsc(t("+ Add server")) + '</button>'
+                + '<div class="mcp-form" id="mcpForm" hidden>'
+                + '<input id="mcpName" placeholder="' + setEsc(t("name, e.g. linear")) + '">'
+                + '<input id="mcpTarget" placeholder="' + setEsc(t("https://… URL, or a command like: npx -y some-mcp-server")) + '">'
+                + '<div class="mcp-acts"><button id="mcpAddGo">' + setEsc(t("Add")) + "</button>"
+                + '<button id="mcpAddCancel">' + setEsc(t("Cancel")) + "</button></div>"
+                + '<div class="mcp-err" id="mcpAddErr" hidden></div></div></div>';
     if (!servers.length) {
-      box.innerHTML = '<div class="mcp-empty">' + setEsc(t("No MCP servers configured. Ask Collie to add one — or run: collie mcp add <name> <url-or-command>")) + "</div>";
+      box.innerHTML = '<div class="mcp-empty">' + setEsc(t("No MCP servers configured yet.")) + "</div>" + addForm;
       return;
     }
     box.innerHTML = servers.map(function (s) {
@@ -1659,8 +1804,37 @@
       return '<div class="mcp-item"><div class="mcp-top"><span class="mcp-name">' + setEsc(s.name) + "</span>"
            + badges + '</div><div class="mcp-target">' + setEsc(s.target) + "</div>"
            + err + '<div class="mcp-acts">' + acts + "</div></div>";
-    }).join("");
+    }).join("") + addForm;
   }
+
+  // Delegated (the box is re-rendered on every action, so per-element handlers would go stale).
+  document.addEventListener("click", function (e) {
+    var el = e.target;
+    if (!el || !el.id) return;
+    if (el.id === "mcpAddOpen") {
+      el.hidden = true;
+      var f = document.getElementById("mcpForm"); f.hidden = false;
+      document.getElementById("mcpName").focus();
+    } else if (el.id === "mcpAddCancel") {
+      document.getElementById("mcpForm").hidden = true;
+      document.getElementById("mcpAddOpen").hidden = false;
+    } else if (el.id === "mcpAddGo") {
+      var name = document.getElementById("mcpName").value.trim();
+      var target = document.getElementById("mcpTarget").value.trim();
+      var errBox = document.getElementById("mcpAddErr");
+      el.disabled = true;
+      fetch("/api/mcp?token=" + encodeURIComponent(CT), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "add", name: name, target: target })
+      }).then(function (r) { return r.json(); }).then(function (p) {
+        el.disabled = false;
+        // Say what the server said. A rejected name or a malformed URL is the common case here, and
+        // silently redrawing an unchanged list would read as "added" when nothing was.
+        if (p && p.error) { errBox.hidden = false; errBox.textContent = p.error; return; }
+        mcpRender({ servers: p.servers || [] });
+      }).catch(function () { el.disabled = false; errBox.hidden = false; errBox.textContent = t("Could not reach Collie."); });
+    }
+  });
   function err_short(e) { return String(e).length > 160 ? String(e).slice(0, 160) + "…" : String(e); }
 
   function mcpLoad() {
@@ -1701,11 +1875,7 @@
     setOverlay.classList.add("open");
     fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
       renderSettings(d.schema || [], d.values || {});
-      // The MCP panel is appended AFTER the schema-driven groups: it is not a setting with a value,
-      // it is a list of things with their own live state.
-      setBody.insertAdjacentHTML("beforeend",
-        '<div class="set-group"><h3>' + setEsc(t("MCP servers")) + '</h3><div id="mcpBox"></div></div>');
-      mcpLoad();
+      mcpLoad();          // renderSettings has laid out the MCP category and its #mcpBox
       setStatus.textContent = "";
     }).catch(function () { setStatus.textContent = t("failed to load"); setStatus.className = "set-status err"; });
   }
