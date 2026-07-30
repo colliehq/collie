@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.20.17 — music you can stop without asking the agent
+
+- **Three ways to stop the music, none of them a conversation.** Anything the agent starts that
+  outlives the request has to leave behind a control that is NOT the agent, and music had none: the
+  only ways out were to ask again or to kill a process in a terminal. Now there is a menu-bar item on
+  macOS that appears only while something is playing and stops it in one click; a pill in collie's own
+  UI, which is the control that exists on every platform; and the reply that starts music says where
+  the off switch is, while you are still looking at it.
+- **The player no longer outlives collie.** Kill collie mid-song and the music kept going with nothing
+  anywhere that could stop it — it is started in its own session so a timeout can reap the whole tree,
+  which also meant it did not die with us. Reaped on exit and on SIGTERM/SIGHUP now, installed from
+  the main thread because signal handlers cannot be set from the HTTP worker that starts playback.
+- **"Stop the music" stops the music.** The intent router used to answer `action=stop` and leave it to
+  the caller's own player, which was right while the caller had one.
+- **/api/desktop/nowplaying tells the two apart.** What the SYSTEM plays (Spotify, Music) is read-only;
+  what collie plays can actually be stopped. Only the second gets a stop button — offering one for the
+  first would be a lie.
+
 ## v0.20.15 — /api/repos could hang forever
 
 - **A directory walk that never returns no longer takes the endpoint with it.** `~/Music` and
