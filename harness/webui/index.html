@@ -1111,7 +1111,7 @@
         <h2 id="modelTitle">Choose a model</h2>
         <p id="modelCaption">Switches immediately and applies to your next message.</p>
       </div>
-      <span class="model-shortcut">⌘ K</span>
+      <span class="model-shortcut" id="modelShortcut">⌘ K</span>
       <button class="tbtn" id="modelClose" title="close model picker" aria-label="close model picker">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
@@ -1544,6 +1544,14 @@
     UI_LANG = resolveLang(((d || {}).values || {}).LANG);
     if (UI_LANG !== "en") applyLang();
   }).catch(function () {});
+
+  // the model-picker shortcut chip is hardcoded ⌘ (macOS) — show Ctrl on Windows/Linux so it's not
+  // a wrong-platform glyph. (The tooltips already say "Ctrl/⌘".)
+  (function () {
+    var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    var el = $("modelShortcut");
+    if (el && !/Mac/i.test(plat)) el.textContent = "Ctrl K";
+  })();
 
   // ---- settings modal --------------------------------------------------
   var setOverlay = $("setOverlay"), setBody = $("setBody"), setStatus = $("setStatus");

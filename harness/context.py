@@ -56,9 +56,13 @@ def _response_language_line() -> str:
                "default to the language the user has been using earlier in this conversation"
     return ("RESPONSE LANGUAGE: Reply in the SAME language as the user's most recent message. If "
             "the user has asked — anywhere in this conversation — to reply in a particular "
-            "language, honour that for the rest of the conversation. When the user's language is "
-            "ambiguous (a very short message, or Han characters that could be Chinese or "
-            "Japanese), %s." % tiebreak)
+            "language, honour that for the rest of the conversation. IMPORTANT: Han/CJK characters "
+            "ALONE are shared between Chinese and Japanese and are NOT evidence of Japanese — a "
+            "message written only in Han characters with NO kana (e.g. 下一首) is "
+            "Chinese; treat it as Chinese. Only kana (ひらがな / カタカナ) "
+            "or an explicit request means Japanese — never default to Japanese from Han characters "
+            "alone. When the user's language is still genuinely ambiguous (a very short non-CJK "
+            "message), %s." % tiebreak)
 
 
 @dataclass
