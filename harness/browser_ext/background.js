@@ -921,6 +921,20 @@ async function handle(cmd) {
     if (cmd.action === "fields") return await exec(pageFields, []);
     if (cmd.action === "upload")   // MAIN world: a snapshot ref resolves against window.__collieRefs
       return await execMain(pageUpload, [cmd.selector || "", cmd.files || [], cmd.ref || ""]);
+    if (cmd.action === "reload") {
+      // Pick up new extension files from disk. Chrome never re-reads an unpacked extension on its
+      // own, and chrome://extensions cannot be automated (privileged page — no scripting, no
+      // debugger), so reloading ourselves is the only way collie can finish its own update instead
+      // of asking the user to go and click a button.
+      //
+      // The reload is scheduled rather than immediate: it tears down this service worker, and the
+      // result below still has to be POSTed back to the bridge. The worker restarts on its own
+      // (background.js re-runs pollOnce at top level), so the bridge reconnects a second or two
+      // later — the caller confirms the new version through /health rather than assuming.
+      const was = chrome.runtime.getManifest().version;
+      setTimeout(function () { chrome.runtime.reload(); }, 700);
+      return { reloading: true, was: was };
+    }
     if (cmd.action === "console") return await getConsole(!!cmd.clear);
     if (cmd.action === "eval") return await evalExpr(cmd.expr || "");
     return { error: "unknown action " + cmd.action };

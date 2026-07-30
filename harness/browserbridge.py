@@ -657,6 +657,68 @@ class BrowserUpload(Tool):
         return out
 
 
+def _health(port=None, timeout=2):
+    """The bridge's own /health — which extension is connected, and what version it reports."""
+    try:
+        req = urllib.request.Request("http://127.0.0.1:%d/health" % (port or _port()),
+                                     headers={"X-Collie-Bridge": "1"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read() or b"{}")
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+class BrowserReloadExtension(Tool):
+    name, tier = "browser_reload_extension", "always"
+    description = ("Make the browser pick up new collie-extension files from disk. Chrome never "
+                   "re-reads an unpacked extension by itself, and its extensions page cannot be "
+                   "automated, so after collie updates or its files change the browser keeps running "
+                   "the OLD extension until this is called — new browser tools appear to be missing "
+                   "for no visible reason. This reloads the extension in place (the browser and its "
+                   "tabs are NOT restarted) and then confirms it came back by checking the version it "
+                   "reports, so you know whether the update actually took. Costs a few seconds and "
+                   "invalidates any browser_snapshot refs — re-snapshot afterwards. No args.")
+    schema = {"type": "object", "properties": {}}
+
+    def run(self, args, ctx):
+        shipped = ""
+        mf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext", "manifest.json")
+        try:
+            with open(mf, encoding="utf-8") as fh:
+                shipped = str(json.load(fh).get("version") or "")
+        except Exception:
+            pass
+        before = _health().get("extension_version") or "(unknown)"
+        res = _call({"action": "reload"}, timeout=20)
+        if not res.get("ok", True) and res.get("error"):
+            return "ERROR(browser): %s" % res["error"]
+        # The worker is torn down and restarts itself; wait for it to poll again rather than
+        # declaring success on the basis of having asked.
+        deadline = time.time() + 25
+        h = {}
+        while time.time() < deadline:
+            time.sleep(1.0)
+            h = _health()
+            if h.get("extension_connected"):
+                break
+        if not h.get("extension_connected"):
+            return ("ERROR(browser): the extension did not come back within 25s after reloading "
+                    "(it was version %s). Check chrome://extensions — a manifest that fails to parse "
+                    "leaves the extension disabled, and only that page will say why." % before)
+        now = h.get("extension_version") or "(unknown)"
+        out = "extension reloaded and reconnected — version %s -> %s" % (before, now)
+        if shipped and now != shipped:
+            # Worth saying plainly: the loaded extension is a different copy from the one this collie
+            # ships, so updating collie will never change what the browser runs.
+            out += ("\nNOTE: this collie ships extension %s but the browser is running %s, so the "
+                    "loaded extension is a DIFFERENT copy on disk (loaded from another directory). "
+                    "Updating collie will not change it — reload the right directory in "
+                    "chrome://extensions, or point the browser at %s."
+                    % (shipped, now, os.path.dirname(mf)))
+        return out
+
+
 class BrowserFields(Tool):
     name, tier = "browser_fields", "always"
     description = ("List the current page's labelled form fields (label, kind text/dropdown, "
@@ -754,6 +816,6 @@ class BrowserScreenshot(Tool):
 def register_browser_bridge(registry):
     for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserType(),
               BrowserPick(), BrowserUpload(), BrowserFields(), BrowserLinks(), BrowserConsole(),
-              BrowserEval(), BrowserScreenshot()):
+              BrowserEval(), BrowserScreenshot(), BrowserReloadExtension()):
         registry.register(t)
     return True

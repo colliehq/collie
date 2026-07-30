@@ -63,6 +63,7 @@ _SYNC_ACTIONS = {
 _UNSUPPORTED = {
     "console": "DevTools console history needs the extension (it requires Chrome's debugger permission).",
     "upload": "File upload needs the extension.",
+    "reload": "There is no extension to reload on this transport — Apple Events drives the browser directly.",
     "eval": "browser_eval needs the extension (the page-side evaluator is async; Apple Events cannot await it).",
     "pick": "browser_pick needs the extension (its page function is async).",
 }
