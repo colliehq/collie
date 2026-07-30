@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import plat
 
@@ -102,6 +102,12 @@ class ToolCtx:
     project: str
     memory: object          # SqliteMemory
     recorder: object = None
+    # Images a tool wants the model to actually SEE. A tool's run() still returns a plain string —
+    # so redaction, the result preview and history elision keep working unchanged — and anything it
+    # appends here is drained by the loop into a real image block on the conversation. Providers
+    # already know how to reshape those per API (Anthropic source / OpenAI image_url / Ollama
+    # images), so this is the whole seam: `screenshot` is the first user.
+    images: list = field(default_factory=list)
 
 
 class Tool:
@@ -796,6 +802,12 @@ _GATED_CAPS = {
     "desktop_control": ("DESKTOP_CONTROL", "Desktop control",
                         "drive any native app window — click controls, type into fields, "
                         "including system dialogs like file pickers"),
+    # Separate from desktop_control on purpose: acting and SEEING carry different risks. A capture
+    # can read anything on screen — a password manager, a bank tab, a private message — and the
+    # image then travels to whatever model is configured, so it gets its own consent.
+    "screen_capture": ("SCREEN_CAPTURE", "Screen capture",
+                       "see the screen — capture a window or the whole display as an image, which "
+                       "is then sent to the model along with whatever happens to be visible"),
 }
 
 
@@ -871,6 +883,14 @@ def default_registry(code_search: bool = False,
         if _native_backend() is not None:          # Windows (UIA) or macOS (System Events); None on Linux
             register_native(r)
             r.register(EnableCapabilityTool())     # just-in-time consent seam for gated capabilities
+    except Exception:
+        pass
+    # Eyes. Registered alongside the desktop hand and gated the same way (always visible, refuses
+    # until consented) — every other perception tool here returns a TREE, and there was no way to
+    # see what anything actually looks like.
+    try:
+        from .screenshot import register_screenshot
+        register_screenshot(r)
     except Exception:
         pass
     # external MCP servers -> deferred tier (advertised by name, schema loaded on demand). Kept

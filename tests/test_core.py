@@ -1275,7 +1275,13 @@ def test_mcp_absent_when_no_config():
         from harness.tools import default_registry
         r = default_registry(web_search=False)
         assert not any(n.startswith("mcp__") for n in r.names()), "no MCP tools without config"
-        assert "load_tools" not in r.names(), "load_tools stays off when nothing is deferred"
+        # load_tools only earns its always-on slot when something is actually deferred. It used to be
+        # safe to assert it is simply absent here, but gated-off capabilities now legitimately defer
+        # (screenshot, and desktop_* when "Control desktop apps" is off) — so assert the REASON: MCP
+        # must not be what defers, and load_tools must not appear with nothing deferred at all.
+        assert not any(n.startswith("mcp__") for n in r.deferred_names()), "MCP must defer nothing here"
+        if "load_tools" in r.names():
+            assert r.deferred_names(), "load_tools appeared with nothing deferred"
     finally:
         M._CONFIG = old
 

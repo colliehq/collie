@@ -88,6 +88,8 @@ SCHEMA = [
      "hint": "Run Collie's live wallpaper (clock, weather, music, an app dock, and a command bar) behind your desktop icons, started automatically when you log in. Turn OFF to remove the autostart and keep your normal wallpaper — Windows only."},
     {"group": "Desktop", "key": "DESKTOP_CONTROL", "label": "Control desktop apps", "label_zh": "控制桌面应用", "type": "bool", "default": "off",
      "hint": "Let Collie drive your native apps — click buttons, fill fields, launch apps, use menus — via Windows UI Automation or macOS System Events, in the background. Adds the desktop_* tools. Powerful, so off by default. Windows & macOS (macOS needs Accessibility permission)."},
+    {"group": "Desktop", "key": "SCREEN_CAPTURE", "label": "Let Collie see the screen", "label_zh": "允许查看屏幕", "type": "bool", "default": "off",
+     "hint": "Let Collie capture a window (even one behind others — no focus stealing) or the whole screen and actually LOOK at it, which is how it can judge whether a UI renders correctly. The image is sent to your configured model, along with anything else visible at the time, so this is separate from desktop control and off by default. Adds the screenshot tool. Windows & macOS (macOS needs Screen Recording permission)."},
 
     {"group": "Retrieval", "key": "EMBED", "label": "Embedder", "type": "select", "default": "auto",
      "options": [

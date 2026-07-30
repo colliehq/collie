@@ -588,8 +588,60 @@ class BrowserEval(Tool):
         return _fence(_fmt(_call({"action": "eval", "expr": args.get("expr", "")})))
 
 
+class BrowserScreenshot(Tool):
+    name, tier = "browser_screenshot", "always"
+    description = (
+        "SEE collie's tab as an image — what the page actually looks like, rendered. Use it for "
+        "anything visual: is this laid out correctly, did the styling break, what does this chart or "
+        "captcha or PDF preview show. This is the RIGHT tool for a web page: the OS-level "
+        "`screenshot` tool cannot capture Chromium page content (it renders the window frame and an "
+        "empty page), and it needs the window unobscured, while this reads the page directly. For "
+        "clicking or reading structure keep using browser_snapshot — a tree is exact where an image "
+        "is a guess. Args: full_page (true = the whole scrollable page, including below the fold; "
+        "default false = just the visible viewport), max_dim (longest edge in px, default 1568).")
+    schema = {"type": "object", "properties": {
+        "full_page": {"type": "boolean", "description": "capture the whole page, not just the viewport"},
+        "max_dim": {"type": "integer", "description": "longest edge in pixels (default 1568)"},
+    }}
+
+    def run(self, args, ctx):
+        args = args or {}
+        try:
+            mx = max(256, min(4096, int(args.get("max_dim") or 1568)))
+        except (TypeError, ValueError):
+            mx = 1568
+        full = bool(args.get("full_page"))
+        env = _call({"action": "screenshot", "full_page": full, "max_dim": mx})
+        # Same envelope every bridge call returns: {"ok":…, "data":{…}} at the transport layer, and
+        # an in-tab failure arrives as {"error":…} INSIDE data with ok:True — _fmt unwraps both, and
+        # this has to as well or the image lookup finds a dict where base64 should be.
+        if not isinstance(env, dict):
+            return "ERROR: browser_screenshot got no response from the bridge"
+        if not env.get("ok", True) and env.get("error"):
+            return "ERROR(browser): %s" % env["error"]
+        res = env.get("data", env)
+        if not isinstance(res, dict) or res.get("error"):
+            return "ERROR(browser): %s" % ((res or {}).get("error") or "no image returned")
+        data = res.get("data")
+        if not data:
+            return "ERROR: browser_screenshot returned no image data"
+        # Same seam the OS-level screenshot tool uses: the string stays a string (redaction, result
+        # previews and history elision all keep working) and the image rides ctx for the loop to
+        # attach as a real image block.
+        try:
+            ctx.images.append({"type": "image", "media_type": "image/png", "data": data,
+                               "label": (res.get("title") or res.get("url") or "page")})
+        except AttributeError:
+            return ("ERROR: this harness build cannot attach images (ToolCtx has no .images), "
+                    "so the capture would be invisible to you.")
+        return ("Captured %s at %sx%s — %s\n%s\nThe image is attached — look at it."
+                % (res.get("how", "?"), res.get("width", "?"), res.get("height", "?"),
+                   res.get("title") or "(untitled)", res.get("url") or ""))
+
+
 def register_browser_bridge(registry):
     for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserType(),
-              BrowserPick(), BrowserFields(), BrowserLinks(), BrowserConsole(), BrowserEval()):
+              BrowserPick(), BrowserFields(), BrowserLinks(), BrowserConsole(), BrowserEval(),
+              BrowserScreenshot()):
         registry.register(t)
     return True

@@ -693,6 +693,65 @@ async function trustedTypeRef(ref, text, submit) {
   }
 }
 
+// --- screenshots -------------------------------------------------------------------------------
+// Why this exists next to pageSnapshot: a snapshot is the accessibility tree, which is exact for
+// ACTING but says nothing about appearance. And the OS-level `screenshot` tool cannot cover a web
+// page — PrintWindow renders a Chromium window's frame but not its GPU-composited content, so it
+// comes back with the tabs and an empty page. Capturing here, inside the browser, is the only path
+// that sees the page as rendered.
+//
+// The default path is chrome.tabs.captureVisibleTab: NO chrome.debugger, so no "started debugging
+// this browser" banner — the same reason console capture and eval avoid the debugger. It captures
+// the visible viewport of the active tab in its window, so the collie tab is activated first: a tab
+// switch inside the browser, not an OS focus steal.
+async function shrinkPng(dataUrl, maxDim) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const bmp = await createImageBitmap(blob);
+  const m = Math.max(bmp.width, bmp.height);
+  const k = m > maxDim ? maxDim / m : 1;
+  const w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+  const c = new OffscreenCanvas(w, h);
+  c.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  bmp.close();
+  const buf = await (await c.convertToBlob({ type: "image/png" })).arrayBuffer();
+  const u8 = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return { data: btoa(s), width: w, height: h };
+}
+
+async function pageShot(fullPage, maxDim) {
+  const tab = await targetTab(false);
+  if (!tab) return { error: "no collie tab yet — call browser_open first" };
+  let dataUrl = "", how = "";
+  if (fullPage) {
+    // CDP reaches content below the fold and does not need the tab active, at the cost of the
+    // debugger banner. Detach ONLY if we were the ones who attached — the trusted-input path holds
+    // a deliberate persistent session and tearing it down here would silently disable real clicks.
+    let preAttached = false;
+    try {
+      const targets = await new Promise((r) => chrome.debugger.getTargets((t) => r(t || [])));
+      preAttached = targets.some((t) => t.tabId === tab.id && t.attached);
+    } catch (e) { /* getTargets is best-effort; worst case we detach a session we did not open */ }
+    await dbgAttach(tab.id);
+    try {
+      const r = await dbgSend(tab.id, "Page.captureScreenshot",
+                              { format: "png", captureBeyondViewport: true });
+      dataUrl = "data:image/png;base64," + r.data;
+      how = "full page (CDP)";
+    } finally {
+      if (!preAttached) await dbgDetach(tab.id);
+    }
+  } else {
+    if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
+    dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    how = "visible viewport";
+  }
+  const small = await shrinkPng(dataUrl, maxDim || 1568);
+  return { data: small.data, width: small.width, height: small.height, how,
+           title: tab.title || "", url: tab.url || "" };
+}
+
 async function handle(cmd) {
   try {
     if (cmd.action === "open") {
@@ -714,6 +773,7 @@ async function handle(cmd) {
     if (cmd.action === "read") return await exec(pageRead, []);
     if (cmd.action === "snapshot") return await execMain(pageSnapshot, [cmd.max || 200]);
     if (cmd.action === "links") return await exec(pageLinks, [cmd.filter || ""]);
+    if (cmd.action === "screenshot") return await pageShot(cmd.full_page === true, cmd.max_dim || 1568);
     if (cmd.action === "mode") {   // read/set high-fidelity input from the bridge/CLI
       if (typeof cmd.trusted === "boolean") await chrome.storage.local.set({ trustedInput: cmd.trusted });
       if (cmd.origin && cmd.scope) await setSiteMode(cmd.origin, cmd.scope);

@@ -318,5 +318,23 @@ class ContextComposer:
                     m = {**m, "content": c[:half]
                          + " …[overflow recovery: middle truncated; re-run the tool if needed] "
                          + c[-half:]}
+            elif isinstance(m.get("content"), list) and i < keep_from:
+                # Images are the one payload the stub logic above cannot reach: they ride a user
+                # message as a base64 block, not a str, so without this a screenshot stays in the
+                # cached prefix for the rest of the run and a handful of them overflow it outright.
+                # The recent window keeps whatever was just looked at; older frames become a line
+                # saying they existed, which is enough for the model to take a fresh one. Applies to
+                # user-attached images too — the same cost applies whoever produced them.
+                kept, dropped = [], 0
+                for b in m["content"]:
+                    if isinstance(b, dict) and b.get("type") == "image" and b.get("data"):
+                        dropped += 1
+                    else:
+                        kept.append(b)
+                if dropped:
+                    kept.append({"type": "text", "text":
+                                 "[%d older image(s) dropped from history to save context — "
+                                 "capture again if you need to look]" % dropped})
+                    m = {**m, "content": kept}
             provider_messages.append(m)
         return system, provider_messages, meta

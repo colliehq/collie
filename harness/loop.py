@@ -585,6 +585,21 @@ class Harness:
                         if repairs:
                             _tmsg["repairs"] = repairs   # zero-token; rides session JSON for post-hoc grep
                         session["messages"].append(_tmsg)
+                        # Images a tool produced (screenshot) ride ctx, and become a real image block
+                        # on the conversation HERE rather than inside the tool_result. Two reasons:
+                        # OpenAI's tool-role messages cannot carry images at all, and every provider
+                        # already reshapes images on a user message (Anthropic source blocks, OpenAI
+                        # image_url, Ollama images[], claude-cli degrades to a marker). So one seam
+                        # works everywhere and providers.py needs no change. Drained immediately so
+                        # nothing leaks into the next tool call.
+                        if getattr(ctx, "images", None):
+                            for _img in ctx.images:
+                                _lbl = _img.get("label") or "screen"
+                                session["messages"].append({"role": "user", "content": [
+                                    {"type": "text", "text": "[screenshot: %s]" % _lbl},
+                                    {"type": "image", "media_type": _img.get("media_type", "image/png"),
+                                     "data": _img["data"]}]})
+                            ctx.images.clear()
                         # a compact result preview (first non-empty line + a "more" marker) so the
                         # UI can show a cc-style `⎿ result` under each tool call, not just the action.
                         _rprev = ""
