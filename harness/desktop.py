@@ -597,6 +597,70 @@ def _extract_one(exe, terms, source, exclude=()):
 
 _playing = {"proc": None, "track": None}
 _reaper_installed = False
+# Cross-process now-playing. _playing above is per-process, so a track started by ONE process (a CLI
+# `collie`, the phone remote, a one-off call) was invisible to ANOTHER — e.g. the ambient desktop's
+# widget, served by the web process, never saw it. Persist what we start (title + the player's pid) so
+# any process can report/stop it. (ffplay never registers with the OS media session (GSMTC) either, so
+# this file is the only way collie's OWN playback shows up anywhere.)
+_NP_FILE = os.path.join(COLLIE_DIR, "nowplaying.json")
+
+
+def _pid_alive(pid) -> bool:
+    try:
+        pid = int(pid or 0)
+        if not pid:
+            return False
+        if sys.platform == "win32":
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return False
+        os.kill(pid, 0)          # POSIX: raises if the process is gone
+        return True
+    except Exception:
+        return False
+
+
+def _np_write(track, pid) -> None:
+    try:
+        os.makedirs(COLLIE_DIR, exist_ok=True)
+        with open(_NP_FILE, "w", encoding="utf-8") as f:
+            json.dump({"title": track.get("title"), "uploader": track.get("uploader"),
+                       "duration": track.get("duration"), "pid": int(pid or 0)}, f)
+    except Exception:
+        pass
+
+
+def _np_read():
+    try:
+        with open(_NP_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _np_clear() -> None:
+    try:
+        os.remove(_NP_FILE)
+    except OSError:
+        pass
+
+
+def _kill_pid(pid) -> bool:
+    try:
+        pid = int(pid or 0)
+        if not pid:
+            return False
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            import signal as _sig
+            os.kill(pid, _sig.SIGTERM)
+        return True
+    except Exception:
+        return False
 
 
 def _install_reaper():
@@ -618,7 +682,9 @@ def _install_reaper():
 
     atexit.register(lambda: stop_here())
 
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    # SIGHUP is POSIX-only — referencing it unguarded crashed play_here on Windows (AttributeError),
+    # so music playback died before it started. Only wire signals this OS actually has.
+    for sig in [s for s in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)) if s]:
         try:
             prev = signal.getsignal(sig)
 
@@ -664,6 +730,7 @@ def play_here(query, artist="", title="", region=""):
     _playing["track"] = {"title": info.get("title") or query,
                          "uploader": info.get("uploader") or "",
                          "duration": info.get("duration")}
+    _np_write(_playing["track"], proc.pid if proc is not None else 0)   # cross-process now-playing
     # A menu-bar control, so stopping this never requires asking the agent again. Reported back, so
     # the reply can tell the person where the button is — or not claim one exists when it does not.
     indicator = _show_indicator(_playing["track"]["title"])
@@ -677,13 +744,19 @@ def play_here(query, artist="", title="", region=""):
 
 
 def stop_here():
-    """Stop what play_here started."""
+    """Stop what play_here started — even if a DIFFERENT process started it (via the persisted pid)."""
     from . import plat
 
     proc, _playing["proc"] = _playing["proc"], None
     _playing["track"] = None
     _hide_indicator()
-    return {"ok": plat.stop_stream(proc)}
+    ok = plat.stop_stream(proc)                 # our own in-process player, if any
+    if not ok:                                  # else it was started elsewhere — kill by persisted pid
+        d = _np_read()
+        if d and _pid_alive(d.get("pid")):
+            ok = _kill_pid(d.get("pid"))
+    _np_clear()
+    return {"ok": ok}
 
 
 def _show_indicator(title: str) -> bool:
@@ -710,11 +783,23 @@ def _hide_indicator() -> None:
 
 
 def playing_here():
-    """What play_here is currently playing, if anything is still alive."""
+    """What play_here is currently playing, if anything is still alive — across processes.
+
+    Fast path: a track WE started (this process). Otherwise fall back to the persisted now-playing so
+    a track another process started (a CLI run, the phone) still shows in the ambient desktop widget."""
     proc = _playing["proc"]
-    if proc is not None and proc.poll() is not None:      # it finished on its own
-        _playing["proc"], _playing["track"] = None, None
-    return {"track": _playing["track"]}
+    if proc is not None:
+        if proc.poll() is not None:                       # it finished on its own
+            _playing["proc"], _playing["track"] = None, None
+            _np_clear()
+        return {"track": _playing["track"]}
+    d = _np_read()                                        # started elsewhere?
+    if d and _pid_alive(d.get("pid")):
+        return {"track": {"title": d.get("title"), "uploader": d.get("uploader"),
+                          "duration": d.get("duration")}}
+    if d:                                                 # stale file — the player is gone
+        _np_clear()
+    return {"track": None}
 
 
 def resolve_audio(query, artist="", title="", region="", exclude=()):
