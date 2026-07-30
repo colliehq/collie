@@ -927,13 +927,15 @@ async function handle(cmd) {
       // debugger), so reloading ourselves is the only way collie can finish its own update instead
       // of asking the user to go and click a button.
       //
-      // The reload is scheduled rather than immediate: it tears down this service worker, and the
-      // result below still has to be POSTed back to the bridge. The worker restarts on its own
-      // (background.js re-runs pollOnce at top level), so the bridge reconnects a second or two
-      // later — the caller confirms the new version through /health rather than assuming.
-      const was = chrome.runtime.getManifest().version;
-      setTimeout(function () { chrome.runtime.reload(); }, 700);
-      return { reloading: true, was: was };
+      // Reload IMMEDIATELY, and accept that this command gets no reply. Deferring it with
+      // setTimeout so the reply could be sent first does not work: an MV3 service worker is
+      // suspended once the in-flight work finishes, and a pending timer dies with it — the reply
+      // arrived and the reload silently never happened, which is the most misleading of the two
+      // failure modes. Tearing the worker down here means the caller sees the request time out;
+      // that IS the success signature, and the caller confirms the outcome by the version the
+      // extension reports once it is answering commands again.
+      chrome.runtime.reload();
+      return { reloading: true };
     }
     if (cmd.action === "console") return await getConsole(!!cmd.clear);
     if (cmd.action === "eval") return await evalExpr(cmd.expr || "");
