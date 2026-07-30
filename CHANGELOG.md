@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.20.22 — the model you picked, and a release that arrives
+## v0.20.23 — the model you picked, and a release that arrives
 
 - **`mock` is no longer offered as a model.** It answers from canned text, which is
   indistinguishable from a model that has gone wrong, and it sat in the picker between real
@@ -15,8 +15,9 @@
   runner was attached to the repository releases are cut from, so the run queued against a machine
   that did not exist. On the Mac that does exist, `actions/setup-python` then failed at
   `mkdir: /Users/runner: Permission denied` — its macOS package carries an install script with the
-  hosted runner's path compiled in. The Mac jobs now use the machine's own Python. Everything in
-  the v0.20.21 notes below is in this release.
+  hosted runner's path compiled in. The Mac jobs now use the machine's own Python — and only the
+  Mac jobs: applying that same redirection to the hosted Windows runner broke its Python install
+  and cost v0.20.22 its release in turn. Everything in the v0.20.21 notes below is in this one.
 
 ## v0.20.21 — MCP you can see, an extension that updates itself, settings you can navigate
 
