@@ -690,33 +690,58 @@ class BrowserReloadExtension(Tool):
         except Exception:
             pass
         before = _health().get("extension_version") or "(unknown)"
-        res = _call({"action": "reload"}, timeout=20)
-        if not res.get("ok", True) and res.get("error"):
-            return "ERROR(browser): %s" % res["error"]
-        # The worker is torn down and restarts itself; wait for it to poll again rather than
-        # declaring success on the basis of having asked.
-        deadline = time.time() + 25
-        h = {}
+        # This command is expected to go unanswered: the extension tears its worker down to reload,
+        # which kills the reply. A TIMEOUT here is the success signature, not a failure — the only
+        # answer worth acting on is an old extension saying it does not know the action.
+        res = _call({"action": "reload"}, timeout=8)
+        d = res.get("data") if isinstance(res, dict) else None
+        if isinstance(d, dict) and "unknown action" in str(d.get("error", "")):
+            return ("ERROR(browser): the extension currently loaded is too old to reload itself "
+                    "(version %s — it has no `reload` action). This needs ONE manual reload to adopt: "
+                    "chrome://extensions -> the collie card -> the reload arrow. After that collie can "
+                    "do it unattended." % before)
+        # Do NOT believe /health's `extension_connected` here: it is age-based (a poll within the
+        # last 40s), so the poll from BEFORE the reload still reads as connected for half a minute
+        # and would report success while the worker is gone. Probe with a real command instead —
+        # only an extension that is actually running answers one. Reloading also leaves the MV3
+        # worker dormant until an event wakes it (the 30s keep-alive alarm is the backstop), so this
+        # waits well past that rather than calling a sleeping extension a failure.
+        deadline = time.time() + 90
+        alive = False
         while time.time() < deadline:
-            time.sleep(1.0)
-            h = _health()
-            if h.get("extension_connected"):
-                break
-        if not h.get("extension_connected"):
-            return ("ERROR(browser): the extension did not come back within 25s after reloading "
-                    "(it was version %s). Check chrome://extensions — a manifest that fails to parse "
-                    "leaves the extension disabled, and only that page will say why." % before)
-        now = h.get("extension_version") or "(unknown)"
-        out = "extension reloaded and reconnected — version %s -> %s" % (before, now)
-        if shipped and now != shipped:
-            # Worth saying plainly: the loaded extension is a different copy from the one this collie
-            # ships, so updating collie will never change what the browser runs.
-            out += ("\nNOTE: this collie ships extension %s but the browser is running %s, so the "
-                    "loaded extension is a DIFFERENT copy on disk (loaded from another directory). "
-                    "Updating collie will not change it — reload the right directory in "
-                    "chrome://extensions, or point the browser at %s."
-                    % (shipped, now, os.path.dirname(mf)))
-        return out
+            probe = _call({"action": "mode"}, timeout=10)
+            pd = probe.get("data") if isinstance(probe, dict) else None
+            if probe.get("ok") and isinstance(pd, dict) and not pd.get("error"):
+                alive = True
+                # Answering is not enough to stop here. The worker that answers first can be the
+                # OLD one, still alive in the moment between being told to reload and going away —
+                # checking the version once, right then, reads the state we are trying to change and
+                # calls a working reload a failure. So keep going until the version it reports is
+                # the one on disk, and let the timeout below be what gives up.
+                if not shipped or (_health().get("extension_version") or "") == shipped:
+                    break
+            time.sleep(2)
+        if not alive:
+            return ("ERROR(browser): the extension did not answer a command within 90s of being told "
+                    "to reload (it was version %s). It may have come back disabled: a manifest that "
+                    "fails to parse leaves it that way, and chrome://extensions is the only place "
+                    "that will say why." % before)
+        # The probe proves the extension is running; it does not by itself prove it re-read the disk.
+        # The assertion worth making is the one the caller actually cares about — is the browser now
+        # running the files that are on disk? — so compare the version it reports against the
+        # manifest, rather than announcing a reload we cannot see.
+        now = _health().get("extension_version") or "(unknown)"
+        moved = " (was %s)" % before if before != now else ""
+        if not shipped:
+            return "extension reloaded and answering commands — it reports version %s%s." % (now, moved)
+        if now == shipped:
+            return ("extension reloaded — the browser is now running the files on disk, confirmed by "
+                    "the version it reports after answering a live command: %s%s." % (now, moved))
+        return ("ERROR(browser): the reload did not take. The browser reports extension %s, but the "
+                "files on disk are %s. Either the reload was refused, or — more likely — the browser "
+                "has a DIFFERENT copy loaded from another directory, in which case updating collie "
+                "will never change what it runs. This collie's copy is %s; check the path on the "
+                "collie card in chrome://extensions." % (now, shipped, os.path.dirname(mf)))
 
 
 class BrowserFields(Tool):

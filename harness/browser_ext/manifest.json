@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "collie browser bridge",
-  "version": "1.6",
+  "version": "1.8",
   "description": "Lets the collie agent drive THIS browser (navigate / read / click / type) via a localhost bridge, using your real logged-in session.",
   "permissions": [
     "scripting",
