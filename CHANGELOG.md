@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.20.22 — the model you picked, and a release that arrives
+
+- **`mock` is no longer offered as a model.** It answers from canned text, which is
+  indistinguishable from a model that has gone wrong, and it sat in the picker between real
+  models where one tap silently replaces every future answer with a fixture. A machine already
+  running on it still sees the row it is on, named as canned replies rather than as a model.
+- **A model switch that cannot take effect says so.** `COLLIE_PROVIDER` set before Collie starts
+  outranks the panel — deliberately, so `COLLIE_PROVIDER=x collie web` still means something.
+  It used to do that in silence: the picker accepted the choice, wrote it, reported it back, and
+  every run kept using the pinned provider. Now the desktop names the variable, and the phone
+  shows that sentence above the list rather than under it.
+- **v0.20.21 shipped nothing.** Its tag built on `[self-hosted, macOS, collie-mac]`, and no such
+  runner was attached to the repository releases are cut from, so the run queued against a machine
+  that did not exist. On the Mac that does exist, `actions/setup-python` then failed at
+  `mkdir: /Users/runner: Permission denied` — its macOS package carries an install script with the
+  hosted runner's path compiled in. The Mac jobs now use the machine's own Python. Everything in
+  the v0.20.21 notes below is in this release.
+
 ## v0.20.21 — MCP you can see, an extension that updates itself, settings you can navigate
 
 - **MCP servers have a place in Settings.** Which servers exist, which are switched on, which are
