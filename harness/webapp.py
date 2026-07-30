@@ -705,7 +705,17 @@ class Handler(BaseHTTPRequestHandler):
                           "model": vals.get("MODEL", "")} if vals.get("PROVIDER") == "openai-compat" else None
                 entries = catalog.list_entries(discover_live=live, custom=custom)
                 current = "%s:%s" % (vals.get("PROVIDER", ""), vals.get("MODEL", ""))
-                return self._send_json({"entries": entries, "current": current})
+                # A COLLIE_PROVIDER/COLLIE_MODEL set before we started outranks anything the picker
+                # writes. Say so here rather than letting every selection appear to be ignored.
+                pin = [k for k in ("PROVIDER", "MODEL") if settings.pinned(k)]
+                out = {"entries": entries, "current": current}
+                if pin:
+                    out["pinned"] = pin
+                    out["pinned_note"] = (
+                        "This collie was started with %s set in its environment, which outranks the "
+                        "picker — choosing a model here will not change what runs. Restart collie "
+                        "without it." % ", ".join("COLLIE_" + k for k in pin))
+                return self._send_json(out)
             if path == "/api/browser/status":
                 # onboarding "connect your browser": is the bridge up, has the extension connected,
                 # where's the extension folder, and which Chromium browsers are installed.
@@ -1261,7 +1271,20 @@ class Handler(BaseHTTPRequestHandler):
                     partial["MODEL"] = model
                 settings.update(partial)
                 settings.apply()
-                return self._send_json({"ok": True, "provider": provider, "model": model or ""})
+                out = {"ok": True, "provider": provider, "model": model or ""}
+                # The write went through; whether it CHANGES anything is a different question.
+                # Reporting plain success while a hard-set env var keeps serving another provider is
+                # how "the picker doesn't work" stayed a mystery instead of becoming a message.
+                pin = [k for k in ("PROVIDER", "MODEL") if settings.pinned(k)]
+                if pin:
+                    out["ok"] = False
+                    out["pinned"] = pin
+                    out["error"] = (
+                        "Saved, but %s is set in this collie's environment and outranks it — runs will "
+                        "keep using %s. Restart collie without it."
+                        % (", ".join("COLLIE_" + k for k in pin),
+                           settings.get("PROVIDER", "") or "the pinned provider"))
+                return self._send_json(out)
             if path in ("/api/mission", "/api/mission/confirm", "/api/mission/resume",
                         "/api/mission/tick"):
                 # Missions are disabled (the router rewrites mission->chat). Enforce it server-side so

@@ -228,6 +228,18 @@ def all_values():
     return {s["key"]: get(s["key"], s["default"]) for s in SCHEMA}
 
 
+def pinned(key):
+    """True when COLLIE_<KEY> was set before we started, so saving this knob cannot change anything.
+
+    A hard-set env var winning over the panel is the right rule — but silently is not. A server
+    started with COLLIE_PROVIDER=mock accepts every model the picker sends, writes it to
+    settings.json, reports it back, and keeps answering from the canned provider: the picker looks
+    broken and the replies look like the model is broken. Whoever renders a control for a knob asks
+    this first, so the answer can be "something else is holding this" rather than nothing at all.
+    """
+    return ("COLLIE_" + key) in _HARD_ENV
+
+
 def apply():
     """Inject saved settings into os.environ (as COLLIE_<KEY>) for keys the user did NOT hard-set
     via a real env var — so every existing os.environ.get('COLLIE_X') read picks up the Settings

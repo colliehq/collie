@@ -30,6 +30,11 @@ class FakeProc(object):
     def __init__(self):
         self.killed = False
         self._done = None
+        # play_here records the player's pid so a later collie (or a reaper after a crash) can stop
+        # music this process did not start. A stand-in without one turns that into an AttributeError
+        # from inside the code under test, which reads as the feature being broken rather than the
+        # double being out of date.
+        self.pid = 424242
 
     def poll(self):
         return self._done

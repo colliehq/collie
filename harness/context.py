@@ -83,8 +83,13 @@ def _grounding_line() -> str:
     Lives OUTSIDE `identity` on purpose — webapp.py's desktop persona replaces composer.identity
     wholesale, and this must survive that (same reason as _response_language_line). Byte-stable per
     platform, so it rides inside the cached prefix and costs nothing per turn."""
-    roots = (r"C:\Apps, C:\Program Files, %LOCALAPPDATA%\Programs, the Desktop, Downloads"
-             if os.name == "nt" else "/opt, /usr/local, $HOME, ~/Desktop, ~/Downloads")
+    # Branch first, literal second. As a trailing ternary the platform test sat BELOW the Windows
+    # path it guards, which is exactly the shape the purity check cannot see — and the shape that let
+    # six Windows-only features ship as silent no-ops on macOS.
+    if os.name == "nt":
+        roots = r"C:\Apps, C:\Program Files, %LOCALAPPDATA%\Programs, the Desktop, Downloads"
+    else:
+        roots = "/opt, /usr/local, $HOME, ~/Desktop, ~/Downloads"
     return (
         "GROUNDING — a search that came back empty proves only that YOUR QUERY came back empty, "
         "never that the thing does not exist. Before you tell the user something is missing, is not "

@@ -136,8 +136,10 @@ def _static() -> list:
                    "DashScope API key", "metered", ["coding"]),
         ModelEntry("claude-cli", "sonnet", "Claude CLI (logged-in)",
                    "your claude CLI", "subscription", ["coding"], price=P["claude-sonnet-5"]),
-        ModelEntry("mock", "mock", "Mock (offline)",
-                   "local, canned", "local", ["testing"]),
+        # No `mock` row. It answers from canned text, which is indistinguishable from a model that
+        # has gone wrong, and it sat in the picker between real models where one tap would silently
+        # replace every future answer with a fixture. Tests still reach it through COLLIE_PROVIDER
+        # and probe_auth() still knows it; it is simply not something to offer a person.
     ]
 
 
@@ -267,6 +269,22 @@ def list_entries(discover_live: bool = False, custom: dict | None = None) -> lis
 
     for e in _static():
         _add(e, collapse_unauthed=True)
+
+    # `mock` is not offered (see _static), but a machine already ON it must still see what it is on
+    # — otherwise the picker shows a current id matching no row, which reads as "nothing selected"
+    # on the very setup whose whole problem is that it is answering from fixtures.
+    from . import settings as _settings
+    if _settings.get("PROVIDER", "") == "mock":
+        # The id has to be the one `current` reports, or the row it describes shows no tick and the
+        # picker still looks like it has lost track of itself. PROVIDER and MODEL are separate knobs,
+        # so a machine pinned to mock usually keeps whatever MODEL name was already saved.
+        # all_values(), not get("MODEL", ""): `current` in /api/models is built from all_values, which
+        # falls back to the SCHEMA default rather than to empty. Reading MODEL a second way produced a
+        # row id of mock:mock against a current of mock:claude-opus-4-8 — the same "nothing selected"
+        # this row exists to prevent.
+        _add(ModelEntry("mock", _settings.all_values().get("MODEL") or "mock",
+                        "Mock (offline) — canned replies, not a model",
+                        "local, canned", "local", ["testing"]))
 
     # LOCAL discovery (Ollama) is a cheap localhost call and the ONLY way to know which models
     # you've pulled — always include it, no toggle. NETWORK (cloud) discovery stays opt-in below.

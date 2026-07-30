@@ -13,6 +13,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, "/Users/siningxu/projects/collie")
@@ -34,6 +35,19 @@ def check(cond, msg):
     print(("  PASS " if cond else "  FAIL ") + msg)
     if not cond:
         fails.append(msg)
+
+
+def get(path):
+    req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        try:
+            return e.code, json.loads(body)
+        except ValueError:
+            return e.code, {"raw": body[:200]}
 
 
 def post(path, payload):
@@ -69,6 +83,29 @@ status, body = post("pair", {
     "confirm": base64.b64encode(
         e2e.confirm_tag(PAIRCODE, ROOM, desktop_pub_pre, pub, e2e.SIDE_PHONE)).decode("ascii"),
 })
+
+# Pairing is two-phase now: the code alone is not enough, because a code can be read over a shoulder
+# or off a screen share. 202 means "ask the person at the keyboard", and hands back a four-digit
+# number to show here plus a ticket to collect the result with. This script used to assert 200 and so
+# would have failed against every desktop shipped since — a stale test that reports the wrong thing.
+if status == 202:
+    number, ticket = body.get("num", body.get("number", "")), body.get("ticket", "")
+    check(len(str(number)) == 4, "202 carries a four-digit number to compare (%r)" % number)
+    check(bool(ticket), "and a ticket to collect the decision with")
+    print("phone: waiting for approval — the computer should be showing %s" % number)
+    deadline = time.time() + 150
+    while time.time() < deadline:
+        st, b = get("pair/wait?ticket=" + urllib.parse.quote(ticket))
+        if st == 200 and b.get("token"):
+            status, body = 200, b
+            break
+        if st != 202:                                  # a refusal or an expiry, not "still waiting"
+            status, body = st, b
+            break
+        time.sleep(2)
+    check(status == 200, "the approval came back as a token (got %s %s)"
+          % (status, body.get("error", "")))
+
 check(status == 200, "pair returned 200 (got %s %s)" % (status, body.get("error", "")))
 if status != 200:
     print("\n%d FAILED" % len(fails))

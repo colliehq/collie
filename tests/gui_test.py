@@ -3,7 +3,7 @@ collie web server, drives the UI with Playwright, checks the interactive parts I
 theme persist, retractable sidebar persist, mobile no-overflow, session rename/delete, mode
 selector, CSRF token gate, welcome state.
     python3 tests/gui_test.py     (needs: system python w/ playwright; exit 0 = all pass)"""
-import os, subprocess, sys, time, urllib.request
+import json, os, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8795
@@ -28,8 +28,17 @@ def main():
     # redirect settings to a temp file so the test never clobbers the user's real ~/.collie/settings.json
     sessdir = os.path.join(tempfile.gettempdir(), "collie_gui_test_sessions")
     # redirect settings AND sessions to temp so the test never clobbers real ~/.collie or floods the Map
-    env = dict(os.environ, COLLIE_PROVIDER="mock", PYTHONUNBUFFERED="1",
+    #
+    # mock goes in the SETTINGS FILE, not COLLIE_PROVIDER. An env var set before the server starts is
+    # deliberately unbeatable by the picker — so pinning it there made the model-switch checks below
+    # test a UI that is correctly refusing to switch. The file gets the same $0 provider with none of
+    # that: the picker is genuinely in charge, which is what these checks are about.
+    with open(setpath, "w", encoding="utf-8") as fh:
+        json.dump({"PROVIDER": "mock", "MODEL": "mock"}, fh)
+    env = dict(os.environ, PYTHONUNBUFFERED="1",
                COLLIE_SETTINGS_PATH=setpath, COLLIE_SESSIONS_DIR=sessdir)
+    env.pop("COLLIE_PROVIDER", None)
+    env.pop("COLLIE_MODEL", None)
     srv = subprocess.Popen([sys.executable if os.path.exists(sys.executable) else "python3",
                             "-m", "harness.webapp", "--port", str(PORT), "--no-open"],
                            cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -129,7 +138,6 @@ def main():
                                    % (PORT, sid, tok), timeout=5)   # rename creates nothing if absent
             # seed a session file so delete has a target — in the SAME store the server was launched
             # with (COLLIE_SESSIONS_DIR), never the user's real data/sessions/
-            import json
             sess_dir = sessdir
             os.makedirs(sess_dir, exist_ok=True)
             open(os.path.join(sess_dir, sid + ".json"), "w").write(json.dumps(
@@ -153,15 +161,24 @@ def main():
             pg.wait_for_selector(".set-row", timeout=3000)   # rows render async after /api/settings resolves
             nrows = len(pg.query_selector_all(".set-row"))
             check("settings modal opens w/ rows", nrows >= 6, "rows=%d" % nrows)
-            pg.fill("#set_MODEL", "claude-sonnet-5")
-            pg.fill("#set_MAX_TURNS", "9")
+            # The modal grew a rail of categories, one visible .set-pane at a time — so a field is in
+            # the DOM long before it is reachable, and Playwright's fill() waited 30s for an <input>
+            # it could see in the tree and never in the viewport. Click the owning category first.
+            def set_field(key, value):
+                cat = pg.eval_on_selector("#set_" + key,
+                                          "e => e.closest('.set-pane').getAttribute('data-cat')")
+                pg.click('.set-nav[data-cat="%s"]' % cat)
+                pg.wait_for_selector("#set_" + key, state="visible", timeout=3000)
+                pg.fill("#set_" + key, value)
+
+            set_field("MODEL", "claude-sonnet-5")
+            set_field("MAX_TURNS", "9")
             pg.click("#setSave")
             pg.wait_for_selector(".set-status.ok", timeout=3000)
             check("settings save -> ok status", True)
             pg.wait_for_timeout(300)
             saved = {}
             try:
-                import json
                 with open(setpath, encoding="utf-8") as f: saved = json.load(f)
             except Exception: pass
             check("settings persisted to disk", saved.get("MODEL") == "claude-sonnet-5" and saved.get("MAX_TURNS") == "9",

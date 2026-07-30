@@ -38,8 +38,6 @@ import tempfile
 from . import plat
 from .tools import Tool
 
-_NOWIN = 0x08000000 if os.name == "nt" else 0        # CREATE_NO_WINDOW: no console flash per capture
-
 # Anthropic resizes anything larger than ~1568px on the long edge anyway, and a full 4K screenshot
 # costs several thousand tokens for detail no model uses. Downscaling in GDI before encoding keeps a
 # capture at roughly 1-1.5k tokens.
@@ -292,7 +290,8 @@ def capture(title: str = "", max_dim: int = _MAX_DIM, path: str = "") -> dict:
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                             "-File", _script_path(), "-Path", path, "-Title", title or "",
                             "-MaxDim", str(int(max_dim))],
-                           creationflags=_NOWIN, timeout=60, capture_output=True, text=True,
+                           timeout=60, capture_output=True, text=True,
+                           **plat.no_window_kwargs(),
                            encoding="utf-8", errors="ignore")
     except Exception as e:
         return {"ok": False, "error": "capture driver failed to run: %s" % e}
