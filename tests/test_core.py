@@ -154,10 +154,11 @@ def test_response_language_directive():
 
 
 def test_grounding_directive():
-    """GROUNDING + INITIATIVE: after the VocalCode miss (grepped only cwd -> "it doesn't exist on
-    this machine", while the exe sat in C:\\Apps\\vocalcode), the prompt must carry three rules: an
-    empty search is not a negative result, auto-recalled memory is a lead rather than a fact, and
-    ask only what you cannot determine yourself. Like RESPONSE LANGUAGE it lives OUTSIDE identity so
+    """GROUNDING + INITIATIVE: after a miss where collie grepped only the cwd and concluded a
+    project "doesn't exist on this machine" while it sat two directories away, the prompt must
+    carry three rules: an empty search is not a negative result, auto-recalled memory is a lead
+    rather than a fact, and ask only what you cannot determine yourself. Like RESPONSE LANGUAGE
+    it lives OUTSIDE identity so
     the desktop persona's wholesale override can't drop it, and the WORKING DIRECTORY line must no
     longer read as "nothing outside cwd exists"."""
     from harness.cli import make_harness

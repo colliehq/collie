@@ -61,6 +61,15 @@ jobs:
   installer:
     needs: check-version
     runs-on: windows-latest
+    # Overrides the workflow-level `contents: write`: this job only reads the repo and uploads an
+    # artifact, and id-token is what lets it exchange a GitHub OIDC token for an Azure one.
+    permissions:
+      contents: read
+      id-token: write
+    # Required, not cosmetic. The Azure federated credential is bound to
+    # `repo:colliehq/collie:environment:release`, because tag names differ every release and the
+    # subject claim accepts no wildcard — so without this line the token exchange is refused.
+    environment: release
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -83,6 +92,52 @@ jobs:
         # (see docs/signing.md) and switch this step back to installer/shell/pack.ps1.
         shell: pwsh
         run: ./installer/build.ps1
+
+      # ── Code signing ────────────────────────────────────────────────────────────────────
+      # Unsigned, Chrome and Defender flagged Collie-Setup.exe as a virus and blocked the
+      # download outright (see the note above) — that is what this fixes. Signed by Azure
+      # Artifact Signing as CN=Daming Wu, chaining to the Microsoft Identity Verification Root,
+      # so the publisher is trusted out of the box. The same certificate signs VocalCode; one
+      # identity, one subscription.
+      #
+      # Auth is OIDC, deliberately: no long-lived credential is stored anywhere. GitHub mints a
+      # short-lived token for this job, Azure trades it for an access token, and the service
+      # principal behind it can do exactly one thing — sign with this certificate profile. The
+      # client and tenant ids below are identifiers, NOT secrets: they are useless without a
+      # GitHub-issued token for this repo and environment, which is why they can sit in a public
+      # workflow file. A stored client secret in a public repo would be the real hazard, since
+      # leaking it would let someone sign arbitrary code as this person.
+      - name: Azure login (OIDC, no stored secret)
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: 62282756-278c-40b0-87cf-0ce4a3aebeb5
+          tenant-id: cb753fb0-36e6-47cb-a8ed-9c60cc644d12
+          subscription-id: bbbe77f4-5a52-4091-b06e-d9d74e1cb381
+
+      - name: Sign Collie-Setup.exe
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: vocalcode-signing
+          certificate-profile-name: public-trust
+          files-folder: installer/Output
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Not decoration: the signing step can report success while leaving a file unsigned (that
+      # is how the macOS chain used to fool us), and an unsigned release is the whole problem we
+      # are here to fix. Fail the build rather than publish one.
+      - name: Verify the installer really is signed
+        shell: pwsh
+        run: |
+          $st = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+                Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $st) { throw "signtool not found on the runner" }
+          & $st.FullName verify /pa /v installer/Output/Collie-Setup.exe
+          if ($LASTEXITCODE -ne 0) { throw "Collie-Setup.exe is NOT validly signed" }
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer

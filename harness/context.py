@@ -69,14 +69,13 @@ def _response_language_line() -> str:
 def _grounding_line() -> str:
     """GROUNDING + INITIATIVE directives for the STABLE tier.
 
-    Written after a real failure (2026-07-29): asked to code-sign "the Windows version of
-    VocalCode", collie grepped ONLY the working directory (a different project), found 0 matches,
-    and told the user the thing "doesn't exist on this machine" — while C:\\Apps\\vocalcode held the
-    exe, the installer and the Inno script, touched 12 minutes earlier. It also treated a stray
-    auto-recalled fragment from an unrelated old task as its whole knowledge of what VocalCode was,
-    missed that "local code" was the user's voice tool mis-hearing "VocalCode" (that mis-hearing is
-    literally where the product's name came from), and spent two turns asking questions it could
-    have answered itself while delivering nothing.
+    Written after a real failure. Asked to work on one of the user's other projects, collie
+    grepped ONLY the working directory — a different project entirely — found no matches, and
+    replied that the thing did not exist on this machine, while it sat a couple of directories
+    away and had been edited minutes earlier. It compounded that by treating a stray
+    auto-recalled fragment from an unrelated old task as its whole knowledge of what the project
+    was, and by spending two turns asking questions it could have answered itself, delivering
+    nothing in the meantime.
 
     Three failure modes, three rules: a narrow search is not a negative result; recall is a lead,
     not a fact; answer what you can determine and only ask what you truly can't.
