@@ -153,6 +153,31 @@ def test_response_language_directive():
             os.environ["COLLIE_LANG"] = old
 
 
+def test_grounding_directive():
+    """GROUNDING + INITIATIVE: after the VocalCode miss (grepped only cwd -> "it doesn't exist on
+    this machine", while the exe sat in C:\\Apps\\vocalcode), the prompt must carry three rules: an
+    empty search is not a negative result, auto-recalled memory is a lead rather than a fact, and
+    ask only what you cannot determine yourself. Like RESPONSE LANGUAGE it lives OUTSIDE identity so
+    the desktop persona's wholesale override can't drop it, and the WORKING DIRECTORY line must no
+    longer read as "nothing outside cwd exists"."""
+    from harness.cli import make_harness
+    from harness.context import _grounding_line
+    line = _grounding_line()
+    low = line.lower()
+    assert "your query" in low and "does not exist" in low, "empty search != nonexistent"
+    assert "name variants" in low and "former name" in low, "must try renamed/variant spellings"
+    assert "lead, not a fact" in low, "recall must not be treated as evidence"
+    assert "mis-transcription" in low, "voice input: an odd word may be a misheard proper noun"
+    assert "questionnaire" in low and "could" in low, "no question-dumps, no menus of offers"
+    h = make_harness(os.getcwd(), provider="mock", project="ground", embed="hash")
+    h.composer.identity = "You are collie, the user's live desktop assistant."   # wholesale override
+    system, _msgs, _meta = h.composer.build({"messages": []}, "sign the windows build", os.getcwd(), "ground")
+    assert "GROUNDING" in system and "INITIATIVE" in system, \
+        "the directive must survive the identity override"
+    # the working-directory rule must not be readable as "nothing outside cwd exists"
+    assert "absolute path" in system and "lives elsewhere on this machine" in system, system[:400]
+
+
 def test_browser_snapshot_ref_wiring():
     """browser_snapshot enqueues a 'snapshot' command and renders the extension's ref list;
     browser_click / browser_type forward a snapshot `ref` so the agent acts on an EXACT element

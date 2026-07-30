@@ -2,7 +2,8 @@
 
 The system prompt is assembled from three cache-ordered tiers:
 
-  STABLE   identity + mode role + tool NAMES + skill manifest      (rarely changes)
+  STABLE   identity + language/grounding rules + mode role
+           + tool NAMES + skill manifest                          (rarely changes)
   CONTEXT  merged project rules (CLAUDE.md / AGENTS.md), char-capped
   VOLATILE core memory blocks + AUTO-PREFETCHED memory + timestamp  (LAST)
 
@@ -63,6 +64,46 @@ def _response_language_line() -> str:
             "or an explicit request means Japanese — never default to Japanese from Han characters "
             "alone. When the user's language is still genuinely ambiguous (a very short non-CJK "
             "message), %s." % tiebreak)
+
+
+def _grounding_line() -> str:
+    """GROUNDING + INITIATIVE directives for the STABLE tier.
+
+    Written after a real failure (2026-07-29): asked to code-sign "the Windows version of
+    VocalCode", collie grepped ONLY the working directory (a different project), found 0 matches,
+    and told the user the thing "doesn't exist on this machine" — while C:\\Apps\\vocalcode held the
+    exe, the installer and the Inno script, touched 12 minutes earlier. It also treated a stray
+    auto-recalled fragment from an unrelated old task as its whole knowledge of what VocalCode was,
+    missed that "local code" was the user's voice tool mis-hearing "VocalCode" (that mis-hearing is
+    literally where the product's name came from), and spent two turns asking questions it could
+    have answered itself while delivering nothing.
+
+    Three failure modes, three rules: a narrow search is not a negative result; recall is a lead,
+    not a fact; answer what you can determine and only ask what you truly can't.
+
+    Lives OUTSIDE `identity` on purpose — webapp.py's desktop persona replaces composer.identity
+    wholesale, and this must survive that (same reason as _response_language_line). Byte-stable per
+    platform, so it rides inside the cached prefix and costs nothing per turn."""
+    roots = (r"C:\Apps, C:\Program Files, %LOCALAPPDATA%\Programs, the Desktop, Downloads"
+             if os.name == "nt" else "/opt, /usr/local, $HOME, ~/Desktop, ~/Downloads")
+    return (
+        "GROUNDING — a search that came back empty proves only that YOUR QUERY came back empty, "
+        "never that the thing does not exist. Before you tell the user something is missing, is not "
+        "a real project, or is not on this machine: search WIDER than the working directory (%s), "
+        "and try NAME VARIANTS — spacing, hyphens, case, and any FORMER name the thing may have had "
+        "— then state what you actually searched. One narrow query must never become a confident "
+        "negative. Auto-recalled memory is a LEAD, not a fact: a weak fragment, especially one left "
+        "over from an unrelated task, is not evidence about what something IS — confirm it on disk "
+        "before you assert it. And the user often dictates by voice, so an odd or meaningless word "
+        "is frequently a mis-transcription of a proper noun (a product, repo, or path): consider "
+        "homophones and go look for a near-match before asking what they meant.\n"
+        "INITIATIVE — answer the questions you can answer yourself instead of asking them: find the "
+        "files, read the build scripts and configs, look it up. Ask ONLY what you genuinely cannot "
+        "determine — the user's accounts, billing, credentials, or a judgement that is theirs to "
+        "make — and only after finishing everything that does not depend on the answer. Never open "
+        "with a questionnaire. Do not present a menu of what you COULD do; do it, then report what "
+        "you found. State a caveat once — do not repeat the same limitation or the same offer in a "
+        "later turn of the same conversation." % roots)
 
 
 @dataclass
@@ -152,17 +193,26 @@ class ContextComposer:
         # runs FROM here. Without this line the model burns turns guessing its location —
         # observed on pylint-4551: ~15 turns lost to `cd /repo`, `cd /workspace`, `cd ~`,
         # and absolute /home/user/... paths that don't exist.
+        # The "don't cd elsewhere" clause is about not GUESSING prefixes for files in THIS repo. It
+        # was being over-applied as "nothing outside cwd exists" (the VocalCode miss — see
+        # _grounding_line), so the last sentence carves out the case where the user's actual target
+        # legitimately lives elsewhere on the machine.
         workdir = ("WORKING DIRECTORY: %s\nAll tools run from this directory. Pass paths "
                    "RELATIVE to it (e.g. `pylint/pyreverse/writer.py`). Do NOT `cd` "
                    "elsewhere and do NOT prepend prefixes like /repo, /workspace, ~, or "
-                   "/home/user — the repository root already IS your working directory." % cwd)
+                   "/home/user — the repository root already IS your working directory. That is "
+                   "about THIS project's files; when the user asks about something that genuinely "
+                   "lives elsewhere on this machine, go find it and use its absolute path — never "
+                   "conclude it does not exist merely because it is not in this directory." % cwd)
         # SKILLS index (point 10): lazy name+description+path lines, ~20 tok/skill, read on demand.
         # Cached per cwd so it's byte-stable within a session (a skill installed mid-session won't
         # show until the next process — documented trade-off, keeps the cached prefix intact).
         skill_index = self._skill_index(cwd)
-        # RESPONSE LANGUAGE sits right after identity so it survives identity overrides (the desktop
-        # persona in webapp.py replaces self.identity wholesale but never touches this line).
-        stable_parts = [self.identity, _response_language_line(), mode_role, tool_names]
+        # RESPONSE LANGUAGE + GROUNDING sit right after identity so they survive identity overrides
+        # (the desktop persona in webapp.py replaces self.identity wholesale but never touches these
+        # lines). Both are byte-stable, so they stay inside the cached prefix.
+        stable_parts = [self.identity, _response_language_line(), _grounding_line(),
+                        mode_role, tool_names]
         if skill_index:
             stable_parts.append(skill_index)         # after tools, before workdir (STABLE slot)
         stable_parts.append(workdir)
