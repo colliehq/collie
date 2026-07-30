@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.20.20 — the browser tools stop reporting success they never had
+
+This release comes out of watching collie try to work a real, unfamiliar web flow end to end and
+fail — not for lack of intelligence, but because four of its browser tools could not fail. Each one
+returned the same cheerful result whether it had worked or done nothing at all, so collie believed
+them, built theories on top of them, and gave up on things it was actually able to do.
+
+- **It can upload files.** New `browser_upload`: give it a path on your machine and it attaches the
+  file to the page — profile picture, banner, video, any attachment, any format. This was previously
+  impossible in a way that was nobody's fault and everybody's problem: the obvious move is to click
+  the page's "choose file" button and drive the picker that appears, but **Chrome opens the OS file
+  picker only for a genuine human gesture**, so an automated click opens no window at all. There was
+  nothing to drive, and no error to explain why. Uploading now writes the file to the page's file
+  input directly, which is how browser automation has always had to do it.
+- **Typing is checked.** `browser_type` now reads the field back afterwards, and a write that landed
+  nowhere is an error naming the routes that work, instead of a confident "typed". A silent no-op
+  here is worse than a failure: it lets an empty form be submitted and believed.
+- **An ambiguous click says it was ambiguous.** Clicking by visible text or a CSS selector takes the
+  first match, and pages routinely hold several elements answering to the same name. When more than
+  one matches, collie is told the count and the candidates, and pointed at snapshot refs, which are
+  exact.
+- **A truncated snapshot says it was truncated.** `browser_snapshot` caps how many elements it
+  returns, and it walks the page in document order — so what falls off the end is whatever came
+  last, which is exactly where a dialog that just opened lives. A cut-off list used to be
+  indistinguishable from a complete one, which made a required control look like it did not exist.
+- **It can see inside closed shadow roots.** Component-based sites put real controls inside shadow
+  roots created in "closed" mode, where the standard way of looking inside returns nothing — so
+  those controls did not appear in the snapshot at all, and "not in the snapshot" reads exactly like
+  "not on the page". Collie can now see them. Your pages are unaffected: nothing is forced open,
+  `shadowRoot` still reads as the site built it, and the visibility is one-way and collie's own.
+- **macOS parity.** The Apple Events transport (the no-extension path on macOS) checks typing the
+  same way the extension does, so the two never disagree about whether text landed.
+
 ## v0.20.19 — collie can look at things
 
 - **It can see the screen.** Every perception collie had was a TREE — `browser_snapshot` returns the
