@@ -60,17 +60,27 @@ jobs:
     runs-on: [self-hosted, macOS, collie-mac]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12"
-        env:
-          # setup-python installs into RUNNER_TOOL_CACHE, and when that is unset it falls back to the
-          # HOSTED runner's path — /Users/runner/hostedtoolcache, a directory nobody on this Mac may
-          # create. `mkdir: /Users/runner: Permission denied` was the whole of the failure. The
-          # runner's own .env is supposed to carry AGENT_TOOLSDIRECTORY and does; the jobs got the
-          # hosted default anyway. A build that only works when a machine outside the repo is
-          # configured correctly is how four tags in a row produced a release with nothing attached.
-          AGENT_TOOLSDIRECTORY: ${{ runner.workspace }}/../_tool
+      # NOT actions/setup-python. Its macOS artifact ships an installation script with
+      # /Users/runner/hostedtoolcache baked into it, so on a self-hosted Mac it downloads a Python and
+      # then dies at `mkdir: /Users/runner: Permission denied` — whatever RUNNER_TOOL_CACHE says, and
+      # it says the right thing now. That single step is what stood between four tags and a release
+      # with anything attached to it. The machine already has a Python; use it.
+      - name: A Python this machine can actually run
+        run: |
+          for c in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 \
+                   /usr/local/bin/python3.13 /usr/local/bin/python3.12 /usr/local/bin/python3.11; do
+            [ -x "$c" ] || continue
+            "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || continue
+            PY="$c"; break
+          done
+          # pyproject says >=3.10. Failing here names the problem; letting `python` resolve to the
+          # 3.8 framework build on this box would fail somewhere far less obvious.
+          [ -n "${PY:-}" ] || { echo "::error::no python >= 3.10 on this runner"; exit 1; }
+          echo "using $PY ($($PY --version))"
+          mkdir -p "$RUNNER_TEMP/pybin"
+          ln -sf "$PY" "$RUNNER_TEMP/pybin/python"
+          ln -sf "$PY" "$RUNNER_TEMP/pybin/python3"
+          echo "$RUNNER_TEMP/pybin" >> "$GITHUB_PATH"
       - run: python -m pip install --upgrade build
       - run: python -m build                       # dist/*.whl + dist/*.tar.gz (version is dynamic)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -109,7 +119,8 @@ jobs:
         with:
           python-version: "3.12"
         env:
-          AGENT_TOOLSDIRECTORY: ${{ runner.workspace }}/../_tool   # see the note in `wheel`
+          RUNNER_TOOL_CACHE: ${{ runner.workspace }}/../_tool      # see the note in `wheel`
+          AGENT_TOOLSDIRECTORY: ${{ runner.workspace }}/../_tool
       - name: Inno Setup 6
         run: choco install innosetup --no-progress -y
       - name: Generator deps (Pillow for the wizard art)
@@ -202,11 +213,20 @@ jobs:
       HAVE_ASC: ${{ secrets.ASC_KEY_P8 != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12"
-        env:
-          AGENT_TOOLSDIRECTORY: ${{ runner.workspace }}/../_tool   # see the note in `wheel`
+      - name: A Python this machine can actually run        # see the note in `wheel`
+        run: |
+          for c in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 \
+                   /usr/local/bin/python3.13 /usr/local/bin/python3.12 /usr/local/bin/python3.11; do
+            [ -x "$c" ] || continue
+            "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || continue
+            PY="$c"; break
+          done
+          [ -n "${PY:-}" ] || { echo "::error::no python >= 3.10 on this runner"; exit 1; }
+          echo "using $PY ($($PY --version))"
+          mkdir -p "$RUNNER_TEMP/pybin"
+          ln -sf "$PY" "$RUNNER_TEMP/pybin/python"
+          ln -sf "$PY" "$RUNNER_TEMP/pybin/python3"
+          echo "$RUNNER_TEMP/pybin" >> "$GITHUB_PATH"
       - name: A real app icon
         run: brew install librsvg          # the build falls back to Chrome, but this is faster
 
