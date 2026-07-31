@@ -208,27 +208,150 @@ def apply_macos(dmg, on_note=print):
         shutil.rmtree(mnt, ignore_errors=True)
 
 
+def _install_root():
+    """The Inno install root, if this interpreter lives inside one. …/<root>/python/python.exe."""
+    if not plat.is_windows():
+        return ""
+    here = os.path.abspath(sys.executable)
+    root = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Collie")
+    if root and here.lower().startswith(root.lower()):
+        return root
+    inst = os.path.dirname(os.path.dirname(here))
+    try:
+        if any(f.lower().startswith("unins") and f.lower().endswith(".exe") for f in os.listdir(inst)):
+            return inst
+    except OSError:
+        pass
+    return ""
+
+
+def running_parts(root):
+    """Which pieces of Collie are up right now, so the same ones can be brought back afterwards.
+
+    Returned as plain strings ('wallpaper', 'bridge', 'window') rather than pids: everything here is
+    about to be killed, so a pid is worthless by the time it would be used.
+    """
+    parts = []
+    # The wallpaper and the app window are the SAME exe in two modes, told apart only by `--window`
+    # on the command line. Port 8787 cannot do it: that is the server, and the wallpaper is holding
+    # it open whether or not a window exists — using the port would pop a window open after every
+    # update on a machine that only ever ran the wallpaper.
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name like 'collie-wallpaper%' or Name like 'cw-build%'\""
+          " | ForEach-Object { $_.CommandLine }")
+    try:
+        out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, timeout=25,
+                             creationflags=_NO_WINDOW).stdout or ""
+    except Exception:
+        out = ""
+    lines = [l for l in out.splitlines() if l.strip()]
+    if any("--window" in l for l in lines):
+        parts.append("window")
+    if any("--window" not in l for l in lines):
+        parts.append("wallpaper")
+    try:
+        import socket
+        s = socket.create_connection(("127.0.0.1", 8677), timeout=0.6)
+        s.close()
+        parts.append("bridge")
+    except OSError:
+        pass
+    return parts
+
+
+_NO_WINDOW = 0x08000000
+
+# Runs AFTER collie has exited. PowerShell, not python: the only interpreter guaranteed to exist
+# outside the directory the installer is about to overwrite.
+_BOOTSTRAP = r'''
+$ErrorActionPreference = "Continue"
+Start-Transcript -Path "{log}" -Append | Out-Null
+"[collie-update] waiting for pid {pid} to exit"
+for ($i = 0; $i -lt 120; $i++) {{
+  if (-not (Get-Process -Id {pid} -ErrorAction SilentlyContinue)) {{ break }}
+  Start-Sleep -Milliseconds 500
+}}
+"[collie-update] running the installer"
+$p = Start-Process -FilePath "{exe}" -ArgumentList "/SILENT","/NORESTART","/SUPPRESSMSGBOXES" -Wait -PassThru
+"[collie-update] installer exit code: $($p.ExitCode)"
+if ($p.ExitCode -ne 0) {{ "[collie-update] installer FAILED — not restarting anything"; Stop-Transcript | Out-Null; exit $p.ExitCode }}
+$pyw = "{root}\python\pythonw.exe"
+if (-not (Test-Path $pyw)) {{ "[collie-update] no pythonw at $pyw"; Stop-Transcript | Out-Null; exit 1 }}
+{restarts}
+"[collie-update] done"
+Stop-Transcript | Out-Null
+'''
+
+_RESTART = {
+    "wallpaper": '"[collie-update] restarting wallpaper"\n'
+                 'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\wallpaper-boot.pyw" '
+                 '-WindowStyle Hidden\nStart-Sleep -Seconds 3',
+    "bridge":    '"[collie-update] restarting browser bridge"\n'
+                 'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\bridge-boot.pyw" '
+                 '-WindowStyle Hidden\nStart-Sleep -Seconds 2',
+    "window":    '"[collie-update] reopening the Collie window"\n'
+                 'Start-Process -FilePath $pyw -ArgumentList "-m","harness.cli","app" '
+                 '-WorkingDirectory "{root}\\python" -WindowStyle Hidden',
+}
+
+
 def apply_windows(exe, digest, on_note=print):
     """Re-run Collie-Setup.exe over the existing install. Returns (ok, detail).
 
-    Collie-Setup.exe is NOT code-signed — the PE certificate table is empty — so unlike macOS there
-    is no signature to check and Windows already shows an unknown-publisher warning on first run.
-    The digest GitHub publishes is therefore the only integrity check there is, and it is required:
-    without it this would be "download an executable and run it", which is not something to do
-    quietly on a user's machine.
+    The digest GitHub publishes is checked first. Collie-Setup.exe IS Authenticode-signed now (Azure
+    Trusted Signing, verified on the published asset), but the digest is kept: it binds the bytes to
+    THIS release, which a signature does not.
+
+    Then the awkward part. This updater usually runs from inside the very directory the installer is
+    about to replace, and Inno closes whatever holds those files (CloseApplications defaults to yes)
+    — so the installer kills the updater mid-wait. The install actually succeeded, but the process
+    was gone before it could say so: `collie update --yes` printed a download progress bar, then
+    exit code -1 and nothing else, and Collie stayed shut afterwards because the wizard's own
+    relaunch step is `skipifsilent`.
+
+    So when we are inside the install tree we do not run the installer at all. We hand it to a
+    PowerShell bootstrap outside that tree, which waits for this process to exit, installs, and
+    brings back exactly the pieces that were running. Reporting honestly matters here: this returns
+    'handed off', not 'installed', because at that point it genuinely does not know yet.
     """
     ok, why = verify_digest(exe, digest)
     on_note("  verify: %s" % why)
     if not ok:
         return False, why
-    # /SILENT keeps the wizard out of the way on an upgrade; /NORESTART because collie never needs
-    # one and a surprise reboot is worse than a stale process.
-    r = subprocess.run([exe, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
-                       capture_output=True, text=True, timeout=1800)
-    if r.returncode != 0:
-        return False, "installer exited %d: %s" % (r.returncode,
-                                                   (r.stdout or r.stderr or "").strip()[:160])
-    return True, "reinstalled over the existing copy"
+
+    root = _install_root()
+    if not root:
+        # Not inside the install tree (a pip-style layout): nothing will close us, so run it here
+        # and report the real outcome.
+        r = subprocess.run([exe, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+                           capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0:
+            return False, "installer exited %d: %s" % (r.returncode,
+                                                       (r.stdout or r.stderr or "").strip()[:160])
+        return True, "reinstalled over the existing copy"
+
+    parts = running_parts(root)
+    log = os.path.join(tempfile.gettempdir(), "collie-update.log")
+    restarts = "\n".join(_RESTART[p].replace("{root}", root) for p in parts) or \
+        '"[collie-update] nothing was running; not starting anything"'
+    script = _BOOTSTRAP.format(pid=os.getpid(), exe=exe, root=root, log=log, restarts=restarts)
+    sp = os.path.join(tempfile.gettempdir(), "collie-update.ps1")
+    with open(sp, "w", encoding="utf-8") as f:
+        f.write(script)
+
+    # CREATE_NO_WINDOW ALONE. Not DETACHED_PROCESS: a detached console application gets no console
+    # at all, and powershell.exe then exits without running a line — while Popen returns a healthy
+    # process object, so the handoff looks like it worked and nothing ever happens. Measured, both
+    # ways round. A child is not killed by its parent exiting on Windows, so nothing more is needed
+    # for the bootstrap to outlive us.
+    subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", sp],
+                     creationflags=_NO_WINDOW,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     cwd=tempfile.gettempdir())
+    on_note("  the installer runs once Collie exits; it will bring back: %s"
+            % (", ".join(parts) or "nothing (none of it was running)"))
+    on_note("  log: %s" % log)
+    return True, "handed off to the installer (it restarts Collie itself)"
 
 
 def apply_pip(wheel_url, on_note=print):

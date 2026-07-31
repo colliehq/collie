@@ -1243,6 +1243,48 @@ def test_provider_error_keeps_status_and_limit_headers():
     assert "content-type" not in comp.error_detail, "only limit-related headers, not every header"
 
 
+def test_update_handoff_does_not_detach_the_bootstrap():
+    """DETACHED_PROCESS silently does nothing here, which is the worst way for it to be wrong.
+
+    The Windows self-update hands the installer to a PowerShell bootstrap, because the installer
+    closes whatever holds the files it is replacing — including the updater itself, which lives in
+    that directory. Launched with DETACHED_PROCESS the bootstrap gets no console, powershell exits
+    without running a line, and Popen still returns a healthy process object: the handoff reports
+    success and nothing whatsoever happens. Measured both ways; CREATE_NO_WINDOW alone works, and a
+    child already outlives its parent on Windows.
+    """
+    import inspect as _i
+    from harness import update as up
+    src = _i.getsource(up.apply_windows)
+    launch = src[src.index("powershell.exe"):]
+    assert "0x00000008" not in launch and "DETACHED" not in launch.upper().replace("DETACHED_PROCESS:", ""), \
+        "the bootstrap must not be launched detached — it silently never runs"
+    assert "creationflags=_NO_WINDOW" in launch, "expected CREATE_NO_WINDOW alone for the bootstrap"
+
+
+def test_update_bootstrap_waits_installs_and_refuses_to_restart_after_a_failure():
+    from harness import update as up
+    s = up._BOOTSTRAP.format(pid=4242, exe="C:\\x\\setup.exe", root="C:\\r",
+                             log="C:\\l.log", restarts='"noop"')
+    assert "Get-Process -Id 4242" in s, "it must wait for the caller to exit before installing"
+    assert "-Wait" in s, "it must wait for the installer, or it restarts Collie mid-install"
+    assert "installer exit code" in s, "the installer's exit code has to be recorded somewhere"
+    assert "not restarting anything" in s, \
+        "a failed install must not be followed by a restart that hides it"
+
+
+def test_update_tells_wallpaper_and_window_apart():
+    """Both are the same exe; only `--window` separates them, and the server port cannot."""
+    import inspect as _i
+    from harness import update as up
+    src = _i.getsource(up.running_parts)
+    assert "--window" in src, "the window must be identified by its command line"
+    # strip comments: the comment that explains why 8787 is wrong must not read as using it
+    code = "\n".join(l.split("#", 1)[0] for l in src.splitlines())
+    assert "8787" not in code, \
+        "8787 is the server and the wallpaper holds it too — using it opens a window that was never there"
+
+
 # ------------------------------------------------------------------ reserved tool names
 def test_no_tool_name_reserved_by_the_api():
     """No tool may be called mcp_<name>. The Anthropic API reserves that shape for its own MCP
