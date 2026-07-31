@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.20.25 — the desktop stops fidgeting, and a chat that keeps up
+
+- **The chat follows new output again, and can recover from a dropped connection.** Auto-scroll
+  decided whether to follow *after* appending, so a block that landed whole — a finished answer, a
+  tool card — was already past the 130px threshold by the time the check ran, and the page read its
+  own new content as "the user scrolled away". Following stopped for the rest of the run and never
+  came back. Separately, a dropped stream does not stop the run: recovery polled the saved session
+  five times 1.5s apart, and accepted "the last message is an assistant" as proof of finishing —
+  which mid-run matches the PREVIOUS turn, so the window replaced a live run with an older thread.
+  It now re-attaches to `/api/mirror`, the run's own event bus, and judges completion against the
+  turn count the run started with.
+- **Settings holds still.** The panel was sized by its content, so switching category resized the
+  dialog under the cursor (701px, then 403px, then 489px) and every keystroke in the search box
+  resized it again.
+- **The title bar follows the theme.** It is drawn by Windows, not by the page, so a dark UI sat
+  under a white caption until the window was told — and the page now reports every theme change.
+- **Opening Collie no longer flashes a console, every time.** The C# host was recompiled on every
+  single launch: the canonical exe cannot be overwritten while an engine is running, so the swap
+  failed, the exe stayed older than its source, and the next launch compiled it again — leaving an
+  orphan `cw-build-*.exe` behind each time, one of which the app window was itself running as.
+- **"No installed app matching 'Google Chrome'" on a machine with Chrome installed.** The Windows
+  app list was six hardcoded paths labelled with the exe basename. It now comes from the Start Menu,
+  which is Windows' own list of installed applications and names them the way people say them —
+  4 apps became 153 on the machine this was found on.
+
 ## v0.20.24 — the model you picked, and a release that arrives
 
 - **`mock` is no longer offered as a model.** It answers from canned text, which is
