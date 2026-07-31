@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.20.26 — a tool name that made Collie unable to say anything
+## v0.20.27 — a tool name that made Collie unable to say anything
 
 - **`mcp_status`, `mcp_add`, `mcp_set_enabled` and `mcp_remove` are now `mcpctl_*`, and that is the
   whole release.** The Anthropic API reserves the `mcp_<name>` shape for its own MCP connector and
@@ -18,6 +18,17 @@
 - **Failures record the HTTP status and the rate-limit headers.** Only the body was kept, so a 400,
   a 429 and a 529 were indistinguishable afterwards — which is exactly why "is this us or them?"
   could not be answered from the record.
+## v0.20.26 — releases that do not depend on one laptop being awake
+
+- **The macOS build is signed from repository secrets, on a GitHub-hosted runner.** It had moved to
+  a self-hosted Mac so signing could read the Developer ID out of that machine's login keychain.
+  That bought one thing and cost two: every release waited on one laptop being awake, and a public
+  repository — the one place GitHub advises against it — had a runner attached to it. v0.20.21 and
+  v0.20.25 are what the first cost looks like: both were tagged, both queued against a runner that
+  was not attached to the repository releases are cut from, and neither produced a single file.
+  Everything in their notes below ships here.
+- The dmg is still signed and notarised, and the build still refuses to cut a tag whose dmg is
+  neither — that check is what makes reading the certificate from secrets safe rather than hopeful.
 
 ## v0.20.25 — the desktop stops fidgeting, and a chat that keeps up
 
