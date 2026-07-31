@@ -1,195 +1,532 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Download Collie — a coding agent that lives on your computer</title>
-<meta name="description" content="Collie is a coding agent that runs on your own machine — it reaches your real environment (your logged-in browser, desktop, screen, files) and proves its work by running it. Download for Windows, macOS, or Linux.">
-<link rel="icon" href="favicon.ico">
+<title>Collie — a coding agent that lives on your computer</title>
+<meta name="description" content="Collie is a coding agent that runs on your own machine — it reaches your real environment (your logged-in browser, desktop, screen, files) and proves its work by running it. Local, private, no telemetry. One-click on Windows; free.">
+<link rel="icon" href="collie-logo.svg" type="image/svg+xml">
+<link rel="canonical" href="https://collie.run/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Collie">
+<meta property="og:url" content="https://collie.run/">
+<meta property="og:title" content="Collie — a coding agent that lives on your computer">
+<meta property="og:description" content="Local and private. It reaches your real environment and proves its work by running it. One click to install.">
+<meta property="og:image" content="https://collie.run/collie-logo.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Collie — a coding agent that lives on your computer">
+<meta name="twitter:description" content="Local and private. It reaches your real environment and proves its work by running it.">
+<meta name="twitter:image" content="https://collie.run/collie-logo.png">
+<meta name="theme-color" content="#0B0C11">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Collie",
+  "alternateName": "Collie Harness",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Windows, macOS, Linux",
+  "url": "https://collie.run/",
+  "downloadUrl": "https://github.com/colliehq/collie/releases/latest",
+  "softwareHelp": "https://colliehq.github.io/collie/",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "description": "An open-source coding agent that runs on your own computer and can automate your real environment — your browser, desktop, and files. Local, private, no telemetry.",
+  "sameAs": ["https://github.com/colliehq/collie"]
+}
+</script>
 <style>
   :root{
-    --bg:#09090C; --ink:#F3F4FA; --muted:#A0A6B8; --faint:#6B7082;
-    --card:rgba(255,255,255,.045); --card-hi:rgba(255,255,255,.09); --stroke:rgba(255,255,255,.09);
-    --accent:#6E7CE8; --accent2:#93A0F4; --glow:rgba(110,124,235,.42); --ok:#5FC79A;
+    --bg:#0B0C11; --panel:#13151D; --panel-2:#181B24; --raise:#1D202B;
+    --ink:#F0F2F8; --muted:#A2A8BA; --faint:#666C7E; --line:#23262F; --line-2:#2E323E;
+    --accent:#8E9BE8; --accent-2:#AAB4F0; --accent-deep:#5766B8;
+    --warm:#E8B06A; --ok:#63C495;
+    --font:"Inter","Segoe UI",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Menlo,monospace;
+    --maxw:1120px;
   }
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,"PingFang SC",sans-serif;
-    color:var(--ink); background:var(--bg); -webkit-font-smoothing:antialiased; overflow-x:hidden;}
-  a{color:var(--accent2); text-decoration:none;} a:hover{text-decoration:underline;}
-  #aurora{position:fixed; inset:0; z-index:0;}
-  .grain{position:fixed; inset:0; z-index:1; pointer-events:none; opacity:.04; mix-blend-mode:overlay;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
-  .wrap{position:relative; z-index:2; max-width:880px; margin:0 auto; padding:0 22px;}
-  header{display:flex; align-items:center; gap:11px; padding:26px 0;}
-  header img{width:30px;height:30px;} header .nm{font-weight:650;font-size:18px;letter-spacing:-.01em;}
-  header nav{margin-left:auto; display:flex; gap:20px; font-size:14px; color:var(--muted);}
-  header nav a{color:var(--muted);} header nav a:hover{color:var(--ink);text-decoration:none;}
+  :root[data-theme="light"]{
+    --bg:#F5F6F9; --panel:#FFFFFF; --panel-2:#FAFBFD; --raise:#FFFFFF;
+    --ink:#14161F; --muted:#545A69; --faint:#8990A0; --line:#E4E6ED; --line-2:#D5D8E1;
+    --accent:#45569E; --accent-2:#33427A; --accent-deep:#45569E;
+    --warm:#B9822F; --ok:#2F8560;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme]){
+      --bg:#F5F6F9; --panel:#FFFFFF; --panel-2:#FAFBFD; --raise:#FFFFFF;
+      --ink:#14161F; --muted:#545A69; --faint:#8990A0; --line:#E4E6ED; --line-2:#D5D8E1;
+      --accent:#45569E; --accent-2:#33427A; --accent-deep:#45569E; --warm:#B9822F; --ok:#2F8560;
+    }
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html{scroll-behavior:smooth; -webkit-text-size-adjust:100%}
+  body{background:var(--bg); color:var(--ink); font-family:var(--font); line-height:1.55;
+    letter-spacing:-0.012em; -webkit-font-smoothing:antialiased; overflow-x:hidden}
+  a{color:inherit; text-decoration:none}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
+  .mono{font-family:var(--mono)}
 
-  .hero{text-align:center; padding:52px 0 30px;}
-  .hero .logo{width:104px;height:104px; filter:drop-shadow(0 12px 40px rgba(120,120,250,.4));
-    animation:float 7s ease-in-out infinite;}
-  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-  .hero h1{font-size:56px; font-weight:680; letter-spacing:-2px; margin:14px 0 0;}
-  .hero .tag{margin-top:14px; color:var(--muted); font-size:19px;}
-  .hero .pills{margin-top:18px; display:flex; gap:9px; justify-content:center; align-items:center;
-    color:var(--faint); font-size:11px; font-weight:700; letter-spacing:.18em; text-transform:uppercase; flex-wrap:wrap;}
-  .hero .pills i{width:3px;height:3px;border-radius:50%;background:var(--faint);}
+  header{position:sticky; top:0; z-index:60; background:color-mix(in srgb,var(--bg) 82%,transparent); backdrop-filter:blur(12px); border-bottom:1px solid var(--line)}
+  header .in{max-width:var(--maxw); margin:0 auto; padding:0 22px; height:60px; display:flex; align-items:center; justify-content:space-between}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:660; font-size:17px; letter-spacing:-0.02em}
+  .brand img{width:28px; height:28px}
+  nav{display:flex; align-items:center; gap:4px; font-size:14px}
+  nav a,nav button{color:var(--muted); padding:8px 13px; border-radius:9px; cursor:pointer; background:none; border:0; font-family:inherit; font-size:inherit}
+  nav a:hover,nav button:hover{color:var(--ink); background:var(--panel-2)}
+  nav .dl{color:#0B0C11; background:var(--accent); font-weight:600}
+  :root[data-theme="light"] nav .dl{color:#fff}
+  nav .dl:hover{background:var(--accent-2)}
+  .btn{display:inline-flex; align-items:center; justify-content:center; gap:10px; background:var(--accent); color:#0B0C11; font-weight:640; font-size:16px; padding:15px 26px; border-radius:13px; border:1px solid var(--accent); cursor:pointer; transition:transform .12s, background .15s}
+  :root[data-theme="light"] .btn{color:#fff}
+  .btn:hover{background:var(--accent-2); transform:translateY(-1px)}
+  .btn.ghost{background:none; color:var(--ink); border-color:var(--line-2); font-weight:560}
+  .btn.ghost:hover{border-color:var(--muted); background:var(--panel-2)}
+  .btn .sz{font-family:var(--mono); font-weight:500; opacity:.72; font-size:12.5px}
 
-  .primary{margin:30px auto 8px; max-width:520px;}
-  .dlbtn{display:flex; align-items:center; justify-content:center; gap:12px; width:100%;
-    padding:17px 26px; border-radius:16px; color:#fff; font-size:17px; font-weight:650; cursor:pointer;
-    background:linear-gradient(180deg,var(--accent2),var(--accent)); border:none;
-    box-shadow:0 12px 34px -8px var(--glow), inset 0 1px 0 rgba(255,255,255,.28); transition:.18s;}
-  .dlbtn:hover{filter:brightness(1.07); box-shadow:0 16px 44px -8px var(--glow);}
-  .dlbtn svg{width:22px;height:22px;}
-  .subline{text-align:center; color:var(--faint); font-size:13px; margin-top:11px;}
-  .subline b{color:var(--muted); font-weight:600;}
+  /* ---------- hero ---------- */
+  .hero{padding:60px 0 54px; position:relative}
+  .hero .halo{position:absolute; inset:0; z-index:-1; background:
+     radial-gradient(46ch 30ch at 80% 8%, color-mix(in srgb,var(--accent) 20%,transparent), transparent 62%)}
+  .hero-grid{display:grid; grid-template-columns:1.04fr 0.96fr; gap:50px; align-items:center}
+  .pill{display:inline-flex; align-items:center; gap:9px; font-size:13px; color:var(--muted);
+    background:var(--panel); border:1px solid var(--line); padding:6px 14px 6px 8px; border-radius:999px; margin-bottom:22px}
+  .pill b{background:var(--accent); color:#0B0C11; font-size:10.5px; font-weight:700; letter-spacing:.06em; padding:3px 8px; border-radius:999px; text-transform:uppercase}
+  :root[data-theme="light"] .pill b{color:#fff}
+  .hero h1{font-size:clamp(38px,4.7vw,60px); line-height:1.03; font-weight:700; letter-spacing:-0.035em}
+  .hero h1 .g{color:var(--accent)}
+  .hero .sub{margin:22px 0 0; max-width:46ch; font-size:18px; color:var(--muted)}
+  .hero .sub b{color:var(--ink); font-weight:600}
+  .cta{margin-top:30px; display:flex; gap:13px; justify-content:flex-start; align-items:center; flex-wrap:wrap}
+  .cta .note{width:100%; margin-top:6px; font-size:13px; color:var(--faint)}
+  @keyframes blink{50%{opacity:0}}
 
-  .os-grid{margin:40px 0 12px; display:grid; grid-template-columns:repeat(3,1fr); gap:14px;}
-  @media(max-width:640px){.os-grid{grid-template-columns:1fr;} .hero h1{font-size:44px;}}
-  .os{padding:20px; border-radius:16px; background:var(--card); border:1px solid var(--stroke);
-    backdrop-filter:blur(10px); transition:.16s;}
-  .os:hover{background:var(--card-hi); border-color:rgba(255,255,255,.16);}
-  .os.rec{border-color:transparent; box-shadow:0 0 0 1.5px var(--accent2), 0 14px 34px -14px var(--glow);
-    background:linear-gradient(180deg,rgba(110,124,235,.14),rgba(110,124,235,.05));}
-  .os .top{display:flex; align-items:center; gap:10px;}
-  .os .ico{width:26px;height:26px;color:var(--ink);} .os .ico svg{width:100%;height:100%;}
-  .os h3{font-size:16px;font-weight:640;} .os .rec-pill{margin-left:auto; font-size:10px; font-weight:700;
-    letter-spacing:.04em; color:var(--accent2); background:rgba(110,124,235,.16); padding:3px 8px; border-radius:99px;}
-  .os p{margin-top:9px; color:var(--muted); font-size:13px; line-height:1.5;}
-  .os .act{margin-top:14px; display:inline-flex; align-items:center; gap:6px; font-size:13.5px; font-weight:600; color:var(--accent2); cursor:pointer;}
-  .os code{font-family:ui-monospace,Consolas,monospace; font-size:12px; color:var(--muted);
-    background:var(--bg); border:1px solid var(--stroke); border-radius:7px; padding:7px 9px; display:block; margin-top:10px;
-    white-space:nowrap; overflow:auto;}
-  .os .soon{color:var(--faint); font-size:12px; margin-top:12px; font-style:italic;}
+  /* app panel (hero right) */
+  .app{background:var(--panel); border:1px solid var(--line-2); border-radius:18px; overflow:hidden;
+    box-shadow:0 44px 84px -52px color-mix(in srgb,var(--accent) 72%,transparent)}
+  .app-bar{display:flex; align-items:center; gap:11px; padding:12px 15px; border-bottom:1px solid var(--line); background:var(--panel-2)}
+  .app-bar .dots{display:flex; gap:6px} .app-bar .dots i{width:9px;height:9px;border-radius:50%;background:var(--line-2)}
+  .app-bar .ttl{display:flex; align-items:center; gap:7px; font-weight:600; font-size:13px}
+  .app-bar .ttl img{width:17px;height:17px}
+  .app-bar .ctx{margin-left:auto; font-family:var(--mono); font-size:11.5px; color:var(--faint)}
+  .app-body{padding:18px 17px; display:flex; flex-direction:column; gap:15px; min-height:258px; max-height:322px; overflow-y:auto; scroll-behavior:smooth}
+  .app-body::-webkit-scrollbar{width:7px} .app-body::-webkit-scrollbar-thumb{background:var(--line-2); border-radius:4px}
+  .who{font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); display:block; margin-bottom:7px}
+  .msg.you{display:flex; flex-direction:column; align-items:flex-end}
+  .msg.you .who{text-align:right}
+  .msg.you .bub{background:var(--accent); color:#0B0C11; padding:11px 14px; border-radius:13px 13px 4px 13px; font-size:14.5px; font-weight:520; max-width:82%}
+  :root[data-theme="light"] .msg.you .bub{color:#fff}
+  .acts{display:flex; flex-direction:column; gap:9px}
+  .act{display:flex; align-items:center; gap:10px; font-size:14px; color:var(--ink)}
+  .act .i{width:19px;height:19px;flex:none;border-radius:50%;background:color-mix(in srgb,var(--ok) 22%,transparent);color:var(--ok);display:grid;place-items:center;font-size:11px;font-style:normal}
+  .act b{font-weight:620} .act .dim{color:var(--faint)}
+  .done{margin-top:3px; display:flex; align-items:center; gap:9px; font-size:14px; color:var(--muted); background:var(--bg); border:1px solid var(--line); border-radius:11px; padding:10px 13px}
+  .done img{width:18px;height:18px}
+  .app-input{display:flex; align-items:center; gap:11px; padding:13px 14px; border-top:1px solid var(--line); background:var(--panel-2)}
+  .app-input .ii{width:22px;height:22px;flex:none;opacity:.92}
+  .app-input .itxt{flex:1; font-size:14.5px; color:var(--ink); min-height:20px}
+  .app-input .ph{color:var(--faint)}
+  .app-input .cur{display:inline-block; width:2px; height:16px; background:var(--accent); vertical-align:-2px; margin-left:1px; animation:blink 1.05s steps(1) infinite}
+  .app-input .send{width:32px;height:32px;flex:none;border-radius:9px;background:var(--accent);color:#0B0C11;display:grid;place-items:center;border:0;cursor:pointer}
+  :root[data-theme="light"] .app-input .send{color:#fff}
+  .ifield{position:relative; flex:1; display:flex; align-items:center}
+  #askInput{width:100%; background:none; border:0; outline:0; color:var(--ink); font-family:var(--font); font-size:14.5px; padding:0; letter-spacing:inherit}
+  .pho{position:absolute; inset:0; display:flex; align-items:center; pointer-events:none}
+  .pho.hide{display:none}
+  /* guided response */
+  .rbub{background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:13px 15px}
+  .rbub p{font-size:13.8px; color:var(--ink); line-height:1.5} .rbub p b{font-weight:660}
+  .rbtn{display:inline-flex; align-items:center; gap:8px; margin-top:12px; background:var(--accent); color:#0B0C11; font-weight:620; font-size:13.5px; padding:9px 15px; border-radius:10px}
+  :root[data-theme="light"] .rbtn{color:#fff}
+  .rbtn:hover{background:var(--accent-2)}
+  .rnote{display:block; margin-top:9px; font-size:11px; color:var(--faint); font-family:var(--mono); letter-spacing:.02em}
+  .typing{display:flex; gap:5px; padding:6px 2px}
+  .typing i{width:7px;height:7px;border-radius:50%;background:var(--faint);animation:bob 1.1s infinite}
+  .typing i:nth-child(2){animation-delay:.15s} .typing i:nth-child(3){animation-delay:.3s}
+  @keyframes bob{0%,60%,100%{opacity:.35;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+  #askInput:disabled{cursor:default}
+  .app-input.capped .send{opacity:.4; pointer-events:none}
 
-  .note{text-align:center; color:var(--faint); font-size:13px; margin:26px 0; line-height:1.6;}
-  footer{text-align:center; color:var(--faint); font-size:12.5px; padding:40px 0 50px; border-top:1px solid var(--stroke); margin-top:36px;}
-  footer a{color:var(--muted);}
+  /* ---------- marquee of asks ---------- */
+  .band{padding:52px 0}
+  .lead-h{text-align:center; margin-bottom:30px}
+  .lead-h .eye{font-size:13px; color:var(--accent); font-weight:600; letter-spacing:.02em}
+  .lead-h h2{font-size:clamp(26px,4vw,40px); font-weight:680; letter-spacing:-0.03em; margin-top:10px}
+  .lead-h p{color:var(--muted); font-size:17px; margin:12px auto 0; max-width:50ch}
+  .marq{position:relative; display:flex; flex-direction:column; gap:14px; overflow:hidden; -webkit-mask:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent); mask:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent)}
+  .track{display:flex; gap:14px; width:max-content; animation:scroll 46s linear infinite}
+  .track.rev{animation-direction:reverse; animation-duration:54s}
+  @keyframes scroll{to{transform:translateX(-50%)}}
+  .marq:hover .track{animation-play-state:paused}
+  .chip{display:inline-flex; align-items:center; gap:11px; white-space:nowrap; background:var(--panel);
+    border:1px solid var(--line); border-radius:12px; padding:14px 18px; font-size:15px; color:var(--ink)}
+  .chip .q{font-family:var(--mono); color:var(--accent); font-size:13px}
+  .chip .tag{font-size:11px; color:var(--faint); border:1px solid var(--line); border-radius:6px; padding:2px 7px; margin-left:2px}
+
+  /* ---------- how (3 steps, mass-market) ---------- */
+  .how{background:var(--panel); border-top:1px solid var(--line); border-bottom:1px solid var(--line)}
+  .how .in{max-width:var(--maxw); margin:0 auto; padding:56px 22px; display:grid; grid-template-columns:repeat(3,1fr); gap:20px}
+  .stp{text-align:center; padding:0 10px}
+  .stp .big{font-size:34px; font-weight:720; color:var(--accent); letter-spacing:-0.03em}
+  .stp h3{font-size:20px; font-weight:660; margin:12px 0 8px}
+  .stp p{color:var(--muted); font-size:15px}
+
+  /* ---------- trust strip ---------- */
+  .trust{display:grid; grid-template-columns:repeat(4,1fr); gap:20px; text-align:center}
+  .trust .t{padding:14px}
+  .trust .t .ic{width:26px;height:26px;margin:0 auto 12px;color:var(--accent)}
+  .trust .t h4{font-size:15.5px; font-weight:620; margin-bottom:5px}
+  .trust .t p{font-size:13px; color:var(--muted)}
+
+  /* ---------- download ---------- */
+  .get{background:var(--panel); border-top:1px solid var(--line)}
+  .get .in{max-width:920px; margin:0 auto; padding:60px 22px}
+  .dlcard{background:var(--bg); border:1px solid var(--line-2); border-radius:20px; overflow:hidden}
+  .dlcard .top{display:flex; align-items:center; gap:14px; padding:20px 24px; border-bottom:1px solid var(--line)}
+  .dlcard .top img{width:40px;height:40px}
+  .dlcard .top .t{font-weight:660; font-size:18px}
+  .dlcard .top .s{color:var(--faint); font-size:13px; font-family:var(--mono)}
+  .tabs{display:grid; grid-template-columns:repeat(3,1fr)}
+  .tabs button{font-size:14.5px; color:var(--muted); background:none; border:0; border-bottom:2px solid transparent; padding:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:9px; font-family:inherit; font-weight:520}
+  .tabs button svg{width:17px;height:17px}
+  .tabs button[aria-selected="true"]{color:var(--ink); border-bottom-color:var(--accent); background:var(--panel-2)}
+  .pane{display:none; padding:28px 26px}
+  .pane.on{display:block}
+  .pane .lead{color:var(--muted); font-size:15px; margin-bottom:18px; max-width:60ch}
+  .pane .btn{width:100%; font-size:17px; padding:17px}
+  .cmd{display:flex; align-items:center; gap:11px; font-family:var(--mono); font-size:14px; background:var(--panel); border:1px solid var(--line-2); border-radius:12px; padding:15px 16px; cursor:pointer; color:var(--ink)}
+  .cmd .pr{color:var(--accent)} .cmd .cp{margin-left:auto; font-size:12px; color:var(--faint)}
+  .incl{margin-top:20px; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:13.5px; color:var(--muted)}
+  .incl div{display:flex; gap:9px; align-items:center} .incl .k{color:var(--accent)}
+  .fine{margin-top:20px; font-size:12.5px; color:var(--faint); display:flex; gap:16px; flex-wrap:wrap}
+  .fine a{color:var(--accent)}
+
+  footer{border-top:1px solid var(--line)}
+  footer .in{max-width:var(--maxw); margin:0 auto; padding:26px 22px; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; color:var(--faint); font-size:13.5px}
+  footer a{color:var(--muted)} footer a:hover{color:var(--ink)}
+  footer .r{display:flex; gap:20px}
+
+  @media (max-width:900px){
+    .hero-grid{grid-template-columns:1fr; gap:38px}
+    .hero-l{text-align:center}
+    .hero h1,.hero .sub{margin-left:auto; margin-right:auto}
+    .cta{justify-content:center}
+    .app{max-width:520px; margin:0 auto; width:100%}
+  }
+  @media (max-width:820px){
+    .how .in{grid-template-columns:1fr; gap:34px}
+    .trust{grid-template-columns:1fr 1fr; gap:26px}
+  }
+  @media (prefers-reduced-motion:reduce){ .track{animation:none} .ask .cur{animation:none} }
 </style>
 </head>
 <body>
-<canvas id="aurora"></canvas>
-<div class="grain"></div>
-<div class="wrap">
-  <header>
-    <img src="collie-logo.png" alt=""><span class="nm">Collie</span>
-    <nav>
-      <a href="https://github.com/colliehq/collie">GitHub</a>
-      <a href="https://github.com/colliehq/collie/releases">Releases</a>
-      <a href="https://github.com/colliehq/collie#readme">Docs</a>
-    </nav>
-  </header>
 
-  <section class="hero">
-    <img class="logo" src="collie-logo.png" alt="Collie">
-    <h1>Collie</h1>
-    <div class="tag">A coding agent that lives on your computer — and can actually run it.</div>
-    <div class="pills"><span>RUNS LOCALLY</span><i></i><span>YOUR REAL BROWSER</span><i></i><span>NO TELEMETRY</span></div>
+<header><div class="in">
+  <div class="brand"><img src="collie-logo.svg" alt=""><span>Collie</span></div>
+  <nav>
+    <a href="https://github.com/colliehq/collie#readme">How it works</a>
+    <a href="https://github.com/colliehq/collie">GitHub</a>
+    <button id="theme" title="light / dark">◐</button>
+    <a href="#get" class="dl">Download</a>
+  </nav>
+</div></header>
 
-    <div class="primary">
-      <button class="dlbtn" id="primaryBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
-        <span id="primaryText">Download</span>
-      </button>
-      <div class="subline" id="primarySub">Detecting your platform…</div>
+<main>
+  <!-- HERO -->
+  <section class="hero"><div class="halo"></div><div class="wrap hero-grid">
+    <div class="hero-l">
+      <span class="pill"><b>New</b> a coding agent that lives on your computer</span>
+      <h1>A coding agent that lives on your computer — and can <span class="g">actually run it</span>.</h1>
+      <p class="sub">Local and private. Collie reaches your <b>real environment</b> — your logged-in browser, your desktop, your screen, your files — and <b>proves its work by running it.</b></p>
+      <div class="cta">
+        <a class="btn" href="#get">↓ Get Collie — it's free</a>
+        <a class="btn ghost" href="#see">See what it can do</a>
+        <span class="note">One click on Windows · also on macOS &amp; Linux · runs on your own machine</span>
+      </div>
+    </div>
+
+    <div class="hero-r">
+      <div class="app">
+        <div class="app-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="ttl"><img src="collie-logo.svg" alt="">Collie</span>
+          <span class="ctx">~/staging</span>
+        </div>
+        <div class="app-body">
+          <div class="msg you"><span class="who">You</span><div class="bub">Fix the timeout bug in checkout — and prove it's fixed</div></div>
+          <div class="msg col">
+            <span class="who">Collie</span>
+            <div class="acts">
+              <div class="act"><i class="i">✓</i> Found it → <b>checkout/pay.py:42</b></div>
+              <div class="act"><i class="i">✓</i> Wrote a failing reproduction <span class="dim">· red before the fix</span></div>
+              <div class="act"><i class="i">✓</i> Made the fix <span class="dim">· +1 −1</span></div>
+              <div class="act"><i class="i">✓</i> Re-ran it — <b>verified passing ✓</b></div>
+            </div>
+            <div class="done"><img src="collie-logo.svg" alt="">Fixed and verified. Anything else?</div>
+          </div>
+        </div>
+        <form class="app-input" id="askForm" autocomplete="off">
+          <img class="ii" src="collie-logo.svg" alt="">
+          <div class="ifield">
+            <input id="askInput" type="text" aria-label="Ask Collie to do something">
+            <span class="pho" id="pho"><span id="typed"></span><span class="ph">Ask Collie to…</span><span class="cur"></span></span>
+          </div>
+          <button class="send" type="submit" aria-label="Ask Collie"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+        </form>
+      </div>
+    </div>
+  </div></section>
+
+  <!-- WHAT YOU CAN ASK -->
+  <section class="band" id="see">
+    <div class="wrap lead-h">
+      <div class="eye">CODING IS THE CORE · YOUR MACHINE IS THE REACH</div>
+      <h2>If you can describe it, Collie can do it.</h2>
+      <p>Its coding agent built the desktop console, the real-browser control, the recorder, the phone remote — the range is the proof. You ask; it does the whole thing, on your own machine.</p>
+    </div>
+    <div class="marq">
+      <div class="track">
+        <span class="chip"><span class="q">›</span>Fix the checkout bug — and prove it's fixed<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
+        <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
+        <span class="chip"><span class="q">›</span>Clean up and organize my Downloads folder<span class="tag">files</span></span>
+        <!-- duplicate for seamless loop -->
+        <span class="chip"><span class="q">›</span>Fix the checkout bug — and prove it's fixed<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
+        <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
+        <span class="chip"><span class="q">›</span>Clean up and organize my Downloads folder<span class="tag">files</span></span>
+      </div>
+      <div class="track rev">
+        <span class="chip"><span class="q">›</span>Rename this project everywhere in the code<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Summarize these 40 PDFs into one note<span class="tag">files</span></span>
+        <span class="chip"><span class="q">›</span>Fill out this application form with my details<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Find every place this function is used<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Download my invoices and total them up<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Rename this project everywhere in the code<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Summarize these 40 PDFs into one note<span class="tag">files</span></span>
+        <span class="chip"><span class="q">›</span>Fill out this application form with my details<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Find every place this function is used<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Download my invoices and total them up<span class="tag">web</span></span>
+      </div>
     </div>
   </section>
 
-  <section class="os-grid" id="osGrid">
-    <!-- Windows -->
-    <div class="os" data-os="win">
-      <div class="top">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l7.5-1v7.2H3V5.5zM3 12.3h7.5v7.2L3 18.5v-6.2zM11.3 4.3L21 3v9.5h-9.7V4.3zM11.3 12.3H21V21l-9.7-1.3v-7.4z"/></svg></span>
-        <h3>Windows</h3><span class="rec-pill" data-rec style="display:none">Recommended</span>
-      </div>
-      <p>One click. A self-contained installer — no Python, no terminal. Opens Collie in a native window.</p>
-      <a class="act" id="winDl" href="https://github.com/colliehq/collie/releases/latest">Download Collie-Setup.exe →</a>
-    </div>
-    <!-- macOS -->
-    <div class="os" data-os="mac">
-      <div class="top">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.9-.8-3-.8-1.6 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.3-2.6-.1 0-2.4-1-2.5-3.9zM14.1 5.2c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.8-1.3z"/></svg></span>
-        <h3>macOS</h3><span class="rec-pill" data-rec style="display:none">Recommended</span>
-      </div>
-      <p>One click. Signed and notarised by Apple — no Gatekeeper warning, no Python, no terminal.</p>
-      <a class="act" id="macDl" href="https://github.com/colliehq/collie/releases/latest">Download Collie-arm64.dmg →</a>
-      <div class="soon">Apple Silicon. On Intel: <code>pip install "collie-harness[local]"</code></div>
-    </div>
-    <!-- Linux -->
-    <div class="os" data-os="linux">
-      <div class="top">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-1.7 0-3 1.5-3 3.3 0 1 .2 1.7.2 2.4 0 .8-.7 1.5-1.4 2.6-.8 1.1-1.8 2.4-1.8 4.4 0 .6.1 1.1.3 1.6-.3.4-.5.9-.5 1.4 0 1.3 1.3 2.3 3.2 2.7 1 .2 1.8.7 2.8.7s1.8-.5 2.8-.7c1.9-.4 3.2-1.4 3.2-2.7 0-.5-.2-1-.5-1.4.2-.5.3-1 .3-1.6 0-2-1-3.3-1.8-4.4-.7-1.1-1.4-1.8-1.4-2.6 0-.7.2-1.4.2-2.4C15 3.5 13.7 2 12 2zm-1.3 3.6c.3 0 .5.3.5.7s-.2.7-.5.7-.5-.3-.5-.7.2-.7.5-.7zm2.6 0c.3 0 .5.3.5.7s-.2.7-.5.7-.5-.3-.5-.7.2-.7.5-.7z"/></svg></span>
-        <h3>Linux</h3><span class="rec-pill" data-rec style="display:none">Recommended</span>
-      </div>
-      <p>The core is stdlib-only — one pip install:</p>
-      <code>pip install -e ".[local]"</code>
-      <a class="act" href="https://github.com/colliehq/collie#install">Setup guide →</a>
-    </div>
-  </section>
+  <!-- HOW SIMPLE -->
+  <section class="how"><div class="in">
+    <div class="stp"><div class="big">1</div><h3>Say it in plain words</h3><p>No commands, no setup. Talk to Collie the way you'd ask a person for help.</p></div>
+    <div class="stp"><div class="big">2</div><h3>It does the whole thing</h3><p>It opens your browser, runs the steps, edits the files — the actual work, not just advice.</p></div>
+    <div class="stp"><div class="big">3</div><h3>It proves it worked</h3><p>It runs the change to check it's actually done, shows you exactly what it did, and hands back the result.</p></div>
+  </div></section>
 
-  <div class="note" id="verNote">
-    Every build is on the <a href="https://github.com/colliehq/collie/releases">releases page</a>.
-    No account, no telemetry — <b>mock</b> and local <b>Ollama</b> run with no key.
-  </div>
+  <!-- TRUST -->
+  <section class="band"><div class="wrap">
+    <div class="trust">
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div><h4>Uses your real browser</h4><p>Signed into your accounts — it does what you'd do, in your own session.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></div><h4>Proves its work</h4><p>Writes a check, runs it, and only calls a task done when it actually passes.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg></div><h4>Runs on your machine</h4><p>Local and private, on your own AI subscription. Your files stay with you.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M3 8h18M8 21h8"/></svg></div><h4>Windows, Mac &amp; Linux</h4><p>One click to install on Windows; a single line on macOS and Linux.</p></div>
+    </div>
+  </div></section>
 
-  <footer>
-    Collie — MIT-licensed, runs locally. <a href="https://github.com/colliehq/collie">github.com/colliehq/collie</a>
-  </footer>
-</div>
+  <!-- GET -->
+  <section class="get" id="get"><div class="in">
+    <div class="lead-h" style="margin-bottom:26px">
+      <div class="eye">GET COLLIE</div>
+      <h2>Free, and installed in a minute.</h2>
+      <p>Pick your system — we already guessed it below.</p>
+    </div>
+    <div class="dlcard">
+      <div class="top"><img src="collie-logo.svg" alt=""><div><div class="t">Collie</div><div class="s" data-version>v0.20.24 · free · MIT · open-source</div></div></div>
+      <div class="tabs" role="tablist">
+        <button role="tab" data-os="win" aria-selected="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.5V11H3V5.5ZM10.5 12v6.5L3 17.5V12h7.5ZM11.5 4.3 21 3v8h-9.5V4.3ZM21 12v9l-9.5-1.3V12H21Z"/></svg>Windows</button>
+        <button role="tab" data-os="mac" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.9c0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.7-.8-2.8-.8-1.4 0-2.8.8-3.5 2.1-1.5 2.6-.4 6.5 1.1 8.6.7 1 1.5 2.2 2.6 2.1 1-.04 1.4-.7 2.7-.7 1.2 0 1.6.7 2.7.66 1.1-.02 1.8-1 2.5-2 .8-1.2 1.1-2.3 1.1-2.3-.02-.02-2.1-.8-2.1-3.2ZM14.3 6.3c.6-.7 1-1.7.9-2.7-.9.04-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .07 1.9-.5 2.5-1.2Z"/></svg>macOS</button>
+        <button role="tab" data-os="linux" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c2.2 0 3.3 1.9 3.3 4.2 0 1.3-.4 2.2-.4 3.2 0 .9.7 1.5 1.4 2.8.8 1.5 1.7 3.1 1.7 4.7 0 1.6-1.1 2.5-1.9 2.6.2.6-.1 1.4-.9 1.7-.8.3-2.1.3-3.4.3s-2.6 0-3.4-.3c-.8-.3-1.1-1.1-.9-1.7-.8-.1-1.9-1-1.9-2.6 0-1.6.9-3.2 1.7-4.7.7-1.3 1.4-1.9 1.4-2.8 0-1-.4-1.9-.4-3.2C8.7 3.9 9.8 2 12 2Z"/></svg>Linux</button>
+      </div>
+      <div class="pane on" data-os="win">
+        <p class="lead">The easy way: no Python, no terminal. Download, double-click, pick your language — done. Everything's bundled inside.</p>
+        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-Setup.exe">↓ Download for Windows <span class="sz">Collie-Setup.exe · 48 MB</span></a>
+        <div class="incl">
+          <div><span class="k">✓</span> No setup or configuring</div>
+          <div><span class="k">✓</span> Desktop app + live wallpaper</div>
+          <div><span class="k">✓</span> Installs for you only, no admin</div>
+          <div><span class="k">✓</span> Uninstalls cleanly anytime</div>
+        </div>
+        <div class="fine"><span>Windows 10 / 11</span><a href="https://github.com/colliehq/collie/releases/latest">all downloads →</a></div>
+      </div>
+      <div class="pane" data-os="mac">
+        <p class="lead">The easy way: no Python, no terminal. Download, drag it to Applications, open it — signed and notarised by Apple, so it opens without a warning.</p>
+        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-arm64.dmg">↓ Download for macOS <span class="sz">Collie-arm64.dmg · 137 MB</span></a>
+        <div class="incl">
+          <div><span class="k">✓</span> No setup or configuring</div>
+          <div><span class="k">✓</span> Desktop app + menu-bar controls</div>
+          <div><span class="k">✓</span> Installs for you only, no admin</div>
+          <div><span class="k">✓</span> Drag to the Bin to uninstall</div>
+        </div>
+        <div class="fine"><span>Apple silicon · macOS 12+</span><a href="https://github.com/colliehq/collie/releases/latest">all downloads →</a></div>
+      </div>
+      <div class="pane" data-os="linux">
+        <p class="lead">One package, one line. Everything works on plain localhost.</p>
+        <div class="cmd" data-copy='pip install "git+https://github.com/colliehq/collie"'><span class="pr">$</span><span>pip install "git+https://github.com/colliehq/collie"</span><span class="cp">copy</span></div>
+        <div class="fine"><span>needs Python 3.12+</span><a href="https://github.com/colliehq/collie#readme">step-by-step guide →</a></div>
+      </div>
+    </div>
+  </div></section>
+</main>
+
+<footer><div class="in">
+  <span>Collie · <a href="https://collie.run">collie.run</a> · free &amp; open-source (MIT) · runs locally</span>
+  <span class="r"><a href="https://github.com/colliehq/collie">GitHub</a><a href="https://github.com/colliehq/collie/releases">Downloads</a><a href="https://github.com/colliehq/collie#readme">Docs</a></span>
+</div></footer>
 
 <script>
-  var REPO = "colliehq/collie";
-  function detectOS(){
-    var p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent;
-    p = p.toLowerCase();
-    if (p.indexOf("win") >= 0) return "win";
-    if (p.indexOf("mac") >= 0 || p.indexOf("iphone") >= 0 || p.indexOf("ipad") >= 0) return "mac";
-    if (p.indexOf("linux") >= 0 || p.indexOf("android") >= 0 || p.indexOf("x11") >= 0) return "linux";
-    return "win";
-  }
-  var os = detectOS();
-  // highlight the visitor's OS card
-  document.querySelectorAll(".os").forEach(function(c){
-    if (c.dataset.os === os){ c.classList.add("rec"); var r = c.querySelector("[data-rec]"); if (r) r.style.display = ""; }
+(function(){
+  "use strict";
+  var root=document.documentElement;
+  document.getElementById("theme").addEventListener("click",function(){
+    var c=root.getAttribute("data-theme");
+    if(!c) c=matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light";
+    root.setAttribute("data-theme", c==="dark"?"light":"dark");
   });
-  // primary button reflects the OS
-  var pBtn = document.getElementById("primaryBtn"), pTxt = document.getElementById("primaryText"), pSub = document.getElementById("primarySub");
-  var releasesUrl = "https://github.com/" + REPO + "/releases/latest";
-  if (os === "win"){ pTxt.textContent = "Download for Windows"; pSub.innerHTML = "Collie-Setup.exe · <b>Windows 10/11 (64-bit)</b>"; pBtn.onclick = function(){ location.href = winExe || releasesUrl; }; }
-  else if (os === "mac"){ pTxt.textContent = "Get Collie for macOS"; pSub.innerHTML = "Install via <b>pip</b> today — a .dmg is coming"; pBtn.onclick = function(){ location.href = "https://github.com/" + REPO + "#install"; }; }
-  else { pTxt.textContent = "Get Collie for Linux"; pSub.innerHTML = "Install via <b>pip</b> — stdlib-only core"; pBtn.onclick = function(){ location.href = "https://github.com/" + REPO + "#install"; }; }
+  // OS tabs
+  function os(){
+    var p=(((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||"")+" "+(navigator.userAgent||"")).toLowerCase();
+    if(p.indexOf("win")>-1)return"win";
+    if(p.indexOf("mac")>-1||p.indexOf("iphone")>-1||p.indexOf("ipad")>-1)return"mac";
+    if(p.indexOf("linux")>-1||p.indexOf("android")>-1)return"linux";
+    return"win";
+  }
+  var tabs=[].slice.call(document.querySelectorAll('.tabs button')), panes=[].slice.call(document.querySelectorAll('.pane'));
+  function sel(o){tabs.forEach(function(t){t.setAttribute("aria-selected",t.dataset.os===o);});panes.forEach(function(p){p.classList.toggle("on",p.dataset.os===o);});}
+  tabs.forEach(function(t){t.addEventListener("click",function(){sel(t.dataset.os);});}); sel(os());
+  // copy
+  document.querySelectorAll('.cmd[data-copy]').forEach(function(el){
+    el.addEventListener("click",function(){var cp=el.querySelector('.cp');
+      (navigator.clipboard?navigator.clipboard.writeText(el.dataset.copy):Promise.reject())
+      .then(function(){if(cp){var o=cp.textContent;cp.textContent="copied ✓";setTimeout(function(){cp.textContent=o;},1400);}}).catch(function(){});});
+  });
+  // ---- interactive ask panel ----
+  var input=document.getElementById("askInput"), pho=document.getElementById("pho"),
+      typed=document.getElementById("typed"), form=document.getElementById("askForm"),
+      body=document.querySelector(".app-body"), reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
 
-  // pull the latest release: real asset URL for the Windows exe + version label
-  var winExe = "";
-  fetch("https://api.github.com/repos/" + REPO + "/releases/latest").then(function(r){ return r.ok ? r.json() : null; }).then(function(rel){
-    if (!rel) return;
-    var ver = rel.tag_name || "";
-    (rel.assets || []).forEach(function(a){ if (/\.exe$/i.test(a.name)) winExe = a.browser_download_url; });
-    if (winExe){ document.getElementById("winDl").href = winExe; if (os === "win") pBtn.onclick = function(){ location.href = winExe; }; }
-    if (ver){ document.getElementById("verNote").insertAdjacentHTML("afterbegin", "Latest: <b>" + ver + "</b> · "); }
-  }).catch(function(){});
+  // typewriter placeholder — runs only while the field is empty & unfocused
+  var lines=["fix the login bug and prove it's fixed","renew the cert and open the dashboard",
+    "pull my orders into a spreadsheet","clean up my Downloads folder","get this project running on my machine",
+    "fill out this form with my details"];
+  var li=0, ci=0, del=false, run=false, tok=0;
+  function tick(t){
+    if(t!==tok||!run) return;
+    var w=lines[li];
+    if(!del){ typed.textContent=w.slice(0,ci++); if(ci>w.length){ del=true; setTimeout(function(){tick(t);},1400); return; } }
+    else{ typed.textContent=w.slice(0,ci--); if(ci<0){ del=false; ci=0; li=(li+1)%lines.length; } }
+    setTimeout(function(){tick(t);}, del?32:54);
+  }
+  function startTw(){ if(reduce) return; run=true; tok++; tick(tok); }
+  function stopTw(){ run=false; tok++; }
+  input.addEventListener("focus", function(){ stopTw(); pho.classList.add("hide"); });
+  input.addEventListener("input", function(){ pho.classList.add("hide"); });
+  input.addEventListener("blur", function(){ if(!input.value){ typed.textContent=""; pho.classList.remove("hide"); startTw(); } });
+  var phStatic=pho.querySelector(".ph");
+  if(reduce){ typed.textContent=""; }
+  else{ if(phStatic) phStatic.style.display="none"; setTimeout(startTw,700); }
 
-  // ---- aurora background (same motif as the app) ----
-  var cv = document.getElementById("aurora"), ctx = cv.getContext("2d"), W, H, DPR, cx, cy, blobs = [], dust = [];
-  var PAL = [[99,102,241],[139,92,246],[56,140,230],[224,118,150]];
-  function rnd(a,b){ return a + Math.random()*(b-a); }
-  function resize(){ DPR = Math.min(2, devicePixelRatio||1); W = cv.width = innerWidth*DPR; H = cv.height = innerHeight*DPR;
-    cv.style.width = innerWidth+"px"; cv.style.height = innerHeight+"px"; cx = W/2; cy = H*0.32; build(); }
-  function build(){ blobs = []; for (var i=0;i<4;i++) blobs.push({c:PAL[i%4], orb:rnd(0.16,0.42)*W, size:rnd(0.5,0.9)*W, a0:rnd(0,6.28), sp:rnd(0.6,1.2)*(Math.random()<.5?-1:1), al:rnd(0.09,0.16)});
-    dust = []; var n = Math.round(innerWidth*innerHeight/8000), R = Math.hypot(W,H)*0.6;
-    for (var j=0;j<n;j++) dust.push({rad:Math.pow(Math.random(),.6)*R, a:rnd(0,6.28), r:rnd(0.4,1.3)*DPR, base:rnd(0.15,0.6), ph:rnd(0,6.28), sp:rnd(0.5,1.4)}); }
-  var OMEGA = 0.09, t0 = performance.now();
-  function frame(now){ var t = (now-t0)/1000; ctx.clearRect(0,0,W,H); ctx.globalCompositeOperation = "lighter";
-    blobs.forEach(function(b){ var ang = b.a0 + t*OMEGA*b.sp, x = cx+Math.cos(ang)*b.orb, y = cy+Math.sin(ang)*b.orb*0.7;
-      var g = ctx.createRadialGradient(x,y,0,x,y,b.size), c = b.c;
-      g.addColorStop(0,"rgba("+c[0]+","+c[1]+","+c[2]+","+b.al+")"); g.addColorStop(.5,"rgba("+c[0]+","+c[1]+","+c[2]+","+(b.al*.4)+")"); g.addColorStop(1,"rgba("+c[0]+","+c[1]+","+c[2]+",0)");
-      ctx.fillStyle = g; ctx.fillRect(0,0,W,H); });
-    ctx.globalCompositeOperation = "source-over";
-    dust.forEach(function(s){ var ang = s.a + t*OMEGA*0.8*(1+40*DPR/(s.rad+40*DPR)), x = cx+Math.cos(ang)*s.rad, y = cy+Math.sin(ang)*s.rad*0.86;
-      var a = s.base*(0.5+0.5*Math.sin(t*s.sp+s.ph)); ctx.beginPath(); ctx.arc(x,y,s.r,0,6.2832); ctx.fillStyle = "rgba(210,214,255,"+a+")"; ctx.fill(); });
-    requestAnimationFrame(frame); }
-  addEventListener("resize", resize); resize(); requestAnimationFrame(frame);
+  // guided, honest reply -> download
+  function cat(t){ t=t.toLowerCase();
+    if(/(browser|chrome|edge|website|\bsite\b|login|log in|sign in|dashboard|portal|order|form|invoice|book|email|gmail|scrape|\bweb\b|\bpage\b|account)/.test(t)) return "browser";
+    if(/(bug|\bcode\b|coding|repo|function|refactor|deploy|\btest|build|project|rename|\bgit\b|\bapi\b|compile|\bfix\b|feature|typescript|python|javascript)/.test(t)) return "code";
+    if(/(file|folder|pdf|organi|photo|document|spreadsheet|csv|summari|downloads|clean\s?up|\bsort\b)/.test(t)) return "files";
+    return "generic";
+  }
+  var REPLY={
+    browser:"On it — that’s a <b>browser</b> job. I’d open your own logged-in Chrome or Edge and handle it, click by click.",
+    code:"Nice, a <b>coding</b> task — my favourite. I’d dig into your project, make the change, and prove it actually works.",
+    files:"Easy — I’d go through your <b>files</b> and sort the whole thing out for you.",
+    generic:"Love it — that’s exactly my kind of job."
+  };
+  function osDl(){
+    var p=(((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||"")+" "+(navigator.userAgent||"")).toLowerCase();
+    if(p.indexOf("win")>-1) return {href:"https://github.com/colliehq/collie/releases/latest/download/Collie-Setup.exe", label:"↓ Install Collie for Windows — free", note:"WINDOWS 10 / 11 · ALSO MACOS · LINUX"};
+      // A Mac visitor used to get a button that scrolled to a panel telling them to run pip.
+      // There has been a signed, notarised .dmg in every release since v0.20.16; hand them the
+      // file, the same way Windows gets one.
+      if(p.indexOf("mac")>-1) return {href:"https://github.com/colliehq/collie/releases/latest/download/Collie-arm64.dmg", label:"↓ Install Collie for macOS — free", note:"APPLE SILICON · ALSO ON WINDOWS &amp; LINUX"};
+    return {href:"#get", label:"↓ Get Collie — it’s free", note:"MACOS · LINUX · WINDOWS · RUNS ON YOUR MACHINE"};
+  }
+  function esc(s){ return s.replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+
+  var history=[], msgCount=0, MAX_MSGS=6, busy=false;
+  function down(){ body.scrollTop=body.scrollHeight; }
+  function addYou(v){
+    var e=document.createElement("div"); e.className="msg you";
+    e.innerHTML='<span class="who">You</span><div class="bub">'+esc(v)+'</div>';
+    body.appendChild(e); down();
+  }
+  function addTyping(){
+    var e=document.createElement("div"); e.className="msg col";
+    e.innerHTML='<span class="who">Collie</span><div class="typing"><i></i><i></i><i></i></div>';
+    body.appendChild(e); down(); return e;
+  }
+  function addReply(text){
+    var dl=osDl();
+    var e=document.createElement("div"); e.className="msg col";
+    e.innerHTML='<span class="who">Collie</span><div class="rbub"><p>'+esc(text)+'</p>'+
+      '<a class="rbtn" href="'+dl.href+'">'+dl.label+'</a><span class="rnote">'+dl.note+'</span></div>';
+    body.appendChild(e); down();
+  }
+  function fallback(v){
+    return REPLY[cat(v)]+' But I do the real thing on your own computer — so I can’t run it from this web page. Install me and I’ll actually do it.';
+  }
+  function capNotice(){
+    input.disabled=true; form.classList.add("capped"); pho.classList.add("hide"); typed.textContent="";
+    var dl=osDl();
+    var e=document.createElement("div"); e.className="msg col";
+    e.innerHTML='<span class="who">Collie</span><div class="rbub"><p>That’s the tour! 🐾 To actually get any of this done, bring me onto your own computer — it’s free.</p><a class="rbtn" href="'+dl.href+'">'+dl.label+'</a><span class="rnote">'+dl.note+'</span></div>';
+    body.appendChild(e); down();
+  }
+  form.addEventListener("submit", async function(e){
+    e.preventDefault();
+    if(busy || input.disabled) return;
+    var v=input.value.trim(); if(!v) return;
+    stopTw(); pho.classList.add("hide");
+    addYou(v); history.push({role:"user",content:v});
+    input.value=""; msgCount++; busy=true;
+    var t=addTyping();
+    var reply=null, limited=false;
+    try{
+      var res=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({message:v, history:history.slice(0,-1)})});
+      if(res.status===429){ limited=true; }
+      else if(res.ok){ var d=await res.json(); if(d&&d.reply) reply=d.reply; }
+    }catch(_){}
+    t.remove();
+    if(limited) reply="I’ve chatted plenty today! To keep going — and to actually get things done — install me on your computer. It’s free.";
+    else if(!reply) reply=fallback(v);
+    history.push({role:"assistant",content:reply});
+    if(history.length>8) history=history.slice(-8);
+    addReply(reply); busy=false;
+    if(msgCount>=MAX_MSGS) capNotice();
+    else setTimeout(function(){ if(!input.disabled) input.focus(); },40);
+  });
+})();
+</script>
+<!-- Cloudflare Web Analytics: no cookies, no cross-site identifiers, nothing to consent to. -->
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "dbb5ee67fbbd4995a2cae84e3f0af217"}'></script>
+<script>
+// The version was typed into the page by hand and stopped being true: the card still read v0.20.0
+// with four releases shipped since. Ask GitHub instead, and leave the typed one as the fallback so a
+// rate-limited or offline visitor sees a number rather than a gap.
+fetch("https://api.github.com/repos/colliehq/collie/releases/latest")
+  .then(function (r) { return r.ok ? r.json() : null; })
+  .then(function (j) {
+    if (!j || !j.tag_name) return;
+    document.querySelectorAll("[data-version]").forEach(function (el) {
+      el.textContent = j.tag_name + " · free · MIT · open-source";
+    });
+  })
+  .catch(function () {});
 </script>
 </body>
 </html>
