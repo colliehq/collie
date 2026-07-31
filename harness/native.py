@@ -337,14 +337,22 @@ def launch(target):
 
     Off Windows this defers to desktop.launch, which knows `open` and `xdg-open` — so a caller that
     reaches here on a Mac opens the app instead of silently returning False."""
+    return launch_detail(target)[0]
+
+
+def launch_detail(target):
+    """(ok, reason) — launch, keeping why it failed. See desktop.launch_detail: a bare False forces
+    every caller to report "could not launch", which names the outcome and hides the cause."""
+    if not target:
+        return False, "no target given"
     if not plat.is_windows():
         from . import desktop
-        return desktop.launch(target)
+        return desktop.launch_detail(target)
     try:
         os.startfile(target)  # noqa: S606 - launching a user app is the point
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as e:
+        return False, "%s: %s" % (type(e).__name__, e)
 
 
 # ── agent tools ─────────────────────────────────────────────────────────────────────────────────
@@ -523,7 +531,10 @@ def _register_windows(registry):
         schema = {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}
 
         def run(self, args, ctx):
-            return "ok — launched" if launch(args.get("target", "")) else "ERROR(desktop): could not launch %r" % args.get("target", "")
+            # The reason, not just the verdict: "could not launch" is the report, never the problem.
+            ok, why = launch_detail(args.get("target", ""))
+            return "ok — launched" if ok else "ERROR(desktop): could not launch %r — %s" % (
+                args.get("target", ""), why)
 
     class DesktopFocus(Tool):
         name, tier = "desktop_focus", "always"

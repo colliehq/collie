@@ -646,8 +646,13 @@ class GrepTool(Tool):
             out = (out or "").strip()
             if out:
                 return out[:6000] + "\n… (hit 25s; PARTIAL results — pass a narrower `path` for the rest)"
-            return ("(no match within 25s — this tree is very large; narrow `path` (e.g. a "
-                    "subdir) or use a more specific pattern)")
+            # ERROR, not "(no match…)". A completed search that finds nothing returns "(no matches)"
+            # one branch up, and the two strings were near-identical — so a search that was KILLED
+            # read as proof the thing does not exist, and whatever was searched for got treated as
+            # absent. An inconclusive result must never wear the shape of a conclusive one.
+            return ("ERROR: the search was killed at 25s before it finished, so this says NOTHING "
+                    "about whether the pattern exists — it was not searched to the end. Narrow "
+                    "`path` (e.g. a subdirectory) or use a more specific pattern, then re-run.")
         except Exception as e:
             return "ERROR: %s" % e
 

@@ -18,7 +18,7 @@ from . import redact as _redact
 from . import settings as _settings
 from .context import ContextComposer
 from .providers import (ModelProvider, Usage, ToolCall, classify_error, is_overflow,
-                        _error_completion)
+                        is_known_terminal, _error_completion)
 from .recorder import Recorder, RunResult
 from .tools import ToolRegistry, ToolCtx, repair_args
 from .verifier import CodeReproVerifier, Mutation, Observation
@@ -436,8 +436,22 @@ class Harness:
                     # once only the body survives, and "is this Anthropic having a bad minute or is
                     # it us?" is precisely the question the record has to be able to answer.
                     # The class stays the prefix — callers key off "<cls>:" — so the status follows it.
-                    comp.text = "%s: %s%s" % (cls, ("HTTP %d " % comp.error_status) if comp.error_status else "",
-                                              comp.error_detail or comp.text or "provider error")
+                    # Say what was DECIDED, not only what happened. "terminal" is the classifier's
+                    # word for "not retried", and a reader has no way to know whether Collie tried
+                    # three times or gave up on the first response. Worse, an error matching none of
+                    # the patterns lands here too, so "we did not recognise this" and "we know this
+                    # is fatal" printed identically — the mcp_ naming failure spent hours looking
+                    # like a quota problem partly because nothing said the message was unrecognised.
+                    known = is_known_terminal(comp.error_detail or comp.text or "")
+                    note = ("not retried (fatal)" if known else
+                            "not retried — this error matches no known pattern, so it was treated "
+                            "as fatal rather than retried blindly; the text below is verbatim from "
+                            "the provider and may not describe the real cause")
+                    if attempts:
+                        note = "gave up after %d retries" % attempts
+                    comp.text = "%s: [%s] %s%s" % (
+                        cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
+                        comp.error_detail or comp.text or "provider error")
                     break
                 if overflow_now:
                     continue   # rebuild context with shrunk history, then re-run this turn

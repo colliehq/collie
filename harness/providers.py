@@ -229,6 +229,17 @@ _RETRYABLE_RE = re.compile(
 _RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504, 522, 524, 529}
 
 
+def is_known_terminal(text: str) -> bool:
+    """True iff the text matches a failure we RECOGNISE as fatal (bad key, no quota, no permission).
+
+    classify_error() returns 'terminal' both for those and for anything it does not recognise at
+    all — the fall-through at the end. Same word, two very different confidences, and the report
+    read the same either way. Callers that show a human why a run stopped need to be able to say
+    "this is fatal" apart from "we have never seen this and did not retry it".
+    """
+    return bool(_TERMINAL_RE.search(text or ""))
+
+
 def is_overflow(text: str) -> bool:
     """True iff the error text means the INPUT exceeded the model's context window (point 9).
     Exclude rate-limit/throttle wording first (those say 'too many tokens' but aren't overflow)."""

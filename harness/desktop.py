@@ -194,9 +194,22 @@ def launch(target):
     bundles, plain files and URLs alike."""
     if not target:
         return False
+    return launch_detail(target)[0]
+
+
+def launch_detail(target):
+    """(ok, reason) — the same launch, with the reason it failed kept.
+
+    launch() answers True/False and throws the cause away, so every caller could only say "could
+    not launch", which is the report and not the problem: a missing path, a path that exists but is
+    not runnable, and a shell association that is not registered all looked identical. Callers that
+    report to a person or to the model should use this one.
+    """
+    if not target:
+        return False, "no target given"
     is_url = target.lower().startswith(("http://", "https://"))
     if not is_url and not os.path.exists(target):
-        return False
+        return False, "path does not exist: %s" % target
     try:
         if _is_mac():
             subprocess.Popen(["/usr/bin/open", target],
@@ -206,9 +219,9 @@ def launch(target):
         else:
             subprocess.Popen(["xdg-open", target],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as e:
+        return False, "%s: %s" % (type(e).__name__, e)
 
 
 def icon_png(path):
@@ -1203,8 +1216,9 @@ def desktop_intent(text):
             return {"action": "app", "arg": arg, "ok": False,
                     "error": "No installed app matching %r." % arg,
                     "suggest": near}
+        ok, why = launch_detail(hit["path"])
         return {"action": "app", "arg": hit["label"], "path": hit["path"],
-                "ok": bool(launch(hit["path"]))}
+                "ok": ok, "error": "" if ok else "could not launch %s — %s" % (hit["label"], why)}
 
     if action == "system":
         info = sysinfo() or {}

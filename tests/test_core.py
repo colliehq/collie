@@ -1,7 +1,7 @@
 """Per-component regression suite for collie's pure-logic Python parts. Stdlib-only, no Opus, fast.
     .venv/bin/python tests/test_core.py     (exit 0 = all pass)
 Each test targets one component and locks in a fixed bug so it can't regress."""
-import io, json, os, sys, tempfile, time, types, warnings
+import inspect, io, json, os, sys, tempfile, time, types, warnings
 warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1170,6 +1170,78 @@ def test_bash_python_shim():
     from harness.tools import BashTool
     r = BashTool().run({"command": 'python -c "print(6*7)"', "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert r.strip() == "42", "python (shimmed to python3) must run, got: %r" % r
+
+# ------------------------------------------------------------------ failures must announce themselves
+def test_grep_timeout_is_not_reported_as_no_match():
+    """A killed search must not wear the shape of a completed one.
+
+    grep returns "(no matches)" when it searched everything and found nothing. On timeout it used to
+    return "(no match within 25s …)" — a near-identical string for the opposite claim: the
+    tree was NOT searched to the end, so it says nothing about whether the pattern exists. Anything
+    reading results would conclude the thing is absent. The timeout path is an ERROR now.
+    """
+    import ast, textwrap
+    import harness.tools as T
+    fn = ast.parse(textwrap.dedent(inspect.getsource(T.GrepTool.run))).body[0]
+    # the TimeoutExpired handler ONLY — a looser slice picks up the generic `except Exception:
+    # return "ERROR: %s"` below it and passes no matter what this branch does.
+    handlers = [h for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)
+                and "TimeoutExpired" in ast.dump(h.type or ast.Pass())]
+    assert len(handlers) == 1, "expected exactly one timeout handler in grep, found %d" % len(handlers)
+    rets = []
+    for n in ast.walk(handlers[0]):
+        if isinstance(n, ast.Return):
+            for c in ast.walk(n):
+                if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                    rets.append(c.value)
+    assert rets, "the timeout handler returns nothing constant to inspect"
+    empty = [r for r in rets if "25s" in r and "PARTIAL" not in r]
+    assert empty, "could not find the no-results-on-timeout message"
+    for r in empty:
+        assert r.lstrip().upper().startswith("ERROR"), \
+            "a killed search must announce itself, not return a no-match-shaped string: %r" % r[:60]
+
+
+def test_launch_failure_carries_a_reason():
+    """`could not launch X` names the outcome and hides the cause. launch_detail keeps the reason."""
+    from harness import desktop
+    ok, why = desktop.launch_detail(os.path.join(os.getcwd(), "definitely-not-here-xyz.app"))
+    assert ok is False and "does not exist" in why, "expected the missing path to be named: %r" % why
+    ok, why = desktop.launch_detail("")
+    assert ok is False and why, "an empty target must still say why"
+
+
+def test_unrecognised_provider_error_says_it_was_not_recognised():
+    """'terminal' covers both 'we know this is fatal' and 'we have never seen this'.
+
+    They printed identically, so a run stopped by an unknown error looked as settled as one stopped
+    by a bad API key. That is how the mcp_ naming failure — reported by the API as a billing
+    message — read as a quota problem for hours.
+    """
+    from harness.providers import classify_error, is_known_terminal
+    known = "authentication_error: invalid x-api-key"
+    unknown = "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+    assert classify_error(known) == "terminal" and classify_error(unknown) == "terminal", \
+        "both still classify as terminal — that is the point"
+    assert is_known_terminal(known), "a bad key is a recognised fatal error"
+    assert not is_known_terminal(unknown), \
+        "this message matches no pattern; it must NOT be reported with the confidence of one"
+
+
+def test_provider_error_keeps_status_and_limit_headers():
+    """A recorded failure has to be diagnosable later: 400, 429 and 529 must not look identical."""
+    import urllib.error, io as _io
+    from harness.providers import _error_completion
+    hdrs = {"anthropic-ratelimit-unified-5h-utilization": "0.08",
+            "anthropic-ratelimit-unified-status": "allowed",
+            "content-type": "application/json"}
+    err = urllib.error.HTTPError("https://api", 400, "Bad Request", hdrs,
+                                 _io.BytesIO(b'{"error":{"message":"boom"}}'))
+    comp = _error_completion("anthropic-oauth", err)
+    assert comp.error_status == 400, "the status must survive into the record"
+    assert "5h-utilization" in comp.error_detail, "the rate-limit headers must survive too"
+    assert "content-type" not in comp.error_detail, "only limit-related headers, not every header"
+
 
 # ------------------------------------------------------------------ reserved tool names
 def test_no_tool_name_reserved_by_the_api():
