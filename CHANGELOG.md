@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.20.26 — a tool name that made Collie unable to say anything
+
+- **`mcp_status`, `mcp_add`, `mcp_set_enabled` and `mcp_remove` are now `mcpctl_*`, and that is the
+  whole release.** The Anthropic API reserves the `mcp_<name>` shape for its own MCP connector and
+  refuses any request that declares a tool with it — the entire request, HTTP 400, before a single
+  token. Those four tools shipped in v0.20.21 and are registered unconditionally, so from that
+  release on, **every message on the subscription path failed**. Nothing could be sent at all.
+- **The error said something else entirely.** The refusal comes back as
+  `invalid_request_error: "You're out of extra usage. Add more at claude.ai/settings/usage"` — a
+  quota message for a naming problem, on an account whose 5-hour window was 8% used. It cost three
+  wrong diagnoses before the request was bisected a variable at a time; the tool name was the only
+  thing that mattered, and renaming it with the description and schema untouched fixes it.
+  `mcp__server__tool` — the double-underscore form MCP servers' own tools use — is unaffected.
+- **A test now refuses any tool named `mcp_<name>`,** because nothing about the failure points at
+  the cause and the next person will not get there by reading the message.
+- **Failures record the HTTP status and the rate-limit headers.** Only the body was kept, so a 400,
+  a 429 and a 529 were indistinguishable afterwards — which is exactly why "is this us or them?"
+  could not be answered from the record.
+
 ## v0.20.25 — the desktop stops fidgeting, and a chat that keeps up
 
 - **The chat follows new output again, and can recover from a dropped connection.** Auto-scroll

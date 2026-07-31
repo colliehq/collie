@@ -1171,6 +1171,28 @@ def test_bash_python_shim():
     r = BashTool().run({"command": 'python -c "print(6*7)"', "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert r.strip() == "42", "python (shimmed to python3) must run, got: %r" % r
 
+# ------------------------------------------------------------------ reserved tool names
+def test_no_tool_name_reserved_by_the_api():
+    """No tool may be called mcp_<name>. The Anthropic API reserves that shape for its own MCP
+    connector and rejects the WHOLE request when it sees one — with
+    `invalid_request_error: "You're out of extra usage. Add more at claude.ai/settings/usage"`,
+    which is not a hint, it is a different problem entirely. Four tools named mcp_status / mcp_add /
+    mcp_set_enabled / mcp_remove shipped in v0.20.21 and broke every single request on the
+    subscription path: not one message could be sent, and the error sent the diagnosis chasing a
+    quota that was 8% used.
+
+    `mcp__server__tool` (double underscore) is the sanctioned form and stays legal — MCP servers'
+    own tools are named that way and are unaffected.
+    """
+    import re
+    from harness.tools import default_registry
+    reg = default_registry(web_search=False)
+    names = [t.name for t in reg.all()] if hasattr(reg, "all") else list(getattr(reg, "_tools", {}))
+    assert names, "registry exposed no tools to check"
+    bad = [n for n in names if re.match(r"^mcp_[^_]", n)]
+    assert not bad, "tool names the API refuses (rename off the mcp_ prefix): %s" % bad
+
+
 # ------------------------------------------------------------------ execute_code RPC (progtool)
 def test_execute_code_recursion_guard():
     from harness.tools import default_registry

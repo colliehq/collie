@@ -431,7 +431,13 @@ class Harness:
                         time.sleep(delay)
                         continue
                     # terminal / retries exhausted / overflow-already-tried: class-prefix res.error
-                    comp.text = "%s: %s" % (cls, comp.error_detail or comp.text or "provider error")
+                    # The HTTP status goes in too. Without it a recorded failure cannot be told
+                    # apart afterwards: a 529 overload, a 429 rate limit and a 400 read identically
+                    # once only the body survives, and "is this Anthropic having a bad minute or is
+                    # it us?" is precisely the question the record has to be able to answer.
+                    # The class stays the prefix — callers key off "<cls>:" — so the status follows it.
+                    comp.text = "%s: %s%s" % (cls, ("HTTP %d " % comp.error_status) if comp.error_status else "",
+                                              comp.error_detail or comp.text or "provider error")
                     break
                 if overflow_now:
                     continue   # rebuild context with shrunk history, then re-run this turn

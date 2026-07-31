@@ -109,7 +109,7 @@ class ToolCtx:
     # images), so this is the whole seam: `screenshot` is the first user.
     images: list = field(default_factory=list)
     # The live ToolRegistry, so a tool that CHANGES what tools exist can make the change take effect
-    # in this session instead of asking for a restart — `mcp_add` registers the new server's tools
+    # in this session instead of asking for a restart — `mcpctl_add` registers the new server's tools
     # straight away, the same way enable_capability makes a gated capability usable immediately.
     registry: object = None
 
@@ -814,7 +814,7 @@ _GATED_CAPS = {
                        "is then sent to the model along with whatever happens to be visible"),
     # Gated because this is the one capability that changes what the OTHER capabilities are: adding
     # an MCP server hands collie a new set of tools, chosen by collie, running under the user's
-    # credentials. Reading the configuration (mcp_status) and switching a server OFF stay ungated —
+    # credentials. Reading the configuration (mcpctl_status) and switching a server OFF stay ungated —
     # neither extends reach, and being able to disable a misbehaving server should never need a
     # permission dance.
     "mcp_manage": ("MCP_MANAGE", "MCP server management",
@@ -909,7 +909,7 @@ def default_registry(code_search: bool = False,
     # last so a broken server can't stop the core tools from registering.
     try:
         from .mcpclient import register_mcp_management, register_mcp_servers
-        register_mcp_management(r)      # always — mcp_add matters most when nothing is set up yet
+        register_mcp_management(r)      # always — mcpctl_add matters most when nothing is set up yet
         register_mcp_servers(r)
     except Exception:
         pass

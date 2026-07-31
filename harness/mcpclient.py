@@ -842,7 +842,7 @@ def _register_live(registry, name, cfg):
 
 
 class MCPStatusTool(Tool):
-    name, tier = "mcp_status", "always"
+    name, tier = "mcpctl_status", "always"
     description = ("List the MCP servers configured on this machine and what state each is in: "
                    "stdio or remote, its command/URL, whether it is switched on, whether it is "
                    "authenticated, and how many tools it advertises. Use this before assuming a "
@@ -869,7 +869,7 @@ class MCPStatusTool(Tool):
 
 
 class MCPAddTool(Tool):
-    name, tier = "mcp_add", "always"
+    name, tier = "mcpctl_add", "always"
     description = ("Add an MCP server, giving yourself the tools it exposes. Provide `url` for a "
                    "remote server (https://…) or `command` (plus optional `args`) for a stdio one. "
                    "The server's tools are registered immediately, so you can use them in this same "
@@ -901,7 +901,7 @@ class MCPAddTool(Tool):
 
 
 class MCPSetEnabledTool(Tool):
-    name, tier = "mcp_set_enabled", "always"
+    name, tier = "mcpctl_set_enabled", "always"
     description = ("Switch a configured MCP server on or off without deleting how it was set up. "
                    "Switching one OFF is the safe way to test whether it is what is causing a "
                    "problem. Switching one ON expands the tools you can call, so it needs the user's "
@@ -919,16 +919,16 @@ class MCPSetEnabledTool(Tool):
         if on and not _mcp_manage_on():
             return _MCP_CONSENT % ("switch the MCP server %r back on and give you its tools" % name)
         if not set_enabled(name, on):
-            return "ERROR: no MCP server named %r (call mcp_status to see what exists)" % name
+            return "ERROR: no MCP server named %r (call mcpctl_status to see what exists)" % name
         return ("MCP server %r is now %s. This takes effect on the next collie run — the tools "
                 "available in THIS session are unchanged." % (name, "ON" if on else "OFF"))
 
 
 class MCPRemoveTool(Tool):
-    name, tier = "mcp_remove", "always"
+    name, tier = "mcpctl_remove", "always"
     description = ("Delete an MCP server's configuration, its cached tool list and any stored OAuth "
                    "token. This is irreversible — the user has to set the server up again. Prefer "
-                   "mcp_set_enabled with enabled=false to switch one off temporarily. Requires the "
+                   "mcpctl_set_enabled with enabled=false to switch one off temporarily. Requires the "
                    "user's explicit agreement. Args: name.")
     schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
 
@@ -937,13 +937,13 @@ class MCPRemoveTool(Tool):
         if not _mcp_manage_on():
             return _MCP_CONSENT % ("delete the MCP server %r, including its stored credential" % name)
         if not remove_server(name):
-            return "ERROR: no MCP server named %r (call mcp_status to see what exists)" % name
+            return "ERROR: no MCP server named %r (call mcpctl_status to see what exists)" % name
         return ("Removed MCP server %r — config, cached tool list and stored token. Its tools stay in "
                 "this session's registry until the next run." % name)
 
 
 def register_mcp_management(registry):
-    """The manage-MCP tools. Registered ALWAYS, including when no server is configured — `mcp_add`
+    """The manage-MCP tools. Registered ALWAYS, including when no server is configured — `mcpctl_add`
     with nothing set up yet is the case that matters most."""
     for t in (MCPStatusTool(), MCPAddTool(), MCPSetEnabledTool(), MCPRemoveTool()):
         registry.register(t)

@@ -184,12 +184,27 @@ def _error_completion(name: str, err, usage=None, status: int = 0) -> Completion
             detail = err.read().decode("utf-8", "ignore")[:300]
         except Exception:
             detail = str(err)
+        # Keep the rate-limit headers WITH the failure. "You're out of extra usage" says a request
+        # was refused for want of capacity but not which bucket was full, and the answer is only
+        # observable at the moment of refusal — a check afterwards reads a window that has already
+        # moved on (8% utilization, 67 seconds after a rejection claiming none). Without this the
+        # only way to explain an intermittent refusal is to guess.
+        try:
+            hs = {k.lower(): v for k, v in err.headers.items()}
+            rl = {k: v for k, v in hs.items()
+                  if "ratelimit" in k or k in ("retry-after", "anthropic-organization-id")}
+            if rl:
+                detail += " | limits: " + json.dumps(rl, sort_keys=True)
+        except Exception:
+            pass
         msg = "HTTP %d: %s" % (err.code, detail)
     else:
         detail = str(err)
         msg = "%s: %s" % (type(err).__name__, detail)
+    # 300 was enough for a message and not for the evidence behind it: the body alone already fills
+    # it, so appending the limit headers above would have written them straight into the truncation.
     return Completion(text="ERROR(%s): %s" % (name, msg), stop_reason="error",
-                      usage=usage or Usage(), error_status=status, error_detail=detail[:300])
+                      usage=usage or Usage(), error_status=status, error_detail=detail[:1200])
 
 
 # ---- error classification (pure data — NO retry policy here; the host owns policy, pi retry.ts) --
