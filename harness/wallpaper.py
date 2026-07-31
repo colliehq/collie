@@ -105,6 +105,76 @@ def start_server_windowless(port: int) -> None:
     subprocess.Popen([pythonw(), "-c", code], **kw)
 
 
+CREATE_NO_WINDOW = 0x08000000
+
+
+def _quiet() -> dict:
+    """Kwargs that keep a console child from flashing a window on screen.
+
+    capture_output does NOT do this: it redirects the handles, and Windows still creates a console
+    for a console-subsystem program. csc.exe and tasklist.exe are both console programs, and both
+    used to blink a black box over whatever the user was looking at, every single launch.
+    """
+    return {"creationflags": CREATE_NO_WINDOW} if plat.is_windows() else {}
+
+
+def _try_remove(path: str) -> bool:
+    try:
+        os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
+def _sweep_builds(d: str, keep: str) -> None:
+    """Delete build leftovers that are no longer in use. A running image cannot be deleted, so
+    whatever is still live simply survives to be swept by a later launch — that is the intended
+    outcome, not a failure, and nothing here raises."""
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        if n == keep:
+            continue
+        if n.startswith("cw-build-") and n.endswith(".exe"):
+            _try_remove(os.path.join(d, n))
+        elif n.startswith("collie-wallpaper.exe.old-"):
+            _try_remove(os.path.join(d, n))
+
+
+def _install_build(tmp: str, exe: str) -> "str | None":
+    """Put a freshly compiled exe at the canonical path, even when the old one is running.
+
+    Windows refuses to overwrite or delete a running image — which is why the plain os.replace()
+    this used to do failed on every launch that mattered: the logon autostart keeps an engine live,
+    so the canonical exe could never be refreshed, the freshness check failed again next time, and
+    csc ran (and flashed) on EVERY launch, leaving another orphan build behind each time.
+
+    Renaming a running image, however, IS allowed. Move the old one aside, then the swap lands.
+    """
+    try:
+        os.replace(tmp, exe)
+        return exe
+    except OSError:
+        pass
+    aside = exe + ".old-%s" % os.urandom(3).hex()
+    try:
+        os.replace(exe, aside)
+    except OSError:
+        return tmp if os.path.exists(tmp) else None      # nothing else to try; the fresh build runs
+    try:
+        os.replace(tmp, exe)
+    except OSError:
+        try:
+            os.replace(aside, exe)                        # put it back rather than leave none
+        except OSError:
+            pass
+        return tmp if os.path.exists(tmp) else None
+    _try_remove(aside)                                    # still running -> swept on a later launch
+    return exe
+
+
 # ── engine: build-on-demand + WebView2 check ─────────────────────────────────
 def webview2_present() -> bool:
     if not plat.is_windows():
@@ -132,6 +202,7 @@ def build_engine(force: bool = False) -> "str | None":
         # C# fixes (mouse-hook, load-retry, …) never actually reached the running wallpaper.
         try:
             if os.path.getmtime(exe) >= os.path.getmtime(os.path.join(src_dir(), "Program.cs")):
+                _sweep_builds(src_dir(), os.path.basename(exe))
                 return exe
         except OSError:
             return exe
@@ -153,7 +224,7 @@ def build_engine(force: bool = False) -> "str | None":
            "/reference:Microsoft.Web.WebView2.Core.dll",
            "/reference:Microsoft.Web.WebView2.WinForms.dll", "Program.cs"]
     try:
-        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=120, **_quiet())
     except Exception:
         try:
             if os.path.exists(tmp):
@@ -168,12 +239,9 @@ def build_engine(force: bool = False) -> "str | None":
         except OSError:
             pass
         return exe if os.path.exists(exe) else None   # keep the working exe; don't hand back garbage
-    try:
-        os.replace(tmp, exe)                            # atomic swap
-    except OSError:
-        # the canonical exe is likely held open by a running engine — the fresh temp build still works
-        return tmp if os.path.exists(tmp) else (exe if os.path.exists(exe) else None)
-    return exe if os.path.exists(exe) else None
+    got = _install_build(tmp, exe)                      # swaps even when the old one is running
+    _sweep_builds(d, os.path.basename(got or exe))
+    return got
 
 
 def launch_engine(port: int) -> bool:
@@ -195,7 +263,7 @@ def engine_running() -> bool:
         return False
     try:
         out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq collie-wallpaper.exe"],
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, timeout=10, **_quiet()).stdout
         return "collie-wallpaper.exe" in out
     except Exception:
         return False

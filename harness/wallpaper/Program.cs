@@ -71,6 +71,24 @@ class CollieWallpaper : Form
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, IntPtr size, out IntPtr wrote);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, IntPtr size, out IntPtr read);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
+
+    // The title bar is drawn by DWM, not by us and not by the page — so a dark UI inside a window
+    // whose caption stays white is not a CSS problem, it is a window that was never told. 20 is
+    // DWMWA_USE_IMMERSIVE_DARK_MODE on Windows 10 20H1 and later; before that the same flag lived at
+    // 19. Try the current one, and fall back only if it is rejected.
+    static bool _titleBarDark;
+    void ApplyTitleBarTheme(bool dark)
+    {
+        if (!_windowMode || !IsHandleCreated) return;
+        _titleBarDark = dark;
+        int on = dark ? 1 : 0;
+        if (DwmSetWindowAttribute(Handle, 20, ref on, sizeof(int)) != 0)
+            DwmSetWindowAttribute(Handle, 19, ref on, sizeof(int));
+        // DWM repaints the caption on the next frame; nudge it so the change is not deferred until
+        // the user happens to move or focus the window.
+        SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020);
+    }
 
     static string _log = Path.Combine(Path.GetTempPath(), "collie-wallpaper.log");
     static void Log(string s) { try { File.AppendAllText(_log, DateTime.Now.ToString("HH:mm:ss") + " " + s + "\r\n"); } catch { } }
@@ -157,6 +175,15 @@ class CollieWallpaper : Form
         base.WndProc(ref m);
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // Start dark rather than starting light and correcting: the client area is black from the
+        // first frame, so a light caption would flash before the page finishes loading and reports
+        // its real theme. The page's own message (below) is what settles it either way.
+        ApplyTitleBarTheme(true);
+    }
+
     CollieWallpaper()
     {
         int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
@@ -225,6 +252,23 @@ class CollieWallpaper : Form
             _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _web.CoreWebView2.Settings.IsZoomControlEnabled = false;
             _web.DefaultBackgroundColor = Color.Black;
+            // The page owns the theme (a saved choice, else the system's) and can flip it at any
+            // time from the toggle in its header. It posts {type:"theme",dark:bool}; the caption is
+            // ours to repaint, so this is the only way the two can agree.
+            _web.CoreWebView2.WebMessageReceived += delegate (object sT, CoreWebView2WebMessageReceivedEventArgs eT)
+            {
+                // WebMessageAsJson, NOT TryGetWebMessageAsString: postMessage is called with an
+                // OBJECT, and the string accessor throws for anything that is not a bare string —
+                // so every theme report was dropped and the caption never followed the page.
+                string raw = null;
+                try { raw = eT.WebMessageAsJson; } catch { }
+                if (string.IsNullOrEmpty(raw)) { try { raw = eT.TryGetWebMessageAsString(); } catch { return; } }
+                if (string.IsNullOrEmpty(raw) || raw.IndexOf("\"theme\"", StringComparison.Ordinal) < 0) return;
+                bool dark = raw.IndexOf("\"dark\":true", StringComparison.Ordinal) >= 0
+                            || raw.IndexOf("\"dark\": true", StringComparison.Ordinal) >= 0;
+                if (dark == _titleBarDark) return;
+                try { BeginInvoke((MethodInvoker)delegate { ApplyTitleBarTheme(dark); }); } catch { }
+            };
             // The wallpaper is pinned behind the desktop icons and can never show a permission prompt,
             // so auto-grant microphone — that's what the composer's voice input (Web Speech API) needs.
             _web.CoreWebView2.PermissionRequested += delegate (object s3, CoreWebView2PermissionRequestedEventArgs e3)

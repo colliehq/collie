@@ -237,7 +237,14 @@
      everything. A category rail is what desktop tools do, and matching that habit matters more here
      than being clever. The groups are folded into six categories on the way in. */
   .modal.modal-wide { max-width: 880px; }
-  .modal-wide .modal-body { padding: 0; max-height: 66vh; overflow: hidden; display: flex; }
+  /* height, NOT max-height. With max-height the panel was only as tall as whatever category was
+     open, so switching Essentials -> MCP -> Memory resized the whole dialog under the cursor, and
+     typing in the search box resized it on every keystroke. A settings window is furniture: it
+     holds still and the content scrolls inside it (both the rail and the pane already scroll).
+     min() keeps it off the bottom of a short window without going back to content-driven sizing. */
+  .modal-wide .modal-body {
+    padding: 0; height: min(66vh, 620px); overflow: hidden; display: flex;
+  }
   .set-rail {
     width: 208px; flex: none; border-right: 1px solid var(--line); background: var(--surface-2);
     padding: 12px; overflow-y: auto;
@@ -1335,11 +1342,26 @@
     if (t) return t;
     return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
+  // Tell the native window host. Its title bar is drawn by Windows, not by this page, so without
+  // this a dark UI sits under a white caption bar. No-op in a browser (no chrome.webview).
+  function reportTheme() {
+    try { window.chrome.webview.postMessage({ type: "theme", dark: curTheme() === "dark" }); }
+    catch (e) {}
+  }
+  reportTheme();
   $("themeBtn").onclick = function () {
     var next = curTheme() === "dark" ? "light" : "dark";
     root.setAttribute("data-theme", next);
     try { localStorage.setItem("collie-theme", next); } catch (e) {}
+    reportTheme();
   };
+  // Following the system only matters while the user has NOT pinned a choice — once data-theme is
+  // set, curTheme() ignores the media query and so must the caption.
+  try {
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+      if (!root.getAttribute("data-theme")) reportTheme();
+    });
+  } catch (e) {}
 
   // ---- i18n --------------------------------------------------------------
   // Resolved from Settings (LANG: auto or a language code); auto follows the browser. Each

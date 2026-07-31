@@ -63,12 +63,62 @@ def apps(limit=0):
                 seen.add(label.lower())
                 out.append({"label": label, "path": path})
     else:
+        # The Start Menu first: it IS Windows' list of installed applications, and its shortcut
+        # filenames are the names people say out loud.
+        for a in _win_start_menu_apps():
+            if a["label"].lower() not in seen:
+                seen.add(a["label"].lower())
+                out.append(a)
         for p in _win_candidates():
-            if p and os.path.exists(p) and p.lower() not in seen:
-                seen.add(p.lower())
-                out.append({"label": os.path.splitext(os.path.basename(p))[0], "path": p})
+            if p and os.path.exists(p):
+                label = os.path.splitext(os.path.basename(p))[0]
+                if label.lower() not in seen:
+                    seen.add(label.lower())
+                    out.append({"label": label, "path": p})
     out.sort(key=lambda a: a["label"].lower())
     return out[:limit] if limit else out
+
+
+# Shortcuts that are not applications. Start Menu folders are full of these, and offering
+# "Uninstall Foo" to a launcher that runs what it matches is worse than not listing it.
+_NOT_APPS = ("uninstall", "readme", "read me", "release notes", "documentation", "docs",
+             "help", "website", "home page", "homepage", "manual", "license", "changelog",
+             "报告问题", "卸载", "帮助")
+
+
+def _win_start_menu_apps():
+    """Every app on the Start Menu, labelled the way the user would name it.
+
+    This replaces a hardcoded list of six paths. "No installed app matching 'Spotify'" was never a
+    matching failure — Spotify simply was not a candidate. And the labels matter as much as the
+    coverage: a path list yields the exe basename ("chrome", "msedge"), while a shortcut yields the
+    product name ("Google Chrome", "Microsoft Edge"), which is what a router asked to open an app
+    will produce.
+
+    The .lnk is kept as the launch target rather than resolved: ShellExecute follows shortcuts, so
+    os.startfile opens it correctly, arguments and working directory included, with no COM call and
+    no shortcut parser.
+    """
+    roots = [os.path.join(os.environ.get("PROGRAMDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
+             os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")]
+    out = []
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        try:
+            walk = list(os.walk(root))
+        except OSError:
+            continue
+        for dirpath, _dirnames, filenames in walk:
+            for f in filenames:
+                if not f.lower().endswith(".lnk"):
+                    continue
+                label = f[:-4]
+                low = label.lower()
+                if any(k in low for k in _NOT_APPS):
+                    continue
+                out.append({"label": label, "path": os.path.join(dirpath, f)})
+    return out
 
 
 def _win_candidates():
@@ -1080,7 +1130,14 @@ def _match_app(name):
     for pred in (lambda l: l == n,
                  lambda l: l.startswith(n),
                  lambda l: n in l,
-                 lambda l: l.replace(" ", "") == n.replace(" ", "")):
+                 lambda l: l.replace(" ", "") == n.replace(" ", ""),
+                 # …and the other direction. Every predicate above assumes the installed label is the
+                 # LONGER string ("chrome" finding "Google Chrome"), which holds for macOS bundle
+                 # names. A Windows entry taken from an exe path is the short one, so a router that
+                 # said "Google Chrome" could not match an installed app labelled "chrome" — found,
+                 # present, launchable, and still reported as not installed. Short labels are
+                 # excluded because a two-letter one ("wt") matches almost any sentence.
+                 lambda l: len(l) >= 3 and l in n):
         hits = [a for a in installed if pred(a["label"].lower())]
         if hits:
             return sorted(hits, key=lambda a: len(a["label"]))[0]
