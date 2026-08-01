@@ -67,7 +67,16 @@ class HarnessAdapter:
                     else:
                         env[k] = v
             self._max_turns = max_turns          # let build_cmd honor the caller's turn budget
-            r = subprocess.run(self.build_cmd(task["prompt"], model), cwd=cwd,
+            cmd = list(self.build_cmd(task["prompt"], model))
+            # Resolve argv[0] through PATH before exec. On Windows an npm-installed CLI lays down
+            # three files — `claude`, `claude.cmd`, `claude.ps1` — and bare `subprocess.run(["claude"])`
+            # picks the extensionless shell script, which Windows cannot execute: FileNotFoundError,
+            # while `available()` (shutil.which, PATHEXT-aware) says yes. Every arm of a comparison
+            # then errors out and the other harness looks like it won 10/10.
+            resolved = shutil.which(cmd[0])
+            if resolved:
+                cmd[0] = resolved
+            r = subprocess.run(cmd, cwd=cwd,
                                capture_output=True, text=True, timeout=timeout, env=env)
             d = self.parse(r.stdout, r.stderr)
             res.input_tokens = d.get("input_tokens", 0)
