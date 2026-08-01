@@ -1,7 +1,7 @@
 """Per-component regression suite for collie's pure-logic Python parts. Stdlib-only, no Opus, fast.
     .venv/bin/python tests/test_core.py     (exit 0 = all pass)
 Each test targets one component and locks in a fixed bug so it can't regress."""
-import inspect, io, json, os, sys, tempfile, time, types, warnings
+import inspect, io, json, os, re, sys, tempfile, time, types, warnings
 warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1170,6 +1170,32 @@ def test_bash_python_shim():
     from harness.tools import BashTool
     r = BashTool().run({"command": 'python -c "print(6*7)"', "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert r.strip() == "42", "python (shimmed to python3) must run, got: %r" % r
+
+def test_running_out_of_turns_is_not_reported_as_done():
+    """A run cut off mid-task must not answer with the word "done".
+
+    Measured on a real task with a two-turn budget: six runs out of six ended with the loop's
+    placeholder, `(done — see the edits/tools above)`, having made an edit and never run a single
+    check — in the verify-gated mode too, because running out of turns leaves the loop from outside
+    the gate. The cost ceiling had always appended a "stopped" note; the turn ceiling appended
+    nothing, so the two endings were indistinguishable to a reader and one of them lied.
+    """
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+    # a provider that never stops asking for tools -> the loop can only end by exhausting turns
+    always_tool = Completion(text="", stop_reason="tool_use",
+                             tool_calls=[ToolCall("t1", "bash", {"command": "echo hi"})])
+    h = make_harness(os.getcwd(), provider="mock", project="exhaust", embed="hash")
+    h.max_turns = 2
+    h.provider = _ScriptProvider([always_tool, always_tool,
+                                  Completion(text="", stop_reason="end_turn")])
+    res = h.run("exhaust", "do something that cannot finish in two turns")
+    ans = (res.answer or "") + " " + (res.error or "")
+    assert "ran out of turns" in ans, \
+        "an exhausted run must say so; got %r" % ans[:160]
+    assert not re.match(r"^\(done\b", (res.answer or "").strip()), \
+        "an exhausted run must not open with 'done': %r" % (res.answer or "")[:80]
+
 
 # ------------------------------------------------------------------ failures must announce themselves
 def test_grep_timeout_is_not_reported_as_no_match():
