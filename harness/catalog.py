@@ -41,7 +41,10 @@ _KEY_ENV = {
 # receipts — same convention collie already uses for Claude-sub Opus — while the picker labels
 # them "$0 marginal". Registered into costs.PRICES on import (idempotent).
 PRICES = {
-    "claude-opus-4-8":  (15.0, 1.5, 75.0),
+    # (input, cache-read, output) per 1M tokens. Opus 4.8 sat at the old 15/75 Opus-3-era rates,
+    # which overstated every Opus receipt by 3x; both Opus 5 and 4.8 are 5/25.
+    "claude-opus-5":    (5.0, 0.5, 25.0),
+    "claude-opus-4-8":  (5.0, 0.5, 25.0),
     "claude-sonnet-5":  (3.0, 0.3, 15.0),
     "claude-haiku-4-5": (0.8, 0.08, 4.0),
     "claude-fable-5":   (15.0, 1.5, 75.0),
@@ -95,10 +98,14 @@ def _static() -> list:
     P = PRICES
     return [
         # Claude — subscription first (the recommended $0-marginal path), then metered API.
+        ModelEntry("anthropic-oauth", "claude-opus-5", "Claude Opus 5",
+                   "Claude subscription", "subscription", ["coding", "frontier"], price=P["claude-opus-5"]),
         ModelEntry("anthropic-oauth", "claude-opus-4-8", "Claude Opus 4.8",
                    "Claude subscription", "subscription", ["coding", "frontier"], price=P["claude-opus-4-8"]),
         ModelEntry("anthropic-oauth", "claude-sonnet-5", "Claude Sonnet 5",
                    "Claude subscription", "subscription", ["coding", "fast"], price=P["claude-sonnet-5"]),
+        ModelEntry("anthropic", "claude-opus-5", "Claude Opus 5",
+                   "Anthropic API key", "metered", ["coding", "frontier"], price=P["claude-opus-5"]),
         ModelEntry("anthropic", "claude-opus-4-8", "Claude Opus 4.8",
                    "Anthropic API key", "metered", ["coding", "frontier"], price=P["claude-opus-4-8"]),
         ModelEntry("anthropic", "claude-sonnet-5", "Claude Sonnet 5",
@@ -211,6 +218,21 @@ def discover(provider: str) -> list:
             if key:
                 d = _http_json("https://api.anthropic.com/v1/models",
                                {"x-api-key": key, "anthropic-version": "2023-06-01"})
+                ids = [m["id"] for m in d.get("data", []) if m.get("id")]
+        elif provider == "anthropic-oauth":
+            # The subscription path had NO discovery branch at all — only the API-key one existed,
+            # and it needs ANTHROPIC_API_KEY, which a subscription user does not have. So the picker
+            # showed the hand-written list forever: Opus 5 shipped and Collie went on offering 4.8,
+            # with no way to notice. The same endpoint answers a Bearer token.
+            from . import providers as _p
+            tok = _p._read_oauth_token()
+            if tok:
+                d = _http_json("https://api.anthropic.com/v1/models?limit=40",
+                               {"authorization": "Bearer " + tok,
+                                "anthropic-version": "2023-06-01",
+                                "anthropic-beta": _p._CC_BETAS,
+                                "user-agent": "claude-code/%s (external, cli)" % _p._claude_version(),
+                                "x-app": "cli"})
                 ids = [m["id"] for m in d.get("data", []) if m.get("id")]
         elif provider in OPENAI_COMPAT_PRESETS or provider in _KEY_ENV:
             base, keyenv, _d = OPENAI_COMPAT_PRESETS.get(
