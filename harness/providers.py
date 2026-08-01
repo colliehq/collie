@@ -1037,6 +1037,13 @@ OPENAI_COMPAT_PRESETS = {
     "moonshot":   ("https://api.moonshot.cn/v1", "MOONSHOT_API_KEY", "moonshot-v1-8k"),
     "groq":       ("https://api.groq.com/openai/v1", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
     "zhipu":      ("https://open.bigmodel.cn/api/paas/v4", "ZHIPU_API_KEY", "glm-4-flash"),
+    # Volcengine Ark (火山方舟) — Doubao's platform, and an aggregator: the same endpoint also
+    # serves GLM, MiniMax, Kimi and DeepSeek, so one preset covers several vendors. No default
+    # model is pinned on purpose — Ark identifies models by ids that change per release (and can
+    # be per-account endpoint ids), and inventing one produces a 404 that reads like a broken
+    # provider. Discovery fills the picker from /models instead.
+    "ark":        ("https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY", ""),
+    "doubao":     ("https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY", ""),
 }
 
 
