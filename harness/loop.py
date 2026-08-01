@@ -350,6 +350,11 @@ class Harness:
         force_at = max(3, int(self.max_turns * _fr))    # soft nudge to converge
         hard_at = max(force_at + 2, int(self.max_turns * _hr))  # then remove explore tools
         budget_hit = False
+        # Ran out of turns, as opposed to deciding it was finished. Every voluntary ending leaves the
+        # loop through a `break`, so `for … else` marks exactly the case where the range simply ran
+        # out — mid-task, by definition. Without this the two endings were indistinguishable
+        # afterwards and both reported the same word: "done".
+        turns_exhausted = False
         try:
             for turn in range(self.max_turns):
                 if turn > 0 and _budget_exceeded(self.provider.model, total):
@@ -875,6 +880,8 @@ class Harness:
                 answer = comp.text
                 res.turns = turn + 1
                 break
+            else:
+                turns_exhausted = True
 
             # mechanical white-flag restore (the belt to ROLLBACK_NUDGE's braces): every rescue
             # is spent and the tree is STILL empty — put the last non-empty edit state back.
@@ -903,6 +910,13 @@ class Harness:
                 elif budget_hit:                  # don't spend MORE past the ceiling on a synthesis
                     answer = "(stopped at budget — see the edits/tools above)"
                 else:
+                    # A run cut off mid-task must not fall back on the word "done". Measured: with a
+                    # tight turn budget the loop ends here, the synthesis comes back empty, and every
+                    # run answered "(done — see the edits/tools above)" having never run a single
+                    # check — in the verify-gated mode too, since running out of turns leaves the
+                    # loop from outside the gate.
+                    _unfinished = "(ran out of turns — UNFINISHED; see the edits/tools above)"
+                    _placeholder = _unfinished if turns_exhausted else "(done — see the edits/tools above)"
                     try:
                         # synthesize from the ELIDED history (composer.build), not the raw thread —
                         # the raw thread is the single most likely place to actually overflow.
@@ -912,13 +926,18 @@ class Harness:
                         total.add(fin.usage)
                         if fin.stop_reason == "error":   # don't let a failed synthesis become the answer
                             res.error = res.error or (fin.text or "provider error")[:300]
-                            answer = "(done — see the edits/tools above)"
+                            answer = _placeholder
                         else:
-                            answer = (fin.text or "").strip() or "(done — see the edits/tools above)"
+                            answer = (fin.text or "").strip() or _placeholder
                     except Exception:
-                        answer = "(done — see the edits/tools above)"
+                        answer = _placeholder
             if budget_hit and answer:
                 answer += "\n\n_[stopped: budget ceiling reached]_"
+            if turns_exhausted and answer and "ran out of turns" not in answer:
+                # The cost ceiling has always said so; the turn ceiling never did, so a summary
+                # written mid-task read as a finished report — including when no check had run.
+                answer += ("\n\n_[stopped: ran out of turns (%d) — this task was NOT finished, and "
+                           "nothing above was necessarily verified]_" % self.max_turns)
             if last_stop == "length" and answer and "truncated" not in answer:
                 answer += "\n\n_[answer truncated at output-token limit]_"   # visible half of point 1
 
