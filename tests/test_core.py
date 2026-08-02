@@ -153,6 +153,22 @@ def test_response_language_directive():
             os.environ["COLLIE_LANG"] = old
 
 
+def test_human_interaction_directive():
+    """The human, conversational voice is stable and survives a desktop identity override."""
+    from harness.cli import make_harness
+    from harness.context import _human_interaction_line
+    line = _human_interaction_line()
+    low = line.lower()
+    assert "warm, natural, and attentive" in low
+    assert "corporate helpdesk" in low and "generic chatbot" in low
+    assert "user's style" in low and "practical judgement" in low
+    assert "do not pretend" in low and "human feelings" in low
+    h = make_harness(os.getcwd(), provider="mock", project="voice", embed="hash")
+    h.composer.identity = "You are collie, the user's live desktop assistant."
+    system, _msgs, _meta = h.composer.build({"messages": []}, "hello", os.getcwd(), "voice")
+    assert "HUMAN INTERACTION" in system and "warm, natural" in system
+
+
 def test_grounding_directive():
     """GROUNDING + INITIATIVE: after a miss where collie grepped only the cwd and concluded a
     project "doesn't exist on this machine" while it sat two directories away, the prompt must
@@ -2285,3 +2301,20 @@ def test_verify_nudge_names_the_repos_own_toolchain():
     assert swe._swe_assert_verify_nudge("python") == swe._SWE_ASSERT_VERIFY_NUDGE
     # an unknown language must not silently fall back to python
     assert "python3" not in swe._swe_assert_verify_nudge("")
+
+
+def test_a_provider_outage_is_not_scored_as_a_failed_attempt():
+    """Collie reports provider failures in RunResult.error and returns NORMALLY — it does not
+    raise. A comparison runner that only catches exceptions therefore books a quota outage as
+    "produced no patch". That happened: two 16-second, one-turn, zero-byte runs were scored as
+    losses while the Claude arm's identical outage was reported correctly (it exits non-zero).
+    Same outage, opposite bookkeeping, and the bookkeeping decided the result.
+    """
+    import inspect as _i
+    from bench import paired_eval
+    src = _i.getsource(paired_eval.run_collie)
+    assert 'getattr(rr, "error"' in src, "run_collie ignores RunResult.error again"
+    # and the loop must actually populate it on a provider error
+    from harness import loop
+    lsrc = _i.getsource(loop)
+    assert 'if comp.stop_reason == "error":' in lsrc and "res.error = " in lsrc
