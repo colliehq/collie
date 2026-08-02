@@ -266,6 +266,11 @@ def main(argv) -> int:
                     json.dump({"dataset": DATASET, "model": a.model,
                                "rows": [{k: v for k, v in x.items() if k != "patch"} for x in rows],
                                "summary": summarize(rows)}, f, ensure_ascii=False, indent=1)
+                # Patches kept alongside, because grading is the only half that discriminates and
+                # a stripped result file means re-spending the whole run to get them back.
+                with open(out.replace(".json", "-patches.json"), "w", encoding="utf-8") as f:
+                    json.dump({"dataset": DATASET, "model": a.model, "rows": rows},
+                              f, ensure_ascii=False, indent=1)
     if warm_state:
         shutil.rmtree(warm_state, ignore_errors=True)
     print()
