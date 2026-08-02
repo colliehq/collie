@@ -38,6 +38,7 @@ class RunResult:
     verified: bool = False   # edited + a repro ran on the fixed code & passed (the gate's verdict)
     quality: float = 0.0     # LLM-judge 0-10 (task completion quality)
     cost_usd: float = 0.0    # estimated $ from tokens x model price
+    checkpoint_ref: str = ""  # tree snapshot taken before this run; "" when one could not be taken
     answer: str = ""
     error: str = ""
     messages: list = None    # the full conversation thread (for --continue / repl session save)

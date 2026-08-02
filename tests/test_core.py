@@ -2442,3 +2442,42 @@ def test_checkpoint_refuses_to_stash_apply_an_ordinary_merge():
         head = sp.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True,
                       text=True).stdout.strip()
         assert cp._kind_of(d, head) == "commit", "an ordinary merge was mistaken for a snapshot"
+
+
+def test_checkpoint_taken_on_a_clean_tree_still_removes_what_the_agent_created():
+    """The commonest case: you check out clean, then ask the agent to do something.
+
+    `git stash create` returns nothing on a clean tree, so the obvious implementation (Cline's)
+    falls back to recording HEAD — and then restore dare not delete untracked files, leaving every
+    file the agent created on disk. Found by restoring for real and watching new.txt survive.
+    An EMPTY untracked set is complete knowledge, not missing knowledge: anything untracked at
+    restore time must have appeared afterwards, so it is safe to remove.
+    """
+    from harness import checkpoints as cp
+    with tempfile.TemporaryDirectory() as d:
+        _mkrepo(d)                                   # clean tree, nothing untracked
+        c = cp.capture(d, "s1", 1, "clean tree")
+        assert c.kind == "stash", "clean tree fell back to a checkpoint that cannot rewind"
+        with open(os.path.join(d, "tracked.txt"), "w") as f:
+            f.write("BROKEN\n")
+        with open(os.path.join(d, "new.txt"), "w") as f:
+            f.write("agent made this\n")
+        info = cp.restore(d, c)
+        assert info["untracked_rewound"] is True, info
+        assert open(os.path.join(d, "tracked.txt")).read() == "original\n"
+        assert not os.path.exists(os.path.join(d, "new.txt"))
+
+
+def test_rewind_button_is_hidden_when_nothing_can_be_rewound():
+    """An undo control that cannot undo is worse than none — the user lets the agent run BECAUSE
+    they believe it exists. The button starts hidden and only appears once a snapshot is listed."""
+    html = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "harness", "webui", "index.html"), encoding="utf-8").read()
+    assert 'id="rewindBtn"' in html and 'id="rewindBtn" title=' in html
+    btn = html[html.index('id="rewindBtn"'):]
+    assert "hidden" in btn[:400], "rewind button is not hidden by default"
+    assert "/api/checkpoints" in html and "/api/checkpoint/restore" in html
+    # destructive: it must ask, and it must say what gets thrown away
+    assert "window.confirm" in html and "cannot be undone" in html
+    # and it must not imply untracked files came back when they could not
+    assert "untracked_rewound" in html

@@ -758,6 +758,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._send_json({"runs": Handler._runs_snapshot()})
+            if path == "/api/checkpoints":
+                return self._serve_checkpoints()
             if path == "/api/settings":
                 from . import settings
                 vals = settings.all_values()
@@ -1070,6 +1072,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/pair":
                 return self._serve_pair_exchange()
+            if path == "/api/checkpoint/restore":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._serve_checkpoint_restore()
             if path == "/api/mcp":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -1835,6 +1841,44 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             n = 20
         self._send_json({"sessions": sessions.recent(n)})
+
+    def _serve_checkpoints(self):
+        """List the snapshots that exist RIGHT NOW in this repo, plus why there are none.
+
+        The reason matters as much as the list: a user who sees an empty list assumes nothing has
+        happened yet, when the truth may be that this folder is not a git repo and no run has ever
+        been protected. Those two states must not look alike.
+        """
+        from . import checkpoints as ckpt
+        cwd = getattr(self.server, "cwd", None) or os.getcwd()
+        ok, why = ckpt.available(cwd)
+        if not ok:
+            return self._send_json({"available": False, "reason": why, "checkpoints": []})
+        try:
+            items = [c.as_dict() for c in ckpt.history(cwd)]
+        except ckpt.CheckpointError as e:
+            return self._send_json({"available": False, "reason": str(e), "checkpoints": []})
+        return self._send_json({"available": True, "reason": "", "checkpoints": items})
+
+    def _serve_checkpoint_restore(self):
+        """Rewind the working tree. DESTRUCTIVE, so it is POST + authed, and it reports exactly
+        what happened — including whether untracked files could be rewound, which older snapshots
+        cannot do."""
+        from . import checkpoints as ckpt
+        body = self._read_json() or {}
+        ref = (body.get("ref") or "").strip()
+        if not ref:
+            return self._send_json({"error": "which checkpoint? pass ref"}, 400)
+        cwd = getattr(self.server, "cwd", None) or os.getcwd()
+        try:
+            cp = ckpt.Checkpoint(ref=ref, session=str(body.get("session") or ""),
+                                 n=int(body.get("n") or 0))
+            return self._send_json({"ok": True, "result": ckpt.restore(cwd, cp)})
+        except ckpt.CheckpointError as e:
+            return self._send_json({"ok": False, "error": str(e)}, 409)
+        except Exception as e:
+            return self._send_json({"ok": False,
+                                    "error": "%s: %s" % (type(e).__name__, e)}, 500)
 
     def _serve_session(self, sid: str):
         from . import sessions
