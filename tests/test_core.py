@@ -2339,3 +2339,102 @@ def test_both_arms_record_cache_tokens_and_cost():
     assert "cache_read_input_tokens" in claude_src and "total_cost_usd" in claude_src
     # the CLI only reports usage in json mode
     assert '"--output-format", "json"' in _i.getsource(swe.predict_claude_code)
+
+
+def _mkrepo(d):
+    import subprocess as sp
+    sp.run(["git", "init", "-q", d], check=True)
+    for k, v in (("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        sp.run(["git", "-C", d, "config", k, v], check=True)
+    with open(os.path.join(d, "tracked.txt"), "w") as f:
+        f.write("original\n")
+    sp.run(["git", "-C", d, "add", "-A"], check=True)
+    sp.run(["git", "-C", d, "commit", "-qm", "init"], check=True)
+
+
+def test_checkpoint_rewinds_edits_new_files_and_deletions():
+    """A checkpoint the user relies on must restore all three kinds of damage an agent can do:
+    modify a tracked file, create a new one, and delete one. Untracked files are the case a
+    plain `git stash` loses, which is why the snapshot carries them as a third parent."""
+    from harness import checkpoints as cp
+    with tempfile.TemporaryDirectory() as d:
+        _mkrepo(d)
+        with open(os.path.join(d, "untracked.txt"), "w") as f:
+            f.write("keep me\n")
+        ok, why = cp.available(d)
+        assert ok, why
+        c = cp.capture(d, "s1", 1, "before edits")
+
+        with open(os.path.join(d, "tracked.txt"), "w") as f:
+            f.write("AGENT BROKE THIS\n")
+        with open(os.path.join(d, "untracked.txt"), "w") as f:
+            f.write("AGENT BROKE THIS TOO\n")
+        with open(os.path.join(d, "new.txt"), "w") as f:
+            f.write("agent made this\n")
+
+        info = cp.restore(d, c)
+        assert info["untracked_rewound"] is True, info
+        assert open(os.path.join(d, "tracked.txt")).read() == "original\n"
+        assert open(os.path.join(d, "untracked.txt")).read() == "keep me\n"
+        assert not os.path.exists(os.path.join(d, "new.txt")), "a file created after the checkpoint survived"
+
+
+def test_checkpoint_never_touches_the_users_stash_list_or_index():
+    """Taking a snapshot must be invisible: `git stash create` does not move the worktree, the
+    private ref namespace keeps it out of `git stash list`, and untracked files are staged into a
+    THROWAWAY index so anything the user had staged survives."""
+    import subprocess as sp
+    from harness import checkpoints as cp
+    with tempfile.TemporaryDirectory() as d:
+        _mkrepo(d)
+        with open(os.path.join(d, "staged.txt"), "w") as f:
+            f.write("i was staged\n")
+        sp.run(["git", "-C", d, "add", "staged.txt"], check=True)
+        with open(os.path.join(d, "untracked.txt"), "w") as f:
+            f.write("u\n")
+        with open(os.path.join(d, "tracked.txt"), "w") as f:
+            f.write("dirty\n")
+
+        cp.capture(d, "s1", 1)
+
+        assert sp.run(["git", "-C", d, "stash", "list"], capture_output=True,
+                      text=True).stdout.strip() == "", "checkpoint leaked into git stash list"
+        staged = sp.run(["git", "-C", d, "diff", "--cached", "--name-only"],
+                        capture_output=True, text=True).stdout.split()
+        assert "staged.txt" in staged, "capture clobbered the user's index"
+        assert open(os.path.join(d, "tracked.txt")).read() == "dirty\n", "capture moved the worktree"
+
+
+def test_checkpoint_says_when_it_cannot_protect_you():
+    """Silently not saving is worse than not offering: the user lets the agent run BECAUSE they
+    believe a checkpoint exists."""
+    from harness import checkpoints as cp
+    with tempfile.TemporaryDirectory() as d:
+        ok, why = cp.available(d)
+        assert not ok and "not inside a git repository" in why
+        try:
+            cp.capture(d, "s1", 1)
+        except cp.CheckpointError as e:
+            assert "git repository" in str(e)
+        else:
+            raise AssertionError("capture returned a handle outside a git repo")
+
+
+def test_checkpoint_refuses_to_stash_apply_an_ordinary_merge():
+    """A snapshot is recognised by merge shape AND our marker. Shape alone would let a real merge
+    commit reach `git stash apply`, which corrupts the tree."""
+    import subprocess as sp
+    from harness import checkpoints as cp
+    with tempfile.TemporaryDirectory() as d:
+        _mkrepo(d)
+        sp.run(["git", "-C", d, "checkout", "-qb", "side"], check=True)
+        with open(os.path.join(d, "side.txt"), "w") as f:
+            f.write("s\n")
+        sp.run(["git", "-C", d, "add", "-A"], check=True)
+        sp.run(["git", "-C", d, "commit", "-qm", "side"], check=True)
+        sp.run(["git", "-C", d, "checkout", "-q", "-"], capture_output=True)
+        sp.run(["git", "-C", d, "merge", "-q", "--no-ff", "side", "-m", "a real merge"],
+               capture_output=True)
+        head = sp.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True,
+                      text=True).stdout.strip()
+        assert cp._kind_of(d, head) == "commit", "an ordinary merge was mistaken for a snapshot"
