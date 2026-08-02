@@ -125,12 +125,23 @@ def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str =
     # silently ignored (see _paths), so it would isolate nothing.
     os.environ["COLLIE_DATA_DIR"] = os.path.join(state, "data")
     t0 = time.time()
+    patch, err, usage = "", "", {}
     try:
-        patch = swe.predict_collie(workdir, inst["problem_statement"],
-                                   provider="anthropic-oauth", model=model)
-        err = ""
+        # Both predictors EDIT THE WORKDIR IN PLACE; neither returns the patch. predict_collie
+        # returns a RunResult (tokens/cost), predict_claude_code returns the CLI result. Reading
+        # the return value as a patch is how you get a benchmark that reports plausible-looking
+        # byte counts for work that never happened — take the diff from the repo, always.
+        rr = swe.predict_collie(workdir, inst["problem_statement"],
+                                provider="anthropic-oauth", model=model)
+        usage = {"input_tokens": getattr(rr, "input_tokens", 0),
+                 "output_tokens": getattr(rr, "output_tokens", 0),
+                 "turns": getattr(rr, "turns", 0)}
     except Exception as e:
-        patch, err = "", "%s: %s" % (type(e).__name__, e)
+        err = "%s: %s" % (type(e).__name__, e)
+    try:
+        patch = swe.make_patch(workdir)
+    except Exception as e:
+        err = err or "make_patch: %s: %s" % (type(e).__name__, e)
     finally:
         if prev is None:
             os.environ.pop("COLLIE_DATA_DIR", None)
@@ -139,19 +150,34 @@ def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str =
         if not warm_state:
             shutil.rmtree(state, ignore_errors=True)
     return {"harness": "collie", "rep": rep, "secs": round(time.time() - t0, 1),
-            "patch_bytes": len(patch or ""), "patch": patch, "error": err}
+            "patch_bytes": len(patch or ""), "patch": patch, "error": err, "usage": usage}
 
 
 def run_claude(inst: dict, workdir: str, model: str, rep: int) -> dict:
     from harness import swe
     t0 = time.time()
+    patch, err, cli = "", "", None
     try:
-        patch = swe.predict_claude_code(workdir, inst["problem_statement"], model=model)
-        err = ""
+        cli = swe.predict_claude_code(workdir, inst["problem_statement"], model=model)
     except Exception as e:
-        patch, err = "", "%s: %s" % (type(e).__name__, e)
-    return {"harness": "claude", "rep": rep, "secs": round(time.time() - t0, 1),
-            "patch_bytes": len(patch or ""), "patch": patch, "error": err}
+        err = "%s: %s" % (type(e).__name__, e)
+    # An empty patch with no explanation is the failure mode this whole file exists to prevent:
+    # the arm "ran", scored 0, and looked like a legitimate loss. Surface why it produced nothing.
+    if cli is not None and not err:
+        tail = ((cli.stderr or "").strip() or (cli.stdout or "").strip())[-400:]
+        if cli.returncode != 0:
+            err = "claude exited %d: %s" % (cli.returncode, tail)
+    try:
+        patch = swe.make_patch(workdir)     # same contract as collie — diff the repo, not the return
+    except Exception as e:
+        err = err or "make_patch: %s: %s" % (type(e).__name__, e)
+    row = {"harness": "claude", "rep": rep, "secs": round(time.time() - t0, 1),
+           "patch_bytes": len(patch or ""), "patch": patch, "error": err, "usage": {}}
+    if not patch and cli is not None:
+        # rc==0 and an empty diff still needs an explanation — keep what the CLI actually said.
+        row["cli_rc"] = cli.returncode
+        row["cli_tail"] = ((cli.stdout or "") + "\n" + (cli.stderr or "")).strip()[-800:]
+    return row
 
 
 # ---------------------------------------------------------------- reporting
@@ -194,22 +220,59 @@ def main(argv) -> int:
               "this comparison cannot survive.")
         return 2
 
-    inst = load_instances(a.n, repos=a.repos)
-    print("\n%d instances from %s:" % (len(inst), DATASET))
-    for i in inst:
+    instances = load_instances(a.n, repos=a.repos)
+    print("\n%d instances from %s:" % (len(instances), DATASET))
+    for i in instances:
         print("   %-44s %-28s %s" % (i["instance_id"][:44], i["repo"], i.get("repo_language", "")))
 
-    plan = len(inst) * a.reps * (3 if a.warm else 2)
+    plan = len(instances) * a.reps * (3 if a.warm else 2)
     print("\nplan: %d instances x %d reps x %d arms = %d runs" %
-          (len(inst), a.reps, 3 if a.warm else 2, plan))
+          (len(instances), a.reps, 3 if a.warm else 2, plan))
     if a.dry:
         print("dry run — nothing spent.")
         return 0
 
-    print("NOT IMPLEMENTED past this point on purpose: the Docker evaluation half is unverified, "
-          "and a half-run benchmark is worse than none. Wire swe-bench-pro's evaluator, then "
-          "remove this guard.")
-    return 3
+    # PREDICTION half only. Grading needs swe-bench-pro's own Docker evaluator, which is not
+    # wired yet — so nothing here claims a resolve rate. What it does measure is already the
+    # harness question: given the same repository at the same commit and the same problem
+    # statement, does each harness produce a patch at all, how long does it take, and how much
+    # does that vary run to run. A patch is necessary but not sufficient for a resolve, so treat
+    # these as an upper bound per arm, never as a score.
+    from harness import swe
+    os.makedirs(RESULTS, exist_ok=True)
+    rows, warm_state = [], (tempfile.mkdtemp(prefix="pe-warm-") if a.warm else "")
+    for inst in instances:
+        for rep in range(1, a.reps + 1):
+            for arm in ("collie", "claude"):
+                wd = tempfile.mkdtemp(prefix="pe-repo-")
+                try:
+                    swe.prepare_repo(inst["repo"], inst["base_commit"], wd)
+                except Exception as e:
+                    rows.append({"instance_id": inst["instance_id"], "harness": arm, "rep": rep,
+                                 "secs": 0, "patch_bytes": 0, "patch": "",
+                                 "error": "prepare_repo: %s" % e})
+                    shutil.rmtree(wd, ignore_errors=True)
+                    continue
+                r = (run_collie(inst, wd, a.model, rep) if arm == "collie"
+                     else run_claude(inst, wd, a.model, rep))
+                r["instance_id"] = inst["instance_id"]
+                rows.append(r)
+                print("  %-46s %-7s rep%d  patch=%-6s %5.0fs %s" %
+                      (inst["instance_id"][:46], arm, rep, r["patch_bytes"], r["secs"],
+                       (r["error"] or "")[:40]), flush=True)
+                shutil.rmtree(wd, ignore_errors=True)
+                out = os.path.join(RESULTS, "paired-%s.json" % a.model)
+                with open(out, "w", encoding="utf-8") as f:
+                    json.dump({"dataset": DATASET, "model": a.model,
+                               "rows": [{k: v for k, v in x.items() if k != "patch"} for x in rows],
+                               "summary": summarize(rows)}, f, ensure_ascii=False, indent=1)
+    if warm_state:
+        shutil.rmtree(warm_state, ignore_errors=True)
+    print()
+    print(json.dumps(summarize(rows), ensure_ascii=False, indent=1)[:1400])
+    print()
+    print("written to", os.path.join(RESULTS, "paired-%s.json" % a.model))
+    return 0
 
 
 if __name__ == "__main__":
