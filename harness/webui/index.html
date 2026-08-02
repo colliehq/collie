@@ -570,6 +570,22 @@
   .msg .flow { display: flex; flex-direction: column; gap: 7px; }
   .msg .flow > .text.md { margin: 0; }             /* segment spacing comes from the flow gap */
   /* inline tool trace (cc-style): a compact step per tool — verb + mono target + a ⎿ result line */
+  /* A steer, shown where it happened — inside the turn, not after the answer it changed. */
+  .steer-note {
+    display: flex; gap: 7px; align-items: baseline; margin: 7px 0;
+    padding: 6px 10px; border-left: 2px solid var(--pine);
+    background: var(--raise); border-radius: 0 6px 6px 0; font-size: 13px;
+  }
+  .steer-note .sn-ico { color: var(--pine); font-weight: 700; }
+  .steer-note .sn-tag {
+    font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--pine); white-space: nowrap;
+  }
+  .steer-note .sn-text { color: var(--ink); }
+  /* queued, not delivered: the desktop hands it over at the next turn boundary */
+  .steer-note.pending { opacity: .72; border-left-style: dashed; }
+  .steer-note.dropped { border-left-color: var(--coral); opacity: .6; }
+  .steer-note.dropped .sn-ico, .steer-note.dropped .sn-tag { color: var(--coral); }
   .trace-step { font-size: 12.5px; color: var(--muted); }
   .trace-step .ts-head { display: flex; align-items: baseline; gap: 8px; }
   .trace-step .ts-ico { width: 14px; text-align: center; color: var(--faint);
@@ -1410,6 +1426,8 @@
     "failed to load": "加载失败",
     "steering delivered": "转向已送达",
     "not delivered": "未送达",
+    "queued": "排队中",
+    "steering": "已插话",
     "run already finished — send again to start a new turn": "运行已结束——再发一次将开启新的一轮",
     "connection dropped — checking whether Collie finished…": "连接中断——正在确认 Collie 是否已完成…",
     "reconnected — Collie is still working…": "已重新连上——Collie 仍在继续工作…",
@@ -1444,6 +1462,8 @@
     "failed to load": "載入失敗",
     "steering delivered": "轉向已送達",
     "not delivered": "未送達",
+    "queued": "排隊中",
+    "steering": "已插話",
     "run already finished — send again to start a new turn": "執行已結束——再發一次將開啟新的一輪",
     "connection dropped — checking whether Collie finished…": "連線中斷——正在確認 Collie 是否已完成…",
     "reconnected — Collie is still working…": "已重新連上——Collie 仍在繼續工作…",
@@ -1471,6 +1491,8 @@
       "saved · applies to your next message": "保存しました · 次のメッセージから有効",
       "failed to load": "読み込みに失敗しました", "steering delivered": "誘導を送信しました",
       "not delivered": "送信されませんでした",
+      "queued": "順番待ち",
+      "steering": "介入しました",
       "run already finished — send again to start a new turn": "実行はすでに終了しました——もう一度送信すると新しいターンを開始します",
       "connection dropped — checking whether Collie finished…": "接続が切れました——Collie が完了したか確認中…",
       "reconnected — Collie is still working…": "再接続しました——Collie はまだ作業中です…",
@@ -1493,6 +1515,8 @@
       "saved · applies to your next message": "저장됨 · 다음 메시지부터 적용",
       "failed to load": "불러오지 못했습니다", "steering delivered": "방향 지시 전달됨",
       "not delivered": "전달되지 않음",
+      "queued": "대기 중",
+      "steering": "개입함",
       "run already finished — send again to start a new turn": "실행이 이미 끝났습니다 — 다시 보내면 새 턴을 시작합니다",
       "connection dropped — checking whether Collie finished…": "연결이 끊겼습니다 — Collie가 완료했는지 확인 중…",
       "reconnected — Collie is still working…": "다시 연결되었습니다 — Collie가 계속 작업 중입니다…",
@@ -1515,6 +1539,8 @@
       "saved · applies to your next message": "guardado · se aplica a tu próximo mensaje",
       "failed to load": "error al cargar", "steering delivered": "guía entregada",
       "not delivered": "no entregada",
+      "queued": "en cola",
+      "steering": "corrigiendo",
       "run already finished — send again to start a new turn": "la ejecución ya terminó — envía de nuevo para iniciar un nuevo turno",
       "connection dropped — checking whether Collie finished…": "conexión perdida — comprobando si Collie terminó…",
       "reconnected — Collie is still working…": "reconectado — Collie sigue trabajando…",
@@ -1537,6 +1563,8 @@
       "saved · applies to your next message": "enregistré · s'applique à votre prochain message",
       "failed to load": "échec du chargement", "steering delivered": "orientation transmise",
       "not delivered": "non transmise",
+      "queued": "en attente",
+      "steering": "correction",
       "run already finished — send again to start a new turn": "l'exécution est déjà terminée — renvoyez pour démarrer un nouveau tour",
       "connection dropped — checking whether Collie finished…": "connexion perdue — vérification si Collie a terminé…",
       "reconnected — Collie is still working…": "reconnecté — Collie travaille toujours…",
@@ -2972,14 +3000,43 @@
 
   // steer the in-flight run: echo the message as a user bubble, then queue it server-side. The loop
   // injects it at the next turn boundary and streams back a `steer` event when it lands.
+  // A steer belongs INSIDE the run, at the moment it was said.
+  //
+  // It used to be appended to the log, which put it after the assistant bubble that was still
+  // growing — so the transcript read "you asked, Collie answered, then you interrupted", with the
+  // interruption below the answer it had already changed. Everything about that order is false.
+  // It goes into the flow instead, in front of the status line, exactly where the tool steps and
+  // text segments of that turn go.
+  //
+  // It is also not delivered yet. The desktop hands it over at the next turn boundary, so it stays
+  // visibly QUEUED until the POST comes back saying it was taken.
   function steer(q) {
-    addMsg("user", q, null, true);      // 4th arg -> marked as a mid-run steer
+    var el;
+    if (flowEl) {
+      sealText();                       // close the current text block: this happened after it
+      el = document.createElement("div");
+      el.className = "steer-note pending";
+      el.innerHTML = '<span class="sn-ico">↳</span><span class="sn-tag"></span><span class="sn-text"></span>';
+      el.querySelector(".sn-tag").textContent = t("queued");
+      el.querySelector(".sn-text").textContent = q;
+      flowEl.insertBefore(el, statusEl && statusEl.parentNode === flowEl ? statusEl : null);
+    } else {
+      el = addMsg("user", q, null, true).parentNode;   // no live bubble (rare): fall back to the log
+    }
+    scrollDown(true);                   // your own words always come into view, even scrolled up
     fetch("/api/steer?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session: currentSession, q: q })
     }).then(function (r) { return r.json(); }).then(function (d) {
-      if (!d || !d.queued)              // run ended between our keystroke and the POST
-        addEvent("meta", "flag", t("not delivered"), t("run already finished — send again to start a new turn"));
+      var tag = el && el.querySelector && el.querySelector(".sn-tag");
+      if (d && d.queued) {
+        if (el.classList) el.classList.remove("pending");
+        if (tag) tag.textContent = t("steering");
+        return;
+      }
+      if (el.classList) { el.classList.remove("pending"); el.classList.add("dropped"); }
+      if (tag) tag.textContent = t("not delivered");
+      addEvent("meta", "flag", t("not delivered"), t("run already finished — send again to start a new turn"));
     }).catch(function () {});
   }
 
