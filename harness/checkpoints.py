@@ -93,16 +93,21 @@ def _untracked_parent(cwd: str) -> str:
     listing = subprocess.run(["git", "-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
                              capture_output=True, text=True, timeout=300)
     files = [f for f in (listing.stdout or "").split("\0") if f]
-    if not files:
-        return ""
+    # NOTE the empty case still produces a commit, holding an EMPTY tree. "There were no untracked
+    # files" is complete knowledge, not missing knowledge: it means every untracked file present at
+    # restore time appeared afterwards and is safe to remove. Cline stops at a HEAD-only fallback
+    # here and consequently leaves agent-created files behind on a clean tree — found by restoring
+    # for real and watching new.txt survive, which is precisely the "undo" a user expects to work.
     tmp = tempfile.mkdtemp(prefix="collie-ckpt-")
     try:
-        spec = os.path.join(tmp, "pathspec")
-        with open(spec, "wb") as f:                       # NUL-delimited: no argv length limit
-            f.write(("\0".join(files) + "\0").encode("utf-8"))
         env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
-        _git(cwd, ["add", "--force", "--pathspec-from-file", spec, "--pathspec-file-nul"], env=env)
-        tree = _git(cwd, ["write-tree"], env=env)
+        if files:
+            spec = os.path.join(tmp, "pathspec")
+            with open(spec, "wb") as f:                   # NUL-delimited: no argv length limit
+                f.write(("\0".join(files) + "\0").encode("utf-8"))
+            _git(cwd, ["add", "--force", "--pathspec-from-file", spec, "--pathspec-file-nul"],
+                 env=env)
+        tree = _git(cwd, ["write-tree"], env=env)         # empty tree when there were none
         if not tree:
             return ""
         return _git(cwd, ["commit-tree", tree, "-m", _MARKER + "untracked"], env=env)
@@ -131,7 +136,8 @@ def capture(cwd: str, session: str, n: int, label: str = "") -> Checkpoint:
                              "-p", untracked, "-m", msg]) or stash
             kind = "stash"
     elif untracked:
-        # Tracked tree is clean but the agent may still be about to overwrite untracked files.
+        # Tracked tree clean. Still synthesize a snapshot: the untracked parent records the exact
+        # set present now (possibly none), which is what lets restore delete whatever appears later.
         head = _git(cwd, ["rev-parse", "HEAD"])
         head_tree = _git(cwd, ["rev-parse", "HEAD^{tree}"])
         index_parent = _git(cwd, ["commit-tree", head_tree, "-p", head, "-m", _MARKER + "index"])

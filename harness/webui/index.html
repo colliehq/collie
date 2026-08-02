@@ -1034,6 +1034,11 @@
         <span class="model-trigger-label" id="modelTriggerLabel">Loading model…</span>
         <svg class="model-trigger-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
+      <!-- Rewind. Hidden unless a snapshot actually exists: an undo button that cannot undo is
+           worse than no button, because the user relies on it BEFORE letting the agent run. -->
+      <button class="tbtn" id="rewindBtn" title="Rewind the files to before a run" aria-label="rewind" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+      </button>
       <button class="tbtn" id="runDetailsBtn" title="run details" aria-label="run details" aria-controls="workpanel" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
       </button>
@@ -1940,6 +1945,54 @@
   function closeSettings() { setOverlay.classList.remove("open"); clearInterval(mcpPollTimer); }
 
   $("settingsBtn").onclick = openSettings;
+
+  // ---- rewind: undo a run's edits --------------------------------------
+  // The button appears only when a snapshot really exists. Restoring is destructive and cannot
+  // itself be undone, so it asks first and NAMES what it will throw away; and it reports whether
+  // untracked files were rewound, because older snapshots cannot do that and implying otherwise
+  // would be the exact lie this feature exists to prevent.
+  var rewindBtn = $("rewindBtn"), lastCheckpoints = [];
+  function refreshCheckpoints() {
+    return fetch("/api/checkpoints" + (CT ? "?token=" + encodeURIComponent(CT) : ""))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        lastCheckpoints = (d && d.checkpoints) || [];
+        var on = !!(d && d.available) && lastCheckpoints.length > 0;
+        rewindBtn.hidden = !on;
+        if (d && !d.available && d.reason) { rewindBtn.title = d.reason; }
+        else { rewindBtn.title = "Rewind the files to before a run"; }
+      })
+      .catch(function () { rewindBtn.hidden = true; });
+  }
+  rewindBtn.onclick = function () {
+    if (!lastCheckpoints.length) { return; }
+    var c = lastCheckpoints[0];
+    var when = c.created_at ? new Date(c.created_at * 1000).toLocaleTimeString() : "";
+    if (!window.confirm(
+        "Rewind every file to the snapshot taken before" + (c.label ? ' "' + c.label + '"' : " that run") +
+        (when ? " (" + when + ")" : "") + "?\n\n" +
+        "Edits made since then are discarded, and files created since then are deleted. " +
+        "This cannot be undone. Your chat history is kept.")) { return; }
+    fetch("/api/checkpoint/restore" + (CT ? "?token=" + encodeURIComponent(CT) : ""),
+          { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ref: c.ref, session: c.session, n: c.n }) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (!x.ok || !x.d || !x.d.ok) {
+          window.alert("Could not rewind: " + ((x.d && x.d.error) || "unknown error"));
+          return;
+        }
+        var r = x.d.result || {};
+        window.alert("Rewound to " + (r.restored_to || "the snapshot") + ".\n" +
+                     (r.untracked_rewound
+                        ? "Files the agent created were removed and untracked files restored."
+                        : "Note: this snapshot could not carry untracked files, so any the agent " +
+                          "created are still on disk."));
+        refreshCheckpoints();
+      })
+      .catch(function (e) { window.alert("Could not rewind: " + e); });
+  };
+  refreshCheckpoints();
 
   // ---- onboarding: first-run "pick a brain" ----------------------------
   var obOverlay = $("obOverlay");
@@ -3180,6 +3233,19 @@
       NOW.act("✎", "Edit", baseName(d.path), "edit"); NOW.touch(d.path, "edit");
       pstat("thinking…");
       setGate("verifying");             // NOW verification is real — code changed, repro is due
+    });
+
+    // The run reports whether it managed to snapshot the tree. Surfacing the FAILURE is the point:
+    // a user who thinks a rewind exists will let the agent do things they would not otherwise.
+    es.addEventListener("checkpoint", function (e) {
+      var d = JSON.parse(e.data);
+      if (d.ok) {
+        addEvent("checkpoint", "ok", "snapshot taken — this run can be rewound", d.ref || "", "ok");
+        refreshCheckpoints();
+      } else {
+        addEvent("checkpoint", "bad", "no snapshot — this run CANNOT be rewound",
+                 d.reason || "", "bad");
+      }
     });
 
     es.addEventListener("repro", function (e) {

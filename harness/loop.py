@@ -336,6 +336,25 @@ class Harness:
                         model=self.provider.model, provider=self.provider.name)
         ctx = ToolCtx(cwd=self.cwd, project=self.project, memory=self.memory,
                       recorder=self.recorder, registry=self.registry)
+        # Snapshot the tree BEFORE anything is edited, so a run can be undone wholesale. Taken
+        # here rather than at the first edit: by the time an edit lands a command may already have
+        # written files, and the point the user wants back is "before I asked for this".
+        #
+        # A failure to snapshot must not stop the task — but it must not be silent either, since
+        # the user's willingness to let an agent loose depends on believing the undo exists. So
+        # the reason travels to the UI in the same event that would have carried the checkpoint.
+        res.checkpoint_ref = ""
+        try:
+            from . import checkpoints as _ckpt
+            _ok, _why = _ckpt.available(self.cwd)
+            if _ok:
+                _cp = _ckpt.capture(self.cwd, str(task_id), rid, user_msg[:60])
+                res.checkpoint_ref = _cp.ref
+                self._emit("checkpoint", ok=True, ref=_cp.ref[:12], kind=_cp.kind)
+            else:
+                self._emit("checkpoint", ok=False, reason=_why)
+        except Exception as _ce:                 # never block the run on bookkeeping
+            self._emit("checkpoint", ok=False, reason="%s: %s" % (type(_ce).__name__, _ce))
         # history (prior thread) lets a session CONTINUE across CLI calls / repl turns; the
         # composer's own elision keeps a long continued thread from bloating the prefix.
         msgs0 = list(history) if history else []
