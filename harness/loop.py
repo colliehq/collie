@@ -54,6 +54,34 @@ _REPRO_RE = re.compile(
 # so the gate keeps nagging about a phantom failure it saw on an earlier command.
 _REPRO_STDIN_RE = re.compile(r'(^|[;&|]\s*)(python3?|py)\b[^\n;|]*?(<<-?\s*[\'"]?\w|\s-\s*(<|$))')
 
+# Non-Python evidence. Both regexes above only match `python`/`py`, so on a Go or JS repo the
+# finish-gate saw NO evidence no matter what the agent ran: `go build ./...` was not a
+# reproduction, the gate nagged for `verify_max` rounds with a Python instruction the agent could
+# not satisfy, and then let it finish anyway. That is how a patch that does not even COMPILE got
+# declared done on SWE-bench Pro's flipt instance. For compiled/typechecked languages the build
+# itself is the most valuable evidence there is — cheap, unambiguous, and impossible to fake.
+_REPRO_OTHER_RE = re.compile(
+    r'(^|[;&|]\s*)('
+    r'go\s+(build|vet|run)\b'
+    r'|go\s+test\b[^\n;|]*\s-run\b'                 # targeted, not the suite
+    r'|cargo\s+(check|clippy|build|run)\b'
+    r'|cargo\s+test\b[^\n;|]*\S'                    # cargo test <name>
+    r'|npx?\s+tsc\b|yarn\s+tsc\b|tsc\s+--noEmit\b'
+    r'|node\s+(--check\b|[\w./~-]+\.(js|mjs|cjs)\b)'
+    r'|npx\s+(jest|vitest|mocha|ava)\b[^\n;|]*\S'   # a named test file, not a bare suite run
+    r'|(mvn|\./gradlew)\s+[^\n;|]*\b(compile|test-compile)\b'
+    r')')
+
+# Does the command actually CHECK a result, as opposed to merely proving the code builds?
+# `\bassert\b` alone is a Python idiom; a Go agent asserts with t.Fatal/t.Error, a JS one with
+# expect(). Running a TARGETED existing test counts too — it is an executable correctness check.
+# `go build` deliberately does NOT count: compiling is necessary, never sufficient, and letting it
+# satisfy require_assert would reopen the print-only hole in a new language.
+_ASSERTED_RE = re.compile(
+    r'\bassert\b|\bt\.(Fatal|Error)f?\b|\bexpect\(|\brequire\.\w|\bshould\b\.'
+    r'|go\s+test\b[^\n;|]*\s-run\b|cargo\s+test\b[^\n;|]*\S'
+    r'|npx\s+(jest|vitest|mocha|ava)\b[^\n;|]*\S')
+
 
 def _budget_exceeded(model, total):
     """True once the run has spent past the configured $ or token ceiling (Settings panel /
@@ -92,7 +120,8 @@ def _is_repro_cmd(name, args):
     if any(b in c.lower() for b in ("pytest", "pip ", "pip3 ", "python -m venv", "tox", "nox",
                                     "unittest", "nose", "setup.py")):
         return False
-    return bool(_REPRO_RE.search(c)) or bool(_REPRO_STDIN_RE.search(c))
+    return (bool(_REPRO_RE.search(c)) or bool(_REPRO_STDIN_RE.search(c))
+            or bool(_REPRO_OTHER_RE.search(c)))
 
 
 def _repro_failed(output) -> bool:
@@ -681,7 +710,7 @@ class Harness:
                                 # \bassert\b (not a bare substring) so "reassert"/print("assert")
                                 # don't satisfy the assert-mode gate without a real assertion.
                                 last_repro_asserted = bool(
-                                    re.search(r'\bassert\b', tc.args.get("command") or ""))
+                                    _ASSERTED_RE.search(tc.args.get("command") or ""))
                                 self._emit("repro", passed=not last_repro_failed,
                                            asserted=last_repro_asserted,
                                            cmd=(tc.args.get("command") or "")[:200])
