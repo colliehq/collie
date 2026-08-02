@@ -1440,6 +1440,8 @@
     "failed to load": "加载失败",
     "steering delivered": "转向已送达",
     "not delivered": "未送达",
+    "still working": "仍在运行",
+    "this run started elsewhere — following it live; the thread fills in when it lands": "这次运行不是在本窗口发起的——正在实时跟随；结束后会显示完整对话",
     "working…": "运行中",
     "failed": "失败",
     "verified": "已验证",
@@ -1480,6 +1482,8 @@
     "failed to load": "載入失敗",
     "steering delivered": "轉向已送達",
     "not delivered": "未送達",
+    "still working": "仍在執行",
+    "this run started elsewhere — following it live; the thread fills in when it lands": "這次執行不是在本視窗發起的——正在即時跟隨；結束後會顯示完整對話",
     "working…": "執行中",
     "failed": "失敗",
     "verified": "已驗證",
@@ -1513,6 +1517,8 @@
       "saved · applies to your next message": "保存しました · 次のメッセージから有効",
       "failed to load": "読み込みに失敗しました", "steering delivered": "誘導を送信しました",
       "not delivered": "送信されませんでした",
+      "still working": "実行中",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "この実行は別の場所で開始されました——ライブで追跡中。終了後に全文が表示されます",
       "working…": "実行中",
       "failed": "失敗",
       "verified": "検証済み",
@@ -1541,6 +1547,8 @@
       "saved · applies to your next message": "저장됨 · 다음 메시지부터 적용",
       "failed to load": "불러오지 못했습니다", "steering delivered": "방향 지시 전달됨",
       "not delivered": "전달되지 않음",
+      "still working": "아직 실행 중",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "다른 곳에서 시작된 실행입니다 — 실시간으로 따라갑니다. 끝나면 전체가 표시됩니다",
       "working…": "실행 중",
       "failed": "실패",
       "verified": "검증됨",
@@ -1569,6 +1577,8 @@
       "saved · applies to your next message": "guardado · se aplica a tu próximo mensaje",
       "failed to load": "error al cargar", "steering delivered": "guía entregada",
       "not delivered": "no entregada",
+      "still working": "sigue trabajando",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "esta ejecución empezó en otra ventana — siguiéndola en vivo; el hilo aparece al terminar",
       "working…": "trabajando…",
       "failed": "falló",
       "verified": "verificado",
@@ -1597,6 +1607,8 @@
       "saved · applies to your next message": "enregistré · s'applique à votre prochain message",
       "failed to load": "échec du chargement", "steering delivered": "orientation transmise",
       "not delivered": "non transmise",
+      "still working": "toujours en cours",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "cette exécution a démarré ailleurs — suivi en direct ; le fil apparaît à la fin",
       "working…": "en cours…",
       "failed": "échec",
       "verified": "vérifié",
@@ -2992,7 +3004,43 @@
         }
       });
       scrollDown();
+      // Reopening a thread that is STILL WORKING must not look like reading a finished one. The
+      // saved file holds the PREVIOUS turn mid-run — the last thing written, not what is happening
+      // — so without this you are shown a stale transcript with no sign that Collie is mid-sentence
+      // in it, and the obvious next move is to ask for the same thing again.
+      if (liveRuns[id] && liveRuns[id].state === "running") followSession(id);
     }).catch(function () {});
+  }
+
+  // Watch a run this window did not start. The mirror bus is session-scoped and takes late
+  // subscribers, so joining is cheap; what it cannot do is replay what was already said, and
+  // pretending otherwise would be worse than admitting it. So the note says plainly that it is
+  // following, shows the activity that arrives from here on, and swaps itself for the real
+  // transcript the moment the run lands.
+  function followSession(sid) {
+    var note = addEvent("meta", "eye", t("still working"),
+                        t("this run started elsewhere — following it live; the thread fills in when it lands"));
+    var src = null;
+    try {
+      src = new EventSource("/api/mirror?session=" + encodeURIComponent(sid) +
+                            "&token=" + encodeURIComponent(CT));
+    } catch (e) { return; }
+    function stop() { if (src) { try { src.close(); } catch (e) {} src = null; } }
+    ["tool", "edit", "repro"].forEach(function (ev) {
+      src.addEventListener(ev, function (m) {
+        if (currentSession !== sid) { stop(); return; }     // walked away again
+        try {
+          var d = JSON.parse(m.data || "{}");
+          if (d.name) NOW.act(toolIcon(d.name), d.name, (d.args && (d.args.path || d.args.file)) || "", ev);
+        } catch (e) {}
+      });
+    });
+    src.addEventListener("done", function () {
+      stop();
+      if (currentSession !== sid) return;
+      if (note && note.parentNode) note.parentNode.removeChild(note);
+      openSession(sid);                      // the answer is saved — show the real thread
+    });
   }
 
   var WC_EXAMPLES = '<div class="wc-examples">'
