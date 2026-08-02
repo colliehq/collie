@@ -136,6 +136,12 @@ def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str =
         usage = {"input_tokens": getattr(rr, "input_tokens", 0),
                  "output_tokens": getattr(rr, "output_tokens", 0),
                  "turns": getattr(rr, "turns", 0)}
+        # Collie reports a provider failure (quota exhausted, HTTP error) in RunResult.error and
+        # returns NORMALLY — it does not raise. Reading only exceptions therefore turned a
+        # subscription outage into "collie produced no patch": two 16-second, one-turn, zero-byte
+        # runs were scored as losses on NodeBB-97c8 while the Claude arm's identical outage was
+        # correctly reported, because that arm exits non-zero. Same outage, opposite bookkeeping.
+        err = (getattr(rr, "error", "") or "").strip()
     except Exception as e:
         err = "%s: %s" % (type(e).__name__, e)
     try:
