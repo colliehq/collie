@@ -764,6 +764,7 @@
   .mt-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
   .mt-dot[data-mode="herding"] { background: var(--amber); }
   .mt-dot[data-mode="pack"] { background: var(--pine); }
+  .mt-dot[data-mode="isolated"] { background: var(--azure); }
   .mt-chev { width: 13px; height: 13px; color: var(--faint); transition: transform .16s; }
   .modepick.open .mt-chev { transform: rotate(180deg); }
   .mode-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; min-width: 236px;
@@ -779,6 +780,7 @@
   .mi-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
   .mi-dot[data-mode="herding"] { background: var(--amber); }
   .mi-dot[data-mode="pack"] { background: var(--pine); }
+  .mi-dot[data-mode="isolated"] { background: var(--azure); }
   .mi-txt { display: flex; flex-direction: column; flex: 1; line-height: 1.25; }
   .mi-name { font-size: 13px; font-weight: 600; }
   .mi-desc { font-size: 11px; color: var(--faint); }
@@ -1174,6 +1176,11 @@
               <span class="mi-txt"><span class="mi-name">Extreme Herding</span><span class="mi-desc">More turns + assert-verify gate</span></span>
               <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
             </button>
+            <button type="button" class="mode-item" data-val="isolated" role="option">
+              <span class="mi-dot" data-mode="isolated"></span>
+              <span class="mi-txt"><span class="mi-name">Isolated branch</span><span class="mi-desc">Its own git worktree — two runs can share a repo, and the result reads as a diff</span></span>
+              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </button>
             <button type="button" class="mode-item" data-val="pack" role="option">
               <span class="mi-dot" data-mode="pack"></span>
               <span class="mi-txt"><span class="mi-name">Pack · best-of-N</span><span class="mi-desc">N isolated tries, keep the one that passes a check</span></span>
@@ -1444,6 +1451,8 @@
     "failed to load": "加载失败",
     "steering delivered": "转向已送达",
     "not delivered": "未送达",
+    "file(s) changed": "个文件有改动",
+    "no files changed": "没有文件改动",
     "still working": "仍在运行",
     "this run started elsewhere — following it live; the thread fills in when it lands": "这次运行不是在本窗口发起的——正在实时跟随；结束后会显示完整对话",
     "working…": "运行中",
@@ -1486,6 +1495,8 @@
     "failed to load": "載入失敗",
     "steering delivered": "轉向已送達",
     "not delivered": "未送達",
+    "file(s) changed": "個檔案有變更",
+    "no files changed": "沒有檔案變更",
     "still working": "仍在執行",
     "this run started elsewhere — following it live; the thread fills in when it lands": "這次執行不是在本視窗發起的——正在即時跟隨；結束後會顯示完整對話",
     "working…": "執行中",
@@ -1521,6 +1532,8 @@
       "saved · applies to your next message": "保存しました · 次のメッセージから有効",
       "failed to load": "読み込みに失敗しました", "steering delivered": "誘導を送信しました",
       "not delivered": "送信されませんでした",
+      "file(s) changed": "件のファイルが変更",
+      "no files changed": "変更なし",
       "still working": "実行中",
       "this run started elsewhere — following it live; the thread fills in when it lands": "この実行は別の場所で開始されました——ライブで追跡中。終了後に全文が表示されます",
       "working…": "実行中",
@@ -1551,6 +1564,8 @@
       "saved · applies to your next message": "저장됨 · 다음 메시지부터 적용",
       "failed to load": "불러오지 못했습니다", "steering delivered": "방향 지시 전달됨",
       "not delivered": "전달되지 않음",
+      "file(s) changed": "개 파일 변경",
+      "no files changed": "변경 없음",
       "still working": "아직 실행 중",
       "this run started elsewhere — following it live; the thread fills in when it lands": "다른 곳에서 시작된 실행입니다 — 실시간으로 따라갑니다. 끝나면 전체가 표시됩니다",
       "working…": "실행 중",
@@ -1581,6 +1596,8 @@
       "saved · applies to your next message": "guardado · se aplica a tu próximo mensaje",
       "failed to load": "error al cargar", "steering delivered": "guía entregada",
       "not delivered": "no entregada",
+      "file(s) changed": "archivo(s) cambiados",
+      "no files changed": "sin cambios",
       "still working": "sigue trabajando",
       "this run started elsewhere — following it live; the thread fills in when it lands": "esta ejecución empezó en otra ventana — siguiéndola en vivo; el hilo aparece al terminar",
       "working…": "trabajando…",
@@ -1611,6 +1628,8 @@
       "saved · applies to your next message": "enregistré · s'applique à votre prochain message",
       "failed to load": "échec du chargement", "steering delivered": "orientation transmise",
       "not delivered": "non transmise",
+      "file(s) changed": "fichier(s) modifiés",
+      "no files changed": "aucun changement",
       "still working": "toujours en cours",
       "this run started elsewhere — following it live; the thread fills in when it lands": "cette exécution a démarré ailleurs — suivi en direct ; le fil apparaît à la fin",
       "working…": "en cours…",
@@ -3267,7 +3286,12 @@
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false;
 
     var mode = ($("mode") && $("mode").value) || "normal";
+    // "Isolated" is not a way of running — it is where the run happens. The server still gets
+    // mode=normal; what changes is that it gets a worktree of its own to do it in.
+    var isolated = mode === "isolated";
+    if (isolated) mode = "normal";
     var url = "/api/stream?q=" + encodeURIComponent(q) + "&mode=" + mode +
+              (isolated ? "&isolate=1" : "") +
               "&token=" + encodeURIComponent(CT) +
               (imgIds && imgIds.length ? "&imgs=" + imgIds.join(",") : "") +
               (currentSession ? "&session=" + encodeURIComponent(currentSession) : "");
@@ -3418,6 +3442,16 @@
           addCopy(fin, ans);
         }
         // ran out of turns mid-task: say so, instead of presenting a half-way answer as finished
+        // An isolated run finished on a branch. Saying which one is the difference between a
+        // result you can read and one you have to go looking for.
+        if (d.isolated && d.branch) {
+          var br = document.createElement("div"); br.className = "pack-summary";
+          br.innerHTML = '\u2387 <b>' + esc(d.branch) + '</b> — ' +
+            (d.changed ? (d.changed + " " + t("file(s) changed") +
+                          ". <code>git diff main.." + esc(d.branch) + "</code>")
+                       : t("no files changed"));
+          flowEl.appendChild(br);
+        }
         if (d.max_turns && d.turns >= d.max_turns) {
           var cap = document.createElement("div"); cap.className = "pack-summary";
           cap.innerHTML = "⏱ <b>Turn limit reached</b> (" + d.turns + "/" + d.max_turns +
