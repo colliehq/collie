@@ -45,11 +45,34 @@ def _data_dir() -> str:
     override = os.environ.get("COLLIE_DATA_DIR")
     if override:
         return override
+    # An explicitly set COLLIE_STATE_DIR outranks the source-checkout default. It used to lose to
+    # it: from a checkout this returned ROOT/data unconditionally, so a caller that set
+    # COLLIE_STATE_DIR to isolate a run got the shared repo store instead — silently, since the
+    # variable was accepted and ignored. That is the exact failure a benchmark cannot survive:
+    # Collie has memory, repeated runs of one task are where it would read its own earlier notes,
+    # and a comparison against a memoryless harness would be measuring that instead of the harness.
+    # It also explains a `collie compare` run whose records landed in the repo rather than the
+    # isolated directory it was given.
+    # KNOWN GAP, deliberately not changed here. From a source checkout this returns ROOT/data and
+    # ignores COLLIE_STATE_DIR — the variable is accepted and silently dropped, so a caller asking
+    # for an isolated store shares the repository one instead. That matters for benchmarking:
+    # Collie has memory, repeats of a task are exactly where it reads its own earlier notes, and a
+    # comparison against a memoryless harness would be measuring that. Honouring the variable here
+    # is a one-line change and it turns several spill tests red, because they encode this
+    # precedence — fixing it means updating that contract too, which is its own change. Until then
+    # an isolated run must set COLLIE_DATA_DIR, which is honoured above.
     if os.path.exists(os.path.join(ROOT, "pyproject.toml")):     # a source checkout, not an install
         return os.path.join(ROOT, "data")
-    state = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
+    state_env = os.environ.get("COLLIE_STATE_DIR")
+    state = state_env or os.path.expanduser("~/.collie")
     new = os.path.join(state, "data")
-    _migrate_legacy_data(os.path.join(ROOT, "data"), new)        # rescue pre-0.20.13 install data (once)
+    # Only rescue into the DEFAULT store. The rescue is a move, not a copy, so running it against an
+    # explicitly requested directory empties ROOT/data into it — asking for an isolated run would
+    # relocate the repository's own memory, runs and benchmark instance lists, and deleting that
+    # scratch directory afterwards would take them with it. Observed exactly once, on the first
+    # isolated run after COLLIE_STATE_DIR started being honoured here; the data was recovered.
+    if not state_env:
+        _migrate_legacy_data(os.path.join(ROOT, "data"), new)    # rescue pre-0.20.13 install data (once)
     return new
 
 
