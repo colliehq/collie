@@ -128,6 +128,72 @@ def make_patch(workdir: str, max_len: int = 200_000) -> str:
     return patch
 
 
+# ---- language detection for the verify gate ----------------------------------------------
+# Every nudge below used to hardcode `python3 -c`. On a Go or JS repo that instruction is not
+# merely useless, it is misleading: the agent runs some Python, nothing raises, and the gate lets
+# it finish. SWE-bench Pro is 280 go / 266 python / 165 js / 20 ts, so the gate was INERT on 445
+# of 731 instances — and it showed. On flipt the patch applied and the test package then failed
+# to COMPILE (undefined: NewClient), zero tests ran, and collie had declared itself done.
+#
+# So the gate is now built per language, and for anything that compiles or typechecks the FIRST
+# obligation is that it still builds. A fix that does not build cannot be right, and unlike
+# behavioural correctness that is cheap and unambiguous to check.
+_LANG_MARKERS = [
+    ("go", ("go.mod",)),
+    ("rust", ("Cargo.toml",)),
+    ("java", ("pom.xml", "build.gradle", "build.gradle.kts")),
+    ("js", ("package.json",)),                       # incl. ts; refined below
+    ("python", ("pyproject.toml", "setup.py", "setup.cfg", "tox.ini")),
+]
+
+
+def detect_language(workdir: str) -> str:
+    """Best-effort repo language. Unknown is an ANSWER, not a default to python — a wrong guess
+    reinstates exactly the bug this exists to fix."""
+    for lang, markers in _LANG_MARKERS:
+        for m in markers:
+            if os.path.exists(os.path.join(workdir, m)):
+                if lang == "js" and (os.path.exists(os.path.join(workdir, "tsconfig.json"))):
+                    return "ts"
+                return lang
+    return ""
+
+
+# Per language: (build/typecheck command, how to run a throwaway assertion).
+_LANG_VERIFY = {
+    "go": ("go build ./... && go vet ./...",
+           "write a temporary `xx_verify_test.go` in the package you changed, run it with "
+           "`go test -run '^TestXxVerify$' ./path/to/pkg`, and DELETE the file before you finish"),
+    "rust": ("cargo check",
+             "add a `#[test]` in the module you changed, run `cargo test <name>`, then remove it"),
+    "java": ("mvn -q -o compile || ./gradlew compileJava",
+             "run the single most relevant existing test class for the code you changed"),
+    "ts": ("npx tsc --noEmit",
+           "run the single most relevant existing test file with the project's runner "
+           "(check package.json scripts — usually `npx jest <file>` or `npx vitest run <file>`)"),
+    "js": ("node --check the files you edited",
+           "run the single most relevant existing test file with the project's runner "
+           "(check package.json scripts — usually `npx jest <file>` or `npx mocha <file>`)"),
+    "python": ("python3 -c 'import <the package you changed>'",
+               "run a SHORT `python3 -c \"...\"` that constructs the minimal scenario from the "
+               "issue and asserts the correct result"),
+}
+
+
+def _verify_instructions(lang: str) -> str:
+    """The language-specific half of the verify nudge. Empty when the language is unknown —
+    saying nothing beats telling a Go agent to run python3."""
+    spec = _LANG_VERIFY.get(lang)
+    if not spec:
+        return ("Use whatever the repo's own toolchain is to check your change: first that it "
+                "still BUILDS/typechecks, then that it behaves correctly on the issue's scenario.")
+    build, exercise = spec
+    return ("This repo is %s. FIRST make sure your change still builds: run `%s` and fix every "
+            "error it reports — a patch that does not compile cannot be correct, and this is the "
+            "single most common way a plausible-looking fix is worthless. THEN exercise the fix: "
+            "%s." % (lang, build, exercise))
+
+
 # ---- prediction agents (each: edit files in workdir, given problem_statement) ----
 # Ported from Hermes' loop: after editing, TEST the fix by running it (not the suite).
 _SWE_VERIFY_NUDGE = (
@@ -169,6 +235,32 @@ _SWE_ASSERT_REPAIR_NUDGE = (
     "correct change is (the current edit's logic is wrong or incomplete), FIX it with edit_file, "
     "then RE-RUN the SAME assertion. If instead the assertion itself is wrong (bad `expected`), "
     "correct the `expected` to match the issue and re-run. Finish only when it passes cleanly.")
+
+
+# The three nudges above are tuned for Python and stay VERBATIM on Python repos — they were
+# measured there (assert-verify promoted on a 12-instance holdout) and rewording them would
+# silently re-run that experiment. For every other language the Python-specific mechanics are
+# replaced by the repo's own toolchain, build-first.
+def _swe_verify_nudge(lang: str) -> str:
+    if lang == "python":
+        return _SWE_VERIFY_NUDGE
+    return ("Before you finish: SANITY-CHECK your fix. %s Do NOT run the full test suite — a "
+            "separate grader runs the tests. If the build fails or the behaviour is still wrong, "
+            "read the error, FIX the code with edit_file, and re-check. ITERATE until it builds "
+            "clean AND your check shows the CORRECT result; only then finish."
+            % _verify_instructions(lang))
+
+
+def _swe_assert_verify_nudge(lang: str) -> str:
+    if lang == "python":
+        return _SWE_ASSERT_VERIFY_NUDGE
+    return ("Before finishing you MUST verify by EXECUTING something, not by eyeballing your diff "
+            "or the code (a plausible-looking edit is exactly what a wrong fix looks like). %s "
+            "State the expected result from what the ISSUE says, and make the check FAIL LOUDLY "
+            "if the actual result differs. Do NOT run the whole test suite. If the build fails or "
+            "the check does not match, reconsider WHAT the correct change is — do not merely "
+            "re-run — fix it and re-check. Finish only when the build is clean and the check "
+            "passes." % _verify_instructions(lang))
 
 
 _CRITIC_SYS = (
@@ -223,6 +315,9 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
                    model=None, max_turns=50):   # 50 (was 35): the verify loop (reproduce ->
                    # edit -> re-check) needs headroom; Hermes runs to 90. Still well under.
     from .cli import make_harness
+    # The verify gate is only as good as the toolchain it names, so decide the language BEFORE
+    # building any nudge. COLLIE_SWE_LANG overrides it for repos the markers get wrong.
+    _lang = os.environ.get("COLLIE_SWE_LANG") or detect_language(workdir)
     # Env override to swap the backend model without touching call sites — e.g. to break the
     # DeepSeek resolve ceiling with the latest Opus via the subscription/CLI path:
     #   COLLIE_PROVIDER=claude-cli COLLIE_MODEL=opus  (auth via CLAUDE_CODE_OAUTH_TOKEN or
@@ -253,7 +348,7 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     # runs tests separately). Opt-out with COLLIE_SWE_VERIFY=0.
     if os.environ.get("COLLIE_SWE_VERIFY", "1") not in ("0", "false", "off"):
         h.self_verify = True
-        h.verify_nudge = _SWE_VERIFY_NUDGE
+        h.verify_nudge = _swe_verify_nudge(_lang)
         # Evidence-gate (default on): gate finish on an actually-run post-edit reproduction
         # that didn't error, with bounded reproduce->repair rounds. COLLIE_VERIFY_GATE=0
         # reverts to the old one-shot advisory nudge for A/B.
@@ -281,7 +376,7 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         if os.environ.get("COLLIE_ASSERT_VERIFY", "1") not in ("0", "false", "off"):
             h.verify_gate = True
             h.require_assert = True
-            h.verify_nudge = _SWE_ASSERT_VERIFY_NUDGE
+            h.verify_nudge = _swe_assert_verify_nudge(_lang)
             h.repair_nudge = _SWE_ASSERT_REPAIR_NUDGE
             h.verify_max = int(os.environ.get("COLLIE_VERIFY_ROUNDS", "3"))
     else:

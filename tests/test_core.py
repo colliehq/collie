@@ -2244,3 +2244,48 @@ def test_multiline_prompt_is_never_passed_as_a_windows_argv():
     # and the real caller must use the stdin path
     src = inspect.getsource(swe.predict_claude_code)
     assert "stdin_text=" in src, "predict_claude_code still puts the prompt in argv"
+
+
+def test_verify_gate_is_not_python_only():
+    """The finish-gate must see evidence in whatever language the repo is written in.
+
+    Both repro regexes matched only `python`/`py`, so on a Go or JS repo the gate saw NO evidence
+    whatever the agent ran: it nagged for verify_max rounds with a `python3 -c` instruction that
+    could not be satisfied, then let the agent finish anyway. SWE-bench Pro is 280 go / 266 python
+    / 165 js / 20 ts, and on its flipt instance Collie shipped a patch whose test package did not
+    even COMPILE. Necessary but not sufficient: a build must count as evidence, and must NOT count
+    as a correctness assertion.
+    """
+    from harness.loop import _is_repro_cmd, _ASSERTED_RE
+    for cmd in ("go build ./...", "go vet ./...", "cargo check",
+                "npx tsc --noEmit", "node --check src/a.js",
+                "go test -run '^TestXxVerify$' ./internal/config"):
+        assert _is_repro_cmd("bash", {"command": cmd}), "not counted as evidence: %s" % cmd
+    # a whole-suite run is still not the focused evidence the gate keys on
+    for cmd in ("go test ./...", "npm test", "pytest -q"):
+        assert not _is_repro_cmd("bash", {"command": cmd}), "suite run counted: %s" % cmd
+    # building proves it compiles, never that it is correct
+    assert not _ASSERTED_RE.search("go build ./...")
+    assert not _ASSERTED_RE.search("npx tsc --noEmit")
+    for cmd in ("go test -run '^TestX$' ./p", "python3 -c 'assert a == b'",
+                "npx jest test/foo.test.ts"):
+        assert _ASSERTED_RE.search(cmd), "assertion not recognised: %s" % cmd
+
+
+def test_verify_nudge_names_the_repos_own_toolchain():
+    """A Go agent told to run `python3 -c` is being told to verify nothing."""
+    from harness import swe
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "go.mod"), "w").close()
+        assert swe.detect_language(d) == "go"
+        n = swe._swe_assert_verify_nudge("go")
+        assert "go build" in n and "python3" not in n
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "package.json"), "w").close()
+        open(os.path.join(d, "tsconfig.json"), "w").close()
+        assert swe.detect_language(d) == "ts"
+        assert "tsc" in swe._swe_assert_verify_nudge("ts")
+    # python keeps the tuned wording verbatim — rewording it would silently re-run that experiment
+    assert swe._swe_assert_verify_nudge("python") == swe._SWE_ASSERT_VERIFY_NUDGE
+    # an unknown language must not silently fall back to python
+    assert "python3" not in swe._swe_assert_verify_nudge("")
