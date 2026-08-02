@@ -601,6 +601,10 @@
   .steer-note.dropped { border-left-color: var(--coral); opacity: .6; }
   .steer-note.dropped .sn-ico, .steer-note.dropped .sn-tag { color: var(--coral); }
   .trace-step { font-size: 12.5px; color: var(--muted); }
+  /* Steps that happened before this window arrived. Shown, but not as if they were happening now —
+     a run you just opened must not look like it did ten things in the instant you looked at it. */
+  .trace-step.replay { opacity: .55; }
+  .trace-step.replay .ts-ico { filter: grayscale(1); }
   .trace-step .ts-head { display: flex; align-items: baseline; gap: 8px; }
   .trace-step .ts-ico { width: 14px; text-align: center; color: var(--faint);
     font-family: var(--mono); font-size: 11px; flex: none; }
@@ -3020,18 +3024,30 @@
   function followSession(sid) {
     var note = addEvent("meta", "eye", t("still working"),
                         t("this run started elsewhere — following it live; the thread fills in when it lands"));
+    // A live bubble to put the steps in. Without one traceStep has nowhere to write (it returns on a
+    // null flow), so the note would sit there claiming work was happening above a blank screen.
+    addPending();
     var src = null;
     try {
       src = new EventSource("/api/mirror?session=" + encodeURIComponent(sid) +
                             "&token=" + encodeURIComponent(CT));
     } catch (e) { return; }
     function stop() { if (src) { try { src.close(); } catch (e) {} src = null; } }
+    // The bus hands over what already happened before this window arrived. Those events are history,
+    // not news: rendering them as live activity would make a run look like it was doing ten things
+    // in the same instant you opened it.
+    var replaying = false;
+    src.addEventListener("mirror_replay", function () { replaying = true; });
+    src.addEventListener("mirror_live", function () { replaying = false; });
     ["tool", "edit", "repro"].forEach(function (ev) {
       src.addEventListener(ev, function (m) {
         if (currentSession !== sid) { stop(); return; }     // walked away again
         try {
           var d = JSON.parse(m.data || "{}");
-          if (d.name) NOW.act(toolIcon(d.name), d.name, (d.args && (d.args.path || d.args.file)) || "", ev);
+          if (!d.name) return;
+          var lab = ccLabel(d.name, d.args);
+          traceStep(toolIcon(d.name), lab.verb, lab.target, "", replaying ? "replay" : "");
+          NOW.act(toolIcon(d.name), lab.verb, lab.target, ev);
         } catch (e) {}
       });
     });
@@ -3039,6 +3055,7 @@
       stop();
       if (currentSession !== sid) return;
       if (note && note.parentNode) note.parentNode.removeChild(note);
+      curMsg = flowEl = statusEl = pstatEl = curTextEl = null;   // drop the follow bubble
       openSession(sid);                      // the answer is saved — show the real thread
     });
   }

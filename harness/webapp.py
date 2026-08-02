@@ -388,6 +388,10 @@ class Handler(BaseHTTPRequestHandler):
     # + the desktop) can mirror a run token-by-token in real time. sid -> list[queue].
     _mirror_lock = threading.Lock()
     _mirror_subs: dict = {}
+    # What a late subscriber missed. sid -> [(kind, data)], structural events only, dropped when the
+    # run ends because from that moment the saved thread is the better record.
+    _mirror_backlog: dict = {}
+    _MIRROR_BACKLOG = 60
 
     # attached-image store: the composer POSTs an image to /api/upload, gets an id back, then the
     # next /api/stream?imgs=<id> references it. Kept in memory (a run consumes it right away), bounded
@@ -581,6 +585,17 @@ class Handler(BaseHTTPRequestHandler):
         """Fan one event of session `sid`'s run to every window mirroring that session."""
         with cls._mirror_lock:
             subs = list(cls._mirror_subs.get(sid, ()))
+            # Keep a short tail so a window that joins mid-run is not shown a blank screen under a
+            # note saying work is happening. Structural events only: the token firehose would blow
+            # the buffer in one paragraph, and what a late joiner needs is what Collie DID, not the
+            # prose it was in the middle of.
+            if kind != "token":
+                buf = cls._mirror_backlog.setdefault(sid, [])
+                buf.append((kind, data))
+                if len(buf) > cls._MIRROR_BACKLOG:
+                    del buf[:-cls._MIRROR_BACKLOG]
+            if kind == "done":
+                cls._mirror_backlog.pop(sid, None)   # the thread on disk is the record now
         for q in subs:
             try:
                 q.put_nowait((kind, data))
@@ -599,6 +614,15 @@ class Handler(BaseHTTPRequestHandler):
         self._sse_open()
         try:
             self._sse("mirror_hello", {"session": sid})
+            # Hand over what already happened before this window arrived, marked as a replay so the
+            # page can render it as history rather than as things happening right now.
+            with Handler._mirror_lock:
+                past = list(Handler._mirror_backlog.get(sid, ()))
+            if past:
+                self._sse("mirror_replay", {"session": sid, "count": len(past)})
+                for kind, data in past:
+                    self._sse(kind, data)
+                self._sse("mirror_live", {"session": sid})
             while True:
                 try:
                     kind, data = q.get(timeout=15)
@@ -720,6 +744,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_live()
             if path == "/api/sessions":
                 return self._serve_sessions(urllib.parse.parse_qs(parsed.query))
+            if path == "/api/worktrees":
+                # Isolation nobody can see becomes disk nobody reclaims. Listing them with what each
+                # holds is what makes "clean up" a decision rather than a gamble.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import worktree as _wt
+                return self._send_json({"worktrees": _wt.listing(os.getcwd())})
             if path == "/api/runs":
                 # What is running right now, and how the last few finished. The page cannot know this
                 # on its own: a run outlives the socket that started it and may have been started from
@@ -1849,8 +1880,32 @@ class Handler(BaseHTTPRequestHandler):
         prior = sessions.load(sid) if qs.get("session", [""])[0] else None
         history = (prior or {}).get("messages") or []
         cwd = os.getcwd()
+
+        # ?isolate=1 — run this one in its own git worktree, on its own branch.
+        #
+        # Opt-in, and it has to stay opt-in: the ordinary expectation is that Collie edits the tree
+        # you are looking at, and quietly moving those edits somewhere else would be the worst kind
+        # of surprise. Ask for it when you want two runs on the same repo not to collide, or a
+        # result you can read as a diff before it touches anything.
+        #
+        # If the directory is not a repository this REFUSES rather than falling back: falling back to
+        # the shared tree is exactly the collision that was asked to be avoided, and saying nothing
+        # about it is how you find out afterwards.
+        wt_info = None
+        if qs.get("isolate", ["0"])[0] in ("1", "true", "on"):
+            from . import worktree as _wt
+            wt_info = _wt.prepare(cwd, sid, label=q)
+            if not wt_info["ok"]:
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "could not isolate this run: " + wt_info["error"]})
+                return
+            cwd = wt_info["dir"]
+
         start_d = {"session": sid, "provider": _provider(), "cwd": cwd,
                    "prior_turns": sum(1 for m in history if m.get("role") == "user")}
+        if wt_info:
+            start_d["branch"] = wt_info["branch"]
+            start_d["isolated"] = True
         self._sse("start", start_d)
         Handler._live_pub("start", start_d)   # let open Maps enter live mode for this run
         Handler._mirror_pub(sid, "start", start_d)   # + any window mirroring this session
@@ -2004,6 +2059,16 @@ class Handler(BaseHTTPRequestHandler):
                 # only a per-token ESTIMATE of what it'd cost on the metered API. Flag it so the UI
                 # doesn't present the estimate as a real charge.
                 "subscription": _provider() in ("anthropic-oauth", "claude-cli")}
+            # An isolated run's result is a branch, not a claim. Say which one, and what is on it,
+            # so the next step is `git diff` rather than "did anything happen?".
+            if wt_info:
+                from . import worktree as _wt
+                st = _wt.status(wt_info["dir"])
+                done_d["branch"] = wt_info["branch"]
+                done_d["isolated"] = True
+                done_d["changed"] = len(st["files"])
+                done_d["worktree"] = wt_info["dir"]
+
             # Record the verdict BEFORE trying to tell the client, and let telling it fail. A run
             # whose browser had gone away finished its work, saved its answer, and was then filed as
             # a failure — because this frame went straight to a dead socket and the BrokenPipeError
