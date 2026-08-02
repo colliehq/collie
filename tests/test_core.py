@@ -2322,3 +2322,24 @@ def test_a_provider_outage_is_not_scored_as_a_failed_attempt():
     from harness import loop
     lsrc = _i.getsource(loop)
     assert 'if comp.stop_reason == "error":' in lsrc and "res.error = " in lsrc
+
+
+def test_both_arms_record_cache_tokens_and_cost():
+    """A cost figure without cache reads is several times too high, and unrecorded is unrecoverable.
+
+    The first graded run measured Collie's tokens and NOTHING for Claude Code (plain -p returns
+    only the answer), so efficiency could not be compared at all. Worse, Collie's own figure
+    omitted cache reads: a live check shows a run with 6 fresh input tokens against 117,696 cached
+    ones, so pricing all input at the uncached rate overstates spend by orders of magnitude. Cold
+    runs delete their store, so a field not captured at the call site is gone for good.
+    """
+    import inspect as _i
+    from bench import paired_eval
+    from harness import swe
+    collie_src = _i.getsource(paired_eval.run_collie)
+    for field in ("cache_read", "cache_creation", "cost_usd"):
+        assert field in collie_src, "run_collie stopped recording %s" % field
+    claude_src = _i.getsource(paired_eval.run_claude)
+    assert "cache_read_input_tokens" in claude_src and "total_cost_usd" in claude_src
+    # the CLI only reports usage in json mode
+    assert '"--output-format", "json"' in _i.getsource(swe.predict_claude_code)

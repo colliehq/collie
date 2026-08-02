@@ -133,9 +133,14 @@ def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str =
         # byte counts for work that never happened — take the diff from the repo, always.
         rr = swe.predict_collie(workdir, inst["problem_statement"],
                                 provider="anthropic-oauth", model=model)
-        usage = {"input_tokens": getattr(rr, "input_tokens", 0),
-                 "output_tokens": getattr(rr, "output_tokens", 0),
-                 "turns": getattr(rr, "turns", 0)}
+        # Record EVERY usage field RunResult carries, not just input/output. Cache reads are
+        # billed at a tenth of input and are the bulk of an agent loop's tokens, so a cost figure
+        # without them overstates spend several-fold — and the cold runs delete their store, so a
+        # field not captured here is gone for good rather than recoverable from runs.db.
+        usage = {k: getattr(rr, k) for k in
+                 ("turns", "input_tokens", "output_tokens", "total_tokens",
+                  "cache_read", "cache_creation", "cache_miss_tokens", "cost_usd")
+                 if getattr(rr, k, None) is not None}
         # Collie reports a provider failure (quota exhausted, HTTP error) in RunResult.error and
         # returns NORMALLY — it does not raise. Reading only exceptions therefore turned a
         # subscription outage into "collie produced no patch": two 16-second, one-turn, zero-byte
@@ -177,8 +182,23 @@ def run_claude(inst: dict, workdir: str, model: str, rep: int) -> dict:
         patch = swe.make_patch(workdir)     # same contract as collie — diff the repo, not the return
     except Exception as e:
         err = err or "make_patch: %s: %s" % (type(e).__name__, e)
+    # The CLI reports its own usage/cost on stdout under --output-format json. Parse failures are
+    # recorded as an empty usage dict, never as a zero — a missing measurement is not free work.
+    usage = {}
+    if cli is not None and (cli.stdout or "").strip().startswith("{"):
+        try:
+            d = json.loads(cli.stdout)
+            u = d.get("usage") or {}
+            usage = {"cost_usd": d.get("total_cost_usd"), "duration_ms": d.get("duration_ms"),
+                     "input_tokens": u.get("input_tokens"),
+                     "output_tokens": u.get("output_tokens"),
+                     "cache_read": u.get("cache_read_input_tokens"),
+                     "cache_creation": u.get("cache_creation_input_tokens")}
+            usage = {k: v for k, v in usage.items() if v is not None}
+        except (ValueError, AttributeError):
+            usage = {}
     row = {"harness": "claude", "rep": rep, "secs": round(time.time() - t0, 1),
-           "patch_bytes": len(patch or ""), "patch": patch, "error": err, "usage": {}}
+           "patch_bytes": len(patch or ""), "patch": patch, "error": err, "usage": usage}
     if not patch and cli is not None:
         # rc==0 and an empty diff still needs an explanation — keep what the CLI actually said.
         row["cli_rc"] = cli.returncode
