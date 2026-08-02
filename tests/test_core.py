@@ -2186,3 +2186,61 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_every_agent_cli_is_resolved_on_path_before_exec():
+    """A competitor that cannot start must be an error, not a loss.
+
+    On Windows CreateProcess ignores PATHEXT, so `subprocess.run(["claude", ...])` raises
+    FileNotFoundError in ~0.2s and never runs anything. Twice now a comparison run recorded that
+    as "the other harness produced no patch" (a bogus 10:0, then a bogus 2:0). Fixing the call
+    site in adapters.py did not fix the identical call in swe.py, so lock the CLASS: every place
+    that execs an external agent CLI resolves argv[0] through shutil.which first.
+    """
+    import ast
+    from harness import swe, adapters
+    for mod in (swe, adapters):
+        src = inspect.getsource(mod)
+        assert "shutil.which" in src, "%s execs a CLI without resolving it on PATH" % mod.__name__
+        tree = ast.parse(src)
+        # no subprocess.run/Popen whose argv[0] is a bare string literal command name
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            fn = node.func
+            name = getattr(fn, "attr", "") or getattr(fn, "id", "")
+            if name not in ("run", "Popen"):
+                continue
+            argv = node.args[0]
+            if not isinstance(argv, ast.List) or not argv.elts:
+                continue
+            first = argv.elts[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                # git/where/powershell are OS built-ins with real .exe files; the agent CLIs
+                # (claude, hermes, codex, ...) are npm shims that only exist as .cmd/.ps1
+                assert first.value in ("git", "where", "powershell", "docker", "sg", "cmd",
+                                       "systemd-run"), (
+                    "%s: exec of bare %r — resolve it with shutil.which first"
+                    % (mod.__name__, first.value))
+
+
+def test_multiline_prompt_is_never_passed_as_a_windows_argv():
+    """cmd.exe ends a command at a newline, so a multi-line prompt in argv arrives truncated.
+
+    Empirically: a 1007-char problem statement reached `claude` as its FIRST LINE ONLY via argv,
+    and complete via stdin. The agent then said it had no issue body, edited nothing, exited 0 —
+    and the paired benchmark scored that as a loss for the other harness. Silent truncation of the
+    task itself is the most expensive lie a comparison harness can tell, so _run_cli must refuse.
+    """
+    from harness import swe
+    with tempfile.TemporaryDirectory() as wd:
+        try:
+            swe._run_cli(["git", "status", "line one\nline two"], wd)
+        except ValueError as e:
+            assert "newline" in str(e) and "stdin_text" in str(e)
+        else:
+            if os.name == "nt":
+                raise AssertionError("_run_cli accepted a multi-line argv on Windows")
+    # and the real caller must use the stdin path
+    src = inspect.getsource(swe.predict_claude_code)
+    assert "stdin_text=" in src, "predict_claude_code still puts the prompt in argv"

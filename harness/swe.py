@@ -17,6 +17,7 @@ shell pre-dates the group add, wrap calls in `sg docker -c "..."`. See docs/SWEB
 from __future__ import annotations
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -468,16 +469,42 @@ CLI_SWE_PROMPT = (
     "metadata like a maintainer would.\n\nISSUE:\n")
 
 
-def _run_cli(cmd, workdir, extra_env=None, timeout=1800):
-    """Run a headless coding-agent CLI in workdir; it edits files in place."""
+def _run_cli(cmd, workdir, extra_env=None, timeout=1800, stdin_text=None):
+    """Run a headless coding-agent CLI in workdir; it edits files in place.
+
+    `stdin_text` feeds the prompt on stdin instead of as an argv element. On Windows these CLIs
+    are npm .CMD shims, so they launch through cmd.exe — and cmd.exe TREATS A NEWLINE AS END OF
+    COMMAND. A multi-line prompt passed as an argument is silently cut at the first newline: the
+    agent receives a fragment, says it lacks the issue body, edits nothing, and the comparison
+    records a clean 0 with no error. Verified empirically: a 1007-char prompt arrived as its
+    first line via argv, and complete via stdin.
+    """
     env = dict(os.environ)
     for k, v in (extra_env or {}).items():
         if v is None:
             env.pop(k, None)                 # unset a shadowing key
         else:
             env[k] = v
-    return subprocess.run(cmd, cwd=workdir, env=env, text=True, check=False,
-                          timeout=timeout, capture_output=True)
+    # Resolve argv[0] on PATH ourselves. On Windows CreateProcess does NOT consult PATHEXT, so
+    # bare "claude" misses claude.cmd and raises FileNotFoundError in ~0.2s — which a comparison
+    # harness happily records as "the other agent produced no patch". That exact broken arm has
+    # now produced a bogus 2:0 and a bogus 10:0 in this repo. A competitor that cannot start must
+    # be an ERROR, never a loss, so say which executable was not found.
+    exe = shutil.which(cmd[0], path=env.get("PATH"))
+    if not exe:
+        raise FileNotFoundError("%r is not on PATH — cannot run this arm (this is a harness "
+                                "failure, not a result for %s)" % (cmd[0], cmd[0]))
+    # Refuse to silently truncate. If a multi-line prompt is still sitting in argv on Windows,
+    # cmd.exe would cut it at the first newline and the run would LOOK fine — so fail loudly.
+    if os.name == "nt" and stdin_text is None:
+        for i, a in enumerate(cmd[1:], 1):
+            if isinstance(a, str) and "\n" in a:
+                raise ValueError(
+                    "argv[%d] of %r contains a newline; on Windows cmd.exe would truncate it "
+                    "there and the agent would receive only a fragment. Pass it via stdin_text."
+                    % (i, cmd[0]))
+    return subprocess.run([exe] + list(cmd[1:]), cwd=workdir, env=env, text=True, check=False,
+                          timeout=timeout, capture_output=True, input=stdin_text)
 
 
 # Third-party provider keys the `claude` CLI never needs — dropped from the child env so that a
@@ -493,11 +520,14 @@ def predict_claude_code(workdir: str, problem_statement: str, model="", timeout=
     # is a benchmark harness and MUST only be run in a disposable sandbox/VM/container, never on a
     # machine holding real credentials or data. We at least strip non-Claude provider keys from the
     # child env to bound what an injected command could steal.
-    cmd = ["claude", "-p", CLI_SWE_PROMPT + problem_statement,
-           "--permission-mode", "bypassPermissions"]
+    cmd = ["claude", "-p", "--permission-mode", "bypassPermissions"]
     if model:
         cmd += ["--model", model]
-    _run_cli(cmd, workdir, extra_env={k: None for k in _NON_CLAUDE_KEYS}, timeout=timeout)
+    # RETURN the CompletedProcess. Discarding it made a non-zero exit / a refusal on stdout
+    # indistinguishable from "the agent chose to change nothing", which a comparison harness then
+    # scores as a loss. Callers must look at returncode and stderr before recording an empty patch.
+    return _run_cli(cmd, workdir, extra_env={k: None for k in _NON_CLAUDE_KEYS}, timeout=timeout,
+                    stdin_text=CLI_SWE_PROMPT + problem_statement)
 
 
 def predict_hermes(workdir: str, problem_statement: str, model="", timeout=1800):
