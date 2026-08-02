@@ -615,7 +615,12 @@ def predict_claude_code(workdir: str, problem_statement: str, model="", timeout=
     # is a benchmark harness and MUST only be run in a disposable sandbox/VM/container, never on a
     # machine holding real credentials or data. We at least strip non-Claude provider keys from the
     # child env to bound what an injected command could steal.
-    cmd = ["claude", "-p", "--permission-mode", "bypassPermissions"]
+    # --output-format json so the run reports its own usage and cost. Plain text mode returns only
+    # the answer, which left the Claude arm with NO token or cost data at all while Collie's was
+    # measured — a comparison can't discuss efficiency when one side is unmeasured. The JSON also
+    # separates cache reads from fresh input, which is the difference between a real cost figure
+    # and one several times too high. Editing behaviour is unaffected; only stdout changes.
+    cmd = ["claude", "-p", "--output-format", "json", "--permission-mode", "bypassPermissions"]
     if model:
         cmd += ["--model", model]
     # RETURN the CompletedProcess. Discarding it made a non-zero exit / a refusal on stdout
