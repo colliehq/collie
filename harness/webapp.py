@@ -402,6 +402,58 @@ class Handler(BaseHTTPRequestHandler):
     _steer_lock = threading.Lock()
     _steer_runs: dict = {}          # sid -> queue.Queue[str], present only while a run is in flight
 
+    # What is running, across every window and none.
+    #
+    # A run outlives the socket that started it, so "is anything happening?" cannot be answered from
+    # the page that asked — and a second thread cannot be started with any confidence while the first
+    # one's state lives only in one tab's `running` variable. This is the process's own answer, and
+    # the only thing that makes more than one conversation at a time honest rather than hopeful.
+    # sid -> {state, started, ask, cwd, turns, verified, error, ended}
+    _runs_lock = threading.Lock()
+    _runs: dict = {}
+    _RUNS_KEEP = 30                 # finished runs stay listable so the list can show a verdict
+
+    @classmethod
+    def _run_begin(cls, sid, ask, cwd):
+        with cls._runs_lock:
+            cls._runs[sid] = {"session": sid, "state": "running", "started": time.time(),
+                              "ask": (ask or "")[:120], "cwd": cwd, "turns": 0,
+                              "verified": None, "error": "", "ended": None}
+
+    @classmethod
+    def _run_mark(cls, sid, **kw):
+        with cls._runs_lock:
+            r = cls._runs.get(sid)
+            if r is not None:
+                r.update(kw)
+
+    @classmethod
+    def _run_end(cls, sid, res=None, error=""):
+        with cls._runs_lock:
+            r = cls._runs.get(sid)
+            # First verdict wins. The success path records the real one and the `finally` guard runs
+            # straight after it; without this the guard would overwrite every good result with its
+            # own catch-all and every finished run would read as failed.
+            if r is None or r["ended"]:
+                return
+            r["state"] = "failed" if (error or getattr(res, "error", "")) else "done"
+            r["error"] = (error or getattr(res, "error", "") or "")[:200]
+            r["ended"] = time.time()
+            if res is not None:
+                r["turns"] = getattr(res, "turns", 0) or 0
+                r["verified"] = bool(getattr(res, "verified", False))
+            # keep the most recent finished runs, drop the rest — a verdict nobody looked at within
+            # thirty runs is not one the sidebar should still be offering
+            done = sorted([x for x in cls._runs.values() if x["ended"]], key=lambda x: x["ended"])
+            for old in done[:-cls._RUNS_KEEP]:
+                cls._runs.pop(old["session"], None)
+
+    @classmethod
+    def _runs_snapshot(cls):
+        with cls._runs_lock:
+            return sorted((dict(r) for r in cls._runs.values()),
+                          key=lambda r: (r["state"] != "running", -(r["ended"] or r["started"])))
+
     @classmethod
     def _steer_open(cls, sid):
         q: queue.Queue = queue.Queue(maxsize=64)
@@ -668,6 +720,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_live()
             if path == "/api/sessions":
                 return self._serve_sessions(urllib.parse.parse_qs(parsed.query))
+            if path == "/api/runs":
+                # What is running right now, and how the last few finished. The page cannot know this
+                # on its own: a run outlives the socket that started it and may have been started from
+                # another window entirely (the phone, a second tab).
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._send_json({"runs": Handler._runs_snapshot()})
             if path == "/api/settings":
                 from . import settings
                 vals = settings.all_values()
@@ -1795,6 +1854,7 @@ class Handler(BaseHTTPRequestHandler):
         self._sse("start", start_d)
         Handler._live_pub("start", start_d)   # let open Maps enter live mode for this run
         Handler._mirror_pub(sid, "start", start_d)   # + any window mirroring this session
+        Handler._run_begin(sid, q, cwd)              # the process-wide answer to "what is running?"
 
         # PACK mode (🎯 best-of-N): run the task N times in isolation, pick the winner by what
         # actually PASSES. No token stream — each attempt runs silently; we push a `pack_attempt`
@@ -1877,9 +1937,25 @@ class Handler(BaseHTTPRequestHandler):
                 h.max_turns = 40                     # raised default; the Settings panel / env still wins
             # every structural event hits BOTH the starting client's socket and the live bus (so the
             # Map / mini-map render it in real time); the token firehose stays client-only.
-            h.emit = lambda kind, d: (self._sse(kind, d), Handler._live_pub(kind, d),
+            # The run does not belong to the socket that started it.
+            #
+            # `self._sse` was called FIRST and unguarded here, so the moment the browser went away —
+            # closed tab, switched thread, phone locked — the next emit raised BrokenPipeError, which
+            # travelled out of h.run() into the handler below and ended the run. A comment in the web
+            # UI said the opposite ("a dropped SSE connection does NOT stop the run") and built a
+            # whole reconnect path on top of that belief; what it reconnected to was a corpse.
+            #
+            # Writing to the departed client is the only part allowed to fail. The live bus and the
+            # session mirror always get the event, which is what lets a window re-attach later, and
+            # what makes leaving a run to start another one possible at all.
+            def _tx(kind, d):
+                try:
+                    self._sse(kind, d)
+                except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+                    pass
+            h.emit = lambda kind, d: (_tx(kind, d), Handler._live_pub(kind, d),
                                       Handler._mirror_pub(sid, kind, d))
-            h.stream_cb = lambda piece: (self._sse("token", {"t": piece}),
+            h.stream_cb = lambda piece: (_tx("token", {"t": piece}),
                                          Handler._mirror_pub(sid, "token", {"t": piece}))  # real token streaming
             # mid-run steering: register a per-session queue; the loop drains it at each turn boundary.
             # POST /api/steer pushes onto it. Text typed while Collie works becomes the next user turn.
@@ -1928,12 +2004,22 @@ class Handler(BaseHTTPRequestHandler):
                 # only a per-token ESTIMATE of what it'd cost on the metered API. Flag it so the UI
                 # doesn't present the estimate as a real charge.
                 "subscription": _provider() in ("anthropic-oauth", "claude-cli")}
-            self._sse("done", done_d)
+            # Record the verdict BEFORE trying to tell the client, and let telling it fail. A run
+            # whose browser had gone away finished its work, saved its answer, and was then filed as
+            # a failure — because this frame went straight to a dead socket and the BrokenPipeError
+            # jumped over the line that stored the result. The work was real; only the audience left.
+            Handler._run_end(sid, res)
             Handler._mirror_pub(sid, "done", done_d)   # mirroring windows see the run finish too
             Handler._notify_done(sid, res, wall_ms=res.wall_ms)
+            try:
+                self._sse("done", done_d)
+            except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+                pass
         except BrokenPipeError:
-            pass
+            # Only reachable now from a write outside h.emit; the run's own emits swallow it.
+            Handler._run_end(sid, error="client went away")
         except Exception as e:
+            Handler._run_end(sid, error="%s: %s" % (type(e).__name__, e))
             try:
                 self._sse("done", {"session": sid, "answer": "",
                                    "error": "%s: %s" % (type(e).__name__, e)})
@@ -1948,6 +2034,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         finally:
+            # Whatever happened, nothing may stay listed as running — a sidebar that shows a dot
+            # forever is worse than one that shows nothing, because it is believed.
+            Handler._run_end(sid, error="ended without a verdict")
             Handler._steer_close(sid)      # run over: reject further steers for this session
             if h is not None:
                 try:

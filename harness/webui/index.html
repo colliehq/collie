@@ -162,6 +162,20 @@
   }
   .thread { position: relative; }
   .thread .t-turns { font-size: 11px; color: var(--faint); margin-top: 4px; }
+  /* What a thread is doing, so a second one can be started without losing track of the first. */
+  .thread .t-state {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 10.5px; letter-spacing: .03em; text-transform: uppercase;
+    margin-top: 4px; color: var(--muted);
+  }
+  .thread .t-state::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  }
+  .thread .t-state.running { color: var(--pine); }
+  .thread .t-state.running::before { animation: tpulse 1.4s ease-in-out infinite; }
+  .thread .t-state.failed { color: var(--coral); }
+  .thread.r-running { border-left: 2px solid var(--pine); }
+  @keyframes tpulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   .thread .t-acts { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; opacity: 0;
     transition: opacity .12s; }
   .thread:hover .t-acts { opacity: 1; }
@@ -1426,6 +1440,10 @@
     "failed to load": "加载失败",
     "steering delivered": "转向已送达",
     "not delivered": "未送达",
+    "working…": "运行中",
+    "failed": "失败",
+    "verified": "已验证",
+    "done": "完成",
     "queued": "排队中",
     "steering": "已插话",
     "run already finished — send again to start a new turn": "运行已结束——再发一次将开启新的一轮",
@@ -1462,6 +1480,10 @@
     "failed to load": "載入失敗",
     "steering delivered": "轉向已送達",
     "not delivered": "未送達",
+    "working…": "執行中",
+    "failed": "失敗",
+    "verified": "已驗證",
+    "done": "完成",
     "queued": "排隊中",
     "steering": "已插話",
     "run already finished — send again to start a new turn": "執行已結束——再發一次將開啟新的一輪",
@@ -1491,6 +1513,10 @@
       "saved · applies to your next message": "保存しました · 次のメッセージから有効",
       "failed to load": "読み込みに失敗しました", "steering delivered": "誘導を送信しました",
       "not delivered": "送信されませんでした",
+      "working…": "実行中",
+      "failed": "失敗",
+      "verified": "検証済み",
+      "done": "完了",
       "queued": "順番待ち",
       "steering": "介入しました",
       "run already finished — send again to start a new turn": "実行はすでに終了しました——もう一度送信すると新しいターンを開始します",
@@ -1515,6 +1541,10 @@
       "saved · applies to your next message": "저장됨 · 다음 메시지부터 적용",
       "failed to load": "불러오지 못했습니다", "steering delivered": "방향 지시 전달됨",
       "not delivered": "전달되지 않음",
+      "working…": "실행 중",
+      "failed": "실패",
+      "verified": "검증됨",
+      "done": "완료",
       "queued": "대기 중",
       "steering": "개입함",
       "run already finished — send again to start a new turn": "실행이 이미 끝났습니다 — 다시 보내면 새 턴을 시작합니다",
@@ -1539,6 +1569,10 @@
       "saved · applies to your next message": "guardado · se aplica a tu próximo mensaje",
       "failed to load": "error al cargar", "steering delivered": "guía entregada",
       "not delivered": "no entregada",
+      "working…": "trabajando…",
+      "failed": "falló",
+      "verified": "verificado",
+      "done": "listo",
       "queued": "en cola",
       "steering": "corrigiendo",
       "run already finished — send again to start a new turn": "la ejecución ya terminó — envía de nuevo para iniciar un nuevo turno",
@@ -1563,6 +1597,10 @@
       "saved · applies to your next message": "enregistré · s'applique à votre prochain message",
       "failed to load": "échec du chargement", "steering delivered": "orientation transmise",
       "not delivered": "non transmise",
+      "working…": "en cours…",
+      "failed": "échec",
+      "verified": "vérifié",
+      "done": "terminé",
       "queued": "en attente",
       "steering": "correction",
       "run already finished — send again to start a new turn": "l'exécution est déjà terminée — renvoyez pour démarrer un nouveau tour",
@@ -2845,15 +2883,61 @@
   }
 
   // ---- sessions ---------------------------------------------------------
+  // ---- what is running, anywhere ----------------------------------------
+  // The server's answer, not this page's. A run outlives the socket that started it and may have
+  // been started from another window entirely, so `running` in this tab cannot answer it.
+  var liveRuns = {};
+  function runLabel(r) {
+    if (r.state === "running") return t("working…");
+    if (r.state === "failed") return t("failed");
+    return r.verified ? t("verified") : t("done");
+  }
+  function pollRuns() {
+    fetch("/api/runs?token=" + encodeURIComponent(CT))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var next = {}, changed = false;
+        (d.runs || []).forEach(function (r) { next[r.session] = r; });
+        Object.keys(next).concat(Object.keys(liveRuns)).forEach(function (k) {
+          var a = liveRuns[k], b = next[k];
+          if (!a !== !b || (a && b && (a.state !== b.state || a.verified !== b.verified))) changed = true;
+        });
+        liveRuns = next;
+        // Only redraw when something actually moved: the sidebar is also where rename and delete
+        // live, and a list that rebuilds every two seconds eats the click that lands on it.
+        if (changed) loadSessions();
+      })
+      .catch(function () {});
+  }
+  setInterval(pollRuns, 2500);
+
   function loadSessions() {
     fetch("/api/sessions").then(function (r) { return r.json(); }).then(function (d) {
       var box = $("threads"); box.innerHTML = "";
       var list = (d && d.sessions) || [];
+      // A brand-new thread has no saved file until its first run finishes. So starting one, leaving
+      // it to work and looking at the list showed nothing at all — the thread you had just started
+      // was the one thread you could not get back to. Anything the server says is alive gets a row
+      // whether or not it has been written to disk yet.
+      var known = {};
+      list.forEach(function (s) { known[s.id] = true; });
+      Object.keys(liveRuns).forEach(function (id) {
+        if (known[id]) return;
+        var r = liveRuns[id];
+        if (r.state !== "running") return;      // finished-and-unsaved is a crash, not a thread
+        list.unshift({ id: id, title: r.ask || "(untitled)", last: r.ask || "", turns: r.turns || 0 });
+      });
       if (!list.length) { box.innerHTML = '<div class="empty">No sessions yet.</div>'; return; }
       list.forEach(function (s) {
         var el = document.createElement("div");
         el.className = "thread" + (s.id === currentSession ? " active" : "");
+        var rs = liveRuns[s.id];
+        if (rs) el.className += " r-" + rs.state;
         el.innerHTML = '<div class="t-last">' + esc(s.title || s.last || "(untitled)") + '</div>' +
+          // What this thread is doing right now, decided by the server rather than by whether this
+          // window happens to be the one watching it. Without it, a run started here and left, or
+          // started from the phone, is invisible — and invisible work is work you start twice.
+          (rs ? '<div class="t-state ' + rs.state + '">' + esc(runLabel(rs)) + '</div>' : '') +
           '<div class="t-turns">' + (s.turns || 0) + ' turn' + (s.turns === 1 ? "" : "s") + '</div>' +
           '<div class="t-acts">' +
           '<button class="t-act" data-a="rename" title="Rename">✎</button>' +
@@ -2880,8 +2964,21 @@
     }).catch(function () {});
   }
 
+  // Leaving a conversation no longer ends it.
+  //
+  // openSession and newThread both refused outright while a run was going — the only ways out were
+  // to wait or to stop the work. That was the honest thing to do back when the run died with the
+  // socket, and it is the whole reason Collie could hold only one thought at a time. The server owns
+  // the run now, so leaving is just this window looking somewhere else.
+  function detachRun() {
+    if (es) { try { es.close(); } catch (e) {} es = null; }
+    if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }
+    curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
+    finishRunUI();                       // this window goes idle; the run does not
+  }
+
   function openSession(id) {
-    if (running) return;
+    detachRun();
     currentSession = id;
     clearTimeline(); setGate("idle"); NOW.reset();
     setReceipt({}); loadSessions();
@@ -2915,7 +3012,7 @@
     + 'diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>'
     + WC_EXAMPLES + '</div>';
   function newThread() {
-    if (running) return;
+    detachRun();                         // start a second thing while the first one runs
     currentSession = null;
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     loadSessions(); $("input").focus();
