@@ -2005,11 +2005,34 @@
   function openSettings() {
     setStatus.textContent = t("loading…"); setStatus.className = "set-status";
     setOverlay.classList.add("open");
-    fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
-      renderSettings(d.schema || [], d.values || {});
-      mcpLoad();          // renderSettings has laid out the MCP category and its #mcpBox
-      setStatus.textContent = "";
-    }).catch(function () { setStatus.textContent = t("failed to load"); setStatus.className = "set-status err"; });
+    // One catch covered the fetch, the JSON parse, renderSettings AND mcpLoad, and reported all
+    // four as "failed to load" — so a render bug read as a dead server. The fetch is separated
+    // from what happens to its result, and the message now carries the actual reason: a panel
+    // that says only "failed" cannot be diagnosed from a screenshot, which is exactly how this
+    // one reached us.
+    fetch("/api/settings")
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .catch(function (e) {
+        setStatus.textContent = t("failed to load") + " — " + (e && e.message ? e.message : e);
+        setStatus.className = "set-status err";
+        throw e;                       // don't run the render on a failed load
+      })
+      .then(function (d) {
+        try {
+          renderSettings(d.schema || [], d.values || {});
+          mcpLoad();      // renderSettings has laid out the MCP category and its #mcpBox
+          setStatus.textContent = "";
+        } catch (e) {
+          setStatus.textContent = "settings loaded but could not render — " +
+                                  (e && e.message ? e.message : e);
+          setStatus.className = "set-status err";
+          throw e;        // surface it to the console too, so there is a stack to read
+        }
+      })
+      .catch(function () {});          // both arms already reported; keep it off the console as unhandled
   }
   function closeSettings() { setOverlay.classList.remove("open"); clearInterval(mcpPollTimer); }
 

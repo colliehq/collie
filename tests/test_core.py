@@ -1171,6 +1171,43 @@ def test_bash_python_shim():
     r = BashTool().run({"command": 'python -c "print(6*7)"', "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert r.strip() == "42", "python (shimmed to python3) must run, got: %r" % r
 
+def test_panel_settings_survive_a_fork():
+    """A setting the panel saved must reach a child process, not be locked out by inheritance.
+
+    apply() exports every saved setting as COLLIE_<KEY>. The desktop app spawns the web server as
+    a child, which inherits those exports; its own _HARD_ENV snapshot then classed them as "the
+    user set this in their environment", and apply() skips a hard-set key forever. Measured on a
+    live machine: settings.json said LANG=zh and the running server answered en — the panel saved,
+    the file was right, and nothing read it. Silent in both directions.
+    """
+    import subprocess as _sp
+    state = tempfile.mkdtemp(prefix="forksettings-")
+    env = {**os.environ, "COLLIE_STATE_DIR": state}
+    parent = ("import os, sys\n"
+              "sys.path.insert(0, %r)\n"
+              "from harness import settings as st\n"
+              "st.save({'LANG': 'en'})\n"          # what the process started with
+              "st.apply()\n"
+              "st.save({'LANG': 'zh'})\n"          # the user changes it in the panel
+              "child = os.path.join(%r, 'c.py')\n"
+              "open(child, 'w').write(\"import sys\\n\"\n"
+              "  \"sys.path.insert(0, %r)\\n\"\n"
+              "  \"from harness import settings as st\\n\"\n"
+              "  \"st.apply()\\n\"\n"
+              "  \"print(st.get('LANG', 'auto'))\\n\")\n"
+              "import subprocess\n"
+              "print(subprocess.run([sys.executable, child], capture_output=True, text=True,\n"
+              "                     env=dict(os.environ)).stdout.strip())\n"
+              % (os.getcwd(), state, os.getcwd()))
+    pf = os.path.join(state, "p.py")
+    with open(pf, "w", encoding="utf-8") as f:
+        f.write(parent)
+    r = _sp.run([sys.executable, pf], capture_output=True, text=True, env=env, timeout=120)
+    got = (r.stdout or "").strip().splitlines()[-1:] or [""]
+    assert got[0] == "zh", \
+        "the child must see the panel's value, got %r (stderr: %s)" % (got[0], (r.stderr or "")[:200])
+
+
 def test_running_out_of_turns_is_not_reported_as_done():
     """A run cut off mid-task must not answer with the word "done".
 

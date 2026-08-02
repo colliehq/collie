@@ -13,7 +13,19 @@ _PATH = os.environ.get("COLLIE_SETTINGS_PATH") or os.path.expanduser("~/.collie/
 _cache = {"mtime": -1.0, "data": {}}
 # env vars set BEFORE we ran are authoritative (a user's CLI `COLLIE_X=… collie …` must win over a
 # saved panel value); apply() never overwrites these.
-_HARD_ENV = {k for k in os.environ if k.startswith("COLLIE_")}
+# Env vars the USER set, which outrank the Settings panel. Snapshotted at import — but a var this
+# process INHERITED from a parent Collie is not a user override, and treating it as one is how the
+# panel silently stopped working: apply() exports every saved setting as COLLIE_<KEY>, the desktop
+# app spawns the web server as a child (start_server_windowless), the child inherits those exports,
+# and its own snapshot then classes them as hard-set. From that point apply() skips them forever —
+# the panel saves, the file is correct, and the running server keeps answering with the value it
+# started with. Measured: settings.json said LANG=zh while the live server reported en.
+#
+# So apply() announces what it injected, and those keys are excluded here. A var a real user
+# exported carries no such marker and still wins.
+_INJECTED_ENV = "COLLIE_APPLIED_KEYS"
+_inherited = {k.strip() for k in (os.environ.get(_INJECTED_ENV) or "").split(",") if k.strip()}
+_HARD_ENV = {k for k in os.environ if k.startswith("COLLIE_")} - _inherited - {_INJECTED_ENV}
 
 
 # Each knob: key (the settings.json field + the env var suffix COLLIE_<KEY>), label, type, default,
@@ -247,6 +259,7 @@ def apply():
     settings.json (mtime-cached) so a panel save takes effect on the next call. Call per web request
     / at CLI start."""
     data = _load()
+    injected = []
     for s in SCHEMA:
         envk = "COLLIE_" + s["key"]
         if envk in _HARD_ENV:
@@ -254,11 +267,14 @@ def apply():
         v = data.get(s["key"])
         if v is not None and v != "":
             os.environ[envk] = str(v)
+            injected.append(envk)      # tell any child this came from the panel, not from the user
         else:
             # Clearing a setting in the panel must REVERT within a long-lived process, not linger until
             # restart — code that reads os.environ directly (COLLIE_MAX_TOKENS / _MAX_COST / force ratios)
             # kept a stale cap otherwise. Only drop env WE injected; a hard-set env stays (guarded above).
             os.environ.pop(envk, None)
+    # Carried across a fork so a child can tell panel-injected vars from a real user override.
+    os.environ[_INJECTED_ENV] = ",".join(injected)
 
 
 def save(values: dict) -> dict:
