@@ -1314,7 +1314,7 @@
       <span class="set-status" id="setStatus"></span>
       <div class="spacer"></div>
       <button class="btn-ghost" id="setCancel">Cancel</button>
-      <button class="btn-primary" id="setSave">Save</button>
+      <button class="btn-primary" id="setSave">Done</button>
     </div>
   </div>
 </div>
@@ -1463,6 +1463,10 @@
     "steering": "已插话",
     "run already finished — send again to start a new turn": "运行已结束——再发一次将开启新的一轮",
     "connection dropped — checking whether Collie finished…": "连接中断——正在确认 Collie 是否已完成…",
+    "applied": "已生效",
+    "could not apply": "未能生效",
+    "this setting is held by an environment variable — ": "这一项被环境变量锁定——",
+    "Done": "完成",
     "reconnected — Collie is still working…": "已重新连上——Collie 仍在继续工作…",
     "stream interrupted": "流被中断",
     "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.":
@@ -1746,7 +1750,7 @@
     }
     var st = $("setTitle"); if (st) st.textContent = t("Settings");
     var sc = $("setCancel"); if (sc) sc.textContent = t("Cancel");
-    var sv = $("setSave"); if (sv) sv.textContent = t("Save");
+    var sv = $("setSave"); if (sv) sv.textContent = t("Done");
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -2224,30 +2228,74 @@
   setOverlay.addEventListener("click", function (e) { if (e.target === setOverlay) closeSettings(); });
   document.addEventListener("keydown", function (e) { if (e.key === "Escape" && setOverlay.classList.contains("open")) closeSettings(); });
 
-  $("setSave").onclick = function () {
+  // Settings apply on change. The Save button made a panel of independent switches behave like a
+  // form: you could change five things and find out afterwards which one broke, and "saved" only
+  // ever meant the file was written — which is precisely the false confidence that hid a bug where
+  // the value never reached the process that reads it. One control, one write, one verdict.
+  function currentSettingValues() {
     var vals = {};
-    setBody.querySelectorAll("[data-key]").forEach(function (el) {
+    // The wrapper row carries data-key too, so select the CONTROLS. Reading `.value` off the row
+    // yields undefined, which survived only because document order happens to put the control
+    // second and overwrite it — an ordering accident, not a design.
+    setBody.querySelectorAll("input[data-key], select[data-key], textarea[data-key]").forEach(function (el) {
       vals[el.getAttribute("data-key")] = el.getAttribute("data-bool") ? (el.checked ? "on" : "off") : el.value;
     });
-    var btn = this; btn.disabled = true;
+    return vals;
+  }
+
+  function applySetting(key, el) {
+    var vals = currentSettingValues();
     setStatus.textContent = t("saving…"); setStatus.className = "set-status";
-    fetch("/api/settings?token=" + encodeURIComponent(CT), {
+    if (el) el.classList.add("saving");
+    return fetch("/api/settings?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(vals)
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
-        btn.disabled = false;
-        if (res.ok && res.d.ok) {
-          // language applies IMMEDIATELY (not next message): re-resolve + repaint the chrome
-          UI_LANG = resolveLang((res.d.values || {}).LANG);
-          applyLang();
-          setStatus.textContent = t("saved · applies to your next message"); setStatus.className = "set-status ok";
-          loadModelCatalog(false);
-          setTimeout(closeSettings, 900);
-        } else {
-          setStatus.textContent = (res.d && res.d.error) || "save failed"; setStatus.className = "set-status err";
+        if (el) el.classList.remove("saving");
+        if (!(res.ok && res.d.ok)) {
+          setStatus.textContent = (res.d && res.d.error) || t("could not apply");
+          setStatus.className = "set-status err";
+          return;
         }
-      }).catch(function () { btn.disabled = false; setStatus.textContent = "network error"; setStatus.className = "set-status err"; });
-  };
+        var saved = res.d.values || {};
+        // Report what the server ACTUALLY holds, not what was sent. A key pinned by a real
+        // environment variable is accepted, stored, and then ignored — silently, until now.
+        if (key && saved[key] !== undefined && String(saved[key]) !== String(vals[key])) {
+          setStatus.textContent = t("this setting is held by an environment variable — ") + key +
+                                  " = " + saved[key];
+          setStatus.className = "set-status err";
+        } else {
+          setStatus.textContent = t("applied");
+          setStatus.className = "set-status ok";
+          setTimeout(function () {
+            if (setStatus.textContent === t("applied")) setStatus.textContent = "";
+          }, 1400);
+        }
+        if (key === "LANG") { UI_LANG = resolveLang(saved.LANG); applyLang(); }
+        if (key === "PROVIDER" || key === "MODEL") loadModelCatalog(false);
+      })
+      .catch(function () {
+        if (el) el.classList.remove("saving");
+        setStatus.textContent = t("network error"); setStatus.className = "set-status err";
+      });
+  }
+
+  // Typing is debounced; a select or a checkbox commits on the spot.
+  var _applyTimer = null;
+  setBody.addEventListener("change", function (e) {
+    var el = e.target.closest ? e.target.closest("[data-key]") : null;
+    if (!el) return;
+    applySetting(el.getAttribute("data-key"), el);
+  });
+  setBody.addEventListener("input", function (e) {
+    var el = e.target.closest ? e.target.closest("[data-key]") : null;
+    if (!el || el.tagName === "SELECT" || el.getAttribute("data-bool")) return;   // those fire `change`
+    clearTimeout(_applyTimer);
+    _applyTimer = setTimeout(function () { applySetting(el.getAttribute("data-key"), el); }, 700);
+  });
+
+  var _sv = $("setSave");
+  if (_sv) _sv.onclick = function () { applySetting("", null).then(closeSettings); };
 
   var workPanel = $("workpanel"), runDetailsButton = $("runDetailsBtn");
   function setRunDetailsOpen(isOpen) {
