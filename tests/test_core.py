@@ -2481,3 +2481,44 @@ def test_rewind_button_is_hidden_when_nothing_can_be_rewound():
     assert "window.confirm" in html and "cannot be undone" in html
     # and it must not imply untracked files came back when they could not
     assert "untracked_rewound" in html
+
+
+
+def test_checkpoint_commits_carry_no_user_text():
+    """These refs live under refs/, so `git log --all` and `git for-each-ref` list them.
+
+    Putting the prompt in the commit subject wrote what the user asked Collie straight into their
+    own repository. Real runs had already committed subjects like "What did we decide about the
+    embedding memory design?" and a base64 image payload — visible to anyone who runs git log.
+    """
+    import subprocess as sp
+    from harness import checkpoints as cp
+    secret = "MY PRIVATE PROMPT about acquiring Foo Corp"
+    with tempfile.TemporaryDirectory() as d:
+        _mkrepo(d)
+        cp.capture(d, "s1", 1, secret)
+        log = sp.run(["git", "-C", d, "log", "--all", "--format=%s%n%b"],
+                     capture_output=True, text=True).stdout
+        assert secret not in log, "the prompt was written into the repository"
+        refs = sp.run(["git", "-C", d, "for-each-ref", "--format=%(subject)"],
+                      capture_output=True, text=True).stdout
+        assert secret not in refs
+        # and it must not come back out through the listing either
+        assert all(secret not in (c.label or "") for c in cp.history(d))
+
+
+def test_checkpoints_do_not_accumulate_forever():
+    """One ref per run, never expiring, is thousands of pinned trees for an everyday user — the
+    live repo was already at run 3940. Old snapshots are also the least useful ones."""
+    from harness import checkpoints as cp
+    with tempfile.TemporaryDirectory() as d:
+        _mkrepo(d)
+        for i in range(1, 9):
+            with open(os.path.join(d, "tracked.txt"), "w") as f:
+                f.write("v%d\n" % i)
+            cp.capture(d, "s1", i)
+        assert len(cp.history(d)) == 8
+        removed = cp.prune(d, keep=3)
+        assert removed == 5
+        left = cp.history(d)
+        assert [c.n for c in left] == [8, 7, 6], [c.n for c in left]

@@ -121,7 +121,13 @@ def capture(cwd: str, session: str, n: int, label: str = "") -> Checkpoint:
     ok, why = available(cwd)
     if not ok:
         raise CheckpointError(why)
-    msg = "%s%s run=%d %s" % (_MARKER, session, n, label)
+    # The commit message carries NO user text. These refs live under refs/, so `git log --all`
+    # and `git for-each-ref` list them — putting the prompt in the subject wrote what the user
+    # asked Collie straight into their repository, where a later `git log --all` shows it to
+    # whoever is looking. Real runs had already committed subjects like "What did we decide about
+    # the embedding memory design?" and a base64 image payload. `label` is kept in memory for this
+    # process and shown in the UI, but it is never written to git.
+    msg = "%s%s run=%d" % (_MARKER, session, n)
     stash = _git(cwd, ["stash", "create", msg], check=False)
     untracked = _untracked_parent(cwd)
 
@@ -148,7 +154,25 @@ def capture(cwd: str, session: str, n: int, label: str = "") -> Checkpoint:
         ref, kind = _git(cwd, ["rev-parse", "HEAD"]), "commit"   # nothing to snapshot
 
     _git(cwd, ["update-ref", "%s/%s/%d" % (_REF_NS, session, n), ref])
+    prune(cwd, keep=int(os.environ.get("COLLIE_CHECKPOINT_KEEP", "50") or 50))
     return Checkpoint(ref=ref, session=session, n=n, kind=kind, label=label)
+
+
+def prune(cwd: str, keep: int = 50) -> int:
+    """Delete all but the `keep` newest snapshots. Returns how many were removed.
+
+    Snapshots are refs, so they never expire on their own: one per run means an everyday user
+    accumulates thousands, each pinning a tree against gc. Old ones are also the least useful —
+    nobody rewinds to run 12 of last month. Deleting the ref only unpins the objects; a normal
+    `git gc` reclaims them later, and nothing the user created is touched.
+    """
+    if keep <= 0:
+        return 0
+    items = history(cwd)
+    doomed = items[keep:]
+    for c in doomed:
+        _git(cwd, ["update-ref", "-d", "%s/%s/%d" % (_REF_NS, c.session, c.n)], check=False)
+    return len(doomed)
 
 
 def _kind_of(cwd: str, ref: str) -> str:
@@ -201,6 +225,7 @@ def history(cwd: str, session: str = "") -> list:
         tail = name[len(_REF_NS) + 1:].split("/")
         if len(tail) != 2 or not tail[1].isdigit():
             continue
-        items.append(Checkpoint(ref=sha, session=tail[0], n=int(tail[1]),
-                                label=(parts[2] if len(parts) > 2 else "")))
+        # label deliberately NOT read back from the commit subject: subjects carry no user text
+        # any more, and older snapshots may still hold some — surfacing it would undo the fix.
+        items.append(Checkpoint(ref=sha, session=tail[0], n=int(tail[1])))
     return sorted(items, key=lambda c: c.n, reverse=True)
