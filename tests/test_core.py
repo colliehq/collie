@@ -1198,23 +1198,28 @@ def test_panel_settings_survive_a_fork():
     """
     import subprocess as _sp
     state = tempfile.mkdtemp(prefix="forksettings-")
-    env = {**os.environ, "COLLIE_STATE_DIR": state}
+    # Paths travel by environment, never interpolated into the generated source. The grandchild's
+    # source is a string literal INSIDE the parent's string literal, so a %r path lost one level of
+    # escaping there: on Windows `sys.path.insert(0, 'C:\Users\…')` made \U a truncated unicode
+    # escape, the grandchild died of SyntaxError before printing, and the assert blamed settings.
+    # Non-COLLIE_ names on purpose — apply() treats every inherited COLLIE_* as "the user set this".
+    env = {**os.environ, "COLLIE_STATE_DIR": state,
+           "FORKTEST_REPO": os.getcwd(), "FORKTEST_STATE": state}
     parent = ("import os, sys\n"
-              "sys.path.insert(0, %r)\n"
+              "sys.path.insert(0, os.environ['FORKTEST_REPO'])\n"
               "from harness import settings as st\n"
               "st.save({'LANG': 'en'})\n"          # what the process started with
               "st.apply()\n"
               "st.save({'LANG': 'zh'})\n"          # the user changes it in the panel
-              "child = os.path.join(%r, 'c.py')\n"
-              "open(child, 'w').write(\"import sys\\n\"\n"
-              "  \"sys.path.insert(0, %r)\\n\"\n"
+              "child = os.path.join(os.environ['FORKTEST_STATE'], 'c.py')\n"
+              "open(child, 'w').write(\"import os, sys\\n\"\n"
+              "  \"sys.path.insert(0, os.environ['FORKTEST_REPO'])\\n\"\n"
               "  \"from harness import settings as st\\n\"\n"
               "  \"st.apply()\\n\"\n"
               "  \"print(st.get('LANG', 'auto'))\\n\")\n"
               "import subprocess\n"
               "print(subprocess.run([sys.executable, child], capture_output=True, text=True,\n"
-              "                     env=dict(os.environ)).stdout.strip())\n"
-              % (os.getcwd(), state, os.getcwd()))
+              "                     env=dict(os.environ)).stdout.strip())\n")
     pf = os.path.join(state, "p.py")
     with open(pf, "w", encoding="utf-8") as f:
         f.write(parent)
