@@ -90,12 +90,18 @@ def _copy_back(src, dst):
 
 
 def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
-             apply=False, emit=None):
+             apply=False, emit=None, project="pack"):
     """Run N isolated attempts, select the winner by execution, optionally apply it back."""
     from .cli import make_harness
     from . import settings
+    from .scratch import isolate_harness
     provider = provider or settings.get("PROVIDER", "anthropic")   # env > settings.json > API default
     n = max(1, min(8, int(n)))
+    # Best-of-N is only best-of-N if the N are independent. Attempts used to share one project, so
+    # each one's consolidated answer was auto-recalled into the NEXT one's prompt. A per-attempt
+    # project separates the undo stacks (keyed by project, and cached in a process-global dict);
+    # isolate_harness below then keeps reads on the shared project so they still start level.
+    run_tag = "%s-%d" % (project, os.getpid())
     have_check = bool(check)
     attempts, dirs = [], []
     for i in range(n):
@@ -103,8 +109,10 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
         dirs.append(iso)
         rec = {"idx": i, "dir": iso}
         try:
-            h = make_harness(iso, provider=provider, model=model, project="pack",
+            h = make_harness(iso, provider=provider, model=model,
+                             project="%s-%d" % (run_tag, i),
                              code_search=True, exec_code=True)
+            isolate_harness(h, read_project=project)
             res = h.run("pack%d" % i, task)
             rec.update(answer=res.answer or "", verified=bool(getattr(res, "verified", False)),
                        turns=res.turns, error=res.error or "", cost_usd=res.cost_usd)
