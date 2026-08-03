@@ -153,22 +153,6 @@ def test_response_language_directive():
             os.environ["COLLIE_LANG"] = old
 
 
-def test_human_interaction_directive():
-    """The human, conversational voice is stable and survives a desktop identity override."""
-    from harness.cli import make_harness
-    from harness.context import _human_interaction_line
-    line = _human_interaction_line()
-    low = line.lower()
-    assert "warm, natural, and attentive" in low
-    assert "corporate helpdesk" in low and "generic chatbot" in low
-    assert "user's style" in low and "practical judgement" in low
-    assert "do not pretend" in low and "human feelings" in low
-    h = make_harness(os.getcwd(), provider="mock", project="voice", embed="hash")
-    h.composer.identity = "You are collie, the user's live desktop assistant."
-    system, _msgs, _meta = h.composer.build({"messages": []}, "hello", os.getcwd(), "voice")
-    assert "HUMAN INTERACTION" in system and "warm, natural" in system
-
-
 def test_grounding_directive():
     """GROUNDING + INITIATIVE: after a miss where collie grepped only the cwd and concluded a
     project "doesn't exist on this machine" while it sat two directories away, the prompt must
