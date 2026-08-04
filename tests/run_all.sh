@@ -59,6 +59,23 @@ else
   echo "  (node not found — skipping renderer suite)"
 fi
 
+echo "── browser extension: page-side logic (JS) ──────────────"
+if command -v node >/dev/null 2>&1; then
+  node tests/browser_ext_test.js || rc=1
+else
+  echo "  (node not found — skipping browser extension suite)"
+fi
+
+echo "── browser bridge tools (batching / spaces / warnings) ──"
+if $PY tests/test_browserbridge.py >/dev/null 2>&1; then echo "  browserbridge OK"; else echo "  browserbridge FAIL"; rc=1; fi
+
+echo "── browser, LIVE (opt-in: COLLIE_BROWSER_LIVE=1 + extension) ─"
+# The checks stubs cannot make — does CDP input reach a background tab, is a cross-origin iframe
+# really readable, did the click land. Skips itself without a browser, so the suite stays hermetic.
+live_out=$($PY tests/browser_live_test.py 2>&1); live_rc=$?
+echo "$live_out" | grep -E "SKIP|FAIL|passed ==" | sed 's/^/  /'
+[ "$live_rc" = "0" ] || rc=1
+
 echo "── relay pairing handshake (JS) ─────────────────────────"
 if command -v node >/dev/null 2>&1; then
   node tests/relay_pairing_test.js || rc=1
