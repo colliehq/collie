@@ -397,8 +397,15 @@ def _handler(bridge, enforce_host=True):
 def _run_managed_browser(port, headed=False):
     """Launch a Playwright Chromium with collie's extension pre-loaded and keep it alive, so the
     bridge has a driveable browser WITHOUT any manual extension install (the extension connects to
-    the bridge on this same host — proven to work). A fresh profile (not the user's logged-in one;
-    that needs their real browser), but enough for autonomous browsing. headed=True opens a visible
+    the bridge on this same host — proven to work).
+
+    The profile is its own and it PERSISTS (~/.collie/browser-profile), which is the part worth
+    knowing: it is empty the first time and keeps whatever you sign into after that. So the answer to
+    "how do I use my logged-in session" is not to reach into Chrome's profiles — extensions and
+    cookies are both per-profile there, and Chrome ignores --load-extension against a profile that is
+    already running — it is to sign in once inside THIS window and let it keep the session.
+
+    Which is why headed matters: signing in needs something to look at. headed=True opens a visible
     window (Playwright's `headless` kwarg is authoritative — passing BOTH it and `--headless=new`
     is contradictory and silently forced headless regardless of the flag)."""
     from playwright.sync_api import sync_playwright
@@ -424,6 +431,59 @@ def _run_managed_browser(port, headed=False):
             pass
         finally:
             ctx.close()
+
+
+def _open_extensions_page():
+    """Put chrome://extensions on screen. True if Chrome took it.
+
+    `open -a` is the only way in: Chrome refuses chrome:// URLs passed as ordinary
+    command-line arguments, and refuses them from `open -u` too. Returns False
+    rather than raising when Chrome is not installed, because the printed
+    instructions still stand — they just have to navigate there themselves.
+    """
+    try:
+        import subprocess as _sp
+        return _sp.run(["open", "-a", "Google Chrome", "chrome://extensions"],
+                       stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+def _await_extension(bridge, _poll=1.0):
+    """Hold the bridge open, and say the moment the extension actually connects.
+
+    This replaced a bare `sleep(3600)` loop. The install ends with the user having
+    dragged a folder somewhere and having no idea whether it worked: the extension
+    is silent, the bridge was silent, and Chrome's own card looks identical whether
+    or not the thing behind it can reach us. People re-drag, or give up, or worse,
+    carry on believing they are set up. The bridge is the one party that knows —
+    it gets polled — so it is the one that should say so.
+
+    The unprompted nudge at 90s is about the trap nothing else warns you about:
+    extensions are per-profile, so an install into the wrong Chrome profile
+    succeeds loudly and connects to nothing.
+    """
+    print("", flush=True)
+    print("  Waiting for the extension to connect… (Ctrl-C to stop the bridge)", flush=True)
+    waited, nudged = 0.0, False
+    try:
+        while not bridge.last_poll:
+            time.sleep(_poll)
+            waited += _poll
+            if waited >= 90 and not nudged:
+                nudged = True
+                print("  …still nothing. If Chrome says the extension is installed, it is most "
+                      "likely\n    installed in a different Chrome profile than the window you are "
+                      "using —\n    extensions are per-profile, and a wrong-profile install looks "
+                      "exactly like a\n    right one. Switch to the profile you actually browse in "
+                      "and drag it again.", flush=True)
+        print("  ✓ extension connected%s — collie can drive your own Chrome now."
+              % (" after %ds" % int(waited) if waited >= 2 else ""), flush=True)
+        print("    Run collie with COLLIE_BROWSER_BRIDGE=1. Leave this running.", flush=True)
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
 
 
 def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
@@ -456,14 +516,33 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
                   "    straight from the disk image or from Downloads. Anything below points into\n"
                   "    that copy and disappears when Collie quits.\n"
                   "    Move Collie.app into your Applications folder and open it from there.")
-        # The absolute path, on the clipboard, with the Finder already open on it.
-        # Chrome's "Load unpacked" is a macOS file picker, and a picker cannot be
-        # typed into — a path gets in by ⌘⇧G and a paste, or by dragging the folder
-        # onto it. Printing a path the reader then has to transcribe by hand is the
-        # step people give up at, and it was not even printing an absolute one.
+        # Loading an unpacked extension is Chrome's developer door, not its user
+        # door, and exactly two of its steps cannot be automated from out here:
+        # the Developer mode switch, and getting a path into "Load unpacked"'s
+        # file picker. A macOS picker is a sandboxed dialog — synthetic keystrokes
+        # aimed at it land in whatever app is actually frontmost, so scripting the
+        # ⌘⇧G is not a fallback, it is a way to type a path into someone's editor.
+        #
+        # So the printed order is the order that works: Developer mode first,
+        # because until it is on there is no "Load unpacked" button on the page to
+        # look for, and a reader hunting for a button that is not rendered assumes
+        # they are on the wrong page. Then the drag, which skips the picker
+        # entirely — chrome://extensions accepts a dropped folder as an unpacked
+        # load. The picker route stays as a footnote for people who prefer buttons.
         ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
-        print("  Chrome → chrome://extensions → Load unpacked → press ⌘⇧G and paste:", flush=True)
-        print("    %s" % ext_dir, flush=True)
+        opened = plat.is_macos() and _open_extensions_page()
+        print("", flush=True)
+        print("  To use your own Chrome, with your own logins, install the extension —", flush=True)
+        print("  two steps, both of which only you can do:", flush=True)
+        print("", flush=True)
+        print("    1. Turn on Developer mode (the switch at the top right of", flush=True)
+        print("       chrome://extensions%s). Until it is on, the Load unpacked"
+              % (", already open" if opened else ""), flush=True)
+        print("       button does not exist on that page at all.", flush=True)
+        print("    2. Drag this folder onto that page. That is the whole install —", flush=True)
+        print("       no file dialog to fight with:", flush=True)
+        print("", flush=True)
+        print("       %s" % ext_dir, flush=True)
         hints = []
         if plat.is_macos():
             try:
@@ -474,21 +553,18 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
                 import subprocess as _sp
                 _sp.run(["pbcopy"], input=ext_dir.encode("utf-8"),
                         env=dict(os.environ, LC_ALL="en_US.UTF-8"), check=True, timeout=5)
-                hints.append("copied to your clipboard")
+                hints.append("on your clipboard")
             except Exception:
                 pass
         if plat.reveal_in_file_manager(ext_dir):
-            hints.append("and opened in a Finder window you can drag it from")
+            hints.append("and showing in a Finder window you can drag it straight from")
         if hints:
-            print("  (%s)" % " ".join(hints), flush=True)
-        print("  Or skip all of it: `collie browser-bridge --browser` opens a browser with the "
-              "extension already loaded.", flush=True)
-        print("  Then run collie with COLLIE_BROWSER_BRIDGE=1", flush=True)
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            pass
+            print("       (%s)" % " ".join(hints), flush=True)
+        print("", flush=True)
+        print("    Prefer the button? Load unpacked → ⌘⇧G → paste → Enter → Select.", flush=True)
+        print("    Rather not install anything? `collie browser-bridge --browser --headed`", flush=True)
+        print("    opens a browser with the extension already in it (sign in once, inside it).", flush=True)
+        _await_extension(bridge)
 
 
 def main(argv=None):
