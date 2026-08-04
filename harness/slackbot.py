@@ -372,6 +372,10 @@ def main(argv=None) -> int:
     ap.add_argument("--cwd", default=os.getcwd(), help="repository it works in")
     ap.add_argument("--provider", default=os.environ.get("COLLIE_PROVIDER", ""))
     ap.add_argument("--announce", default="", help="channel id to say hello in")
+    ap.add_argument("--channels", default=os.environ.get("COLLIE_SLACK_CHANNELS", ""),
+                    help="comma-separated channel ids it will work in (default: only --announce)")
+    ap.add_argument("--allow", default=os.environ.get("COLLIE_SLACK_ALLOW", ""),
+                    help="comma-separated slack user ids that may task it (default: anyone in those channels)")
     args = ap.parse_args(argv)
 
     app_token = os.environ.get("SLACK_APP_TOKEN", "")
@@ -386,6 +390,13 @@ def main(argv=None) -> int:
               % " and ".join(missing), file=sys.stderr)
         return 2
 
+    # Where it will work at all. Defaulting to "only the channel I was announced
+    # in" rather than "anywhere I am invited": a bot dropped into another channel
+    # by a colleague would otherwise arrive already able to drive this machine,
+    # and nobody involved would think of that as granting access.
+    channels = {c.strip() for c in (args.channels or args.announce).split(",") if c.strip()}
+    allowed = {u.strip() for u in args.allow.split(",") if u.strip()}
+
     ident = load_identity(args.name, args.autonomy)
     q = TaskQueue(ident["name"])
     worker = Worker(q, ident, bot_token, args.cwd, args.provider)
@@ -395,9 +406,11 @@ def main(argv=None) -> int:
     # machine part is recomputed on each start, so moving the name to another
     # laptop changes what the channel sees rather than quietly lying.
     tag = "%s · %s" % (ident["name"], machine_label())
-    who = ("*%s* on *%s* (%s · %s), working in `%s`\nautonomy: *%s* — %s" % (
+    who = ("*%s* on *%s* (%s · %s), working in `%s`\nautonomy: *%s* — %s\nscope: %s · %s" % (
         ident["name"], machine_label(), ident["os"], fingerprint(), args.cwd,
-        ident["autonomy"], AUTONOMY.get(ident["autonomy"], "?")))
+        ident["autonomy"], AUTONOMY.get(ident["autonomy"], "?"),
+        ("%d channel(s)" % len(channels)) if channels else "*any channel I am invited to*",
+        ("%d person(s)" % len(allowed)) if allowed else "anyone in them"))
     print(who.replace("*", ""))
     if args.announce:
         first = ident.pop("_fresh", False)
@@ -458,6 +471,18 @@ def main(argv=None) -> int:
                 th = event.get("thread_ts") or event.get("ts") or ""
                 user = event.get("user", "")
                 low = text.lower()
+
+                # Two gates, and they are checked before the text is read as
+                # anything. Out of scope is answered rather than ignored: a bot
+                # that goes silent reads as broken, and someone will debug it by
+                # inviting it somewhere else.
+                if channels and ch not in channels:
+                    say(bot_token, ch, "I only work in the channel I was set up in.", th, tag)
+                    continue
+                if allowed and user not in allowed:
+                    say(bot_token, ch, "I take work from %s here." %
+                        ", ".join("<@%s>" % u for u in sorted(allowed)), th, tag)
+                    continue
 
                 if low.startswith("rename "):
                     new = text.split(None, 1)[1].strip()[:24]

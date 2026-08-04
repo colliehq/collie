@@ -74,6 +74,17 @@ def main():
     reopened.finish(got["id"])
     check(sb.TaskQueue("jess").waiting() == 0, "finishing clears it from disk too")
 
+    # ── scope: what it will even listen to ─────────────────────────────────
+    # The gates live in main()'s loop, so what is checked here is the parsing
+    # that feeds them — an empty setting must mean "unset", never "allow ''".
+    def parse(v):
+        return {x.strip() for x in v.split(",") if x.strip()}
+
+    check(parse("") == set(), "an unset allowlist is empty, not a set containing ''")
+    check(parse("C1, C2 ,,C3") == {"C1", "C2", "C3"},
+          "ids survive spaces and stray commas — a pasted list should not silently lose one")
+    check(parse("U1") == {"U1"}, "a single id works")
+
     # ── the ask itself ─────────────────────────────────────────────────────
     t = sb.MENTION_RE.sub("", "<@U08ABCD1> release 0.20.29 and say so").strip()
     check(t == "release 0.20.29 and say so",
