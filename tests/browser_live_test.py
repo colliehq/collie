@@ -95,11 +95,16 @@ def serve(pages):
     return srv.server_address[1], srv
 
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from harness import browserbridge as bb   # noqa: E402  (for the machine's bridge token)
+
+
 def call(cmd, timeout=60):
     body = json.dumps(dict(cmd, space=SPACE, timeout=timeout)).encode()
     req = urllib.request.Request("http://127.0.0.1:%d/enqueue" % PORT, data=body,
                                  headers={"content-type": "application/json",
-                                          "X-Collie-Bridge": "1"})
+                                          "X-Collie-Bridge": "1",
+                                          "Authorization": "Bearer " + bb.token()})
     with urllib.request.urlopen(req, timeout=timeout + 5) as r:
         return json.loads(r.read()).get("data")
 

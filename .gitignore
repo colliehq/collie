@@ -122,3 +122,4 @@ installer/shell/payload.zip
 
 # Cloudflare wrangler local cache (account id, deploy cache)
 .wrangler/
+harness/browser_ext/token.txt

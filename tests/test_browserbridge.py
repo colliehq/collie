@@ -11,6 +11,7 @@ cannot mistake for success.
 import json
 import os
 import sys
+import threading
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -303,6 +304,113 @@ def test_ambiguous_click_still_warns():
               "clicking the first of several still says so")
     finally:
         bb._call = real
+
+
+# --- the token: what it does, and what it must not pretend to do -------------------------------------
+def _isolated_home(fn):
+    """Run with a throwaway collie home, so a test never reads or writes the real token."""
+    import tempfile
+    real = bb._home
+    with tempfile.TemporaryDirectory() as d:
+        bb._home = lambda: d
+        try:
+            return fn(d)
+        finally:
+            bb._home = real
+
+
+def test_token_is_made_once_and_kept():
+    def body(home):
+        os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
+        first = bb.token()
+        check(len(first) >= 32, "a fresh token is long enough to be worth having (%d chars)" % len(first))
+        check(bb.token() == first, "asking twice returns the SAME token, not a new one")
+        check(os.path.isfile(os.path.join(home, "bridge-token")),
+              "it is stored in collie's state dir, not in the repo (where a commit could take it)")
+    _isolated_home(body)
+
+
+def test_token_gate_accepts_only_the_real_one():
+    def body(home):
+        os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
+        good = bb.token()
+        check(bb._token_ok({"Authorization": "Bearer " + good}) is True, "the right token is accepted")
+        check(bb._token_ok({"Authorization": "Bearer " + good + "x"}) is False, "a near-miss is not")
+        check(bb._token_ok({}) is False, "no Authorization header at all is not")
+        check(bb._token_ok({"Authorization": good}) is False, "and neither is the token without Bearer")
+        check(bb._token_ok({"authorization": "bearer " + good}) is True,
+              "header name and scheme are case-insensitive, as HTTP says")
+    _isolated_home(body)
+
+
+def test_auth_can_be_switched_off_only_loudly():
+    def body(home):
+        os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = "1"
+        try:
+            check(bb.auth_off() is True and bb._token_ok({}) is True,
+                  "the escape hatch really does disable the check")
+        finally:
+            os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
+        check("dangerously" in "COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH".lower(),
+              "and it is named so nobody turns it on by accident")
+    _isolated_home(body)
+
+
+# --- the audit log: what happened, without recording the secrets it happened with ----------------------
+def test_audit_records_the_action_but_never_the_typed_text():
+    def body(home):
+        summary = bb._audit_summary({"action": "type", "space": "apply", "ref": "e7",
+                                     "text": "hunter2-my-actual-password"})
+        blob = json.dumps(summary)
+        check("hunter2" not in blob, "the typed text is NOT in the audit record")
+        check(summary.get("text_len") == 26, "only its length is (%s)" % summary.get("text_len"))
+        check(summary.get("action") == "type" and summary.get("ref") == "e7",
+              "the action and its target are")
+
+        up = bb._audit_summary({"action": "upload", "files": [{"name": "cv.pdf", "data": "AAAA"}]})
+        check(json.dumps(up).count("AAAA") == 0, "uploaded file CONTENT is not logged")
+        check(up.get("files") == ["cv.pdf"], "its name is")
+
+        sc = bb._audit_summary({"action": "script", "steps": [{"action": "type", "text": "secret"},
+                                                              {"action": "click", "ref": "e1"}]})
+        check("secret" not in json.dumps(sc), "a script's step text is not logged either")
+        check(sc.get("steps") == ["type", "click"], "only the shape of the script is")
+    _isolated_home(body)
+
+
+def test_audit_writes_one_line_per_command_with_its_outcome():
+    def body(home):
+        bridge = bb._Bridge()
+
+        def answer():
+            cmd = bridge.next_cmd(wait=5)
+            if cmd:
+                bridge.deliver(cmd["id"], {"error": "no element for e9"})
+
+        t = threading.Thread(target=answer)
+        t.start()
+        bridge.enqueue({"action": "click", "ref": "e9", "space": "s1"}, timeout=10)
+        t.join()
+
+        path = os.path.join(home, "bridge-audit.log")
+        lines = [json.loads(x) for x in open(path, encoding="utf-8").read().splitlines() if x.strip()]
+        check(len(lines) == 1, "one command wrote exactly one audit line (got %d)" % len(lines))
+        rec = lines[0] if lines else {}
+        check(rec.get("action") == "click" and rec.get("ref") == "e9", "with the action and target")
+        check(rec.get("outcome") == "error", "and the outcome, not just the intent")
+        check("at" in rec and "took_ms" in rec, "and when it happened / how long it took")
+    _isolated_home(body)
+
+
+def test_audit_records_a_command_the_browser_never_answered():
+    def body(home):
+        bridge = bb._Bridge()
+        bridge.enqueue({"action": "read", "space": "s1"}, timeout=1)   # nobody is polling
+        path = os.path.join(home, "bridge-audit.log")
+        lines = [json.loads(x) for x in open(path, encoding="utf-8").read().splitlines() if x.strip()]
+        check(len(lines) == 1 and lines[0].get("outcome") == "timeout",
+              "a command that timed out is logged as such, not lost")
+    _isolated_home(body)
 
 
 def main():

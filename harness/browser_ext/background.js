@@ -1074,6 +1074,15 @@ async function snapshotFrames(tabId, max, opts) {
       const tag = "f" + (i + 1);
       let data = null, err = "";
       try {
+        // Wait for the FRAME to be ready, not just the page that hosts it. A cross-origin iframe
+        // loads on its own schedule and the parent's load event says nothing about it, so a snapshot
+        // taken too early captures a half-laid-out document — and the coordinates it hands out are
+        // stale by the time anyone clicks them. (Seen as an intermittent "the click did not land".)
+        for (let w = 0; w < 20; w++) {
+          const ready = await frameEval(tabId, s.sessionId, "document.readyState");
+          if (ready === "complete") break;
+          await sleep(100);
+        }
         data = await frameEval(tabId, s.sessionId, asCall(pageSnapshot, [max || 200, opts || {}]));
       } catch (e) {
         err = String((e && e.message) || e);
@@ -1124,6 +1133,12 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
     const geom = (pt.inView && focused) ? await frameOffset(tabId, live.url, fr.nth || 0) : null;
     const off = geom && !geom.error ? geom : null;
     if (off) {
+      // Re-read the element's position with the frame box already measured, so the two halves of the
+      // coordinate come from the same moment. Measuring them far apart is how a click lands where
+      // the button USED to be when a page is still settling.
+      let pt2 = null;
+      try { pt2 = await frameEval(tabId, sid, asCall(pagePointRef, [ref])); } catch (e) {}
+      if (pt2 && !pt2.error && pt2.inView) pt = pt2;
       const x = off.x + pt.x, y = off.y + pt.y;
       try {
         await ensureAttached(tabId);
@@ -1684,6 +1699,57 @@ async function handle(cmd) {
 // WHILE a request/command is in flight (any API call resets the idle timer), and (b) use
 // chrome.alarms + onStartup as the survive-suspension backstop that re-arms polling after the
 // worker revives.
+// --- the shared secret ---------------------------------------------------------------------------
+// The bridge only takes commands from a caller holding this machine's token, so the extension has to
+// present it too. It is pasted in once through the popup (`collie browser-bridge --print-token`).
+// A wrong or missing token gets a 401, and the badge says so — otherwise the extension would simply
+// stop working against a bridge that looks perfectly healthy, which is the worst kind of silence.
+let __token = null;
+let __authFailed = false;
+
+async function bridgeToken() {
+  if (__token !== null) return __token;
+  try {
+    const s = await chrome.storage.local.get("collieToken");
+    __token = typeof s.collieToken === "string" ? s.collieToken : "";
+  } catch (e) { __token = ""; }
+  if (!__token) __token = await tokenFromDisk();
+  return __token;
+}
+
+// The bridge leaves the token in this extension's own directory, which only this extension can read
+// (it is not web_accessible, so no page can fetch it). That is what makes the token invisible in
+// normal use: nothing to copy, nothing to paste. A packed/store build has no such file, and then the
+// popup's paste box is the way in.
+async function tokenFromDisk() {
+  try {
+    const r = await fetch(chrome.runtime.getURL("token.txt"), { cache: "no-store" });
+    if (!r.ok) return "";
+    const t = (await r.text()).trim();
+    if (t) { try { await chrome.storage.local.set({ collieToken: t }); } catch (e) {} }
+    return t;
+  } catch (e) { return ""; }
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.collieToken) __token = changes.collieToken.newValue || "";
+});
+
+async function bridgeHeaders(extra) {
+  const t = await bridgeToken();
+  const h = Object.assign({ "X-Collie-Bridge": "1" }, extra || {});
+  if (t) h["Authorization"] = "Bearer " + t;
+  return h;
+}
+
+async function noteAuthFailure(failed) {
+  try {
+    await chrome.storage.local.set({ collieAuthFailed: !!failed });
+    await chrome.action.setBadgeText({ text: failed ? "!" : "" });
+    if (failed) await chrome.action.setBadgeBackgroundColor({ color: "#b3261e" });
+  } catch (e) {}
+}
+
 let __alive = 0, __aliveTimer = null, __polling = false;
 function keepAlive(on) {
   if (on) {
@@ -1710,7 +1776,18 @@ async function pollOnce() {
         // report our version so collie can warn when the LOADED extension is a stale copy from
         // another path (that mismatch silently cost a long debugging session).
         const r = await fetch(BRIDGE + "/poll?v=" + encodeURIComponent(chrome.runtime.getManifest().version),
-                              { headers: { "X-Collie-Bridge": "1" } });
+                              { headers: await bridgeHeaders() });
+        if (r.status === 401) {
+          // A rotated token is the likely cause, so re-read the file once before giving up; only a
+          // build with no file (or a genuinely wrong token) gets as far as the badge. Then stop
+          // hammering — the alarm retries in 30s, by which time the user may have pasted one in.
+          const fresh = await tokenFromDisk();
+          if (fresh && fresh !== __token) { __token = fresh; continue; }
+          __authFailed = true;
+          await noteAuthFailure(true);
+          return;
+        }
+        if (__authFailed) { __authFailed = false; await noteAuthFailure(false); }
         cmd = await r.json();
       } catch (e) {
         return;                      // bridge down / worker resuming — the alarm re-arms us
@@ -1723,7 +1800,7 @@ async function pollOnce() {
         try {
           await fetch(BRIDGE + "/result", {
             method: "POST",
-            headers: { "content-type": "application/json", "X-Collie-Bridge": "1" },
+            headers: await bridgeHeaders({ "content-type": "application/json" }),
             body: JSON.stringify({ id: cmd.id, data }),
           });
         } catch (e) { /* result dropped; the tool times out and reports it */ }
