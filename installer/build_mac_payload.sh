@@ -51,7 +51,12 @@ echo "── runtime payload · $PBS_ARCH · extras=[$EXTRAS] ──"
 API="https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
 AUTH=(); TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 [ -n "$TOKEN" ] && AUTH=(-H "Authorization: Bearer $TOKEN")
-RELEASE=$(curl -fsSL -m 60 "${AUTH[@]}" -H "X-GitHub-Api-Version: 2022-11-28" "$API") || {
+# ${AUTH[@]+"${AUTH[@]}"}, not "${AUTH[@]}": macOS ships bash 3.2, where expanding an EMPTY array
+# under `set -u` is an unbound-variable error. The empty case IS the no-token case — so the branch
+# written to handle "no GITHUB_TOKEN" was the one that aborted, on every laptop, while CI (which
+# always has a token) never saw it. The comment above predicted a failure that only shows up in CI;
+# this one only showed up outside it, and announced itself as the 403 it was not.
+RELEASE=$(curl -fsSL -m 60 ${AUTH[@]+"${AUTH[@]}"} -H "X-GitHub-Api-Version: 2022-11-28" "$API") || {
   echo "  cannot reach the python-build-standalone release API." >&2
   echo "  A 403 here is almost always the anonymous rate limit — set GITHUB_TOKEN and retry." >&2
   exit 1
