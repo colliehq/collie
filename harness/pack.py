@@ -97,6 +97,14 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
     from .scratch import isolate_harness
     provider = provider or settings.get("PROVIDER", "anthropic")   # env > settings.json > API default
     n = max(1, min(8, int(n)))
+    # Check the backend BEFORE spending attempts on it. An expired subscription token or an unset
+    # API key otherwise shows up as N identical failures and a "no attempt passed the check",
+    # which reads like the task was hard rather than like nobody was logged in.
+    from .catalog import preflight
+    blocked = preflight([provider])
+    if blocked:
+        return {"n": n, "winner": None, "reason": "; ".join(blocked), "applied": False,
+                "attempts": [], "total_cost_usd": 0.0}
     # Best-of-N is only best-of-N if the N are independent. Attempts used to share one project, so
     # each one's consolidated answer was auto-recalled into the NEXT one's prompt. A per-attempt
     # project separates the undo stacks (keyed by project, and cached in a process-global dict);

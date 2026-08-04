@@ -152,15 +152,20 @@ def _static() -> list:
 
 # ---- auth probing -------------------------------------------------------------------------
 def probe_auth(provider: str) -> str:
-    """'ok' | 'missing-key' | 'not-logged-in' | 'unknown'. Cheap + no network except the
-    ollama liveness ping (which is localhost + 0.3s)."""
+    """'ok' | 'missing-key' | 'not-logged-in' | 'expired' | 'unknown'. Cheap + no network except
+    the ollama liveness ping (which is localhost + 0.3s)."""
     if provider == "mock":
         return "ok"
     if provider == "anthropic-oauth":
         # not os.path.exists(~/.claude/.credentials.json): macOS keeps the same credentials in the
         # Keychain and writes no file, so a file check reported every logged-in Mac as logged-out.
-        from .providers import _read_oauth_token
-        return "ok" if _read_oauth_token() else "not-logged-in"
+        from .providers import _read_oauth_token, claude_oauth_expired
+        if not _read_oauth_token():
+            return "not-logged-in"
+        # Present but stale is a THIRD state, and the only one of the three that looks fine right
+        # up until the request fails. Collie does not refresh this token (providers.
+        # OAUTH_EXPIRED_HINT says why), so a run can start against a credential that cannot work.
+        return "expired" if claude_oauth_expired() else "ok"
     if provider == "codex-oauth":
         return "ok" if os.path.exists(
             os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"),
@@ -180,6 +185,53 @@ def probe_auth(provider: str) -> str:
         _b, keyenv, _d = OPENAI_COMPAT_PRESETS[provider]
         return "ok" if os.environ.get(keyenv) else "missing-key"
     return "unknown"
+
+
+_LOGIN_HINT = {
+    "anthropic-oauth": "run `claude` once to log in",
+    "codex-oauth": "run `codex login` (ChatGPT account)",
+    "claude-cli": "install the claude CLI and log in",
+    "ollama": "start ollama (http://localhost:11434)",
+}
+
+
+def auth_problem(provider: str) -> str:
+    """One line saying why ``provider`` cannot be used right now, or "" when it can."""
+    status = probe_auth(provider)
+    if status == "ok":
+        return ""
+    if status == "expired":
+        from .providers import OAUTH_EXPIRED_HINT
+        return "%s: %s" % (provider, OAUTH_EXPIRED_HINT)
+    if status == "missing-key":
+        env = _KEY_ENV.get(provider)
+        if not env and provider in OPENAI_COMPAT_PRESETS:
+            env = OPENAI_COMPAT_PRESETS[provider][1]
+        return "%s: set %s" % (provider, env or "its API key")
+    if status == "not-logged-in":
+        return "%s: %s" % (provider, _LOGIN_HINT.get(provider, "not logged in"))
+    return "%s: unknown provider" % provider
+
+
+def preflight(members) -> list:
+    """Problems that would sink a multi-provider run, one line each; [] when every member is usable.
+
+    ``members`` is an iterable of provider names or ``(provider, model)`` pairs. This spends no
+    completion — it is the same cheap probe the model picker uses — so a roster whose third member
+    has a stale subscription token says so NOW, by name, instead of after two members have already
+    run and the third burns its attempts on 401s. Order is preserved and duplicates collapse, since
+    a roster naming one provider twice should not report it twice.
+    """
+    problems, seen = [], set()
+    for member in members or ():
+        provider = member[0] if isinstance(member, (tuple, list)) else member
+        if not provider or provider in seen:
+            continue
+        seen.add(provider)
+        problem = auth_problem(provider)
+        if problem:
+            problems.append(problem)
+    return problems
 
 
 # ---- live discovery -----------------------------------------------------------------------
