@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.20.29 — pack's attempts were reading each other
+
+- **Best-of-N was not N independent attempts.** The trees were isolated; the memory was not. Every
+  attempt ran under one project, the loop consolidates its answer by default, and the composer
+  auto-prefetches — so attempt 2's prompt arrived carrying attempt 1's conclusion. Measured, not
+  inferred: the second prompt contained `RELEVANT MEMORY (auto-recalled): - Task 'pack0' -> the bug
+  is in widget_factory.py line 42`. Selection by what passes only means something if the candidates
+  are independent, and they had quietly become serial refinement.
+
+  The fix is not "give each attempt its own memory" — every attempt should start from the same
+  knowledge about the repo, or they differ for reasons that have nothing to do with the attempt.
+  Reads fall through to the shared store; writes land in an overlay that dies with the attempt.
+  Nothing to clean up, and a losing attempt's answer no longer becomes a durable fact.
+
+- **One attempt per model.** `--roster anthropic-oauth,codex-oauth,deepseek:deepseek-reasoner`
+  spreads the attempts over different backends, round-robin, and `--parallel` runs them at once.
+  Selection is still by what PASSES, never by opinion, so a weak member costs tokens and nothing
+  else — which is what makes model diversity safe here rather than somewhere a model would judge.
+  Every attempt records which backend produced it, and the result names the one that won.
+
+- **A dead backend says so before the attempts, not after.** An expired Claude subscription token
+  used to surface as N identical failures and "no attempt passed the check" — indistinguishable
+  from a hard task. `expiresAt` existed in the credential blob and nothing read it. Now it is
+  checked, the message says to run `claude`, and pack refuses in 0.05s naming the fix.
+
+- **The critic can be a different model.** Its justification is that a separate read does not share
+  the author's blind spot, but it was the same model reading twice. `COLLIE_CRITIC_PROVIDER` /
+  `COLLIE_CRITIC_MODEL` make the reviewer independent; a backend that cannot be built raises rather
+  than silently falling back, because a silent fallback is indistinguishable from a working
+  cross-model critic.
+
+- **The tool/loop seam has tests, and test_core.py has been split** along the section boundaries it
+  already carried. Its `if __name__ == "__main__"` sat mid-file with 14 tests defined after it —
+  every checkpoint test among them — so the standalone runner had never run those.
+
 ## v0.20.28 — the work that had been sitting unreleased
 
 Nineteen commits had accumulated since v0.20.27 without a release, so the machine doing the
