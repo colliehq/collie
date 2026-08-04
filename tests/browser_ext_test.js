@@ -37,6 +37,10 @@ function constant(name) {
 
 const body = [
   constant('DEFAULT_SPACE'),
+  grab('const KEYS = {'),
+  grab('const MODBIT = {'),
+  grab('function keySpec(name)'),
+  grab('function modMask(mods)'),
   grab('function pageFrameBox(src, nth)'),
   grab('function pageSnapshot(maxN, opts)'),
   grab('function pageHas(text, selector)'),
@@ -102,7 +106,7 @@ function run(root, max, opts, frames) {
   const fn = new Function(
     'window', 'document', 'getComputedStyle', 'CSS', 'innerWidth', 'innerHeight', 'location',
     body + '\nreturn { pageSnapshot, pageHas, pageScroll, pageFrameBox, stepSummary, stepFailed, ' +
-           'splitFrameRef, spaceOf };'
+           'splitFrameRef, spaceOf, keySpec, modMask };'
   )(win, doc, (e) => e._style, { escape: (s) => s }, VIEW.w, VIEW.h, { href: 'https://example.test/p' });
   return { api: fn, win, doc, out: fn.pageSnapshot(max, opts) };
 }
@@ -325,6 +329,28 @@ function run(root, max, opts, frames) {
   const box = api.pageFrameBox('https://pay.example.com/f', 0);
   t('an off-screen frame is scrolled into view first', scrolled === true);
   eq('and measured where it ended up', [box.x, box.y, box.inView], [10, 200, true]);
+}
+
+// --- keys: the mapping CDP needs, and the modifier trap ------------------------------------------------
+{
+  const { api } = run(el('html', { children: [] }), 200, {});
+  const esc = api.keySpec('Escape');
+  eq('a named key carries its virtual-key code', [esc.key, esc.vk], ['Escape', 27]);
+  t('names are case-insensitive', api.keySpec('escape').vk === 27 && api.keySpec('ESCAPE').vk === 27);
+  t('the common aliases work', api.keySpec('esc').key === 'Escape' && api.keySpec('up').key === 'ArrowUp');
+  const a = api.keySpec('a');
+  eq('a single letter becomes a key with text', [a.key, a.code, a.text], ['a', 'KeyA', 'a']);
+  eq('and the right code for a digit', api.keySpec('7').code, 'Digit7');
+  eq('nonsense is refused rather than guessed', api.keySpec('Ctrl+Shift+Whatever'), null);
+  eq('so is nothing', api.keySpec(''), null);
+  t('Enter carries its text so it types a newline where that is meant', api.keySpec('Enter').text === '\r');
+  t('Escape carries NO text — it is not a character', api.keySpec('Escape').text === undefined);
+
+  eq('modifiers pack into CDP bits', api.modMask(['ctrl']), 2);
+  eq('several combine', api.modMask(['ctrl', 'shift']), 10);
+  eq('names vary in the wild', api.modMask(['Control', 'CMD', 'Alt']), 2 | 4 | 1);
+  eq('unknown modifiers are ignored, not fatal', api.modMask(['hyper']), 0);
+  eq('no modifiers is zero', api.modMask(undefined), 0);
 }
 
 // --- frame refs and spaces ----------------------------------------------------------------------------

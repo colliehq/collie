@@ -306,6 +306,80 @@ def test_ambiguous_click_still_warns():
         bb._call = real
 
 
+# --- the rest of a hand: keys, hover, drag, a bare point ----------------------------------------------
+def test_press_passes_key_and_modifiers_through():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"pressed": "Escape", "trusted": True, "times": 1}))
+        out = bb.BrowserPress().run({"key": "Escape"}, CTX)
+        check(stub.sent[0]["action"] == "press" and stub.sent[0]["key"] == "Escape",
+              "browser_press sends the key")
+        check("Escape" in out, "and reports what was pressed")
+        stub = with_stub(ok({"pressed": "a", "trusted": True, "times": 2}))
+        bb.BrowserPress().run({"key": "a", "modifiers": ["ctrl"], "repeat": 2}, CTX)
+        check(stub.sent[0]["modifiers"] == ["ctrl"] and stub.sent[0]["repeat"] == 2,
+              "modifiers and repeat reach the browser")
+    finally:
+        bb._call = real
+
+
+def test_hover_targets_the_same_ways_a_click_does():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"hovered": "Products", "trusted": True}))
+        bb.BrowserHover().run({"text": "Products"}, CTX)
+        check(stub.sent[0]["action"] == "hover" and stub.sent[0]["text"] == "Products",
+              "browser_hover takes visible text")
+        stub = with_stub(ok({"hovered": "e5", "trusted": True}))
+        bb.BrowserHover().run({"ref": "e5"}, CTX)
+        check(stub.sent[0]["ref"] == "e5", "and a snapshot ref")
+    finally:
+        bb._call = real
+
+
+def test_drag_refuses_endpoints_it_cannot_use():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"dragged": "pointer"}))
+        t = bb.BrowserDrag()
+        check("ERROR" in t.run({"from": "e1", "to": "e2"}, CTX),
+              "endpoints given as bare strings are refused")
+        check(not stub.sent, "and nothing was sent to the browser")
+        out = t.run({"from": {"ref": "e1"}, "to": {"x": 100, "y": 200}}, CTX)
+        check(stub.sent[0]["from"] == {"ref": "e1"} and stub.sent[0]["to"] == {"x": 100, "y": 200},
+              "an element and a point are both valid endpoints")
+        check("not the same as it having had an effect" in out,
+              "a completed drag does NOT claim the page changed — that needs a snapshot")
+    finally:
+        bb._call = real
+
+
+def test_click_can_take_a_bare_point():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"click": {"clicked_at": [400, 300], "trusted": True,
+                                       "hit": {"at": "canvas"}}, "page": "…"}))
+        bb.BrowserClick().run({"x": 400, "y": 300}, CTX)
+        check(stub.sent[0]["x"] == 400 and stub.sent[0]["y"] == 300,
+              "browser_click passes coordinates through for a canvas-style target")
+    finally:
+        bb._call = real
+
+
+def test_the_new_actions_are_script_steps_too():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"ok": True, "ran": 3, "of": 3, "steps": [], "result": ""}))
+        out = bb.BrowserScript().run({"steps": [{"action": "hover", "text": "Menu"},
+                                                {"action": "press", "key": "ArrowDown"},
+                                                {"action": "drag", "from": {"ref": "e1"},
+                                                 "to": {"ref": "e2"}}]}, CTX)
+        check("ERROR" not in out, "hover / press / drag are accepted as script steps")
+        check(len(stub.sent) == 1, "and the whole sequence is ONE round trip")
+    finally:
+        bb._call = real
+
+
 # --- the token: what it does, and what it must not pretend to do -------------------------------------
 def _isolated_home(fn):
     """Run with a throwaway collie home, so a test never reads or writes the real token."""
