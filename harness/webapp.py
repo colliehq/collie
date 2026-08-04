@@ -744,6 +744,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_live()
             if path == "/api/sessions":
                 return self._serve_sessions(urllib.parse.parse_qs(parsed.query))
+            if path == "/api/checkpoints":
+                return self._serve_checkpoints()
             if path == "/api/worktrees":
                 # Isolation nobody can see becomes disk nobody reclaims. Listing them with what each
                 # holds is what makes "clean up" a decision rather than a gamble.
