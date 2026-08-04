@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.20.28 — the work that had been sitting unreleased
+
+Nineteen commits had accumulated since v0.20.27 without a release, so the machine doing the
+developing was running the version before all of them. This release is those commits, plus the two
+test fixes that were needed to make the suite honest about them.
+
+- **Checkpoints: one-click rollback of what the agent changed.** The tree is snapshotted before the
+  agent edits it, wired through the run, the API and the UI, and the prompts stay out of the user's
+  repository.
+- **The verify gate stopped being Python-only.** "Prove it runs" was measured to be spinning on
+  445 of 731 tasks, because the gate only recognised `python3 -c`. It now detects the language and
+  requires a build before finish.
+- **Benchmark honesty.** A local SWE-bench Pro grader and the first resolve numbers that follow the
+  official protocol; the comparison harness stopped inventing wins; a provider outage is recorded as
+  a missing observation rather than a loss; cost is measured on both arms including cache reads.
+- **Settings apply on change, and say when one is being ignored** — a saved setting could not reach
+  the process that reads it.
+- **Running out of turns is no longer reported as "done".**
+- **Two tests that could never have caught anything.** One asserted a directive that has never
+  existed on this branch, and had been red since it landed. The other could not pass on Windows at
+  all: it interpolated a path into generated source through two levels of string literal, so
+  `C:\Users\…` became a truncated `\U` escape and the child died of SyntaxError before printing —
+  and the assertion blamed the settings code it was meant to be testing.
+
 ## v0.20.27 — a tool name that made Collie unable to say anything
 
 - **`mcp_status`, `mcp_add`, `mcp_set_enabled` and `mcp_remove` are now `mcpctl_*`, and that is the
