@@ -100,6 +100,9 @@ if $PY tests/test_output_encoding.py >/dev/null 2>&1; then echo "  output_encodi
 if $PY tests/test_data_dir.py >/dev/null 2>&1; then echo "  data_dir OK"; else echo "  data_dir FAIL"; rc=1; fi
 if $PY tests/test_relay_keepalive.py >/dev/null 2>&1; then echo "  relay_keepalive OK"; else echo "  relay_keepalive FAIL"; rc=1; fi
 if $PY tests/test_repos_deadline.py >/dev/null 2>&1; then echo "  repos_deadline OK"; else echo "  repos_deadline FAIL"; rc=1; fi
+if $PY tests/test_runs_registry.py >/dev/null 2>&1; then echo "  runs_registry OK"; else echo "  runs_registry FAIL"; rc=1; fi
+if $PY tests/test_mirror_backlog.py >/dev/null 2>&1; then echo "  mirror_backlog OK"; else echo "  mirror_backlog FAIL"; rc=1; fi
+if $PY tests/test_worktree.py >/dev/null 2>&1; then echo "  worktree OK"; else echo "  worktree FAIL"; rc=1; fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then
@@ -115,6 +118,14 @@ if "$PY" -c "import playwright" >/dev/null 2>&1; then
     echo "$gui_out" | tail -40 | sed "s/^/    /"
     rc=1
   fi
+  # Two suites that need a live server as well as a browser: the transcript's own honesty (a steer
+  # shown where it happened) and that more than one thread can run at once. browser_suite.py starts
+  # a throwaway `collie web` for each, so they can never touch the user's real one.
+  for t in steer_ui_check parallel_ui_check; do
+    out=$("$PY" tests/browser_suite.py "$t" 2>&1); trc=$?
+    if [ "$trc" = "0" ]; then echo "  $t OK"
+    else echo "  $t FAIL"; echo "$out" | tail -14 | sed "s/^/    /"; rc=1; fi
+  done
 else
   echo "  (playwright not found — skipping GUI suite)"
 fi

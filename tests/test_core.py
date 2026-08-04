@@ -134,7 +134,11 @@ def test_update_handoff_does_not_detach_the_bootstrap():
     launch = src[src.index("powershell.exe"):]
     assert "0x00000008" not in launch and "DETACHED" not in launch.upper().replace("DETACHED_PROCESS:", ""), \
         "the bootstrap must not be launched detached — it silently never runs"
-    assert "creationflags=_NO_WINDOW" in launch, "expected CREATE_NO_WINDOW alone for the bootstrap"
+    # Through plat.no_window_kwargs(), not a bare `creationflags=`: passing that keyword at all
+    # raises ValueError off Windows, and the platform-purity check rejects it outside plat.py. The
+    # property this test is about — CREATE_NO_WINDOW and nothing else — is what the helper returns
+    # on Windows; the assertion follows the expression, not the other way round.
+    assert "no_window_kwargs()" in launch, "expected CREATE_NO_WINDOW (via plat) for the bootstrap"
 
 def test_update_bootstrap_waits_installs_and_refuses_to_restart_after_a_failure():
     from harness import update as up

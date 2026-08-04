@@ -162,6 +162,20 @@
   }
   .thread { position: relative; }
   .thread .t-turns { font-size: 11px; color: var(--faint); margin-top: 4px; }
+  /* What a thread is doing, so a second one can be started without losing track of the first. */
+  .thread .t-state {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 10.5px; letter-spacing: .03em; text-transform: uppercase;
+    margin-top: 4px; color: var(--muted);
+  }
+  .thread .t-state::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  }
+  .thread .t-state.running { color: var(--pine); }
+  .thread .t-state.running::before { animation: tpulse 1.4s ease-in-out infinite; }
+  .thread .t-state.failed { color: var(--coral); }
+  .thread.r-running { border-left: 2px solid var(--pine); }
+  @keyframes tpulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   .thread .t-acts { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; opacity: 0;
     transition: opacity .12s; }
   .thread:hover .t-acts { opacity: 1; }
@@ -570,7 +584,27 @@
   .msg .flow { display: flex; flex-direction: column; gap: 7px; }
   .msg .flow > .text.md { margin: 0; }             /* segment spacing comes from the flow gap */
   /* inline tool trace (cc-style): a compact step per tool — verb + mono target + a ⎿ result line */
+  /* A steer, shown where it happened — inside the turn, not after the answer it changed. */
+  .steer-note {
+    display: flex; gap: 7px; align-items: baseline; margin: 7px 0;
+    padding: 6px 10px; border-left: 2px solid var(--pine);
+    background: var(--raise); border-radius: 0 6px 6px 0; font-size: 13px;
+  }
+  .steer-note .sn-ico { color: var(--pine); font-weight: 700; }
+  .steer-note .sn-tag {
+    font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--pine); white-space: nowrap;
+  }
+  .steer-note .sn-text { color: var(--ink); }
+  /* queued, not delivered: the desktop hands it over at the next turn boundary */
+  .steer-note.pending { opacity: .72; border-left-style: dashed; }
+  .steer-note.dropped { border-left-color: var(--coral); opacity: .6; }
+  .steer-note.dropped .sn-ico, .steer-note.dropped .sn-tag { color: var(--coral); }
   .trace-step { font-size: 12.5px; color: var(--muted); }
+  /* Steps that happened before this window arrived. Shown, but not as if they were happening now —
+     a run you just opened must not look like it did ten things in the instant you looked at it. */
+  .trace-step.replay { opacity: .55; }
+  .trace-step.replay .ts-ico { filter: grayscale(1); }
   .trace-step .ts-head { display: flex; align-items: baseline; gap: 8px; }
   .trace-step .ts-ico { width: 14px; text-align: center; color: var(--faint);
     font-family: var(--mono); font-size: 11px; flex: none; }
@@ -730,6 +764,7 @@
   .mt-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
   .mt-dot[data-mode="herding"] { background: var(--amber); }
   .mt-dot[data-mode="pack"] { background: var(--pine); }
+  .mt-dot[data-mode="isolated"] { background: var(--azure); }
   .mt-chev { width: 13px; height: 13px; color: var(--faint); transition: transform .16s; }
   .modepick.open .mt-chev { transform: rotate(180deg); }
   .mode-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; min-width: 236px;
@@ -745,6 +780,7 @@
   .mi-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
   .mi-dot[data-mode="herding"] { background: var(--amber); }
   .mi-dot[data-mode="pack"] { background: var(--pine); }
+  .mi-dot[data-mode="isolated"] { background: var(--azure); }
   .mi-txt { display: flex; flex-direction: column; flex: 1; line-height: 1.25; }
   .mi-name { font-size: 13px; font-weight: 600; }
   .mi-desc { font-size: 11px; color: var(--faint); }
@@ -1145,6 +1181,11 @@
               <span class="mi-txt"><span class="mi-name">Extreme Herding</span><span class="mi-desc">More turns + assert-verify gate</span></span>
               <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
             </button>
+            <button type="button" class="mode-item" data-val="isolated" role="option">
+              <span class="mi-dot" data-mode="isolated"></span>
+              <span class="mi-txt"><span class="mi-name">Isolated branch</span><span class="mi-desc">Its own git worktree — two runs can share a repo, and the result reads as a diff</span></span>
+              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </button>
             <button type="button" class="mode-item" data-val="pack" role="option">
               <span class="mi-dot" data-mode="pack"></span>
               <span class="mi-txt"><span class="mi-name">Pack · best-of-N</span><span class="mi-desc">N isolated tries, keep the one that passes a check</span></span>
@@ -1415,6 +1456,16 @@
     "failed to load": "加载失败",
     "steering delivered": "转向已送达",
     "not delivered": "未送达",
+    "file(s) changed": "个文件有改动",
+    "no files changed": "没有文件改动",
+    "still working": "仍在运行",
+    "this run started elsewhere — following it live; the thread fills in when it lands": "这次运行不是在本窗口发起的——正在实时跟随；结束后会显示完整对话",
+    "working…": "运行中",
+    "failed": "失败",
+    "verified": "已验证",
+    "done": "完成",
+    "queued": "排队中",
+    "steering": "已插话",
     "run already finished — send again to start a new turn": "运行已结束——再发一次将开启新的一轮",
     "connection dropped — checking whether Collie finished…": "连接中断——正在确认 Collie 是否已完成…",
     "applied": "已生效",
@@ -1453,6 +1504,16 @@
     "failed to load": "載入失敗",
     "steering delivered": "轉向已送達",
     "not delivered": "未送達",
+    "file(s) changed": "個檔案有變更",
+    "no files changed": "沒有檔案變更",
+    "still working": "仍在執行",
+    "this run started elsewhere — following it live; the thread fills in when it lands": "這次執行不是在本視窗發起的——正在即時跟隨；結束後會顯示完整對話",
+    "working…": "執行中",
+    "failed": "失敗",
+    "verified": "已驗證",
+    "done": "完成",
+    "queued": "排隊中",
+    "steering": "已插話",
     "run already finished — send again to start a new turn": "執行已結束——再發一次將開啟新的一輪",
     "connection dropped — checking whether Collie finished…": "連線中斷——正在確認 Collie 是否已完成…",
     "reconnected — Collie is still working…": "已重新連上——Collie 仍在繼續工作…",
@@ -1480,6 +1541,16 @@
       "saved · applies to your next message": "保存しました · 次のメッセージから有効",
       "failed to load": "読み込みに失敗しました", "steering delivered": "誘導を送信しました",
       "not delivered": "送信されませんでした",
+      "file(s) changed": "件のファイルが変更",
+      "no files changed": "変更なし",
+      "still working": "実行中",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "この実行は別の場所で開始されました——ライブで追跡中。終了後に全文が表示されます",
+      "working…": "実行中",
+      "failed": "失敗",
+      "verified": "検証済み",
+      "done": "完了",
+      "queued": "順番待ち",
+      "steering": "介入しました",
       "run already finished — send again to start a new turn": "実行はすでに終了しました——もう一度送信すると新しいターンを開始します",
       "connection dropped — checking whether Collie finished…": "接続が切れました——Collie が完了したか確認中…",
       "reconnected — Collie is still working…": "再接続しました——Collie はまだ作業中です…",
@@ -1502,6 +1573,16 @@
       "saved · applies to your next message": "저장됨 · 다음 메시지부터 적용",
       "failed to load": "불러오지 못했습니다", "steering delivered": "방향 지시 전달됨",
       "not delivered": "전달되지 않음",
+      "file(s) changed": "개 파일 변경",
+      "no files changed": "변경 없음",
+      "still working": "아직 실행 중",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "다른 곳에서 시작된 실행입니다 — 실시간으로 따라갑니다. 끝나면 전체가 표시됩니다",
+      "working…": "실행 중",
+      "failed": "실패",
+      "verified": "검증됨",
+      "done": "완료",
+      "queued": "대기 중",
+      "steering": "개입함",
       "run already finished — send again to start a new turn": "실행이 이미 끝났습니다 — 다시 보내면 새 턴을 시작합니다",
       "connection dropped — checking whether Collie finished…": "연결이 끊겼습니다 — Collie가 완료했는지 확인 중…",
       "reconnected — Collie is still working…": "다시 연결되었습니다 — Collie가 계속 작업 중입니다…",
@@ -1524,6 +1605,16 @@
       "saved · applies to your next message": "guardado · se aplica a tu próximo mensaje",
       "failed to load": "error al cargar", "steering delivered": "guía entregada",
       "not delivered": "no entregada",
+      "file(s) changed": "archivo(s) cambiados",
+      "no files changed": "sin cambios",
+      "still working": "sigue trabajando",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "esta ejecución empezó en otra ventana — siguiéndola en vivo; el hilo aparece al terminar",
+      "working…": "trabajando…",
+      "failed": "falló",
+      "verified": "verificado",
+      "done": "listo",
+      "queued": "en cola",
+      "steering": "corrigiendo",
       "run already finished — send again to start a new turn": "la ejecución ya terminó — envía de nuevo para iniciar un nuevo turno",
       "connection dropped — checking whether Collie finished…": "conexión perdida — comprobando si Collie terminó…",
       "reconnected — Collie is still working…": "reconectado — Collie sigue trabajando…",
@@ -1546,6 +1637,16 @@
       "saved · applies to your next message": "enregistré · s'applique à votre prochain message",
       "failed to load": "échec du chargement", "steering delivered": "orientation transmise",
       "not delivered": "non transmise",
+      "file(s) changed": "fichier(s) modifiés",
+      "no files changed": "aucun changement",
+      "still working": "toujours en cours",
+      "this run started elsewhere — following it live; the thread fills in when it lands": "cette exécution a démarré ailleurs — suivi en direct ; le fil apparaît à la fin",
+      "working…": "en cours…",
+      "failed": "échec",
+      "verified": "vérifié",
+      "done": "terminé",
+      "queued": "en attente",
+      "steering": "correction",
       "run already finished — send again to start a new turn": "l'exécution est déjà terminée — renvoyez pour démarrer un nouveau tour",
       "connection dropped — checking whether Collie finished…": "connexion perdue — vérification si Collie a terminé…",
       "reconnected — Collie is still working…": "reconnecté — Collie travaille toujours…",
@@ -2941,15 +3042,61 @@
   }
 
   // ---- sessions ---------------------------------------------------------
+  // ---- what is running, anywhere ----------------------------------------
+  // The server's answer, not this page's. A run outlives the socket that started it and may have
+  // been started from another window entirely, so `running` in this tab cannot answer it.
+  var liveRuns = {};
+  function runLabel(r) {
+    if (r.state === "running") return t("working…");
+    if (r.state === "failed") return t("failed");
+    return r.verified ? t("verified") : t("done");
+  }
+  function pollRuns() {
+    fetch("/api/runs?token=" + encodeURIComponent(CT))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var next = {}, changed = false;
+        (d.runs || []).forEach(function (r) { next[r.session] = r; });
+        Object.keys(next).concat(Object.keys(liveRuns)).forEach(function (k) {
+          var a = liveRuns[k], b = next[k];
+          if (!a !== !b || (a && b && (a.state !== b.state || a.verified !== b.verified))) changed = true;
+        });
+        liveRuns = next;
+        // Only redraw when something actually moved: the sidebar is also where rename and delete
+        // live, and a list that rebuilds every two seconds eats the click that lands on it.
+        if (changed) loadSessions();
+      })
+      .catch(function () {});
+  }
+  setInterval(pollRuns, 2500);
+
   function loadSessions() {
     fetch("/api/sessions").then(function (r) { return r.json(); }).then(function (d) {
       var box = $("threads"); box.innerHTML = "";
       var list = (d && d.sessions) || [];
+      // A brand-new thread has no saved file until its first run finishes. So starting one, leaving
+      // it to work and looking at the list showed nothing at all — the thread you had just started
+      // was the one thread you could not get back to. Anything the server says is alive gets a row
+      // whether or not it has been written to disk yet.
+      var known = {};
+      list.forEach(function (s) { known[s.id] = true; });
+      Object.keys(liveRuns).forEach(function (id) {
+        if (known[id]) return;
+        var r = liveRuns[id];
+        if (r.state !== "running") return;      // finished-and-unsaved is a crash, not a thread
+        list.unshift({ id: id, title: r.ask || "(untitled)", last: r.ask || "", turns: r.turns || 0 });
+      });
       if (!list.length) { box.innerHTML = '<div class="empty">No sessions yet.</div>'; return; }
       list.forEach(function (s) {
         var el = document.createElement("div");
         el.className = "thread" + (s.id === currentSession ? " active" : "");
+        var rs = liveRuns[s.id];
+        if (rs) el.className += " r-" + rs.state;
         el.innerHTML = '<div class="t-last">' + esc(s.title || s.last || "(untitled)") + '</div>' +
+          // What this thread is doing right now, decided by the server rather than by whether this
+          // window happens to be the one watching it. Without it, a run started here and left, or
+          // started from the phone, is invisible — and invisible work is work you start twice.
+          (rs ? '<div class="t-state ' + rs.state + '">' + esc(runLabel(rs)) + '</div>' : '') +
           '<div class="t-turns">' + (s.turns || 0) + ' turn' + (s.turns === 1 ? "" : "s") + '</div>' +
           '<div class="t-acts">' +
           '<button class="t-act" data-a="rename" title="Rename">✎</button>' +
@@ -2976,8 +3123,21 @@
     }).catch(function () {});
   }
 
+  // Leaving a conversation no longer ends it.
+  //
+  // openSession and newThread both refused outright while a run was going — the only ways out were
+  // to wait or to stop the work. That was the honest thing to do back when the run died with the
+  // socket, and it is the whole reason Collie could hold only one thought at a time. The server owns
+  // the run now, so leaving is just this window looking somewhere else.
+  function detachRun() {
+    if (es) { try { es.close(); } catch (e) {} es = null; }
+    if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }
+    curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
+    finishRunUI();                       // this window goes idle; the run does not
+  }
+
   function openSession(id) {
-    if (running) return;
+    detachRun();
     currentSession = id;
     clearTimeline(); setGate("idle"); NOW.reset();
     setReceipt({}); loadSessions();
@@ -2991,7 +3151,56 @@
         }
       });
       scrollDown();
+      // Reopening a thread that is STILL WORKING must not look like reading a finished one. The
+      // saved file holds the PREVIOUS turn mid-run — the last thing written, not what is happening
+      // — so without this you are shown a stale transcript with no sign that Collie is mid-sentence
+      // in it, and the obvious next move is to ask for the same thing again.
+      if (liveRuns[id] && liveRuns[id].state === "running") followSession(id);
     }).catch(function () {});
+  }
+
+  // Watch a run this window did not start. The mirror bus is session-scoped and takes late
+  // subscribers, so joining is cheap; what it cannot do is replay what was already said, and
+  // pretending otherwise would be worse than admitting it. So the note says plainly that it is
+  // following, shows the activity that arrives from here on, and swaps itself for the real
+  // transcript the moment the run lands.
+  function followSession(sid) {
+    var note = addEvent("meta", "eye", t("still working"),
+                        t("this run started elsewhere — following it live; the thread fills in when it lands"));
+    // A live bubble to put the steps in. Without one traceStep has nowhere to write (it returns on a
+    // null flow), so the note would sit there claiming work was happening above a blank screen.
+    addPending();
+    var src = null;
+    try {
+      src = new EventSource("/api/mirror?session=" + encodeURIComponent(sid) +
+                            "&token=" + encodeURIComponent(CT));
+    } catch (e) { return; }
+    function stop() { if (src) { try { src.close(); } catch (e) {} src = null; } }
+    // The bus hands over what already happened before this window arrived. Those events are history,
+    // not news: rendering them as live activity would make a run look like it was doing ten things
+    // in the same instant you opened it.
+    var replaying = false;
+    src.addEventListener("mirror_replay", function () { replaying = true; });
+    src.addEventListener("mirror_live", function () { replaying = false; });
+    ["tool", "edit", "repro"].forEach(function (ev) {
+      src.addEventListener(ev, function (m) {
+        if (currentSession !== sid) { stop(); return; }     // walked away again
+        try {
+          var d = JSON.parse(m.data || "{}");
+          if (!d.name) return;
+          var lab = ccLabel(d.name, d.args);
+          traceStep(toolIcon(d.name), lab.verb, lab.target, "", replaying ? "replay" : "");
+          NOW.act(toolIcon(d.name), lab.verb, lab.target, ev);
+        } catch (e) {}
+      });
+    });
+    src.addEventListener("done", function () {
+      stop();
+      if (currentSession !== sid) return;
+      if (note && note.parentNode) note.parentNode.removeChild(note);
+      curMsg = flowEl = statusEl = pstatEl = curTextEl = null;   // drop the follow bubble
+      openSession(sid);                      // the answer is saved — show the real thread
+    });
   }
 
   var WC_EXAMPLES = '<div class="wc-examples">'
@@ -3011,7 +3220,7 @@
     + 'diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>'
     + WC_EXAMPLES + '</div>';
   function newThread() {
-    if (running) return;
+    detachRun();                         // start a second thing while the first one runs
     currentSession = null;
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     loadSessions(); $("input").focus();
@@ -3096,14 +3305,43 @@
 
   // steer the in-flight run: echo the message as a user bubble, then queue it server-side. The loop
   // injects it at the next turn boundary and streams back a `steer` event when it lands.
+  // A steer belongs INSIDE the run, at the moment it was said.
+  //
+  // It used to be appended to the log, which put it after the assistant bubble that was still
+  // growing — so the transcript read "you asked, Collie answered, then you interrupted", with the
+  // interruption below the answer it had already changed. Everything about that order is false.
+  // It goes into the flow instead, in front of the status line, exactly where the tool steps and
+  // text segments of that turn go.
+  //
+  // It is also not delivered yet. The desktop hands it over at the next turn boundary, so it stays
+  // visibly QUEUED until the POST comes back saying it was taken.
   function steer(q) {
-    addMsg("user", q, null, true);      // 4th arg -> marked as a mid-run steer
+    var el;
+    if (flowEl) {
+      sealText();                       // close the current text block: this happened after it
+      el = document.createElement("div");
+      el.className = "steer-note pending";
+      el.innerHTML = '<span class="sn-ico">↳</span><span class="sn-tag"></span><span class="sn-text"></span>';
+      el.querySelector(".sn-tag").textContent = t("queued");
+      el.querySelector(".sn-text").textContent = q;
+      flowEl.insertBefore(el, statusEl && statusEl.parentNode === flowEl ? statusEl : null);
+    } else {
+      el = addMsg("user", q, null, true).parentNode;   // no live bubble (rare): fall back to the log
+    }
+    scrollDown(true);                   // your own words always come into view, even scrolled up
     fetch("/api/steer?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session: currentSession, q: q })
     }).then(function (r) { return r.json(); }).then(function (d) {
-      if (!d || !d.queued)              // run ended between our keystroke and the POST
-        addEvent("meta", "flag", t("not delivered"), t("run already finished — send again to start a new turn"));
+      var tag = el && el.querySelector && el.querySelector(".sn-tag");
+      if (d && d.queued) {
+        if (el.classList) el.classList.remove("pending");
+        if (tag) tag.textContent = t("steering");
+        return;
+      }
+      if (el.classList) { el.classList.remove("pending"); el.classList.add("dropped"); }
+      if (tag) tag.textContent = t("not delivered");
+      addEvent("meta", "flag", t("not delivered"), t("run already finished — send again to start a new turn"));
     }).catch(function () {});
   }
 
@@ -3172,7 +3410,12 @@
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false;
 
     var mode = ($("mode") && $("mode").value) || "normal";
+    // "Isolated" is not a way of running — it is where the run happens. The server still gets
+    // mode=normal; what changes is that it gets a worktree of its own to do it in.
+    var isolated = mode === "isolated";
+    if (isolated) mode = "normal";
     var url = "/api/stream?q=" + encodeURIComponent(q) + "&mode=" + mode +
+              (isolated ? "&isolate=1" : "") +
               "&token=" + encodeURIComponent(CT) +
               (imgIds && imgIds.length ? "&imgs=" + imgIds.join(",") : "") +
               (currentSession ? "&session=" + encodeURIComponent(currentSession) : "");
@@ -3336,6 +3579,16 @@
           addCopy(fin, ans);
         }
         // ran out of turns mid-task: say so, instead of presenting a half-way answer as finished
+        // An isolated run finished on a branch. Saying which one is the difference between a
+        // result you can read and one you have to go looking for.
+        if (d.isolated && d.branch) {
+          var br = document.createElement("div"); br.className = "pack-summary";
+          br.innerHTML = '\u2387 <b>' + esc(d.branch) + '</b> — ' +
+            (d.changed ? (d.changed + " " + t("file(s) changed") +
+                          ". <code>git diff main.." + esc(d.branch) + "</code>")
+                       : t("no files changed"));
+          flowEl.appendChild(br);
+        }
         if (d.max_turns && d.turns >= d.max_turns) {
           var cap = document.createElement("div"); cap.className = "pack-summary";
           cap.innerHTML = "⏱ <b>Turn limit reached</b> (" + d.turns + "/" + d.max_turns +

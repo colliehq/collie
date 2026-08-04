@@ -388,6 +388,10 @@ class Handler(BaseHTTPRequestHandler):
     # + the desktop) can mirror a run token-by-token in real time. sid -> list[queue].
     _mirror_lock = threading.Lock()
     _mirror_subs: dict = {}
+    # What a late subscriber missed. sid -> [(kind, data)], structural events only, dropped when the
+    # run ends because from that moment the saved thread is the better record.
+    _mirror_backlog: dict = {}
+    _MIRROR_BACKLOG = 60
 
     # attached-image store: the composer POSTs an image to /api/upload, gets an id back, then the
     # next /api/stream?imgs=<id> references it. Kept in memory (a run consumes it right away), bounded
@@ -401,6 +405,58 @@ class Handler(BaseHTTPRequestHandler):
     # and injects it as a user message. Bounded so a jammed run can't grow the queue without limit.
     _steer_lock = threading.Lock()
     _steer_runs: dict = {}          # sid -> queue.Queue[str], present only while a run is in flight
+
+    # What is running, across every window and none.
+    #
+    # A run outlives the socket that started it, so "is anything happening?" cannot be answered from
+    # the page that asked — and a second thread cannot be started with any confidence while the first
+    # one's state lives only in one tab's `running` variable. This is the process's own answer, and
+    # the only thing that makes more than one conversation at a time honest rather than hopeful.
+    # sid -> {state, started, ask, cwd, turns, verified, error, ended}
+    _runs_lock = threading.Lock()
+    _runs: dict = {}
+    _RUNS_KEEP = 30                 # finished runs stay listable so the list can show a verdict
+
+    @classmethod
+    def _run_begin(cls, sid, ask, cwd):
+        with cls._runs_lock:
+            cls._runs[sid] = {"session": sid, "state": "running", "started": time.time(),
+                              "ask": (ask or "")[:120], "cwd": cwd, "turns": 0,
+                              "verified": None, "error": "", "ended": None}
+
+    @classmethod
+    def _run_mark(cls, sid, **kw):
+        with cls._runs_lock:
+            r = cls._runs.get(sid)
+            if r is not None:
+                r.update(kw)
+
+    @classmethod
+    def _run_end(cls, sid, res=None, error=""):
+        with cls._runs_lock:
+            r = cls._runs.get(sid)
+            # First verdict wins. The success path records the real one and the `finally` guard runs
+            # straight after it; without this the guard would overwrite every good result with its
+            # own catch-all and every finished run would read as failed.
+            if r is None or r["ended"]:
+                return
+            r["state"] = "failed" if (error or getattr(res, "error", "")) else "done"
+            r["error"] = (error or getattr(res, "error", "") or "")[:200]
+            r["ended"] = time.time()
+            if res is not None:
+                r["turns"] = getattr(res, "turns", 0) or 0
+                r["verified"] = bool(getattr(res, "verified", False))
+            # keep the most recent finished runs, drop the rest — a verdict nobody looked at within
+            # thirty runs is not one the sidebar should still be offering
+            done = sorted([x for x in cls._runs.values() if x["ended"]], key=lambda x: x["ended"])
+            for old in done[:-cls._RUNS_KEEP]:
+                cls._runs.pop(old["session"], None)
+
+    @classmethod
+    def _runs_snapshot(cls):
+        with cls._runs_lock:
+            return sorted((dict(r) for r in cls._runs.values()),
+                          key=lambda r: (r["state"] != "running", -(r["ended"] or r["started"])))
 
     @classmethod
     def _steer_open(cls, sid):
@@ -529,6 +585,17 @@ class Handler(BaseHTTPRequestHandler):
         """Fan one event of session `sid`'s run to every window mirroring that session."""
         with cls._mirror_lock:
             subs = list(cls._mirror_subs.get(sid, ()))
+            # Keep a short tail so a window that joins mid-run is not shown a blank screen under a
+            # note saying work is happening. Structural events only: the token firehose would blow
+            # the buffer in one paragraph, and what a late joiner needs is what Collie DID, not the
+            # prose it was in the middle of.
+            if kind != "token":
+                buf = cls._mirror_backlog.setdefault(sid, [])
+                buf.append((kind, data))
+                if len(buf) > cls._MIRROR_BACKLOG:
+                    del buf[:-cls._MIRROR_BACKLOG]
+            if kind == "done":
+                cls._mirror_backlog.pop(sid, None)   # the thread on disk is the record now
         for q in subs:
             try:
                 q.put_nowait((kind, data))
@@ -547,6 +614,15 @@ class Handler(BaseHTTPRequestHandler):
         self._sse_open()
         try:
             self._sse("mirror_hello", {"session": sid})
+            # Hand over what already happened before this window arrived, marked as a replay so the
+            # page can render it as history rather than as things happening right now.
+            with Handler._mirror_lock:
+                past = list(Handler._mirror_backlog.get(sid, ()))
+            if past:
+                self._sse("mirror_replay", {"session": sid, "count": len(past)})
+                for kind, data in past:
+                    self._sse(kind, data)
+                self._sse("mirror_live", {"session": sid})
             while True:
                 try:
                     kind, data = q.get(timeout=15)
@@ -670,6 +746,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_sessions(urllib.parse.parse_qs(parsed.query))
             if path == "/api/checkpoints":
                 return self._serve_checkpoints()
+            if path == "/api/worktrees":
+                # Isolation nobody can see becomes disk nobody reclaims. Listing them with what each
+                # holds is what makes "clean up" a decision rather than a gamble.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import worktree as _wt
+                return self._send_json({"worktrees": _wt.listing(os.getcwd())})
+            if path == "/api/runs":
+                # What is running right now, and how the last few finished. The page cannot know this
+                # on its own: a run outlives the socket that started it and may have been started from
+                # another window entirely (the phone, a second tab).
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._send_json({"runs": Handler._runs_snapshot()})
             if path == "/api/settings":
                 from . import settings
                 vals = settings.all_values()
@@ -1834,11 +1924,36 @@ class Handler(BaseHTTPRequestHandler):
         prior = sessions.load(sid) if qs.get("session", [""])[0] else None
         history = (prior or {}).get("messages") or []
         cwd = os.getcwd()
+
+        # ?isolate=1 — run this one in its own git worktree, on its own branch.
+        #
+        # Opt-in, and it has to stay opt-in: the ordinary expectation is that Collie edits the tree
+        # you are looking at, and quietly moving those edits somewhere else would be the worst kind
+        # of surprise. Ask for it when you want two runs on the same repo not to collide, or a
+        # result you can read as a diff before it touches anything.
+        #
+        # If the directory is not a repository this REFUSES rather than falling back: falling back to
+        # the shared tree is exactly the collision that was asked to be avoided, and saying nothing
+        # about it is how you find out afterwards.
+        wt_info = None
+        if qs.get("isolate", ["0"])[0] in ("1", "true", "on"):
+            from . import worktree as _wt
+            wt_info = _wt.prepare(cwd, sid, label=q)
+            if not wt_info["ok"]:
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "could not isolate this run: " + wt_info["error"]})
+                return
+            cwd = wt_info["dir"]
+
         start_d = {"session": sid, "provider": _provider(), "cwd": cwd,
                    "prior_turns": sum(1 for m in history if m.get("role") == "user")}
+        if wt_info:
+            start_d["branch"] = wt_info["branch"]
+            start_d["isolated"] = True
         self._sse("start", start_d)
         Handler._live_pub("start", start_d)   # let open Maps enter live mode for this run
         Handler._mirror_pub(sid, "start", start_d)   # + any window mirroring this session
+        Handler._run_begin(sid, q, cwd)              # the process-wide answer to "what is running?"
 
         # PACK mode (🎯 best-of-N): run the task N times in isolation, pick the winner by what
         # actually PASSES. No token stream — each attempt runs silently; we push a `pack_attempt`
@@ -1921,9 +2036,25 @@ class Handler(BaseHTTPRequestHandler):
                 h.max_turns = 40                     # raised default; the Settings panel / env still wins
             # every structural event hits BOTH the starting client's socket and the live bus (so the
             # Map / mini-map render it in real time); the token firehose stays client-only.
-            h.emit = lambda kind, d: (self._sse(kind, d), Handler._live_pub(kind, d),
+            # The run does not belong to the socket that started it.
+            #
+            # `self._sse` was called FIRST and unguarded here, so the moment the browser went away —
+            # closed tab, switched thread, phone locked — the next emit raised BrokenPipeError, which
+            # travelled out of h.run() into the handler below and ended the run. A comment in the web
+            # UI said the opposite ("a dropped SSE connection does NOT stop the run") and built a
+            # whole reconnect path on top of that belief; what it reconnected to was a corpse.
+            #
+            # Writing to the departed client is the only part allowed to fail. The live bus and the
+            # session mirror always get the event, which is what lets a window re-attach later, and
+            # what makes leaving a run to start another one possible at all.
+            def _tx(kind, d):
+                try:
+                    self._sse(kind, d)
+                except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+                    pass
+            h.emit = lambda kind, d: (_tx(kind, d), Handler._live_pub(kind, d),
                                       Handler._mirror_pub(sid, kind, d))
-            h.stream_cb = lambda piece: (self._sse("token", {"t": piece}),
+            h.stream_cb = lambda piece: (_tx("token", {"t": piece}),
                                          Handler._mirror_pub(sid, "token", {"t": piece}))  # real token streaming
             # mid-run steering: register a per-session queue; the loop drains it at each turn boundary.
             # POST /api/steer pushes onto it. Text typed while Collie works becomes the next user turn.
@@ -1972,12 +2103,32 @@ class Handler(BaseHTTPRequestHandler):
                 # only a per-token ESTIMATE of what it'd cost on the metered API. Flag it so the UI
                 # doesn't present the estimate as a real charge.
                 "subscription": _provider() in ("anthropic-oauth", "claude-cli")}
-            self._sse("done", done_d)
+            # An isolated run's result is a branch, not a claim. Say which one, and what is on it,
+            # so the next step is `git diff` rather than "did anything happen?".
+            if wt_info:
+                from . import worktree as _wt
+                st = _wt.status(wt_info["dir"])
+                done_d["branch"] = wt_info["branch"]
+                done_d["isolated"] = True
+                done_d["changed"] = len(st["files"])
+                done_d["worktree"] = wt_info["dir"]
+
+            # Record the verdict BEFORE trying to tell the client, and let telling it fail. A run
+            # whose browser had gone away finished its work, saved its answer, and was then filed as
+            # a failure — because this frame went straight to a dead socket and the BrokenPipeError
+            # jumped over the line that stored the result. The work was real; only the audience left.
+            Handler._run_end(sid, res)
             Handler._mirror_pub(sid, "done", done_d)   # mirroring windows see the run finish too
             Handler._notify_done(sid, res, wall_ms=res.wall_ms)
+            try:
+                self._sse("done", done_d)
+            except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+                pass
         except BrokenPipeError:
-            pass
+            # Only reachable now from a write outside h.emit; the run's own emits swallow it.
+            Handler._run_end(sid, error="client went away")
         except Exception as e:
+            Handler._run_end(sid, error="%s: %s" % (type(e).__name__, e))
             try:
                 self._sse("done", {"session": sid, "answer": "",
                                    "error": "%s: %s" % (type(e).__name__, e)})
@@ -1992,6 +2143,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         finally:
+            # Whatever happened, nothing may stay listed as running — a sidebar that shows a dot
+            # forever is worse than one that shows nothing, because it is believed.
+            Handler._run_end(sid, error="ended without a verdict")
             Handler._steer_close(sid)      # run over: reject further steers for this session
             if h is not None:
                 try:

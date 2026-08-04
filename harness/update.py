@@ -241,7 +241,7 @@ def running_parts(root):
     try:
         out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
                              capture_output=True, text=True, timeout=25,
-                             creationflags=_NO_WINDOW).stdout or ""
+                             **plat.no_window_kwargs()).stdout or ""
     except Exception:
         out = ""
     lines = [l for l in out.splitlines() if l.strip()]
@@ -259,7 +259,9 @@ def running_parts(root):
     return parts
 
 
-_NO_WINDOW = 0x08000000
+# CREATE_NO_WINDOW went through plat.no_window_kwargs() instead: passing `creationflags` at all
+# raises ValueError off Windows, and both call sites below sat outside any platform branch — the
+# exact shape that once turned six Windows-only features into silent no-ops on macOS.
 
 # Runs AFTER collie has exited. PowerShell, not python: the only interpreter guaranteed to exist
 # outside the directory the installer is about to overwrite.
@@ -345,9 +347,8 @@ def apply_windows(exe, digest, on_note=print):
     # ways round. A child is not killed by its parent exiting on Windows, so nothing more is needed
     # for the bootstrap to outlive us.
     subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", sp],
-                     creationflags=_NO_WINDOW,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     cwd=tempfile.gettempdir())
+                     cwd=tempfile.gettempdir(), **plat.no_window_kwargs())
     on_note("  the installer runs once Collie exits; it will bring back: %s"
             % (", ".join(parts) or "nothing (none of it was running)"))
     on_note("  log: %s" % log)
