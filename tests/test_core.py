@@ -523,6 +523,101 @@ def test_loop_terminal_fails_fast():
     assert p.calls == 1, "terminal error must not retry: %d calls" % p.calls
     assert res.error.startswith("terminal:"), res.error
 
+# --- the tool/loop seam ------------------------------------------------------------------------
+# Every edit_file test in this file calls `EditFileTool().run(...)` and stops at the tool boundary:
+# it asserts the string that came back and that the file is untouched, and then never asks what
+# READS that string. The seam where a tool result becomes a conversation turn had no test at all,
+# which is where three of the four defects found while reviewing codex/foundation were living.
+# These are written against behaviour rather than structure, so they still hold if dispatch later
+# moves behind a registry — which is exactly the change that broke it there.
+
+def _tool_result_for(res, call_id):
+    return next((m for m in res.messages
+                 if m.get("role") == "tool" and m.get("tool_call_id") == call_id), None)
+
+
+def test_a_recoverable_tool_error_does_not_end_the_run():
+    """A stale `old_string` is the commonest slip there is. The model has to get it back and answer.
+
+    Measured on codex/foundation before this existed: the same call raised out of the run and
+    killed it, with the whole suite green.
+    """
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall, Usage
+    d = tempfile.mkdtemp(); p = os.path.join(d, "f.py")
+    open(p, "w", encoding="utf-8").write("def f():\n    return 1\n")
+    h = make_harness(d, provider="mock", project="toolseam", embed="hash")
+    h.max_turns = 3
+    h.memory = _RecordingMemory()
+    call = ToolCall("tc-1", "edit_file",
+                    {"path": "f.py", "old_string": "return 2", "new_string": "return 3"})
+    h.provider = _ScriptProvider([
+        Completion(tool_calls=[call], stop_reason="tool_use"),
+        Completion(text="the file said otherwise, so I looked again",
+                   stop_reason="end_turn", usage=Usage(input_tokens=5)),
+    ])
+    res = h.run("toolseam", "edit it")
+    assert res.error == "", "a rejected edit is not a failed run: %r" % res.error
+    assert res.answer == "the file said otherwise, so I looked again"
+    assert res.tool_calls == 1
+    result = _tool_result_for(res, "tc-1")
+    assert result is not None, "an unpaired tool_use 400s the provider on the next turn"
+    assert "old_string not found" in result["content"], result["content"]
+    assert open(p, encoding="utf-8").read() == "def f():\n    return 1\n", "refused, so unchanged"
+
+
+def test_a_tool_that_raises_does_not_end_the_run_either():
+    """A tool exception is the loop's problem to contain, not the run's to die of — and the
+    tool_use still has to be paired, or the NEXT provider call is the thing that fails."""
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall, Usage
+    from harness.tools import Tool
+
+    class Detonating(Tool):
+        name, tier = "detonate", "always"
+        description = "raises"
+        schema = {"type": "object", "properties": {}}
+
+        def run(self, args, ctx):
+            raise RuntimeError("the disk fell off")
+
+    d = tempfile.mkdtemp()
+    h = make_harness(d, provider="mock", project="toolraise", embed="hash")
+    h.registry.register(Detonating())
+    h.max_turns = 3
+    h.memory = _RecordingMemory()
+    h.provider = _ScriptProvider([
+        Completion(tool_calls=[ToolCall("tc-2", "detonate", {})], stop_reason="tool_use"),
+        Completion(text="noted, doing it another way", stop_reason="end_turn",
+                   usage=Usage(input_tokens=5)),
+    ])
+    res = h.run("toolraise", "go")
+    assert res.error == "", res.error
+    assert res.answer == "noted, doing it another way"
+    result = _tool_result_for(res, "tc-2")
+    assert result is not None and "the disk fell off" in result["content"], result
+    assert result["content"].startswith("ERROR"), "the model needs to see it as a failure"
+
+
+def test_an_unknown_tool_name_is_answerable_not_fatal():
+    """A model naming a tool that does not exist is a mistake it can recover from in one turn."""
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall, Usage
+    d = tempfile.mkdtemp()
+    h = make_harness(d, provider="mock", project="toolmissing", embed="hash")
+    h.max_turns = 3
+    h.memory = _RecordingMemory()
+    h.provider = _ScriptProvider([
+        Completion(tool_calls=[ToolCall("tc-3", "no_such_tool", {})], stop_reason="tool_use"),
+        Completion(text="used a real one instead", stop_reason="end_turn",
+                   usage=Usage(input_tokens=5)),
+    ])
+    res = h.run("toolmissing", "go")
+    assert res.error == "" and res.answer == "used a real one instead"
+    result = _tool_result_for(res, "tc-3")
+    assert result is not None and "no such tool" in result["content"], result
+
+
 def test_loop_overflow_recovers():
     """#9: a context-overflow error triggers a one-shot shrink+retry; the run recovers instead of
     dying. Exactly one kind='overflow' turn."""
