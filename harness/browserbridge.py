@@ -109,6 +109,17 @@ def _hand_token_to_extension():
     Best effort: an installed collie may sit in a read-only place, and then the popup's paste box is
     still there. Never fatal.
     """
+    # Not inside the shipped app. `browser_ext/` lives in the bundle, and a signed
+    # bundle is sealed — this write would invalidate the signature and the app
+    # would stop opening some day with nothing pointing back at the write that did
+    # it. The docstring above already allowed for a read-only install; the case it
+    # did not allow for is the one where the write *succeeds*.
+    #
+    # The popup's paste box is the path there, and it is the only path there: the
+    # token is printed by `collie browser-bridge --token`.
+    from . import plat as _plat
+    if _plat.in_app_bundle():
+        return False
     try:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext", "token.txt")
         current = ""
@@ -437,6 +448,14 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
     if managed_browser:
         _run_managed_browser(port, headed=headed)   # blocks: holds the browser open (main thread)
     else:
+        # A path into a translocated copy is worse than no path: it works when they
+        # try it and is gone at the next launch, and nothing connects the two.
+        from . import plat as _plat
+        if _plat.translocated():
+            print("  ⚠ Collie is running from a temporary copy macOS made because it was opened\n"
+                  "    straight from the disk image or from Downloads. Anything below points into\n"
+                  "    that copy and disappears when Collie quits.\n"
+                  "    Move Collie.app into your Applications folder and open it from there.")
         print("  load harness/browser_ext/ in Chrome (or run with --browser for an auto browser), "
               "then run collie with COLLIE_BROWSER_BRIDGE=1", flush=True)
         try:

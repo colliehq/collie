@@ -299,6 +299,27 @@ sys.exit(1 if bad else 0)
 SMOKE
 fi
 
+# ── notarise and staple the APP, before the dmg is built around it ───────────────────────────────
+# Notarising only the dmg leaves the app inside it unstapled. That passes every check you are likely
+# to run — `spctl -a -t exec` on a networked Mac says "Notarized Developer ID", because Gatekeeper
+# falls back to asking Apple when there is no ticket on disk. The machine it fails on is the one that
+# is offline the first time somebody drags the app across, and it fails by refusing to launch, with
+# nothing to say why. `xcrun stapler validate Collie.app` on our own 0.20.24 dmg answers
+# "does not have a ticket stapled to it", so this has been shipping.
+#
+# The order is the whole point: staple the app FIRST, then build the dmg around the stapled app.
+# Stapling the app afterwards would modify it inside a dmg that had already been notarised.
+if [ -n "$NOTARY_PROFILE" ] && [ "$SIGN" = "1" ]; then
+  echo "  notarising the app (profile: $NOTARY_PROFILE) …"
+  APP_ZIP="$(mktemp -d)/Collie.zip"
+  # ditto -c -k --keepParent: the only archiver whose output notarytool accepts for a bundle.
+  ditto -c -k --keepParent "$APP" "$APP_ZIP"
+  xcrun notarytool submit "$APP_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP" || { echo "::error::the app did not staple"; exit 1; }
+  echo "  app stapled."
+fi
+
 # ── dmg ──────────────────────────────────────────────────────────────────────────────────────────
 if [ "$DMG" = "1" ]; then
   DMG_PATH="installer/Output/Collie-$VERSION.dmg"
