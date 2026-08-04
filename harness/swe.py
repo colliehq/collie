@@ -278,6 +278,46 @@ _CRITIC_SYS = (
     "exact file/case/behavior that is wrong or missing>`. Do not end mid-investigation.")
 
 
+def critic_backend(provider, model):
+    """(provider, model) the critic should run on — a SECOND model when asked for.
+
+    The critic is justified by "a separate read does not share the model's blind spot", but it has
+    been the same model reading twice, which shares a good deal of it: a misread of the issue tends
+    to repeat. COLLIE_CRITIC_PROVIDER / COLLIE_CRITIC_MODEL make the reviewer genuinely independent.
+
+    A model name belongs to ITS provider, so naming a provider without a model falls back to that
+    provider's default rather than carrying e.g. `deepseek-chat` into an Anthropic request.
+    """
+    want_provider = (os.environ.get("COLLIE_CRITIC_PROVIDER") or "").strip()
+    want_model = (os.environ.get("COLLIE_CRITIC_MODEL") or "").strip()
+    if not want_provider and not want_model:
+        return provider, model
+    switched = bool(want_provider) and want_provider != provider
+    return (want_provider or provider,
+            want_model or (None if switched else model))
+
+
+def _critic_provider(provider, model):
+    """Build the critic's provider, or None to reuse the author's.
+
+    Deliberately raises rather than falling back when an explicitly requested critic backend cannot
+    be built. Silently reviewing with the author's own model would look exactly like a working
+    cross-model critic and would quietly turn a measurement into a tautology.
+    """
+    from .providers import make_provider
+    critic_p, critic_m = critic_backend(provider, model)
+    if (critic_p, critic_m) == (provider, model):
+        return None
+    try:
+        return make_provider(critic_p, critic_m)
+    except Exception as exc:
+        raise RuntimeError(
+            "critic backend %s/%s could not be built: %s. Fix it or unset "
+            "COLLIE_CRITIC_PROVIDER/COLLIE_CRITIC_MODEL — falling back to the author's own model "
+            "would report a cross-model critic that never happened." %
+            (critic_p, critic_m or "(default)", exc)) from exc
+
+
 def _spawn_investigative_critic(provider, model):
     """Return critic(issue, diff, cwd) -> (ok, objection): a FRESH read-only agent that investigates
     the codebase itself (grep/read/code_search/run_in_env) — catches under-coverage and call-site
@@ -388,6 +428,9 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         h.critic = True
         h.critic_issue = problem_statement
         h.critic_max = int(os.environ.get("COLLIE_CRITIC_ROUNDS", "2"))
+        # Independence is only as real as the reader. Applies to the DEFAULT shallow critic too,
+        # which is the one that empirically wins — not just the opt-in investigative path below.
+        h.critic_provider = _critic_provider(provider, model)
         # Default = SHALLOW one-shot critic (issue+diff, forced to state ONE concrete concern). It
         # EMPIRICALLY beat the investigative version: the tool-equipped critic wanders and often ends
         # mid-investigation without a verdict, MISSING logic holes the forced-concise critic catches
@@ -395,7 +438,7 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         # hurt sharpness here. Investigative is opt-in (COLLIE_CRITIC_DEEP=1) — neither catches
         # under-coverage (pygraphistry), which stays the ceiling.
         if os.environ.get("COLLIE_CRITIC_DEEP") in ("1", "true", "on"):
-            h.critic_fn = _spawn_investigative_critic(provider, model)
+            h.critic_fn = _spawn_investigative_critic(*critic_backend(provider, model))
     h.force_edit = True                          # converge to an edit (no empty patches)
     # PLAN-FIRST (opt-in, COLLIE_PLAN_FIRST=1): commit the full multi-file SCOPE before
     # editing. Hypothesis (audit found DeepSeek fixes the primary file then stops even when

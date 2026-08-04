@@ -244,6 +244,10 @@ class Harness:
         self.critic_issue = ""     # the issue text handed to the critic
         self.critic_max = 2        # bounded critic->repair rounds
         self.critic_fn = None      # optional INVESTIGATIVE critic (fn(issue,diff,cwd)->(ok,objection))
+        self.critic_provider = None  # optional SECOND MODEL for the critic; None -> self.provider.
+                                   # The critic's whole claim is that a separate read does not share
+                                   # the author's blind spot — which only fully holds once the reader
+                                   # is a different model. See swe._critic_provider.
                                    # — a fresh agent WITH read-only tools that inspects the codebase
                                    # itself (catches under-coverage a diff-only review can't). Falls
                                    # back to the one-shot _run_critic when None.
@@ -301,7 +305,8 @@ class Harness:
         msg = "ISSUE:\n%s\n\nCANDIDATE DIFF:\n%s" % (str(issue)[:6000], str(diff)[:9000])
         self._critic_usage = None
         try:
-            comp = self.provider.complete(sysp, [{"role": "user", "content": msg}], [])
+            reviewer = self.critic_provider or self.provider
+            comp = reviewer.complete(sysp, [{"role": "user", "content": msg}], [])
             self._critic_usage = comp.usage   # the caller folds this into the run's token/$ total —
             text = (comp.text or "").strip()   # a critic call spends real tokens; the receipt must show them
         except Exception:

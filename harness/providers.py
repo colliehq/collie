@@ -633,6 +633,42 @@ def _read_oauth_token():
     return (claude_credentials().get("claudeAiOauth") or {}).get("accessToken", "")
 
 
+# Collie READS the token Claude Code mints and deliberately never refreshes it: refreshing means
+# writing the credential store that Claude Code is also writing, and two processes racing over one
+# OAuth token is a worse failure than asking the user to run `claude`. (The Codex path is the other
+# way round — see codex_oauth._refresh — because there the CLI hands us the refresh token and
+# expects whoever uses it to write auth.json back.)
+#
+# The consequence is that this token goes stale on its own if Claude Code is not being used, and
+# without a check the only symptom is a bare 401 from the API that reads like an outage.
+OAUTH_EXPIRED_HINT = (
+    "Claude subscription token has expired. Collie reads the token Claude Code mints and does not "
+    "refresh it (that would mean two processes writing one credential). Run `claude` once to renew "
+    "it, then retry — or set CLAUDE_CODE_OAUTH_TOKEN.")
+
+
+def _oauth_expiry_ms() -> int:
+    """Claude Code's ``expiresAt`` in epoch milliseconds, or 0 for "no opinion".
+
+    0 is returned for an env-supplied token (it carries no expiry) and for a credential blob that
+    has no such field. Only a value that has demonstrably passed may block a request; a missing one
+    never may, or an older credential format would lock a working login out.
+    """
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return 0
+    raw = (claude_credentials().get("claudeAiOauth") or {}).get("expiresAt")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def claude_oauth_expired(skew_s: int = 60) -> bool:
+    """Whether the subscription token is past (or within ``skew_s`` of) its stated expiry."""
+    expires_at = _oauth_expiry_ms()
+    return bool(expires_at) and (time.time() + skew_s) * 1000 >= expires_at
+
+
 class AnthropicOAuthProvider(AnthropicProvider):
     name = "anthropic-oauth"
 
@@ -646,8 +682,15 @@ class AnthropicOAuthProvider(AnthropicProvider):
         if not _read_oauth_token():
             raise RuntimeError("no Claude OAuth token (run `claude` login or set "
                                "CLAUDE_CODE_OAUTH_TOKEN) — needed for --provider anthropic-oauth")
+        if claude_oauth_expired():
+            raise RuntimeError(OAUTH_EXPIRED_HINT)
 
     def complete(self, system: str, messages: list, tool_schemas: list, on_text=None) -> Completion:
+        # Re-read per call so a refresh Claude Code performs mid-run is picked up without a restart
+        # — and re-check expiry for the same reason, since a long run can outlive the token it
+        # started with. Naming the real cause beats letting the request come back a bare 401.
+        if claude_oauth_expired():
+            raise RuntimeError(OAUTH_EXPIRED_HINT)
         token = _read_oauth_token()
         anthropic_msgs = self._to_anthropic(messages)
         # cache the conversation prefix too (3rd breakpoint here: _CC_SYSTEM chains into the collie
