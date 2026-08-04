@@ -3,29 +3,71 @@
 // real, logged-in session. The continuous /poll fetch keeps the MV3 worker alive between commands.
 const BRIDGE = "http://127.0.0.1:8677";
 
-// The dedicated "collie tab" — all browser_* actions run here so we never hijack the tab the
-// user is actually looking at. Created on the first `open` and reused; auto-recreated if closed.
-// Keep its id in session storage too: MV3 service workers are suspended and restarted regularly,
-// so an in-memory id alone would make the next command fall back to the user's active tab again.
-let collieTabId = null;
+// --- spaces: one lane of work, one tab -----------------------------------------------------------
+// Every browser_* command names a SPACE (default "default") and each space owns its own tab, so two
+// tasks driving this browser at the same time cannot end up fighting over one page.
+//
+// The other half is OWNERSHIP, and it is why this replaced a single remembered tab id. The previous
+// resolver, when it had no tab of its own, ADOPTED whatever tab the user was looking at — which is
+// how a run once walked into the middle of a half-filled job application in the user's own window
+// and navigated it away. A tab collie did not open is never taken silently now: `open` creates its
+// own tab unless the caller passes adopt:true, and `attach` is the explicit "use the tab I am
+// looking at". Cookies are per-profile, so collie's own tab is logged in exactly like the user's —
+// adopting was only ever about reusing their view, never about the session.
+//
+// What a space is NOT: a cookie jar. A Chrome extension cannot partition storage within a profile
+// (that needs a separate profile, which would not be logged in), so spaces isolate TABS, not
+// identity. Two spaces on the same site share one login. Say so rather than implying containers.
+//
+// Ids live in session storage as well as memory: MV3 suspends this worker regularly, and an
+// in-memory map alone would forget every space on the very next command.
+const DEFAULT_SPACE = "default";
 
-async function rememberedTabId() {
-  if (collieTabId != null) return collieTabId;
-  try {
-    const saved = await chrome.storage.session.get("collieTabId");
-    collieTabId = saved.collieTabId == null ? null : saved.collieTabId;
-  } catch (e) {}
-  return collieTabId;
+// The space the command in flight belongs to, so the injected helpers below resolve the right tab
+// without every one of them taking an extra argument. Safe because the poll loop runs commands
+// strictly one at a time (one fetched, `handle` awaited, only then the next fetch).
+let curSpace = DEFAULT_SPACE;
+
+let spaces = null;                       // {name: {tabId, owned, opened}}
+
+function spaceOf(cmd) {
+  const s = cmd && typeof cmd.space === "string" ? cmd.space.trim() : "";
+  return s ? s.slice(0, 40) : DEFAULT_SPACE;
 }
 
-async function rememberTabId(id) {
-  collieTabId = id;
-  try { await chrome.storage.session.set({ collieTabId: id }); } catch (e) {}
+async function saveSpaces() {
+  try { await chrome.storage.session.set({ collieSpaces: spaces || {} }); } catch (e) {}
 }
 
-async function forgetTabId() {
-  collieTabId = null;
-  try { await chrome.storage.session.remove("collieTabId"); } catch (e) {}
+async function loadSpaces() {
+  if (spaces) return spaces;
+  let saved = {};
+  try { saved = await chrome.storage.session.get(["collieSpaces", "collieTabId"]); } catch (e) {}
+  spaces = (saved.collieSpaces && typeof saved.collieSpaces === "object") ? saved.collieSpaces : {};
+  // Upgrade in place: a bridge that was already driving a tab keeps driving THAT tab after the
+  // extension reloads into this version, instead of quietly opening a second one beside it.
+  if (!spaces[DEFAULT_SPACE] && saved.collieTabId != null) {
+    spaces[DEFAULT_SPACE] = { tabId: saved.collieTabId, owned: false, adopted: true };
+    await saveSpaces();
+  }
+  return spaces;
+}
+
+async function getSpace(name) {
+  const all = await loadSpaces();
+  return all[name] || null;
+}
+
+async function setSpace(name, rec) {
+  const all = await loadSpaces();
+  all[name] = rec;
+  await saveSpaces();
+}
+
+async function dropSpace(name) {
+  const all = await loadSpaces();
+  delete all[name];
+  await saveSpaces();
 }
 
 async function tabExists(id) {
@@ -33,42 +75,38 @@ async function tabExists(id) {
   try { await chrome.tabs.get(id); return true; } catch (e) { return false; }
 }
 
-// Resolve the tab commands run in. NEVER fails: adopted tab -> a real tab the user already has ->
-// a fresh one. Failing closed here is what produced "no active tab", which the model then reported
-// to the user as "the bridge won't connect" while the bridge was perfectly healthy.
-async function targetTab(create) {
-  const savedId = await rememberedTabId();
-  if (await tabExists(savedId)) {
-    return await chrome.tabs.get(savedId);
+// Is this tab already spoken for by ANOTHER space? Adopting one twice would recreate the collision
+// spaces exist to prevent, so the caller is told rather than quietly given a shared tab.
+async function spaceHolding(tabId, except) {
+  const all = await loadSpaces();
+  for (const name of Object.keys(all)) {
+    if (name !== except && all[name] && all[name].tabId === tabId) return name;
   }
-  if (savedId != null) await forgetTabId();
+  return null;
+}
 
-  // 1) the tab the user is actually looking at — it carries their logins, and "just use the tab I
-  //    already have open" is the single most common ask.
-  try {
-    const found = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    const act = found && found[0];
-    if (act && /^https?:/i.test(act.url || "")) {
-      await rememberTabId(act.id);
-      return act;
-    }
-  } catch (e) {}
-
-  // 2) any other ordinary web tab (the active one may be chrome://extensions — e.g. right after
-  //    reloading this extension — which cannot be scripted).
-  try {
-    const web = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
-    if (web && web.length) {
-      const t = web.find((x) => x.active) || web[0];
-      await rememberTabId(t.id);
-      return t;
-    }
-  } catch (e) {}
-
-  // 3) nothing usable open at all -> make one. Start at about:blank so the navigation listener is
-  //    installed before the target page loads; active:false keeps the user's Collie UI in front.
-  const fresh = await chrome.tabs.create({ url: "about:blank", active: false });
-  await rememberTabId(fresh.id);
+// Resolve the tab this space works in. Returns null when the space has no tab and create is false —
+// deliberately: the alternative (fall back to whatever the user has in front of them) is the exact
+// behaviour that made collie type into someone else's page. Callers turn null into NO_TAB, which
+// tells the model to open a page or attach a tab explicitly.
+async function targetTab(create, opts) {
+  const name = (opts && opts.space) || curSpace;
+  const rec = await getSpace(name);
+  if (rec && await tabExists(rec.tabId)) return await chrome.tabs.get(rec.tabId);
+  if (rec) await dropSpace(name);
+  if (!create) return null;
+  // A space's own tab, opened in the background: about:blank first so the navigation listener is
+  // installed before the target page loads, active:false so the user keeps looking at what they
+  // were looking at. A named space that asked for its own window gets one, unfocused.
+  let fresh;
+  if (opts && opts.window) {
+    const win = await chrome.windows.create({ url: "about:blank", focused: false });
+    fresh = win.tabs && win.tabs[0];
+    if (!fresh) fresh = await chrome.tabs.create({ url: "about:blank", active: false });
+  } else {
+    fresh = await chrome.tabs.create({ url: "about:blank", active: false });
+  }
+  await setSpace(name, { tabId: fresh.id, owned: true });
   return fresh;
 }
 
@@ -76,40 +114,51 @@ async function activeTab() {
   return await targetTab(false);
 }
 
-// If the user ALREADY has that site open, adopt THAT tab instead of opening a second one. This is
-// what people mean by "just use the tab I've got open" — and it lands directly on the view they are
-// actually logged into. (Cookies are per-profile, so a fresh tab would be authenticated too; the
-// point of adopting is to reuse their page and not litter the window with duplicates.)
-async function adoptTabForUrl(url) {
+// Adopt a tab the user already has on that site — ONLY when the caller explicitly asked for it
+// (browser_open adopt:true / browser_attach). Lands directly on the view they are looking at, which
+// is sometimes exactly the point ("finish what I started in this tab") and is never the default.
+async function adoptTabForUrl(url, space) {
   let origin;
   try { origin = new URL(url).origin; } catch (e) { return null; }
   let tabs = [];
   try { tabs = await chrome.tabs.query({ url: origin + "/*" }); } catch (e) { return null; }
   if (!tabs || !tabs.length) return null;
   const tab = tabs.find((t) => t.active) || tabs[0];
-  await rememberTabId(tab.id);
+  const held = await spaceHolding(tab.id, space);
+  if (held) return { error: "that tab is already space '" + held + "'s — use space:'" + held +
+                            "' to work in it, or let this space open its own" };
+  await setSpace(space, { tabId: tab.id, owned: false, adopted: true });
   return tab;
 }
 
-// Forget the collie tab if the user closes it, so the next `open` makes a fresh one.
+// Forget a space's tab when it closes, so the next command in that space opens a fresh one.
 chrome.tabs.onRemoved.addListener((id) => {
   if (id === dbgTab) dbgTab = null;   // Chrome auto-detaches the debugger on close; drop our handle too
-  rememberedTabId().then((savedId) => { if (id === savedId) return forgetTabId(); });
+  loadSpaces().then((all) => {
+    let changed = false;
+    for (const name of Object.keys(all)) {
+      if (all[name] && all[name].tabId === id) { delete all[name]; changed = true; }
+    }
+    if (changed) return saveSpaces();
+  });
 });
 
-function waitComplete(tabId, timeoutMs = 20000) {
-  return new Promise((resolve) => {
-    const finish = () => { chrome.tabs.onUpdated.removeListener(listener); clearTimeout(t); resolve(); };
-    const listener = (id, info) => { if (id === tabId && info.status === "complete") finish(); };
-    chrome.tabs.onUpdated.addListener(listener);
-    const t = setTimeout(finish, timeoutMs);
-  });
-}
-
+// Wait for THIS navigation to arrive — not merely for the next "complete" event. A tab collie just
+// created is still finishing about:blank, so its complete fires immediately after the update call,
+// and scripting the tab right then fails with `Cannot access contents of url "about:blank"`: the
+// page the caller asked for has not loaded yet, and the very first read of it comes back an error.
+// (That was invisible while collie mostly took over a tab the user already had on the site; opening
+// its own tab every time made it the normal path.)
 async function navigateCollieTab(tabId, url) {
-  const complete = waitComplete(tabId);
   await chrome.tabs.update(tabId, { url });
-  await complete;
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    let t = null;
+    try { t = await chrome.tabs.get(tabId); } catch (e) { break; }   // tab closed under us
+    if (t && t.status === "complete" && t.url && t.url !== "about:blank") break;
+    if (Date.now() > deadline) break;
+    await sleep(120);
+  }
   await ensureConsoleCapture(tabId);   // arm console capture on the fresh document (load logs onward)
   return await chrome.tabs.get(tabId);
 }
@@ -351,24 +400,44 @@ function pageUpload(selector, files, ref) {
 }
 
 // --- ref-indexed accessibility snapshot (MAIN world) ---------------------------------------------
-// A compact "[e5] button \"Add to cart\"" list of the visible, interactive elements — the view the
-// model acts on instead of guessing CSS selectors. Built in injected JS (NOT CDP getFullAXTree) so
-// there is no extra debugger surface and it composes with the existing trusted-click path: each kept
-// element is stashed on window.__collieRefs (a real element handle), and a later click/type by ref
-// pulls THAT element back and clicks its live getBoundingClientRect centre through CDP — a real,
-// isTrusted click. Traverses shadow roots: open ones off el.shadowRoot, closed ones via the WeakMap
-// shadow.js records at document_start. Cross-origin iframes are unreachable from page JS (accepted
-// limit — a CDP OOPIF path is the documented follow-up). Self-contained.
-function pageSnapshot(maxN) {
-  const CAP = maxN || 200;
-  const out = [];
+// A compact "[e5] button \"Add to cart\"" view of the page — what the model acts on instead of
+// guessing CSS selectors. Built in injected JS (NOT CDP getFullAXTree) so there is no extra debugger
+// surface and it composes with the existing trusted-click path: each kept element is stashed on
+// window.__collieRefs (a real element handle), and a later click/type by ref pulls THAT element back
+// and clicks its live getBoundingClientRect centre through CDP — a real, isTrusted click.
+//
+// It is a TREE, not a flat list, and that is what makes it worth reading instead of the page text:
+// headings and landmarks are kept as unnumbered context lines around the controls nested under them,
+// so one snapshot answers both "what is this page" and "what can I press" — the pair of calls
+// (snapshot + read) it used to take, at a fraction of the tokens. Three more economies: runs of
+// identical siblings (a feed's 30 "Reply" links) collapse to one line while every ref stays
+// addressable; nothing off-screen-but-rendered is dropped, but when the cap bites, what survives is
+// chosen by IMPORTANCE (open dialog first, then in-viewport) rather than by document order, so a
+// just-opened modal can no longer be the part that falls off the end; and same-origin iframes are
+// walked, which they never were.
+//
+// Traverses shadow roots: open ones off el.shadowRoot, closed ones via the WeakMap shadow.js records
+// at document_start. CROSS-origin iframes are unreachable from page JS by construction — they are
+// listed, not silently skipped, and `frames:true` fetches them over CDP (see snapshotFrames).
+// Self-contained.
+function pageSnapshot(maxN, opts) {
+  const CAP = Math.max(1, maxN || 200);
+  const O = opts || {};
   const refs = (window.__collieRefs = new Map());   // fresh map each snapshot -> stale refs drop
-  let n = 0, cut = false;   // `cut`: we hit the cap, so the list below is NOT the whole page
+  const items = [];            // every candidate, before the cap is applied
+  const frames = [];           // cross-origin iframes: reachable only over CDP
+  let visited = 0, overflowed = false;
+  const VISIT_LIMIT = 30000;   // a runaway page must not hang the worker
+
   const visible = (el) => {
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
     const s = getComputedStyle(el);
     return s.visibility !== "hidden" && s.display !== "none" && s.opacity !== "0";
+  };
+  const inViewport = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
   };
   const roleOf = (el) => {
     const explicit = el.getAttribute("role");
@@ -408,30 +477,171 @@ function pageSnapshot(maxN) {
     if (el.getAttribute("tabindex") !== null && el.tabIndex >= 0) return true;
     return typeof el.onclick === "function";
   };
-  const walk = (root) => {
-    let els;
-    try { els = root.querySelectorAll("*"); } catch (e) { return; }
-    for (const el of els) {
-      if (n >= CAP) { cut = true; return; }
-      const role = roleOf(el);
-      if (role && interactive(el, role) && visible(el)) {
-        const ref = "e" + (++n);
-        refs.set(ref, el);
-        const name = nameOf(el);
-        const dis = (el.disabled || el.getAttribute("aria-disabled") === "true") ? " (disabled)" : "";
-        out.push("[" + ref + "] " + role + (name ? ' "' + name + '"' : "") + dis);
+  const LANDMARK = { dialog: "dialog", alertdialog: "dialog", form: "form", navigation: "nav",
+                     main: "main", table: "table", list: "list", listbox: "listbox", menu: "menu",
+                     tablist: "tablist", article: "article", region: "region", search: "search",
+                     banner: "banner", contentinfo: "contentinfo" };
+  const TAG_LANDMARK = { DIALOG: "dialog", FORM: "form", NAV: "nav", MAIN: "main", TABLE: "table",
+                         UL: "list", OL: "list", ARTICLE: "article", SECTION: "region",
+                         HEADER: "banner", FOOTER: "contentinfo", ASIDE: "complementary" };
+  const landmarkOf = (el) => {
+    const r = (el.getAttribute("role") || "").toLowerCase();
+    if (LANDMARK[r]) return LANDMARK[r];
+    return TAG_LANDMARK[el.tagName] || "";
+  };
+  const modalOf = (el) => {
+    const r = (el.getAttribute("role") || "").toLowerCase();
+    if (el.getAttribute("aria-modal") === "true") return true;
+    if (r === "dialog" || r === "alertdialog") return true;
+    return el.tagName === "DIALOG" && el.hasAttribute("open");
+  };
+  const headingOf = (el) => {
+    if ((el.getAttribute("role") || "").toLowerCase() === "heading") return true;
+    return /^H[1-6]$/.test(el.tagName);
+  };
+  // Text worth carrying: the element's OWN text, not its descendants' (or every ancestor would
+  // repeat the whole page). Only collected when the caller asks for text.
+  const ownText = (el) => {
+    let s = "";
+    for (const node of el.childNodes) if (node.nodeType === 3) s += node.nodeValue;
+    return s.replace(/\s+/g, " ").trim();
+  };
+  // Any element that carries its OWN text counts, not a list of "text tags": the modern web writes
+  // its prose in divs and spans, and a tag whitelist quietly lost most of what a page actually says
+  // — including the status line that tells you whether the last action worked. Because only DIRECT
+  // text children count, an ancestor never repeats what its children already said.
+  const NOT_TEXT = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, TITLE: 1, HEAD: 1, SVG: 1 };
+
+  const push = (entry) => { items.push(entry); };
+
+  const walk = (node, depth, modal) => {
+    let kids;
+    try { kids = node.children; } catch (e) { return; }
+    if (!kids) return;
+    for (const el of kids) {
+      if (visited++ > VISIT_LIMIT) { overflowed = true; return; }
+      let childDepth = depth;
+      const shown = visible(el);
+      const isModal = modal || (shown && modalOf(el));
+
+      if (shown) {
+        const role = roleOf(el);
+        if (role && interactive(el, role)) {
+          const dis = (el.disabled || el.getAttribute("aria-disabled") === "true") ? " (disabled)" : "";
+          push({ kind: "control", el, depth, modal: isModal, view: inViewport(el),
+                 role, name: nameOf(el), suffix: dis });
+        } else if (headingOf(el)) {
+          const t = (el.innerText || "").replace(/\s+/g, " ").trim().slice(0, 90);
+          if (t) push({ kind: "heading", el, depth, modal: isModal, view: inViewport(el),
+                        role: /^H[1-6]$/.test(el.tagName) ? el.tagName.toLowerCase() : "heading",
+                        name: t });
+        } else {
+          const mark = landmarkOf(el);
+          if (mark) {
+            const label = (el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 60);
+            push({ kind: "landmark", el, depth, modal: isModal, view: inViewport(el),
+                   role: isModal && mark !== "dialog" ? "dialog" : mark, name: label });
+            childDepth = depth + 1;
+          } else if (O.text && !NOT_TEXT[el.tagName]) {
+            const t = ownText(el);
+            if (t.length > 1) push({ kind: "text", el, depth, modal: isModal, view: inViewport(el),
+                                     role: "", name: t.slice(0, 200) });
+          }
+        }
       }
+
+      // An <iframe> is a document boundary. Same-origin content is walked inline (it was invisible
+      // to every previous snapshot); cross-origin content is NOT reachable from page JS at all, so
+      // it is REPORTED — a control that is genuinely there but unreachable must never read as absent.
+      if (el.tagName === "IFRAME") {
+        let doc = null;
+        try { doc = el.contentDocument; } catch (e) { doc = null; }
+        if (doc && doc.documentElement) {
+          if (shown) walk(doc.documentElement, childDepth + 1, isModal);
+        } else if (shown) {
+          frames.push({ src: (el.getAttribute("src") || "").slice(0, 200),
+                        name: el.getAttribute("name") || el.getAttribute("title") ||
+                              el.getAttribute("aria-label") || "" });
+        }
+        continue;       // an iframe's own children are its fallback content, never rendered
+      }
+
       // Open roots come off the element; closed ones are recovered from the WeakMap shadow.js
       // filled in at document_start (el.shadowRoot stays null for those, by design).
       const sub = el.shadowRoot || (window.__collieClosedRoots ? window.__collieClosedRoots.get(el) : null);
-      if (sub) walk(sub);
+      if (sub) walk(sub, childDepth, isModal);
+      walk(el, childDepth, isModal);
     }
   };
-  walk(document);
-  // Truncation must be visible. The walk is in document order, so what gets dropped is whatever
-  // sits LAST — and a dialog or modal that just opened is appended at the end of <body>. Reporting
-  // a silently-cut list as if it were the page is how a required control comes to look absent.
-  return { count: n, truncated: cut, snapshot: out.join("\n") || "(no interactive elements found)" };
+  walk(document.documentElement || document, 0, false);
+
+  // Collapse runs of identical siblings — a feed's 30 "Reply" links cost 30 lines and say one thing.
+  // Every one of them still gets a ref, so any single item stays addressable; only the repetition is
+  // dropped, and the line says which refs it covers.
+  const merged = [];
+  for (const it of items) {
+    const prev = merged[merged.length - 1];
+    if (prev && it.kind === "control" && prev.kind === "control" && prev.depth === it.depth &&
+        prev.role === it.role && prev.name === it.name && prev.suffix === it.suffix) {
+      (prev.run = prev.run || [prev.el]).push(it.el);
+      continue;
+    }
+    merged.push(Object.assign({}, it));
+  }
+
+  // The cap decides what SURVIVES, and importance beats document order. Cutting in document order is
+  // what once dropped a just-opened modal — it is appended last in the body — and reported the page
+  // as if the dialog were not there.
+  const score = (it) => (it.modal ? 0 : 2) + (it.view ? 0 : 1) +
+                        (it.kind === "control" ? 0 : it.kind === "heading" ? 0.5 : it.kind === "landmark" ? 0.6 : 1);
+  let keep = merged;
+  let dropped = 0;
+  if (merged.length > CAP) {
+    const order = merged.map((it, i) => [score(it), i]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const chosen = new Set(order.slice(0, CAP).map((p) => p[1]));
+    dropped = merged.length - chosen.size;
+    keep = merged.filter((_, i) => chosen.has(i));
+  }
+
+  // Landmarks earn their line only if something was kept inside them; a page of empty "region" and
+  // "list" headers is noise the model pays for.
+  const out = [];
+  let n = 0;
+  for (let i = 0; i < keep.length; i++) {
+    const it = keep[i];
+    if (it.kind === "landmark") {
+      let hasChild = false;
+      for (let j = i + 1; j < keep.length && keep[j].depth > it.depth; j++) {
+        if (keep[j].kind !== "landmark") { hasChild = true; break; }
+      }
+      if (!hasChild) continue;
+    }
+    const pad = "  ".repeat(Math.min(it.depth, 8));
+    if (it.kind === "control") {
+      const first = "e" + (++n);
+      refs.set(first, it.el);
+      let line = pad + "[" + first + "] " + it.role + (it.name ? ' "' + it.name + '"' : "") + it.suffix;
+      if (it.run) {
+        const ids = [first];
+        for (let k = 1; k < it.run.length; k++) { const r = "e" + (++n); refs.set(r, it.run[k]); ids.push(r); }
+        line += " ×" + it.run.length + " (identical siblings: " + ids[0] + "–" + ids[ids.length - 1] + ")";
+      }
+      out.push(line);
+    } else if (it.kind === "heading") {
+      out.push(pad + it.role + ' "' + it.name + '"');
+    } else if (it.kind === "landmark") {
+      out.push(pad + it.role + (it.name ? ' "' + it.name + '"' : ""));
+    } else {
+      out.push(pad + '"' + it.name + '"');
+    }
+  }
+  for (const f of frames) {
+    out.push("iframe (cross-origin — its contents are NOT in this list) " +
+             (f.name ? '"' + f.name + '" ' : "") + (f.src || ""));
+  }
+  return { count: n, truncated: dropped > 0 || overflowed, dropped,
+           frames: frames.length, url: location.href,
+           snapshot: out.join("\n") || "(no interactive elements found)" };
 }
 
 // Resolve a ref from the last snapshot to its live element. Shared shape with pagePoint so the
@@ -492,9 +702,40 @@ function pageValue(ref, selector) {
            tag: (el.tagName || "").toLowerCase(), editable: !!el.isContentEditable };
 }
 
+// Is it there yet? The post-condition a multi-step script waits on between steps, so a page that
+// renders asynchronously (every SPA) does not need a blind sleep long enough to cover the worst case.
+// Self-contained (injected into the PAGE).
+function pageHas(text, selector) {
+  if (selector) {
+    try { const el = document.querySelector(selector); return { found: !!el }; }
+    catch (e) { return { error: "bad selector " + selector }; }
+  }
+  const t = String(text || "").toLowerCase();
+  if (!t) return { error: "wait_for needs text or selector" };
+  const body = (document.body && document.body.innerText) || "";
+  return { found: body.toLowerCase().indexOf(t) >= 0 };
+}
+
+// Scroll the page (or an element from the last snapshot) — the step a long page needs before its
+// controls are even laid out. Self-contained (injected into the PAGE, MAIN world for refs).
+function pageScroll(to, by, ref) {
+  if (ref) {
+    const m = window.__collieRefs;
+    const el = m && m.get ? m.get(ref) : null;
+    if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+    el.scrollIntoView({ block: "center", inline: "center" });
+    return { scrolled: "to " + ref, y: window.scrollY };
+  }
+  if (to === "top") window.scrollTo(0, 0);
+  else if (to === "bottom") window.scrollTo(0, document.body ? document.body.scrollHeight : 0);
+  else window.scrollBy(0, Number(by) || Math.round(innerHeight * 0.9));
+  return { scrolled: to || ("by " + (Number(by) || Math.round(innerHeight * 0.9))), y: window.scrollY,
+           bottom: Math.abs((window.scrollY + innerHeight) - (document.body ? document.body.scrollHeight : 0)) < 4 };
+}
+
 async function exec(func, args) {
   const tab = await activeTab();
-  if (!tab) return { error: "no dedicated Collie tab — call browser_open first" };
+  if (!tab) return { error: NO_TAB };
   const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func, args });
   return res.result;
 }
@@ -557,7 +798,7 @@ async function pageEval(expr) {
 // real page globals (the default isolated world has its own console and forbids eval under MV3 CSP).
 async function execMain(func, args) {
   const tab = await activeTab();
-  if (!tab) return { error: "no dedicated Collie tab — call browser_open first" };
+  if (!tab) return { error: NO_TAB };
   const [res] = await chrome.scripting.executeScript({
     target: { tabId: tab.id }, world: "MAIN", func, args });
   return res.result;
@@ -569,8 +810,9 @@ async function ensureConsoleCapture(tabId) {
   } catch (e) { /* chrome:// pages etc. can't be scripted; console just stays empty there */ }
 }
 
-const NO_TAB = "no collie tab yet — call browser_open(url) first. It opens in YOUR real, logged-in " +
-  "browser (and adopts a tab you already have on that site), so your sessions apply.";
+const NO_TAB = "this space has no tab yet — call browser_open(url) first. It opens a tab of collie's " +
+  "own in YOUR real browser, so your logins apply without touching the tabs you are using. To work " +
+  "in a page you already have open, hand it over deliberately with browser_tabs(action='attach').";
 
 async function getConsole(clear) {
   const tab = await activeTab();
@@ -658,6 +900,8 @@ function dbgDetach(tabId) {
 let dbgTab = null;
 chrome.debugger.onDetach.addListener((src, reason) => {
   if (src && src.tabId === dbgTab) dbgTab = null;
+  // Every child session died with the attachment; keeping their ids would hand out dead handles.
+  if (src && src.tabId != null) frameSessions.delete(src.tabId);
   if (reason === "canceled_by_user") { try { chrome.storage.local.set({ trustedInput: false }); } catch (e) {} }
 });
 async function ensureAttached(tabId) {
@@ -667,9 +911,316 @@ async function ensureAttached(tabId) {
   dbgTab = tabId;
 }
 
+// --- cross-origin iframes (OOPIF) over CDP -------------------------------------------------------
+// Page JS cannot see inside a cross-origin iframe — same-origin policy, and no extension permission
+// changes that. So an embedded checkout, a payment field, a booking widget, a Stripe/Recaptcha frame
+// were invisible to every snapshot collie has ever taken, and the model was told there was no such
+// control: indistinguishable from the control not existing. CDP is the way in — each out-of-process
+// frame is its own TARGET, and evaluating in that target's session is the only route.
+//
+// Cost is the debugger banner, so this is OPT-IN per call (frames:true) and detaches afterwards
+// unless the trusted-input path was already holding the session. Refs from a frame are tagged
+// `f1e7`, and clicking one is translated back into top-level viewport coordinates so it can still be
+// a real trusted click; when the translation is not available it falls back to a synthetic click IN
+// the frame and says which of the two it did — the same "never regress below synthetic, never lie
+// about it" rule the rest of this file follows.
+// Sessions are remembered for as long as the attachment that owns them lives, NOT only while a
+// collector happens to be listening. `Target.setAutoAttach` announces a frame ONCE per connection;
+// asking a second time is silent because the child is already attached — so a collector that only
+// counts freshly-fired events sees the frames on the first call and an empty page on every call
+// after it ("frame f1 is no longer on the page", while the frame sat there the whole time). The map
+// is emptied when the debugger detaches, which is exactly when those session ids stop being valid.
+const frameSessions = new Map();       // tabId -> Map(targetId -> {sessionId, targetId, url})
+let frameIndex = null;                 // { tabId, frames: [{tag, sessionId, targetId, url}] }
+
+chrome.debugger.onEvent.addListener((src, method, params) => {
+  if (!src || src.tabId == null || !params) return;
+  if (method === "Target.attachedToTarget" && params.sessionId) {
+    const info = params.targetInfo || {};
+    if (info.type !== "iframe") return;
+    let m = frameSessions.get(src.tabId);
+    if (!m) { m = new Map(); frameSessions.set(src.tabId, m); }
+    // Keyed by TARGET, so a frame that re-attaches replaces its dead session instead of sitting
+    // beside it and being found first.
+    m.set(info.targetId, { sessionId: params.sessionId, targetId: info.targetId, url: info.url || "" });
+  } else if (method === "Target.detachedFromTarget" && params.sessionId) {
+    const m = frameSessions.get(src.tabId);
+    if (!m) return;
+    for (const [tid, s] of m) if (s.sessionId === params.sessionId) m.delete(tid);
+  }
+});
+
+// Send a command to a CHILD session (an OOPIF) rather than the tab's root session. `sessionId` on
+// the debuggee is what makes the flat protocol usable from an extension; a Chrome too old to know
+// the field rejects the call, and we report that rather than pretending the frame is empty.
+function dbgSendSession(tabId, sessionId, method, params) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand({ tabId, sessionId }, method, params || {}, (res) => {
+      const e = chrome.runtime.lastError;
+      if (e) reject(new Error(e.message)); else resolve(res);
+    });
+  });
+}
+
+async function frameEval(tabId, sessionId, expression) {
+  const r = await dbgSendSession(tabId, sessionId, "Runtime.evaluate",
+                                 { expression, returnByValue: true, awaitPromise: true });
+  if (r && r.exceptionDetails)
+    throw new Error((r.exceptionDetails.exception && r.exceptionDetails.exception.description) ||
+                    r.exceptionDetails.text || "frame eval failed");
+  return r && r.result ? r.result.value : undefined;
+}
+
+// Turn a self-contained page function into an expression CDP can evaluate inside a frame. Same trick
+// the injected paths use — these functions may not reference anything in extension scope.
+function asCall(fn, args) {
+  return "(" + fn.toString() + ").apply(null," + JSON.stringify(args || []) + ")";
+}
+
+async function collectFrameSessions(tabId, waitMs) {
+  try {
+    // flatten:true is what delivers child sessions on this connection instead of a separate socket.
+    await dbgSend(tabId, "Target.setAutoAttach",
+                  { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+    await new Promise((r) => setTimeout(r, waitMs || 400));   // attachedToTarget arrives async
+  } catch (e) { /* report through the empty list: the caller says "no frames" rather than throwing */ }
+  return [...(frameSessions.get(tabId) || new Map()).values()];
+}
+
+// Where the frame sits in the TOP-level viewport, so a click inside it can be placed by the same
+// CDP Input path as everything else. The owning <iframe> element lives in the parent document, which
+// page JS can see even when the content is off-limits — but going through CDP keeps it in one place.
+// Injected into the PARENT document (MAIN world): where does that <iframe> sit on screen? The parent
+// can see the iframe ELEMENT perfectly well — same-origin policy hides the frame's CONTENT, not the
+// box it occupies — so this is all it takes to turn a point inside the frame into a page coordinate.
+// Scrolls the frame into view first, because a click can only be placed inside the viewport.
+// Self-contained (injected).
+function pageFrameBox(src, nth) {
+  const all = [...document.querySelectorAll("iframe")];
+  let list = src ? all.filter((f) => f.src === src || f.getAttribute("src") === src) : all;
+  if (!list.length) list = all;
+  const el = list[Math.min(nth || 0, list.length - 1)];
+  if (!el) return { error: "no <iframe> for " + (src || "(any)") };
+  let r = el.getBoundingClientRect();
+  const onScreen = () => r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+  if (!onScreen()) { el.scrollIntoView({ block: "center", inline: "center" }); r = el.getBoundingClientRect(); }
+  // Frame coordinates start INSIDE the border and padding; skipping that shifts every click by the
+  // border width, which on a 1px-bordered payment frame is enough to miss a small control.
+  const cs = getComputedStyle(el);
+  const num = (v) => parseFloat(v) || 0;
+  return { x: r.left + num(cs.borderLeftWidth) + num(cs.paddingLeft),
+           y: r.top + num(cs.borderTopWidth) + num(cs.paddingTop),
+           inView: onScreen() };
+}
+
+// Where the frame sits in the TOP-level viewport, so a click inside it can be placed by the same CDP
+// Input path as everything else.
+//
+// NOT via CDP: `Page.getFrameOwner` is one of the methods chrome.debugger does not expose to
+// extensions at all ("'Page.getFrameOwner' wasn't found", -32601), and asking for it fails in a way
+// that looks exactly like "this frame has no position" — which silently downgraded every click
+// inside a cross-origin frame to a synthetic one. The parent document knows the answer anyway.
+async function frameOffset(tabId, url, nth) {
+  try {
+    const box = await execMain(pageFrameBox, [url || "", nth || 0]);
+    if (!box || box.error) return { error: (box && box.error) || "could not measure the frame" };
+    if (!box.inView) return { error: "the frame is off-screen even after scrolling to it" };
+    return box;
+  } catch (e) { return { error: String((e && e.message) || e) }; }
+}
+
+// Run `fn(sessions)` with the tab's OOPIFs attached, then put the debugger back the way we found it.
+async function withFrames(tabId, fn) {
+  const held = dbgTab === tabId;                 // the trusted-input path owns a persistent session
+  let attached = held;
+  if (!held) {
+    try {
+      const targets = await new Promise((r) => chrome.debugger.getTargets((t) => r(t || [])));
+      attached = targets.some((t) => t.tabId === tabId && t.attached);
+    } catch (e) {}
+    if (!attached) { await dbgAttach(tabId); }
+  }
+  try {
+    return await fn(await collectFrameSessions(tabId));
+  } finally {
+    if (!held && !attached) {
+      // Drop the handle too if the work inside took a persistent session out on this tab: leaving
+      // dbgTab pointing at a detached tab makes the next ensureAttached a no-op, and every trusted
+      // click after that fails on a session that is not there.
+      if (dbgTab === tabId) dbgTab = null;
+      try { await dbgDetach(tabId); } catch (e) {}
+    }
+  }
+}
+
+function splitFrameRef(ref) {
+  const m = /^(f\d+)(e\d+)$/.exec(String(ref || ""));
+  return m ? { tag: m[1], ref: m[2] } : null;
+}
+
+function lookupFrame(tabId, tag) {
+  if (!frameIndex || frameIndex.tabId !== tabId) return null;
+  return frameIndex.frames.find((f) => f.tag === tag) || null;
+}
+
+// Snapshot every cross-origin frame in the tab, tagging each frame's refs so they stay addressable
+// (`f2e5` = the fifth control of the second frame).
+async function snapshotFrames(tabId, max, opts) {
+  return await withFrames(tabId, async (sessions) => {
+    const frames = [];
+    const blocks = [];
+    for (let i = 0; i < sessions.length; i++) {
+      const s = sessions[i];
+      const tag = "f" + (i + 1);
+      let data = null, err = "";
+      try {
+        data = await frameEval(tabId, s.sessionId, asCall(pageSnapshot, [max || 200, opts || {}]));
+      } catch (e) {
+        err = String((e && e.message) || e);
+      }
+      // How many earlier frames share this url — that is which <iframe> element it is in the parent
+      // when a page embeds the same widget twice.
+      const nth = frames.filter((f) => f.url === s.url).length;
+      frames.push({ tag, sessionId: s.sessionId, targetId: s.targetId, url: s.url, nth });
+      if (data && data.snapshot) {
+        const body = String(data.snapshot)
+          .replace(/\[e(\d+)\]/g, "[" + tag + "e$1]")
+          .replace(/siblings: e(\d+)–e(\d+)/g, "siblings: " + tag + "e$1–" + tag + "e$2");
+        blocks.push("── " + tag + " (cross-origin iframe) " + (s.url || "") + "\n" + body);
+      } else {
+        blocks.push("── " + tag + " (cross-origin iframe) " + (s.url || "") + "\n" +
+                    "  (unreadable: " + (err || "no content") + ")");
+      }
+    }
+    frameIndex = { tabId, frames };
+    return { frames: frames.length, snapshot: blocks.join("\n") };
+  });
+}
+
+// Click/type a `f1e7` ref: resolve the element inside its frame, then place a REAL click at the
+// frame's offset when the geometry is available, else act synthetically inside the frame.
+async function frameActRef(tabId, tag, ref, kind, text, submit) {
+  const fr = lookupFrame(tabId, tag);
+  if (!fr) return { error: "no frame " + tag + " on this tab — take a browser_snapshot with frames:true first" };
+  const tab = await activeTab();
+  return await withFrames(tabId, async (sessions) => {
+    // Re-resolve the session EVERY time. A session id dies with the debugger attachment, and this
+    // path deliberately detaches after each use, so the id the snapshot recorded is already stale by
+    // the time anyone clicks something ("Session with given id not found"). The frame's TARGET id
+    // survives, so that is what identifies it across attachments; its url is the fallback.
+    const live = sessions.find((s) => s.targetId === fr.targetId) ||
+                 sessions.find((s) => s.url && s.url === fr.url);
+    if (!live)
+      return { error: "frame " + tag + " is no longer on the page (it navigated or was removed) — " +
+                      "re-run browser_snapshot with frames:true" };
+    const sid = live.sessionId;
+    let pt = null;
+    try { pt = await frameEval(tabId, sid, asCall(pagePointRef, [ref])); }
+    catch (e) { return { error: "frame " + tag + " is unreachable: " + String((e && e.message) || e) }; }
+    if (!pt || pt.error) return pt || { error: "no element for ref " + tag + ref };
+    // Same rule as the top-level paths: CDP input never reaches a background tab, so a "real" click
+    // into a frame is only real if the tab is in front.
+    const focused = tab ? await focusForTrusted(tab) : false;
+    const geom = (pt.inView && focused) ? await frameOffset(tabId, live.url, fr.nth || 0) : null;
+    const off = geom && !geom.error ? geom : null;
+    if (off) {
+      const x = off.x + pt.x, y = off.y + pt.y;
+      try {
+        await ensureAttached(tabId);
+        const b = { x, y, button: "left" };
+        await dbgSend(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, buttons: 0 });
+        await dbgSend(tabId, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
+        await dbgSend(tabId, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
+        if (kind === "type") {
+          await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+          await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+          await dbgSend(tabId, "Input.insertText", { text: text || "" });
+          if (submit) {
+            await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+            await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+          }
+          const back = await frameEval(tabId, sid, asCall(pageValue, [ref, ""]));
+          const want = String(text || "").trim().slice(0, 60);
+          return { typed: String(text || "").slice(0, 40), trusted: true, frame: tag,
+                   value: String((back && back.value) || "").slice(0, 120),
+                   landed: !want || String((back && back.value) || "").indexOf(want) >= 0 };
+        }
+        return { clicked: pt.label, trusted: true, frame: tag };
+      } catch (e) {
+        if (dbgTab === tabId) dbgTab = null;   // fall through to the synthetic path below
+      }
+    }
+    // No usable geometry (frame scrolled out of view, or getFrameOwner refused): act inside the
+    // frame instead. Synthetic events, and the result says so — a site that gates on isTrusted will
+    // ignore this, and the caller needs to know that is what happened.
+    const why = off ? "the trusted click failed"
+                    : !focused ? NO_FOCUS
+                    : !pt.inView ? "the element is off-screen inside the frame"
+                    : "the frame's position on the page could not be read (" +
+                      ((geom && geom.error) || "unknown") + ")";
+    try {
+      if (kind === "type") {
+        const r = await frameEval(tabId, sid, asCall(pageTypeRef, [ref, text, !!submit]));
+        const back = await frameEval(tabId, sid, asCall(pageValue, [ref, ""]));
+        const want = String(text || "").trim().slice(0, 60);
+        return Object.assign({ trusted: false, frame: tag,
+                               note: why + "; typed synthetically inside the frame",
+                               value: String((back && back.value) || "").slice(0, 120),
+                               landed: !want || String((back && back.value) || "").indexOf(want) >= 0 }, r || {});
+      }
+      const r = await frameEval(tabId, sid, asCall(pageClickRef, [ref]));
+      return Object.assign({ trusted: false, frame: tag,
+                             note: why + "; clicked synthetically inside the frame" }, r || {});
+    } catch (e) {
+      return { error: "frame " + tag + ": " + String((e && e.message) || e) };
+    }
+  });
+}
+
+// CDP input is delivered to the tab the browser is SHOWING. A background tab swallows it silently:
+// Input.insertText writes nothing and Input.dispatchMouseEvent clicks nothing, and BOTH still return
+// success — so the caller is told a real click happened when the page never saw one. (Measured, not
+// assumed: with the tab in the background a trusted type read back "" and a trusted click left the
+// page untouched.) That became reachable the day collie stopped typing into whatever tab the user
+// had in front of them and started opening its own, which is the right thing to do — so the fix
+// belongs here.
+//
+// The fix is NOT to steal the user's view. `Emulation.setFocusEmulationEnabled` makes the renderer
+// treat the tab as focused, and with it on, input reaches a background tab exactly as it would a
+// foreground one: measured on a tab that was never activated, the click arrived with
+// **isTrusted true**, the text landed, and it kept working across a navigation. As a bonus the page
+// reads `visibilityState: "visible"`, so sites that pause rendering, timers or lazy-loading while
+// hidden behave normally instead of quietly doing nothing.
+//
+// Bringing the tab forward is kept only as the fallback for a browser that will not emulate, and
+// synthetic input as the fallback to that — never a trusted claim we cannot back.
+async function focusForTrusted(tab) {
+  try {
+    await ensureAttached(tab.id);
+    await dbgSend(tab.id, "Emulation.setFocusEmulationEnabled", { enabled: true });
+    return true;                            // the tab stays where it is; the user is not disturbed
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+  }
+  if (tab.active) return true;
+  try {                                     // fallback: a tab switch inside Chrome, as pageShot does
+    await chrome.tabs.update(tab.id, { active: true });
+    await sleep(120);                       // let the switch commit before input is dispatched
+    const t = await chrome.tabs.get(tab.id);
+    return !!t.active;
+  } catch (e) { return false; }
+}
+
+const NO_FOCUS = "collie's tab could be neither focus-emulated nor brought to the front, so a REAL " +
+                 "click was impossible (CDP input never reaches a background tab); acted " +
+                 "synthetically instead — a site that checks isTrusted will ignore it";
+
 async function trustedClick(text, selector) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
+  if (!(await focusForTrusted(tab)))
+    return Object.assign({ trusted: false, note: NO_FOCUS },
+                         await exec(pageClick, [text || "", selector || ""]));
   const pt = await exec(pagePoint, [text || "", selector || ""]);
   if (!pt || pt.error) return pt || { error: "no element for " + (selector || text) };
   if (!pt.inView) return { error: "element found but off-screen after scroll — cannot place a real click there" };
@@ -691,6 +1242,9 @@ async function trustedClick(text, selector) {
 async function trustedType(selector, text, submit) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
+  if (!(await focusForTrusted(tab)))
+    return Object.assign({ trusted: false, note: NO_FOCUS },
+                         await exec(pageType, [selector, text, !!submit]));
   const pt = await exec(pagePoint, ["", selector]);
   if (!pt || pt.error) return pt || { error: "no field " + selector };
   if (!pt.inView) return { error: "field '" + selector + "' off-screen after scroll — cannot type there" };
@@ -724,6 +1278,8 @@ async function trustedType(selector, text, submit) {
 async function trustedClickRef(ref) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
+  if (!(await focusForTrusted(tab)))
+    return Object.assign({ trusted: false, note: NO_FOCUS }, await execMain(pageClickRef, [ref]));
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no element for ref " + ref };
   if (!pt.inView) return { error: "element " + ref + " off-screen after scroll — cannot place a real click there" };
@@ -745,6 +1301,9 @@ async function trustedClickRef(ref) {
 async function trustedTypeRef(ref, text, submit) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
+  if (!(await focusForTrusted(tab)))
+    return Object.assign({ trusted: false, note: NO_FOCUS },
+                         await execMain(pageTypeRef, [ref, text, !!submit]));
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no field for ref " + ref };
   if (!pt.inView) return { error: "field " + ref + " off-screen after scroll — cannot type there" };
@@ -844,28 +1403,118 @@ async function pageShot(fullPage, maxDim) {
            title: tab.title || "", url: tab.url || "" };
 }
 
-async function handle(cmd) {
-  try {
+// Decide trusted vs synthetic for THIS step: a command can force it (trusted:true/false), otherwise
+// resolve the per-origin authorization (session -> permanent -> global default ON).
+async function wantTrusted(cmd) {
+  if (cmd.trusted === true) return true;
+  if (cmd.trusted === false) return false;
+  const t = await activeTab();
+  return await trustedForOrigin(t ? originOf(t) : "");
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function runStep(cmd) {
     if (cmd.action === "open") {
       const url = httpUrl(cmd.url);
       if (!url) return { error: "browser_open only accepts http(s) URLs" };
-      // Prefer a tab the user already has on that site (their logged-in view); otherwise open one.
-      const adopted = await adoptTabForUrl(url);
-      const tab = adopted || await targetTab(true);
+      // A tab the user already has on this site is taken ONLY when the caller asked for it. The old
+      // default — adopt whatever was open — is what let a run walk into a half-filled form the user
+      // (or another collie job) had going. Cookies are per-profile, so collie's own tab is logged in
+      // just the same; adopting buys their scroll position, not their session.
+      let adopted = null;
+      if (cmd.adopt) {
+        adopted = await adoptTabForUrl(url, curSpace);
+        if (adopted && adopted.error) return adopted;
+      }
+      const tab = adopted || await targetTab(true, { window: !!cmd.window });
       const already = adopted && (adopted.url || "").indexOf(url) === 0;
       if (!already) await navigateCollieTab(tab.id, url);
       return await exec(pageRead, []);
     }
     if (cmd.action === "show") {
       const tab = await targetTab(false);
-      if (!tab) return { error: "no dedicated Collie tab yet — open a page first" };
+      if (!tab) return { error: "no tab in space '" + curSpace + "' yet — open a page first" };
       const shown = await chrome.tabs.update(tab.id, { active: true });
       return { shown: true, title: shown.title || "", url: shown.url || "" };
     }
+    // Explicitly hand collie the tab you are looking at ("finish what I started here"). This is the
+    // ONLY way a tab collie did not open becomes collie's, and it is a deliberate user act.
+    if (cmd.action === "attach") {
+      let tab = null;
+      if (cmd.tab_id != null) {
+        try { tab = await chrome.tabs.get(cmd.tab_id); } catch (e) { return { error: "no tab with id " + cmd.tab_id }; }
+      } else {
+        try { const found = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); tab = found && found[0]; }
+        catch (e) {}
+      }
+      if (!tab) return { error: "could not tell which tab you are looking at" };
+      if (!/^https?:/i.test(tab.url || ""))
+        return { error: "that tab is not an ordinary web page (" + (tab.url || "").slice(0, 60) + ") — collie cannot script it" };
+      const held = await spaceHolding(tab.id, curSpace);
+      if (held) return { error: "that tab is already space '" + held + "'s" };
+      await setSpace(curSpace, { tabId: tab.id, owned: false, adopted: true });
+      return { attached: true, space: curSpace, title: tab.title || "", url: tab.url || "" };
+    }
+    if (cmd.action === "spaces") {
+      const all = await loadSpaces();
+      const out = [];
+      for (const name of Object.keys(all)) {
+        const rec = all[name] || {};
+        let tab = null;
+        try { tab = await chrome.tabs.get(rec.tabId); } catch (e) {}
+        if (!tab) { await dropSpace(name); continue; }
+        out.push({ space: name, tab_id: rec.tabId, owned: !!rec.owned, active: !!tab.active,
+                   title: (tab.title || "").slice(0, 60), url: (tab.url || "").slice(0, 120) });
+      }
+      return { spaces: out, current: curSpace };
+    }
+    // Give a space's tab back. A tab collie did not open is never CLOSED — dropping the claim is the
+    // most collie is entitled to do with someone else's window.
+    if (cmd.action === "release") {
+      const rec = await getSpace(curSpace);
+      if (!rec) return { released: false, note: "space '" + curSpace + "' has no tab" };
+      await dropSpace(curSpace);
+      if (cmd.close) {
+        if (!rec.owned) return { released: true, closed: false,
+                                 note: "the claim on that tab is dropped, but it was YOUR tab, not one collie opened, so it was left open" };
+        try { await chrome.tabs.remove(rec.tabId); } catch (e) {}
+        return { released: true, closed: true };
+      }
+      return { released: true, closed: false };
+    }
     if (cmd.action === "read") return await exec(pageRead, []);
-    if (cmd.action === "snapshot") return await execMain(pageSnapshot, [cmd.max || 200]);
+    if (cmd.action === "snapshot") {
+      const top = await execMain(pageSnapshot, [cmd.max || 200, { text: !!cmd.text }]);
+      if (!cmd.frames || !top || top.error) return top;
+      const tab = await activeTab();
+      if (!tab) return top;
+      try {
+        const fr = await snapshotFrames(tab.id, cmd.max || 200, { text: !!cmd.text });
+        return Object.assign({}, top, { frames: fr.frames,
+                                        snapshot: top.snapshot + (fr.snapshot ? "\n" + fr.snapshot : "") });
+      } catch (e) {
+        // Say the reach failed rather than returning the top document as if it were the whole page.
+        return Object.assign({}, top, { frames_error: String((e && e.message) || e) });
+      }
+    }
     if (cmd.action === "links") return await exec(pageLinks, [cmd.filter || ""]);
     if (cmd.action === "screenshot") return await pageShot(cmd.full_page === true, cmd.max_dim || 1568);
+    if (cmd.action === "wait") { await sleep(Math.min(30000, Math.max(0, Number(cmd.ms) || 500))); return { waited_ms: Number(cmd.ms) || 500 }; }
+    if (cmd.action === "wait_for") {
+      const budget = Math.min(60000, Math.max(500, Number(cmd.timeout_ms) || 10000));
+      const started = Date.now();
+      for (;;) {
+        const r = await exec(pageHas, [cmd.text || "", cmd.selector || ""]);
+        if (r && r.error) return r;
+        if (r && r.found) return { found: true, waited_ms: Date.now() - started };
+        if (Date.now() - started >= budget)
+          return { error: "waited " + budget + "ms and " + (cmd.selector ? "selector " + cmd.selector : '"' + (cmd.text || "") + '"') +
+                          " never appeared — the page may not have got there, or the wording differs" };
+        await sleep(250);
+      }
+    }
+    if (cmd.action === "scroll") return await execMain(pageScroll, [cmd.to || "", cmd.by || 0, cmd.ref || ""]);
     if (cmd.action === "mode") {   // read/set high-fidelity input from the bridge/CLI
       if (typeof cmd.trusted === "boolean") await chrome.storage.local.set({ trustedInput: cmd.trusted });
       if (cmd.origin && cmd.scope) await setSiteMode(cmd.origin, cmd.scope);
@@ -873,31 +1522,34 @@ async function handle(cmd) {
       const origin = t ? originOf(t) : "";
       return { global: await trustedGlobal(), origin, effective: await trustedForOrigin(origin) };
     }
-    // Decide trusted vs synthetic for THIS action: a command can force it (trusted:true/false),
-    // otherwise resolve the per-origin authorization (session -> permanent -> global default ON).
-    async function wantTrusted() {
-      if (cmd.trusted === true) return true;
-      if (cmd.trusted === false) return false;
-      const t = await activeTab();
-      return await trustedForOrigin(t ? originOf(t) : "");
-    }
     if (cmd.action === "click") {
       let r;
-      if (cmd.ref) {                                  // act on the exact element from a browser_snapshot
-        r = (await wantTrusted()) ? await trustedClickRef(cmd.ref) : await execMain(pageClickRef, [cmd.ref]);
+      const fref = splitFrameRef(cmd.ref);
+      if (fref) {                                     // a ref from inside a cross-origin iframe
+        const tab = await activeTab();
+        if (!tab) return { error: NO_TAB };
+        r = await frameActRef(tab.id, fref.tag, fref.ref, "click");
+      } else if (cmd.ref) {                           // act on the exact element from a browser_snapshot
+        r = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref) : await execMain(pageClickRef, [cmd.ref]);
       } else {
-        r = (await wantTrusted()) ? await trustedClick(cmd.text || "", cmd.selector || "")
-                                  : await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
+        r = (await wantTrusted(cmd)) ? await trustedClick(cmd.text || "", cmd.selector || "")
+                                     : await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
       }
-      await new Promise((z) => setTimeout(z, 800));
+      await sleep(800);
       return { click: r, page: await exec(pageRead, []) };
     }
     if (cmd.action === "type") {
       let r;
+      const fref = splitFrameRef(cmd.ref);
+      if (fref) {
+        const tab = await activeTab();
+        if (!tab) return { error: NO_TAB };
+        return await frameActRef(tab.id, fref.tag, fref.ref, "type", cmd.text, !!cmd.submit);
+      }
       if (cmd.ref) {                                  // act on the exact field from a browser_snapshot
-        r = (await wantTrusted()) ? await trustedTypeRef(cmd.ref, cmd.text, !!cmd.submit)
-                                  : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
-      } else if ((await wantTrusted()) && cmd.selector) {
+        r = (await wantTrusted(cmd)) ? await trustedTypeRef(cmd.ref, cmd.text, !!cmd.submit)
+                                     : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
+      } else if ((await wantTrusted(cmd)) && cmd.selector) {
         r = await trustedType(cmd.selector, cmd.text, !!cmd.submit);
       } else {
         r = cmd.label ? await exec(pageTypeLabel, [cmd.label, cmd.text])
@@ -940,6 +1592,87 @@ async function handle(cmd) {
     if (cmd.action === "console") return await getConsole(!!cmd.clear);
     if (cmd.action === "eval") return await evalExpr(cmd.expr || "");
     return { error: "unknown action " + cmd.action };
+}
+
+// --- many steps, one round trip ------------------------------------------------------------------
+// A bridge round trip is a MODEL TURN: the tool result goes back through the loop, the model reads
+// it and decides the next call. So filling a six-field form cost six turns of latency and six copies
+// of the page in context, and the model spent most of them re-deciding things it already knew. A
+// script says the whole sequence up front and pays for one turn.
+//
+// Two rules make it safe to give up that per-step supervision:
+//   · it STOPS at the first failure and reports which step stopped it, with the same hard-failure
+//     signals a single call would have raised (a type that did not land is a failure, not a note);
+//   · only the LAST step returns its full payload. Intermediate page reads are summarised, because
+//     a script whose every step returned the whole page would cost more context than the calls it
+//     replaced — which would defeat the entire point.
+function stepSummary(r) {
+  if (r == null) return { ok: true };
+  if (typeof r === "string") return { ok: true, text: r.length > 200 ? r.slice(0, 200) + "…" : r };
+  if (Array.isArray(r)) return { ok: true, items: r.length };
+  const out = { ok: !r.error };
+  if (r.error) out.error = String(r.error).slice(0, 300);
+  for (const k of ["clicked", "typed", "picked", "landed", "value", "trusted", "found", "waited_ms",
+                   "uploaded", "attached", "count", "truncated", "scrolled", "frame", "note", "matches"]) {
+    if (r[k] !== undefined) out[k] = typeof r[k] === "string" ? r[k].slice(0, 120) : r[k];
+  }
+  if (r.click && typeof r.click === "object") {           // click returns {click, page}
+    if (r.click.error) { out.ok = false; out.error = String(r.click.error).slice(0, 300); }
+    if (r.click.clicked) out.clicked = String(r.click.clicked).slice(0, 120);
+    if (r.click.trusted !== undefined) out.trusted = r.click.trusted;
+    if (r.click.matches) out.matches = r.click.matches;
+  }
+  return out;
+}
+
+// What counts as a failure worth stopping for. `landed:false` is here deliberately: a write that
+// silently went nowhere is the failure this codebase has been burned by most, and a script must not
+// keep going (and eventually submit) on top of one.
+function stepFailed(r) {
+  if (r == null) return false;
+  if (typeof r === "string") return false;
+  if (r.error) return true;
+  if (r.landed === false) return true;
+  if (r.attached === false) return true;
+  if (r.click && r.click.error) return true;
+  return false;
+}
+
+async function runScript(cmd) {
+  const steps = Array.isArray(cmd.steps) ? cmd.steps : [];
+  if (!steps.length) return { error: "browser_script needs a non-empty `steps` list" };
+  if (steps.length > 40) return { error: "at most 40 steps in one script (got " + steps.length + ")" };
+  const done = [];
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i] && typeof steps[i] === "object" ? steps[i] : {};
+    const action = typeof step.action === "string" ? step.action : "";
+    if (!action) {
+      done.push({ step: i + 1, action: "", ok: false, error: "step has no `action`" });
+      return { ok: false, ran: done.length, of: steps.length, stopped_at: i + 1, steps: done };
+    }
+    if (action === "script")
+      return { ok: false, ran: done.length, of: steps.length, stopped_at: i + 1,
+               steps: done.concat([{ step: i + 1, action, ok: false, error: "scripts do not nest" }]) };
+    let r;
+    try { r = await runStep(step); }
+    catch (e) { r = { error: String((e && e.message) || e) }; }
+    const failed = stepFailed(r);
+    const last = i === steps.length - 1;
+    done.push(Object.assign({ step: i + 1, action }, stepSummary(r)));
+    if (failed)
+      return { ok: false, ran: done.length, of: steps.length, stopped_at: i + 1, steps: done,
+               // The failing step's own payload in full — that is the one worth reading.
+               result: r };
+    if (last) return { ok: true, ran: done.length, of: steps.length, steps: done, result: r };
+  }
+  return { ok: true, ran: done.length, of: steps.length, steps: done };
+}
+
+async function handle(cmd) {
+  curSpace = spaceOf(cmd);
+  try {
+    if (cmd.action === "script") return await runScript(cmd);
+    return await runStep(cmd);
   } catch (e) {
     return { error: String(e) };
   }

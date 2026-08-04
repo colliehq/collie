@@ -389,11 +389,26 @@ def _ensure_server(port):
     return False
 
 
+_CURRENT_SPACE = [None]
+
+
+def _space():
+    """Which SPACE (lane of browser work, one tab of its own) this collie's commands belong to.
+
+    Two collie runs driving the same browser used to land in the same tab and fight over it — the
+    reason a run once walked into the middle of another job's half-filled form. Set
+    COLLIE_BROWSER_SPACE per run and they get a tab each; a tool can also switch this process's
+    space explicitly (browser_open space=…)."""
+    return _CURRENT_SPACE[0] or os.environ.get("COLLIE_BROWSER_SPACE") or "default"
+
+
 def _call(cmd, timeout=60):
     """Send a command to the bridge server and wait for the extension's result. The server is
     auto-spawned if not already running."""
     port = _port()
     _ensure_server(port)
+    cmd = dict(cmd)
+    cmd.setdefault("space", _space())
     body = json.dumps(dict(cmd, timeout=timeout)).encode()
     req = urllib.request.Request("http://127.0.0.1:%d/enqueue" % port, data=body,
                                  headers={"content-type": "application/json",
@@ -464,17 +479,38 @@ class BrowserOpen(Tool):
     name, tier = "browser_open", "always"
     description = ("Open a URL in the user's REAL logged-in browser (via the collie extension) and "
                    "return the page's readable text. Use for authenticated pages / full content, "
-                   "not just search snippets. Args: url.")
-    schema = {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}
+                   "not just search snippets. Opens a tab of collie's OWN — the user's other tabs "
+                   "are never navigated — and because cookies are per-profile it is logged in just "
+                   "like theirs. Args: url; optional space (name a separate lane of work with its "
+                   "own tab, for running two jobs at once); optional adopt (true = take over a tab "
+                   "the user ALREADY has on this site instead of opening one — only when they asked "
+                   "for that, e.g. \"finish what I started in this tab\"); optional window (true = "
+                   "give this space its own browser window, to keep a long job visually separate — "
+                   "a preference, not a requirement: collie acts in its tab while it sits in the "
+                   "background, without pulling it in front of what the user is doing).")
+    schema = {"type": "object", "properties": {
+        "url": {"type": "string"},
+        "space": {"type": "string"},
+        "adopt": {"type": "boolean"},
+        "window": {"type": "boolean"}}, "required": ["url"]}
 
     def run(self, args, ctx):
-        return _fence(_fmt(_call({"action": "open", "url": args.get("url", "")})))
+        space = (args.get("space") or "").strip()
+        if space:
+            _CURRENT_SPACE[0] = space[:40]      # sticky: the rest of this run works in that lane
+        return _fence(_fmt(_call({"action": "open", "url": args.get("url", ""),
+                                  "adopt": bool(args.get("adopt")),
+                                  "window": bool(args.get("window"))})))
 
 
 class BrowserRead(Tool):
     name, tier = "browser_read", "always"
-    description = ("Read collie's tab in YOUR real logged-in browser (call browser_open first; it adopts a tab you already have on that site, so your session applies). Full readable text (the whole page, so the model "
-                   "can solve from complete context). Optional args: max_chars (default 8000).")
+    description = ("Read collie's tab in YOUR real logged-in browser (call browser_open first — it "
+                   "opens a tab of collie's own in your browser, so your session applies without "
+                   "disturbing the tabs you are using). Full readable text (the whole page, so the "
+                   "model can solve from complete context). For most decisions browser_snapshot is "
+                   "the better read: it carries the page's structure and the refs you act on, in "
+                   "far less space. Optional args: max_chars (default 8000).")
     schema = {"type": "object", "properties": {"max_chars": {"type": "integer"}}}
 
     def run(self, args, ctx):
@@ -484,21 +520,32 @@ class BrowserRead(Tool):
 
 class BrowserSnapshot(Tool):
     name, tier = "browser_snapshot", "always"
-    description = ("Snapshot collie's tab as a compact, numbered list of its VISIBLE interactive "
-                   "elements — buttons, links, form fields — each with a stable ref id and its "
-                   "accessible name, e.g. `[e5] button \"Add to cart\"`. PREFER this over guessing "
-                   "CSS selectors or matching by text: pass a ref to browser_click / browser_type to "
-                   "act on that exact element with a REAL, trusted click. Refs are valid until the "
-                   "page changes — re-snapshot after navigating or after the DOM updates. Optional "
-                   "args: max (cap on elements, default 200).")
-    schema = {"type": "object", "properties": {"max": {"type": "integer"}}}
+    description = ("Snapshot collie's tab as a compact accessibility TREE — the headings and "
+                   "landmarks that say what the page is, with its interactive elements nested under "
+                   "them, each carrying a stable ref id and accessible name, e.g. "
+                   "`[e5] button \"Add to cart\"`. PREFER this over guessing CSS selectors or "
+                   "matching by text: pass a ref to browser_click / browser_type to act on that "
+                   "exact element with a REAL, trusted click. It usually answers what browser_read "
+                   "would, for a fraction of the size, so reach for it FIRST and only read the page "
+                   "text when you need prose. Runs of identical controls collapse to one line "
+                   "(`×7 (identical siblings: e12–e18)`) and every ref in the run still works. Refs "
+                   "are valid until the page changes — re-snapshot after navigating or after the DOM "
+                   "updates. Optional args: max (cap on elements, default 200), text (true = also "
+                   "include paragraph text), frames (true = ALSO reach into cross-origin iframes "
+                   "over the debugger — embedded checkouts, payment fields, captcha and booking "
+                   "widgets live there and are invisible without it; their refs look like `f1e7` and "
+                   "browser_click / browser_type accept them).")
+    schema = {"type": "object", "properties": {"max": {"type": "integer"},
+                                               "text": {"type": "boolean"},
+                                               "frames": {"type": "boolean"}}}
 
     def run(self, args, ctx):
         try:
             mx = int(args.get("max", 200))
         except (TypeError, ValueError):
             mx = 200
-        res = _call({"action": "snapshot", "max": mx})
+        res = _call({"action": "snapshot", "max": mx, "text": bool(args.get("text")),
+                     "frames": bool(args.get("frames"))}, timeout=90 if args.get("frames") else 60)
         if not res.get("ok", True) and res.get("error"):
             return "ERROR(browser): %s" % res["error"]
         d = res.get("data", res)
@@ -508,13 +555,25 @@ class BrowserSnapshot(Tool):
             head = ("%d interactive elements (act on one by passing its ref to browser_click / "
                     "browser_type):\n" % d.get("count", 0))
             if d.get("truncated"):
-                # Do not let a partial list read as the whole page: the elements dropped are the ones
-                # LAST in document order, which is exactly where a just-opened dialog/modal lives.
-                head = ("WARNING: this list is CUT OFF at the %d-element cap — the page has more, and "
-                        "what is missing is whatever comes last in the document, which is where a "
-                        "dialog or modal that just opened sits. If a control you expected is absent, "
-                        "it is probably below this cut, NOT absent: re-run browser_snapshot with a "
-                        "larger `max` (e.g. 600) before concluding it cannot be reached.\n" % mx) + head
+                # A partial list must not read as the whole page. What is dropped is now the LEAST
+                # important (an open dialog and everything on screen are kept first), which is the
+                # opposite of the old document-order cut — but a cut is still a cut, so say so.
+                head = ("WARNING: %d elements did not fit the %d cap. What survived was chosen by "
+                        "importance — an open dialog first, then what is on screen — so a control "
+                        "you expected may be one of the ones dropped rather than absent. Re-run with "
+                        "a larger `max` (e.g. 600) before concluding it cannot be reached.\n"
+                        % (d.get("dropped") or 0, mx)) + head
+            if d.get("frames_error"):
+                # Reaching into cross-origin frames failed. Returning the top document alone, quietly,
+                # is exactly the failure mode this option exists to fix.
+                head = ("WARNING: the cross-origin iframes on this page could NOT be read (%s). What "
+                        "follows is the top document ONLY — a control inside an embedded checkout, "
+                        "payment field or captcha will be missing from it.\n"
+                        % str(d["frames_error"])[:200]) + head
+            elif not args.get("frames") and d.get("frames"):
+                head = ("NOTE: this page has %d cross-origin iframe(s) whose contents are NOT below. "
+                        "If what you need is inside one, re-run browser_snapshot with frames=true.\n"
+                        % d["frames"]) + head
             return _fence(head + str(d["snapshot"]))
         return _fmt(res)
 
@@ -523,8 +582,9 @@ class BrowserClick(Tool):
     name, tier = "browser_click", "always"
     description = ("Click an element in collie's tab. PREFER `ref` from browser_snapshot (most "
                    "reliable — a real trusted click on that exact element). Otherwise target by "
-                   "visible `text` or a CSS `selector`. Returns the resulting page text. Args: ref "
-                   "OR text OR selector. "
+                   "visible `text` or a CSS `selector`. A ref like `f1e7` (from a snapshot taken "
+                   "with frames=true) clicks inside a cross-origin iframe. Returns the resulting "
+                   "page text. Args: ref OR text OR selector. "
                    "NOTE on uploads: do NOT click a page's \"choose file\" / attach button to upload "
                    "something — Chrome opens the OS file picker only for a genuine human gesture, so "
                    "an automated click opens NO dialog at all and there is nothing to drive. Use "
@@ -557,9 +617,11 @@ class BrowserType(Tool):
     description = ("Type text into a form field. Target it by `ref` (from browser_snapshot — "
                    "preferred, unambiguous) OR by `label` (the field's visible label text — robust "
                    "on obfuscated forms like Facebook where CSS selectors aren't stable) OR by "
-                   "`selector` (CSS). The field is read back afterwards and this FAILS if the text "
-                   "did not actually land, so a reported success means the text is really in the "
-                   "field. Args: ref OR label OR selector, text, optional submit (bool).")
+                   "`selector` (CSS). A ref like `f1e7` (from a snapshot taken with frames=true) "
+                   "types inside a cross-origin iframe — that is where an embedded payment or "
+                   "booking field lives. The field is read back afterwards and this FAILS if the "
+                   "text did not actually land, so a reported success means the text is really in "
+                   "the field. Args: ref OR label OR selector, text, optional submit (bool).")
     schema = {"type": "object", "properties": {
         "ref": {"type": "string"}, "label": {"type": "string"}, "selector": {"type": "string"},
         "text": {"type": "string"}, "submit": {"type": "boolean"}},
@@ -655,6 +717,133 @@ class BrowserUpload(Tool):
                     "upload finishing — confirm the page shows a preview / progress / filename before "
                     "submitting.")
         return out
+
+
+class BrowserScript(Tool):
+    name, tier = "browser_script", "always"
+    description = (
+        "Run a SEQUENCE of browser steps in one call — the efficient way to work a form or a "
+        "multi-page flow. Every browser_* action you already know is a step, and they run back to "
+        "back in collie's tab without a round trip between them, so a six-field form is one call "
+        "instead of six. Use it whenever you already know the next few moves; keep the single tools "
+        "for when you must LOOK at the result before deciding.\n"
+        "Steps (a list of objects, each with `action`):\n"
+        "  {action:'open', url}                     · {action:'click', ref|text|selector}\n"
+        "  {action:'type', ref|label|selector, text, submit?} · {action:'pick', label, option}\n"
+        "  {action:'wait_for', text|selector, timeout_ms?}    · {action:'wait', ms}\n"
+        "  {action:'scroll', to:'bottom'|'top'|ref?, by?}     · {action:'read'} · {action:'fields'}\n"
+        "  {action:'snapshot', max?, text?, frames?}          · {action:'links', filter?}\n"
+        "  {action:'eval', expr}\n"
+        "PREFER wait_for over wait: it returns the moment the page is ready instead of guessing.\n"
+        "It STOPS at the first failing step and tells you which one — a write that did not land "
+        "counts as failure, so a script never keeps going on top of an empty field. Only the LAST "
+        "step returns its full result; earlier ones are summarised, which is where the saving is. "
+        "Uploads and screenshots are not steps — use browser_upload / browser_screenshot. "
+        "Args: steps (list, max 40).")
+    schema = {"type": "object", "properties": {
+        "steps": {"type": "array", "items": {"type": "object"}}}, "required": ["steps"]}
+
+    STEP_ACTIONS = {"open", "click", "type", "pick", "read", "snapshot", "fields", "links",
+                    "wait", "wait_for", "scroll", "eval", "show"}
+    ELSEWHERE = {"upload": "browser_upload", "screenshot": "browser_screenshot",
+                 "reload": "browser_reload_extension", "attach": "browser_tabs",
+                 "release": "browser_tabs", "spaces": "browser_tabs"}
+
+    def run(self, args, ctx):
+        steps = args.get("steps")
+        if not isinstance(steps, list) or not steps:
+            return "ERROR(browser): 'steps' must be a non-empty list of step objects"
+        if len(steps) > 40:
+            return "ERROR(browser): at most 40 steps in one script (got %d)" % len(steps)
+        for i, s in enumerate(steps, 1):
+            if not isinstance(s, dict) or not isinstance(s.get("action"), str) or not s["action"]:
+                return "ERROR(browser): step %d has no 'action'" % i
+            act = s["action"]
+            if act in self.ELSEWHERE:
+                return ("ERROR(browser): '%s' is not a script step — call %s on its own (step %d)"
+                        % (act, self.ELSEWHERE[act], i))
+            if act not in self.STEP_ACTIONS:
+                return ("ERROR(browser): step %d has unknown action '%s'. Steps are: %s"
+                        % (i, act, ", ".join(sorted(self.STEP_ACTIONS))))
+        # One step can legitimately wait 60s; the whole script needs room for all of them.
+        budget = min(600, 30 + 30 * len(steps))
+        res = _call({"action": "script", "steps": steps}, timeout=budget)
+        if not res.get("ok", True) and res.get("error"):
+            return "ERROR(browser): %s" % res["error"]
+        d = res.get("data", res)
+        if not isinstance(d, dict):
+            return _fmt(res)
+        if d.get("error"):
+            return "ERROR(browser): %s" % d["error"]
+        lines = []
+        for st in d.get("steps") or []:
+            bits = ["%s%s" % (st.get("action", "?"), "" if st.get("ok", True) else " FAILED")]
+            for k in ("clicked", "typed", "picked", "value", "landed", "trusted", "found",
+                      "waited_ms", "count", "truncated", "scrolled", "frame", "matches", "note",
+                      "error", "items", "text"):
+                if k in st:
+                    bits.append("%s=%r" % (k, st[k]))
+            lines.append("  %s %s" % (st.get("step", "?"), " ".join(bits)))
+        body = "\n".join(lines)
+        tail = d.get("result")
+        tail_txt = tail if isinstance(tail, str) else json.dumps(tail, ensure_ascii=False)[:6000] if tail is not None else ""
+        if not d.get("ok", True):
+            # A half-run script reported as success is the failure mode worth spending words on.
+            return ("ERROR(browser): the script STOPPED at step %s of %s — the steps AFTER it did "
+                    "NOT run, so the page is part-way through whatever you were doing. Check where "
+                    "it actually is (browser_snapshot) before retrying, and do not assume the "
+                    "remaining steps happened.\nsteps that ran:\n%s\nfailing step returned:\n%s"
+                    % (d.get("stopped_at", "?"), d.get("of", "?"), body, _fence(tail_txt[:2000])))
+        return ("%s/%s steps ran, all OK.\n%s\nlast step returned:\n%s"
+                % (d.get("ran", "?"), d.get("of", "?"), body, _fence(tail_txt)))
+
+
+class BrowserTabs(Tool):
+    name, tier = "browser_tabs", "always"
+    description = (
+        "See and manage which tabs collie is working in. Collie works in SPACES — each space is one "
+        "lane of work with its own tab, so two jobs running at once never fight over one page, and "
+        "the user's own tabs are never touched unless they are handed over deliberately.\n"
+        "  action='list' (default) — the spaces collie holds, their tabs, and which of those tabs "
+        "collie opened itself\n"
+        "  action='attach' — take the tab the USER is looking at into this space. Use only when they "
+        "asked for that (\"use the tab I have open\", \"finish this page\"); afterwards collie's "
+        "commands act on THAT page\n"
+        "  action='release' — let go of this space's tab. Add close=true to also close it, which "
+        "works only for a tab collie opened; a tab the user handed over is left open.\n"
+        "Args: optional action, space (which lane), close, tab_id.")
+    schema = {"type": "object", "properties": {
+        "action": {"type": "string", "enum": ["list", "attach", "release"]},
+        "space": {"type": "string"}, "close": {"type": "boolean"}, "tab_id": {"type": "integer"}}}
+
+    def run(self, args, ctx):
+        args = args or {}
+        act = (args.get("action") or "list").strip().lower()
+        space = (args.get("space") or "").strip()
+        if space:
+            _CURRENT_SPACE[0] = space[:40]
+        if act == "attach":
+            cmd = {"action": "attach"}
+            if args.get("tab_id") is not None:
+                cmd["tab_id"] = args["tab_id"]
+            return _fmt(_call(cmd))
+        if act == "release":
+            return _fmt(_call({"action": "release", "close": bool(args.get("close"))}))
+        res = _call({"action": "spaces"})
+        d = _data(res)
+        if not isinstance(d, dict):
+            return _fmt(res)
+        rows = d.get("spaces") or []
+        if not rows:
+            return ("collie holds no tabs right now (current space: %s). browser_open will open one "
+                    "of its own." % d.get("current", _space()))
+        out = ["space          owned  tab   title / url"]
+        for r in rows:
+            out.append("%-14s %-6s %-5s %s — %s"
+                       % (r.get("space", "?"), "yes" if r.get("owned") else "no (yours)",
+                          r.get("tab_id", "?"), (r.get("title") or "")[:40], (r.get("url") or "")[:70]))
+        out.append("current space: %s" % d.get("current", _space()))
+        return "\n".join(out)
 
 
 def _health(port=None, timeout=2):
@@ -841,6 +1030,7 @@ class BrowserScreenshot(Tool):
 def register_browser_bridge(registry):
     for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserType(),
               BrowserPick(), BrowserUpload(), BrowserFields(), BrowserLinks(), BrowserConsole(),
-              BrowserEval(), BrowserScreenshot(), BrowserReloadExtension()):
+              BrowserEval(), BrowserScreenshot(), BrowserReloadExtension(),
+              BrowserScript(), BrowserTabs()):
         registry.register(t)
     return True
