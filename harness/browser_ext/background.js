@@ -209,13 +209,25 @@ function pageClick(text, selector) {
 // Resolve an element (same finder as pageClick) and return the viewport-CENTER point to click, in CSS
 // px relative to the viewport — exactly what CDP Input.dispatchMouseEvent consumes to place a real,
 // isTrusted click. Used only by the trusted-input path. Self-contained (injected into the page).
-function pagePoint(text, selector) {
+function pagePoint(text, selector, broad) {
   let all = [];
   if (selector) { try { all = [...document.querySelectorAll(selector)]; } catch (e) { return { error: "bad selector " + selector }; } }
   else if (text) {
     const t = text.toLowerCase();
-    all = [...document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button]")]
+    // `broad` widens the search from clickable things to ANY element carrying that text. Hovering
+    // needs it: a site's navigation is made of divs and list items, not buttons, so the narrow
+    // search answered "no element for Menu" about a menu that was plainly there.
+    all = [...document.querySelectorAll(broad ? "*" : "a,button,[role=button],input[type=submit],input[type=button]")]
       .filter((e) => ((e.innerText || e.value || "").trim().toLowerCase()).includes(t));
+    if (broad) {
+      // Order matters, and getting it wrong is subtle. Drop the INVISIBLE matches first, then keep
+      // the deepest of what is left. The other way round, a hidden descendant eliminates its own
+      // visible ancestor and the answer is "no element" about something plainly on screen — a
+      // closed submenu labelled "Submenu item" knocking out the "Menu" that opens it.
+      all = all.filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+      // Every ancestor contains its descendant's text, so without this the best match is <body>.
+      all = all.filter((e) => !all.some((other) => other !== e && e.contains(other)));
+    }
   }
   const el = all[0];
   if (!el) return { error: "no element for " + (selector || text) };
@@ -455,6 +467,9 @@ function pageSnapshot(maxN, opts) {
       if (t === "hidden") return "";
       return "textbox";
     }
+    // A drag handle usually has no role and no tabindex — a bare div the page marked draggable. It
+    // still needs a line in the snapshot, or a drag-and-drop board has nothing to grab.
+    if (el.draggable === true || el.getAttribute("draggable") === "true") return "draggable";
     return "";
   };
   const nameOf = (el) => {
@@ -475,6 +490,9 @@ function pageSnapshot(maxN, opts) {
   const interactive = (el, role) => {
     if (INTERACTIVE.includes(role)) return true;
     if (el.getAttribute("tabindex") !== null && el.tabIndex >= 0) return true;
+    // Something the page marked as draggable is something a person can act on, so it needs a ref to
+    // be dragged BY. Without this a drag-and-drop board had no handles in the snapshot at all.
+    if (el.draggable === true || el.getAttribute("draggable") === "true") return true;
     return typeof el.onclick === "function";
   };
   const LANDMARK = { dialog: "dialog", alertdialog: "dialog", form: "form", navigation: "nav",
@@ -1345,6 +1363,285 @@ async function trustedTypeRef(ref, text, submit) {
   }
 }
 
+// --- the rest of a hand: keys, hover, drag, and a point on the screen ----------------------------
+// Clicking and typing covered most of the web, and the gaps were all the same shape: a control that
+// answers to something OTHER than "click this element / put text in this field". A menu that only
+// opens on hover, a dialog that only closes on Escape, a list that is reordered by dragging, a slider
+// puzzle, a chart where the thing you want has no element of its own. All four are the same CDP
+// primitives the trusted click already uses — they were simply never exposed.
+
+// CDP wants a virtual-key code, not just a name. Only the keys worth pressing are listed; a single
+// character falls through to the generic branch.
+const KEYS = {
+  enter: { key: "Enter", code: "Enter", vk: 13, text: "\r" },
+  tab: { key: "Tab", code: "Tab", vk: 9, text: "\t" },
+  escape: { key: "Escape", code: "Escape", vk: 27 },
+  esc: { key: "Escape", code: "Escape", vk: 27 },
+  backspace: { key: "Backspace", code: "Backspace", vk: 8 },
+  delete: { key: "Delete", code: "Delete", vk: 46 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", vk: 38 },
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", vk: 37 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", vk: 39 },
+  up: { key: "ArrowUp", code: "ArrowUp", vk: 38 },
+  down: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+  left: { key: "ArrowLeft", code: "ArrowLeft", vk: 37 },
+  right: { key: "ArrowRight", code: "ArrowRight", vk: 39 },
+  home: { key: "Home", code: "Home", vk: 36 },
+  end: { key: "End", code: "End", vk: 35 },
+  pageup: { key: "PageUp", code: "PageUp", vk: 33 },
+  pagedown: { key: "PageDown", code: "PageDown", vk: 34 },
+  space: { key: " ", code: "Space", vk: 32, text: " " },
+};
+const MODBIT = { alt: 1, ctrl: 2, control: 2, meta: 4, cmd: 4, command: 4, shift: 8 };
+
+function keySpec(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return null;
+  const known = KEYS[raw.toLowerCase()];
+  if (known) return known;
+  if (raw.length === 1) {
+    const upper = raw.toUpperCase();
+    const code = /[a-z]/i.test(raw) ? "Key" + upper : (/[0-9]/.test(raw) ? "Digit" + raw : "");
+    return { key: raw, code, vk: upper.charCodeAt(0), text: raw };
+  }
+  return null;
+}
+
+function modMask(mods) {
+  let m = 0;
+  for (const name of (Array.isArray(mods) ? mods : [])) {
+    m |= MODBIT[String(name).toLowerCase()] || 0;
+  }
+  return m;
+}
+
+// Injected: the synthetic fallback for a key. It reaches listeners bound to keydown/keyup, which is
+// most of them, and reaches nothing that depends on a real edit — hence `trusted:false` in the reply.
+function pageKey(key, code, mods) {
+  const el = document.activeElement || document.body;
+  if (!el) return { error: "nothing focused to send a key to" };
+  const init = { key: key, code: code, bubbles: true, cancelable: true,
+                 altKey: !!(mods & 1), ctrlKey: !!(mods & 2), metaKey: !!(mods & 4),
+                 shiftKey: !!(mods & 8) };
+  el.dispatchEvent(new KeyboardEvent("keydown", init));
+  el.dispatchEvent(new KeyboardEvent("keyup", init));
+  return { pressed: key, on: (el.tagName || "").toLowerCase() };
+}
+
+// Injected: what is actually at this point? A coordinate click is the one addressing mode with no
+// element behind it, so the reply says what it landed on — otherwise "I clicked (400,300)" is a
+// claim nobody can check.
+function pageElementAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return { at: null };
+  return { at: (el.tagName || "").toLowerCase(),
+           name: (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().slice(0, 60),
+           id: el.id || "", cls: (typeof el.className === "string" ? el.className : "").slice(0, 60) };
+}
+
+// Injected: the synthetic hover — the pointer/mouse event sequence a menu listens for.
+function pageHover(ref, selector, text) {
+  let el = null;
+  if (ref) { const m = window.__collieRefs; el = m && m.get ? m.get(ref) : null; }
+  else if (selector) { try { el = document.querySelector(selector); } catch (e) { return { error: "bad selector " + selector }; } }
+  else if (text) {
+    const t = String(text).toLowerCase();
+    el = [...document.querySelectorAll("a,button,[role=button],li,div,span")]
+      .find((e) => ((e.innerText || "").trim().toLowerCase()).includes(t));
+  }
+  if (!el) return { error: "no element to hover for " + (ref || selector || text) };
+  el.scrollIntoView({ block: "center", inline: "center" });
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+  for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"]) {
+    try { el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type, opts)); }
+    catch (e) { el.dispatchEvent(new MouseEvent(type.replace("pointer", "mouse"), opts)); }
+  }
+  return { hovered: (el.innerText || el.getAttribute("aria-label") || "").trim().slice(0, 60) || (el.tagName || "").toLowerCase() };
+}
+
+// Injected: HTML5 drag-and-drop. Plain mouse movement does NOT drive it — the browser only fires
+// dragstart/drop for a real drag, so a page built on the HTML5 API sits there doing nothing while
+// the pointer sails across it. Handing both elements a shared DataTransfer is the way in, and it is
+// what every automation library ends up doing.
+function pageDragHtml5(from, to) {
+  const find = (t) => {
+    t = t || {};
+    if (t.ref) { const m = window.__collieRefs; return m && m.get ? m.get(t.ref) : null; }
+    if (t.selector) { try { return document.querySelector(t.selector); } catch (e) { return null; } }
+    if (t.text) {
+      const s = String(t.text).toLowerCase();
+      const all = [...document.querySelectorAll("*")]
+        .filter((e) => ((e.innerText || "").trim().toLowerCase()).includes(s));
+      return all.filter((e) => !all.some((o) => o !== e && e.contains(o)))[0] || null;
+    }
+    return null;
+  };
+  const src = find(from), dst = find(to);
+  if (!src || !dst) return { error: "drag needs a source and a target that both resolve — "
+                                    + "take a fresh browser_snapshot, or name them by selector" };
+  const dt = new DataTransfer();
+  const fire = (el, type) => {
+    const r = el.getBoundingClientRect();
+    const ev = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt,
+                                     clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+    el.dispatchEvent(ev);
+    return ev;
+  };
+  fire(src, "dragstart");
+  fire(dst, "dragenter");
+  fire(dst, "dragover");
+  fire(dst, "drop");
+  fire(src, "dragend");
+  return { dragged: "html5", from: (src.innerText || "").trim().slice(0, 40),
+           to: (dst.innerText || "").trim().slice(0, 40) };
+}
+
+// Is this element one the HTML5 drag API owns? Injected.
+function pageIsDraggable(target) {
+  const t = target || {};
+  let el = null;
+  if (t.ref) { const m = window.__collieRefs; el = m && m.get ? m.get(t.ref) : null; }
+  else if (t.selector) { try { el = document.querySelector(t.selector); } catch (e) { el = null; } }
+  if (!el) return { draggable: false };
+  return { draggable: el.draggable === true || el.getAttribute("draggable") === "true" };
+}
+
+// Resolve any of the three ways to name an element to a viewport point.
+async function resolvePoint(target) {
+  const t = target || {};
+  if (t.ref) return await execMain(pagePointRef, [t.ref]);
+  if (t.selector || t.text) return await exec(pagePoint, [t.text || "", t.selector || "", !!t.broad]);
+  if (typeof t.x === "number" && typeof t.y === "number")
+    return { x: t.x, y: t.y, inView: true, label: "(" + t.x + "," + t.y + ")" };
+  return { error: "say which element: ref, selector, text — or x and y" };
+}
+
+async function doPress(key, mods, repeat) {
+  const spec = keySpec(key);
+  if (!spec) return { error: "unknown key " + key + " — use a single character or a name like Escape, Tab, ArrowDown" };
+  const mask = modMask(mods);
+  const times = Math.max(1, Math.min(20, Number(repeat) || 1));
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  if (await focusForTrusted(tab)) {
+    try {
+      await ensureAttached(tab.id);
+      for (let i = 0; i < times; i++) {
+        const down = { type: "keyDown", modifiers: mask, key: spec.key, code: spec.code,
+                       windowsVirtualKeyCode: spec.vk, nativeVirtualKeyCode: spec.vk };
+        // Text belongs to a PLAIN keystroke only. Sending it with a modifier held is how Ctrl+A
+        // ends up typing the letter a into the field it was supposed to select.
+        if (spec.text && !mask) down.text = spec.text;
+        await dbgSend(tab.id, "Input.dispatchKeyEvent", down);
+        await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: mask,
+                                                          key: spec.key, code: spec.code,
+                                                          windowsVirtualKeyCode: spec.vk,
+                                                          nativeVirtualKeyCode: spec.vk });
+      }
+      return { pressed: spec.key, modifiers: mods || [], times: times, trusted: true };
+    } catch (e) {
+      if (dbgTab === tab.id) dbgTab = null;
+    }
+  }
+  const r = await execMain(pageKey, [spec.key, spec.code, mask]);
+  return Object.assign({ trusted: false, times: 1,
+                         note: "sent a synthetic key; a page that checks isTrusted will ignore it" },
+                       r || {});
+}
+
+async function doHover(target) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const pt = await resolvePoint(Object.assign({ broad: true }, target || {}));
+  if (!pt || pt.error) return pt || { error: "nothing to hover" };
+  if (await focusForTrusted(tab)) {
+    try {
+      await ensureAttached(tab.id);
+      await execMain(pageCursor, [pt.x, pt.y]);
+      await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: pt.x, y: pt.y, buttons: 0 });
+      await sleep(350);                       // menus open on a timer; give it one
+      return { hovered: pt.label, trusted: true };
+    } catch (e) {
+      if (dbgTab === tab.id) dbgTab = null;
+    }
+  }
+  const t = target || {};
+  const r = await execMain(pageHover, [t.ref || "", t.selector || "", t.text || ""]);
+  return Object.assign({ trusted: false, note: "synthetic hover" }, r || {});
+}
+
+async function doDrag(from, to, steps) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  // An HTML5-draggable source needs the DataTransfer path; mouse movement alone does nothing there.
+  const d = await execMain(pageIsDraggable, [from || {}]);
+  if (d && d.draggable) {
+    const r = await execMain(pageDragHtml5, [from || {}, to || {}]);
+    if (r && !r.error) return r;
+  }
+  const a = await resolvePoint(from);
+  if (!a || a.error) return a || { error: "no drag source" };
+  const b = await resolvePoint(to);
+  if (!b || b.error) return b || { error: "no drag target" };
+  if (!(await focusForTrusted(tab))) return { error: NO_FOCUS };
+  const n = Math.max(2, Math.min(60, Number(steps) || 12));
+  try {
+    await ensureAttached(tab.id);
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: a.x, y: a.y, buttons: 0 });
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mousePressed", x: a.x, y: a.y,
+                                                        button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= n; i++) {
+      // Move in steps, not one jump: a sortable list or a slider tracks mousemove, and a single
+      // teleport from A to B reads as no movement at all.
+      const x = a.x + ((b.x - a.x) * i) / n, y = a.y + ((b.y - a.y) * i) / n;
+      await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: x, y: y, button: "left", buttons: 1 });
+      await sleep(16);
+    }
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseReleased", x: b.x, y: b.y,
+                                                        button: "left", buttons: 0, clickCount: 1 });
+    return { dragged: "pointer", from: a.label, to: b.label, trusted: true };
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+    return { error: "drag failed: " + String((e && e.message) || e) };
+  }
+}
+
+async function doClickAt(x, y) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const before = await execMain(pageElementAt, [x, y]);
+  if (!(await focusForTrusted(tab))) {
+    return Object.assign({ trusted: false, note: NO_FOCUS },
+                         await execMain(pageClickAtSynthetic, [x, y]));
+  }
+  try {
+    await ensureAttached(tab.id);
+    await execMain(pageCursor, [x, y]);
+    await sleep(320);
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: x, y: y, buttons: 0 });
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mousePressed", x: x, y: y, button: "left", buttons: 1, clickCount: 1 });
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseReleased", x: x, y: y, button: "left", buttons: 0, clickCount: 1 });
+    return { clicked_at: [x, y], hit: before, trusted: true };
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+    return Object.assign({ trusted: false, note: "debugger unavailable, clicked synthetically" },
+                         await execMain(pageClickAtSynthetic, [x, y]));
+  }
+}
+
+// Injected: the synthetic coordinate click — find what is there and click it.
+function pageClickAtSynthetic(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return { error: "nothing at (" + x + "," + y + ")" };
+  el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  el.click();
+  return { clicked_at: [x, y], hit: { at: (el.tagName || "").toLowerCase() } };
+}
+
 // --- screenshots -------------------------------------------------------------------------------
 // Why this exists next to pageSnapshot: a snapshot is the accessibility tree, which is exact for
 // ACTING but says nothing about appearance. And the OS-level `screenshot` tool cannot cover a web
@@ -1537,7 +1834,22 @@ async function runStep(cmd) {
       const origin = t ? originOf(t) : "";
       return { global: await trustedGlobal(), origin, effective: await trustedForOrigin(origin) };
     }
+    if (cmd.action === "press")
+      return await doPress(cmd.key, cmd.modifiers, cmd.repeat);
+    if (cmd.action === "hover")
+      return await doHover({ ref: cmd.ref, selector: cmd.selector, text: cmd.text,
+                             x: cmd.x, y: cmd.y });
+    if (cmd.action === "drag")
+      return await doDrag(cmd.from || {}, cmd.to || {}, cmd.steps);
     if (cmd.action === "click") {
+      // A point on the screen is its own addressing mode — for a canvas, a map, a chart, anything
+      // whose target is not an element. The reply says what was under the point, because otherwise
+      // "clicked (400,300)" is a claim with nothing behind it.
+      if (typeof cmd.x === "number" && typeof cmd.y === "number" && !cmd.ref && !cmd.text && !cmd.selector) {
+        const r = await doClickAt(cmd.x, cmd.y);
+        await sleep(600);
+        return { click: r, page: await exec(pageRead, []) };
+      }
       let r;
       const fref = splitFrameRef(cmd.ref);
       if (fref) {                                     // a ref from inside a cross-origin iframe
@@ -1628,7 +1940,8 @@ function stepSummary(r) {
   const out = { ok: !r.error };
   if (r.error) out.error = String(r.error).slice(0, 300);
   for (const k of ["clicked", "typed", "picked", "landed", "value", "trusted", "found", "waited_ms",
-                   "uploaded", "attached", "count", "truncated", "scrolled", "frame", "note", "matches"]) {
+                   "uploaded", "attached", "count", "truncated", "scrolled", "frame", "note", "matches",
+                   "pressed", "hovered", "dragged", "clicked_at", "times"]) {
     if (r[k] !== undefined) out[k] = typeof r[k] === "string" ? r[k].slice(0, 120) : r[k];
   }
   if (r.click && typeof r.click === "object") {           // click returns {click, page}

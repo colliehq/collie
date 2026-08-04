@@ -164,8 +164,11 @@ def _audit_path():
 
 def _audit_summary(cmd):
     out = {"action": cmd.get("action"), "space": cmd.get("space")}
-    for k in ("url", "ref", "selector", "label", "option", "to", "tab_id"):
+    for k in ("url", "ref", "selector", "label", "option", "tab_id", "key", "modifiers", "x", "y"):
         if cmd.get(k):
+            out[k] = str(cmd[k])[:120]
+    for k in ("from", "to"):                 # drag endpoints, or scroll's destination
+        if cmd.get(k) is not None:
             out[k] = str(cmd[k])[:120]
     if cmd.get("text") is not None:
         out["text_len"] = len(str(cmd.get("text")))      # never the text itself
@@ -801,6 +804,10 @@ class BrowserClick(Tool):
                    "visible `text` or a CSS `selector`. A ref like `f1e7` (from a snapshot taken "
                    "with frames=true) clicks inside a cross-origin iframe. Returns the resulting "
                    "page text. Args: ref OR text OR selector. "
+                   "Last resort, for a target with no element of its own (a canvas, a map, a point "
+                   "on a chart): `x` and `y`, in CSS pixels from the top-left of the viewport — the "
+                   "result reports what was actually under that point, so check it hit what you "
+                   "meant. "
                    "NOTE on uploads: do NOT click a page's \"choose file\" / attach button to upload "
                    "something — Chrome opens the OS file picker only for a genuine human gesture, so "
                    "an automated click opens NO dialog at all and there is nothing to drive. Use "
@@ -810,11 +817,13 @@ class BrowserClick(Tool):
                    "(desktop_inspect / desktop_type / desktop_click), calling "
                    "enable_capability(\"desktop_control\") first if desktop control is off.")
     schema = {"type": "object", "properties": {
-        "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"}}}
+        "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"},
+        "x": {"type": "number"}, "y": {"type": "number"}}}
 
     def run(self, args, ctx):
         res = _call({"action": "click", "ref": args.get("ref"),
-                     "text": args.get("text"), "selector": args.get("selector")})
+                     "text": args.get("text"), "selector": args.get("selector"),
+                     "x": args.get("x"), "y": args.get("y")})
         out = _fence(_fmt(res))
         d = _data(res) or {}
         click = d.get("click") if isinstance(d.get("click"), dict) else d
@@ -860,6 +869,73 @@ class BrowserType(Tool):
                     "mid-type — re-snapshot and retry. Confirm the field is non-empty before moving on."
                     % (d.get("value") or ""))
         return _fmt(res)
+
+
+class BrowserPress(Tool):
+    name, tier = "browser_press", "always"
+    description = ("Press a KEY in collie's tab — the actions a page answers to that are not clicks "
+                   "or typing. Escape to close a dialog or dropdown, Enter to confirm, Tab to move "
+                   "to the next field, the arrow keys to walk a list or an autocomplete, and "
+                   "shortcuts with modifiers. Keys: a single character, or Enter, Tab, Escape, "
+                   "Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space. "
+                   "Args: key, optional modifiers (list of ctrl/alt/shift/meta), optional repeat "
+                   "(default 1). The key goes to whatever has focus, so click or type into the "
+                   "field first if it matters.")
+    schema = {"type": "object", "properties": {
+        "key": {"type": "string"},
+        "modifiers": {"type": "array", "items": {"type": "string"}},
+        "repeat": {"type": "integer"}}, "required": ["key"]}
+
+    def run(self, args, ctx):
+        return _fmt(_call({"action": "press", "key": args.get("key", ""),
+                           "modifiers": args.get("modifiers") or [],
+                           "repeat": args.get("repeat") or 1}))
+
+
+class BrowserHover(Tool):
+    name, tier = "browser_hover", "always"
+    description = ("Move the pointer onto an element WITHOUT clicking it — for menus and tooltips "
+                   "that only appear on hover, which is a large share of site navigation. Target it "
+                   "the same ways as a click: `ref` from browser_snapshot (best), visible `text`, or "
+                   "a CSS `selector`. Take a fresh browser_snapshot afterwards: what the hover "
+                   "revealed is not in the old one. Args: ref OR text OR selector.")
+    schema = {"type": "object", "properties": {
+        "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"}}}
+
+    def run(self, args, ctx):
+        return _fmt(_call({"action": "hover", "ref": args.get("ref"),
+                           "text": args.get("text"), "selector": args.get("selector")}))
+
+
+class BrowserDrag(Tool):
+    name, tier = "browser_drag", "always"
+    description = ("Drag one thing onto another — reordering a list, moving a card between columns, "
+                   "pulling a slider (including the slide-to-verify kind), drawing on a canvas. "
+                   "Give `from` and `to` as objects naming an element ({\"ref\": \"e5\"} or "
+                   "{\"selector\": \"...\"} or {\"text\": \"...\"}), or a point ({\"x\": 400, "
+                   "\"y\": 300}). Both mechanisms are handled: pages built on HTML5 drag-and-drop "
+                   "get the real drag events, everything else gets a pressed pointer moved in steps "
+                   "(a single jump reads as no movement at all to a sortable list). The result says "
+                   "which one it used. Args: from, to, optional steps (how many moves, default 12).")
+    schema = {"type": "object", "properties": {
+        "from": {"type": "object"}, "to": {"type": "object"}, "steps": {"type": "integer"}},
+        "required": ["from", "to"]}
+
+    def run(self, args, ctx):
+        src, dst = args.get("from"), args.get("to")
+        if not isinstance(src, dict) or not isinstance(dst, dict):
+            return "ERROR(browser): 'from' and 'to' must be objects, e.g. {\"ref\": \"e5\"}"
+        res = _call({"action": "drag", "from": src, "to": dst, "steps": args.get("steps")},
+                    timeout=90)
+        out = _fmt(res)
+        d = _data(res)
+        if isinstance(d, dict) and d.get("dragged"):
+            # A drag has no read-back of its own: whether the list reordered is only visible in the
+            # page. Say so rather than letting "dragged" read as "it worked".
+            out += ("\nThe drag was performed (%s). That is not the same as it having had an effect "
+                    "— take a browser_snapshot and confirm the page actually changed."
+                    % d["dragged"])
+        return out
 
 
 class BrowserPick(Tool):
@@ -944,12 +1020,13 @@ class BrowserScript(Tool):
         "instead of six. Use it whenever you already know the next few moves; keep the single tools "
         "for when you must LOOK at the result before deciding.\n"
         "Steps (a list of objects, each with `action`):\n"
-        "  {action:'open', url}                     · {action:'click', ref|text|selector}\n"
+        "  {action:'open', url}                     · {action:'click', ref|text|selector|x,y}\n"
         "  {action:'type', ref|label|selector, text, submit?} · {action:'pick', label, option}\n"
-        "  {action:'wait_for', text|selector, timeout_ms?}    · {action:'wait', ms}\n"
-        "  {action:'scroll', to:'bottom'|'top'|ref?, by?}     · {action:'read'} · {action:'fields'}\n"
-        "  {action:'snapshot', max?, text?, frames?}          · {action:'links', filter?}\n"
-        "  {action:'eval', expr}\n"
+        "  {action:'press', key, modifiers?, repeat?}         · {action:'hover', ref|text|selector}\n"
+        "  {action:'drag', from:{ref|selector|x,y}, to:{...}} · {action:'wait', ms}\n"
+        "  {action:'wait_for', text|selector, timeout_ms?}    · {action:'read'} · {action:'fields'}\n"
+        "  {action:'scroll', to:'bottom'|'top'|ref?, by?}     · {action:'links', filter?}\n"
+        "  {action:'snapshot', max?, text?, frames?}          · {action:'eval', expr}\n"
         "PREFER wait_for over wait: it returns the moment the page is ready instead of guessing.\n"
         "It STOPS at the first failing step and tells you which one — a write that did not land "
         "counts as failure, so a script never keeps going on top of an empty field. Only the LAST "
@@ -960,7 +1037,7 @@ class BrowserScript(Tool):
         "steps": {"type": "array", "items": {"type": "object"}}}, "required": ["steps"]}
 
     STEP_ACTIONS = {"open", "click", "type", "pick", "read", "snapshot", "fields", "links",
-                    "wait", "wait_for", "scroll", "eval", "show"}
+                    "wait", "wait_for", "scroll", "eval", "show", "press", "hover", "drag"}
     ELSEWHERE = {"upload": "browser_upload", "screenshot": "browser_screenshot",
                  "reload": "browser_reload_extension", "attach": "browser_tabs",
                  "release": "browser_tabs", "spaces": "browser_tabs"}
@@ -1247,6 +1324,6 @@ def register_browser_bridge(registry):
     for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserType(),
               BrowserPick(), BrowserUpload(), BrowserFields(), BrowserLinks(), BrowserConsole(),
               BrowserEval(), BrowserScreenshot(), BrowserReloadExtension(),
-              BrowserScript(), BrowserTabs()):
+              BrowserScript(), BrowserTabs(), BrowserPress(), BrowserHover(), BrowserDrag()):
         registry.register(t)
     return True

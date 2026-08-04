@@ -38,9 +38,53 @@ PARENT_HTML = """<!doctype html>
   <iframe src="http://localhost:%d/child.html" width="420" height="220"></iframe>
 </main>
 <div id="log">parent-untouched</div>
+
+<!-- targets for the input actions -->
+<div id="keylog">no-key</div>
+<div id="menu" style="width:120px;height:30px;background:#eee">Menu
+  <div id="submenu" style="display:none">Submenu item</div>
+</div>
+<div id="src" draggable="true" style="width:80px;height:30px;background:#cde">drag me</div>
+<div id="drop" style="width:120px;height:40px;background:#dfd">drop-empty</div>
+<div id="track" style="width:200px;height:40px;background:#fdd">track-idle</div>
+<div id="box" style="position:absolute;left:600px;top:400px;width:60px;height:40px;background:#ffd">box</div>
+<div id="boxlog">box-unclicked</div>
+
 <script>
 document.getElementById('p1').addEventListener('click', function (e) {
   document.getElementById('log').textContent = 'parent-clicked:' + e.isTrusted;
+});
+
+// keys: record what arrived, and whether the browser considered it real
+document.addEventListener('keydown', function (e) {
+  document.getElementById('keylog').textContent =
+    'key:' + e.key + ':ctrl=' + e.ctrlKey + ':trusted=' + e.isTrusted;
+});
+
+// a menu that only opens on hover — the shape a huge share of site navigation has
+document.getElementById('menu').addEventListener('mouseover', function () {
+  document.getElementById('submenu').style.display = 'block';
+});
+
+// HTML5 drag and drop: only real drag events drive this, never mouse movement
+var drop = document.getElementById('drop');
+drop.addEventListener('dragover', function (e) { e.preventDefault(); });
+drop.addEventListener('drop', function (e) {
+  e.preventDefault();
+  drop.textContent = 'drop-received';
+});
+
+// pointer drag: press, move, release — what a sortable list or a slider tracks
+var track = document.getElementById('track'), down = false, moves = 0;
+track.addEventListener('mousedown', function () { down = true; moves = 0; });
+document.addEventListener('mousemove', function () { if (down) moves++; });
+document.addEventListener('mouseup', function () {
+  if (down) { down = false; track.textContent = 'track-dragged:' + (moves > 3); }
+});
+
+// a target with no element of its own to name — reached only by coordinates
+document.getElementById('box').addEventListener('click', function (e) {
+  document.getElementById('boxlog').textContent = 'box-clicked:' + e.isTrusted;
 });
 </script>
 """
@@ -221,6 +265,76 @@ def main():
                   "a failing step stops the script", bad)
             check("must-not-happen" not in str(ev("document.getElementById('pin').value")),
                   "and the steps after it really did not run")
+
+        # --- keys ---------------------------------------------------------------------------------
+        r = call({"action": "press", "key": "Escape"}) or {}
+        log = str(ev("document.getElementById('keylog').textContent"))
+        check(log.startswith("key:Escape"), "a named key reaches the page", log)
+        check(log.endswith("trusted=true"), "and the page saw a REAL key press", log)
+        check(r.get("trusted") is True, "reported as trusted", r)
+
+        # The modifier trap: Ctrl+A must SELECT, not type the letter a into the field.
+        snap = call({"action": "snapshot", "max": 200}) or {}
+        f3 = refs_for(snap.get("snapshot"), "Parent field")
+        if f3:
+            call({"action": "type", "ref": f3[0], "text": "abc"})
+            call({"action": "press", "key": "a", "modifiers": ["ctrl"]})
+            val = str(ev("document.getElementById('pin').value"))
+            check(val == "abc", "ctrl+a does not TYPE an 'a' (it still reads %r)" % val)
+            klog = str(ev("document.getElementById('keylog').textContent"))
+            check(":ctrl=true" in klog, "and the page saw the modifier held", klog)
+
+        r = call({"action": "press", "key": "ArrowDown", "repeat": 3}) or {}
+        check(r.get("times") == 3, "repeat presses the key that many times", r)
+        bad = call({"action": "press", "key": "Ctrl+Shift+Whatever"}) or {}
+        check(bool(bad.get("error")), "an unknown key is refused, not silently dropped", bad)
+
+        # --- hover --------------------------------------------------------------------------------
+        check(str(ev("getComputedStyle(document.getElementById('submenu')).display")) == "none",
+              "the hover menu starts closed")
+        call({"action": "hover", "text": "Menu"})
+        check(str(ev("getComputedStyle(document.getElementById('submenu')).display")) == "block",
+              "hovering opens it — reachable without a click")
+
+        # --- drag: both mechanisms ----------------------------------------------------------------
+        snap = call({"action": "snapshot", "max": 300}) or {}
+        check(bool(refs_for(snap.get("snapshot"), "drag me")),
+              "a draggable element gets a ref, so a board has handles to grab",
+              snap.get("snapshot"))
+        r = call({"action": "drag",
+                  "from": {"selector": "#src"}, "to": {"selector": "#drop"}}, timeout=90) or {}
+        check(str(ev("document.getElementById('drop').textContent")) == "drop-received",
+              "an HTML5 drag-and-drop target receives the drop", r)
+        check(r.get("dragged") == "html5", "and it used the HTML5 path, not mouse movement", r)
+
+        r = call({"action": "drag",
+                  "from": {"selector": "#track"}, "to": {"x": 900, "y": 250}}, timeout=90) or {}
+        tr = str(ev("document.getElementById('track').textContent"))
+        check(tr.startswith("track-dragged"), "a pointer drag presses, moves and releases", tr)
+        check(tr.endswith(":true"), "with real intermediate movement, not one jump", tr)
+
+        # --- a point with no element to name ------------------------------------------------------
+        pos = json.loads(str(ev(
+            "JSON.stringify((function(){var r=document.getElementById('box')"
+            ".getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})())")))
+        r = call({"action": "click", "x": pos["x"], "y": pos["y"]}, timeout=90) or {}
+        inner = r.get("click", r) if isinstance(r, dict) else {}
+        blog = str(ev("document.getElementById('boxlog').textContent"))
+        check(blog.startswith("box-clicked"), "clicking a bare coordinate lands", blog)
+        check(blog.endswith(":true"), "as a real click", blog)
+        check((inner.get("hit") or {}).get("id") == "box",
+              "and the result says WHAT was under the point", inner.get("hit"))
+
+        # --- all of it available inside one script ------------------------------------------------
+        ev("document.getElementById('keylog').textContent='no-key'; "
+           "document.getElementById('submenu').style.display='none'; 1")
+        sc = call({"action": "script", "steps": [
+            {"action": "hover", "text": "Menu"},
+            {"action": "press", "key": "Escape"},
+            {"action": "read"},
+        ]}, timeout=120) or {}
+        check(sc.get("ok") is True and sc.get("ran") == 3,
+              "hover and press work as script steps too", sc)
 
         rel = call({"action": "release", "close": True}) or {}
         check(rel.get("closed") is True, "releasing closes the tab collie opened", rel)
