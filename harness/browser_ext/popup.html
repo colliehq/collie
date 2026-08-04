@@ -78,6 +78,20 @@
     <div class="row"><div class="k">Active tab</div><div class="v" id="rTab">—</div></div>
   </div>
 
+  <div class="site" id="tokenBox">
+    <div class="site-h">Bridge token · <span id="tokState">—</span></div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <input id="tokIn" type="password" placeholder="paste the token" autocomplete="off"
+             style="flex:1;min-width:0;background:#1b1b1f;color:#e8e8ea;border:1px solid #3a3a40;
+                    border-radius:6px;padding:5px 7px;font:inherit">
+      <button id="tokSave">Save</button>
+    </div>
+    <div class="site-h" style="margin-top:6px;opacity:.75">
+      Get it with <code>collie browser-bridge --print-token</code>. It is what stops any other
+      program on this computer from driving your logged-in browser.
+    </div>
+  </div>
+
   <label class="toggle" for="hiFi">
     <input type="checkbox" id="hiFi">
     <span class="tg-text"><b>High-fidelity input <span style="font-weight:400">(default)</span></b>

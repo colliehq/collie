@@ -15,6 +15,7 @@ Load the extension: harness/browser_ext/ (see docs), then set COLLIE_BROWSER_BRI
 browser_* tools register in a collie run and talk to the server over localhost.
 """
 import base64
+import hmac
 import json
 import mimetypes
 import os
@@ -31,6 +32,167 @@ from .tools import Tool
 DEFAULT_PORT = 8677
 
 
+# ---------------------------------------------------------------------------- auth -----------
+# Anyone who can reach 127.0.0.1 can reach this bridge, and this bridge drives the user's REAL
+# logged-in browser with trusted input. The Origin/custom-header gate below stops WEB PAGES; it stops
+# no local process at all, because `X-Collie-Bridge` is not a secret — any program running as this
+# user can set it. A bearer token is the shape this whole category settled on (Kimi WebBridge ships
+# `--auth-token` + `Authorization: Bearer`, with a `--dangerously-omit-auth` escape hatch).
+#
+# BE PRECISE ABOUT WHAT IT DOES NOT DO, because the next person to read this — including a future
+# collie — will otherwise treat an authenticated bridge as a safe one:
+#   · the token lives in a file THIS user can read, so malware running as this user reads it too;
+#   · and it does not even need to. Such malware can just run the collie CLI and ask IT to do the
+#     same thing, which no amount of authenticating the caller can prevent.
+# What this buys is one step, and it is worth having: "anything that scans port 8677" becomes
+# "something written specifically against collie". Defences that survive a local compromise need an
+# anchor malware cannot forge — a human gesture in trusted browser UI, a second device, or a browser
+# profile with no payment ability. None of those are implemented here.
+def _home():
+    """Collie's per-user state directory. NOT the data dir: in a source checkout that resolves
+    inside the repository, and a secret must never land somewhere a commit can pick it up."""
+    try:
+        from .wallpaper import _collie_home
+        return _collie_home()
+    except Exception:
+        d = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+
+def _token_path():
+    return os.path.join(_home(), "bridge-token")
+
+
+def auth_off():
+    """The escape hatch, named so nobody switches it on by accident."""
+    return os.environ.get("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH") == "1"
+
+
+def token(create=True):
+    """The shared secret, made once per machine and read by both halves of the bridge."""
+    path = _token_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            existing = fh.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    if not create:
+        return ""
+    import secrets
+    fresh = secrets.token_urlsafe(32)
+    try:
+        # O_EXCL, so two collies starting at once cannot each write a different token and then
+        # disagree about which one the extension holds. The loser re-reads the winner's.
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(fresh)
+    except FileExistsError:
+        return token(create=False)
+    except OSError:
+        return fresh          # unwritable home: still authenticate this process's own calls
+    try:
+        os.chmod(path, 0o600)             # no-op on Windows, where the profile ACL is the guard
+    except OSError:
+        pass
+    return fresh
+
+
+def _hand_token_to_extension():
+    """Drop the token where the EXTENSION can read it, so nobody has to paste anything.
+
+    An extension can fetch a file from its own directory (chrome.runtime.getURL) and collie owns
+    that directory. It costs nothing in exposure — it is the same secret, in a second file with the
+    same user-only readership — and it removes the one manual step this scheme would otherwise add.
+    Best effort: an installed collie may sit in a read-only place, and then the popup's paste box is
+    still there. Never fatal.
+    """
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext", "token.txt")
+        current = ""
+        try:
+            with open(path, encoding="utf-8") as fh:
+                current = fh.read().strip()
+        except OSError:
+            pass
+        want = token()
+        if current != want:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(want)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        return True
+    except Exception:
+        return False
+
+
+def _bearer(headers):
+    # HTTP header names are case-insensitive and so is the auth scheme. The server's own headers
+    # object already knows that; a plain dict does not, and this helper is called with both.
+    got = headers.get("Authorization") or headers.get("authorization") or ""
+    if not got:
+        for k, v in (headers.items() if hasattr(headers, "items") else []):
+            if str(k).lower() == "authorization":
+                got = v or ""
+                break
+    got = str(got).strip()
+    return got[7:].strip() if got[:7].lower() == "bearer " else ""
+
+
+def _token_ok(headers):
+    if auth_off():
+        return True
+    want = token(create=True)
+    return bool(want) and hmac.compare_digest(_bearer(headers), want)
+
+
+# --------------------------------------------------------------------------- audit -----------
+# What was done in the browser, in the user's name, one line per command. It prevents nothing; it
+# answers "what happened" afterwards, which is the difference between being able to investigate and
+# not. Typed text is recorded as a LENGTH, never a value — the whole point of driving a logged-in
+# browser is that passwords and card numbers pass through here.
+_AUDIT_MAX = 4 * 1024 * 1024
+
+
+def _audit_path():
+    return os.path.join(_home(), "bridge-audit.log")
+
+
+def _audit_summary(cmd):
+    out = {"action": cmd.get("action"), "space": cmd.get("space")}
+    for k in ("url", "ref", "selector", "label", "option", "to", "tab_id"):
+        if cmd.get(k):
+            out[k] = str(cmd[k])[:120]
+    if cmd.get("text") is not None:
+        out["text_len"] = len(str(cmd.get("text")))      # never the text itself
+    if cmd.get("expr"):
+        out["expr"] = str(cmd["expr"])[:160]
+    if isinstance(cmd.get("files"), list):
+        out["files"] = [str(f.get("name"))[:60] for f in cmd["files"] if isinstance(f, dict)][:5]
+    if isinstance(cmd.get("steps"), list):
+        out["steps"] = [str(s.get("action")) for s in cmd["steps"] if isinstance(s, dict)][:40]
+    return out
+
+
+def _audit(entry):
+    try:
+        path = _audit_path()
+        try:
+            if os.path.getsize(path) > _AUDIT_MAX:
+                os.replace(path, path + ".1")            # one generation back is enough to look at
+        except OSError:
+            pass
+        line = json.dumps(entry, ensure_ascii=False, sort_keys=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass                                             # logging must never break the browser
+
+
 # --------------------------------------------------------------------------- server ----------
 class _Bridge:
     """Shared state between the tool-facing /enqueue and the extension-facing /poll + /result."""
@@ -42,6 +204,21 @@ class _Bridge:
         self.n = 0
         self.last_poll = 0.0                   # when the extension last polled (connection health)
         self.ext_version = ""                  # manifest version the loaded extension reports
+        self.meta = {}                         # id -> what to write to the audit log when it ends
+        self.rejected = 0                      # unauthenticated attempts, so /health can say so
+
+    def _log(self, cid, outcome, data=None):
+        """One audit line per command, written when its fate is known."""
+        m = self.meta.pop(cid, None)
+        if m is None:
+            return
+        entry = dict(m["cmd"], at=time.strftime("%Y-%m-%dT%H:%M:%S"), outcome=outcome,
+                     took_ms=int((time.time() - m["t0"]) * 1000))
+        if isinstance(data, dict):
+            for k in ("url", "error", "landed", "trusted", "clicked", "frame"):
+                if data.get(k) is not None:
+                    entry[k] = str(data[k])[:160]
+        _audit(entry)
 
     def enqueue(self, cmd, timeout=60):
         with self.lock:
@@ -49,16 +226,21 @@ class _Bridge:
             cid = "c%d" % self.n
         ev = threading.Event()
         self.events[cid] = ev
+        self.meta[cid] = {"cmd": _audit_summary(cmd), "t0": time.time()}
         cmd = dict(cmd, id=cid)
         self.pending.put(cmd)
         if not ev.wait(timeout):
             self.events.pop(cid, None)
             self.results.pop(cid, None)   # a late deliver() racing the timeout could leave an orphan
+            self._log(cid, "timeout")
             return {"ok": False, "error": "browser did not respond in %ds (is the extension "
                                           "loaded and a tab open?)" % timeout}
         if cid not in self.results:
+            self._log(cid, "no-result")
             return {"ok": False, "error": "no result"}
-        return {"ok": True, "data": self.results.pop(cid)}   # consistent envelope
+        data = self.results.pop(cid)
+        self._log(cid, "error" if isinstance(data, dict) and data.get("error") else "ok", data)
+        return {"ok": True, "data": data}                    # consistent envelope
 
     def next_cmd(self, wait=25):
         self.last_poll = time.time()           # the extension is alive and polling
@@ -139,10 +321,21 @@ def _handler(bridge, enforce_host=True):
             self.send_response(403 if self._web_origin() else 204)
             self.end_headers()
 
+        def _unauthorized(self):
+            """401, and say what to do — an extension that never got the token would otherwise just
+            stop working, with a healthy-looking bridge and no clue anywhere."""
+            bridge.rejected += 1
+            return self._json({"error": "unauthorized",
+                               "hint": "this bridge requires a bearer token. Run `collie "
+                                       "browser-bridge --print-token`, then paste it into the collie "
+                                       "extension's popup (it is stored in %s)." % _token_path()}, 401)
+
         def do_GET(self):
             if self.path.startswith("/poll"):
                 if self._blocked():
                     return self._json({"error": "forbidden"}, 403)
+                if not _token_ok(self.headers):
+                    return self._unauthorized()
                 # the extension reports its manifest version (?v=) so collie can tell when the LOADED
                 # extension is a stale copy from another path — a mismatch that is otherwise invisible.
                 q = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -152,15 +345,22 @@ def _handler(bridge, enforce_host=True):
                 cmd = bridge.next_cmd()
                 return self._json(cmd or {})       # {} == nothing pending, poll again
             if self.path.startswith("/health"):
+                # Deliberately open: it is a liveness probe with no control attached, and the popup
+                # has to be able to say "bridge up but your token is wrong" — which it cannot do if
+                # asking requires the very token that is wrong.
                 age = time.time() - bridge.last_poll
                 return self._json({"ok": True, "extension_connected": bridge.last_poll > 0 and age < 40,
                                    "extension_version": bridge.ext_version,
+                                   "auth_required": not auth_off(),
+                                   "rejected_unauthorized": bridge.rejected,
                                    "last_poll_secs_ago": round(age, 1) if bridge.last_poll else None})
             self._json({"error": "not found"}, 404)
 
         def do_POST(self):
             if self._blocked():                     # block drive-by web pages (RCE/exfil) + no-Origin CSRF
                 return self._json({"ok": False, "error": "forbidden"}, 403)
+            if not _token_ok(self.headers):         # and block local callers that are not collie
+                return self._unauthorized()
             try:
                 body = self._body()
             except Exception as e:
@@ -214,6 +414,9 @@ def _run_managed_browser(port, headed=False):
 
 def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
     bridge = _Bridge()
+    if not auth_off():
+        token()                          # make it before the first poll can be turned away
+        _hand_token_to_extension()
     # bind host: 127.0.0.1 by default (loopback-only, safe). Set COLLIE_BROWSER_BRIDGE_HOST=0.0.0.0
     # so a Chrome on a DIFFERENT machine/OS (e.g. Windows Chrome reaching a WSL bridge over the LAN
     # IP) can poll it — WSL2 localhost forwarding to a 127.0.0.1 service is unreliable. Still gated by
@@ -248,7 +451,19 @@ def main(argv=None):
                     help="also launch a managed Chromium with the extension (no manual install)")
     ap.add_argument("--headed", action="store_true",
                     help="with --browser, open a VISIBLE window instead of headless")
+    ap.add_argument("--print-token", action="store_true",
+                    help="print this machine's bridge token (paste it into the extension popup once)")
+    ap.add_argument("--dangerously-omit-auth", action="store_true",
+                    help="serve WITHOUT the token check. Any local program could then drive your "
+                         "logged-in browser; only for debugging, never for daily use.")
     a = ap.parse_args(argv)
+    if a.print_token:
+        print(token())
+        return 0
+    if a.dangerously_omit_auth:
+        os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = "1"
+        print("collie browser-bridge: WARNING — running with NO authentication. Any program on this "
+              "machine can drive your logged-in browser through it.", flush=True)
     try:
         serve(a.port, managed_browser=a.browser, headed=a.headed)
     except KeyboardInterrupt:
@@ -412,7 +627,8 @@ def _call(cmd, timeout=60):
     body = json.dumps(dict(cmd, timeout=timeout)).encode()
     req = urllib.request.Request("http://127.0.0.1:%d/enqueue" % port, data=body,
                                  headers={"content-type": "application/json",
-                                          "X-Collie-Bridge": "1"})   # CSRF gate (see _blocked)
+                                          "X-Collie-Bridge": "1",     # CSRF gate (see _blocked)
+                                          "Authorization": "Bearer " + token()})
     try:
         with urllib.request.urlopen(req, timeout=timeout + 5) as r:
             return json.loads(r.read())

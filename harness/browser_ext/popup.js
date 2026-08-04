@@ -29,6 +29,14 @@ async function refresh() {
     const d = await r.json();
     const ago = d.last_poll_secs_ago;
     $("rPoll").textContent = ago == null ? "never" : ago + "s ago";
+    // A bridge that requires a token and is turning this extension away is HEALTHY and useless at
+    // the same time — the one state that looks fine from every other angle, so it is checked first.
+    const authFailed = (await chrome.storage.local.get("collieAuthFailed")).collieAuthFailed;
+    if (d.auth_required && authFailed) {
+      setStatus("bad", "Token rejected", "the bridge will not accept this extension");
+      $("hint").textContent = "Run  collie browser-bridge --print-token  and paste it above.";
+      return;
+    }
     if (d.extension_connected) {
       setStatus("ok", "Connected", "collie can drive this browser");
       // A version mismatch means collie is serving a DIFFERENT copy of this extension than the one
@@ -100,9 +108,28 @@ $("hiFi").addEventListener("change", async (e) => {
     refreshMode();
   }));
 
+// --- the token ------------------------------------------------------------------------------------
+async function refreshToken() {
+  const t = (await chrome.storage.local.get("collieToken")).collieToken;
+  const failed = (await chrome.storage.local.get("collieAuthFailed")).collieAuthFailed;
+  $("tokState").textContent = !t ? "not set" : (failed ? "rejected" : "set");
+}
+
+$("tokSave").addEventListener("click", async () => {
+  const v = ($("tokIn").value || "").trim();
+  // Clearing the field on purpose is how you revoke it here; saving a new one clears the failure
+  // flag so the next poll decides afresh rather than staying red on old news.
+  await chrome.storage.local.set({ collieToken: v, collieAuthFailed: false });
+  $("tokIn").value = "";
+  try { await chrome.action.setBadgeText({ text: "" }); } catch (e) {}
+  await refreshToken();
+  refresh();
+});
+
 $("recheck").addEventListener("click", refresh);
 $("openCollie").addEventListener("click", () => {
   chrome.tabs.create({ url: "http://127.0.0.1:8787/" });
 });
 refresh();
 refreshMode();
+refreshToken();
