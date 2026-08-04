@@ -856,6 +856,8 @@ def cmd_browser_bridge(args):
     argv = ["--port", str(args.port)] if args.port else []   # [] not None: None re-reads argv
     if getattr(args, "browser", False):
         argv.append("--browser")
+    if getattr(args, "headed", False):
+        argv.append("--headed")
     return bb.main(argv)
 
 
@@ -1835,6 +1837,9 @@ def main(argv=None):
     pb.add_argument("--port", type=int, default=0)
     pb.add_argument("--browser", action="store_true",
                     help="also auto-launch a managed Chromium with the extension (no manual install)")
+    pb.add_argument("--headed", action="store_true",
+                    help="show that browser's window — the only way to sign in to sites, since its "
+                         "profile is persistent and the logins are kept")
     pb.add_argument("--install", action="store_true",
                     help="start the bridge hidden at every logon (keeps real-browser powers)")
     pb.add_argument("--uninstall", action="store_true", help="remove the logon autostart")
