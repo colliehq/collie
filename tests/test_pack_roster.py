@@ -103,6 +103,62 @@ def test_emit_is_serialized_across_workers(monkeypatch):
     assert max(overlaps) == 1, "the caller's emit was written against a sequential loop"
 
 
+def test_a_tree_is_copied_only_when_its_attempt_starts(monkeypatch):
+    """Copying all N up front makes a sequential pack wait through N copytrees of the whole repo
+    before the first model call."""
+    order = []
+    _stub_backends(monkeypatch, [])
+    real_isolate = pack._isolate
+
+    def watched(cwd):
+        order.append("copy")
+        return real_isolate(cwd)
+
+    monkeypatch.setattr(pack, "_isolate", watched)
+
+    import harness.cli as cli
+    base = cli.make_harness
+
+    def make(iso, provider=None, model=None, **kw):
+        h = base(iso, provider=provider, model=model, **kw)
+        inner = h.run
+
+        def run(task_id, task, **kwargs):
+            order.append("run")
+            return inner(task_id, task, **kwargs)
+        h.run = run
+        return h
+
+    monkeypatch.setattr(cli, "make_harness", make)
+    pack.run_pack("t", tempfile.mkdtemp(), n=3)
+    assert order == ["copy", "run"] * 3, order
+
+
+def test_one_failed_copy_costs_one_candidate_not_the_run(monkeypatch):
+    _stub_backends(monkeypatch, [])
+    real_isolate = pack._isolate
+    calls = {"n": 0}
+
+    def flaky(cwd):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("no space left on device")
+        return real_isolate(cwd)
+
+    monkeypatch.setattr(pack, "_isolate", flaky)
+    res = pack.run_pack("t", tempfile.mkdtemp(), n=3)
+    assert len(res["attempts"]) == 3
+    assert "isolation failed" in res["attempts"][1]["error"]
+    assert [a["error"] for a in res["attempts"]][::2] == ["", ""], "the others still ran"
+
+
+def test_nothing_is_applied_when_no_attempt_has_a_tree(monkeypatch):
+    _stub_backends(monkeypatch, [])
+    monkeypatch.setattr(pack, "_isolate", lambda cwd: (_ for _ in ()).throw(OSError("nope")))
+    res = pack.run_pack("t", tempfile.mkdtemp(), n=2, apply=True)
+    assert res["applied"] is False, "there was no tree to copy back"
+
+
 def test_preflight_still_refuses_before_spending_attempts(monkeypatch):
     import harness.catalog as catalog
     _stub_backends(monkeypatch, [])

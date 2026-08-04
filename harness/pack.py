@@ -152,15 +152,29 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
     # isolate_harness below then keeps reads on the shared project so they still start level.
     run_tag = "%s-%d" % (project, os.getpid())
     have_check = bool(check)
-    dirs = [_isolate(cwd) for _ in range(n)]
+    # One slot per attempt, filled by the attempt itself. Copying all N trees up front would make
+    # a sequential pack wait through N copytrees of the whole repo before the first model call,
+    # and would sink every attempt if the last copy failed. Each index is written by exactly one
+    # worker, so the list needs no lock.
+    dirs = [None] * n
     emit_lock = threading.Lock()
 
     def _attempt(i):
-        iso = dirs[i]
         member_provider, member_model = members[i % len(members)]
         # Which backend produced which candidate. Without this the winner is anonymous and the one
         # question a mixed roster exists to answer — WHICH model wins, how often — is unanswerable.
-        rec = {"idx": i, "dir": iso, "provider": member_provider, "model": member_model}
+        rec = {"idx": i, "provider": member_provider, "model": member_model}
+        try:
+            iso = dirs[i] = _isolate(cwd)
+        except Exception as e:
+            # One tree that could not be copied is one lost candidate, not a lost run.
+            rec.update(answer="", verified=False, turns=0, cost_usd=0.0,
+                       error="isolation failed: %s: %s" % (type(e).__name__, e))
+            if emit:
+                with emit_lock:
+                    emit(i, rec)
+            return rec
+        rec["dir"] = iso
         try:
             h = make_harness(iso, provider=member_provider, model=member_model,
                              project="%s-%d" % (run_tag, i),
@@ -207,7 +221,10 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
 
     winner_idx, reason = select(attempts, have_check)
     applied = False
-    if apply and winner_idx is not None:
+    if apply and winner_idx is not None and dirs[winner_idx]:
+        # `dirs[winner_idx]` can be empty only when every attempt failed to isolate and select()
+        # still had to return one of them. There is no tree to copy back, and inventing one would
+        # be worse than applying nothing.
         _copy_back(dirs[winner_idx], cwd)
         applied = True
 
@@ -224,7 +241,8 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
         # be running", which is the only reason to pay for a mixed roster.
         result["winner_provider"] = best.get("provider")
         result["winner_model"] = best.get("model")
-    # clean the throwaway trees
+    # clean the throwaway trees (a slot stays empty when its copy never succeeded)
     for d in dirs:
-        shutil.rmtree(os.path.dirname(d), ignore_errors=True)
+        if d:
+            shutil.rmtree(os.path.dirname(d), ignore_errors=True)
     return result
