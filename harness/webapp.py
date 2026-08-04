@@ -780,9 +780,16 @@ class Handler(BaseHTTPRequestHandler):
                 # cannot ask collie to fix it, so seeing and switching them has to work without it.
                 try:
                     from . import mcpclient
+                    have = {x.get("name") for x in mcpclient.status()}
                     return self._send_json({"servers": mcpclient.status(),
                                             "config": mcpclient._CONFIG,
-                                            "errors": dict(_MCP_LOGIN_ERR)})
+                                            "errors": dict(_MCP_LOGIN_ERR),
+                                            # The services you can connect without knowing anything.
+                                            # Adding one used to mean already having its URL, which
+                                            # is a strange thing to demand of the screen whose job is
+                                            # to tell you what exists.
+                                            "catalog": [dict(v, name=k) for k, v in
+                                                        mcpclient.CATALOG.items() if k not in have]})
                 except Exception as e:
                     return self._send_json({"servers": [], "error": str(e)})
             if path == "/api/models":
@@ -1130,6 +1137,19 @@ class Handler(BaseHTTPRequestHandler):
                     _MCP_LOGIN_ERR.pop(name, None)
                     return self._send_json({"ok": True, "had_token": had,
                                             "servers": mcpclient.status()})
+                if action == "connect":
+                    # One press, for a service whose address we already know. Add it and go straight
+                    # into the browser handshake — the two used to be separate steps with a form in
+                    # between, and the form asked for the very thing the catalog exists to supply.
+                    hit = mcpclient.known(name)
+                    if not hit:
+                        return self._send_json({"error": "not a known service — use Add with a URL"}, 400)
+                    name = hit["name"]
+                    if name not in mcpclient._load_config():
+                        err = mcpclient.add_server(name, {"url": hit["url"]}, replace=False)
+                        if err:
+                            return self._send_json({"error": err}, 400)
+                    action = "login"                      # fall through to the browser handshake
                 if action == "login":
                     cfg = mcpclient._load_config().get(name)
                     if not cfg:

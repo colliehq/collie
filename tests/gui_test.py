@@ -173,10 +173,16 @@ def main():
 
             set_field("MODEL", "claude-sonnet-5")
             set_field("MAX_TURNS", "9")
+            # Settings apply as you type now (debounced), and Save's remaining job is to close the
+            # panel. Waiting for `.set-status.ok` to be VISIBLE was asserting the old contract: the
+            # badge lives in the footer of the modal that Save just closed, so it resolved to a
+            # hidden 0x0 span and the wait could only ever time out. What matters is that the value
+            # reached the file, which is checked immediately below.
+            pg.wait_for_timeout(1200)                    # the apply-on-change debounce
             pg.click("#setSave")
-            pg.wait_for_selector(".set-status.ok", timeout=3000)
-            check("settings save -> ok status", True)
             pg.wait_for_timeout(300)
+            check("save closes the settings panel",
+                  "open" not in (pg.query_selector("#setOverlay").get_attribute("class") or ""))
             saved = {}
             try:
                 with open(setpath, encoding="utf-8") as f: saved = json.load(f)
@@ -186,7 +192,11 @@ def main():
             # re-GET reflects the saved values
             got_model = pg.evaluate("async () => (await (await fetch('/api/settings')).json()).values.MODEL")
             check("settings GET reflects save", got_model == "claude-sonnet-5", "got=%r" % got_model)
-            pg.keyboard.press("Escape"); pg.wait_for_timeout(150)
+            # `.set-row` matches rows in every category, and all but the open one are display:none —
+            # so waiting for the first match to be visible waits for a row in a pane nobody opened.
+            pg.click("#settingsBtn")
+            pg.wait_for_selector(".set-pane.on .set-row", timeout=3000)
+            pg.keyboard.press("Escape"); pg.wait_for_timeout(200)
             check("settings ESC closes", "open" not in pg.query_selector("#setOverlay").get_attribute("class"))
             # unauth POST -> 403
             code403 = pg.evaluate("async () => (await fetch('/api/settings', {method:'POST', body:'{}'})).status")

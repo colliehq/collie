@@ -179,6 +179,54 @@ def set_enabled(name, on):
     return True
 
 
+# ---- the short list of servers you can just connect to ------------------------------------------
+#
+# Adding an MCP server used to mean knowing its URL, or knowing which npm package to spawn. Asked to
+# "connect Slack", Collie reached for `@modelcontextprotocol/server-slack` — a stdio server that
+# wants a bot token and a team id you have to go and mint in Slack's admin UI. Meanwhile Slack runs
+# a remote endpoint that does OAuth: click, browser, authorize, done. The capability was already
+# here (see login(), full OAuth 2.1 with PKCE and dynamic registration); what was missing was
+# knowing the address.
+#
+# Every entry below was probed and answered 401 with a WWW-Authenticate: Bearer challenge, which is
+# what an MCP endpoint that will do the browser handshake looks like. Anything that cannot be
+# checked that way does not belong here — a directory that lists a URL nobody verified turns "one
+# click" into "one click, then a mystery".
+CATALOG = {
+    "slack":     {"url": "https://mcp.slack.com/mcp",        "label": "Slack"},
+    "linear":    {"url": "https://mcp.linear.app/mcp",       "label": "Linear"},
+    "notion":    {"url": "https://mcp.notion.com/mcp",       "label": "Notion"},
+    "sentry":    {"url": "https://mcp.sentry.dev/mcp",       "label": "Sentry"},
+    "atlassian": {"url": "https://mcp.atlassian.com/v1/mcp", "label": "Jira & Confluence",
+                  "aka": ("jira", "confluence")},
+    "stripe":    {"url": "https://mcp.stripe.com",           "label": "Stripe"},
+    "hubspot":   {"url": "https://mcp.hubspot.com/anthropic", "label": "HubSpot"},
+    "vercel":    {"url": "https://mcp.vercel.com",           "label": "Vercel"},
+    "neon":      {"url": "https://mcp.neon.tech/mcp",        "label": "Neon"},
+    "github":    {"url": "https://api.githubcopilot.com/mcp/", "label": "GitHub"},
+}
+
+
+def known(name):
+    """Look a service up by name, however it was typed. Returns its entry or None.
+
+    Deliberately forgiving: the name arrives from a person saying "connect slack" or from a model
+    that wrote "Slack MCP", and refusing on capitalisation would send both back to hunting for a URL.
+    """
+    key = (name or "").strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+    if key in CATALOG:
+        return dict(CATALOG[key], name=key)
+    # People ask for the product, not the vendor: "connect jira" must not miss because the entry is
+    # filed under Atlassian.
+    for k, v in CATALOG.items():
+        if key in tuple(v.get("aka", ())):
+            return dict(v, name=k)
+    for k, v in CATALOG.items():
+        if key and (key in k or k in key or key == v["label"].lower().replace(" ", "")):
+            return dict(v, name=k)
+    return None
+
+
 def add_server(name, cfg, replace=False):
     """Add (or replace) one server. Returns an error string, or "" when it was written."""
     name = (name or "").strip()
@@ -870,7 +918,12 @@ class MCPStatusTool(Tool):
 
 class MCPAddTool(Tool):
     name, tier = "mcpctl_add", "always"
-    description = ("Add an MCP server, giving yourself the tools it exposes. Provide `url` for a "
+    description = ("Add an MCP server, giving yourself the tools it exposes. For a well-known "
+                   "service — Slack, Linear, Notion, Sentry, Jira/Confluence, Stripe, HubSpot, "
+                   "Vercel, Neon, GitHub — pass ONLY the name: Collie fills in the official remote "
+                   "address, which signs in through the browser. Never send the user hunting for an "
+                   "API token or a bot token for one of these. "
+                   "Otherwise provide `url` for a "
                    "remote server (https://…) or `command` (plus optional `args`) for a stdio one. "
                    "The server's tools are registered immediately, so you can use them in this same "
                    "session. Requires the user's explicit agreement first — this expands what you "

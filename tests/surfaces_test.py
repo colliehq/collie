@@ -161,6 +161,11 @@ def test_map_codemap():
 def test_map_web():
     """The Map's web surface: /map serves the galaxy, /api/tree + /api/file feed it, /api/file is
     guarded, and /api/session emits structured tool_calls the replay can parse."""
+    # 20s, not 3. These are real HTTP calls into a codemap build: /api/tree on this repo measures
+    # ~4s cold, and on a machine that is also running a simulator or a compile it is slower still.
+    # A three-second budget made this the suite's flakiest check by a distance, failing for reasons
+    # that had nothing to do with the Map — and a test that fails when the machine is busy is one
+    # people learn to skip past.
     port = 8791
     # --no-open, or every run of the suite leaves a browser tab behind. They accumulate silently:
     # the server exits with the test, so what is left is a row of tabs pointing at a dead port.
@@ -177,41 +182,50 @@ def test_map_web():
         check("map web: server came up", up)
         if not up:
             return
-        html = urllib.request.urlopen(base + "/map", timeout=3).read().decode("utf-8", "ignore")
+        html = urllib.request.urlopen(base + "/map", timeout=20).read().decode("utf-8", "ignore")
         check("map web: /map serves the galaxy page",
               "/map/three.min.js" in html and "/api/tree" in html)
         try:                                          # the sheepdog meadow scene was removed
-            urllib.request.urlopen(base + "/meadow", timeout=3)
+            urllib.request.urlopen(base + "/meadow", timeout=20)
             check("map web: /meadow is removed (404)", False)
         except Exception as e:
             check("map web: /meadow is removed (404)", getattr(e, "code", None) == 404)
-        tree = json.load(urllib.request.urlopen(base + "/api/tree", timeout=3))
+        tree = json.load(urllib.request.urlopen(base + "/api/tree", timeout=20))
         check("map web: /api/tree builds the map", len(tree.get("files", [])) > 10)
-        f = json.load(urllib.request.urlopen(base + "/api/file?path=harness/pack.py", timeout=3))
+        f = json.load(urllib.request.urlopen(base + "/api/file?path=harness/pack.py", timeout=20))
         check("map web: /api/file returns source", bool(f.get("source")))
         try:
-            g = json.load(urllib.request.urlopen(base + "/api/file?path=../../etc/passwd", timeout=3))
+            g = json.load(urllib.request.urlopen(base + "/api/file?path=../../etc/passwd", timeout=20))
             guarded = not g.get("source")             # 200 with an error body, no source leaked
         except urllib.error.HTTPError as he:
             guarded = he.code in (400, 403, 404)      # or a hard 4xx — either way, nothing leaked
         check("map web: /api/file guards traversal", guarded)
-        sess = json.load(urllib.request.urlopen(base + "/api/sessions", timeout=3)).get("sessions", [])
+        sess = json.load(urllib.request.urlopen(base + "/api/sessions", timeout=20)).get("sessions", [])
         if sess:
             s = json.load(urllib.request.urlopen(
-                base + "/api/session/" + urllib.request.quote(sess[0]["id"]), timeout=3))
+                base + "/api/session/" + urllib.request.quote(sess[0]["id"]), timeout=20))
             tcs = [tc for m in s.get("messages", []) for tc in (m.get("tool_calls") or [])]
             check("map web: /api/session tool_calls are structured (not repr strings)",
                   all(isinstance(tc, dict) for tc in tcs))
             sm = json.load(urllib.request.urlopen(
-                base + "/api/session_map?id=" + urllib.request.quote(sess[0]["id"]), timeout=3))
+                base + "/api/session_map?id=" + urllib.request.quote(sess[0]["id"]), timeout=20))
             check("map web: /api/session_map returns a constellation shape",
                   "files" in sm and "agents" in sm and "repos" in sm)
-        repos = json.load(urllib.request.urlopen(base + "/api/repos", timeout=5)).get("repos", [])
-        check("map web: /api/repos discovers projects", len(repos) >= 1)
-        tr = json.load(urllib.request.urlopen(base + "/api/tree?repo=" + urllib.request.quote(ROOT), timeout=3))
+        # /api/repos walks $HOME under a hard budget and reports `partial` when the walk did not
+        # finish — that deadline exists because a media library full of cloud placeholders never
+        # returns from os.walk at all. On a cold cache, on a loaded machine, coming back partial and
+        # empty IS the contract being honoured, so demanding a repo here was testing the weather.
+        rp = json.load(urllib.request.urlopen(base + "/api/repos", timeout=20))
+        repos = rp.get("repos", [])
+        check("map web: /api/repos answers within its budget", isinstance(repos, list))
+        if rp.get("partial"):
+            print("       (walk was still running — partial, %d so far)" % len(repos))
+        else:
+            check("map web: /api/repos discovers projects", len(repos) >= 1)
+        tr = json.load(urllib.request.urlopen(base + "/api/tree?repo=" + urllib.request.quote(ROOT), timeout=20))
         check("map web: /api/tree?repo builds a chosen project", len(tr.get("files", [])) > 10)
         try:
-            a = json.load(urllib.request.urlopen(base + "/api/file?abs=/etc/passwd", timeout=3))
+            a = json.load(urllib.request.urlopen(base + "/api/file?abs=/etc/passwd", timeout=20))
             aguard = not a.get("source")
         except urllib.error.HTTPError as he:
             aguard = he.code in (400, 403, 404)
@@ -237,7 +251,7 @@ def test_map_web():
         check("map web: /api/live streams the event bus", b"live_hello" in buf)
     finally:
         p.kill()
-        try: p.wait(timeout=5)
+        try: p.wait(timeout=20)
         except Exception: pass
 
 

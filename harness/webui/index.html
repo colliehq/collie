@@ -305,6 +305,18 @@
   .mcp-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: var(--surface-2); }
   .mcp-top { display: flex; align-items: center; gap: 8px; }
   .mcp-name { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  /* Services you can connect without knowing anything about them. */
+  .mcp-cat { padding: 10px 0 14px; border-bottom: 1px dashed var(--line); margin-bottom: 12px; }
+  .mcp-cat-h { font-size: 12px; font-weight: 600; color: var(--ink); margin-bottom: 8px; }
+  .mcp-cat-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mcp-chip {
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  .mcp-chip:hover:not(:disabled) { background: var(--raise); border-color: var(--pine); }
+  .mcp-chip:disabled { opacity: .55; cursor: default; }
+  .mcp-cat-n { font-size: 11px; color: var(--faint); margin-top: 7px; }
   .mcp-badge { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase;
                color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
   .mcp-badge.warn { color: #d08700; border-color: color-mix(in srgb, #d08700 45%, transparent); }
@@ -1456,6 +1468,9 @@
     "failed to load": "加载失败",
     "steering delivered": "转向已送达",
     "not delivered": "未送达",
+    "Connect a service": "连接一个服务",
+    "signs in through your browser — no token to find": "在浏览器里授权——不用去找 token",
+    "opening browser…": "正在打开浏览器…",
     "file(s) changed": "个文件有改动",
     "no files changed": "没有文件改动",
     "still working": "仍在运行",
@@ -1504,6 +1519,9 @@
     "failed to load": "載入失敗",
     "steering delivered": "轉向已送達",
     "not delivered": "未送達",
+    "Connect a service": "連接一個服務",
+    "signs in through your browser — no token to find": "在瀏覽器裡授權——不用去找 token",
+    "opening browser…": "正在開啟瀏覽器…",
     "file(s) changed": "個檔案有變更",
     "no files changed": "沒有檔案變更",
     "still working": "仍在執行",
@@ -1541,6 +1559,9 @@
       "saved · applies to your next message": "保存しました · 次のメッセージから有効",
       "failed to load": "読み込みに失敗しました", "steering delivered": "誘導を送信しました",
       "not delivered": "送信されませんでした",
+      "Connect a service": "サービスに接続",
+      "signs in through your browser — no token to find": "ブラウザで認証——トークン探し不要",
+      "opening browser…": "ブラウザを開いています…",
       "file(s) changed": "件のファイルが変更",
       "no files changed": "変更なし",
       "still working": "実行中",
@@ -1573,6 +1594,9 @@
       "saved · applies to your next message": "저장됨 · 다음 메시지부터 적용",
       "failed to load": "불러오지 못했습니다", "steering delivered": "방향 지시 전달됨",
       "not delivered": "전달되지 않음",
+      "Connect a service": "서비스 연결",
+      "signs in through your browser — no token to find": "브라우저에서 로그인 — 토큰 불필요",
+      "opening browser…": "브라우저 여는 중…",
       "file(s) changed": "개 파일 변경",
       "no files changed": "변경 없음",
       "still working": "아직 실행 중",
@@ -1605,6 +1629,9 @@
       "saved · applies to your next message": "guardado · se aplica a tu próximo mensaje",
       "failed to load": "error al cargar", "steering delivered": "guía entregada",
       "not delivered": "no entregada",
+      "Connect a service": "Conectar un servicio",
+      "signs in through your browser — no token to find": "se autoriza en tu navegador — sin token que buscar",
+      "opening browser…": "abriendo el navegador…",
       "file(s) changed": "archivo(s) cambiados",
       "no files changed": "sin cambios",
       "still working": "sigue trabajando",
@@ -1637,6 +1664,9 @@
       "saved · applies to your next message": "enregistré · s'applique à votre prochain message",
       "failed to load": "échec du chargement", "steering delivered": "orientation transmise",
       "not delivered": "non transmise",
+      "Connect a service": "Connecter un service",
+      "signs in through your browser — no token to find": "autorisation dans le navigateur — aucun jeton à chercher",
+      "opening browser…": "ouverture du navigateur…",
       "file(s) changed": "fichier(s) modifiés",
       "no files changed": "aucun changement",
       "still working": "toujours en cours",
@@ -1921,11 +1951,30 @@
                 + '<div class="mcp-acts"><button id="mcpAddGo">' + setEsc(t("Add")) + "</button>"
                 + '<button id="mcpAddCancel">' + setEsc(t("Cancel")) + "</button></div>"
                 + '<div class="mcp-err" id="mcpAddErr" hidden></div></div></div>';
+    // Services whose address Collie already knows: one press adds them and goes straight into the
+    // browser handshake. The panel used to open with a form asking for a URL — which is a strange
+    // thing to demand of the screen whose whole job is to tell you what is available.
+    var cat = (d && d.catalog) || [];
+    var catRow = "";
+    if (cat.length) {
+      catRow = '<div class="mcp-cat"><div class="mcp-cat-h">' + setEsc(t("Connect a service")) + "</div>"
+             + '<div class="mcp-cat-row">' + cat.map(function (c) {
+                 return '<button class="mcp-chip" data-mcp="connect" data-name="' + setEsc(c.name) + '">'
+                      + setEsc(c.label) + "</button>";
+               }).join("") + "</div>"
+             + '<div class="mcp-cat-n">' + setEsc(t("signs in through your browser — no token to find")) + "</div></div>";
+    }
     if (!servers.length) {
-      box.innerHTML = '<div class="mcp-empty">' + setEsc(t("No MCP servers configured yet.")) + "</div>" + addForm;
+      box.innerHTML = catRow
+                    + '<div class="mcp-empty">' + setEsc(t("No MCP servers configured yet.")) + "</div>" + addForm;
       return;
     }
-    box.innerHTML = servers.map(function (s) {
+    box.innerHTML = catRow + serversHtml(servers) + addForm;
+    return;
+  }
+
+  function serversHtml(servers) {
+    return servers.map(function (s) {
       var badges = '<span class="mcp-badge">' + setEsc(s.kind) + "</span>";
       badges += '<span class="mcp-badge">' + (s.tools == null ? "? " + t("tools") : s.tools + " " + t("tools")) + "</span>";
       if (s.auth === "login-needed") badges += '<span class="mcp-badge warn">' + setEsc(t("not signed in")) + "</span>";
@@ -1945,7 +1994,7 @@
       return '<div class="mcp-item"><div class="mcp-top"><span class="mcp-name">' + setEsc(s.name) + "</span>"
            + badges + '</div><div class="mcp-target">' + setEsc(s.target) + "</div>"
            + err + '<div class="mcp-acts">' + acts + "</div></div>";
-    }).join("") + addForm;
+    }).join("");
   }
 
   // Delegated (the box is re-rendered on every action, so per-element handlers would go stale).
@@ -1998,7 +2047,9 @@
       if (p && p.servers) mcpRender({ servers: p.servers });
       // Sign-in opens a browser tab and finishes on human time, so watch the state rather than
       // claiming it worked: poll until the badge actually changes (or the error shows up).
-      if (action === "login") {
+      // connect is add + sign-in in one press, so it finishes on human time exactly like login:
+      // watch the badge change instead of claiming success the moment the POST returns.
+      if (action === "login" || action === "connect") {
         var n = 0;
         clearInterval(mcpPollTimer);
         mcpPollTimer = setInterval(function () {
