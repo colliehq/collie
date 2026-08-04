@@ -450,14 +450,40 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
     else:
         # A path into a translocated copy is worse than no path: it works when they
         # try it and is gone at the next launch, and nothing connects the two.
-        from . import plat as _plat
-        if _plat.translocated():
+        from . import plat
+        if plat.translocated():
             print("  ⚠ Collie is running from a temporary copy macOS made because it was opened\n"
                   "    straight from the disk image or from Downloads. Anything below points into\n"
                   "    that copy and disappears when Collie quits.\n"
                   "    Move Collie.app into your Applications folder and open it from there.")
-        print("  load harness/browser_ext/ in Chrome (or run with --browser for an auto browser), "
-              "then run collie with COLLIE_BROWSER_BRIDGE=1", flush=True)
+        # The absolute path, on the clipboard, with the Finder already open on it.
+        # Chrome's "Load unpacked" is a macOS file picker, and a picker cannot be
+        # typed into — a path gets in by ⌘⇧G and a paste, or by dragging the folder
+        # onto it. Printing a path the reader then has to transcribe by hand is the
+        # step people give up at, and it was not even printing an absolute one.
+        ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
+        print("  Chrome → chrome://extensions → Load unpacked → press ⌘⇧G and paste:", flush=True)
+        print("    %s" % ext_dir, flush=True)
+        hints = []
+        if plat.is_macos():
+            try:
+                # LC_ALL, because pbcopy transcodes to the locale's encoding and a
+                # process launched from Finder inherits no LANG — a home directory
+                # with non-ASCII in it would otherwise arrive mangled, the same
+                # fallback that turns 测试中文 into ÊµãËØï‰∏≠Êñá.
+                import subprocess as _sp
+                _sp.run(["pbcopy"], input=ext_dir.encode("utf-8"),
+                        env=dict(os.environ, LC_ALL="en_US.UTF-8"), check=True, timeout=5)
+                hints.append("copied to your clipboard")
+            except Exception:
+                pass
+        if plat.reveal_in_file_manager(ext_dir):
+            hints.append("and opened in a Finder window you can drag it from")
+        if hints:
+            print("  (%s)" % " ".join(hints), flush=True)
+        print("  Or skip all of it: `collie browser-bridge --browser` opens a browser with the "
+              "extension already loaded.", flush=True)
+        print("  Then run collie with COLLIE_BROWSER_BRIDGE=1", flush=True)
         try:
             while True:
                 time.sleep(3600)
