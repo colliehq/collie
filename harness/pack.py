@@ -9,10 +9,12 @@ losing attempt — a no-op beats shipping a wrong edit.
 
 CLI:  collie pack "task" -n 3 --check "python -m pytest -q" [--apply]
 """
+import concurrent.futures
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 
 _SKIP = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache",
          ".pytest_cache", ".collie", "dist", "build", ".tox"}
@@ -89,19 +91,58 @@ def _copy_back(src, dst):
                 pass
 
 
+def normalize_roster(roster, provider, model):
+    """[(provider, model), …] from a roster of "provider", "provider:model", or pairs.
+
+    maxsplit=1 on purpose — an ollama tag is itself colon-separated ("ollama:qwen2.5-coder:7b").
+    An entry that names no model leaves it None so make_provider picks that backend's own default;
+    carrying the caller's model across backends would send `deepseek-chat` to Anthropic.
+    """
+    if not roster:
+        return [(provider, model)]
+    members = []
+    for entry in roster:
+        if isinstance(entry, (tuple, list)):
+            name, want = (list(entry) + [None])[:2]
+        elif ":" in str(entry):
+            name, want = str(entry).split(":", 1)
+        else:
+            name, want = entry, None
+        name = str(name or provider or "").strip()
+        want = str(want).strip() if want else ""
+        members.append((name, want or None))
+    return members
+
+
 def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
-             apply=False, emit=None, project="pack"):
-    """Run N isolated attempts, select the winner by execution, optionally apply it back."""
+             apply=False, emit=None, project="pack", roster=None, parallel=1):
+    """Run N isolated attempts, select the winner by execution, optionally apply it back.
+
+    ``roster`` runs the attempts on DIFFERENT backends, assigned round-robin. Selection stays what
+    PASSES, never opinion, so a weak member costs tokens and nothing else — it cannot win unless it
+    actually passed. That is what makes model diversity safe to add HERE rather than somewhere a
+    model would be doing the judging.
+
+    ``parallel`` is the maximum number of attempts in flight. It stays 1 by default: several
+    attempts at once on ONE backend is a rate-limit magnet, and a subscription plan is the easiest
+    thing to trip. A roster spread across different accounts is the case worth raising it for.
+    """
     from .cli import make_harness
     from . import settings
     from .scratch import isolate_harness
     provider = provider or settings.get("PROVIDER", "anthropic")   # env > settings.json > API default
+    members = normalize_roster(roster, provider, model)
     n = max(1, min(8, int(n)))
-    # Check the backend BEFORE spending attempts on it. An expired subscription token or an unset
-    # API key otherwise shows up as N identical failures and a "no attempt passed the check",
-    # which reads like the task was hard rather than like nobody was logged in.
+    if roster and len(members) > n:
+        # Never silently drop a model someone named: a roster of 4 at n=3 would have looked like a
+        # complete comparison while one backend never ran at all.
+        n = min(8, len(members))
+    parallel = max(1, min(int(parallel or 1), n))
+    # Check the backends BEFORE spending attempts on them. An expired subscription token or an
+    # unset API key otherwise shows up as N identical failures and a "no attempt passed the
+    # check", which reads like the task was hard rather than like nobody was logged in.
     from .catalog import preflight
-    blocked = preflight([provider])
+    blocked = preflight(members)
     if blocked:
         return {"n": n, "winner": None, "reason": "; ".join(blocked), "applied": False,
                 "attempts": [], "total_cost_usd": 0.0}
@@ -111,13 +152,17 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
     # isolate_harness below then keeps reads on the shared project so they still start level.
     run_tag = "%s-%d" % (project, os.getpid())
     have_check = bool(check)
-    attempts, dirs = [], []
-    for i in range(n):
-        iso = _isolate(cwd)
-        dirs.append(iso)
-        rec = {"idx": i, "dir": iso}
+    dirs = [_isolate(cwd) for _ in range(n)]
+    emit_lock = threading.Lock()
+
+    def _attempt(i):
+        iso = dirs[i]
+        member_provider, member_model = members[i % len(members)]
+        # Which backend produced which candidate. Without this the winner is anonymous and the one
+        # question a mixed roster exists to answer — WHICH model wins, how often — is unanswerable.
+        rec = {"idx": i, "dir": iso, "provider": member_provider, "model": member_model}
         try:
-            h = make_harness(iso, provider=provider, model=model,
+            h = make_harness(iso, provider=member_provider, model=member_model,
                              project="%s-%d" % (run_tag, i),
                              code_search=True, exec_code=True)
             isolate_harness(h, read_project=project)
@@ -136,8 +181,29 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
             rec["check_pass"] = ok
             rec["check_tail"] = tail
         if emit:
-            emit(i, rec)
-        attempts.append(rec)
+            # Serialized: `emit` belongs to the caller (the web UI streams from it) and was written
+            # against a sequential loop. Concurrency here is ours to contain, not theirs to absorb.
+            with emit_lock:
+                emit(i, rec)
+        return rec
+
+    if parallel == 1:
+        attempts = [_attempt(i) for i in range(n)]
+    else:
+        done = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
+            futures = {pool.submit(_attempt, i): i for i in range(n)}
+            for future in concurrent.futures.as_completed(futures):
+                i = futures[future]
+                try:
+                    done[i] = future.result()
+                except Exception as e:      # one worker must never take the whole pack down
+                    member_provider, member_model = members[i % len(members)]
+                    done[i] = {"idx": i, "dir": dirs[i], "answer": "", "verified": False,
+                               "turns": 0, "cost_usd": 0.0, "provider": member_provider,
+                               "model": member_model,
+                               "error": "%s: %s" % (type(e).__name__, e)}
+        attempts = [done[i] for i in range(n)]     # attempt order, not finish order
 
     winner_idx, reason = select(attempts, have_check)
     applied = False
@@ -148,9 +214,16 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
     result = {"n": n, "winner": winner_idx, "reason": reason, "applied": applied,
               "attempts": [{k: v for k, v in a.items() if k not in ("dir", "check_tail")}
                            for a in attempts],
+              "roster": ["%s:%s" % (p, m) if m else p for p, m in members],
+              "parallel": parallel,
               "total_cost_usd": round(sum(a.get("cost_usd", 0.0) for a in attempts), 4)}
     if winner_idx is not None:
-        result["answer"] = attempts[winner_idx].get("answer", "")
+        best = attempts[winner_idx]
+        result["answer"] = best.get("answer", "")
+        # Name the backend that won. "pack picked attempt 2" does not answer "which model should I
+        # be running", which is the only reason to pay for a mixed roster.
+        result["winner_provider"] = best.get("provider")
+        result["winner_model"] = best.get("model")
     # clean the throwaway trees
     for d in dirs:
         shutil.rmtree(os.path.dirname(d), ignore_errors=True)

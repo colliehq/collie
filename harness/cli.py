@@ -1011,22 +1011,29 @@ def cmd_pack(args):
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
 
+    roster = [x.strip() for x in (getattr(args, "roster", None) or "").split(",") if x.strip()]
+
     def _emit(i, rec):
         tag = ("check=%s " % ("pass" if rec.get("check_pass") else "fail")) if args.check else ""
-        print("  attempt %d: %sverified=%s turns=%s%s" % (
-            i, tag, rec.get("verified"), rec.get("turns"),
+        who = (" [%s]" % rec["provider"]) if roster and rec.get("provider") else ""
+        print("  attempt %d%s: %sverified=%s turns=%s%s" % (
+            i, who, tag, rec.get("verified"), rec.get("turns"),
             (" ERROR " + rec["error"]) if rec.get("error") else ""), flush=True)
 
     res = _pack.run_pack(args.task, cwd, n=args.n, check=args.check, provider=provider,
-                         model=args.model, apply=args.apply, emit=_emit)
+                         model=args.model, apply=args.apply, emit=_emit,
+                         roster=roster or None, parallel=getattr(args, "parallel", 1))
     if getattr(args, "json", False):
         print(_json.dumps(res, ensure_ascii=False))
         return 0
     if res["winner"] is None:
         print("\nno winner: %s (nothing applied)" % res["reason"])
         return 1
-    print("\nwinner: attempt %d (%s) · total $%.4f across %d attempts%s" % (
-        res["winner"], res["reason"], res["total_cost_usd"], res["n"],
+    won_on = ""
+    if res.get("winner_provider") and len(set(res.get("roster") or [])) > 1:
+        won_on = " on %s" % (res.get("winner_model") or res["winner_provider"])
+    print("\nwinner: attempt %d%s (%s) · total $%.4f across %d attempts%s" % (
+        res["winner"], won_on, res["reason"], res["total_cost_usd"], res["n"],
         " · APPLIED to cwd" if res["applied"] else " · not applied (use --apply)"))
     print("\n%s" % res.get("answer", ""))
     return 0
@@ -1752,6 +1759,14 @@ def main(argv=None):
     pk.add_argument("--apply", action="store_true",
                     help="copy the winning attempt's files back over the working dir")
     pk.add_argument("--provider", default=None); pk.add_argument("--model", default=None)
+    pk.add_argument("--roster", default=None,
+                    help="comma-separated backends to spread the attempts over, e.g. "
+                         "'anthropic-oauth,codex-oauth,deepseek:deepseek-reasoner'. Assigned "
+                         "round-robin; n rises to cover every backend named. Selection is still "
+                         "by what PASSES, so a weak member can only cost tokens.")
+    pk.add_argument("--parallel", type=int, default=1,
+                    help="max attempts in flight (default 1). Worth raising for a roster spread "
+                         "over different accounts; several at once on ONE plan invites rate limits.")
     pk.add_argument("--cwd", default=None)
     pk.add_argument("--json", action="store_true", help="print a JSON result")
     pk.set_defaults(fn=cmd_pack)
