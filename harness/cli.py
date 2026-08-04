@@ -859,6 +859,19 @@ def cmd_browser_bridge(args):
     return bb.main(argv)
 
 
+def cmd_slack(args):
+    """Answer to an @mention in Slack: one named collie per machine, a queue, and
+    an autonomy setting it says out loud. Socket Mode, so the laptop needs no
+    public address — see harness/slackbot.py for why that decides the design."""
+    from . import slackbot
+    argv = []
+    for flag in ("name", "autonomy", "cwd", "provider", "announce"):
+        v = getattr(args, flag, "")
+        if v:
+            argv += ["--" + flag, str(v)]
+    return slackbot.main(argv)
+
+
 def cmd_record(args):
     """Screen recording with a circular webcam bubble + mic (Loom / Reframe style), via ffmpeg.
     Sub-actions: start (default) / stop / status / devices. See harness/record.py."""
@@ -1599,7 +1612,7 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "record", "mcp", "init",
+        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "init",
         "setup", "jobs", "config", "uninstall", "update", "menubar"}
 
 
@@ -1826,6 +1839,16 @@ def main(argv=None):
                     help="start the bridge hidden at every logon (keeps real-browser powers)")
     pb.add_argument("--uninstall", action="store_true", help="remove the logon autostart")
     pb.set_defaults(fn=cmd_browser_bridge)
+
+    # slack: @ a named collie in a channel and it queues the ask and works on it
+    psl = sub.add_parser("slack", help="answer @mentions in Slack (Socket Mode; one named collie per machine)")
+    psl.add_argument("--name", default="", help="the name this collie answers to (kept across restarts)")
+    psl.add_argument("--autonomy", default="", choices=["propose", "branch", "main"],
+                     help="what it may do unattended; announced in the channel")
+    psl.add_argument("--cwd", default="", help="repository it works in (default: here)")
+    psl.add_argument("--provider", default="")
+    psl.add_argument("--announce", default="", help="channel id to report in to on start")
+    psl.set_defaults(fn=cmd_slack)
 
     # record: Loom/Reframe-style screen capture with a circular webcam bubble + mic, via ffmpeg
     prc = sub.add_parser("record", help="screen recording with a circular webcam bubble + mic "
