@@ -104,6 +104,7 @@ if $PY tests/test_runs_registry.py >/dev/null 2>&1; then echo "  runs_registry O
 if $PY tests/test_mirror_backlog.py >/dev/null 2>&1; then echo "  mirror_backlog OK"; else echo "  mirror_backlog FAIL"; rc=1; fi
 if $PY tests/test_worktree.py >/dev/null 2>&1; then echo "  worktree OK"; else echo "  worktree FAIL"; rc=1; fi
 if $PY tests/test_slackbot.py >/dev/null 2>&1; then echo "  slackbot OK"; else echo "  slackbot FAIL"; rc=1; fi
+if $PY tests/test_packaging_facts.py >/dev/null 2>&1; then echo "  packaging OK"; else echo "  packaging FAIL"; rc=1; fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then

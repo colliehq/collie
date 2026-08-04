@@ -43,6 +43,37 @@ def is_wsl() -> bool:
         return False
 
 
+def in_app_bundle() -> bool:
+    """Are we running from inside the shipped, code-signed Collie.app?
+
+    The launcher exports COLLIE_BUNDLED; the path check is the belt for anyone who
+    invokes the bundled interpreter directly. It matters because a signed bundle is
+    *sealed*: writing a single file inside it invalidates the signature, and the
+    app then stops opening at some later date with nothing to connect it to the
+    write that did it.
+    """
+    import os as _os
+    if _os.environ.get("COLLIE_BUNDLED"):
+        return True
+    return "/Collie.app/Contents/" in _os.path.abspath(__file__)
+
+
+def translocated() -> bool:
+    """Is macOS running us from a throwaway copy?
+
+    Gatekeeper path-randomises a quarantined app that has never been moved by
+    Finder: open Collie straight from the dmg or from Downloads and it runs out of
+    /private/var/folders/…/AppTranslocation/…, a read-only copy that disappears
+    when the app quits.
+
+    Everything works — which is the problem. Any path we hand the user (the browser
+    extension directory above all) points into that copy, so they load it, it works
+    today, and it is gone tomorrow with nothing on screen having warned them.
+    """
+    import os as _os
+    return "/AppTranslocation/" in _os.path.abspath(__file__)
+
+
 def os_label() -> str:
     if is_wsl():
         return "WSL (Linux under Windows)"
