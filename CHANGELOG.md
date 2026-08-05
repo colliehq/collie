@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.20.30 — the two releases that were never tagged, and a browser that can finish a form
+
+- **v0.20.28 and v0.20.29 were written and never released.** Both have notes below and neither has
+  a git tag, so the newest thing anyone could install is v0.20.27, from 31 July: checkpoints, the
+  verify gate that stopped being Python-only, pack's independent attempts and one-attempt-per-model
+  have all been sitting in the repository, shipped to nobody. This release carries them.
+
+- **The bridge grew a hand.** A round trip to the browser is a MODEL TURN, so a six-field form cost
+  six turns and six copies of the page — `browser_script` runs a list of steps in one call and stops
+  at the first one that did not land. Snapshots became an accessibility TREE whose survivors, when
+  the cap bites, are chosen by importance (an open dialog first) rather than document order, which
+  used to drop precisely the modal that had just opened. Each space gets its OWN tab: `browser_open`
+  no longer adopts whatever the user had in front of them, after a run walked into a half-filled
+  form in someone's own window. Cross-origin iframes — embedded checkouts, payment fields, captchas
+  — can be read and driven, and a page that has them says so instead of quietly returning the top
+  document. Plus keys, hover, drag and a bare point: a menu that only opens on hover and a dialog
+  that only closes on Escape were unreachable with click and type alone.
+
+- **A token on the bridge, and a record of what it did.** The bridge drives the user's real
+  logged-in browser with trusted input, and until now anything running on the machine could drive
+  it: the `X-Collie-Bridge` header is not a secret. Chrome closed the equivalent hole in 136; an
+  extension that hands the capability back should not be looser than the browser it lives in.
+
+- **A native `<select>` was invisible to every tool that handles dropdowns.** `[role=combobox]`
+  matches an explicit role attribute, which a plain HTML dropdown does not carry — so the commonest
+  dropdown on the web was missing from `browser_fields`, unreachable by `browser_pick`, and answered
+  `browser_type` with `typed: true, landed: false` while the old option stayed selected. A form that
+  will not submit until a dropdown is set is a wall, and the agent could not see what it had hit.
+
+- **An upload that attached nothing reported success.** `attached: landed === transfer.files.length`
+  is true when BOTH are zero, and a DataTransfer can refuse `items.add` without throwing — so the
+  caller's only check passed on an empty file list. It is compared against what was asked for now,
+  and says which half refused: the browser before the input was touched, or the page after.
+
+- **A refusal that arrives as a dropped connection is not a refusal.** The bridge answered a blocked
+  POST without reading its body, and closing a socket with data still queued makes Windows send an
+  RST: the caller got `ConnectionAbortedError` instead of the 403 it was sent, about 2 times in 10.
+  The gate was always right — what was wrong is that "the connection dropped" reads as "the bridge
+  is down", so the thing that gets restarted is the thing that was working.
+
+- **Connect a service in one press — from the panel, the chat, or the terminal.** Asked to connect
+  Slack, Collie used to reach for an npm package wanting a bot token you mint by hand, while Slack
+  runs a remote endpoint that does OAuth in a browser and Collie has had the whole handshake (2.1,
+  PKCE, dynamic registration) the entire time. The missing piece was the address. A catalog of ten
+  endpoints — each probed and answered `401 WWW-Authenticate: Bearer` — now backs a chip in Settings,
+  a new `mcpctl_connect` tool, and `collie mcp connect <name>`. `mcpctl_add` told the model in its
+  own description that a bare name was enough and then refused one; a description and an
+  implementation that disagree are worse than neither, because only one of them is visible from the
+  chat.
+
+- **Collie sits in a Slack channel and answers to a name.** `@Rowan` in a channel queues the ask, on
+  Socket Mode rather than a webhook, because these are laptops behind NAT. Two gates before the ask
+  is read — which channel, and whose word — since a colleague inviting the bot elsewhere would
+  otherwise hand that room the ability to drive the machine.
+
+- **A provider can live outside this repository.** `make_provider` consults plugins LAST, so a third
+  party can add a backend without being able to take a built-in name, and a plugin that fails to
+  import says so rather than surfacing as "unknown provider".
+
+- **Three ways the Mac build was quietly wrong**, all found by opening our own shipped dmg: the app
+  inside it was never stapled (it fails only on the machine that is offline the first time it is
+  opened), the browser token was being written INSIDE the signed bundle, and the local build aborted
+  on every machine without a GITHUB_TOKEN while blaming a rate limit that was not there.
+
+- **Installing the extension is a two-gesture job.** Chrome's "Load unpacked" is a file picker, and a
+  picker cannot be typed into — so the absolute path goes on the clipboard and the folder is revealed
+  in the file manager, and `--headed` reaches the managed browser at last, which is what makes its
+  persistent profile worth signing into.
+
 ## v0.20.29 — pack's attempts were reading each other
 
 - **Best-of-N was not N independent attempts.** The trees were isolated; the memory was not. Every
