@@ -1970,7 +1970,7 @@
                }).join("") + "</div>"
              + '<div class="mcp-cat-n">' + setEsc(t("signs in through your browser — no token to find"))
              + (cat.some(function (c) { return c.byo_client; })
-                ? " · " + setEsc(t("· = needs an OAuth app of your own")) : "")
+                ? setEsc(t(" · a dot means it needs an OAuth app of your own")) : "")
              + "</div></div>";
     }
     if (!servers.length) {
