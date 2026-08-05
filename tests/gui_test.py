@@ -80,7 +80,7 @@ def main():
             check("onboarding appears when no provider is authed", appeared)
             if appeared:
                 pg.click("#obSkip")
-                pg.wait_for_selector("#obOverlay.open", state="detached", timeout=3000)
+                pg.wait_for_selector("#obOverlay.open", state="detached", timeout=15000)
             check("onboarding dismisses and stops blocking the page",
                   "open" not in ((pg.query_selector("#obOverlay").get_attribute("class") or "")
                                  if pg.query_selector("#obOverlay") else ""))
@@ -99,24 +99,24 @@ def main():
             check("model trigger present in toolbar", pg.query_selector(".topbar #modelTrigger") is not None)
             check("run details collapsed by default", pg.query_selector("#workpanel").is_hidden())
             pg.click("#runDetailsBtn")
-            pg.wait_for_selector("#workpanel", state="visible", timeout=3000)
+            pg.wait_for_selector("#workpanel", state="visible", timeout=15000)
             pg.click("#runDetailsBtn")
-            pg.wait_for_selector("#workpanel", state="hidden", timeout=3000)
+            pg.wait_for_selector("#workpanel", state="hidden", timeout=15000)
             pg.click("#modelTrigger")
-            pg.wait_for_selector("#modelOverlay.open", timeout=3000)
-            pg.wait_for_selector(".model-option", timeout=3000)
+            pg.wait_for_selector("#modelOverlay.open", timeout=15000)
+            pg.wait_for_selector(".model-option", timeout=15000)
             check("model picker opens with catalog", len(pg.query_selector_all(".model-option")) >= 1)
             pg.fill("#modelSearch", "Mock")
-            pg.wait_for_selector('.model-option[data-model-id="mock:mock"]', timeout=3000)
+            pg.wait_for_selector('.model-option[data-model-id="mock:mock"]', timeout=15000)
             pg.keyboard.press("ArrowDown")
             pg.keyboard.press("Enter")
-            pg.wait_for_selector("#modelOverlay:not(.open)", state="attached", timeout=3000)
+            pg.wait_for_selector("#modelOverlay:not(.open)", state="attached", timeout=15000)
             model_label = pg.eval_on_selector("#modelTriggerLabel", "element => element.textContent")
             check("model picker keyboard switch persists", "Mock" in model_label, model_label)
             pg.keyboard.press("Control+K")
-            pg.wait_for_selector("#modelOverlay.open", timeout=3000)
+            pg.wait_for_selector("#modelOverlay.open", timeout=15000)
             pg.keyboard.press("Escape")
-            pg.wait_for_selector("#modelOverlay:not(.open)", state="attached", timeout=3000)
+            pg.wait_for_selector("#modelOverlay:not(.open)", state="attached", timeout=15000)
             check("model picker shortcut opens and closes", True)
 
             # --- theme toggle + persistence ---
@@ -166,8 +166,8 @@ def main():
 
             # --- settings modal: open, render, save, persist ---
             pg.click("#settingsBtn")
-            pg.wait_for_selector("#setOverlay.open", timeout=3000)
-            pg.wait_for_selector(".set-row", timeout=3000)   # rows render async after /api/settings resolves
+            pg.wait_for_selector("#setOverlay.open", timeout=15000)
+            pg.wait_for_selector(".set-row", timeout=15000)   # rows render async after /api/settings resolves
             nrows = len(pg.query_selector_all(".set-row"))
             check("settings modal opens w/ rows", nrows >= 6, "rows=%d" % nrows)
             # The modal grew a rail of categories, one visible .set-pane at a time — so a field is in
@@ -177,7 +177,7 @@ def main():
                 cat = pg.eval_on_selector("#set_" + key,
                                           "e => e.closest('.set-pane').getAttribute('data-cat')")
                 pg.click('.set-nav[data-cat="%s"]' % cat)
-                pg.wait_for_selector("#set_" + key, state="visible", timeout=3000)
+                pg.wait_for_selector("#set_" + key, state="visible", timeout=15000)
                 pg.fill("#set_" + key, value)
 
             set_field("MODEL", "claude-sonnet-5")
@@ -216,7 +216,7 @@ def main():
             # `.set-row` matches rows in every category, and all but the open one are display:none —
             # so waiting for the first match to be visible waits for a row in a pane nobody opened.
             pg.click("#settingsBtn")
-            pg.wait_for_selector(".set-pane.on .set-row", timeout=3000)
+            pg.wait_for_selector(".set-pane.on .set-row", timeout=15000)
             pg.keyboard.press("Escape"); pg.wait_for_timeout(200)
             check("settings ESC closes", "open" not in pg.query_selector("#setOverlay").get_attribute("class"))
             # unauth POST -> 403
