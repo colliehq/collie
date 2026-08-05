@@ -176,18 +176,37 @@ collie -p "..." --mode auto              # ask nothing (sandboxes, CI)
 collie risk                              # what collie can reach, grouped by how far
 ```
 
-Two things worth knowing:
+Three things worth knowing:
 
 - **"Always allow" is pinned to a target, never to a tool.** Approving clicks on
   `http://localhost:5173` does not approve clicks on your bank — the rule is
   `browser_click → http://localhost:5173`, the origin is re-read live on every call, and it lasts
   one run. There is deliberately no way to express "always allow browser_click".
-- **Nobody there means no.** Piped, in CI, or with no terminal, off-machine calls are refused with
-  a reason the model can work around, rather than run because no one objected. Unattended does not
-  raise the ceiling; it only changes who can answer.
+- **Unattended does not raise the ceiling — it changes who can answer.** When nobody is at the
+  machine, the question goes to the Inbox and the run *suspends*; your phone gets a nudge, and you
+  answer from there, from the browser, or with `collie inbox allow <id>`. One record, so whoever
+  answers first is the one that counts. With no surface at all (piped, CI), off-machine calls are
+  refused with a reason the model can work around — never run because no one objected.
+- **Only you can widen anything.** A repo's `.collie/allow.toml` is inert until you `collie trust`
+  that exact directory; a persona can only *narrow* what you allowed; and the risk overrides have
+  no tool and no config hook, because something collie loaded must never be able to reclassify
+  itself as harmless.
 
 In an editor, this is the editor's own prompt: collie speaks ACP's `session/request_permission`, so
 Zed / JetBrains / neovim render their native approval UI.
+
+```bash
+collie inbox                             # what is waiting on you, across runs
+collie inbox allow <id>                  # …answer it from anywhere
+collie trust                             # let THIS repo's .collie/allow.toml count
+collie audit --unexplained               # anything that ran silently without citing a rule
+collie risk --set 'mcp__fs__read_*' --risk read    # stop being asked about a server you have read
+collie -p "..." --persona webwork        # a role: identity + tools + a stricter mode
+```
+
+`collie audit --unexplained` is the one to remember. Every call that runs *without* asking records
+the rule that let it through, so the question "why was I not asked about that?" has an answer. It
+should always print nothing.
 
 ## Architecture (abstractions & seams)
 

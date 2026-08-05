@@ -375,6 +375,23 @@ def _provider() -> str:
     return os.environ.get("COLLIE_PROVIDER", "")
 
 
+def _perm(item) -> dict:
+    """One parked approval, as the browser needs it.
+
+    `body` is the argument preview the loop produced from PRE-redaction arguments — the
+    gate runs before `_redact.restore`, so a secret the model only ever saw as a
+    placeholder stays a placeholder on its way to the screen. Nothing here goes looking
+    for the real value to make a nicer card.
+
+    `rule_offer` is empty for calls that cannot carry a standing rule, and the UI must
+    hide "always" when it is — an "always" button that silently means "just this once"
+    lies to the person clicking it.
+    """
+    return {"id": item.id, "tool": item.tool, "body": item.body, "title": item.title,
+            "target": item.target, "risk": item.risk, "rule_offer": item.rule_offer,
+            "state": item.state}
+
+
 class Handler(BaseHTTPRequestHandler):
     # HTTP/1.0 (the default) closes the connection when the handler returns, which is exactly
     # what we want for SSE: after the `done` event we return and the socket closes cleanly. The
@@ -488,6 +505,71 @@ class Handler(BaseHTTPRequestHandler):
             return True
         except queue.Full:
             return False
+
+    # -- approvals: the session's Inbox, present only while a run is in flight ----
+    _inbox_lock = threading.Lock()
+    _inbox_runs: dict = {}
+
+    @classmethod
+    def _inbox_open(cls, sid, store):
+        with cls._inbox_lock:
+            old = cls._inbox_runs.get(sid)
+            cls._inbox_runs[sid] = store
+        if old is not None and old is not store:
+            # A previous run for this session left questions nobody can act on any more.
+            try:
+                old.resolve_session(sid)
+                old.close()
+            except Exception:
+                pass
+
+    @classmethod
+    def _inbox_close(cls, sid):
+        with cls._inbox_lock:
+            store = cls._inbox_runs.pop(sid, None)
+        if store is not None:
+            try:
+                # An approval whose run has ended can never be meaningfully granted; leaving
+                # it pending would show a decision that no longer does anything.
+                store.resolve_session(sid)
+                store.close()
+            except Exception:
+                pass
+
+    @classmethod
+    def _inbox_answer(cls, sid, item_id, resolution):
+        """Answer a parked question. False when there is no live run, the item is unknown,
+        or somebody else got there first — the loser is told nothing happened."""
+        with cls._inbox_lock:
+            store = cls._inbox_runs.get(sid)
+        if store is None:
+            return False
+        return bool(store.resolve(item_id, resolution))
+
+    @classmethod
+    def _inbox_pending(cls, sid):
+        with cls._inbox_lock:
+            store = cls._inbox_runs.get(sid)
+        return [_perm(i) for i in store.pending(sid)] if store is not None else []
+
+    @classmethod
+    def _notify_waiting(cls, sid, item):
+        """Push the question to a paired phone.
+
+        Run-finished notices are rate-limited by NOTIFY_AFTER_MS, because a run that took
+        two seconds does not need to buzz anybody. This one is not throttled and never
+        should be: the run is STOPPED until it is answered, so the notification is the
+        only thing that will ever restart it. A silent parked approval is a run that
+        appears to have hung.
+        """
+        if REMOTE is None:
+            return
+        try:
+            REMOTE.notify("Collie needs your approval",
+                          ("%s — %s" % (item.tool, item.body))[:180],
+                          session=sid, thread=sid)
+        except Exception:
+            pass                      # never fail a run over a notification
 
     @classmethod
     def _img_put(cls, media_type, data):
@@ -1550,6 +1632,34 @@ class Handler(BaseHTTPRequestHandler):
                 if not sid or not text:
                     return self._send_json({"queued": False, "error": "need session + q"}, 400)
                 return self._send_json({"queued": Handler._steer_push(sid, text[:4000])})
+            if path == "/api/approve":
+                # Answer a parked approval. Same CSRF gate and tiny body as /api/steer.
+                # {resolved:false} means the run ended, the item is unknown, or another
+                # surface answered first — never an error, because a lost race is not a fault.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                try:
+                    n = int(self.headers.get("content-length") or 0)
+                except ValueError:
+                    n = 0
+                if n <= 0 or n > 4096:
+                    return self._send_json({"resolved": False, "error": "bad body"}, 400)
+                try:
+                    body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+                except (ValueError, UnicodeDecodeError):
+                    return self._send_json({"resolved": False, "error": "bad json"}, 400)
+                sid = (body or {}).get("session") or ""
+                item = (body or {}).get("id") or ""
+                answer = str((body or {}).get("answer") or "")
+                # An unrecognised answer is a refusal, decided here rather than trusted from
+                # the wire: inbox.outcome_of maps anything it does not know to reject, so a
+                # malformed or replayed body can never become consent.
+                from .inbox import R_ALLOW, R_ALWAYS, R_DENY, R_NEVER
+                if answer not in (R_ALLOW, R_ALWAYS, R_DENY, R_NEVER):
+                    answer = R_DENY
+                if not sid or not item:
+                    return self._send_json({"resolved": False, "error": "need session + id"}, 400)
+                return self._send_json({"resolved": Handler._inbox_answer(sid, item, answer)})
             self._send_json({"error": "not found"}, 404)
         except BrokenPipeError:
             pass
@@ -2108,8 +2218,12 @@ class Handler(BaseHTTPRequestHandler):
             # build INSIDE the try: make_harness -> AnthropicOAuth can raise on a missing token
             # (the advertised real path), and the SSE headers are already committed — so a
             # provider error must arrive as a clean `done{error}` frame, not an escaped 500.
+            from .cli import default_gate
+            # `prov` (not _provider()) — it is the provider this request already resolved and
+            # reported in the frames above; re-reading it here could answer differently.
             h = make_harness(cwd, provider=prov, project="web",
-                             code_search=True, web_search=True, exec_code=True, delegate=True)
+                             code_search=True, web_search=True, exec_code=True, delegate=True,
+                             gate=default_gate(cwd))
             # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
             # shell + the user's logged-in browser. Nudge it to ACT on local/system questions (time, tz,
             # hardware, status, location) via bash/powershell.exe instead of refusing for "lack of a tool".
@@ -2163,6 +2277,17 @@ class Handler(BaseHTTPRequestHandler):
                                       Handler._mirror_pub(sid, kind, d))
             h.stream_cb = lambda piece: (_tx("token", {"t": piece}),
                                          Handler._mirror_pub(sid, "token", {"t": piece}))  # real token streaming
+            # Approvals. The card is driven by the Inbox ITEM, not by a separate event type:
+            # one record means a question answered on the phone closes the card in the browser
+            # and the other way round, and whoever answers first is the one that counts.
+            # It rides the mirror as well as the socket, so re-attaching a window after a
+            # dropped connection re-delivers a still-pending question instead of losing it.
+            from .inbox import VIS_INLINE, InboxStore, inbox_approver
+            inbox = InboxStore(on_new=lambda it: (_tx("permission", _perm(it)),
+                                                  Handler._mirror_pub(sid, "permission", _perm(it)),
+                                                  Handler._notify_waiting(sid, it)))
+            Handler._inbox_open(sid, inbox)
+            h.approve = inbox_approver(inbox, sid, visibility=VIS_INLINE)
             # mid-run steering: register a per-session queue; the loop drains it at each turn boundary.
             # POST /api/steer pushes onto it. Text typed while Collie works becomes the next user turn.
             steer_q = Handler._steer_open(sid)
@@ -2254,6 +2379,7 @@ class Handler(BaseHTTPRequestHandler):
             # forever is worse than one that shows nothing, because it is believed.
             Handler._run_end(sid, error="ended without a verdict")
             Handler._steer_close(sid)      # run over: reject further steers for this session
+            Handler._inbox_close(sid)      # and close any question its run can no longer act on
             if h is not None:
                 try:
                     h.memory.close(); h.recorder.close()

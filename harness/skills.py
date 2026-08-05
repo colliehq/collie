@@ -70,9 +70,20 @@ def discover_skills(cwd: str, extra_dirs=None) -> list:
     """Scan the skill dirs for SKILL.md files -> [{name, description, path}], sorted by name for
     cross-run byte determinism. first-wins on duplicate name (project shadows global)."""
     # A skills dir INSIDE the working directory is repo-sourced (see module trust note); mark its
-    # skills UNTRUSTED so format_skill_index won't tell the model to follow them verbatim, unless the
-    # operator explicitly trusts the repo via COLLIE_TRUST_REPO_SKILLS.
+    # skills UNTRUSTED so format_skill_index won't tell the model to follow them verbatim, unless
+    # the user has trusted THIS directory (`collie trust`).
+    #
+    # That used to be COLLIE_TRUST_REPO_SKILLS — one global switch, so turning it on for a project
+    # you wrote turned it on for every repo you would ever clone. Per-path trust is the same
+    # decision asked about the thing it actually concerns. The env var still works, because
+    # somebody has it in a shell profile, but it is no longer the only way to say yes.
     trust_repo = _truthy(os.environ.get("COLLIE_TRUST_REPO_SKILLS", ""))
+    if not trust_repo:
+        try:
+            from .trust import TrustStore
+            trust_repo = TrustStore().is_trusted(cwd)
+        except Exception:
+            trust_repo = False          # anything unreadable means untrusted, never trusted
     cwd_abs = os.path.abspath(cwd)
     seen, out, walked = set(), [], set()
     for base in _skill_dirs(cwd, extra_dirs):

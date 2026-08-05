@@ -90,6 +90,14 @@ class Decision:
     rule: str = ""          # set when a standing rule allowed it, so audit can cite it
     risk: str = ""
     target: Optional[str] = None
+    # The rule an "always" answer would create, or "" when this call cannot carry one.
+    # Surfaces read it to decide whether to OFFER "always" at all — an "always" button
+    # that quietly degrades to allow-once is a lie told in the user's own interface.
+    rule_offer: str = ""
+    # Set by the loop, not the gate: the model's tool-call id. It is the idempotency key
+    # for a parked approval, so a reconnecting surface finds the same question rather
+    # than asking a second time.
+    call_id: str = ""
 
 
 @dataclass
@@ -155,7 +163,8 @@ class Gate:
         if target and (tool_name, target) in self.session_rules:
             rule = "%s → %s" % (tool_name, target)
             return d(True, "allowed by rule: " + rule, rule=rule, target=target)
-        return d(False, "acts outside this machine", needs_user=True, target=target)
+        return d(False, "acts outside this machine", needs_user=True, target=target,
+                 rule_offer=self.standing_rule_offer(tool_name, target) or "")
 
     # -- outcomes -----------------------------------------------------------
     def apply_outcome(self, outcome: "Outcome", tool_name: str, target: Optional[str]) -> None:

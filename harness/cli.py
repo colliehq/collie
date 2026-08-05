@@ -160,6 +160,30 @@ def _embedder(embed="auto"):
     return make_embedding(embed)
 
 
+def apply_persona(h, gate, name, cwd):
+    """Put a persona on a built harness: its identity text, its tool allowlist, and the
+    stricter of its mode and the user's. Returns the Persona, or None if there is no such
+    file — a missing persona is reported, never silently ignored, because running the
+    wrong role is worse than not running."""
+    from .personas import load
+    p = load(name, cwd)
+    if p is None:
+        return None
+    if gate is not None:
+        gate.mode = p.effective_mode(gate.mode)   # narrowing only — see personas.py
+    dropped = p.apply_tools(h.registry)
+    if p.prompt:
+        try:
+            base = getattr(h.composer, "identity", "") or ""
+            h.composer.identity = (base + "\n\n" + p.prompt).strip()
+        except AttributeError:
+            pass
+    print("  [persona] %s · mode %s%s" % (
+        p.name, gate.mode.value if gate is not None else "-",
+        " · %d tools withheld" % dropped if dropped else ""))
+    return p
+
+
 def default_gate(cwd, mode=None):
     """The gate a user-facing surface runs behind. Mode from COLLIE_MODE, else `project`
     (writes and commands inside cwd are covered by the fact that you launched collie
@@ -171,12 +195,21 @@ def default_gate(cwd, mode=None):
     were."""
     from .gate import Gate, Mode, mode_from_env
     from .settings import get as _sget
+    from .trust import repo_allowed_commands
     allowed = []
     raw = (os.environ.get("COLLIE_ALLOW_COMMANDS") or _sget("ALLOW_COMMANDS", "") or "").strip()
     if raw:
         allowed = [c.strip() for c in raw.split(",") if c.strip()]
+    # …plus whatever this repo asks for — but only once the user has trusted this exact
+    # directory (`collie trust`). Cloning a repository is not the same act as believing it.
+    allowed += repo_allowed_commands(cwd)
     chosen = Mode(mode) if mode else mode_from_env()   # an explicit flag beats the environment
     g = Gate(cwd=cwd, mode=chosen, allowed_commands=allowed)
+    try:                       # user-local risk overrides (mainly to relax MCP's default)
+        from .overrides import RiskOverrideStore
+        g.risk_overrides = RiskOverrideStore().resolver()
+    except ImportError:
+        pass
     try:                       # live page origin, for (tool, origin) rules — never cached
         from .browserbridge import current_origin
         g.origin_lookup = current_origin
@@ -204,6 +237,12 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     prov = make_provider(provider, model)
     h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project)
     h.gate = gate                             # None = ungated (benchmarks, delegate child, embedded)
+    if gate is not None:                      # record decisions only where there is a gate making them
+        try:
+            from .audit import AuditLog
+            h.audit = AuditLog()
+        except Exception:
+            pass                              # a read-only home must not stop a run
     try:                                      # Settings-panel turn limit (env/JSON), else keep default
         mt = os.environ.get("COLLIE_MAX_TURNS")
         if mt:
@@ -1053,6 +1092,11 @@ def cmd_run(args):
     if _sys.stdin is not None and _sys.stdin.isatty():
         from .approve import tty_approver
         h.approve = tty_approver(gate=_gate)
+    if getattr(args, "persona", None):
+        if apply_persona(h, _gate, args.persona, cwd) is None:
+            print("no persona named %r (looked in .collie/personas and ~/.collie/personas)"
+                  % args.persona)
+            return 2
     if getattr(args, "goal", None):              # pin a standing goal into CORE memory (every turn)
         h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
     # --continue / --resume: load a prior conversation THREAD so this run keeps full context
@@ -1219,12 +1263,74 @@ def cmd_compare(args):
     return 0
 
 
+def cmd_audit(args):
+    """What the gate decided. `--unexplained` is the one to run if you ever wonder why
+    something happened without being asked about: it lists calls that went ahead silently
+    and cannot say under which rule. It should always be empty."""
+    from .audit import AuditLog
+    log = AuditLog()
+    try:
+        rows = log.unexplained() if args.unexplained else log.list(
+            limit=args.limit, tool=args.tool, stage=args.stage)
+        if args.unexplained and not rows:
+            print("nothing ran unexplained — every silent call cites a rule.")
+            return 0
+        if not rows:
+            print("no gate decisions recorded yet.")
+            return 0
+        import datetime as _dt
+        for r in rows:
+            when = _dt.datetime.fromtimestamp(r["at"]).strftime("%m-%d %H:%M")
+            print("%s  %-9s %-9s %-22s %s" % (
+                when, r["stage"], r["risk"], r["tool"], r["rule"] or r["reason"]))
+            if r["target"]:
+                print("%s on %s" % (" " * 14, r["target"]))
+        return 0
+    finally:
+        log.close()
+
+
+def cmd_trust(args):
+    """Decide whether a directory's own `.collie/allow.toml` counts. Nothing else writes
+    this — a repo can ask, only you can agree."""
+    from .trust import TrustStore, canonical, repo_allowed_commands
+    store = TrustStore()
+    if args.action == "ls":
+        vals = store.list()
+        print("\n".join("  " + v for v in vals) if vals else "  (no directory is trusted)")
+        return 0
+    target = args.path or os.getcwd()
+    if args.action == "revoke":
+        print("no longer trusted: %s" % store.set(target, False))
+        return 0
+    asked = repo_allowed_commands(target, _AlwaysTrusted())    # show BEFORE agreeing
+    print("trusting a directory lets its .collie/allow.toml auto-run commands here.")
+    if asked:
+        print("\n%s asks to auto-run:" % canonical(target))
+        for c in asked:
+            print("    %s" % c)
+        print("\neach still has to match a command's argv exactly and carry no shell "
+              "operators,\nso none of them can chain into something else.")
+    else:
+        print("\n%s asks for nothing (no .collie/allow.toml)." % canonical(target))
+    print("\ntrusted: %s" % store.set(target, True))
+    return 0
+
+
+class _AlwaysTrusted:
+    """Preview helper: read what a directory ASKS for without granting it. Used only to
+    show the user the list before they decide — never to make a gate decision."""
+    def is_trusted(self, _workspace):
+        return True
+
+
 def cmd_risk(args):
     """Print what collie can reach, grouped by how far it reaches. The policy is data in
     one table (harness/risk.py); this makes it something a person can actually look at
     before trusting the thing, instead of a claim in a README."""
     from . import risk as R
     from .gate import Mode, mode_from_env
+    from .overrides import RiskOverrideStore
     from .risk import RiskClass
 
     reg = default_registry(code_search=True, web_search=True, exec_code=True, delegate=True)
@@ -1255,13 +1361,37 @@ def cmd_risk(args):
         for i in range(0, len(names), 4):
             print("    " + "  ".join("%-24s" % n for n in names[i:i + 4]).rstrip())
         print()
-    unclassified = [n for n in live if n not in R._BASE]
+    unclassified = [n for n in live if not R.is_classified(n)]
     if unclassified:
         print("NOT IN THE TABLE (treated as external until classified):")
         print("    " + "  ".join(unclassified))
         print()
     print("tools that can never carry an 'always allow' rule:")
     print("    " + "  ".join(sorted(n for n in R.NO_STANDING_RULE if n in live)))
+    ov = RiskOverrideStore().list()
+    if ov:
+        print("\nyour overrides (most specific first):")
+        for r in ov:
+            print("    %-34s -> %s" % (r.pattern, r.risk.value))
+    return 0
+
+
+def cmd_risk_set(args):
+    """Change a tool's risk class. The ONLY writer of the override store — deliberately
+    not a tool, because something collie loaded must never be able to reclassify itself
+    as harmless."""
+    from .overrides import RiskOverrideStore
+    store = RiskOverrideStore()
+    if args.unset:
+        print("removed" if store.unset(args.pattern) else "no such rule: %s" % args.pattern)
+        return 0
+    if not args.risk:
+        print("need --risk read|write_local|exec|external (or --unset)")
+        return 2
+    store.set(args.pattern, args.risk)
+    print("%s -> %s" % (args.pattern, args.risk))
+    if args.risk == "read":
+        print("  (read is never asked about — only do this for tools you have looked at)")
     return 0
 
 
@@ -1332,6 +1462,57 @@ def _state_dir():
     d = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def cmd_inbox(args):
+    """Everything waiting on a person, in one list.
+
+    Two subsystems park questions: a delegated job's irreversible action waits for a
+    confirm token (actions.py), and a run's off-machine tool call waits for an approval
+    (inbox.py). They are different mechanisms for good reasons — a job's action stops the
+    run at a step boundary, a tool call suspends in place — but that distinction is
+    collie's, not the user's. Somebody who wants to know what is waiting for them should
+    not have to know which half of the codebase parked it.
+    """
+    from .inbox import STATE_PENDING, InboxStore
+
+    store = InboxStore()
+    try:
+        if args.action in ("allow", "always", "deny", "never"):
+            ok = store.resolve(args.id, args.action)
+            print("%s %s" % ("answered" if ok else "could not answer (already decided,"
+                             " unknown, or its run has ended):", args.id))
+            return 0 if ok else 1
+
+        items = store.pending() if args.action == "ls" else store.list(limit=args.limit)
+        if not items:
+            print("nothing is waiting for you.")
+        else:
+            print("── waiting for you (%d) ──" % sum(1 for i in items if i.state == STATE_PENDING))
+            for i in items:
+                mark = "?" if i.state == STATE_PENDING else ("→ " + (i.resolution or "?"))
+                print("  %s  %-16s %-9s %s" % (i.id, i.tool, mark, i.body[:70]))
+                if i.target:
+                    print("      on %s" % i.target)
+                if i.rule_offer and i.state == STATE_PENDING:
+                    print("      'always' would allow: %s" % i.rule_offer)
+            print("\n  collie inbox allow <id> | always <id> | deny <id> | never <id>")
+
+        # The delegate half. Its confirm tokens live in a different store and are answered
+        # with `collie jobs confirm`; listing them here is what makes this one list.
+        try:
+            from .actions import ActionStore
+            pend = ActionStore(os.path.join(_state_dir(), "actions.db")).pending()
+            if pend:
+                print("\n── delegated actions awaiting confirm (%d) ──" % len(pend))
+                for a in pend:
+                    print("  %s  %s" % (a["nonce"], a["capability"]))
+                print("\n  collie jobs confirm <nonce>")
+        except Exception:
+            pass                       # no delegate store yet is not a problem to report
+        return 0
+    finally:
+        store.close()
 
 
 def cmd_jobs(args):
@@ -1844,7 +2025,7 @@ def cmd_mcp(args):
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
-        "setup", "jobs", "config", "uninstall", "update", "menubar", "risk"}
+        "setup", "jobs", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit"}
 
 
 def _setup_wizard(force=False):
@@ -1981,6 +2162,10 @@ def main(argv=None):
                          "(your logged-in browser, your desktop, an MCP server) asks first. "
                          "plan: read-only. interactive: ask before every write and command. "
                          "auto: ask nothing (sandboxes and CI). Also COLLIE_MODE.")
+    pr.add_argument("--persona", default=None,
+                    help="a role from .collie/personas or ~/.collie/personas: its identity, "
+                         "its tool allowlist, and its mode. A persona can only NARROW what "
+                         "you already allowed — it can never widen it.")
     pr.add_argument("--web-search", action="store_true", dest="web_search",
                     help="enable the web_search tool (keyless DuckDuckGo, or a browser-extension "
                          "bridge via COLLIE_WEBSEARCH_BRIDGE)")
@@ -2169,10 +2354,38 @@ def main(argv=None):
     pc.add_argument("--judge", default="", help="provider for LLM quality judge (e.g. deepseek); '' = heuristic")
     pc.set_defaults(fn=cmd_compare)
 
+    pib = sub.add_parser("inbox", help="what is waiting for you: approvals a run is "
+                                       "suspended on, and delegated actions awaiting confirm")
+    pib.add_argument("action", nargs="?", default="ls",
+                     choices=["ls", "all", "allow", "always", "deny", "never"])
+    pib.add_argument("id", nargs="?", default="")
+    pib.add_argument("--limit", type=int, default=50)
+    pib.set_defaults(fn=cmd_inbox)
+
+    pau = sub.add_parser("audit", help="what the gate decided, and under which rule")
+    pau.add_argument("--limit", type=int, default=40)
+    pau.add_argument("--tool", default=None)
+    pau.add_argument("--stage", default=None, choices=["asked", "approved", "denied", "auto"])
+    pau.add_argument("--unexplained", action="store_true",
+                     help="calls that ran without a prompt and cannot cite a rule "
+                          "(should always be empty)")
+    pau.set_defaults(fn=cmd_audit)
+
+    ptr = sub.add_parser("trust", help="trust this directory's .collie/allow.toml "
+                                       "(ls | revoke to undo)")
+    ptr.add_argument("action", nargs="?", default="add", choices=["add", "ls", "revoke"])
+    ptr.add_argument("path", nargs="?", default=None)
+    ptr.set_defaults(fn=cmd_trust)
+
     prk = sub.add_parser("risk", help="what collie can reach, grouped by how far it reaches")
     prk.add_argument("--mode", default=None,
                      choices=["plan", "project", "interactive", "auto"])
-    prk.set_defaults(fn=cmd_risk)
+    prk.add_argument("--set", default=None, dest="pattern", metavar="GLOB",
+                     help="reclassify tools matching GLOB (e.g. 'mcp__fs__read_*')")
+    prk.add_argument("--risk", default=None,
+                     choices=["read", "write_local", "exec", "external"])
+    prk.add_argument("--unset", action="store_true", help="remove the rule for --set's GLOB")
+    prk.set_defaults(fn=lambda a: cmd_risk_set(a) if a.pattern else cmd_risk(a))
     ph = sub.add_parser("harnesses"); ph.set_defaults(fn=cmd_harnesses)
 
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)

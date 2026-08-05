@@ -85,6 +85,45 @@ and a gate on the part that leaves your machine
 - `collie risk` prints the table. Benchmarks, `pack` and the delegate child build harnesses through
   the same constructor and stay ungated, so what they measure is unchanged.
 
+- **The Inbox: unattended does not raise the ceiling, it changes who can answer.** When nobody is
+  at the machine the question parks and the run *suspends* — a phone gets a nudge, and the answer
+  can come from there, from the browser card, or from `collie inbox allow <id>`. It is ONE record
+  with two visibilities (inline when someone is attending, inbox when not), resolved exactly once,
+  first responder wins — so there is no second, laxer code path for "nobody is watching", which is
+  precisely where a second path would be wrong. The phone needed no new code: `remote.py` already
+  proxies any method and path to the local server, so `POST /api/approve` works over the relay.
+  The notification is deliberately not rate-limited the way run-finished notices are — the run is
+  stopped until it is answered, so a silent parked approval is a run that looks hung.
+
+- **`collie trust`: a repo cannot grant itself anything.** `.collie/allow.toml` command prefixes are
+  inert until the user trusts that exact canonical directory, and trust follows the path rather than
+  a content snapshot. This replaces `COLLIE_TRUST_REPO_SKILLS`, which was one global switch — turning
+  it on for a project you wrote turned it on for every repo you would ever clone. Entries still face
+  the argv-prefix allowlist, so a repo cannot hand itself an operator chain either.
+
+- **Risk overrides, and the rule that nothing but the user writes them.** Every MCP tool defaults to
+  `external` because a server's `create_page` and `delete_database` are indistinguishable by name;
+  `collie risk --set 'mcp__fs__read_*' --risk read` relaxes what you have actually read, most
+  specific glob winning. There is no tool for this and no config hook, on purpose: if something
+  collie loaded could reclassify itself as harmless, the gate would be decorative. A test asserts
+  no registered tool can reach the store.
+
+- **`collie audit --unexplained`.** Every call that runs WITHOUT a prompt records the rule that let
+  it through, so "why was I not asked about that?" has an answer. Reads are not recorded — they have
+  no side effect to account for, and burying the log in them is how an audit trail stops being read.
+  Typed text and message bodies are stored as a length, never a value.
+
+- **Personas.** A role as one file: identity, tool allowlist, and permission mode together, because
+  "fix this bug in my repo" and "go and do this on these websites" want genuinely different defaults
+  and the mode belongs with the job description. A persona can only NARROW — its mode is clamped
+  against the user's, its tools are filtered against what is registered, and it has no field for
+  trust or risk overrides. These are files people copy from the internet; one that could relax the
+  gate would be permission smuggled in as configuration. Ships with `webwork`.
+
+- Fixed while building this: `RiskClass(str(value))` is the obvious spelling and the wrong one —
+  RiskClass subclasses str+Enum, so `str(RiskClass.READ)` is `"RiskClass.READ"`, and passing the
+  enum raised while passing the string worked.
+
 ## v0.20.30 — the two releases that were never tagged, and a browser that can finish a form
 
 - **v0.20.28 and v0.20.29 were written and never released.** Both have notes below and neither has

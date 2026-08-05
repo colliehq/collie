@@ -283,6 +283,9 @@ class Harness:
         # because there is nobody to ask — see _authorize.
         self.gate = None
         self.approve = None
+        # Durable record of what the gate decided. None = not recording (benchmarks, tests,
+        # embedded uses); a user-facing surface attaches an AuditLog.
+        self.audit = None
 
     def _emit(self, kind, **data):
         if self.emit:
@@ -314,10 +317,17 @@ class Harness:
             if d.rule:
                 self._emit("gate", name=tc.name, decision="allowed", rule=d.rule,
                            risk=d.risk)
+            # Consequential AND unprompted is the case the audit exists for: the row has to
+            # be able to answer "why was I not asked about that?". Reads are not recorded —
+            # they have no side effect to account for, and drowning the log in them is how
+            # an audit trail stops being read.
+            if d.risk != "read":
+                self._audit(tc, d, stage="auto", outcome="allowed")
             return None
 
         if not d.needs_user:
             self._emit("gate", name=tc.name, decision="denied", reason=d.reason, risk=d.risk)
+            self._audit(tc, d, stage="denied", outcome="refused")
             return d.reason
 
         if self.approve is None:
@@ -327,11 +337,14 @@ class Harness:
             # when it matters most — when no one is watching.
             self._emit("gate", name=tc.name, decision="denied", risk=d.risk,
                        reason="no approver attached")
+            self._audit(tc, d, stage="denied", outcome="refused",
+                        reason="nobody was available to approve it")
             return ("%s, and there is nobody to approve it in this run. Do the parts that "
                     "need no approval and describe this step instead of doing it." % d.reason)
 
+        d.call_id = tc.id           # the idempotency key a parked approval is filed under
         self._emit("gate", name=tc.name, decision="asking", risk=d.risk,
-                   target=d.target, reason=d.reason)
+                   target=d.target, reason=d.reason, rule_offer=d.rule_offer)
         try:
             outcome = self.approve(tc.name, tc.args, d)
         except Exception as e:
@@ -346,7 +359,26 @@ class Harness:
         allowed = outcome in ALLOWING
         self._emit("gate", name=tc.name, decision="approved" if allowed else "denied",
                    outcome=outcome.value, risk=d.risk, target=d.target)
+        self._audit(tc, d, stage="approved" if allowed else "denied",
+                    outcome=outcome.value, reason="answered by the user")
         return None if allowed else "the user declined this action"
+
+    def _audit(self, tc, decision, *, stage, outcome, reason=None):
+        """Record one gate decision. Best-effort and lazily opened, so a run with no audit
+        db (a test, a read-only home) is unaffected — and note the args passed are
+        `tc.args`, the pre-restore ones, for the same reason the approval prompt gets them.
+        """
+        if self.audit is None:
+            return
+        try:
+            self.audit.record(
+                session=getattr(self, "_audit_session", "") or self.project,
+                cwd=self.cwd, tool=tc.name, risk=decision.risk,
+                target=decision.target or "", stage=stage, outcome=outcome,
+                reason=reason if reason is not None else decision.reason,
+                rule=decision.rule, args=tc.args)
+        except Exception:
+            pass                       # never fail a run over its own bookkeeping
 
     def _drain_steering(self):
         """Pull any queued mid-run user messages (point 13). Same exception discipline as _emit —

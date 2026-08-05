@@ -31,13 +31,25 @@ def _live_registry():
 
 
 def test_every_registered_tool_is_classified():
-    """No built-in may fall through to the EXTERNAL default. Falling through is safe
-    but silent, and silence is how a tool ships without anyone deciding about it."""
+    """No tool may fall through to the EXTERNAL default. Falling through is safe but
+    silent, and silence is how a tool ships without anyone deciding about it.
+
+    Covered means the table OR a glob rule — an MCP server's tools are classified by the
+    `mcp__*` rule, and this machine may well have live ones registered.
+    """
     reg = _live_registry()
-    unclassified = [n for n in reg.names() if n not in R._BASE]
+    unclassified = [n for n in reg.names() if not R.is_classified(n)]
     assert not unclassified, (
-        "these registered tools are not in risk._BASE — classify them:\n  "
+        "these registered tools have no risk decision — classify them:\n  "
         + "\n  ".join(sorted(unclassified)))
+
+
+def test_a_live_mcp_tool_counts_as_classified():
+    """Guards the guard: if is_classified stopped honouring patterns, the test above would
+    start failing on any machine with an MCP server configured — and the tempting fix
+    would be to loosen it."""
+    assert R.is_classified("mcp__slack__slack_send_message")
+    assert not R.is_classified("some_tool_nobody_has_classified")
 
 
 def _every_tool_class_name():

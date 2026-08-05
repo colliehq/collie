@@ -515,6 +515,16 @@
   .ev.repro.ok .ico { background: var(--meadow-bg); color: var(--meadow); }
   .ev.repro.bad .ico { background: var(--coral-bg); color: var(--coral); }
   .ev.meta .ico { background: var(--surface-2); color: var(--faint); }
+  /* A blocked run, not a log line: the whole row is marked so it reads as something
+     waiting on YOU, and it keeps that mark after answering so the record stays legible. */
+  .ev.ask { background: var(--amber-bg, var(--surface-2)); }
+  .ev.ask .ico { background: var(--amber-bg, var(--surface-2)); color: var(--amber, var(--azure)); }
+  .ev .perm-actions { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .ev .perm-actions button { font: inherit; font-size: 11.5px; padding: 3px 10px; cursor: pointer;
+                             border-radius: 6px; border: 1px solid var(--line, #8883);
+                             background: var(--surface-1, transparent); color: inherit; }
+  .ev .perm-actions button:hover { background: var(--surface-2); }
+  .ev .perm-actions button[data-a="deny"] { color: var(--coral); }
   .ev .lead { min-width: 0; }
   .ev .name { font-size: 13.5px; font-weight: 550; }
   .ev .detail { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
@@ -2561,6 +2571,57 @@
     $("tlCount").textContent = (++tlCount);
   }
 
+  // An approval the run is BLOCKED on. Rendered as its own row with buttons rather than
+  // through addEvent, because this one is not a record of something that happened — it is
+  // a question, and the run stays suspended until it is answered from here, from a phone,
+  // or from the desktop. Whoever answers first wins; the rest see the row settle.
+  var PERM_ROWS = {};
+  function addPermission(d, sid) {
+    if (!d || !d.id || PERM_ROWS[d.id]) return;
+    var tl = $("timeline");
+    if (!tl) return;
+    var none = tl.querySelector(".none"); if (none) none.remove();
+    var row = document.createElement("div");
+    row.className = "ev tool ask";
+    var btns = '<button data-a="allow">Allow</button>';
+    // "Always" only when a rule can actually be pinned to something concrete. Offering it
+    // otherwise would be a button that quietly means "just this once".
+    if (d.rule_offer) btns += ' <button data-a="always">Always: ' + esc(d.rule_offer) + '</button>';
+    btns += ' <button data-a="deny">Don\'t</button>';
+    row.innerHTML =
+      '<span class="ico">' + ICON["flag"] + '</span>' +
+      '<span class="lead"><div class="name">' + esc(d.title || ("Run " + (d.tool || "") + "?")) + '</div>' +
+      '<div class="detail">' + esc(d.body || "") +
+      (d.target ? '  ·  on ' + esc(d.target) : '') + '</div>' +
+      '<div class="perm-actions">' + btns + '</div></span>' +
+      '<span class="at">' + elapsed() + '</span>';
+    tl.appendChild(row);
+    tl.scrollTop = tl.scrollHeight;
+    PERM_ROWS[d.id] = row;
+
+    function settle(text) {
+      var a = row.querySelector(".perm-actions");
+      if (a) a.innerHTML = '<span class="detail">' + esc(text) + '</span>';
+    }
+    row.addEventListener("click", function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest("button[data-a]") : null;
+      if (!b) return;
+      var answer = b.getAttribute("data-a");
+      settle("sending…");
+      fetch("/api/approve?token=" + encodeURIComponent(CT),
+        { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ session: sid, id: d.id, answer: answer }) })
+        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          // resolved:false is the ordinary outcome of losing a race or of the run having
+          // ended — say what happened rather than showing an error nobody can act on.
+          settle(r && r.resolved ? (answer === "deny" ? "declined" : "allowed")
+                                 : "already answered elsewhere");
+        })
+        .catch(function () { settle("could not send — answer from the terminal"); });
+    });
+  }
+
   function shortArgs(name, args) {
     if (!args) return "";
     if (args.command) return args.command;
@@ -3569,6 +3630,14 @@
       else if (a.command) NOW.bash(a.command);
       pstat("thinking…");                             // the tool already ran (result arrived with the
                                                       // event) — what's pending now is the next completion
+    });
+
+    es.addEventListener("permission", function (e) {
+      // The run is suspended on this until somebody answers it — here, on a phone, or at
+      // the machine. Nothing proceeds meanwhile, so it is not a notification to scroll past.
+      var d = JSON.parse(e.data);
+      addPermission(d, sid);
+      pstat("waiting for you…");
     });
 
     es.addEventListener("edit", function (e) {

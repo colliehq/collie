@@ -178,12 +178,29 @@ def classify(tool_name: str, tool: Any = None,
     if best is not None:
         return best
     declared = getattr(tool, "risk", None)
+    if isinstance(declared, RiskClass):
+        return declared
     if declared is not None:
         try:
             return RiskClass(str(declared))
         except ValueError:
             pass  # a garbage self-declaration falls through to the safe default
     return RiskClass.EXTERNAL
+
+
+def is_classified(tool_name: str) -> bool:
+    """True when this name is covered by a DECISION — the table or a glob rule — rather
+    than by the fallback.
+
+    `classify` returns EXTERNAL for both, which is safe but indistinguishable, so this is
+    what "has anyone actually thought about this tool?" has to ask. The test that walks
+    the live registry and `collie risk`'s "not in the table" list both depend on the
+    difference: an MCP tool covered by the `mcp__*` rule is classified; a new built-in
+    nobody has touched is not, and should be visible as such.
+    """
+    if tool_name in _BASE:
+        return True
+    return any(fnmatch.fnmatchcase(tool_name, p) for p, _ in _PATTERNS)
 
 
 def _specificity(pattern: str) -> int:
