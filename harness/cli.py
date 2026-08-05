@@ -1553,8 +1553,14 @@ def cmd_mcp(args):
             # one word and no URL at all.
             print("(no MCP servers configured)")
             print("  connect one in a single step — signs in through your browser, no token to find:")
-            print("    " + "  ".join(sorted(mc.CATALOG)))
-            print("  e.g. `collie mcp connect slack`")
+            print("    " + "  ".join(sorted(k for k, v in mc.CATALOG.items()
+                                            if not v.get("byo_client"))))
+            print("  e.g. `collie mcp connect linear`")
+            # Listed apart rather than mixed in: they are one press plus an OAuth app you have to
+            # create, and finding that out by pressing is the thing this line exists to prevent.
+            print("  these need an OAuth app of your own (no dynamic client registration):")
+            print("    " + "  ".join(sorted(k for k, v in mc.CATALOG.items()
+                                            if v.get("byo_client"))))
             print("  anything else: `collie mcp add <name> <https://url | shell command>`")
             return 0
         for s in mc.status():
@@ -1577,6 +1583,11 @@ def cmd_mcp(args):
             return 1
         name = hit["name"]
         cfg = servers.get(name)
+        if hit.get("byo_client") and not (cfg or {}).get("client_id"):
+            # Before adding anything: a server in the config that can never sign in is worse than
+            # no server, because the list then says it is one Sign-in press away.
+            print(mc.byo_client_help(name, hit["label"], hit["url"]))
+            return 1
         if not cfg:
             err = mc.add_server(name, {"url": hit["url"]}, replace=False)
             if err:

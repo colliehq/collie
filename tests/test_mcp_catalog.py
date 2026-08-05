@@ -96,10 +96,10 @@ def main():
     m._CONFIG = os.path.join(tmpdir, "mcp.json")
     m._TOKENS = os.path.join(tmpdir, "tokens.json")       # never touch the real credential store
     try:
-        out = m.MCPAddTool().run({"name": "Slack"}, None)
+        out = m.MCPAddTool().run({"name": "Linear"}, None)
         check("ERROR" not in out, "mcpctl_add takes a bare name: %s" % out.split(".")[0][:58])
         written = json.load(open(m._CONFIG))["servers"]
-        check(written.get("slack", {}).get("url") == m.CATALOG["slack"]["url"],
+        check(written.get("linear", {}).get("url") == m.CATALOG["linear"]["url"],
               "and the catalog address is what landed in the config")
         check("mcpctl_connect" in out, "and it says what finishes the job (the browser sign-in)")
 
@@ -132,6 +132,45 @@ def main():
                   "and nothing is written to the config on the way out")
         finally:
             m.login, m._register_live, m._read_cache = real_login, real_reg, real_cache
+
+        # ---- the entries a press CANNOT finish -------------------------------------------------
+        # Answering 401 with a Bearer challenge does not mean a client can register itself. Slack,
+        # HubSpot and GitHub advertise no registration_endpoint, so connect died at "no client_id"
+        # AFTER adding the server — which is how a button comes to look like it did nothing.
+        for svc in ("slack", "hubspot", "github"):
+            check(m.CATALOG[svc].get("byo_client") is True,
+                  "%s is marked as needing an OAuth app of your own" % svc)
+        for svc in ("linear", "neon", "vercel"):
+            check(not m.CATALOG[svc].get("byo_client"),
+                  "%s is not marked (its server registers clients dynamically)" % svc)
+
+        out = m.MCPAddTool().run({"name": "github"}, None)
+        check("client_id" in out, "mcpctl_add on one of them says so instead of pointing at connect")
+
+        opened = []
+        real_login = m.login
+        m.login = lambda *a, **k: opened.append(a[0]) or {"access_token": "t"}
+        try:
+            # `hubspot` has not been added by anything above — so this also pins that a refused
+            # connect writes nothing, which is the difference between "not set up" and "set up and
+            # permanently one press away from working".
+            out = m.MCPConnectTool().run({"name": "hubspot"}, None)
+            check("ERROR" in out and "client_id" in out,
+                  "mcpctl_connect('hubspot') refuses with the reason, not a dead browser tab")
+            check(not opened, "and no browser handshake was started")
+            check("hubspot" not in json.load(open(m._CONFIG))["servers"],
+                  "and no half-usable server is left in the config")
+            m.remove_server("github")
+
+            # With a client_id of your own it is an ordinary remote server again.
+            m.add_server("slack", {"url": m.CATALOG["slack"]["url"], "client_id": "abc"}, replace=True)
+            m._register_live = lambda *a, **k: "(1 tool)"
+            out = m.MCPConnectTool().run({"name": "slack"}, None)
+            check(opened == ["slack"] and "Connected" in out,
+                  "but with a client_id configured it signs in normally")
+            m.remove_server("slack")
+        finally:
+            m.login = real_login
 
         # The CLI path people type, and the empty-list screen that has to name it.
         from harness import cli

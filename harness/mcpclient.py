@@ -192,19 +192,43 @@ def set_enabled(name, on):
 # what an MCP endpoint that will do the browser handshake looks like. Anything that cannot be
 # checked that way does not belong here — a directory that lists a URL nobody verified turns "one
 # click" into "one click, then a mystery".
+#
+# `byo_client` marks the ones a press CANNOT finish. Answering 401 with a Bearer challenge — the
+# test every entry here passed — proves the endpoint speaks OAuth. It does NOT prove a client can
+# register itself, and without RFC 7591 dynamic registration there is no client_id to authorize
+# with. Slack, HubSpot and GitHub advertise no registration_endpoint (checked 2026-08-04 against
+# their live metadata: Slack sends you to slack.com/oauth/v2_user/authorize with nothing to
+# register against), so `connect` on those dies at "no client_id" — after adding the server, which
+# is exactly how a press comes to look like it did nothing.
+#
+# They stay listed rather than removed: the address is still the thing you would otherwise go
+# hunting for, and knowing you need your own OAuth app IS the answer to "why did that not work".
 CATALOG = {
-    "slack":     {"url": "https://mcp.slack.com/mcp",        "label": "Slack"},
+    "slack":     {"url": "https://mcp.slack.com/mcp",        "label": "Slack", "byo_client": True},
     "linear":    {"url": "https://mcp.linear.app/mcp",       "label": "Linear"},
     "notion":    {"url": "https://mcp.notion.com/mcp",       "label": "Notion"},
     "sentry":    {"url": "https://mcp.sentry.dev/mcp",       "label": "Sentry"},
     "atlassian": {"url": "https://mcp.atlassian.com/v1/mcp", "label": "Jira & Confluence",
                   "aka": ("jira", "confluence")},
     "stripe":    {"url": "https://mcp.stripe.com",           "label": "Stripe"},
-    "hubspot":   {"url": "https://mcp.hubspot.com/anthropic", "label": "HubSpot"},
+    "hubspot":   {"url": "https://mcp.hubspot.com/anthropic", "label": "HubSpot",
+                  "byo_client": True},
     "vercel":    {"url": "https://mcp.vercel.com",           "label": "Vercel"},
     "neon":      {"url": "https://mcp.neon.tech/mcp",        "label": "Neon"},
-    "github":    {"url": "https://api.githubcopilot.com/mcp/", "label": "GitHub"},
+    "github":    {"url": "https://api.githubcopilot.com/mcp/", "label": "GitHub",
+                  "byo_client": True},
 }
+
+
+def byo_client_help(name, label, url):
+    """What to do about a service that will not register a client for you."""
+    return ("%s does not let an app register itself (no OAuth dynamic client registration), so "
+            "there is no client_id to sign in with and the browser step cannot start. Create an "
+            "OAuth app in %s and put its id in the server's config:\n"
+            '    "%s": {"url": "%s", "client_id": "<your client id>"}\n'
+            "  in ~/.collie/mcp.json — the redirect URI is a loopback address collie picks per "
+            "sign-in (http://127.0.0.1:<port>/callback), so register it as a native/desktop client "
+            "if the provider asks which kind it is." % (label, label, name, url))
 
 
 def known(name):
@@ -978,7 +1002,12 @@ class MCPAddTool(Tool):
             return "ERROR: %s" % err
         if catalogued:
             # Added, not authorized. Say the one thing that finishes it rather than leaving a server
-            # that lists no tools and looks broken.
+            # that lists no tools and looks broken — and for the three that cannot finish at all,
+            # say THAT instead of pointing at a tool which will only refuse.
+            if catalogued.get("byo_client"):
+                return ("Added MCP server %r (%s), but it cannot sign in yet. %s"
+                        % (name, catalogued["label"],
+                           byo_client_help(name, catalogued["label"], catalogued["url"])))
             return ("Added MCP server %r (%s). It signs in through the browser — call mcpctl_connect "
                     "with the same name to finish, which is one step for the user rather than a "
                     "token to go and mint." % (name, catalogued["label"]))
@@ -1006,6 +1035,10 @@ class MCPConnectTool(Tool):
         hit = known(raw)
         name = hit["name"] if hit else raw
         cfg = _load_config().get(name)
+        if (hit or {}).get("byo_client") and not (cfg or {}).get("client_id"):
+            # BEFORE the add, not after. Adding it first leaves a server in the config that can
+            # never sign in, and the list then reads as one Sign-in press away from working.
+            return "ERROR: " + byo_client_help(name, hit["label"], hit["url"])
         if not cfg and hit:
             err = add_server(name, {"url": hit["url"]}, replace=False)
             if err:

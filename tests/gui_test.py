@@ -35,7 +35,14 @@ def main():
     # that: the picker is genuinely in charge, which is what these checks are about.
     with open(setpath, "w", encoding="utf-8") as fh:
         json.dump({"PROVIDER": "mock", "MODEL": "mock"}, fh)
-    env = dict(os.environ, PYTHONUNBUFFERED="1",
+    # One MCP server, in a temp config, so the MCP pane has a row to draw. It had none here, and the
+    # code that draws a row read a variable belonging to a different function: the first server
+    # anybody configured made the whole pane stop redrawing, and mcpLoad's catch-all swallowed the
+    # ReferenceError so completely that pressing Connect looked like pressing nothing.
+    mcppath = os.path.join(tempfile.gettempdir(), "collie_gui_test_mcp.json")
+    with open(mcppath, "w", encoding="utf-8") as fh:
+        json.dump({"servers": {"probe": {"url": "https://mcp.example.invalid/mcp"}}}, fh)
+    env = dict(os.environ, PYTHONUNBUFFERED="1", COLLIE_MCP_CONFIG=mcppath,
                COLLIE_SETTINGS_PATH=setpath, COLLIE_SESSIONS_DIR=sessdir)
     env.pop("COLLIE_PROVIDER", None)
     env.pop("COLLIE_MODEL", None)
@@ -217,6 +224,23 @@ def main():
             # so waiting for the first match to be visible waits for a row in a pane nobody opened.
             pg.click("#settingsBtn")
             pg.wait_for_selector(".set-pane.on .set-row", timeout=15000)
+
+            # --- the MCP pane draws the servers it has ---
+            # The pane is not schema-driven (it is a live list), so nothing else here touches it.
+            pg.click('.set-nav[data-cat="mcp"]')
+            drew = True
+            try:
+                pg.wait_for_selector(".mcp-item .mcp-name", timeout=15000)
+            except Exception:
+                drew = False
+            check("MCP pane draws a configured server", drew,
+                  "mcpBox=%r" % (pg.eval_on_selector("#mcpBox", "e => e.textContent.slice(0, 120)")
+                                 if pg.query_selector("#mcpBox") else "(no #mcpBox)"))
+            if drew:
+                check("and names it", pg.eval_on_selector(".mcp-item .mcp-name", "e => e.textContent") == "probe")
+                chips = pg.eval_on_selector_all(".mcp-chip", "els => els.map(e => e.dataset.name)")
+                check("with the one-press catalog beside it", len(chips) >= 5, str(chips[:4]))
+
             pg.keyboard.press("Escape"); pg.wait_for_timeout(200)
             check("settings ESC closes", "open" not in pg.query_selector("#setOverlay").get_attribute("class"))
             # unauth POST -> 403

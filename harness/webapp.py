@@ -1153,6 +1153,13 @@ class Handler(BaseHTTPRequestHandler):
                     if not hit:
                         return self._send_json({"error": "not a known service — use Add with a URL"}, 400)
                     name = hit["name"]
+                    if (hit.get("byo_client")
+                            and not (mcpclient._load_config().get(name) or {}).get("client_id")):
+                        # Refuse before adding it. Otherwise the press adds a server, the handshake
+                        # dies on "no client_id", and the panel shows a service that looks one
+                        # Sign-in away from working and never will be.
+                        return self._send_json(
+                            {"error": mcpclient.byo_client_help(name, hit["label"], hit["url"])}, 400)
                     if name not in mcpclient._load_config():
                         err = mcpclient.add_server(name, {"url": hit["url"]}, replace=False)
                         if err:

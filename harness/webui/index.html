@@ -338,7 +338,10 @@
   .mcp-form { border: 1px solid var(--line); border-radius: 11px; padding: 11px 12px; background: var(--raise); }
   .mcp-form input { width: 100%; margin-bottom: 7px; border: 1px solid var(--line); background: var(--surface-2);
                     color: var(--ink); border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 12.5px; }
-  .mcp-err { font-size: 11.5px; color: #c0392b; margin-top: 6px; overflow-wrap: anywhere; }
+  /* pre-wrap: some of these carry the config snippet you have to paste, and collapsing it into one
+     line is how a fix-it message becomes unreadable. */
+  .mcp-err { font-size: 11.5px; color: #c0392b; margin-top: 6px; overflow-wrap: anywhere;
+             white-space: pre-wrap; }
   .set-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
   .set-row label { flex: 1; font-size: 13.5px; color: var(--ink); }
   .set-row .hint { display: block; font-size: 11.5px; color: var(--faint); margin-top: 1px; }
@@ -1959,21 +1962,32 @@
     if (cat.length) {
       catRow = '<div class="mcp-cat"><div class="mcp-cat-h">' + setEsc(t("Connect a service")) + "</div>"
              + '<div class="mcp-cat-row">' + cat.map(function (c) {
-                 return '<button class="mcp-chip" data-mcp="connect" data-name="' + setEsc(c.name) + '">'
-                      + setEsc(c.label) + "</button>";
+                 // A service that cannot register a client for itself is marked BEFORE it is
+                 // pressed. Finding that out by pressing is what this row exists to prevent.
+                 return '<button class="mcp-chip" data-mcp="connect" data-name="' + setEsc(c.name) + '"'
+                      + (c.byo_client ? ' title="' + setEsc(t("needs an OAuth app of your own")) + '"' : "")
+                      + ">" + setEsc(c.label) + (c.byo_client ? " ·" : "") + "</button>";
                }).join("") + "</div>"
-             + '<div class="mcp-cat-n">' + setEsc(t("signs in through your browser — no token to find")) + "</div></div>";
+             + '<div class="mcp-cat-n">' + setEsc(t("signs in through your browser — no token to find"))
+             + (cat.some(function (c) { return c.byo_client; })
+                ? " · " + setEsc(t("· = needs an OAuth app of your own")) : "")
+             + "</div></div>";
     }
     if (!servers.length) {
       box.innerHTML = catRow
                     + '<div class="mcp-empty">' + setEsc(t("No MCP servers configured yet.")) + "</div>" + addForm;
       return;
     }
-    box.innerHTML = catRow + serversHtml(servers) + addForm;
+    box.innerHTML = catRow + serversHtml(servers, errs) + addForm;
     return;
   }
 
-  function serversHtml(servers) {
+  // `errs` is a PARAMETER. It used to be read here as a free variable declared in mcpRender, which
+  // is a different function — so the first server row ever rendered threw ReferenceError, the whole
+  // MCP section stopped redrawing, and a press that had genuinely added a server and genuinely
+  // failed to sign in looked like a button that did nothing at all.
+  function serversHtml(servers, errs) {
+    errs = errs || {};
     return servers.map(function (s) {
       var badges = '<span class="mcp-badge">' + setEsc(s.kind) + "</span>";
       badges += '<span class="mcp-badge">' + (s.tools == null ? "? " + t("tools") : s.tools + " " + t("tools")) + "</span>";
@@ -2021,14 +2035,30 @@
         // Say what the server said. A rejected name or a malformed URL is the common case here, and
         // silently redrawing an unchanged list would read as "added" when nothing was.
         if (p && p.error) { errBox.hidden = false; errBox.textContent = p.error; return; }
-        mcpRender({ servers: p.servers || [] });
+        mcpLoad();          // re-read: a partial payload drops the catalog chips and the errors
       }).catch(function () { el.disabled = false; errBox.hidden = false; errBox.textContent = t("Could not reach Collie."); });
     }
   });
   function err_short(e) { return String(e).length > 160 ? String(e).slice(0, 160) + "…" : String(e); }
 
   function mcpLoad() {
-    return fetch("/api/mcp").then(function (r) { return r.json(); }).then(mcpRender).catch(function () {});
+    // The catch used to cover the fetch, the parse AND the render, and swallow all three in
+    // silence. A ReferenceError in mcpRender therefore produced NOTHING: no console line, no
+    // message, an unchanged panel — the exact reading of "I pressed connect and nothing happened".
+    // Only the transport is caught here; a render bug is put on the screen and re-thrown.
+    return fetch("/api/mcp").then(function (r) { return r.json(); })
+      .catch(function () { return null; })
+      .then(function (d) {
+        if (!d) return;
+        try {
+          mcpRender(d);
+        } catch (err) {
+          var box = document.getElementById("mcpBox");
+          if (box) box.innerHTML = '<div class="mcp-err">'
+                                 + setEsc(t("could not draw this panel: ") + err) + "</div>";
+          throw err;
+        }
+      });
   }
   function mcpPost(action, name) {
     return fetch("/api/mcp?token=" + encodeURIComponent(CT), {
@@ -2044,11 +2074,30 @@
     if (action === "remove" && !confirm(t("Remove the MCP server") + ' "' + name + '"? ' + t("Its stored sign-in is deleted too."))) return;
     b.disabled = true;
     mcpPost(action, name).then(function (p) {
-      if (p && p.servers) mcpRender({ servers: p.servers });
+      b.disabled = false;
+      // A refusal has to arrive on screen. The server answers 400 with the reason — a service that
+      // needs an OAuth app of your own, a name it does not know — and this used to drop it, leaving
+      // a press with no visible outcome whatsoever.
+      if (p && p.error) {
+        var box = document.getElementById("mcpBox");
+        if (box) {
+          var line = document.getElementById("mcpActErr");
+          if (!line) {
+            line = document.createElement("div");
+            line.id = "mcpActErr"; line.className = "mcp-err";
+            box.insertBefore(line, box.firstChild);
+          }
+          line.textContent = p.error;
+        }
+        return;
+      }
+      var stale = document.getElementById("mcpActErr");
+      if (stale) stale.remove();
       // Sign-in opens a browser tab and finishes on human time, so watch the state rather than
       // claiming it worked: poll until the badge actually changes (or the error shows up).
       // connect is add + sign-in in one press, so it finishes on human time exactly like login:
       // watch the badge change instead of claiming success the moment the POST returns.
+      mcpLoad();          // at once, so `connect` shows the server it just added
       if (action === "login" || action === "connect") {
         var n = 0;
         clearInterval(mcpPollTimer);
@@ -2056,8 +2105,6 @@
           if (++n > 40 || !setOverlay.classList.contains("open")) return clearInterval(mcpPollTimer);
           mcpLoad();
         }, 3000);
-      } else {
-        mcpLoad();
       }
     }).catch(function () { b.disabled = false; });
   });
