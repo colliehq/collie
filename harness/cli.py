@@ -1548,22 +1548,64 @@ def cmd_mcp(args):
     servers = mc._load_config()
     if args.action == "list":
         if not servers:
-            print("(no MCP servers configured — add one with `collie mcp add <name> <url-or-command>`)")
+            # An empty list used to end at "add one with a url-or-command", which is a strange thing
+            # to ask of the screen whose job is to say what exists. Name what can be connected with
+            # one word and no URL at all.
+            print("(no MCP servers configured)")
+            print("  connect one in a single step — signs in through your browser, no token to find:")
+            print("    " + "  ".join(sorted(mc.CATALOG)))
+            print("  e.g. `collie mcp connect slack`")
+            print("  anything else: `collie mcp add <name> <https://url | shell command>`")
             return 0
         for s in mc.status():
             tools = "?" if s["tools"] is None else str(s["tools"])
             state = "" if s["enabled"] else "  OFF"
             auth = {"none": "", "header": "  [static-header]", "oauth": "  [oauth ✓]",
-                    "login-needed": "  [oauth — run: collie mcp login %s]" % s["name"]}[s["auth"]]
+                    "login-needed": "  [oauth — run: collie mcp connect %s]" % s["name"]}[s["auth"]]
             print("  %-16s %-6s %-40s %s tools%s%s"
                   % (s["name"], s["kind"], s["target"][:40], tools, auth, state))
         return 0
+    if args.action == "connect":
+        # The whole thing in one command: fill in the address, then the browser handshake. Everything
+        # it needs was already here — the address was the only missing piece, and asking the user for
+        # it is asking them for the one thing they came here to be told.
+        hit = mc.known(args.name)
+        if not hit:
+            print("%r is not a service collie knows the address of." % args.name)
+            print("  known: " + "  ".join(sorted(mc.CATALOG)))
+            print("  for anything else: collie mcp add <name> <https://url | shell command>")
+            return 1
+        name = hit["name"]
+        cfg = servers.get(name)
+        if not cfg:
+            err = mc.add_server(name, {"url": hit["url"]}, replace=False)
+            if err:
+                print(err)
+                return 1
+            print("added %s → %s" % (name, hit["url"]))
+        servers = mc._load_config()
+        args.action, args.name = "login", name        # fall through to the browser handshake
     if args.action == "add":
-        # `collie mcp add linear https://mcp.linear.app/mcp` (remote), or
-        # `collie mcp add fs "npx -y @modelcontextprotocol/server-filesystem /tmp"` (stdio).
-        if not args.name or not args.value:
+        # `collie mcp add linear https://mcp.linear.app/mcp` (remote),
+        # `collie mcp add fs "npx -y @modelcontextprotocol/server-filesystem /tmp"` (stdio), or
+        # `collie mcp add slack` — a name on its own, for a service whose address is in the catalog.
+        if not args.name:
             print("usage: collie mcp add <name> <https://url | shell command>")
             return 1
+        if not args.value:
+            hit = mc.known(args.name)
+            if not hit:
+                print("usage: collie mcp add <name> <https://url | shell command>")
+                print("  (or a name on its own, for: " + "  ".join(sorted(mc.CATALOG)) + ")")
+                return 1
+            err = mc.add_server(hit["name"], {"url": hit["url"]},
+                                replace=bool(getattr(args, "force", False)))
+            if err:
+                print(err)
+                return 1
+            print("added %s → %s" % (hit["name"], hit["url"]))
+            print("  sign in: collie mcp connect %s" % hit["name"])
+            return 0
         if args.value.startswith(("http://", "https://")):
             cfg = {"url": args.value}
         else:
@@ -2024,14 +2066,17 @@ def main(argv=None):
     pc.add_argument("value", nargs="?", default=None)
     pc.set_defaults(fn=cmd_config)
 
-    # mcp: manage MCP servers — list configured ones, OAuth-login to a remote, logout, or list tools
-    pmcp = sub.add_parser("mcp", help="manage MCP servers (list | add | remove | enable | disable | "
-                                      "login | logout | tools)")
-    pmcp.add_argument("action", choices=["list", "add", "remove", "enable", "disable",
+    # mcp: manage MCP servers. `connect <name>` is the one to reach for — for a service in the
+    # catalog it fills in the address AND does the browser handshake, which is the whole setup.
+    # The rest: list configured ones, OAuth-login to a remote, logout, or list tools.
+    pmcp = sub.add_parser("mcp", help="manage MCP servers (connect | list | add | remove | enable | "
+                                      "disable | login | logout | tools)")
+    pmcp.add_argument("action", choices=["connect", "list", "add", "remove", "enable", "disable",
                                          "login", "logout", "tools"])
     pmcp.add_argument("name", nargs="?", default="")
     pmcp.add_argument("value", nargs="?", default="",
-                      help="for `add`: an https:// URL (remote server) or a shell command (stdio)")
+                      help="for `add`: an https:// URL (remote server) or a shell command (stdio). "
+                           "Omit it for a service collie already knows: `collie mcp add slack`")
     pmcp.add_argument("--force", action="store_true", help="for `add`: overwrite an existing server")
     pmcp.set_defaults(fn=cmd_mcp)
 

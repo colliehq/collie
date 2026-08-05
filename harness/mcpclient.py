@@ -485,9 +485,15 @@ def _access_token(name):
     return tok.get("access_token")        # stale but let the server be the judge (it'll 401 if dead)
 
 
-def login(name, cfg=None):
+def login(name, cfg=None, timeout=300, announce=None):
     """Interactive OAuth 2.1 (auth-code + PKCE + loopback redirect). Opens a browser, catches the
-    redirect on 127.0.0.1, exchanges the code, and stores the token. Returns the token dict."""
+    redirect on 127.0.0.1, exchanges the code, and stores the token. Returns the token dict.
+
+    `timeout` bounds the wait for the redirect. `announce(auth_url)` is handed the address the
+    moment it exists: a caller that is not a terminal — a tool call, a panel — needs somewhere to
+    put it, because `webbrowser.open` can fail without raising (a headless box, a WSL shell with no
+    BROWSER set) and the printed line then goes nowhere anyone is looking. Without it that failure
+    is indistinguishable from a user who is simply slow to click, for five minutes."""
     import http.server
     import webbrowser
     cfg = cfg if cfg is not None else _load_config().get(name) or {}
@@ -529,18 +535,24 @@ def login(name, cfg=None):
         params["scope"] = cfg["scope"]
     auth_url = meta["authorization_endpoint"] + "?" + urllib.parse.urlencode(params)
     print("Opening browser to authorize MCP server %r:\n  %s" % (name, auth_url))
+    if announce:
+        try:
+            announce(auth_url)
+        except Exception:
+            pass
     try:
         webbrowser.open(auth_url)
     except Exception:
         pass
-    srv.timeout = 300
+    srv.timeout = max(5, int(timeout or 300))
     srv.handle_request()                                           # blocks until the redirect or timeout
     srv.server_close()
     if holder.get("error"):
         raise RuntimeError("authorization denied: %s" % holder["error"])
     code = holder.get("code")
     if not code:
-        raise RuntimeError("no authorization code (timed out after 5 min, or the browser never returned)")
+        raise RuntimeError("no authorization code — nothing came back within %ds, or the browser "
+                           "never opened" % srv.timeout)
     if holder.get("state") != state:
         raise RuntimeError("state mismatch — aborting (possible CSRF)")
     tok = _http_json(meta["token_endpoint"], form=True, data={
@@ -908,7 +920,8 @@ class MCPStatusTool(Tool):
             bits = [s["kind"], s["target"][:70]]
             bits.append("ON" if s["enabled"] else "OFF (switched off — contributes no tools)")
             if s["auth"] == "login-needed":
-                bits.append("NOT authenticated — needs `collie mcp login %s`" % s["name"])
+                bits.append("NOT authenticated — call mcpctl_connect with name=%r to sign the user "
+                            "in through their browser" % s["name"])
             elif s["auth"] in ("oauth", "header"):
                 bits.append("authenticated (%s)" % s["auth"])
             bits.append("%s tools" % ("unknown, not listed yet" if s["tools"] is None else s["tools"]))
@@ -947,10 +960,80 @@ class MCPAddTool(Tool):
         for k in ("args", "env", "headers"):
             if a.get(k):
                 cfg[k] = a[k]
+        catalogued = None
+        if not cfg:
+            # The description tells the model that a name is enough for a known service. It has to be
+            # enough HERE, or the model does as it is told and gets "a server needs either url or
+            # command" back — which reads as "the name was wrong" and sends it hunting for an npm
+            # package, the exact behaviour the catalog was added to stop.
+            catalogued = known(name)
+            if not catalogued:
+                return ("ERROR: %r is not a service Collie knows the address of, and no `url` or "
+                        "`command` was given. Known services: %s. For anything else pass the remote "
+                        "`url` (https://…) or the stdio `command`."
+                        % (name, ", ".join(sorted(CATALOG))))
+            name, cfg = catalogued["name"], {"url": catalogued["url"]}
         err = add_server(name, cfg, replace=False)
         if err:
             return "ERROR: %s" % err
+        if catalogued:
+            # Added, not authorized. Say the one thing that finishes it rather than leaving a server
+            # that lists no tools and looks broken.
+            return ("Added MCP server %r (%s). It signs in through the browser — call mcpctl_connect "
+                    "with the same name to finish, which is one step for the user rather than a "
+                    "token to go and mint." % (name, catalogued["label"]))
         return "Added MCP server %r. %s" % (name, _register_live(getattr(ctx, "registry", None), name, cfg))
+
+
+class MCPConnectTool(Tool):
+    name, tier = "mcpctl_connect", "always"
+    description = ("Connect a well-known service in ONE step: Slack, Linear, Notion, Sentry, "
+                   "Jira/Confluence, Stripe, HubSpot, Vercel, Neon or GitHub. Pass the name and "
+                   "nothing else — Collie knows the official remote address, opens the user's "
+                   "browser so they can authorize it, and registers the tools it exposes in THIS "
+                   "session. This is the right tool for 'connect Slack' or 'can you use Linear': "
+                   "never send the user to mint an API token or a bot token for one of these, and "
+                   "never reach for an npm package that wants one. It BLOCKS while the user presses "
+                   "Authorize, so tell them the browser is opening before you call it. Requires "
+                   "their explicit agreement first. Args: name.")
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+
+    def run(self, args, ctx):
+        a = args if isinstance(args, dict) else {}
+        raw = str(a.get("name", "")).strip()
+        if not _mcp_manage_on():
+            return _MCP_CONSENT % ("connect the MCP server %r and sign in to it as the user" % raw)
+        hit = known(raw)
+        name = hit["name"] if hit else raw
+        cfg = _load_config().get(name)
+        if not cfg and hit:
+            err = add_server(name, {"url": hit["url"]}, replace=False)
+            if err:
+                return "ERROR: %s" % err
+            cfg = {"url": hit["url"]}
+        if not cfg:
+            return ("ERROR: %r is not one of the services Collie knows an address for (%s), and no "
+                    "server of that name is configured. Add it with mcpctl_add and its `url`."
+                    % (raw, ", ".join(sorted(CATALOG))))
+        if not cfg.get("url"):
+            return ("ERROR: %r is a stdio server (it runs a command); there is nothing to sign in "
+                    "to. It is already configured." % name)
+        if {s["name"]: s for s in status()}.get(name, {}).get("auth") == "oauth":
+            return ("MCP server %r is already authorized — nothing to sign in to. %s"
+                    % (name, _register_live(getattr(ctx, "registry", None), name, cfg)))
+        seen = {}
+        try:
+            # Bounded well under login()'s own 5 minutes: a tool call that hangs for five minutes is
+            # indistinguishable from a hung agent, and the address is handed back either way so the
+            # user can finish in their own time.
+            login(name, cfg, timeout=180, announce=lambda u: seen.__setitem__("url", u))
+        except Exception as e:
+            return ("ERROR: the browser sign-in for %r did not finish (%s: %s).%s"
+                    % (name, type(e).__name__, e,
+                       (" Give the user this address and call mcpctl_connect again once they say "
+                        "they have authorized it: %s" % seen["url"]) if seen.get("url") else ""))
+        return ("Connected %r — the user authorized it in their browser and the token is stored. %s"
+                % (name, _register_live(getattr(ctx, "registry", None), name, cfg)))
 
 
 class MCPSetEnabledTool(Tool):
@@ -998,7 +1081,7 @@ class MCPRemoveTool(Tool):
 def register_mcp_management(registry):
     """The manage-MCP tools. Registered ALWAYS, including when no server is configured — `mcpctl_add`
     with nothing set up yet is the case that matters most."""
-    for t in (MCPStatusTool(), MCPAddTool(), MCPSetEnabledTool(), MCPRemoveTool()):
+    for t in (MCPStatusTool(), MCPAddTool(), MCPConnectTool(), MCPSetEnabledTool(), MCPRemoveTool()):
         registry.register(t)
     return True
 
