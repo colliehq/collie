@@ -220,7 +220,29 @@ CATALOG = {
 }
 
 
-BYO_PORT = 8899          # any free port; it only has to agree with what you register
+BYO_PORT = 8898          # any free port; it only has to agree with what you register
+
+
+def _first_bindable_port(start=8890, stop=8990):
+    """A loopback port this machine will actually accept, or None.
+
+    Kept BELOW the ephemeral range (Windows hands those out at random, and a pinned port that gets
+    handed to someone else breaks the pairing silently), and checked on both loopback families
+    because a port can be refused on one and not the other.
+    """
+    import socket
+    for p in range(start, stop):
+        try:
+            for fam, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+                s = socket.socket(fam, socket.SOCK_STREAM)
+                try:
+                    s.bind((addr, p))
+                finally:
+                    s.close()
+            return p
+        except OSError:
+            continue
+    return None
 
 
 def byo_client_help(name, label, url):
@@ -584,9 +606,21 @@ def login(name, cfg=None, timeout=300, announce=None):
     try:
         srv = http.server.HTTPServer(("127.0.0.1", want), _CB)
     except OSError as e:
-        raise RuntimeError("cannot listen on the redirect port %d for %r (%s). It is the one this "
-                           "server's OAuth app has registered, so it cannot simply be changed — "
-                           "free the port, or change both sides." % (want, name, e))
+        # "Free the port" is bad advice when nothing holds it that you can find. Windows can refuse
+        # a port that `netstat` shows as empty and that is in no documented exclusion range —
+        # WinNAT and WSL take blocks in the kernel — and it refuses it on ::1 too, so switching
+        # family does not help. The only move left is a different port on BOTH sides, which is
+        # tedious to pick by hand, so pick it here and name the exact URL to register.
+        free = _first_bindable_port()
+        raise RuntimeError(
+            "cannot listen on the redirect port %d for %r (%s). Nothing may appear to hold it: "
+            "Windows can reserve a port invisibly, on IPv4 and IPv6 alike. This port is half of a "
+            "pair — the other half is registered on the provider's OAuth app — so both have to "
+            "move together.%s"
+            % (want, name, e,
+               ("\n  %d is free right now. Set \"redirect_port\": %d in the server's config, and "
+                "register http://%s:%d/callback as a Redirect URL on the app (remember to SAVE "
+                "it — pasting alone does nothing)." % (free, free, host, free)) if free else ""))
     port = srv.server_address[1]
     redirect_uri = "http://%s:%d/callback" % (host, port)
     client_id = cfg.get("client_id")
