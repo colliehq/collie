@@ -75,11 +75,16 @@ def main():
             status=200, content_type="application/json", body=steer_reply["body"]))
 
         pg.goto(BASE + "/?token=" + TOKEN, wait_until="load")
-        pg.wait_for_timeout(600)
-        ov = pg.query_selector("#obOverlay")
-        if ov and "open" in (ov.get_attribute("class") or ""):
+        # Wait for the welcome overlay rather than sampling for it: it opens when the provider probe
+        # answers, which is later than 600ms on a cold machine — and if it is missed, it opens over
+        # the composer a moment after and the run this suite is about never starts. That failure
+        # arrived as `es.emit` on undefined, twenty lines further down.
+        try:
+            pg.wait_for_selector("#obOverlay.open", timeout=15000)
             pg.click("#obSkip")
-            pg.wait_for_timeout(300)
+            pg.wait_for_selector("#obOverlay.open", state="detached", timeout=3000)
+        except Exception:
+            pass                    # already authed, or it never comes: either way, carry on
 
         pg.fill("#input", "the original question")
         pg.press("#input", "Enter")

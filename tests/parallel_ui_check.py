@@ -69,15 +69,22 @@ def main():
             status=200, content_type="application/json", body=sessions["body"]))
 
         pg.goto(BASE + "/?token=" + TOKEN, wait_until="load")
-        pg.wait_for_timeout(600)
-        ov = pg.query_selector("#obOverlay")
-        if ov and "open" in (ov.get_attribute("class") or ""):
+        # Wait for the welcome overlay, do not sample for it — see steer_ui_check for what missing
+        # it costs: it opens over the composer a moment later and the run never starts.
+        try:
+            pg.wait_for_selector("#obOverlay.open", timeout=15000)
             pg.click("#obSkip")
-            pg.wait_for_timeout(300)
+            pg.wait_for_selector("#obOverlay.open", state="detached", timeout=3000)
+        except Exception:
+            pass
 
         pg.fill("#input", "first thing")
         pg.press("#input", "Enter")
-        pg.wait_for_timeout(400)
+        # Wait for the stream to exist. Sending classifies first (POST /api/route) and only then
+        # opens it, so a flat 400ms was a bet on two round trips — and when it lost, the failure was
+        # `es.emit` on undefined rather than "the run never started".
+        pg.wait_for_function(
+            "() => (window.__es || []).some(e => e.url.indexOf('/api/stream') > -1)", timeout=10000)
         pg.evaluate("""() => {
             const es = window.__es.find(e => e.url.indexOf('/api/stream') > -1);
             es.emit('start', {session: 'sess-A', provider: 'mock', cwd: '/tmp', prior_turns: 0});
