@@ -808,6 +808,37 @@ def _data(res):
     return d if isinstance(d, dict) and not d.get("error") else None
 
 
+def current_origin(timeout=4):
+    """The URL of the tab collie is currently acting in, for the permission gate.
+
+    Asked LIVE on every check, never cached. A cached origin is precisely how this gate
+    would be walked past: navigate somewhere else and the stale value still reads as the
+    approved one, so an approval for your dev server would carry to whatever page the
+    model went to next.
+
+    Uses the existing `spaces` action rather than a new one, so this works against every
+    already-installed extension — nobody has to go and reload it for the gate to work.
+    Returns "" when there is no bridge, no space, or no answer: no origin means no
+    standing rule, which means the call is asked about every time. Failing this way costs
+    a prompt; failing the other way costs the guarantee.
+    """
+    try:
+        env = _call({"action": "spaces"}, timeout=timeout)
+    except Exception:
+        return ""
+    if not isinstance(env, dict) or not env.get("ok", True):
+        return ""
+    data = env.get("data", env)
+    if not isinstance(data, dict):
+        return ""
+    spaces = data.get("spaces") or []
+    current = data.get("current") or _space()
+    for s in spaces:
+        if isinstance(s, dict) and s.get("space") == current:
+            return str(s.get("url") or "")
+    return ""
+
+
 def _fmt(res):
     if not res.get("ok", True) and res.get("error"):
         return "ERROR(browser): %s" % res["error"]

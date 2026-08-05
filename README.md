@@ -150,6 +150,45 @@ drives another repair round. This **`assert-verify`** loop is the core of the ha
 never silently ships as "done." The same idea scales up: `collie loop` stops when a real shell check
 exits 0, and `collie pack` picks the best of N attempts by what actually passes.
 
+## What it asks before doing
+
+Collie reaches further than a cloud agent — your logged-in browser, your desktop, your files — so
+it draws a line and asks before crossing it. Every tool declares how far it reaches
+([`harness/risk.py`](harness/risk.py)), and `collie risk` prints the whole table:
+
+| | | |
+|---|---|---|
+| **read** | no side effects | never asks |
+| **write_local** | changes files here | inside your directory: goes ahead |
+| **exec** | runs commands here | inside your directory: goes ahead |
+| **external** | **leaves this machine** — your logged-in browser, your desktop, an MCP server | **asks, every time** |
+
+**Running `collie` in your repo is the consent** for the middle two. That is the whole point of the
+default `project` mode: an agent that interrupts every `pytest` is not usable, and asking about work
+you already asked for is theatre. What you did *not* consent to by launching it is `browser_click`
+sending mail under your cookies — so that asks.
+
+```bash
+collie -p "fix the bug"                  # project (default)
+collie -p "..." --mode plan              # read-only: explore and propose, change nothing
+collie -p "..." --mode interactive       # ask before every write and command too
+collie -p "..." --mode auto              # ask nothing (sandboxes, CI)
+collie risk                              # what collie can reach, grouped by how far
+```
+
+Two things worth knowing:
+
+- **"Always allow" is pinned to a target, never to a tool.** Approving clicks on
+  `http://localhost:5173` does not approve clicks on your bank — the rule is
+  `browser_click → http://localhost:5173`, the origin is re-read live on every call, and it lasts
+  one run. There is deliberately no way to express "always allow browser_click".
+- **Nobody there means no.** Piped, in CI, or with no terminal, off-machine calls are refused with
+  a reason the model can work around, rather than run because no one objected. Unattended does not
+  raise the ceiling; it only changes who can answer.
+
+In an editor, this is the editor's own prompt: collie speaks ACP's `session/request_permission`, so
+Zed / JetBrains / neovim render their native approval UI.
+
 ## Architecture (abstractions & seams)
 
 ```

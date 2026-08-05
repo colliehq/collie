@@ -272,6 +272,17 @@ class Harness:
         # in flight (point 13). Interactive surfaces (TUI) set it; None = zero cost, benchmark path
         # byte-identical. Drained only at safe points (turn start / voluntary finish).
         self.steering = None
+        # The authority half. `gate` decides allow/deny/ask for each proposed call; `approve` is
+        # the surface that answers an "ask" — a TUI prompt, a web card, ACP's native permission
+        # request, a phone. They are separate on purpose: the loop must not know which surface it
+        # is talking to, which is what lets an attended run and an unattended one share this path.
+        #
+        # gate=None means UNGATED, and is the pre-existing behaviour for callers that have not been
+        # taught about the gate yet (benchmarks, pack, embedded uses). New surfaces set it.
+        # approve=None with a gate set is the honest headless case: nothing off-machine may run,
+        # because there is nobody to ask — see _authorize.
+        self.gate = None
+        self.approve = None
 
     def _emit(self, kind, **data):
         if self.emit:
@@ -279,6 +290,63 @@ class Harness:
                 self.emit(kind, data)
             except Exception:
                 pass
+
+    def _authorize(self, tc, tool):
+        """Decide whether this call may run. Returns None to allow, or the reason it was
+        refused (which becomes the call's result, so the model can route around it).
+
+        Called with the REPAIRED but NOT secret-restored args, and that ordering is
+        load-bearing. `_redact.restore` swaps `{{SECRET:…}}` back to real credentials one
+        line before `tool.run`; anything the approval path touches — the prompt on screen,
+        an audit row, a notification pushed to a phone — must see the placeholder version.
+        Authorizing after the restore would leak the very secrets the redaction exists to
+        keep out of sight.
+        """
+        if self.gate is None:
+            return None                       # ungated caller (benchmarks, embedded uses)
+        try:
+            d = self.gate.evaluate(tc.name, tc.args, tool)
+        except Exception as e:
+            # A broken gate must not become an open gate.
+            return "the permission gate failed (%s: %s)" % (type(e).__name__, e)
+
+        if d.allowed:
+            if d.rule:
+                self._emit("gate", name=tc.name, decision="allowed", rule=d.rule,
+                           risk=d.risk)
+            return None
+
+        if not d.needs_user:
+            self._emit("gate", name=tc.name, decision="denied", reason=d.reason, risk=d.risk)
+            return d.reason
+
+        if self.approve is None:
+            # Nobody to ask. This is the honest headless answer: refuse, and say why, so
+            # the model can finish the parts that need no permission and report the rest.
+            # Treating "unattended" as "allowed" would make the gate decorative exactly
+            # when it matters most — when no one is watching.
+            self._emit("gate", name=tc.name, decision="denied", risk=d.risk,
+                       reason="no approver attached")
+            return ("%s, and there is nobody to approve it in this run. Do the parts that "
+                    "need no approval and describe this step instead of doing it." % d.reason)
+
+        self._emit("gate", name=tc.name, decision="asking", risk=d.risk,
+                   target=d.target, reason=d.reason)
+        try:
+            outcome = self.approve(tc.name, tc.args, d)
+        except Exception as e:
+            return "could not ask for approval (%s: %s)" % (type(e).__name__, e)
+
+        from .gate import ALLOWING, Outcome
+        try:
+            outcome = Outcome(str(outcome))
+        except ValueError:
+            outcome = Outcome.REJECT_ONCE     # an unparseable answer is not consent
+        self.gate.apply_outcome(outcome, tc.name, d.target)
+        allowed = outcome in ALLOWING
+        self._emit("gate", name=tc.name, decision="approved" if allowed else "denied",
+                   outcome=outcome.value, risk=d.risk, target=d.target)
+        return None if allowed else "the user declined this action"
 
     def _drain_steering(self):
         """Pull any queued mid-run user messages (point 13). Same exception discipline as _emit —
@@ -614,25 +682,44 @@ class Harness:
                          # preserve signed thinking so the NEXT request can replay it (required by
                          # the API when extended thinking + tool use are both on). Empty when off.
                          "thinking_blocks": comp.thinking_blocks})
+                    # ── pass 1: repair + AUTHORIZE every call in this turn, before running any ──
+                    # Authorizing up front is the point: when the model proposes five calls, the
+                    # human sees all five and decides, instead of discovering the third one only
+                    # after the first two already happened irreversibly.
+                    _prepared = []
                     for tc in comp.tool_calls:
                         tool = self.registry.get(tc.name)
                         repairs = []
+                        if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
+                            _prepared.append((tc, tool, repairs, None))
+                            continue
+                        if tool is not None:
+                            # repair known model quirks (json-string args, file_path->path) BEFORE
+                            # dispatch. REBUILD tc (never mutate) so the session keeps the model's
+                            # raw args for replay fidelity while the tool sees canonical args.
+                            rargs, repairs = repair_args(tc.args, getattr(tool, "schema", {}) or {})
+                            if repairs:
+                                tc = ToolCall(tc.id, tc.name, rargs)
+                                res.arg_repairs += 1
+                                self._emit("repair", name=tc.name, kinds=repairs)
+                        _prepared.append((tc, tool, repairs, self._authorize(tc, tool)))
+
+                    # ── pass 2: execute what cleared ──
+                    for tc, tool, repairs, _denied in _prepared:
                         # malformed/truncated JSON args (provider sentinel, point 7): report the REAL
                         # fault, not a misleading "missing required arg".
                         if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
                             out = ("ERROR: tool call arguments were not valid JSON (truncated or "
                                    "malformed). Raw prefix: %s. Re-emit the call with valid JSON "
                                    "arguments." % str(tc.args.get("_malformed_args"))[:500])
+                        elif _denied is not None:
+                            # The refusal goes back to the model as this call's RESULT, never as a
+                            # dropped call: an unpaired tool_use 400s the provider on the next turn
+                            # (and on --continue), and a model that is told why can route around it
+                            # — write the step into the report for a human instead of doing it.
+                            out = "DENIED: %s" % _denied
+                            res.denied_calls += 1
                         else:
-                            if tool is not None:
-                                # repair known model quirks (json-string args, file_path->path) BEFORE
-                                # dispatch. REBUILD tc (never mutate) so the session keeps the model's
-                                # raw args for replay fidelity while the tool sees canonical args.
-                                rargs, repairs = repair_args(tc.args, getattr(tool, "schema", {}) or {})
-                                if repairs:
-                                    tc = ToolCall(tc.id, tc.name, rargs)
-                                    res.arg_repairs += 1
-                                    self._emit("repair", name=tc.name, kinds=repairs)
                             try:                      # a malformed tool call must not abort the run
                                 # privacy: placeholders the model emitted ({{SECRET:…}}) are swapped
                                 # back to real values ONLY here, at the execution boundary — the

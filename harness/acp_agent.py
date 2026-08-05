@@ -145,10 +145,17 @@ class CollieAgent(acp.Agent):
         try:
             # build INSIDE the try — make_harness -> AnthropicOAuth raises on a missing token, and
             # that must reach the user as a chat message, not an escaped JSON-RPC error.
+            from .cli import default_gate
+            _gate = default_gate(cwd)
             h = make_harness(cwd, provider=provider, model=model,
                              project="acp", code_search=True, embed="hash",
-                             exec_code=True, delegate=True)
+                             exec_code=True, delegate=True, gate=_gate)
             h.emit = _bridge
+            # ACP has a permission request of its own, so the editor renders its NATIVE
+            # approval UI and collie writes no interface at all. Until now this adapter
+            # auto-approved everything it was asked to do, which in an editor that offers
+            # to ask is the worst of both: the affordance exists and is never used.
+            h.approve = self._acp_approver(session_id, loop, _gate)
             history = sess.get("messages")   # ACP is a LONG session (many prompts) -> carry thread
             res = await loop.run_in_executor(
                 None, lambda: h.run("acp", task, consolidate=False, history=history))
@@ -169,6 +176,59 @@ class CollieAgent(acp.Agent):
                 except Exception:
                     pass
         return acp.PromptResponse(stop_reason="end_turn")
+
+    def _acp_approver(self, session_id, loop, gate):
+        """Turn a gate "ask" into ACP's `session/request_permission`.
+
+        The harness runs on a worker thread while the JSON-RPC connection lives on the
+        event loop, so the request is scheduled onto the loop and this thread blocks on
+        the future — which is exactly the semantics wanted: the tool call does not proceed
+        until the editor's user answers.
+
+        Option ids ARE collie's outcome values (both sides use ACP's four kinds), so the
+        response maps straight back with no translation table to drift.
+        """
+        import asyncio as _a
+
+        from .gate import Outcome
+
+        async def _ask(tool_name, args, decision):
+            from .approve import describe
+            opts = [s.PermissionOption(optionId=Outcome.ALLOW_ONCE.value,
+                                       name="Allow", kind="allow_once")]
+            offer = gate.standing_rule_offer(tool_name, decision.target) if gate else None
+            if offer:
+                # Only offered when a rule can actually be pinned to something concrete.
+                # An "always" that silently meant "always, anywhere" would be a lie told
+                # in the editor's own UI.
+                opts.append(s.PermissionOption(optionId=Outcome.ALLOW_ALWAYS.value,
+                                               name="Always allow %s" % offer,
+                                               kind="allow_always"))
+            opts.append(s.PermissionOption(optionId=Outcome.REJECT_ONCE.value,
+                                           name="Don't", kind="reject_once"))
+            title, kind, path = _tool_title(tool_name, args)
+            res = await self.conn.request_permission(
+                session_id,
+                s.ToolCallUpdate(toolCallId="gate-%s" % uuid.uuid4().hex[:8],
+                                 title=title or describe(tool_name, args),
+                                 kind=kind, status="pending", locations=_loc(path)),
+                opts)
+            outcome = getattr(res, "outcome", None)
+            # DeniedOutcome carries outcome="cancelled" and no option_id: the user closed
+            # the prompt or the client cancelled. Not consent.
+            chosen = getattr(outcome, "option_id", None)
+            return chosen or Outcome.REJECT_ONCE.value
+
+        def approve(tool_name, args, decision):
+            try:
+                fut = _a.run_coroutine_threadsafe(_ask(tool_name, args, decision), loop)
+                return fut.result()
+            except Exception:
+                # A client that does not implement request_permission, a dropped
+                # connection, a cancelled turn — every one of them means nobody said yes.
+                return Outcome.REJECT_ONCE.value
+
+        return approve
 
     async def _send(self, sid, kind, d):
         import sys as _sys

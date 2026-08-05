@@ -1,6 +1,7 @@
 # Changelog
 
-## v0.20.31 — a collie that can be @-ed, and one that has an address of its own
+## v0.20.31 — a collie that can be @-ed, one that has an address of its own,
+and a gate on the part that leaves your machine
 
 - **`collie slack` had never started.** `Worker` subclasses `threading.Thread` and its constructor
   assigned `self.ident`, which is a read-only property holding the thread id — AttributeError,
@@ -39,6 +40,50 @@
   callback port was picked fresh every sign-in so no provider requiring an exact redirect could
   ever match, and no `scope` was requested — which produces a sign-in that succeeds and a token
   every call then refuses.
+
+- **The main loop had no permission gate at all.** The authority machinery — `leash.py`,
+  `actions.py` with its HMAC-bound proposals, single-use nonces, TOCTOU snapshot check and durable
+  receipts — was only ever wired to `collie jobs`. Everything a user actually runs (`collie -p`, the
+  TUI, `collie web`, ACP) went straight from the model's tool call to `tool.run`. That path drives
+  the user's REAL logged-in browser and their real desktop, so `browser_click` could send, post, buy
+  or delete under their cookies with nothing to stop it. The Origin/token check in
+  `browserbridge.py` is transport authentication — it stops a web page driving the bridge; it never
+  answered "should this step happen".
+
+- **Risk is now a declared property, in one table.** `harness/risk.py` classifies every tool as
+  `read` / `write_local` / `exec` / `external`, and a test walks the live registry so a new tool
+  cannot ship without someone deciding what it can reach. It found `mcpctl_connect` — which opens a
+  browser OAuth flow and registers a whole new tool set under the user's credentials — sitting
+  unclassified. The fallback is `external`, not `read`: collie's tool set is open (MCP,
+  `enable_capability`, provider plugins), so an unclassified tool has to fail closed.
+
+- **`project` mode: running collie in your repo is the consent.** Reads, writes and commands inside
+  that directory go ahead; anything reaching off the machine asks. An agent that interrupts every
+  `pytest` would not be usable, and asking about the work you just asked for is theatre — so the
+  line is drawn at the machine's edge instead. `--mode plan|project|interactive|auto`, `COLLIE_MODE`.
+
+- **"Always allow" pins to a target, never to a tool.** `browser_click` on a nav link and on "Send"
+  are the same tool with the same schema, so a per-tool rule is either useless or dangerous. Rules
+  are `(tool, origin)` — the origin re-read live from the bridge on every call, never cached,
+  because a cached origin is exactly how this gets walked past. `browser_eval` / `browser_script` /
+  shell can never carry a rule at all: arbitrary code in a logged-in page is that whole account.
+
+- **Nobody there means no.** Piped, in CI, or with no terminal, an off-machine call is refused with
+  a reason the model can route around, instead of running because no one objected.
+
+- **ACP was auto-approving everything.** The protocol has `session/request_permission` and the types
+  were already in collie's dependency; the adapter never called it. It does now, so Zed / JetBrains
+  / neovim render their own native approval UI and collie ships no dialog of its own.
+
+- Authorization for a turn happens **before** any of its calls execute — five proposed calls are all
+  decided on before the first one happens, not discovered after the first two already landed.
+
+- The approval path sees the **pre-redaction** arguments. `_redact.restore` swaps `{{SECRET:…}}`
+  back one line before `tool.run`; a prompt built after that would print the user's key on screen in
+  the name of asking permission. Pinned by a test that fails if the ordering is flipped.
+
+- `collie risk` prints the table. Benchmarks, `pack` and the delegate child build harnesses through
+  the same constructor and stay ungated, so what they measure is unchanged.
 
 ## v0.20.30 — the two releases that were never tagged, and a browser that can finish a form
 

@@ -32,6 +32,7 @@ class RunResult:
     tool_calls: int = 0
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
     steer_count: int = 0     # mid-run user steering messages injected (point 13)
+    denied_calls: int = 0    # tool calls the gate refused (denied, or asked with nobody to answer)
     mem_recalls: int = 0
     wall_ms: int = 0
     success: bool = False

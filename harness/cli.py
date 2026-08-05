@@ -160,9 +160,35 @@ def _embedder(embed="auto"):
     return make_embedding(embed)
 
 
+def default_gate(cwd, mode=None):
+    """The gate a user-facing surface runs behind. Mode from COLLIE_MODE, else `project`
+    (writes and commands inside cwd are covered by the fact that you launched collie
+    here; anything reaching off this machine is asked).
+
+    Deliberately NOT the default inside make_harness: benchmarks, `pack` and the delegate
+    child build harnesses through the same function, and a gate there would change what
+    those measure. Surfaces with a human attached opt in; measurement paths stay as they
+    were."""
+    from .gate import Gate, Mode, mode_from_env
+    from .settings import get as _sget
+    allowed = []
+    raw = (os.environ.get("COLLIE_ALLOW_COMMANDS") or _sget("ALLOW_COMMANDS", "") or "").strip()
+    if raw:
+        allowed = [c.strip() for c in raw.split(",") if c.strip()]
+    chosen = Mode(mode) if mode else mode_from_env()   # an explicit flag beats the environment
+    g = Gate(cwd=cwd, mode=chosen, allowed_commands=allowed)
+    try:                       # live page origin, for (tool, origin) rules — never cached
+        from .browserbridge import current_origin
+        g.origin_lookup = current_origin
+    except ImportError:
+        pass
+    return g
+
+
 def make_harness(cwd, provider="mock", model=None, project="demo",
                  embed="auto", prefix_ceiling=6000, code_search=False,
-                 rerank=None, distill=None, web_search=None, exec_code=False, delegate=False):
+                 rerank=None, distill=None, web_search=None, exec_code=False, delegate=False,
+                 gate=None):
     from .embeddings import make_reranker
     from .distill import make_distiller
     mem_db, runs_db, _, _ = _paths()
@@ -177,6 +203,7 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     recorder = Recorder(runs_db)
     prov = make_provider(provider, model)
     h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project)
+    h.gate = gate                             # None = ungated (benchmarks, delegate child, embedded)
     try:                                      # Settings-panel turn limit (env/JSON), else keep default
         mt = os.environ.get("COLLIE_MAX_TURNS")
         if mt:
@@ -263,8 +290,12 @@ def cmd_repl(args):
     from . import sessions as sess
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
+    _gate = default_gate(cwd, getattr(args, "mode", None))
     h = make_harness(cwd, provider=provider, model=args.model, project=args.project,
-                     code_search=True, web_search=True, exec_code=True, delegate=True)
+                     code_search=True, web_search=True, exec_code=True, delegate=True,
+                     gate=_gate)
+    from .approve import tty_approver
+    h.approve = tty_approver(gate=_gate)
     sid = args.resume or (sess.latest() if getattr(args, "cont", False) else None) or sess.new_id()
     loaded = sess.load(sid) if (args.resume or getattr(args, "cont", False)) else None
     history = (loaded or {}).get("messages") or []
@@ -1010,9 +1041,18 @@ def cmd_run(args):
     _, runs_db, out_html, _ = _paths()
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
+    _gate = default_gate(cwd, getattr(args, "mode", None))
     h = make_harness(cwd, provider=provider, model=args.model, project=args.project,
                      web_search=True if getattr(args, "web_search", False) else None,
-                     exec_code=True, delegate=True)
+                     exec_code=True, delegate=True, gate=_gate)
+    # An approver only when there is genuinely someone there. Piped or in CI, stdin is not a
+    # person: leaving it unset means off-machine calls are refused with a reason the model can
+    # work around, rather than run because nobody objected. `--mode auto` is the explicit
+    # opt-out for a sandbox that wants the old behaviour.
+    import sys as _sys
+    if _sys.stdin is not None and _sys.stdin.isatty():
+        from .approve import tty_approver
+        h.approve = tty_approver(gate=_gate)
     if getattr(args, "goal", None):              # pin a standing goal into CORE memory (every turn)
         h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
     # --continue / --resume: load a prior conversation THREAD so this run keeps full context
@@ -1176,6 +1216,52 @@ def cmd_compare(args):
     dash.build(runs_db, out_html)
     print("  dashboard -> %s" % out_html)
     h.memory.close(); h.recorder.close()
+    return 0
+
+
+def cmd_risk(args):
+    """Print what collie can reach, grouped by how far it reaches. The policy is data in
+    one table (harness/risk.py); this makes it something a person can actually look at
+    before trusting the thing, instead of a claim in a README."""
+    from . import risk as R
+    from .gate import Mode, mode_from_env
+    from .risk import RiskClass
+
+    reg = default_registry(code_search=True, web_search=True, exec_code=True, delegate=True)
+    for mod, fn in (("harness.browserbridge", "register_browser_bridge"),
+                    ("harness.native", "register_native"),
+                    ("harness.mcpclient", "register_mcp_management")):
+        try:
+            __import__(mod)
+            getattr(sys.modules[mod], fn)(reg)
+        except Exception:
+            pass
+    live = sorted(reg.names())
+
+    mode = Mode(args.mode) if getattr(args, "mode", None) else mode_from_env()
+    blurb = {
+        RiskClass.READ: "no side effects — never asks",
+        RiskClass.WRITE_LOCAL: "changes files on this machine",
+        RiskClass.EXEC: "runs commands on this machine",
+        RiskClass.EXTERNAL: "reaches OFF this machine — your logged-in browser, "
+                            "your desktop, a remote server",
+    }
+    print("mode: %s   (cwd %s)\n" % (mode.value, os.getcwd()))
+    for cls in (RiskClass.READ, RiskClass.WRITE_LOCAL, RiskClass.EXEC, RiskClass.EXTERNAL):
+        names = [n for n in live if R.classify(n) is cls]
+        if not names:
+            continue
+        print("%-13s %s" % (cls.value, blurb[cls]))
+        for i in range(0, len(names), 4):
+            print("    " + "  ".join("%-24s" % n for n in names[i:i + 4]).rstrip())
+        print()
+    unclassified = [n for n in live if n not in R._BASE]
+    if unclassified:
+        print("NOT IN THE TABLE (treated as external until classified):")
+        print("    " + "  ".join(unclassified))
+        print()
+    print("tools that can never carry an 'always allow' rule:")
+    print("    " + "  ".join(sorted(n for n in R.NO_STANDING_RULE if n in live)))
     return 0
 
 
@@ -1758,7 +1844,7 @@ def cmd_mcp(args):
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
-        "setup", "jobs", "config", "uninstall", "update", "menubar"}
+        "setup", "jobs", "config", "uninstall", "update", "menubar", "risk"}
 
 
 def _setup_wizard(force=False):
@@ -1888,6 +1974,13 @@ def main(argv=None):
     pr.add_argument("--stream-json", action="store_true", dest="stream_json",
                     help="stream NDJSON events (tool/edit/repro/receipt) to stderr as they "
                          "happen — for live UX / editor extension / ACP adapter")
+    pr.add_argument("--mode", default=None, choices=["plan", "project", "interactive", "auto"],
+                    help="how much collie may do without asking. project (default): reads, "
+                         "writes and commands inside this directory go ahead — you consented to "
+                         "that by running collie here — while anything reaching OFF this machine "
+                         "(your logged-in browser, your desktop, an MCP server) asks first. "
+                         "plan: read-only. interactive: ask before every write and command. "
+                         "auto: ask nothing (sandboxes and CI). Also COLLIE_MODE.")
     pr.add_argument("--web-search", action="store_true", dest="web_search",
                     help="enable the web_search tool (keyless DuckDuckGo, or a browser-extension "
                          "bridge via COLLIE_WEBSEARCH_BRIDGE)")
@@ -2076,6 +2169,10 @@ def main(argv=None):
     pc.add_argument("--judge", default="", help="provider for LLM quality judge (e.g. deepseek); '' = heuristic")
     pc.set_defaults(fn=cmd_compare)
 
+    prk = sub.add_parser("risk", help="what collie can reach, grouped by how far it reaches")
+    prk.add_argument("--mode", default=None,
+                     choices=["plan", "project", "interactive", "auto"])
+    prk.set_defaults(fn=cmd_risk)
     ph = sub.add_parser("harnesses"); ph.set_defaults(fn=cmd_harnesses)
 
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)

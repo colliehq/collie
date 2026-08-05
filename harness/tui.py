@@ -450,8 +450,11 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
     console = Console() if have_rich else None
     ui = RichTUI(console) if have_rich else PlainTUI()
 
+    from .cli import default_gate
+    _gate = default_gate(cwd)
     h = make_harness(cwd, provider=provider, model=model, project=project,
-                     code_search=True, web_search=True, exec_code=True, delegate=True)
+                     code_search=True, web_search=True, exec_code=True, delegate=True,
+                     gate=_gate)
 
     sid = resume or (sess.latest() if cont else None) or sess.new_id()
     loaded = sess.load(sid) if (resume or cont) else None
@@ -553,6 +556,14 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
             try:
                 if feed is not None and feed.tty:
                     h.steering = feed.drain     # let mid-run keystrokes steer the agent
+                    # The approval prompt reads through the SAME pump, or it would fight the
+                    # steering thread for stdin and neither would get a whole line.
+                    from .approve import tty_approver
+                    _w = (lambda s: console.print("[yellow]%s[/yellow]" % s)) if have_rich else print
+                    h.approve = tty_approver(
+                        read_line=lambda: feed.readline_blocking(
+                            "  allow? [y]es / [a]lways / [N]o: "),
+                        write=_w, gate=_gate)
                 res = ui.run_turn(h, "tui", line, history)
             except KeyboardInterrupt:
                 # Ctrl-C DURING a turn aborts just this turn, not the whole session — h.run only
@@ -563,6 +574,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 continue
             finally:
                 h.steering = None               # steering only during a run
+                h.approve = None                # and nobody is at the prompt between turns
             history = res.messages
             sess.save(sid, history, project=project, cwd=cwd, answer=res.answer or "")
             saved = True
