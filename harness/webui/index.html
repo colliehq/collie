@@ -2239,10 +2239,16 @@
     // settings defaults PROVIDER to "anthropic" even when nothing is saved, while the runtime falls
     // back to mock, so `current` alone cannot tell you there is no brain. Ask instead whether the
     // current provider is actually AUTHED; that also catches "configured but the key is missing".
-    var skipped; try { skipped = sessionStorage.getItem("collie-onboard-skip"); } catch (e) {}
-    if (skipped) return;
+    function wasSkipped() {
+      try { return !!sessionStorage.getItem("collie-onboard-skip"); } catch (e) { return false; }
+    }
+    if (wasSkipped()) return;
     fetch("/api/models?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
       .then(function (d) {
+        // Ask AGAIN on the way in. /api/models probes every provider, so this answer can arrive
+        // seconds after the page did — long enough for the reader to have dismissed the welcome
+        // already. Opening it on top of them then looks like a dialog that will not stay shut.
+        if (wasSkipped()) return;
         var entries = (d || {}).entries || [];
         var prov = (((d || {}).current) || "").split(":")[0];
         var working = prov && prov !== "mock" && entries.some(function (e) {

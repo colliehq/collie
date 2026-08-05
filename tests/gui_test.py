@@ -66,10 +66,19 @@ def main():
             # pg.click() then waited 30s for an element it could see but could not reach, and the
             # 30s timeout was the FIRST sign, with the reason nowhere in the log. So assert the
             # overlay behaves, then dismiss it the way a real first-run user does.
-            ov = pg.query_selector("#obOverlay")
-            check("onboarding appears when no provider is authed",
-                  ov is not None and "open" in (ov.get_attribute("class") or ""))
-            if ov and "open" in (ov.get_attribute("class") or ""):
+            #
+            # WAIT for it rather than sampling it. The overlay opens when /api/models comes back,
+            # and that call probes every provider — on a cold machine it lands well after the page
+            # does. Sampling made this check fail on timing alone, and worse: the failure meant the
+            # dismissal below was skipped, the overlay opened a moment later, and the FIRST honest
+            # report of it was a 30s click timeout twelve checks further down.
+            try:
+                pg.wait_for_selector("#obOverlay.open", timeout=20000)
+                appeared = True
+            except Exception:
+                appeared = False
+            check("onboarding appears when no provider is authed", appeared)
+            if appeared:
                 pg.click("#obSkip")
                 pg.wait_for_selector("#obOverlay.open", state="detached", timeout=3000)
             check("onboarding dismisses and stops blocking the page",
@@ -180,13 +189,25 @@ def main():
             # reached the file, which is checked immediately below.
             pg.wait_for_timeout(1200)                    # the apply-on-change debounce
             pg.click("#setSave")
-            pg.wait_for_timeout(300)
+            # Wait for the OUTCOME, not for a fixed 300ms. Save closes the panel when the apply it
+            # fired comes back, and the write lands with that same response — neither is instant on
+            # a machine running the rest of this suite beside it. A sleep that is long enough today
+            # is a flake tomorrow, and it fails as "Done does not close the panel", which sends the
+            # reader into the click handler rather than at the clock.
+            try:
+                pg.wait_for_selector("#setOverlay.open", state="detached", timeout=15000)
+            except Exception:
+                pass
             check("save closes the settings panel",
                   "open" not in (pg.query_selector("#setOverlay").get_attribute("class") or ""))
             saved = {}
-            try:
-                with open(setpath, encoding="utf-8") as f: saved = json.load(f)
-            except Exception: pass
+            for _ in range(60):
+                try:
+                    with open(setpath, encoding="utf-8") as f: saved = json.load(f)
+                except Exception: saved = {}
+                if saved.get("MAX_TURNS") == "9":
+                    break
+                pg.wait_for_timeout(250)
             check("settings persisted to disk", saved.get("MODEL") == "claude-sonnet-5" and saved.get("MAX_TURNS") == "9",
                   "file=%r" % saved)
             # re-GET reflects the saved values
