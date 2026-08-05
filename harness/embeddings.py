@@ -289,6 +289,57 @@ class STEmbedding(EmbeddingProvider):
 
 
 _EMB_CACHE = {}
+_WARMING: set[str] = set()          # names with a background build in flight (start-once guard)
+_WARM_LOCK = __import__("threading").Lock()
+
+
+def granite_cached() -> bool:
+    """True if the default (granite) ONNX weights are already on local disk, i.e. building the
+    embedder will NOT hit the network. Cheap: just probes the HF cache, no import of onnxruntime.
+    Used to decide whether the first run can build in-line or must warm in the background."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        for f in ("model.onnx", "tokenizer.json"):
+            hit = try_to_load_from_cache(GRANITE, f)
+            if not isinstance(hit, str) or not os.path.exists(hit):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def warm_async(name: str = "granite", on_ready=None) -> bool:
+    """Build (and thus download) the embedder in a BACKGROUND daemon thread, once. Returns True if a
+    warm was started (or is already running), False if the model is already cached (nothing to do).
+
+    This is the seam that keeps the FIRST run non-blocking: instead of stalling the user's turn on a
+    multi-hundred-MB model download, the caller falls back to BM25-only for this session and calls
+    warm_async() so the next run finds the model on disk and gets full semantic memory instantly.
+    `on_ready(provider)` — if given — is invoked from the worker thread when the model is live."""
+    import threading
+    if name in _EMB_CACHE:
+        return False
+    with _WARM_LOCK:
+        if name in _WARMING:
+            return True
+        _WARMING.add(name)
+
+    def _run():
+        try:
+            prov = make_embedding(name)                    # downloads + caches into _EMB_CACHE
+            if on_ready:
+                try: on_ready(prov)
+                except Exception: pass
+        except Exception as e:
+            import sys
+            print("[embed] background warm of %s failed (%s: %s) — staying BM25-only"
+                  % (name, type(e).__name__, str(e)[:120]), file=sys.stderr)
+        finally:
+            with _WARM_LOCK:
+                _WARMING.discard(name)
+
+    threading.Thread(target=_run, name="collie-embed-warm", daemon=True).start()
+    return True
 
 
 def make_embedding(name: str = "hash") -> EmbeddingProvider:

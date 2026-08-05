@@ -129,6 +129,19 @@ def _embedder(embed="auto"):
     if embed in ("bm25", "none", "off", "sparse"):
         return None
     if embed in ("auto", "granite", "local", "default", "daemon"):   # "daemon" = legacy alias
+        # First run must NOT block on a multi-hundred-MB model download. If granite isn't on disk
+        # yet, download it in the BACKGROUND and run this session BM25-only; the next run finds it
+        # cached and gets full semantic memory instantly. Once cached, build in-line (fast).
+        try:
+            from .embeddings import granite_cached, warm_async
+            if not granite_cached():
+                if warm_async("granite"):
+                    print("  [embed] downloading the semantic-memory model in the background — "
+                          "this run uses BM25 (keyword) retrieval; the next run will be fully "
+                          "semantic. No need to wait.", file=sys.stderr)
+                return None
+        except Exception:
+            pass                                          # fall through to the normal (blocking) build
         try:
             return make_embedding("granite")
         except Exception as e:
@@ -1325,7 +1338,18 @@ def cmd_init(args):
     if not args.no_config:
         _setup_wizard(force=True)     # provider/model first — init is also "set me up" (tty only)
     t0 = _t.time()
-    emb = _embedder(args.embed)                       # warm the memory embedder (first use downloads)
+    # init's job IS to warm — download and wait here on purpose (unlike a normal run, which
+    # backgrounds the download). Build directly so the auto-path's non-blocking fallback is bypassed.
+    if args.embed in ("bm25", "none", "off", "sparse"):
+        emb = None
+    elif args.embed in ("auto", "granite", "local", "default", "daemon"):
+        try:
+            emb = make_embedding("granite")
+        except Exception as e:
+            print("  · semantic memory unavailable (%s) — BM25 keyword recall" % (str(e)[:100]))
+            emb = None
+    else:
+        emb = _embedder(args.embed)
     if emb is not None:
         emb.embed("warm-up", kind="query")
         print("  ✓ semantic memory ready: %s (dim=%d)  [%.1fs]" % (emb.name, emb.dim, _t.time() - t0))
