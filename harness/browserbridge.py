@@ -286,11 +286,32 @@ def _handler(bridge, enforce_host=True):
         def log_message(self, *a):
             pass
 
+        _body_read = False
+
+        def _drain(self):
+            """Swallow an unread request body before replying.
+
+            A refusal (403/401) answers before _body() is ever called, and closing a socket that
+            still has inbound data queued makes Windows abort the connection with an RST: the client
+            raises ConnectionAbortedError (WinError 10053) and never sees the status it was sent. A
+            caller whose only check is the status code then reads a refusal as "the bridge is down"
+            and goes to restart the thing that was working. It is a race with the last packet, so it
+            shows up intermittently — the surfaces suite caught it on one of two identical POSTs.
+            """
+            n = int(self.headers.get("content-length", 0) or 0) if not self._body_read else 0
+            while n > 0:
+                chunk = self.rfile.read(min(n, 65536))
+                if not chunk:
+                    break
+                n -= len(chunk)
+            self._body_read = True
+
         def _json(self, obj, code=200):
             # NO access-control-allow-origin: the bridge drives chrome.debugger in the user's REAL
             # logged-in tabs, so it must NOT be reachable/readable by web pages. collie's own tools
             # (urllib, same host) and the extension (host_permissions bypass CORS) don't need it;
             # a wildcard ACAO would let any visited page read the results (exfil).
+            self._drain()
             b = json.dumps(obj).encode()
             self.send_response(code)
             self.send_header("content-type", "application/json")
@@ -300,6 +321,7 @@ def _handler(bridge, enforce_host=True):
 
         def _body(self):
             n = int(self.headers.get("content-length", 0) or 0)
+            self._body_read = True
             return json.loads(self.rfile.read(n) or b"{}")
 
         def _web_origin(self):
