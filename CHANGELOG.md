@@ -40,6 +40,17 @@
   The gate was always right — what was wrong is that "the connection dropped" reads as "the bridge
   is down", so the thing that gets restarted is the thing that was working.
 
+- **Collie could make an isolated worktree on Windows and could not remove one.** The removal ran
+  git from inside the directory it was deleting — repo_root answers a worktree with its own path —
+  and Windows refuses to delete a directory a process is standing in. Git deregistered the worktree
+  and then failed to delete the files, so the caller was told nothing had been removed while an
+  orphan directory git no longer knew about stayed on disk.
+
+- **The welcome overlay could reappear after you dismissed it.** It opens when the provider probe
+  answers, and the skip flag was read before that request went out — so a dismissal inside the
+  window was undone by the answer. A dialog that comes back reads as broken software, not a slow
+  probe.
+
 - **Connect a service in one press — from the panel, the chat, or the terminal.** Asked to connect
   Slack, Collie used to reach for an npm package wanting a bot token you mint by hand, while Slack
   runs a remote endpoint that does OAuth in a browser and Collie has had the whole handshake (2.1,
