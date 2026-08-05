@@ -172,6 +172,33 @@ def main():
         finally:
             m.login = real_login
 
+        # ---- a pinned redirect, which is what makes a BYO client_id usable at all ---------------
+        # The ephemeral port is right when the server registers the client on the spot. When you
+        # have to type the redirect URL into an app-management page first, a port that changes every
+        # sign-in can never match — so `redirect_port` fixes it and `redirect_host` covers providers
+        # that accept `localhost` but not `127.0.0.1`.
+        import urllib.parse as _up
+        import webbrowser as _wb
+        m.add_server("pinned", {"url": "https://mcp.example.invalid/mcp", "client_id": "cid",
+                                "redirect_port": 8971, "redirect_host": "localhost"}, replace=True)
+        real_disc, real_open, seen = m._discover_oauth, _wb.open, {}
+        m._discover_oauth = lambda u: {"authorization_endpoint": "https://auth.example.invalid/authorize",
+                                       "token_endpoint": "https://auth.example.invalid/token"}
+        _wb.open = lambda *a, **k: True                    # never actually open a browser in a test
+        try:
+            try:
+                m.login("pinned", timeout=1, announce=lambda u: seen.setdefault("url", u))
+            except Exception:
+                pass                                       # nothing comes back; the URL is the point
+        finally:
+            m._discover_oauth, _wb.open = real_disc, real_open
+        q = _up.parse_qs(_up.urlsplit(seen.get("url", "")).query)
+        check(q.get("redirect_uri") == ["http://localhost:8971/callback"],
+              "the authorize URL carries the redirect you registered (%s)" % q.get("redirect_uri"))
+        check(q.get("client_id") == ["cid"], "and your own client_id, not one it tried to mint")
+        check("code_challenge" in q, "still PKCE")
+        m.remove_server("pinned")
+
         # The CLI path people type, and the empty-list screen that has to name it.
         from harness import cli
         import argparse

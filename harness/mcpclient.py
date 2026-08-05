@@ -220,15 +220,34 @@ CATALOG = {
 }
 
 
+BYO_PORT = 8899          # any free port; it only has to agree with what you register
+
+
 def byo_client_help(name, label, url):
-    """What to do about a service that will not register a client for you."""
-    return ("%s does not let an app register itself (no OAuth dynamic client registration), so "
-            "there is no client_id to sign in with and the browser step cannot start. Create an "
-            "OAuth app in %s and put its id in the server's config:\n"
-            '    "%s": {"url": "%s", "client_id": "<your client id>"}\n'
-            "  in ~/.collie/mcp.json — the redirect URI is a loopback address collie picks per "
-            "sign-in (http://127.0.0.1:<port>/callback), so register it as a native/desktop client "
-            "if the provider asks which kind it is." % (label, label, name, url))
+    """What to do about a service that will not register a client for you.
+
+    The sign-in itself is the ordinary one — their authorize page, their login, their Allow button.
+    The ONLY missing piece is a client_id: this server's authorization metadata advertises no
+    registration_endpoint, so collie cannot obtain one on the spot the way it does elsewhere. The
+    clients that connect to it without this step (Claude, Cursor) are pre-registered with the
+    provider — HubSpot's endpoint is literally .../anthropic — which is a relationship, not a
+    protocol feature.
+    """
+    return ("%s will not register a client on the spot (its OAuth metadata advertises no "
+            "registration_endpoint), so collie has no client_id to send and cannot open the "
+            "authorize page. Everything after that is the normal flow — their page, your login, "
+            "one Allow.\n"
+            "  1. Create an app at the provider's developer console (%s) and copy its Client ID.\n"
+            "  2. Register this exact redirect URL on it: http://localhost:%d/callback\n"
+            "     (also add http://127.0.0.1:%d/callback if it will take both.)\n"
+            "  3. Put both in ~/.collie/mcp.json:\n"
+            '     "%s": {"url": "%s",\n'
+            '                "client_id": "<your client id>",\n'
+            '                "redirect_port": %d, "redirect_host": "localhost"}\n'
+            "  4. `collie mcp connect %s` — the browser opens on their authorize page.\n"
+            "  The port is pinned because the URL you register has to match the one collie listens "
+            "on; without redirect_port it picks a fresh one every sign-in and nothing can match."
+            % (label, label, BYO_PORT, BYO_PORT, name, url, BYO_PORT, name))
 
 
 def known(name):
@@ -541,9 +560,24 @@ def login(name, cfg=None, timeout=300, announce=None):
         def log_message(self, *a):
             pass
 
-    srv = http.server.HTTPServer(("127.0.0.1", 0), _CB)
+    # An EPHEMERAL port is right for a server that registers the client on the spot: it hands over
+    # whatever address it just bound. It is unusable for one that does not, because that redirect
+    # URI has to be typed into someone's app-management page BEFORE the first sign-in, and a port
+    # that changes every time can never match. Providers match the redirect exactly (Slack: "must
+    # match or be a subdirectory of a Redirect URL configured under App Management"), and the port
+    # is part of the origin, not a subdirectory — so `redirect_port` pins it. `redirect_host` is
+    # there because some providers accept `localhost` and not `127.0.0.1`; we always BIND loopback
+    # and only vary the name in the URL.
+    want = int(cfg.get("redirect_port") or os.environ.get("COLLIE_OAUTH_PORT") or 0)
+    host = str(cfg.get("redirect_host") or "127.0.0.1")
+    try:
+        srv = http.server.HTTPServer(("127.0.0.1", want), _CB)
+    except OSError as e:
+        raise RuntimeError("cannot listen on the redirect port %d for %r (%s). It is the one this "
+                           "server's OAuth app has registered, so it cannot simply be changed — "
+                           "free the port, or change both sides." % (want, name, e))
     port = srv.server_address[1]
-    redirect_uri = "http://127.0.0.1:%d/callback" % port
+    redirect_uri = "http://%s:%d/callback" % (host, port)
     client_id = cfg.get("client_id")
     if not client_id and meta.get("registration_endpoint"):
         client_id = (_register_client(meta["registration_endpoint"], redirect_uri) or {}).get("client_id")
@@ -568,7 +602,7 @@ def login(name, cfg=None, timeout=300, announce=None):
         webbrowser.open(auth_url)
     except Exception:
         pass
-    srv.timeout = max(5, int(timeout or 300))
+    srv.timeout = max(1, int(timeout or 300))
     srv.handle_request()                                           # blocks until the redirect or timeout
     srv.server_close()
     if holder.get("error"):
