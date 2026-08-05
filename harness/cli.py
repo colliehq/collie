@@ -898,6 +898,61 @@ def cmd_slack(args):
     return slackbot.main(argv)
 
 
+def cmd_mail(args):
+    """collie mail — an address of this dog's own, and the ability to wait for a letter.
+
+    The reason it exists is `wait`: a signup that ends in "check your email" stops being a handover
+    to a human. See harness/dogmail.py for the identity and encryption design.
+    """
+    from . import dogmail as dm
+    act = args.mail_action
+    if act == "claim":
+        if not args.name or not args.value:
+            print("usage: collie mail claim <handle> <your-real-email>")
+            return 1
+        d = dm.claim_handle(args.name, args.value)
+        if not d.get("ok"):
+            print("could not claim %r: %s" % (args.name, d.get("error") or d))
+            return 1
+        print("a code is on its way to %s — then: collie mail verify <code>" % args.value)
+        return 0
+    if act == "verify":
+        d = dm.verify_handle(args.name)
+        print("handle verified" if d.get("ok") else "not verified: %s" % (d.get("error") or d))
+        return 0 if d.get("ok") else 1
+    if act == "add":
+        if not args.name:
+            print("usage: collie mail add <dog name>")
+            return 1
+        d = dm.claim_dog(args.name)
+        if not d.get("ok"):
+            print("could not give %s an address: %s" % (args.name, d.get("error") or d))
+            return 1
+        print("%s is now %s" % (args.name, d["address"]))
+        return 0
+    if act == "list":
+        st = dm.load()
+        dogs = st.get("dogs") or {}
+        if not dogs:
+            print("(no addresses yet — `collie mail claim <handle> <email>` then `collie mail add <dog>`)")
+            return 0
+        for n, d in sorted(dogs.items()):
+            print("  %-10s %s" % (n, d.get("address", "?")))
+        for m in dm.fetch(args.name):
+            print("  · %s — %s" % (m.get("from", "?"), (m.get("subject") or "")[:70]))
+        return 0
+    if act == "wait":
+        m = dm.wait_for(args.name, subject=args.subject, sender=args.sender, timeout=args.timeout)
+        if not m:
+            print("nothing matching arrived in %ds" % args.timeout)
+            return 1
+        print("from: %s\nsubject: %s\n\n%s" % (m.get("from", ""), m.get("subject", ""),
+                                               (m.get("text") or m.get("raw") or "")[:4000]))
+        return 0
+    print("unknown action %r" % act)
+    return 1
+
+
 def cmd_record(args):
     """Screen recording with a circular webcam bubble + mic (Loom / Reframe style), via ffmpeg.
     Sub-actions: start (default) / stop / status / devices. See harness/record.py."""
@@ -1702,7 +1757,7 @@ def cmd_mcp(args):
 
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
-        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "init",
+        "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "config", "uninstall", "update", "menubar"}
 
 
@@ -1949,6 +2004,16 @@ def main(argv=None):
     psl.add_argument("--provider", default="")
     psl.add_argument("--announce", default="", help="channel id to report in to on start")
     psl.set_defaults(fn=cmd_slack)
+
+    # mail: a dog's own address, so a verification link is not a handover to a human
+    pml = sub.add_parser("mail", help="a dog's own address (claim | verify | add | list | wait)")
+    pml.add_argument("mail_action", choices=["claim", "verify", "add", "list", "wait"])
+    pml.add_argument("name", nargs="?", default="", help="handle / code / dog name, per action")
+    pml.add_argument("value", nargs="?", default="", help="for `claim`: your real email address")
+    pml.add_argument("--subject", default="", help="for `wait`: match the subject")
+    pml.add_argument("--sender", default="", help="for `wait`: match the sender")
+    pml.add_argument("--timeout", type=int, default=180, help="for `wait`: seconds (default 180)")
+    pml.set_defaults(fn=cmd_mail)
 
     # record: Loom/Reframe-style screen capture with a circular webcam bubble + mic, via ffmpeg
     prc = sub.add_parser("record", help="screen recording with a circular webcam bubble + mic "
