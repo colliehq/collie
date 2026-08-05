@@ -880,6 +880,17 @@ def cmd_slack(args):
     public address — see harness/slackbot.py for why that decides the design."""
     from . import slackbot
     argv = []
+    if getattr(args, "slack_action", "run") == "setup":
+        # Provisioning takes a different set of flags, and `--cwd`/`--provider` default to
+        # something on every run — passing them through would look like they meant something here.
+        argv = ["setup"]
+        for flag in ("name", "config_token", "bot_token", "app_token"):
+            v = getattr(args, flag, "")
+            if v:
+                argv += ["--" + flag.replace("_", "-"), str(v)]
+        if getattr(args, "list_dogs", False):
+            argv += ["--list"]
+        return slackbot.main(argv)
     for flag in ("name", "autonomy", "cwd", "provider", "announce"):
         v = getattr(args, flag, "")
         if v:
@@ -1923,7 +1934,14 @@ def main(argv=None):
     pb.set_defaults(fn=cmd_browser_bridge)
 
     # slack: @ a named collie in a channel and it queues the ask and works on it
-    psl = sub.add_parser("slack", help="answer @mentions in Slack (Socket Mode; one named collie per machine)")
+    psl = sub.add_parser("slack", help="answer @mentions in Slack (Socket Mode; `setup` adds a dog)")
+    psl.add_argument("slack_action", nargs="?", default="run", choices=["run", "setup"],
+                     help="`setup` gives one more dog its own Slack app; run it again for the next")
+    psl.add_argument("--config-token", dest="config_token", default="",
+                     help="setup: app-configuration token (xoxe.xoxp-…) from api.slack.com/apps")
+    psl.add_argument("--bot-token", dest="bot_token", default="", help="setup: xoxb-… if you have it")
+    psl.add_argument("--app-token", dest="app_token", default="", help="setup: xapp-… if you have it")
+    psl.add_argument("--list", dest="list_dogs", action="store_true", help="setup: show the pack")
     psl.add_argument("--name", default="", help="the name this collie answers to (kept across restarts)")
     psl.add_argument("--autonomy", default="", choices=["propose", "branch", "main"],
                      help="what it may do unattended; announced in the channel")

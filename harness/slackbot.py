@@ -41,6 +41,7 @@ from . import wsclient
 SLACK_API = "https://slack.com/api/"
 IDENTITY = os.path.expanduser("~/.collie/identity.json")
 QUEUE_DIR = os.path.expanduser("~/.collie/")
+STORE = os.path.expanduser("~/.collie/slack.json")     # this dog's app id and its two tokens
 
 # Herding names, because a collie answers to one. Kept short and sayable — this
 # is a name a human types twenty times a day, so nothing that needs spelling out.
@@ -114,6 +115,90 @@ def fingerprint() -> str:
         raw = _hostname() + str(os.getuid() if hasattr(os, "getuid") else "")
     import hashlib
     return hashlib.sha256(raw.encode()).hexdigest()[:4]
+
+
+# ---------------------------------------------------------------------------
+# The kennel — provisioning a pack, one app per dog
+# ---------------------------------------------------------------------------
+#
+# Slack's identity model is one app = one bot user = one @handle. There is no
+# arrangement of a single app that gives `@rowan` and `@juno` their own
+# autocomplete, their own mentions, and their own avatar — so a pack whose
+# members can be addressed separately needs an app EACH. What makes that
+# affordable is that an app can be created from a manifest over the API: the
+# per-dog cost becomes one command instead of a tour through six settings pages.
+#
+# Bot-only, on purpose, and not as a simplification. The moment an app carries
+# user scopes Slack switches on token rotation, and a rotating app cannot be
+# installed from the button — it must go through an OAuth redirect, and Slack
+# then refuses bot scopes on a loopback one ("Bot scopes are not allowed when
+# redirecting to a non-web URI"). Three rules that close on each other, verified
+# against the live endpoints. A bot-only app is the only shape that installs
+# without the user owning a public https endpoint. The MCP side keeps its own
+# app and its own user token; the two never share a credential.
+
+def app_manifest(name: str) -> dict:
+    """The whole app for one dog: it hears an @, it answers, nothing else."""
+    handle = re.sub(r"[^a-z0-9_-]+", "", name.lower()) or "collie"
+    return {
+        "display_information": {
+            "name": name,
+            "description": "A collie you can @ in a channel — it takes the ask and goes to work",
+            "background_color": "#2c2d30",
+        },
+        "features": {
+            "bot_user": {"display_name": handle, "always_online": False},
+            # Without a messages tab the bot has no App Home, and a DM to it goes nowhere.
+            "app_home": {"messages_tab_enabled": True, "messages_tab_read_only_enabled": False},
+        },
+        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write"]}},
+        "settings": {
+            # Socket Mode means this dog dials OUT: no public address, no tunnel, and a laptop
+            # that changes network just reconnects. It also makes Slack mint the app-level
+            # token for us, which is one fewer thing to go and fetch by hand.
+            "socket_mode_enabled": True,
+            "event_subscriptions": {"bot_events": ["app_mention"]},
+            "interactivity": {"is_enabled": False},
+            "org_deploy_enabled": False,
+        },
+    }
+
+
+def load_kennel() -> dict:
+    """Every dog this machine has papers for: name -> {app_id, bot_token, app_token, …}.
+
+    Keyed by NAME rather than by machine: the point of the name is that it is the identity, and
+    one machine can perfectly well run several dogs on different repositories.
+    """
+    try:
+        with open(STORE, encoding="utf-8") as f:
+            d = json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+    return d.get("dogs") or {}
+
+
+def save_kennel(dogs: dict) -> None:
+    os.makedirs(os.path.dirname(STORE), exist_ok=True)
+    tmp = STORE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"dogs": dogs}, f, indent=2)
+        f.write("\n")
+    try:
+        from . import plat
+        plat.chmod_private(tmp)        # it holds two bearer tokens
+    except Exception:
+        pass
+    os.replace(tmp, STORE)
+
+
+def create_app(config_token: str, manifest: dict) -> dict:
+    """apps.manifest.create — the whole app in one call. Returns Slack's payload."""
+    r = api("apps.manifest.create", config_token, manifest=json.dumps(manifest))
+    if not r.get("ok"):
+        detail = r.get("errors") or r.get("error")
+        raise RuntimeError("apps.manifest.create failed: %s" % json.dumps(detail))
+    return r
 
 
 def load_identity(name: str = "", autonomy: str = "") -> dict:
@@ -364,8 +449,105 @@ def _open_socket_url(app_token: str) -> str:
     return r["url"]
 
 
+def setup(argv=None) -> int:
+    """`collie slack setup` — give one more dog its own app, its own handle, its own tokens.
+
+    Run it again for the next dog. Nothing here is per-machine: the pack is keyed by name, so two
+    dogs can live on one laptop working different repositories, and a name can move to another
+    machine without Slack noticing.
+
+    What cannot be automated, and why it is only two clicks: installing an app to a workspace has
+    no API — the install IS the authorization, and Slack will not let a program grant itself one —
+    and neither does reading back the two tokens it produces. Everything before that (the app, its
+    scopes, Socket Mode, the event subscription) is one manifest call.
+    """
+    import argparse
+    ap = argparse.ArgumentParser(prog="collie slack setup")
+    ap.add_argument("--name", default="", help="what to call this one (default: the next free kennel name)")
+    ap.add_argument("--config-token", default=os.environ.get("SLACK_CONFIG_TOKEN", ""),
+                    help="app-configuration token (xoxe.xoxp-…) from api.slack.com/apps")
+    ap.add_argument("--bot-token", default="", help="xoxb-… , if you already have it")
+    ap.add_argument("--app-token", default="", help="xapp-… , if you already have it")
+    ap.add_argument("--list", action="store_true", help="show the pack and stop")
+    a = ap.parse_args(argv)
+
+    dogs = load_kennel()
+    if a.list:
+        if not dogs:
+            print("(no dogs yet — `collie slack setup` gives you one)")
+            return 0
+        for n, d in sorted(dogs.items()):
+            ready = "ready" if (d.get("bot_token") and d.get("app_token")) else "needs its tokens"
+            print("  %-10s %-12s app %s" % (n, ready, d.get("app_id", "?")))
+        return 0
+
+    name = a.name or next((k for k in KENNEL if k.lower() not in
+                           {d.lower() for d in dogs}), "Collie%d" % (len(dogs) + 1))
+    if name in dogs and dogs[name].get("bot_token"):
+        print("%s already has papers (app %s). Pick another name, or run "
+              "`collie slack --name %s`." % (name, dogs[name].get("app_id", "?"), name))
+        return 1
+
+    entry = dict(dogs.get(name) or {})
+    if not entry.get("app_id"):
+        if not a.config_token:
+            print("collie slack setup: needs an app-configuration token.\n"
+                  "  Get one at https://api.slack.com/apps → 'Your App Configuration Tokens' →\n"
+                  "  Generate Token, then re-run with --config-token xoxe.xoxp-… (or set\n"
+                  "  SLACK_CONFIG_TOKEN). It is the one credential Slack has no API to mint, and\n"
+                  "  it expires in 12 hours — it is used here once and never stored.",
+                  file=sys.stderr)
+            return 2
+        print("creating the app for %s…" % name)
+        res = create_app(a.config_token, app_manifest(name))
+        entry["app_id"] = res.get("app_id", "")
+        entry["team_id"] = (res.get("credentials") or {}).get("team_id", "")
+        dogs[name] = entry
+        save_kennel(dogs)
+        print("  app %s created" % entry["app_id"])
+
+    app_id = entry.get("app_id", "")
+    install = "https://api.slack.com/apps/%s/install-on-team" % app_id
+    tokens_page = "https://api.slack.com/apps/%s/general" % app_id
+    entry["bot_token"] = a.bot_token or entry.get("bot_token", "")
+    entry["app_token"] = a.app_token or entry.get("app_token", "")
+
+    if not (entry["bot_token"] and entry["app_token"]):
+        print("\ntwo clicks left, and they are the two Slack does not expose:\n"
+              "  1. install %s to the workspace and Allow:\n     %s\n"
+              "     then copy the Bot User OAuth Token (xoxb-…) from OAuth & Permissions\n"
+              "  2. copy the app-level token (xapp-…), already generated by Socket Mode:\n     %s\n"
+              % (name, install, tokens_page))
+        if sys.stdin and sys.stdin.isatty():
+            entry["bot_token"] = entry["bot_token"] or input("  paste xoxb-…: ").strip()
+            entry["app_token"] = entry["app_token"] or input("  paste xapp-…: ").strip()
+        else:
+            print("  then: collie slack setup --name %s --bot-token xoxb-… --app-token xapp-…" % name)
+            dogs[name] = entry
+            save_kennel(dogs)
+            return 3
+
+    for label, tok, want in (("bot", entry["bot_token"], "xoxb-"), ("app", entry["app_token"], "xapp-")):
+        if tok and not tok.startswith(want):
+            print("that %s token does not start with %s — check you copied the right box"
+                  % (label, want), file=sys.stderr)
+            return 1
+    dogs[name] = entry
+    save_kennel(dogs)
+
+    who = api("auth.test", entry["bot_token"])
+    if not who.get("ok"):
+        print("the bot token does not authenticate: %s" % who.get("error"), file=sys.stderr)
+        return 1
+    print("\n%s is ready — @%s in %s. Start it with:\n  collie slack --name %s --announce <channel id>"
+          % (name, who.get("user", name.lower()), who.get("team", "your workspace"), name))
+    return 0
+
+
 def main(argv=None) -> int:
     import argparse
+    if argv and argv[0] == "setup":
+        return setup(argv[1:])
     ap = argparse.ArgumentParser(prog="collie slack")
     ap.add_argument("--name", default="", help="name this collie answers to (kept)")
     ap.add_argument("--autonomy", default="", choices=["", "propose", "branch", "main"])
@@ -378,16 +560,24 @@ def main(argv=None) -> int:
                     help="comma-separated slack user ids that may task it (default: anyone in those channels)")
     args = ap.parse_args(argv)
 
-    app_token = os.environ.get("SLACK_APP_TOKEN", "")
-    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    # The kennel first, the environment second. A pack means several dogs with several pairs of
+    # tokens, and one pair of environment variables cannot hold them — but an env var still wins
+    # when it is set, because that is how you run a dog with credentials you keep somewhere else.
+    dogs = load_kennel()
+    kept = dogs.get(args.name) or (list(dogs.values())[0] if len(dogs) == 1 and not args.name else {})
+    app_token = os.environ.get("SLACK_APP_TOKEN", "") or kept.get("app_token", "")
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "") or kept.get("bot_token", "")
     # Failing loudly here rather than connecting and going quiet: a bot that is
     # silently not listening looks exactly like a bot with nothing to do.
     missing = [n for n, v in (("SLACK_APP_TOKEN", app_token), ("SLACK_BOT_TOKEN", bot_token)) if not v]
     if missing:
+        known = ", ".join(sorted(dogs)) or "none yet"
         print("collie slack: missing %s.\n"
+              "  `collie slack setup` gives a dog its own app and fills these in for you.\n"
+              "  dogs on this machine: %s\n"
               "  SLACK_APP_TOKEN is the app-level token (xapp-…) with connections:write.\n"
               "  SLACK_BOT_TOKEN is the bot token (xoxb-…) with app_mentions:read and chat:write."
-              % " and ".join(missing), file=sys.stderr)
+              % (" and ".join(missing), known), file=sys.stderr)
         return 2
 
     # Where it will work at all. Defaulting to "only the channel I was announced

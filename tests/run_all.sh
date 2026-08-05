@@ -105,6 +105,7 @@ if $PY tests/test_mirror_backlog.py >/dev/null 2>&1; then echo "  mirror_backlog
 if $PY tests/test_worktree.py >/dev/null 2>&1; then echo "  worktree OK"; else echo "  worktree FAIL"; rc=1; fi
 if $PY tests/test_mcp_catalog.py >/dev/null 2>&1; then echo "  mcp_catalog OK"; else echo "  mcp_catalog FAIL"; rc=1; fi
 if $PY tests/test_slackbot.py >/dev/null 2>&1; then echo "  slackbot OK"; else echo "  slackbot FAIL"; rc=1; fi
+if $PY tests/test_slack_setup.py >/dev/null 2>&1; then echo "  slack setup (one app per dog) OK"; else echo "  slack setup FAIL"; rc=1; fi
 if $PY tests/test_packaging_facts.py >/dev/null 2>&1; then echo "  packaging OK"; else echo "  packaging FAIL"; rc=1; fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
