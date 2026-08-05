@@ -107,6 +107,7 @@ if $PY tests/test_mcp_catalog.py >/dev/null 2>&1; then echo "  mcp_catalog OK"; 
 if $PY tests/test_slackbot.py >/dev/null 2>&1; then echo "  slackbot OK"; else echo "  slackbot FAIL"; rc=1; fi
 if $PY tests/test_slack_setup.py >/dev/null 2>&1; then echo "  slack setup (one app per dog) OK"; else echo "  slack setup FAIL"; rc=1; fi
 if $PY tests/test_dogmail.py >/dev/null 2>&1; then echo "  dog mail (sealed to the dog, replay-proof) OK"; else echo "  dog mail FAIL"; rc=1; fi
+if $PY tests/test_dogmail_wire.py >/dev/null 2>&1; then echo "  dog mail wire (python ↔ worker agree on the bytes) OK"; else echo "  dog mail wire FAIL"; rc=1; fi
 if $PY tests/test_packaging_facts.py >/dev/null 2>&1; then echo "  packaging OK"; else echo "  packaging FAIL"; rc=1; fi
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
