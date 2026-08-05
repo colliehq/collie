@@ -461,10 +461,19 @@ def _discover_oauth(server_url):
     parts = urllib.parse.urlsplit(server_url)
     origin = urllib.parse.urlunsplit((parts.scheme, parts.netloc, "", "", ""))
     as_url = origin
+    scopes = []
     for prm in ("%s/.well-known/oauth-protected-resource%s" % (origin, parts.path.rstrip("/")),
                 "%s/.well-known/oauth-protected-resource" % origin):
         try:
-            servers = (_http_json(prm) or {}).get("authorization_servers") or []
+            doc = _http_json(prm) or {}
+            # The RESOURCE says what may be asked for; the authorization server does not. A request
+            # with no `scope` is granted nothing, and the sign-in then completes, stores a token,
+            # and every call made with it is refused — which reads as a broken server rather than an
+            # empty grant. Slack lists 29 of them here. Taken whether or not the authorization
+            # server named below is accepted: they describe the resource either way.
+            if doc.get("scopes_supported"):
+                scopes = [str(s) for s in doc["scopes_supported"] if s]
+            servers = doc.get("authorization_servers") or []
             cand = str(servers[0]).rstrip("/") if servers else ""
             # The authorization-server URL is chosen by the (untrusted) remote server — only accept it
             # if it's https + public, else fall back to the origin so we can't be pointed inward.
@@ -482,12 +491,14 @@ def _discover_oauth(server_url):
             if (doc.get("authorization_endpoint") and doc.get("token_endpoint")
                     and _safe_oauth_url(doc["authorization_endpoint"])
                     and _safe_oauth_url(doc["token_endpoint"])):
+                doc["resource_scopes"] = scopes      # from the RESOURCE metadata, not this document
                 return doc
         except Exception:
             continue
     return {"authorization_endpoint": "%s/authorize" % as_url,      # last-ditch conventional guess
             "token_endpoint": "%s/token" % as_url,
-            "registration_endpoint": "%s/register" % as_url}
+            "registration_endpoint": "%s/register" % as_url,
+            "resource_scopes": scopes}
 
 
 def _register_client(reg_endpoint, redirect_uri):
@@ -589,8 +600,12 @@ def login(name, cfg=None, timeout=300, announce=None):
     params = {"response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri,
               "code_challenge": challenge, "code_challenge_method": "S256", "state": state,
               "resource": url}                                      # RFC 8707 — many MCP AS require it
-    if cfg.get("scope"):
-        params["scope"] = cfg["scope"]
+    # Ask for what the resource says it has. Without this the authorize page shows "No scopes
+    # requested", the user approves nothing, and the token that comes back is refused by every
+    # call made with it — a sign-in that succeeds and buys nothing.
+    scope = cfg.get("scope") or " ".join(meta.get("resource_scopes") or [])
+    if scope:
+        params["scope"] = scope
     auth_url = meta["authorization_endpoint"] + "?" + urllib.parse.urlencode(params)
     print("Opening browser to authorize MCP server %r:\n  %s" % (name, auth_url))
     if announce:

@@ -183,7 +183,8 @@ def main():
                                 "redirect_port": 8971, "redirect_host": "localhost"}, replace=True)
         real_disc, real_open, seen = m._discover_oauth, _wb.open, {}
         m._discover_oauth = lambda u: {"authorization_endpoint": "https://auth.example.invalid/authorize",
-                                       "token_endpoint": "https://auth.example.invalid/token"}
+                                       "token_endpoint": "https://auth.example.invalid/token",
+                                       "resource_scopes": ["chat:write", "files:read"]}
         _wb.open = lambda *a, **k: True                    # never actually open a browser in a test
         try:
             try:
@@ -197,7 +198,31 @@ def main():
               "the authorize URL carries the redirect you registered (%s)" % q.get("redirect_uri"))
         check(q.get("client_id") == ["cid"], "and your own client_id, not one it tried to mint")
         check("code_challenge" in q, "still PKCE")
+        # A sign-in that asks for nothing SUCCEEDS and then fails every call made with the token.
+        # The scopes live in the RESOURCE metadata, not the authorization server's.
+        check(q.get("scope") == ["chat:write files:read"],
+              "and asks for the scopes the resource advertises (%s)" % q.get("scope"))
         m.remove_server("pinned")
+
+        # ...which means discovery has to carry them across from the protected-resource document.
+        real_http = m._http_json
+
+        def fake_http(url, **kw):
+            if "oauth-protected-resource" in url:
+                return {"authorization_servers": ["https://example.com"],
+                        "scopes_supported": ["a:read", "b:write"]}
+            if "oauth-authorization-server" in url:
+                return {"authorization_endpoint": "https://example.com/authorize",
+                        "token_endpoint": "https://example.com/token"}
+            raise OSError("404")
+
+        m._http_json = fake_http
+        try:
+            doc = m._discover_oauth("https://mcp.example.com/mcp")
+        finally:
+            m._http_json = real_http
+        check(doc.get("resource_scopes") == ["a:read", "b:write"],
+              "discovery carries scopes_supported over from the resource metadata")
 
         # The CLI path people type, and the empty-list screen that has to name it.
         from harness import cli
