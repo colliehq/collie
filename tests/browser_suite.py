@@ -20,7 +20,31 @@ import time
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = int(os.environ.get("COLLIE_BROWSER_SUITE_PORT", "8993"))
+
+
+def _free_port():
+    """A port nobody is on, chosen now rather than hoped for.
+
+    This was hardcoded to 8993, and a leftover `python -m http.server` from someone's afternoon was
+    sitting on it: the page fetch SUCCEEDED, carried a directory listing instead of collie, and the
+    only thing the suite could think to say was "server never came up on port 8993" — about a server
+    that had come up perfectly well, next to a port that was answering. Two suites failed for a
+    reason nothing in the output pointed at. Ask the OS for a free one instead; the env var still
+    pins it for anyone who needs a known port.
+    """
+    fixed = os.environ.get("COLLIE_BROWSER_SUITE_PORT")
+    if fixed:
+        return int(fixed)
+    import socket
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+PORT = _free_port()
 
 
 def main():
@@ -43,12 +67,14 @@ def main():
         json.dump({"PROVIDER": "mock", "MODEL": "mock"}, fh)
 
     srv = subprocess.Popen([sys.executable, "-m", "harness.webapp", "--port", str(PORT), "--no-open"],
-                           cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True)
     try:
-        token = ""
+        token, answered = "", False
         for _ in range(60):
             try:
                 page = urllib.request.urlopen("http://127.0.0.1:%d/" % PORT, timeout=2)
+                answered = True
                 hit = re.findall(r"[0-9a-f]{32}", page.read().decode("utf-8", "ignore"))
                 if hit:
                     token = hit[0]
@@ -56,7 +82,16 @@ def main():
             except Exception:
                 time.sleep(0.25)
         if not token:
-            print("  server never came up on port %d" % PORT)
+            # Say which of the two happened. They call for opposite fixes, and reporting both as
+            # "never came up" is how a busy port gets debugged as a broken server.
+            if answered:
+                print("  port %d is answering, but not with collie — something else is already "
+                      "serving it. Set COLLIE_BROWSER_SUITE_PORT to a free port." % PORT)
+            else:
+                print("  server never came up on port %d" % PORT)
+                if srv.poll() is not None:
+                    out = (srv.communicate(timeout=5)[0] or "").strip().splitlines()
+                    print("  it exited %s: %s" % (srv.returncode, "; ".join(out[-4:]) or "(silent)"))
             return 1
         r = subprocess.run([sys.executable, script], cwd=ROOT,
                            env=dict(env, COLLIE_WEB="http://127.0.0.1:%d" % PORT,
