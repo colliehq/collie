@@ -363,10 +363,16 @@ def _ensure_remote(port):
 
 
 def _provider() -> str:
-    """Zero-config stays mock ($0 local dev): settings.apply() runs per query, so a Provider
-    saved in the Settings panel (default choice: anthropic API) lands in the env and wins here;
-    only a fresh install with nothing saved falls through to mock."""
-    return os.environ.get("COLLIE_PROVIDER", "mock")
+    """The configured provider, or "" when nothing is configured.
+
+    Deliberately NOT "mock". mock answers from canned fixtures, and a fixture is indistinguishable
+    from a model that has gone wrong — so a default that conjures one turns every momentary "the
+    setting did not arrive" into confident nonsense. It did: see the settings._load() latch this
+    shipped alongside. settings.apply() runs per query and lands a saved Provider in the env; if
+    that ever comes back empty the honest move is to say so, not to answer anyway. Callers that
+    RUN a model refuse on "" (_serve_stream); callers that merely display it show it as unset.
+    mock stays reachable — by NAME only: COLLIE_PROVIDER=mock, or PROVIDER=mock in the panel."""
+    return os.environ.get("COLLIE_PROVIDER", "")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1463,7 +1469,10 @@ class Handler(BaseHTTPRequestHandler):
                     # battery, so this trades only latency), overridable up (opus) or down
                     # (haiku) via COLLIE_ROUTER_MODEL. Only anthropic providers take a claude
                     # model id; others keep their own default.
-                    _name = os.environ.get("COLLIE_PROVIDER", "mock")
+                    _name = _provider()
+                    if not _name:      # same rule as the run path: never route on a fixture
+                        return self._send_json({"error": "model_unavailable",
+                                                "detail": "no model configured"}, 503)
                     _rmodel = os.environ.get("COLLIE_ROUTER_MODEL") or (
                         DEFAULT_ROUTER_MODEL if _name in ("anthropic-oauth", "anthropic") else None)
                     prov = make_provider(_name, _rmodel)
@@ -1942,6 +1951,17 @@ class Handler(BaseHTTPRequestHandler):
             self._sse("done", {"session": sid, "answer": "", "error": "empty message"})
             return
 
+        # No provider -> refuse here, in one legible frame. Everything below assumes a model: the
+        # old default answered from mock's fixtures, and the run path would otherwise hand "" down
+        # to make_provider to fail deeper and less clearly. The SSE headers are already committed,
+        # so this goes out as a clean `done{error}` like every other pre-flight refusal.
+        prov = _provider()
+        if not prov:
+            self._sse("done", {"session": sid, "answer": "", "error":
+                               "no model configured — open Settings and choose a Provider "
+                               "(a saved one did not reach this run)"})
+            return
+
         # seed the full prior thread so the web UI has the same --continue continuity the CLI has
         prior = sessions.load(sid) if qs.get("session", [""])[0] else None
         history = (prior or {}).get("messages") or []
@@ -1967,7 +1987,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             cwd = wt_info["dir"]
 
-        start_d = {"session": sid, "provider": _provider(), "cwd": cwd,
+        start_d = {"session": sid, "provider": prov, "cwd": cwd,
                    "prior_turns": sum(1 for m in history if m.get("role") == "user")}
         if wt_info:
             start_d["branch"] = wt_info["branch"]
@@ -1996,7 +2016,7 @@ class Handler(BaseHTTPRequestHandler):
                     "turns": rec.get("turns", 0), "error": (rec.get("error") or "")[:120],
                     "cost_usd": rec.get("cost_usd", 0.0), "check_pass": rec.get("check_pass")})
             try:
-                pr = _pack.run_pack(q, cwd, n=n, check=check, provider=_provider(),
+                pr = _pack.run_pack(q, cwd, n=n, check=check, provider=prov,
                                     apply=apply_, emit=_emit)
             except BrokenPipeError:
                 return
@@ -2015,7 +2035,7 @@ class Handler(BaseHTTPRequestHandler):
                 "pack": True, "winner": win, "reason": pr.get("reason", ""),
                 "applied": pr.get("applied", False), "attempts": pr.get("attempts", []),
                 "n": pr.get("n"), "cost_usd": pr.get("total_cost_usd", 0.0),
-                "subscription": _provider() in ("anthropic-oauth", "claude-cli")})
+                "subscription": prov in ("anthropic-oauth", "claude-cli")})
             return
 
         h = None
@@ -2023,7 +2043,7 @@ class Handler(BaseHTTPRequestHandler):
             # build INSIDE the try: make_harness -> AnthropicOAuth can raise on a missing token
             # (the advertised real path), and the SSE headers are already committed — so a
             # provider error must arrive as a clean `done{error}` frame, not an escaped 500.
-            h = make_harness(cwd, provider=_provider(), project="web",
+            h = make_harness(cwd, provider=prov, project="web",
                              code_search=True, web_search=True, exec_code=True, delegate=True)
             # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
             # shell + the user's logged-in browser. Nudge it to ACT on local/system questions (time, tz,
@@ -2270,7 +2290,8 @@ def main(argv=None, on_bound=None):
     ip_url = "http://127.0.0.1:%d/" % port
     note = "" if port == requested else "  (%d was busy → auto-picked %d)" % (requested, port)
     # print BOTH: the pretty one for humans, the 127.0.0.1 one so the VS Code extension's regex finds a port.
-    print("collie web · %s · provider=%s · Ctrl-C to stop%s" % (url, _provider(), note), flush=True)
+    print("collie web · %s · provider=%s · Ctrl-C to stop%s"
+          % (url, _provider() or "(not configured)", note), flush=True)
     print("            %s" % ip_url, flush=True)
     # Remote is a first-class, Collie-managed capability: if the user turned it on (Settings/panel),
     # it starts automatically whenever the web server runs — no separate process, no --remote flag.

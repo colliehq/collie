@@ -212,15 +212,30 @@ _KEYS = {s["key"] for s in SCHEMA}
 
 
 def _load():
-    """settings.json, mtime-cached so a Settings-panel save takes effect on the next get()."""
+    """settings.json, mtime-cached so a Settings-panel save takes effect on the next get().
+
+    A failed read KEEPS the last good values and forces a re-read next call. Both halves were
+    wrong before, and together they LATCHED: any transient failure — the panel's atomic save
+    racing a reader, a scanner holding the file for a moment — blanked the cache, while the
+    cached mtime was left at the last good value. The very next call therefore saw an unchanged
+    mtime, skipped the reload, and served {} for the rest of the process's life. apply() then
+    popped every COLLIE_<KEY> it had injected, and a running `collie web` fell to the mock
+    provider mid-conversation: seven real turns, then canned "Based on the tool output:"
+    fixtures, with settings.json on disk correct the whole time and the panel still reporting
+    the right values. A MISSING file is a different thing — nothing is saved, and {} is the
+    honest answer to that.
+    """
     try:
         mt = os.path.getmtime(_PATH)
         if mt != _cache["mtime"]:
             with open(_PATH, encoding="utf-8") as f:
                 _cache["data"] = json.load(f) or {}
             _cache["mtime"] = mt
+    except FileNotFoundError:
+        _cache["data"] = {}            # nothing saved yet — a real answer, not a failure
+        _cache["mtime"] = -1.0
     except (OSError, ValueError):
-        _cache["data"] = {}
+        _cache["mtime"] = -1.0         # transient/mid-write: retry next call, keep what we had
     return _cache["data"]
 
 
