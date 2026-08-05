@@ -320,6 +320,40 @@ function pageTypeLabel(labelText, text) {
 // role=option), not site-specific.
 async function pagePick(labelText, optionText) {
   const t = (labelText || "").toLowerCase();
+  // Native <select> FIRST, and by more than one name. `[role=combobox]` matches only an EXPLICIT
+  // role attribute, which a <select> does not carry — so this used to miss every plain HTML
+  // dropdown on the web while the snapshot cheerfully listed it as a combobox. Its label is also
+  // often a sibling <label for=…> or an aria-label rather than an ancestor, which is why the
+  // ancestor-only lookup below is not enough on its own.
+  {
+    const named = (e) => {
+      const parts = [];
+      const anc = e.closest("label"); if (anc) parts.push(anc.innerText || "");
+      if (e.id) { const f = document.querySelector('label[for="' + CSS.escape(e.id) + '"]'); if (f) parts.push(f.innerText || ""); }
+      parts.push(e.getAttribute("aria-label") || "", e.getAttribute("name") || "", e.getAttribute("id") || "");
+      const lbl = e.getAttribute("aria-labelledby");
+      if (lbl) lbl.split(/\s+/).forEach((id) => { const n = document.getElementById(id); if (n) parts.push(n.innerText || ""); });
+      return parts.join(" ").toLowerCase();
+    };
+    const sels = [...document.querySelectorAll("select")];
+    const sel = (!t && sels.length === 1) ? sels[0] : sels.find((e) => named(e).includes(t));
+    if (sel) {
+      const want = (optionText || "").trim().toLowerCase();
+      const opts = [...sel.options];
+      const hit = opts.find((o) => (o.text || "").trim().toLowerCase() === want)
+               || opts.find((o) => (o.value || "").trim().toLowerCase() === want)
+               || opts.find((o) => (o.text || "").toLowerCase().includes(want));
+      if (!hit) return { error: "no option " + optionText + " under " + labelText,
+                         options: opts.map((o) => (o.text || "").trim()).slice(0, 12) };
+      sel.focus();
+      const sd = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value");
+      if (sd && sd.set) sd.set.call(sel, hit.value); else sel.value = hit.value;
+      sel.dispatchEvent(new Event("input", { bubbles: true }));
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      return { picked: (hit.text || "").trim(), label: labelText, value: sel.value,
+               landed: sel.value === hit.value };
+    }
+  }
   const trig = [...document.querySelectorAll("[role=combobox]")].find((c) => {
     const l = c.closest("label") || c; return (l.innerText || "").toLowerCase().includes(t);
   });
@@ -340,12 +374,22 @@ async function pagePick(labelText, optionText) {
 // List the labelled form controls on the page (label, kind, current value) so the agent
 // can see what to fill without guessing selectors.
 function pageFields() {
-  return [...document.querySelectorAll("input,textarea,[role=combobox]")].map((e) => {
-    const l = e.closest("label"); const lt = l ? (l.innerText || "").trim().split("\n")[0] : "";
+  // `select` is listed explicitly: `[role=combobox]` only matches an EXPLICIT role attribute, so
+  // native dropdowns were invisible here — the agent could not even see that the field existed,
+  // let alone that it had to be set before the form would submit. Their options are returned too,
+  // because "there is a dropdown" is useless without knowing what may be chosen.
+  return [...document.querySelectorAll("input,textarea,select,[role=combobox]")].map((e) => {
+    const anc = e.closest("label");
+    let lt = anc ? (anc.innerText || "").trim().split("\n")[0] : "";
+    if (!lt && e.id) { const f = document.querySelector('label[for="' + CSS.escape(e.id) + '"]'); if (f) lt = (f.innerText || "").trim().split("\n")[0]; }
     const role = e.getAttribute("role");
-    return { label: lt || e.getAttribute("aria-label") || "",
-             kind: role === "combobox" ? "dropdown" : (e.tagName === "TEXTAREA" ? "text" : (e.getAttribute("type") || "text")),
-             value: (e.value || "").slice(0, 40) };
+    const isSelect = e.tagName === "SELECT";
+    const out = { label: lt || e.getAttribute("aria-label") || e.getAttribute("name") || "",
+                  kind: (isSelect || role === "combobox") ? "dropdown"
+                        : (e.tagName === "TEXTAREA" ? "text" : (e.getAttribute("type") || "text")),
+                  value: (e.value || "").slice(0, 40) };
+    if (isSelect) out.options = [...e.options].map((o) => (o.text || "").trim()).slice(0, 20);
+    return out;
   }).filter((x) => x.label && x.kind !== "hidden");
 }
 
@@ -405,10 +449,23 @@ function pageUpload(selector, files, ref) {
   input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
   // Read the FileList back: assigning .files is silently refused in some contexts, and a refused
   // upload otherwise looks identical to a successful one.
+  //
+  // Compare against what was ASKED for, not against the DataTransfer. `landed === transfer.length`
+  // reports attached:true when BOTH are zero — so a DataTransfer that accepted nothing (the browser
+  // can refuse `items.add` without throwing) came back as a success with an empty file list, and the
+  // caller's only error check is `attached === false`. That is the same "looks identical to a
+  // successful one" failure this read-back exists to prevent, one level up.
   const landed = input.files ? input.files.length : 0;
-  return { uploaded: landed, attached: landed === transfer.files.length,
-           names: [...(input.files || [])].map((file) => file.name),
-           accept: input.getAttribute("accept") || "" };
+  const attached = landed > 0 && landed === files.length;
+  const out = { uploaded: landed, attached: attached,
+                names: [...(input.files || [])].map((file) => file.name),
+                accept: input.getAttribute("accept") || "" };
+  if (!attached)
+    out.error = "the input holds " + landed + " file(s) after attaching " + files.length
+              + (transfer.files.length !== files.length
+                 ? " — the browser refused " + (files.length - transfer.files.length) + " of them before the input was touched"
+                 : " — the page refused the assignment");
+  return out;
 }
 
 // --- ref-indexed accessibility snapshot (MAIN world) ---------------------------------------------
@@ -688,6 +745,24 @@ function pageTypeRef(ref, text, submit) {
   const el = m && m.get ? m.get(ref) : null;
   if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
   el.focus();
+  // A native <select> is reported as `combobox` by the snapshot, so the model is told it can act on
+  // it — but the input-value setter below writes nothing to one, and every attempt came back
+  // "typed" with landed:false and the old value still selected. Choosing the option is the only
+  // thing that moves a <select>; typing into it never will.
+  if (el.tagName === "SELECT") {
+    const want = (text || "").trim().toLowerCase();
+    const opts = [...el.options];
+    const hit = opts.find((o) => (o.text || "").trim().toLowerCase() === want)
+             || opts.find((o) => (o.value || "").trim().toLowerCase() === want)
+             || opts.find((o) => (o.text || "").toLowerCase().includes(want));
+    if (!hit) return { error: "no option matching " + text,
+                       options: opts.map((o) => (o.text || "").trim()).slice(0, 12) };
+    const sd = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value");
+    if (sd && sd.set) sd.set.call(el, hit.value); else el.value = hit.value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { picked: (hit.text || "").trim(), value: el.value, landed: el.value === hit.value };
+  }
   const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
   const d = Object.getOwnPropertyDescriptor(proto, "value");
   if (d && d.set) d.set.call(el, text); else el.value = text;
@@ -1331,9 +1406,25 @@ async function trustedClickRef(ref) {
   }
 }
 
+// Report the tag behind a ref, so the trusted path can tell a <select> from a text field before it
+// commits to keystrokes. Self-contained (injected into the PAGE, MAIN world).
+function pageTagRef(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  return el && el.isConnected ? el.tagName : "";
+}
+
 async function trustedTypeRef(ref, text, submit) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
+  // Real keystrokes cannot drive a native <select>: CDP Input.insertText goes nowhere on one, and
+  // the OS dropdown a genuine click opens is not something we can pick from. Choosing the option in
+  // the DOM is the only path that lands, so route selects there before touching the debugger.
+  try {
+    if ((await execMain(pageTagRef, [ref])) === "SELECT")
+      return Object.assign({ trusted: false, note: "native <select>: option chosen in the DOM" },
+                           await execMain(pageTypeRef, [ref, text, !!submit]));
+  } catch (e) {}
   if (!(await focusForTrusted(tab)))
     return Object.assign({ trusted: false, note: NO_FOCUS },
                          await execMain(pageTypeRef, [ref, text, !!submit]));

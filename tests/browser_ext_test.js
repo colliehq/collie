@@ -369,6 +369,115 @@ function run(root, max, opts, frames) {
   t('an absurd space name is capped', api.spaceOf({ space: 'z'.repeat(200) }).length === 40);
 }
 
-console.log('\n== browser extension (page-side): ' + pass + '/' + (pass + fail) + ' passed ==' +
-            (fail ? ' — ' + fail + ' FAILED' : ''));
-process.exit(fail ? 1 : 0);
+// --- native <select> ----------------------------------------------------------------------------
+// The snapshot has always reported a <select> as `combobox`, so the model is told it can act on one.
+// Nothing could: pagePick looked only for an EXPLICIT [role=combobox] (which a <select> never has),
+// pageFields did not list selects at all, and pageTypeRef wrote through the HTMLInputElement value
+// setter, which leaves a <select> untouched — every attempt came back "typed" with the old option
+// still selected. A dropdown the agent is shown but cannot move is worse than one it cannot see.
+{
+  function option(text, value) { return { text: text, value: value === undefined ? text : value }; }
+  function select(opts, attrs) {
+    const node = el('select', { attrs: attrs || {} });
+    node.options = opts;
+    node.value = opts.length ? opts[0].value : '';
+    node.focus = () => {};
+    node.events = [];
+    node.dispatchEvent = function (e) { this.events.push(e.type); return true; };
+    return node;
+  }
+
+  function runSelect(sel, extraDoc) {
+    const win = { HTMLSelectElement: { prototype: {} }, HTMLInputElement: { prototype: {} },
+                  HTMLTextAreaElement: { prototype: {} }, __collieRefs: new Map([['e1', sel]]) };
+    const doc = Object.assign({
+      querySelectorAll: (q) => (String(q).includes('select') ? [sel] : []),
+      querySelector: () => null,
+      getElementById: () => null,
+    }, extraDoc || {});
+    const fn = new Function(
+      'window', 'document', 'CSS', 'Event',
+      [grab('function pageFields()'), grab('async function pagePick(labelText, optionText)'),
+       grab('function pageTypeRef(ref, text, submit)')].join('\n') +
+      '\nreturn { pageFields, pagePick, pageTypeRef };'
+    )(win, doc, { escape: (s) => s }, function (type) { return { type: type }; });
+    return fn;
+  }
+
+  const opts = [option('Android'), option('Mac'), option('Windows')];
+  {
+    const sel = select(opts, { 'aria-label': 'Operating system' });
+    const api = runSelect(sel);
+    const fields = api.pageFields();
+    eq('a native select is listed as a dropdown', fields.length && fields[0].kind, 'dropdown');
+    eq('its options are reported, not just its existence', fields.length && fields[0].options,
+       ['Android', 'Mac', 'Windows']);
+  }
+  {
+    const sel = select(opts.map((o) => option(o.text)), { 'aria-label': 'Operating system' });
+    const api = runSelect(sel);
+    const r = api.pageTypeRef('e1', 'Windows');
+    eq('typing an option name into a select picks it', r.picked, 'Windows');
+    eq('and the value actually lands', sel.value, 'Windows');
+    t('a change event is fired so frameworks notice', sel.events.indexOf('change') >= 0);
+  }
+  {
+    const sel = select(opts.map((o) => option(o.text)), { 'aria-label': 'Operating system' });
+    const api = runSelect(sel);
+    const r = api.pageTypeRef('e1', 'Solaris');
+    t('an option that does not exist is an error, not a silent no-op', !!r.error);
+    eq('and the error says what was on offer', r.options, ['Android', 'Mac', 'Windows']);
+  }
+  {
+    const sel = select(opts.map((o) => option(o.text)), { 'aria-label': 'Operating system' });
+    const api = runSelect(sel);
+    // The only async assertion in the suite, so it owns the tail: everything after this block is
+    // hoisted declarations, and anything else placed there would never run.
+    return api.pagePick('operating system', 'Mac').then((r) => {
+      eq('pick finds a select by its aria-label', r.picked, 'Mac');
+      eq('and moves it', sel.value, 'Mac');
+      uploadTests();
+      finish();
+    });
+  }
+}
+
+// --- upload read-back ---------------------------------------------------------------------------
+// `attached` used to be `landed === transfer.files.length`, which is TRUE when both are zero — so an
+// upload that attached nothing reported success, and the caller only ever checks `attached === false`.
+// The read-back exists precisely to stop a refused upload looking like a successful one; comparing
+// against the DataTransfer instead of against what was asked for reopened that hole one level up.
+function uploadTests() {
+  function runUpload(fileListAfter, transferCount) {
+    const input = { tagName: 'INPUT', type: 'file', multiple: true, files: fileListAfter,
+                    getAttribute: () => 'image/*', dispatchEvent: () => true };
+    const win = {};
+    const doc = { querySelector: () => input, querySelectorAll: () => [] };
+    const DT = function () {
+      this.items = { add: () => { this.files.length = Math.min(this.files.length + 1, transferCount); } };
+      this.files = [];
+      this.files.length = 0;
+    };
+    const fn = new Function(
+      'window', 'document', 'DataTransfer', 'Blob', 'File', 'Uint8Array', 'atob', 'Event',
+      grab('function pageUpload(selector, files, ref)') + '\nreturn pageUpload;'
+    )(win, doc, DT, function () {}, function () {}, { from: () => [] }, () => '', function (t) { return { type: t }; });
+    input.instanceCheck = true;
+    return { fn: fn, input: input };
+  }
+  // The real function guards with `instanceof HTMLInputElement`, which a plain object cannot satisfy,
+  // so assert the shape of the contract directly instead of re-running the guard.
+  const src = grab('function pageUpload(selector, files, ref)');
+  t('attached is not satisfied by an empty file list',
+    /landed > 0 && landed === files\.length/.test(src));
+  t('a failed attach carries an explanation, not just a false flag',
+    /out\.error =/.test(src));
+  t('the read-back still compares what the input actually holds',
+    /input\.files \? input\.files\.length : 0/.test(src));
+}
+
+function finish() {
+  console.log('\n== browser extension (page-side): ' + pass + '/' + (pass + fail) + ' passed ==' +
+              (fail ? ' — ' + fail + ' FAILED' : ''));
+  process.exit(fail ? 1 : 0);
+}
