@@ -45,6 +45,26 @@ def repo_root(cwd):
     return out if ok and out else None
 
 
+def main_root(wt_dir):
+    """The MAIN worktree's root — the one directory guaranteed NOT to be inside `wt_dir`.
+
+    repo_root() answers a worktree with its own path, by design. Running `git worktree remove` from
+    there means git's own process is sitting in the directory it has been told to delete, and
+    Windows refuses to remove a directory any process has as its current directory: the removal
+    half-happens — the worktree is deregistered, the files stay — and the caller is told nothing was
+    removed. POSIX unlinks a busy cwd happily, which is why this only ever showed up on Windows.
+    """
+    ok, out = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], wt_dir)
+    if not ok or not out:                       # --path-format needs git 2.31 (2021); fall back
+        ok, out = _git(["rev-parse", "--git-common-dir"], wt_dir)
+        if ok and out and not os.path.isabs(out):
+            out = os.path.join(wt_dir, out)
+    if not ok or not out:
+        return None
+    parent = os.path.dirname(os.path.abspath(out.splitlines()[-1].strip()))
+    return parent if os.path.isdir(parent) else None
+
+
 def _slug(text, fallback="run"):
     s = re.sub(r"[^a-zA-Z0-9._-]+", "-", (text or "").strip().lower()).strip("-.")
     return (s or fallback)[:48]
@@ -140,9 +160,21 @@ def release(wt_dir, force=False):
                 "error": "worktree still holds work (%d changed file%s, %d commit%s)"
                          % (len(st["files"]), "" if len(st["files"]) == 1 else "s",
                             st["commits"], "" if st["commits"] == 1 else "s")}
-    root = repo_root(wt_dir) or wt_dir
+    # NOT repo_root(wt_dir): that answers with the worktree itself, and git would then be deleting
+    # the directory it is standing in — see main_root.
+    root = main_root(wt_dir) or repo_root(wt_dir) or wt_dir
     args = ["worktree", "remove", wt_dir] + (["--force"] if force else [])
     ok, out = _git(args, root, timeout=120)
+    if not ok and os.path.isdir(wt_dir):
+        # git can fail HALFWAY — deregister the worktree, then fail to delete the files — which
+        # leaves a directory git no longer knows about and a caller told that nothing happened.
+        # Finish it here and prune the registration either way, so `removed` describes the disk.
+        # (Only reachable when the tree is clean or the caller passed force: the guard above still
+        # protects work that has not been kept.)
+        shutil.rmtree(wt_dir, ignore_errors=True)
+        _git(["worktree", "prune"], root)
+        if not os.path.isdir(wt_dir):
+            ok, out = True, ""
     if ok:
         shutil.rmtree(os.path.dirname(wt_dir), ignore_errors=True)
     return {"ok": ok, "removed": ok, "error": "" if ok else out[:300]}
