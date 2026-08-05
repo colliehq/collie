@@ -1182,6 +1182,48 @@ class OpenAICompatProvider(ModelProvider):
                           stop_reason="length" if truncated else "end_turn")
 
 
+def _plugin_providers() -> tuple:
+    """(name -> factory, import_errors) for providers supplied from outside this package.
+
+    Two discovery paths, deliberately: an installed distribution declares a ``collie.providers``
+    entry point and needs no configuration, while ``COLLIE_PROVIDER_PLUGINS`` (os.pathsep-separated
+    module names) loads a plugin straight from a git checkout that has not been installed yet —
+    which is how one gets developed.
+
+    A plugin module exposes ``COLLIE_PROVIDERS = {"name": factory}`` where ``factory(model)``
+    returns a ModelProvider.
+
+    Import errors are COLLECTED, not raised and not swallowed. One broken plugin must not stop the
+    other providers from resolving; but a user who asked for exactly that plugin's provider must be
+    told why it is missing, so make_provider puts these in its error. Silent absence is the one
+    behaviour this must never have — it reads as "unknown provider" and sends people hunting the
+    wrong bug.
+    """
+    found, errors = {}, []
+    for mod_name in (os.environ.get("COLLIE_PROVIDER_PLUGINS") or "").split(os.pathsep):
+        mod_name = mod_name.strip()
+        if not mod_name:
+            continue
+        try:
+            import importlib
+            found.update(getattr(importlib.import_module(mod_name), "COLLIE_PROVIDERS", {}) or {})
+        except Exception as e:
+            errors.append("%s: %s" % (mod_name, e))
+    try:
+        from importlib.metadata import entry_points
+        for ep in entry_points(group="collie.providers"):
+            try:
+                obj = ep.load()
+                # an entry point may point at the mapping itself or at the module holding it
+                found.update(obj if isinstance(obj, dict)
+                             else (getattr(obj, "COLLIE_PROVIDERS", {}) or {}))
+            except Exception as e:
+                errors.append("%s: %s" % (ep.name, e))
+    except Exception as e:                                  # pragma: no cover - metadata unavailable
+        errors.append("entry_points: %s" % e)
+    return found, errors
+
+
 def make_provider(name: str, model: str | None = None) -> ModelProvider:
     if name == "mock":
         return MockProvider()
@@ -1199,4 +1241,16 @@ def make_provider(name: str, model: str | None = None) -> ModelProvider:
     if name in OPENAI_COMPAT_PRESETS:
         base, env, default = OPENAI_COMPAT_PRESETS[name]
         return OpenAICompatProvider(base, env, model or default, name=name)
-    raise ValueError("unknown provider: %s" % name)
+    # Plugins are consulted LAST so a third party cannot shadow a built-in name: someone who asks
+    # for `anthropic` must always get this file's Anthropic path, whatever happens to be installed.
+    plugins, errors = _plugin_providers()
+    if name in plugins:
+        return plugins[name](model)
+    known = sorted(set(list(plugins) + list(OPENAI_COMPAT_PRESETS)
+                       + ["mock", "anthropic", "anthropic-oauth", "codex-oauth",
+                          "claude-cli", "ollama"]))
+    msg = "unknown provider: %s (known: %s)" % (name, ", ".join(known))
+    if errors:
+        # The likely case when a plugin-provided name is missing is that the plugin failed to load.
+        msg += " · plugin load errors: " + "; ".join(errors)
+    raise ValueError(msg)
