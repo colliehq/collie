@@ -86,9 +86,77 @@ def main():
     for name in ("channels", "allow", "install_autostart", "uninstall_autostart"):
         check(name in fwd, "...and cmd_slack forwards %s through" % name)
 
+    # Refusing without a provider is right; leaving the person to guess which one is not. On a
+    # machine with a Claude subscription the credential is a token Claude Code minted, and it lives
+    # under a DIFFERENT provider name than the `anthropic` that `collie config` displays — so
+    # "pick one in the Settings panel" can be followed exactly and still not start.
     from harness import slackbot as sb
+    real_env = dict(os.environ)
+    try:
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-whatever"
+        check("--provider anthropic" in sb.provider_hint(),
+              "an API key on this machine is named as the provider to pass")
+        os.environ.pop("ANTHROPIC_API_KEY")
+        import harness.providers as pv
+        keep = pv._read_oauth_token
+        pv._read_oauth_token = lambda: "sk-ant-oat01-…"
+        check("anthropic-oauth" in sb.provider_hint(),
+              "a Claude Code token points at anthropic-oauth, not at anthropic")
+        pv._read_oauth_token = lambda: ""
+        check(sb.provider_hint() == "",
+              "and a machine with neither says nothing rather than inventing a suggestion")
+        pv._read_oauth_token = keep
+    finally:
+        os.environ.clear()
+        os.environ.update(real_env)
 
-    # --- the autonomy it ANNOUNCES has to be the autonomy it RUNS UNDER ------------------------
+    # ---- the pack can talk to itself ---------------------------------------------------------
+    # Dropping every event with a bot_id made two dogs in one channel deaf to each other, which is
+    # the opposite of what a pack is. What keeps that from looping is that a dog's reply mentions
+    # nobody — so no app_mention fires back — plus a bound on the case where one is asked to.
+    src = open(os.path.join(ROOT, "harness", "slackbot.py"), encoding="utf-8").read()
+    check('!= "app_mention" or event.get("bot_id")' not in src,
+          "a mention from another dog is no longer thrown away unread")
+    check('peer == my_bot' in src and 'user == my_user' in src,
+          "but a dog still never answers itself — the one loop needing no second party")
+    check('"<@%s> " % item["user"]' in src and "queued #" in src,
+          "the outcome is addressed to whoever asked; `queued` and `on it` are not, so one ask is "
+          "one ping and not three")
+
+    # Being asked to @ another dog is the ordinary way work is handed on, so the bound cannot be
+    # "dogs may not mention dogs". It has to tell a chain that is getting somewhere from a pair
+    # bouncing — and what separates those is REPETITION, not volume.
+    st = {}
+    chain = [sb.pack_gate(st, "T1", p) for p in ("B1", "B2", "B3", "B4")]
+    check(chain == ["", "", "", ""],
+          "a delegation down four different dogs passes — every hop is new ground")
+
+    st = {}
+    laps = [sb.pack_gate(st, "T2", "B1") for _ in range(sb.PACK_LAPS + 1)]
+    check(laps[:sb.PACK_LAPS] == [""] * sb.PACK_LAPS,
+          "one dog may come back %d times — enough for an answer and a follow-up" % sb.PACK_LAPS)
+    check("loop" in laps[-1], "and the lap after that is refused, in words")
+    check(sb.pack_gate({}, "T3", "B1") == "",
+          "while a fresh thread starts clean — the bound is on one conversation, not on a pair of "
+          "dogs ever speaking again")
+
+    st = {}
+    hops = [sb.pack_gate(st, "T4", "B%d" % i) for i in range(sb.PACK_HOPS + 1)]
+    check(hops[-1] and "reaching" in hops[-1],
+          "a chain that never repeats an edge still stops at %d hops" % sb.PACK_HOPS)
+
+    big = {}
+    for i in range(600):
+        sb.pack_gate(big, "T%d" % i, "B1")
+    check(len(big) <= 500, "and the tally cannot grow forever in a process that runs for weeks")
+
+    # The other half of delegating: an answer a dog cannot see is not an answer. A dog reads a
+    # channel only through its own mentions, so work handed back has to be addressed.
+    check('"<@%s> " % item["user"]' in src,
+          "an answer is addressed to the asker — for a dog that is the difference between an "
+          "answer and no answer, since it sees a channel only through its own mentions")
+
+    # --- the autonomy it ANNOUNCES has to be the autonomy it RUNS UNDER --------------------------
     # It was announced and nothing more: ident["autonomy"] reached the greeting string and the
     # spawn carried no --mode at all, so it took the gate's default. A dog introduced to a channel
     # as "propose — writes nothing" could write anything, and the greeting's one load-bearing
@@ -100,7 +168,7 @@ def main():
     check('"--mode"' in src and "AUTONOMY_MODE" in src,
           "...and the spawn passes it, so the setting bounds the run and not just the hello")
 
-    # --- a dog that knows its own name ----------------------------------------------------------
+    # --- a dog that knows its own name -----------------------------------------------------------
     who = sb.identity_text({"name": "Cornetto", "autonomy": "propose",
                             "machine": "box", "os": "Windows"})
     check("Cornetto" in who, "the identity carries the name the channel @-s")
@@ -110,7 +178,7 @@ def main():
     check("Do not push to main" in sb.identity_text({"name": "x", "autonomy": "branch"}),
           "branch states the half no gate mode can hold — a destination, not a permission")
 
-    # --- the answer is the answer ---------------------------------------------------------------
+    # --- the answer is the answer ----------------------------------------------------------------
     check("stderr=subprocess.STDOUT" not in src,
           "stderr is not merged into the reply — a huggingface warning is not an answer")
     check('"--print"' in src, "...and the run is asked for its answer alone")

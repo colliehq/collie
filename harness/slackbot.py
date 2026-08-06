@@ -353,10 +353,11 @@ class TaskQueue:
         except Exception:
             pass
 
-    def add(self, text: str, channel: str, thread: str, user: str) -> dict:
+    def add(self, text: str, channel: str, thread: str, user: str, from_dog: bool = False) -> dict:
         with self._lock:
             item = {"id": self.next_id, "text": text, "channel": channel,
                     "thread": thread, "user": user, "state": "waiting",
+                    "from_dog": from_dog,      # kept for `queue`/receipts: who is waiting on this
                     "queued_at": time.time()}
             self.next_id += 1
             self.items.append(item)
@@ -585,7 +586,15 @@ class Worker(threading.Thread):
         # well as the thread. The status line above is left showing how it ended, so the thread reads
         # as one request with one outcome rather than a log of a state machine.
         edit(self.token, ch, ts, head, self.tag)
-        say(self.token, ch, "%s\n```\n%s\n```" % (head, out or "(no output)"),
+        # Addressed to whoever asked — dog or person, the same way. For a dog it is the difference
+        # between an answer and no answer: it reads a channel only through its own mentions, so work
+        # it delegated would come back somewhere it cannot see. For a person it is the difference
+        # between an answer and one they find later: a run takes minutes, by which time they are in
+        # another window, and a thread reply is the notification easiest to miss on a phone. Only
+        # the outcome is addressed; "queued" and "on it" stay unmentioned, because being pinged
+        # three times for one ask is how a colleague becomes a nuisance.
+        back = "<@%s> " % item["user"] if item.get("user") else ""
+        say(self.token, ch, "%s%s\n```\n%s\n```" % (back, head, out or "(no output)"),
             th, self.tag, broadcast=True)
         self.q.finish(item["id"])
 
@@ -595,6 +604,73 @@ class Worker(threading.Thread):
 # ---------------------------------------------------------------------------
 
 MENTION_RE = re.compile(r"<@[UW][A-Z0-9]+>")
+
+# ---------------------------------------------------------------------------
+# The pack, talking to itself
+# ---------------------------------------------------------------------------
+#
+# Every event carrying a `bot_id` used to be dropped, which made two dogs in one channel deaf to
+# each other: BigMac's `@rowan hello` reached rowan's app and went in the bin. The reason was real —
+# two bots answering each other's mentions is a loop that spends real money on every lap — but it
+# also ruled out the thing a pack is for.
+#
+# "A reply mentions nobody, so it cannot re-trigger anyone" was true of the code and false of the
+# job: being asked to @ another dog is the ordinary way work is handed on, and a dog that reports
+# back to the dog that asked has to mention it or the answer goes nowhere. So mentions between dogs
+# are the mechanism, and the loop has to be bounded by something that can tell a chain that is
+# GETTING SOMEWHERE from a pair of dogs bouncing.
+#
+# Repetition is what distinguishes them. A delegation walks new ground — rowan asks juno, juno asks
+# cap — and every step is an edge nobody has used in this thread. A loop re-walks one edge: rowan,
+# juno, rowan, juno. So the rule is per-edge and not per-message: any one dog may reach this dog
+# PACK_LAPS times in a thread, which leaves room for "here is the answer" and "thanks, one more
+# thing" and stops the third identical lap. PACK_HOPS is the backstop for a long chain that never
+# repeats an edge but has clearly stopped being useful.
+#
+# Both are per-thread, so a new thread starts clean: the bound is on one conversation going round,
+# never on a pair of dogs speaking again.
+#
+# One thing stays forbidden at any depth: answering yourself. That loop needs no second party.
+PACK_LAPS = 2                      # times one particular dog may reach this one, per thread
+PACK_HOPS = 8                      # dog-to-dog turns in a thread, however many dogs are involved
+
+
+def pack_gate(state: dict, thread: str, peer: str,
+              laps: int = PACK_LAPS, hops: int = PACK_HOPS) -> str:
+    """Record a dog-to-dog turn. "" to go ahead, else the reason to stop, in words."""
+    t = state.setdefault(thread, {"n": 0, "edges": {}})
+    if len(state) > 500:                       # a process that runs for weeks cannot grow forever
+        state.pop(next(iter(state)), None)
+    t["n"] += 1
+    t["edges"][peer] = t["edges"].get(peer, 0) + 1
+    if t["edges"][peer] > laps:
+        return ("we have been round this %d times in this thread — stopping before it becomes a "
+                "loop. A person, or a new thread, starts it again." % laps)
+    if t["n"] > hops:
+        return ("that is %d hands-off in one thread — stopping here; whatever this was meant to "
+                "reach, it is not reaching it." % hops)
+    return ""
+
+
+def provider_hint() -> str:
+    """Name a provider that has a credential on THIS machine, or "" if none does.
+
+    "Pick one in the Settings panel" is advice a person can follow and still land on a provider
+    that cannot start: `anthropic` wants ANTHROPIC_API_KEY, and the machine that has a Claude
+    subscription instead has a token Claude Code minted, under a different provider name. The gap
+    between those two names is invisible until a dog refuses to run, so the refusal names the one
+    that would have worked.
+    """
+    try:
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return "\n  This machine has ANTHROPIC_API_KEY — try: --provider anthropic"
+        from . import providers
+        if providers._read_oauth_token():
+            return ("\n  This machine has a Claude Code token, which is a different provider name"
+                    " than\n  `anthropic`: --provider anthropic-oauth")
+    except Exception:
+        pass
+    return ""
 
 
 def _open_socket_url(app_token: str) -> str:
@@ -640,9 +716,15 @@ def setup(argv=None) -> int:
 
     name = a.name or next((k for k in KENNEL if k.lower() not in
                            {d.lower() for d in dogs}), "Collie%d" % (len(dogs) + 1))
-    if name in dogs and dogs[name].get("bot_token"):
+    # Papers means BOTH tokens. Checking only the bot token turned the half-provisioned case into a
+    # dead end: a dog whose xoxb- was saved and whose xapp- came later — which is the order the two
+    # pages hand them over in — was told it "already has papers" and refused, while `--list` said in
+    # the same breath that it needs its tokens. The one command that could finish it was the one
+    # command that would not run.
+    have = dogs.get(name) or {}
+    if have.get("bot_token") and have.get("app_token"):
         print("%s already has papers (app %s). Pick another name, or run "
-              "`collie slack --name %s`." % (name, dogs[name].get("app_id", "?"), name))
+              "`collie slack --name %s`." % (name, have.get("app_id", "?"), name))
         return 1
 
     entry = dict(dogs.get(name) or {})
@@ -868,10 +950,13 @@ def main(argv=None) -> int:
     # channel, for every ask. mock stays reachable, but only by NAME.
     if not args.provider:
         print("collie slack: no provider.\n"
-              "  Pick one in the Settings panel, or set COLLIE_PROVIDER, or pass --provider.\n"
+              "  Looked at: --provider, then COLLIE_PROVIDER (which the Settings panel injects).\n"
+              "  A value in `collie config` is not necessarily a saved one — that listing falls\n"
+              "  back to defaults, so it can name a provider nothing has actually configured.%s\n"
               "  Refusing rather than falling back to `mock`: mock answers from fixtures, and a\n"
               "  fixture in a channel reads exactly like a model that has gone wrong.\n"
-              "  To do that on purpose: --provider mock", file=sys.stderr)
+              "  To do that on purpose: --provider mock"
+              % provider_hint(), file=sys.stderr)
         return 2
 
     # Where it will work at all. Defaulting to "only the channel I was announced
@@ -913,6 +998,17 @@ def main(argv=None) -> int:
                        if first else "\n_reporting in._")
         say(bot_token, args.announce, hello, tag=tag)
 
+    # Who this dog is to Slack. Needed only since the pack can talk: "is this me" cannot be answered
+    # from the name, and answering your own mention is the one loop with no second party to tire of
+    # it. Failing to find out is not fatal — it costs the self-check, not the dog.
+    my_user = my_bot = ""
+    try:
+        me = api("auth.test", bot_token)
+        my_user, my_bot = me.get("user_id", ""), me.get("bot_id", "")
+    except Exception as e:
+        print("[slack] auth.test failed (%s) — self-mentions will not be filtered" % e, file=sys.stderr)
+
+    pack: dict = {}                 # thread -> dog-to-dog turns taken in it
     seen: set[str] = set()          # envelope ids, for Slack's redeliveries
     seen_order: list[str] = []
 
@@ -958,7 +1054,7 @@ def main(argv=None) -> int:
                 if env.get("type") != "events_api":
                     continue
                 event = (env.get("payload") or {}).get("event") or {}
-                if event.get("type") != "app_mention" or event.get("bot_id"):
+                if event.get("type") != "app_mention":
                     continue
 
                 text = MENTION_RE.sub("", event.get("text", "")).strip()
@@ -966,6 +1062,21 @@ def main(argv=None) -> int:
                 th = event.get("thread_ts") or event.get("ts") or ""
                 user = event.get("user", "")
                 low = text.lower()
+
+                # Another dog may ask; this dog may not ask itself. Self-mention is the one loop
+                # with no bound — it re-triggers on its own reply and never needs a second party.
+                peer = event.get("bot_id", "")
+                if (peer and peer == my_bot) or (user and user == my_user):
+                    continue
+                if peer:
+                    stop = pack_gate(pack, th, peer)
+                    if stop:
+                        # Said once, to the dog that asked, and then not again: silence is how a
+                        # bounded exchange looks identical to a broken one.
+                        if not pack[th].get("said"):
+                            pack[th]["said"] = True
+                            say(bot_token, ch, stop, th, tag)
+                        continue
 
                 # Two gates, and they are checked before the text is read as
                 # anything. Out of scope is answered rather than ignored: a bot
@@ -1001,7 +1112,7 @@ def main(argv=None) -> int:
                 elif not text:
                     say(bot_token, ch, "%s here. Ask me something, or say `queue`." % ident["name"], th, tag)
                 else:
-                    item = q.add(text, ch, th, user)
+                    item = q.add(text, ch, th, user, from_dog=bool(peer))
                     ahead = q.waiting() - 1
                     # The ts is kept ON the item so the worker can edit this same line rather than
                     # post another one under it.

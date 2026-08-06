@@ -149,6 +149,21 @@ def main():
     check(rc == 1 and "already has papers" in out.getvalue(),
           "a name that is already provisioned is refused rather than silently re-created")
 
+    # …but "provisioned" means BOTH tokens. The two pages hand them over one at a time, so a dog
+    # holding only its xoxb- is the ordinary mid-setup state — and refusing it as finished made the
+    # one command that could complete it the one command that would not run, while `--list` said in
+    # the same breath that it needed its tokens.
+    sb.save_kennel({"Meg": {"app_id": "A3", "bot_token": "xoxb-3"}})
+    real_api, sb.api = sb.api, lambda m, t, **p: {"ok": True, "user": "meg", "team": "Collie"}
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = sb.setup(["--name", "Meg", "--app-token", "xapp-3"])
+    sb.api = real_api
+    check(rc == 0 and "already has papers" not in out.getvalue(),
+          "a half-provisioned dog takes the token it was missing instead of being turned away")
+    check(sb.load_kennel()["Meg"].get("app_token") == "xapp-3", "and the token is stored")
+    check(sb.load_kennel()["Meg"].get("bot_token") == "xoxb-3", "beside the one it already had")
+
     # A dog whose app exists but whose tokens do not: setup must say what is left, keep the app id,
     # and exit non-zero so a script does not read it as finished. stdin is swapped for a
     # non-tty so this takes the unattended path rather than stopping to prompt.
