@@ -217,6 +217,49 @@ def main():
           "only the dog's OWN mention is stripped from an ask; everyone else's is the addressing "
           "information, and deleting it deleted the only thing that can reach them")
 
+    # --- and the lookups have to be FORM-encoded --------------------------------------------------
+    # api() posts JSON, which Slack's WRITE methods accept and its LOOKUP methods quietly ignore.
+    # conversations.members answered `invalid_arguments — missing required field: channel` for a
+    # call that carried channel, so the roster came back empty with every scope granted and the
+    # channel right there — a shape that reads as "the permission did not work".
+    sent = {}
+
+    class _Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(req, timeout=None):
+        sent["ctype"] = req.headers.get("Content-type") or req.get_header("Content-type")
+        sent.setdefault("bodies", []).append(req.data)
+        if req.full_url.endswith("conversations.members"):
+            return _Resp(b'{"ok":true,"members":["U1"]}')
+        return _Resp(b'{"ok":true,"user":{"is_bot":true,"profile":{"display_name":"rowan"}}}')
+
+    real_open = sb.urllib.request.urlopen
+    sb.urllib.request.urlopen = fake_open
+    sb._roster_cache.clear()
+    try:
+        got = sb.roster("xoxb-1", "C1", now=1.0)
+    finally:
+        sb.urllib.request.urlopen = real_open
+        sb._roster_cache.clear()
+
+    check(got == [{"id": "U1", "name": "rowan", "is_bot": True}],
+          "the roster comes back carrying the member Slack named")
+    check("x-www-form-urlencoded" in (sent.get("ctype") or ""),
+          "...because a lookup goes out form-encoded, which is the only encoding Slack reads it in")
+    check(any(b"channel=C1" in (b or b"") for b in sent.get("bodies", [])),
+          "...with the parameter in the body, where `missing required field` said it was not")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 

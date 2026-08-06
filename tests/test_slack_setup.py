@@ -156,6 +156,30 @@ def main():
     check(rc == 1 and "already has papers" in out.getvalue(),
           "a name that is already provisioned is refused rather than silently re-created")
 
+    # …but a finished dog is not frozen at the manifest of the day it was made. Scopes, display name
+    # and face are all fixed at creation and follow no later change, so the first dog to need a new
+    # scope was brought up to date BY HAND over the API — per-dog handwork, inside the command whose
+    # whole purpose is to remove it, and there is never only one such dog. Given the credential that
+    # can, `--config-token` on a finished dog means "make it current".
+    seen = []
+
+    def fake_update(method, token, **params):
+        seen.append((method, params.get("app_id")))
+        return {"ok": True, "permissions_updated": True}
+    real_api2, sb.api = sb.api, fake_update
+    real_icon, sb.set_icon = sb.set_icon, lambda *a, **k: ""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = sb.setup(["--name", "Rowan", "--config-token", "xoxe.xoxp-1"])
+    sb.api, sb.set_icon = real_api2, real_icon
+    check(rc == 0 and ("apps.manifest.update", "A1") in seen,
+          "with the credential that can, an existing dog is UPDATED rather than turned away")
+    check("install-on-team" in out.getvalue(),
+          "...and a scope change says so, because granting one is the install itself and Slack "
+          "exposes no API for it")
+    check(sb.load_kennel()["Rowan"]["app_id"] == "A1",
+          "...on the app it already had — an update is not a second app")
+
     # …but "provisioned" means BOTH tokens. The two pages hand them over one at a time, so a dog
     # holding only its xoxb- is the ordinary mid-setup state — and refusing it as finished made the
     # one command that could complete it the one command that would not run, while `--list` said in

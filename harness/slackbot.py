@@ -297,6 +297,20 @@ def create_app(config_token: str, manifest: dict) -> dict:
     return r
 
 
+def update_app(config_token: str, app_id: str, manifest: dict) -> dict:
+    """apps.manifest.update — the same whole-app call, aimed at one that already exists.
+
+    `permissions_updated` in the reply is the part worth reading: true means the SCOPES changed and
+    a reinstall has to grant them, false means the change was cosmetic and is already live. Both
+    are ordinary outcomes, so both are reported rather than one being treated as a failure.
+    """
+    r = api("apps.manifest.update", config_token, app_id=app_id, manifest=json.dumps(manifest))
+    if not r.get("ok"):
+        detail = r.get("errors") or r.get("error")
+        raise RuntimeError("apps.manifest.update failed: %s" % json.dumps(detail))
+    return r
+
+
 def load_identity(name: str = "", autonomy: str = "") -> dict:
     """The dog's name, where it lives, and what it may do.
 
@@ -443,6 +457,24 @@ def api(method: str, token: str, **params) -> dict:
         return json.loads(r.read().decode("utf-8"))
 
 
+def api_q(method: str, token: str, **params) -> dict:
+    """Same, FORM-encoded — for the query methods that will not read a JSON body.
+
+    Slack's write methods (chat.postMessage, conversations.join) take application/json. Its
+    lookup methods do not: conversations.members and users.info silently ignore a JSON body and
+    answer `invalid_arguments — missing required field: channel` for a call that plainly carried
+    one. Sent as a form they work. The split is Slack's, so it is a second function rather than a
+    guess inside the first: a caller picks the encoding its method actually accepts.
+    """
+    data = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
+    req = urllib.request.Request(
+        SLACK_API + method, data=data.encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                 "Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 def join(token: str, channel: str, name: str = "collie") -> str:
     """Walk into a channel. "" on success, else the reason, in words.
 
@@ -494,7 +526,7 @@ def roster(token: str, channel: str, now: float = 0.0) -> list:
     try:
         ids, cursor = [], ""
         for _ in range(10):                       # bounded: a channel is not an unbounded page walk
-            r = api("conversations.members", token, channel=channel, limit=200, cursor=cursor)
+            r = api_q("conversations.members", token, channel=channel, limit=200, cursor=cursor)
             if not r.get("ok"):
                 # Say it ONCE, and say what to do. A dog provisioned before these scopes existed
                 # lands here on every ask, and an empty roster is invisible from the channel: it
@@ -512,7 +544,7 @@ def roster(token: str, channel: str, now: float = 0.0) -> list:
             if not cursor:
                 break
         for uid in ids:
-            u = api("users.info", token, user=uid)
+            u = api_q("users.info", token, user=uid)
             if not u.get("ok"):
                 continue
             m = u.get("user") or {}
@@ -809,6 +841,44 @@ def _open_socket_url(app_token: str) -> str:
     return r["url"]
 
 
+def _refresh(name: str, entry: dict, config_token: str) -> int:
+    """Bring one already-provisioned dog up to the manifest setup would build TODAY.
+
+    Every member of a pack was created at some point in this file's history and keeps the manifest
+    of that day — scopes, display name and face are all fixed at creation and none of them follow
+    a later change. The first dog to need the roster scopes was brought up to date by hand over the
+    API, once, which is exactly the per-dog handwork this command exists to remove; and there is
+    never only one such dog. `--config-token` on a finished dog means this, for any of them.
+    """
+    app_id = entry.get("app_id", "")
+    print("bringing %s up to the current manifest (app %s)…" % (name, app_id))
+    try:
+        res = update_app(config_token, app_id, app_manifest(name))
+    except Exception as e:
+        print("  %s" % e, file=sys.stderr)
+        return 1
+    print("  manifest updated")
+
+    face = ""
+    try:
+        from . import avatar
+        face = avatar.write(name)
+    except Exception as e:
+        print("  (could not draw an avatar: %s)" % e)
+    icon_err = set_icon(config_token, app_id, face)
+    print("  face on" if not icon_err else "  (icon unchanged — %s)" % icon_err)
+
+    if res.get("permissions_updated"):
+        print("\n  the SCOPES changed, so one reinstall is needed to grant them — Slack exposes no\n"
+              "  API for that, it is the install itself that authorizes:\n"
+              "    https://api.slack.com/apps/%s/install-on-team\n"
+              "  then hand the new bot token back:\n"
+              "    collie slack setup --name %s --bot-token xoxb-…" % (app_id, name))
+    else:
+        print("  no scope changed — nothing to reinstall, it is already live")
+    return 0
+
+
 def setup(argv=None) -> int:
     """`collie slack setup` — give one more dog its own app, its own handle, its own tokens.
 
@@ -850,8 +920,16 @@ def setup(argv=None) -> int:
     # command that would not run.
     have = dogs.get(name) or {}
     if have.get("bot_token") and have.get("app_token"):
-        print("%s already has papers (app %s). Pick another name, or run "
-              "`collie slack --name %s`." % (name, have.get("app_id", "?"), name))
+        # A finished dog is not a dead end: it is the one that goes STALE. Scopes, the display name
+        # and the face are all fixed at creation, so every dog provisioned before a change to the
+        # manifest keeps the old one forever — and the only fix was to reach for the API by hand,
+        # once per dog, which is exactly the per-dog handwork this command exists to remove. Given
+        # the credential that can, bring it up to today's manifest instead of refusing.
+        if a.config_token and have.get("app_id"):
+            return _refresh(name, have, a.config_token)
+        print("%s already has papers (app %s). Pick another name, run `collie slack --name %s`, "
+              "or pass --config-token to bring its app up to the current manifest (scopes, name "
+              "and face)." % (name, have.get("app_id", "?"), name))
         return 1
 
     entry = dict(dogs.get(name) or {})
