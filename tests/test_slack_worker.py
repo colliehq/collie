@@ -110,6 +110,31 @@ def main():
         os.environ.clear()
         os.environ.update(real_env)
 
+    # ---- the pack can talk to itself ---------------------------------------------------------
+    # Dropping every event with a bot_id made two dogs in one channel deaf to each other, which is
+    # the opposite of what a pack is. What keeps that from looping is that a dog's reply mentions
+    # nobody — so no app_mention fires back — plus a bound on the case where one is asked to.
+    src = open(os.path.join(ROOT, "harness", "slackbot.py"), encoding="utf-8").read()
+    check('!= "app_mention" or event.get("bot_id")' not in src,
+          "a mention from another dog is no longer thrown away unread")
+    check('peer == my_bot' in src and 'user == my_user' in src,
+          "but a dog still never answers itself — the one loop needing no second party")
+    check("MENTION_RE" in src and 'say(' in src,
+          "replies are plain text: nothing in an answer re-triggers the dog that asked")
+
+    turns = {}
+    got = [sb.pack_gate(turns, "T1") for _ in range(sb.PACK_TURNS + 2)]
+    check(got == list(range(1, sb.PACK_TURNS + 3)), "dog-to-dog turns are counted per thread")
+    check(sum(1 for n in got if n <= sb.PACK_TURNS) == sb.PACK_TURNS,
+          "and %d of them pass before the thread is closed" % sb.PACK_TURNS)
+    check(sb.pack_gate(turns, "T2") == 1,
+          "a different thread starts fresh — the bound is on one conversation going round, not on "
+          "a pair of dogs ever speaking again")
+    big = {}
+    for i in range(600):
+        sb.pack_gate(big, "T%d" % i)
+    check(len(big) <= 500, "and the tally cannot grow forever in a process that runs for weeks")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 

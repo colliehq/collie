@@ -552,6 +552,38 @@ class Worker(threading.Thread):
 
 MENTION_RE = re.compile(r"<@[UW][A-Z0-9]+>")
 
+# ---------------------------------------------------------------------------
+# The pack, talking to itself
+# ---------------------------------------------------------------------------
+#
+# Every event carrying a `bot_id` used to be dropped, which made two dogs in one channel deaf to
+# each other: BigMac's `@rowan hello` reached rowan's app and went in the bin. The reason was real —
+# two bots answering each other's mentions is a loop that spends real money on every lap — but it
+# also ruled out the thing a pack is for.
+#
+# What actually prevents the loop is not the filter. It is that a dog's reply mentions nobody: the
+# answer lands in the thread as text, no app_mention fires on the other side, and the exchange ends
+# after one turn on its own. Two cases survive that — a dog ASKED to mention someone, and two dogs
+# that address each other in the same breath — so the count below bounds them. Three turns is enough
+# for "ask, answer, thanks" and short of anything that reads as a machine arguing with itself.
+#
+# One thing is never allowed at any depth: answering yourself. A self-mention has no bound at all.
+PACK_TURNS = 3
+
+
+def pack_gate(state: dict, thread: str, limit: int = PACK_TURNS) -> int:
+    """Count this dog-to-dog turn in `thread`. Returns the turn number; > limit means stop.
+
+    Keyed by thread rather than by peer: the runaway case is one conversation going round, and a
+    per-peer count would let the same pair start again in the next thread — which is exactly what a
+    person wants when they open a new one.
+    """
+    n = state.get(thread, 0) + 1
+    state[thread] = n
+    if len(state) > 500:                       # a long-lived process must not grow a dict forever
+        state.pop(next(iter(state)), None)
+    return n
+
 
 def provider_hint() -> str:
     """Name a provider that has a credential on THIS machine, or "" if none does.
@@ -899,6 +931,17 @@ def main(argv=None) -> int:
                        if first else "\n_reporting in._")
         say(bot_token, args.announce, hello, tag=tag)
 
+    # Who this dog is to Slack. Needed only since the pack can talk: "is this me" cannot be answered
+    # from the name, and answering your own mention is the one loop with no second party to tire of
+    # it. Failing to find out is not fatal — it costs the self-check, not the dog.
+    my_user = my_bot = ""
+    try:
+        me = api("auth.test", bot_token)
+        my_user, my_bot = me.get("user_id", ""), me.get("bot_id", "")
+    except Exception as e:
+        print("[slack] auth.test failed (%s) — self-mentions will not be filtered" % e, file=sys.stderr)
+
+    pack: dict = {}                 # thread -> dog-to-dog turns taken in it
     seen: set[str] = set()          # envelope ids, for Slack's redeliveries
     seen_order: list[str] = []
 
@@ -944,7 +987,7 @@ def main(argv=None) -> int:
                 if env.get("type") != "events_api":
                     continue
                 event = (env.get("payload") or {}).get("event") or {}
-                if event.get("type") != "app_mention" or event.get("bot_id"):
+                if event.get("type") != "app_mention":
                     continue
 
                 text = MENTION_RE.sub("", event.get("text", "")).strip()
@@ -952,6 +995,20 @@ def main(argv=None) -> int:
                 th = event.get("thread_ts") or event.get("ts") or ""
                 user = event.get("user", "")
                 low = text.lower()
+
+                # Another dog may ask; this dog may not ask itself. Self-mention is the one loop
+                # with no bound — it re-triggers on its own reply and never needs a second party.
+                peer = event.get("bot_id", "")
+                if (peer and peer == my_bot) or (user and user == my_user):
+                    continue
+                if peer:
+                    turn = pack_gate(pack, th)
+                    if turn > PACK_TURNS:
+                        if turn == PACK_TURNS + 1:      # say it once, then let the thread rest
+                            say(bot_token, ch, "that is %d turns between dogs in this thread — "
+                                "stopping here rather than talking us both in circles. A person "
+                                "can start it again." % PACK_TURNS, th, tag)
+                        continue
 
                 # Two gates, and they are checked before the text is read as
                 # anything. Out of scope is answered rather than ignored: a bot
