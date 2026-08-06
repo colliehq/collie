@@ -71,6 +71,21 @@ def main():
     check(i_ts > 0 and i_nudge > i_ts,
           "the worker is nudged AFTER the ts is stored — otherwise it can start before it exists")
 
+    # --- every flag the logon launcher writes must survive `collie` -----------------------------
+    # The launcher goes through harness.cli, whose slack subparser was NARROWER than slackbot's own
+    # parser: --channels died with "invalid choice: C0BM…". At logon that is invisible — no window,
+    # and a bot that simply is not there looks exactly like a bot with nothing to say.
+    cli_src = open(os.path.join(ROOT, "harness", "cli.py"), encoding="utf-8").read()
+    i = cli_src.find('sub.add_parser("slack"')
+    sub = cli_src[i:cli_src.find("set_defaults(fn=cmd_slack)", i)]
+    for flag in ("--name", "--cwd", "--provider", "--announce", "--channels", "--allow",
+                 "--install-autostart", "--uninstall-autostart"):
+        check(flag in sub, "`collie slack` accepts %s" % flag)
+    j = cli_src.find("def cmd_slack")
+    fwd = cli_src[j:cli_src.find("\ndef ", j + 5)]
+    for name in ("channels", "allow", "install_autostart", "uninstall_autostart"):
+        check(name in fwd, "...and cmd_slack forwards %s through" % name)
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 

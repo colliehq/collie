@@ -961,10 +961,13 @@ def cmd_slack(args):
         if getattr(args, "list_dogs", False):
             argv += ["--list"]
         return slackbot.main(argv)
-    for flag in ("name", "autonomy", "cwd", "provider", "announce"):
+    for flag in ("name", "autonomy", "cwd", "provider", "announce", "channels", "allow"):
         v = getattr(args, flag, "")
         if v:
             argv += ["--" + flag, str(v)]
+    for flag in ("install_autostart", "uninstall_autostart"):
+        if getattr(args, flag, False):
+            argv += ["--" + flag.replace("_", "-")]
     return slackbot.main(argv)
 
 
@@ -2281,6 +2284,18 @@ def main(argv=None):
     psl.add_argument("--cwd", default="", help="repository it works in (default: here)")
     psl.add_argument("--provider", default="")
     psl.add_argument("--announce", default="", help="channel id to report in to on start")
+    # These existed only on slackbot's own parser, so `collie slack --channels …` — the form setup
+    # prints, and the form the logon launcher generates — died with "invalid choice: C0BM…" before
+    # anything connected. At logon that failure is invisible: no window, and the bot simply is not
+    # there, which is indistinguishable from a bot with nothing to say.
+    psl.add_argument("--channels", default="",
+                     help="comma-separated channel ids it will work in (default: only --announce)")
+    psl.add_argument("--allow", default="",
+                     help="comma-separated slack user ids that may task it (default: anyone there)")
+    psl.add_argument("--install-autostart", dest="install_autostart", action="store_true",
+                     help="bring this dog back after a restart (opt-in)")
+    psl.add_argument("--uninstall-autostart", dest="uninstall_autostart", action="store_true",
+                     help="stop it coming back")
     psl.set_defaults(fn=cmd_slack)
 
     # mail: a dog's own address, so a verification link is not a handover to a human
