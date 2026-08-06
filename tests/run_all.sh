@@ -104,6 +104,7 @@ if $PY tests/test_runs_registry.py >/dev/null 2>&1; then echo "  runs_registry O
 if $PY tests/test_mirror_backlog.py >/dev/null 2>&1; then echo "  mirror_backlog OK"; else echo "  mirror_backlog FAIL"; rc=1; fi
 if $PY tests/test_worktree.py >/dev/null 2>&1; then echo "  worktree OK"; else echo "  worktree FAIL"; rc=1; fi
 if $PY tests/test_mcp_catalog.py >/dev/null 2>&1; then echo "  mcp_catalog OK"; else echo "  mcp_catalog FAIL"; rc=1; fi
+if $PY tests/test_mcp_confidential.py >/dev/null 2>&1; then echo "  mcp_confidential OK"; else echo "  mcp_confidential FAIL"; rc=1; fi
 if $PY tests/test_slackbot.py >/dev/null 2>&1; then echo "  slackbot OK"; else echo "  slackbot FAIL"; rc=1; fi
 if $PY tests/test_slack_setup.py >/dev/null 2>&1; then echo "  slack setup (one app per dog) OK"; else echo "  slack setup FAIL"; rc=1; fi
 if $PY tests/test_dogmail.py >/dev/null 2>&1; then echo "  dog mail (sealed to the dog, replay-proof) OK"; else echo "  dog mail FAIL"; rc=1; fi

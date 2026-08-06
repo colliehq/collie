@@ -23,6 +23,7 @@ to do**, so its autonomy is never something you find out afterwards.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -151,7 +152,11 @@ def app_manifest(name: str) -> dict:
             # Without a messages tab the bot has no App Home, and a DM to it goes nowhere.
             "app_home": {"messages_tab_enabled": True, "messages_tab_read_only_enabled": False},
         },
-        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write"]}},
+        # channels:join is the third and last one: it lets the dog walk into the public channels it
+        # was told to work in instead of standing outside until somebody remembers to `/invite` it.
+        # The permission it grants is the one the owner exercises anyway by typing that command —
+        # and it cannot reach a private channel, where an invitation is still the only way in.
+        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write", "channels:join"]}},
         "settings": {
             # Socket Mode means this dog dials OUT: no public address, no tunnel, and a laptop
             # that changes network just reconnects. It also makes Slack mint the app-level
@@ -190,6 +195,43 @@ def save_kennel(dogs: dict) -> None:
     except Exception:
         pass
     os.replace(tmp, STORE)
+
+
+ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "collie-icon-512.png")
+
+
+def set_icon(config_token: str, app_id: str, path: str = "") -> str:
+    """Give the app a face while we are already holding the credential that can. "" on success.
+
+    `apps.icon.set` is in no method list — the manifest has no icon field, and Slack's own CLI
+    uploads one on deploy, so something had to exist. It takes `app_id` and a `file` part, and a
+    square PNG of at least 512px (128 comes back `invalid_icon_size`).
+
+    Undocumented means it may change without warning, so this reports and never raises: an app
+    wearing Slack's grey default is a working app, and a setup that got everything else right
+    should not end in a traceback over a picture.
+    """
+    path = path or ICON
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except OSError as e:
+        return str(e)
+    boundary = "----collie%s" % base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
+    body = b"".join([
+        ("--%s\r\nContent-Disposition: form-data; name=\"app_id\"\r\n\r\n%s\r\n" % (boundary, app_id)).encode(),
+        ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"icon.png\"\r\n"
+         "Content-Type: image/png\r\n\r\n" % boundary).encode(),
+        blob, b"\r\n", ("--%s--\r\n" % boundary).encode()])
+    req = urllib.request.Request(
+        SLACK_API + "apps.icon.set", data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=" + boundary,
+                 "Authorization": "Bearer " + config_token})
+    try:
+        r = json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8"))
+    except Exception as e:
+        return str(e)
+    return "" if r.get("ok") else str(r.get("error"))
 
 
 def create_app(config_token: str, manifest: dict) -> dict:
@@ -344,6 +386,30 @@ def api(method: str, token: str, **params) -> dict:
                  "Authorization": "Bearer " + token})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def join(token: str, channel: str, name: str = "collie") -> str:
+    """Walk into a channel. "" on success, else the reason, in words.
+
+    Run on every start, not only the first: already being in the channel is a success, and the
+    alternative — a dog that is connected, listening and simply not a member — is indistinguishable
+    from a dog nobody has spoken to yet. That failure is silent on both ends, which is why it is
+    worth a call that usually does nothing.
+    """
+    try:
+        r = api("conversations.join", token, channel=channel)
+    except Exception as e:
+        return str(e)
+    if r.get("ok") or r.get("error") == "already_in_channel":
+        return ""
+    if r.get("error") == "missing_scope":
+        return ("this app predates `channels:join` — reinstall it from its Slack app page to pick "
+                "the scope up, or `/invite @%s` in the channel once" % name.lower())
+    if r.get("error") == "method_not_supported_for_channel_type":
+        return "private channel — nothing may let itself in; `/invite @%s` once" % name.lower()
+    if r.get("error") == "channel_not_found":
+        return "no such channel, or it is private and this app cannot see it"
+    return str(r.get("error"))
 
 
 def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
@@ -530,6 +596,19 @@ def setup(argv=None) -> int:
         return 1
 
     entry = dict(dogs.get(name) or {})
+
+    # THIS dog's face, drawn BEFORE anything can fail, so there is something of its own to upload
+    # and something on disk if the rest of setup stops early. Derived from the name, so it is the
+    # same face on every machine and after any reinstall.
+    face = ""
+    try:
+        from . import avatar
+        face = avatar.write(name)
+        t = avatar.traits(name)
+        print("  %s: %s coat on a %s plate — %s" % (name, t["coat"], t["plate"], face))
+    except Exception as e:                               # never let a picture stop a setup
+        print("  (could not draw an avatar: %s)" % e)
+
     if not entry.get("app_id"):
         if not a.config_token:
             print("collie slack setup: needs an app-configuration token.\n"
@@ -546,18 +625,12 @@ def setup(argv=None) -> int:
         dogs[name] = entry
         save_kennel(dogs)
         print("  app %s created" % entry["app_id"])
-
-    # This dog's face, derived from its name so it is the same face on every machine. Written even
-    # when the rest of setup cannot finish: it costs nothing, and having the file already there is
-    # what makes the icon a drag-and-drop rather than an errand.
-    face = ""
-    try:
-        from . import avatar
-        face = avatar.write(name)
-        t = avatar.traits(name)
-        print("  %s has %s eyes on a %s plate — %s" % (name, t["eye"], t["plate"], face))
-    except Exception as e:                               # never let a picture stop a setup
-        print("  (could not draw an avatar: %s)" % e)
+        # Now, while the config token is still in hand and before anyone has seen the app: an
+        # icon set later is a second visit to a settings page, which is the cost this command
+        # exists to remove. It uploads THIS dog's face rather than one picture shared by the
+        # pack — the whole point of the name is that the members are told apart.
+        icon_err = set_icon(a.config_token, entry["app_id"], face)
+        print("  face on" if not icon_err else "  (default icon — %s)" % icon_err)
 
     app_id = entry.get("app_id", "")
     install = "https://api.slack.com/apps/%s/install-on-team" % app_id
@@ -604,12 +677,12 @@ def setup(argv=None) -> int:
     print("\n%s is ready — @%s in %s. Start it with:\n  collie slack --name %s --announce <channel id>"
           % (name, who.get("user", name.lower()), who.get("team", "your workspace"), name))
     if face:
-        # Slack's manifest has display_information.{name,description,background_color} and NO icon
-        # field, and no apps.* method uploads one — so this last one genuinely cannot be automated
-        # either. Saying exactly where the file is turns it into a drag rather than a task.
-        print("  its face is drawn but not uploaded (Slack exposes no API for an app icon):\n"
-              "    %s\n    -> https://api.slack.com/apps/%s/general  (Display Information → icon)"
-              % (face, app_id))
+        # It IS uploaded above, by `apps.icon.set`. That method is in no published list — the
+        # manifest has no icon field, which is why this was written off as un-automatable — but
+        # Slack's own CLI uses it on deploy, and it works. Undocumented means it can go away, so
+        # the path is still printed: if the upload ever fails the fallback is a drag, not a hunt.
+        print("  its face: %s\n    (already uploaded; to redo it by hand: "
+              "https://api.slack.com/apps/%s/general → Display Information)" % (face, app_id))
     return 0
 
 
@@ -759,6 +832,17 @@ def main(argv=None) -> int:
     allowed = {u.strip() for u in args.allow.split(",") if u.strip()}
 
     ident = load_identity(args.name, args.autonomy)
+
+    # Into those channels, under its own steam. Not fatal when it fails: a private channel it was
+    # already invited to works perfectly, and a dog that refuses to start over a channel it can
+    # already hear would be trading a working pack for a tidy rule.
+    for ch in sorted(channels):
+        err = join(bot_token, ch, ident["name"])
+        if err:
+            print("[slack] %s: %s" % (ch, err), file=sys.stderr)
+        else:
+            print("[slack] in %s" % ch)
+
     q = TaskQueue(ident["name"])
     worker = Worker(q, ident, bot_token, args.cwd, args.provider)
     worker.start()

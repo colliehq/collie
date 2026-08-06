@@ -45,5 +45,5 @@ version = { attr = "harness.__version__" }
 # ship the web GUI, the browser extension, AND the desktop wallpaper engine (C# source + WebView2
 # DLLs + build/stop scripts) so `pip install collie-harness` gives `collie wallpaper` everything it
 # needs — it builds the .exe on first use via the in-box csc (no .NET SDK). Windows-only feature.
-harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "browser_ext/*",
+harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png", "browser_ext/*",
            "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico"]

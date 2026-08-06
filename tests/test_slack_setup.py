@@ -34,8 +34,9 @@ def main():
     check(m["display_information"]["name"] == "Rowan", "the app is named after the dog")
     check(m["features"]["bot_user"]["display_name"] == "rowan",
           "and its handle is the name, lowercased — that is what gets @-ed")
-    check(sorted(m["oauth_config"]["scopes"]["bot"]) == ["app_mentions:read", "chat:write"],
-          "hear an @ and answer it: the two scopes, no more")
+    check(sorted(m["oauth_config"]["scopes"]["bot"])
+          == ["app_mentions:read", "channels:join", "chat:write"],
+          "hear an @, answer it, and let itself into a public channel: those three, no more")
     check("user" not in m["oauth_config"]["scopes"],
           "NO user scopes — they switch on token rotation, which disables the Install button and "
           "forces an OAuth redirect that then refuses bot scopes on loopback")
@@ -44,6 +45,83 @@ def main():
           "and the one event it exists to receive")
     check(sb.app_manifest("Odd Name!")["features"]["bot_user"]["display_name"] == "oddname",
           "a handle Slack will accept, whatever the dog is called")
+
+    # ---- letting itself in -------------------------------------------------------------------
+    # The scope above is only worth having if start-up actually uses it, and if the ways it can
+    # fail come back as something to do rather than as Slack's method name.
+    calls = []
+
+    def fake_api(method, token, **params):
+        calls.append((method, params))
+        return fake_api.reply
+    real_api, sb.api = sb.api, fake_api
+
+    fake_api.reply = {"ok": True}
+    check(sb.join("xoxb-1", "C123", "Rowan") == "", "a clean join reports nothing to report")
+    check(calls[-1] == ("conversations.join", {"channel": "C123"}),
+          "by asking Slack for that channel and no other")
+
+    fake_api.reply = {"ok": False, "error": "already_in_channel"}
+    check(sb.join("xoxb-1", "C123", "Rowan") == "",
+          "already being in it is success — so every start can try, not just the first")
+
+    fake_api.reply = {"ok": False, "error": "missing_scope"}
+    check("reinstall" in sb.join("xoxb-1", "C123", "Rowan"),
+          "a dog provisioned before this scope existed is told to reinstall, not left guessing")
+
+    fake_api.reply = {"ok": False, "error": "method_not_supported_for_channel_type"}
+    check("/invite @rowan" in sb.join("xoxb-1", "C1", "Rowan"),
+          "a private channel says the one thing that does work there")
+    sb.api = real_api
+
+    # ---- the face ------------------------------------------------------------------------------
+    # Shipped inside the wheel, not read out of the repo: `pip install collie-harness` has no
+    # assets/ directory, and an icon that only exists for developers is the same as no icon.
+    check(os.path.exists(sb.ICON), "the icon ships with the package (%s)" % os.path.basename(sb.ICON))
+    head = open(sb.ICON, "rb").read(24)
+    check(head[:8] == b"\x89PNG\r\n\x1a\n", "and it is a PNG")
+    w = int.from_bytes(head[16:20], "big")
+    h = int.from_bytes(head[20:24], "big")
+    check(w == h and w >= 512, "square and at least 512px — Slack refuses smaller (%dx%d)" % (w, h))
+
+    posted = {}
+
+    class _Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        posted["ctype"] = req.headers.get("Content-type") or req.get_header("Content-type")
+        posted["auth"] = req.get_header("Authorization")
+        posted["url"] = req.full_url
+        posted["body"] = req.data
+        return _Resp(posted.get("reply", b'{"ok":true}'))
+    real_urlopen = sb.urllib.request.urlopen
+    sb.urllib.request.urlopen = fake_urlopen
+
+    check(sb.set_icon("xoxe.xoxp-1", "A0BIGMAC") == "", "a successful upload reports nothing")
+    check(posted["url"].endswith("apps.icon.set"), "via apps.icon.set")
+    check(posted["auth"] == "Bearer xoxe.xoxp-1", "authenticated with the app-configuration token")
+    check("multipart/form-data" in (posted["ctype"] or ""), "as multipart, which is what it wants")
+    check(b'name="app_id"' in posted["body"] and b"A0BIGMAC" in posted["body"], "carrying the app id")
+    check(b'name="file"' in posted["body"] and b"\x89PNG" in posted["body"], "and the PNG itself")
+
+    posted["reply"] = b'{"ok":false,"error":"invalid_icon_size"}'
+    check(sb.set_icon("xoxe.xoxp-1", "A0BIGMAC") == "invalid_icon_size",
+          "a refusal comes back as Slack's reason")
+    sb.urllib.request.urlopen = real_urlopen
+    check(sb.set_icon("xoxe.xoxp-1", "A0BIGMAC", "/nope/missing.png").startswith("[Errno"),
+          "and a missing file is reported, not raised — an undocumented endpoint must never be "
+          "the thing that ends a setup")
 
     # ---- the kennel holds a PACK, keyed by name ---------------------------------------------
     check(sb.load_kennel() == {}, "an empty kennel reads as empty, not as an error")
