@@ -231,6 +231,10 @@ def recent(n=10):
                     n_touch += 1
                     if any(k in name for k in ("edit", "write", "create")):
                         n_edit += 1
-        out.append({"id": f[:-5], "turns": turns, "title": title[:72],
+        # `cwd` is where the run happened, and it is the only DURABLE record of where this user keeps
+        # code: the web server is spawned without a cwd of its own, so on a shortcut launch it
+        # inherits whatever Explorer hands it, and the in-memory run list is empty at startup. The
+        # star-map's project discovery seeds from these.
+        out.append({"id": f[:-5], "turns": turns, "title": title[:72], "cwd": s.get("cwd") or "",
                     "last": (s.get("last_answer") or "")[:60], "edits": n_edit, "touches": n_touch})
     return out

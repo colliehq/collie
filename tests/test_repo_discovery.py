@@ -79,6 +79,15 @@ def main():
     check(any(r["root"] == outside for r in got),
           "a seed anywhere inside a repo resolves to the repo root")
 
+    # The seeds have to SURVIVE a restart. The web server is spawned with no cwd of its own, so a
+    # shortcut launch lands it somewhere arbitrary and the in-memory run list is empty — leaving the
+    # saved sessions as the only record of where this user keeps code. If recent() drops the cwd
+    # field there is nothing to seed with and the map goes back to being empty.
+    from harness import sessions
+    rec = sessions.recent(5)
+    check(all(isinstance(s, dict) and "cwd" in s for s in rec) if rec else True,
+          "sessions.recent() carries cwd — the only seed that outlives a restart")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "repo discovery: all green"))
     return 1 if fails else 0
 
