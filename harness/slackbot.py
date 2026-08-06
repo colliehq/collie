@@ -60,6 +60,37 @@ AUTONOMY = {
     "main": "works and pushes to main",
 }
 
+# What each autonomy BOUNDS, as opposed to what it announces. Until this existed the setting was
+# a sentence in the greeting and nothing else: `ident["autonomy"]` appeared once, in the hello
+# message, while the run was spawned with no --mode at all and took the gate's default. A dog
+# introduced to a channel as "propose — writes nothing" could write anything, and the one promise
+# the greeting makes that matters was the one nothing kept.
+#
+# The gate has a single axis — may this run change things — so propose maps to plan (read-only)
+# and the other two to project. branch-vs-main is a git DESTINATION, which no gate mode can
+# express; that half travels in the identity text as an instruction to the model, and is called
+# an instruction below rather than dressed up as a wall.
+AUTONOMY_MODE = {"propose": "plan", "branch": "project", "main": "project"}
+
+
+def identity_text(ident: dict) -> str:
+    """Who the dog is, for the system prompt of the run it spawns.
+
+    A pack whose whole premise is that members have names a person can hold in their head, and
+    the member did not know its own: the name reached the Slack tag and stopped there.
+    """
+    a = ident.get("autonomy", "branch")
+    lines = [
+        "You are %s, a collie: a coding agent working in a repository on %s (%s). That is your "
+        "name — answer to it." % (ident.get("name", "collie"), ident.get("machine", "this machine"),
+                                  ident.get("os", "")),
+        "You are reached by @mention in a Slack channel, so answer briefly and say what you did.",
+        "Your autonomy is '%s': %s." % (a, AUTONOMY.get(a, "?")),
+    ]
+    if a == "branch":
+        lines.append("Do not push to main. Put the work on a branch and push that.")
+    return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # Identity
@@ -517,21 +548,34 @@ class Worker(threading.Thread):
         # the thread filled with "on it" and "queued" and looked for all the world like it was
         # working. Same shape as the constructor bug that stopped it starting at all: the failure
         # was downstream of everything anyone watches.
-        cmd = [sys.executable, "-m", "harness.cli", "run", item["text"]]
+        # --print: the answer, and nothing else on stdout. --mode: the autonomy this dog was
+        # ANNOUNCED with, finally bounding what the run may do rather than only what it said.
+        # COLLIE_IDENTITY: its name, which until now reached the Slack tag and no further.
+        cmd = [sys.executable, "-m", "harness.cli", "run", item["text"], "--print",
+               "--mode", AUTONOMY_MODE.get(self.dog.get("autonomy", ""), "project")]
         if self.provider:
             cmd += ["--provider", self.provider]
+        env = dict(os.environ, COLLIE_IDENTITY=identity_text(self.dog))
         try:
             self.current = subprocess.Popen(
-                cmd, cwd=self.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cmd, cwd=self.cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace")
-            out, _ = self.current.communicate()
+            out, err = self.current.communicate()
             rc = self.current.returncode
         except Exception as e:
-            out, rc = str(e), -1
+            out, err, rc = "", str(e), -1
         finally:
             self.current = None
 
-        out = (out or "").strip()
+        out, err = (out or "").strip(), (err or "").strip()
+        # stderr is diagnostics, not the answer. Merged into stdout (stderr=STDOUT) it went to the
+        # channel AS the reply: a huggingface_hub "unauthenticated requests" warning and the run's
+        # own stats line sat above the answer inside one code fence, and the warning is what the
+        # person then asked about. A failed run is the exception — there, stderr is the only thing
+        # that says why, and silence would be worse than noise.
+        out = out or ("(no output)" if rc == 0 else "")
+        if rc != 0:
+            out = (out + "\n" + err).strip() or "(no output)"
         # Slack rejects a message over 40k; keeping the tail keeps the conclusion,
         # which is the part anyone reads.
         if len(out) > 3500:

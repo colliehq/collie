@@ -86,6 +86,35 @@ def main():
     for name in ("channels", "allow", "install_autostart", "uninstall_autostart"):
         check(name in fwd, "...and cmd_slack forwards %s through" % name)
 
+    from harness import slackbot as sb
+
+    # --- the autonomy it ANNOUNCES has to be the autonomy it RUNS UNDER ------------------------
+    # It was announced and nothing more: ident["autonomy"] reached the greeting string and the
+    # spawn carried no --mode at all, so it took the gate's default. A dog introduced to a channel
+    # as "propose — writes nothing" could write anything, and the greeting's one load-bearing
+    # promise was the one thing nothing kept.
+    check(sb.AUTONOMY_MODE["propose"] == "plan",
+          "propose maps to the one gate mode that is actually read-only")
+    check(set(sb.AUTONOMY) == set(sb.AUTONOMY_MODE),
+          "every autonomy the greeting can name has a mode to run under")
+    check('"--mode"' in src and "AUTONOMY_MODE" in src,
+          "...and the spawn passes it, so the setting bounds the run and not just the hello")
+
+    # --- a dog that knows its own name ----------------------------------------------------------
+    who = sb.identity_text({"name": "Cornetto", "autonomy": "propose",
+                            "machine": "box", "os": "Windows"})
+    check("Cornetto" in who, "the identity carries the name the channel @-s")
+    check("propose" in who and "writes nothing" in who,
+          "...and what it may do, in the same words the channel was given")
+    check("COLLIE_IDENTITY" in src, "...and the spawn hands that to the run")
+    check("Do not push to main" in sb.identity_text({"name": "x", "autonomy": "branch"}),
+          "branch states the half no gate mode can hold — a destination, not a permission")
+
+    # --- the answer is the answer ---------------------------------------------------------------
+    check("stderr=subprocess.STDOUT" not in src,
+          "stderr is not merged into the reply — a huggingface warning is not an answer")
+    check('"--print"' in src, "...and the run is asked for its answer alone")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 

@@ -232,7 +232,14 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
         web_search = os.environ.get("COLLIE_WEBSEARCH", "") in ("1", "on", "true")
     registry = default_registry(code_search=code_search, web_search=web_search,
                                 exec_code=exec_code, delegate=delegate)
-    composer = ContextComposer(memory, registry, TokenBudgeter(prefix_ceiling))
+    # COLLIE_IDENTITY lets a PARENT process say who this run is, which a subprocess otherwise has
+    # no way to be told: `collie slack` names each dog and then had to shell out to `collie run`,
+    # so the name lived in the Slack message tag and nowhere the model could see it — asked "Hi
+    # Cornetto" the dog introduced itself as collie and corrected the person. Empty keeps the
+    # default identity exactly as it was (ContextComposer falls back on ""), so nothing changes
+    # for anyone who does not set it.
+    composer = ContextComposer(memory, registry, TokenBudgeter(prefix_ceiling),
+                               identity=os.environ.get("COLLIE_IDENTITY", ""))
     recorder = Recorder(runs_db)
     prov = make_provider(provider, model)
     h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project)
