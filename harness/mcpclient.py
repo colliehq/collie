@@ -259,12 +259,14 @@ def byo_client_help(name, label, url):
             "registration_endpoint), so collie has no client_id to send and cannot open the "
             "authorize page. Everything after that is the normal flow — their page, your login, "
             "one Allow.\n"
-            "  1. Create an app at the provider's developer console (%s) and copy its Client ID.\n"
+            "  1. Create an app at the provider's developer console (%s) and copy its Client ID —\n"
+            "     and its Client Secret, if the console shows one.\n"
             "  2. Register this exact redirect URL on it: http://localhost:%d/callback\n"
             "     (also add http://127.0.0.1:%d/callback if it will take both.)\n"
             "  3. Put both in ~/.collie/mcp.json:\n"
             '     "%s": {"url": "%s",\n'
             '                "client_id": "<your client id>",\n'
+            '                "client_secret": "<your client secret, if it has one>",\n'
             '                "redirect_port": %d, "redirect_host": "localhost"}\n'
             "  4. `collie mcp connect %s` — the browser opens on their authorize page.\n"
             "  The port is pinned because the URL you register has to match the one collie listens "
@@ -523,6 +525,22 @@ def _discover_oauth(server_url):
             "resource_scopes": scopes}
 
 
+def _client_creds(name, cfg=None):
+    """The (client_id, client_secret) a byo-client server was configured with.
+
+    A registered client is not always a public one. Slack's metadata says
+    `token_endpoint_auth_methods_supported: ["client_secret_post"]`, so a client_id alone gets
+    through the authorize page and its Allow button and then fails at the exchange — the one place
+    where the failure can no longer be read as "I have not signed in yet".
+
+    They live in mcp.json rather than the token store because they configure the client, not a
+    session: they survive `logout` and a refresh a year from now still needs them. mcp.json is
+    already written owner-only for exactly this class of secret.
+    """
+    cfg = cfg if cfg is not None else (_load_config().get(name) or {})
+    return cfg.get("client_id") or "", cfg.get("client_secret") or ""
+
+
 def _register_client(reg_endpoint, redirect_uri):
     """RFC 7591 dynamic client registration -> client_id (public/native client, no secret)."""
     return _http_json(reg_endpoint, data={
@@ -550,9 +568,15 @@ def _access_token(name):
     rt, te = tok.get("refresh_token"), tok.get("token_endpoint")
     if rt and te:
         try:
-            new = _http_json(te, form=True, data={
-                "grant_type": "refresh_token", "refresh_token": rt,
-                "client_id": tok.get("client_id", "")})
+            form = {"grant_type": "refresh_token", "refresh_token": rt,
+                    "client_id": tok.get("client_id", "")}
+            # A confidential client authenticates on refresh with the same secret it used to get
+            # the token. Leaving it out works until the first expiry and then logs the user out an
+            # hour later, which reads as the server going flaky rather than as a missing field.
+            _, secret = _client_creds(name)
+            if secret:
+                form["client_secret"] = secret
+            new = _http_json(te, form=True, data=form)
             new.setdefault("refresh_token", rt)
             _put_token(name, _stamp_token(new, tok.get("client_id"), te))
             return new.get("access_token")
@@ -623,7 +647,7 @@ def login(name, cfg=None, timeout=300, announce=None):
                 "it — pasting alone does nothing)." % (free, free, host, free)) if free else ""))
     port = srv.server_address[1]
     redirect_uri = "http://%s:%d/callback" % (host, port)
-    client_id = cfg.get("client_id")
+    client_id, client_secret = _client_creds(name, cfg)
     if not client_id and meta.get("registration_endpoint"):
         client_id = (_register_client(meta["registration_endpoint"], redirect_uri) or {}).get("client_id")
     if not client_id:
@@ -662,9 +686,20 @@ def login(name, cfg=None, timeout=300, announce=None):
                            "never opened" % srv.timeout)
     if holder.get("state") != state:
         raise RuntimeError("state mismatch — aborting (possible CSRF)")
-    tok = _http_json(meta["token_endpoint"], form=True, data={
-        "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
-        "client_id": client_id, "code_verifier": verifier, "resource": url})
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
+            "client_id": client_id, "code_verifier": verifier, "resource": url}
+    if client_secret:
+        form["client_secret"] = client_secret     # client_secret_post; PKCE still carries the proof
+    tok = _http_json(meta["token_endpoint"], form=True, data=form)
+    # Slack answers a refusal with HTTP 200 and {"ok": false, "error": …}, so without this a token
+    # dict holding no token is stored and the sign-in reads as successful — the complaint arrives
+    # much later, at the first tool call, as an unexplained 401.
+    if tok.get("ok") is False or (not tok.get("access_token") and tok.get("error")):
+        raise RuntimeError("the token endpoint refused the exchange: %s%s" % (
+            tok.get("error") or tok,
+            "" if client_secret else " (no client_secret was sent — some providers require one)"))
+    if not tok.get("access_token") and isinstance(tok.get("authed_user"), dict):
+        tok = dict(tok["authed_user"])            # Slack returns the user grant nested under this
     _put_token(name, _stamp_token(tok, client_id, meta["token_endpoint"]))
     return tok
 
