@@ -151,7 +151,11 @@ def app_manifest(name: str) -> dict:
             # Without a messages tab the bot has no App Home, and a DM to it goes nowhere.
             "app_home": {"messages_tab_enabled": True, "messages_tab_read_only_enabled": False},
         },
-        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write"]}},
+        # channels:join is the third and last one: it lets the dog walk into the public channels it
+        # was told to work in instead of standing outside until somebody remembers to `/invite` it.
+        # The permission it grants is the one the owner exercises anyway by typing that command —
+        # and it cannot reach a private channel, where an invitation is still the only way in.
+        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write", "channels:join"]}},
         "settings": {
             # Socket Mode means this dog dials OUT: no public address, no tunnel, and a laptop
             # that changes network just reconnects. It also makes Slack mint the app-level
@@ -344,6 +348,30 @@ def api(method: str, token: str, **params) -> dict:
                  "Authorization": "Bearer " + token})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def join(token: str, channel: str, name: str = "collie") -> str:
+    """Walk into a channel. "" on success, else the reason, in words.
+
+    Run on every start, not only the first: already being in the channel is a success, and the
+    alternative — a dog that is connected, listening and simply not a member — is indistinguishable
+    from a dog nobody has spoken to yet. That failure is silent on both ends, which is why it is
+    worth a call that usually does nothing.
+    """
+    try:
+        r = api("conversations.join", token, channel=channel)
+    except Exception as e:
+        return str(e)
+    if r.get("ok") or r.get("error") == "already_in_channel":
+        return ""
+    if r.get("error") == "missing_scope":
+        return ("this app predates `channels:join` — reinstall it from its Slack app page to pick "
+                "the scope up, or `/invite @%s` in the channel once" % name.lower())
+    if r.get("error") == "method_not_supported_for_channel_type":
+        return "private channel — nothing may let itself in; `/invite @%s` once" % name.lower()
+    if r.get("error") == "channel_not_found":
+        return "no such channel, or it is private and this app cannot see it"
+    return str(r.get("error"))
 
 
 def say(token: str, channel: str, text: str, thread: str = "", tag: str = "") -> None:
@@ -601,6 +629,17 @@ def main(argv=None) -> int:
     allowed = {u.strip() for u in args.allow.split(",") if u.strip()}
 
     ident = load_identity(args.name, args.autonomy)
+
+    # Into those channels, under its own steam. Not fatal when it fails: a private channel it was
+    # already invited to works perfectly, and a dog that refuses to start over a channel it can
+    # already hear would be trading a working pack for a tidy rule.
+    for ch in sorted(channels):
+        err = join(bot_token, ch, ident["name"])
+        if err:
+            print("[slack] %s: %s" % (ch, err), file=sys.stderr)
+        else:
+            print("[slack] in %s" % ch)
+
     q = TaskQueue(ident["name"])
     worker = Worker(q, ident, bot_token, args.cwd, args.provider)
     worker.start()

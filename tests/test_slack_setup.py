@@ -34,8 +34,9 @@ def main():
     check(m["display_information"]["name"] == "Rowan", "the app is named after the dog")
     check(m["features"]["bot_user"]["display_name"] == "rowan",
           "and its handle is the name, lowercased — that is what gets @-ed")
-    check(sorted(m["oauth_config"]["scopes"]["bot"]) == ["app_mentions:read", "chat:write"],
-          "hear an @ and answer it: the two scopes, no more")
+    check(sorted(m["oauth_config"]["scopes"]["bot"])
+          == ["app_mentions:read", "channels:join", "chat:write"],
+          "hear an @, answer it, and let itself into a public channel: those three, no more")
     check("user" not in m["oauth_config"]["scopes"],
           "NO user scopes — they switch on token rotation, which disables the Install button and "
           "forces an OAuth redirect that then refuses bot scopes on loopback")
@@ -44,6 +45,34 @@ def main():
           "and the one event it exists to receive")
     check(sb.app_manifest("Odd Name!")["features"]["bot_user"]["display_name"] == "oddname",
           "a handle Slack will accept, whatever the dog is called")
+
+    # ---- letting itself in -------------------------------------------------------------------
+    # The scope above is only worth having if start-up actually uses it, and if the ways it can
+    # fail come back as something to do rather than as Slack's method name.
+    calls = []
+
+    def fake_api(method, token, **params):
+        calls.append((method, params))
+        return fake_api.reply
+    real_api, sb.api = sb.api, fake_api
+
+    fake_api.reply = {"ok": True}
+    check(sb.join("xoxb-1", "C123", "Rowan") == "", "a clean join reports nothing to report")
+    check(calls[-1] == ("conversations.join", {"channel": "C123"}),
+          "by asking Slack for that channel and no other")
+
+    fake_api.reply = {"ok": False, "error": "already_in_channel"}
+    check(sb.join("xoxb-1", "C123", "Rowan") == "",
+          "already being in it is success — so every start can try, not just the first")
+
+    fake_api.reply = {"ok": False, "error": "missing_scope"}
+    check("reinstall" in sb.join("xoxb-1", "C123", "Rowan"),
+          "a dog provisioned before this scope existed is told to reinstall, not left guessing")
+
+    fake_api.reply = {"ok": False, "error": "method_not_supported_for_channel_type"}
+    check("/invite @rowan" in sb.join("xoxb-1", "C1", "Rowan"),
+          "a private channel says the one thing that does work there")
+    sb.api = real_api
 
     # ---- the kennel holds a PACK, keyed by name ---------------------------------------------
     check(sb.load_kennel() == {}, "an empty kennel reads as empty, not as an error")
