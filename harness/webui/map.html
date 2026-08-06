@@ -103,7 +103,16 @@
     if(SESS){
       fetch("/api/session_map?id="+encodeURIComponent(SESS)).then(J).then(function(m){
         populateSessions(SESS); populateRepos("");
-        if(!(m.files&&m.files.length)){ overlay("This run has no source operations that map to specific files (mostly bash / network / memory tools).<br>Pick a run that changed files, or switch projects above to browse the star-map."); return; }
+        if(!(m.files&&m.files.length)){
+          // Nothing to plot for this run — but an empty canvas reads as a broken page, so fall back
+          // to the project galaxy and say why. Explaining a black screen is not the same as not
+          // showing one.
+          overlay("This run has no source operations that map to specific files (mostly bash / network / memory tools).<br>Showing the project instead — pick another run above to see one.");
+          fetch("/api/tree").then(J).then(function(t){
+            if(t.files&&t.files.length) boot(t.files, [], 1, [{name:t.repo}], t.cwd||"");
+          }).catch(function(){});
+          return;
+        }
         boot(m.files, m.agents||[], m.dur||1, m.repos||[], "");
       }).catch(showErr);
     } else {
@@ -116,10 +125,17 @@
   }
   function populateSessions(cur){var sel=$("sessSel");if(!sel)return;fetch("/api/sessions?n=50").then(J).then(function(d){
     var recent=(d.sessions||[]);                                       // API order = most recent first
-    // default to the LAST RUN: a bare /map (no ?session, no explicit ?explore, no ?repo) jumps to the
-    // most recent run instead of an empty explore view. "— explore —" sets ?explore=1 so it sticks.
+    // Default to the last run that ACTUALLY TOUCHED CODE. Jumping to recent[0] unconditionally is
+    // how the map came to open black: most runs are bash / network / memory only, they map to no
+    // files, and the landing view was an empty canvas with a note telling you to pick something
+    // else. A run with no file work is not a star-map; when there is none, stay in explore and draw
+    // the project instead. "— explore —" sets ?explore=1 so the choice sticks.
     var q=new URLSearchParams(location.search);
-    if(!cur&&recent.length&&!q.has("explore")&&!q.has("repo")){location.replace("?session="+encodeURIComponent(recent[0].id||recent[0]));return;}
+    // Enough work to BE a map: an edit, or several files touched. A run that read one file plots a
+    // single dot on an empty field, which is indistinguishable from a broken page — the complaint
+    // that started this was a landing view exactly like that.
+    var withCode=recent.filter(function(s){return (s.edits||0)>0||(s.touches||0)>=3;});
+    if(!cur&&withCode.length&&!q.has("explore")&&!q.has("repo")){location.replace("?session="+encodeURIComponent(withCode[0].id||withCode[0]));return;}
     var ss=recent.slice();ss.sort(function(a,b){return (b.edits||0)-(a.edits||0)||(b.touches||0)-(a.touches||0);});   // runs that changed code first
     sel.innerHTML='<option value="">— explore (no run) —</option>'+ss.map(function(s){var id=s.id||s;var tag=s.edits?("✎"+s.edits+" "):(s.touches?("·"+s.touches+" "):"");var ti=tag+(s.title||s.last_answer||id||"").toString().replace(/</g,"&lt;").slice(0,40);return '<option value="'+id+'"'+(id===cur?" selected":"")+'>'+ti+'</option>';}).join("");
     sel.onchange=function(){location.search=this.value?("?session="+encodeURIComponent(this.value)):"?explore=1";};}).catch(function(){});}

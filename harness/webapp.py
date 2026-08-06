@@ -1632,8 +1632,16 @@ class Handler(BaseHTTPRequestHandler):
         if repo:
             home = os.path.realpath(os.path.expanduser("~"))
             cand = os.path.realpath(os.path.expanduser(repo))
-            # only a real git repo under home may be mapped (never an arbitrary path)
-            if (cand == home or cand.startswith(home + os.sep)) and codemap.git_root(cand) == cand:
+            # Never map an arbitrary path the request names — but "under the home directory" was the
+            # wrong way to say that. Projects legitimately live on C:\workspace or /srv, and once
+            # discovery started returning them this guard rejected every one, silently mapping cwd
+            # instead: the picker offered nine projects and eight of them showed a tenth. The rule
+            # that actually expresses the intent is that the server must have DISCOVERED the repo —
+            # that list comes from its own cwd, runs and sessions, never from the caller.
+            known = {os.path.realpath(r.get("root") or "")
+                     for r in (Handler._REPOS_CACHE.get("repos") or [])}
+            allowed = cand in known or cand == home or cand.startswith(home + os.sep)
+            if allowed and codemap.git_root(cand) == cand:
                 cwd = cand
         try:
             key = (cwd, os.path.getmtime(cwd))
@@ -1674,12 +1682,33 @@ class Handler(BaseHTTPRequestHandler):
                 scan = Handler._REPOS_SCAN
                 if scan.get("thread") is None:            # start the single scan exactly once
                     home = os.path.expanduser("~")
+                    # Seed with where work has ACTUALLY happened: this server's own directory and
+                    # every cwd a run was started in. Walking the home directory alone misses the
+                    # usual Windows layout completely — projects on C:\workspace, a home holding
+                    # nothing but AppData — which is how the star-map came to open on a list of
+                    # collie's own temp worktrees with the real repository nowhere in it.
+                    seeds = [os.getcwd()]
+                    try:
+                        for r in (Handler._runs_snapshot() or []):
+                            cwd = (r or {}).get("cwd")
+                            if cwd:
+                                seeds.append(cwd)
+                    except Exception:
+                        pass                              # no runs yet must not cost the scan
+                    try:
+                        from . import sessions as _sess
+                        for s in (_sess.recent(50) or []):
+                            cwd = (s or {}).get("cwd") if isinstance(s, dict) else None
+                            if cwd:
+                                seeds.append(cwd)
+                    except Exception:
+                        pass
                     box = {}
                     scan["box"] = box
 
-                    def _run(b=box):
+                    def _run(b=box, seeds=seeds):
                         try:
-                            b["repos"] = codemap.discover_repos(home)
+                            b["repos"] = codemap.discover_repos(home, extra=seeds)
                         except Exception:
                             b["repos"] = []
 

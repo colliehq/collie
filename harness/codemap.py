@@ -32,9 +32,18 @@ _SKIP = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"
 # walking one can BLOCK — cloud placeholders that never resolve, so os.walk stops returning at all.
 # One such directory hung /api/repos indefinitely, which on the phone is a screen that spins forever
 # and a server thread that never comes back. Photos and the cloud mirrors are the same shape.
+#
+# The Windows half was missing, and it mattered more than the macOS half: `AppData` is where the
+# per-user system store lives AND where %TEMP% is — inside the home directory, unlike /var/folders
+# on macOS. So every throwaway git repo a test or a `collie worktree` had ever made was discovered
+# as one of the user's "projects", and the star-map opened onto a list of `collie_wt_test_*`
+# temp directories with nothing to draw. `AppData` is to Windows what `Library` is to macOS.
 _HOME_SKIP = {"Library", "Applications", "Music", "Movies", "Pictures",
               "Applications (Parallels)", "Creative Cloud Files", "Dropbox",
-              "Google Drive", "OneDrive", "iCloud Drive", "Public"}
+              "Google Drive", "OneDrive", "iCloud Drive", "Public",
+              "AppData", "Application Data", "Local Settings", "NetHood", "PrintHood",
+              "Recent", "SendTo", "Templates", "Searches", "Saved Games", "Contacts",
+              "Links", "Favorites", "3D Objects"}
 _EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".html", ".css", ".md", ".toml")
 MAX_FILES = 600            # a request must stay snappy; bigger repos are sampled by size
 _DEF_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?(?:function|def|class|func|fn)\s+([A-Za-z_$][\w$]*)")
@@ -162,13 +171,73 @@ def git_root(path: str) -> str | None:
         d = parent
 
 
-def discover_repos(home: str, max_depth: int = 4, limit: int = 60) -> list[dict]:
+def _temp_roots() -> list[str]:
+    """Directories that hold throwaway repos. A temp worktree is not a project, and collie makes
+    them itself — `worktree.prepare` mkdtemps one per isolated run — so without this the map fills
+    up with the agent's own scratch space."""
+    import tempfile
+    roots = {tempfile.gettempdir()}
+    for var in ("TEMP", "TMP", "TMPDIR"):
+        v = os.environ.get(var)
+        if v:
+            roots.add(v)
+    return [os.path.abspath(r).rstrip(os.sep).lower() for r in roots if r]
+
+
+def discover_repos(home: str, max_depth: int = 4, limit: int = 60,
+                   extra: list | None = None) -> list[dict]:
     """Git repos under `home` (bounded depth/count) — one galaxy per project. Returns
-    [{root, name}], repos not descended into (no nested-submodule noise)."""
+    [{root, name}], repos not descended into (no nested-submodule noise).
+
+    `extra` seeds the list with repos found some other way — the server's own cwd and the
+    directories runs have actually happened in. Walking the home directory alone misses the common
+    Windows layout entirely, where projects live on `C:\\workspace` or `D:\\code` and the home
+    directory holds nothing but AppData.
+    """
     home = os.path.abspath(home)
     base = home.count(os.sep)
     out, names = [], set()
+    # A temp root that CONTAINS the directory we were asked to walk is not a reason to walk nothing:
+    # pointing the scan somewhere is an instruction, and refusing it would be the tool overruling
+    # its caller. (It is also how the test builds a throwaway home.) Only temp dirs encountered
+    # inside the walk are pruned.
+    home_low = home.lower()
+    temps = [t for t in _temp_roots()
+             if not (home_low == t or home_low.startswith(t + os.sep))]
+    seeded = []
+    for cand in (extra or []):
+        root = git_root(cand) if cand else None
+        if root and os.path.basename(root) not in names:
+            out.append({"root": root, "name": os.path.basename(root)})
+            names.add(os.path.basename(root))
+            seeded.append(root)
+    # A seeded repo tells us where this user KEEPS code, and people keep it together: one project
+    # under C:\workspace means the rest of C:\workspace is projects too. So glance one level at each
+    # seed's parent — otherwise the map shows the single repo the server happened to start in and
+    # none of its siblings. Only one level, and never a drive/filesystem root (the parent of
+    # C:\myrepo is C:\, where a scan would enumerate Windows and Program Files).
+    for parent in dict.fromkeys(os.path.dirname(r) for r in seeded):
+        if not parent or parent == os.path.dirname(parent) or parent == home:
+            continue
+        low = parent.lower()
+        if any(low == t or low.startswith(t + os.sep) for t in temps):
+            continue
+        try:
+            kids = os.listdir(parent)
+        except OSError:
+            continue
+        for d in sorted(kids):
+            if d in _SKIP or d.startswith(".") or len(out) >= limit:
+                continue
+            p = os.path.join(parent, d)
+            if d not in names and os.path.exists(os.path.join(p, ".git")):
+                out.append({"root": p, "name": d})
+                names.add(d)
     for dp, dn, _fn in os.walk(home):
+        low = dp.lower()
+        if any(low == t or low.startswith(t + os.sep) for t in temps):
+            dn[:] = []
+            continue
         dn[:] = [d for d in dn if d not in _SKIP and not d.startswith(".")]
         if dp == home:
             # ~/Library is macOS's per-user system store: ~86% of the directories under a

@@ -69,7 +69,7 @@ def main():
 
     forever = threading.Event()
 
-    def never_returns(_home):
+    def never_returns(_home, **_kw):               # **_kw: the caller seeds the scan (extra=...)
         forever.wait()                            # exactly as unresponsive as a stalled mount
         return []
 
