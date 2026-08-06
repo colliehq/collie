@@ -32,8 +32,9 @@ def main():
     # ---- the manifest: exactly what a dog needs, and nothing that costs it the install button ----
     m = sb.app_manifest("Rowan")
     check(m["display_information"]["name"] == "Rowan", "the app is named after the dog")
-    check(m["features"]["bot_user"]["display_name"] == "rowan",
-          "and its handle is the name, lowercased — that is what gets @-ed")
+    check(m["features"]["bot_user"]["display_name"] == "Rowan",
+          "and the displayed name keeps its capital — Slack lowercases the @handle itself, so "
+          "sending it pre-lowercased only cost the one place the name is shown")
     check(sorted(m["oauth_config"]["scopes"]["bot"])
           == ["app_mentions:read", "channels:join", "chat:write"],
           "hear an @, answer it, and let itself into a public channel: those three, no more")
@@ -43,8 +44,8 @@ def main():
     check(m["settings"]["socket_mode_enabled"] is True, "Socket Mode, so a laptop exposes nothing")
     check(m["settings"]["event_subscriptions"]["bot_events"] == ["app_mention"],
           "and the one event it exists to receive")
-    check(sb.app_manifest("Odd Name!")["features"]["bot_user"]["display_name"] == "oddname",
-          "a handle Slack will accept, whatever the dog is called")
+    check(sb.app_manifest("Odd Name!")["features"]["bot_user"]["display_name"] == "OddName",
+          "a name Slack will accept whatever the dog is called — the filter stays, the case goes")
 
     # ---- letting itself in -------------------------------------------------------------------
     # The scope above is only worth having if start-up actually uses it, and if the ways it can

@@ -140,7 +140,13 @@ def fingerprint() -> str:
 
 def app_manifest(name: str) -> dict:
     """The whole app for one dog: it hears an @, it answers, nothing else."""
-    handle = re.sub(r"[^a-z0-9_-]+", "", name.lower()) or "collie"
+    # Keep the capital. Slack lowercases the @handle ITSELF — the bot user came back from
+    # auth.test as `cornetto` whether or not we sent it that way — so pre-lowercasing here bought
+    # nothing and spent the one place the name is shown with its capital. display_name is the
+    # DISPLAYED name, not the handle; verified against the live endpoint (apps.manifest.update
+    # accepted "Cornetto", stored "Cornetto", permissions_updated=false). The character filter
+    # stays: a name like "Odd Name!" still has to arrive as something Slack will accept.
+    handle = re.sub(r"[^A-Za-z0-9_.-]+", "", name) or "collie"
     return {
         "display_information": {
             "name": name,
