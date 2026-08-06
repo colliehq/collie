@@ -297,6 +297,35 @@ def create_app(config_token: str, manifest: dict) -> dict:
     return r
 
 
+def export_app(config_token: str, app_id: str) -> dict:
+    """apps.manifest.export — what Slack holds for this app right now."""
+    r = api("apps.manifest.export", config_token, app_id=app_id)
+    if not r.get("ok"):
+        raise RuntimeError("apps.manifest.export failed: %s" % (r.get("error") or r.get("errors")))
+    return r.get("manifest") or {}
+
+
+def merge_manifest(live: dict, ours: dict) -> dict:
+    """Ours wins where we declare something; anything else the app carries survives.
+
+    apps.manifest.update REPLACES — it is not a patch — so pushing our manifest at an app that
+    already exists deletes every field we do not mention. Measured on two dogs made by older
+    versions: a wholesale push would have dropped four keys Slack echoes back (home_tab_enabled,
+    pkce_enabled, is_mcp_enabled, token_rotation_enabled — all false, so all harmless) and would
+    ALSO have turned off interactivity, which was on for reasons this file has no idea about.
+
+    Updating a scope is not a licence to reset everything else, so the rule is: converge what
+    collie declares, and leave alone what it has no opinion on.
+    """
+    out = dict(live)
+    for k, v in (ours or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_manifest(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def update_app(config_token: str, app_id: str, manifest: dict) -> dict:
     """apps.manifest.update — the same whole-app call, aimed at one that already exists.
 
@@ -852,12 +881,31 @@ def _refresh(name: str, entry: dict, config_token: str) -> int:
     """
     app_id = entry.get("app_id", "")
     print("bringing %s up to the current manifest (app %s)…" % (name, app_id))
+    want = app_manifest(name)
+    # A NARROW patch, not the whole manifest. Two things force that. apps.manifest.update replaces
+    # rather than patches, so everything we do not mention is deleted — and our manifest also states
+    # creation-time defaults (interactivity off, no app-home tab) which are right for a NEW app and
+    # are not ours to reimpose on one that has been running: both older dogs measured here had
+    # interactivity ON, for reasons this file does not know. So converge the four things collie
+    # actually needs to work — who it is, what it may do, and the two settings that make an @ arrive
+    # — and leave every other switch exactly as the app has it.
+    patch = {
+        "display_information": {"name": want["display_information"]["name"]},
+        "features": {"bot_user": {"display_name": want["features"]["bot_user"]["display_name"]}},
+        "oauth_config": {"scopes": {"bot": want["oauth_config"]["scopes"]["bot"]}},
+        "settings": {"socket_mode_enabled": want["settings"]["socket_mode_enabled"],
+                     "event_subscriptions": want["settings"]["event_subscriptions"]},
+    }
     try:
-        res = update_app(config_token, app_id, app_manifest(name))
+        live = export_app(config_token, app_id)
+        before = sorted((live.get("oauth_config") or {}).get("scopes", {}).get("bot") or [])
+        res = update_app(config_token, app_id, merge_manifest(live, patch))
     except Exception as e:
         print("  %s" % e, file=sys.stderr)
         return 1
-    print("  manifest updated")
+    after = sorted(patch["oauth_config"]["scopes"]["bot"])
+    gained = [s for s in after if s not in before]
+    print("  manifest updated%s" % ("  (+%s)" % ", ".join(gained) if gained else ""))
 
     face = ""
     try:

@@ -162,9 +162,23 @@ def main():
     # whole purpose is to remove it, and there is never only one such dog. Given the credential that
     # can, `--config-token` on a finished dog means "make it current".
     seen = []
+    # A live app carrying a switch collie has no opinion about, plus one it does.
+    live_manifest = {
+        "display_information": {"name": "rowan", "description": "hand-edited"},
+        "features": {"bot_user": {"display_name": "rowan"},
+                     "app_home": {"home_tab_enabled": False}},
+        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write"]},
+                         "pkce_enabled": False},
+        "settings": {"socket_mode_enabled": True, "token_rotation_enabled": False,
+                     "interactivity": {"is_enabled": True},
+                     "event_subscriptions": {"bot_events": ["app_mention"]}},
+    }
 
     def fake_update(method, token, **params):
         seen.append((method, params.get("app_id")))
+        if method == "apps.manifest.export":
+            return {"ok": True, "manifest": live_manifest}
+        seen.append(("pushed", json.loads(params["manifest"])))
         return {"ok": True, "permissions_updated": True}
     real_api2, sb.api = sb.api, fake_update
     real_icon, sb.set_icon = sb.set_icon, lambda *a, **k: ""
@@ -179,6 +193,22 @@ def main():
           "exposes no API for it")
     check(sb.load_kennel()["Rowan"]["app_id"] == "A1",
           "...on the app it already had — an update is not a second app")
+
+    # apps.manifest.update REPLACES, so what is not pushed is deleted. An update that silently
+    # reset an app to creation defaults would be a worse bug than the staleness it cures.
+    pushed = next(v for k, v in seen if k == "pushed")
+    check(sorted(pushed["oauth_config"]["scopes"]["bot"])
+          == ["app_mentions:read", "channels:join", "channels:read", "chat:write", "users:read"],
+          "the scopes converge on today's manifest — that is the point of the exercise")
+    check(pushed["features"]["bot_user"]["display_name"] == "Rowan",
+          "...and so does the name, which is how the capital reaches a dog made before the fix")
+    check(pushed["settings"]["interactivity"]["is_enabled"] is True,
+          "but a switch collie never asked about is left ALONE — both older dogs measured here had "
+          "interactivity on, and an update is not a licence to reset what it did not come for")
+    check(pushed["display_information"].get("description") == "hand-edited"
+          and pushed["oauth_config"].get("pkce_enabled") is False
+          and pushed["settings"].get("token_rotation_enabled") is False,
+          "...as is every other field the live app carried and ours does not mention")
 
     # …but "provisioned" means BOTH tokens. The two pages hand them over one at a time, so a dog
     # holding only its xoxb- is the ordinary mid-setup state — and refusing it as finished made the
