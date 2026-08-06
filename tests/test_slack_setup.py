@@ -35,9 +35,16 @@ def main():
     check(m["features"]["bot_user"]["display_name"] == "Rowan",
           "and the displayed name keeps its capital — Slack lowercases the @handle itself, so "
           "sending it pre-lowercased only cost the one place the name is shown")
+    # The list is pinned, not bounded by a count: the rule is that a dog sees and does what a PERSON
+    # IN THAT CHANNEL can, so each entry has to earn itself against that sentence. channels:read and
+    # users:read are the member list and the name behind an id — without them a dog that is @-ed by
+    # a packmate has no way to answer it, because addressing anyone means writing a <@U…>.
     check(sorted(m["oauth_config"]["scopes"]["bot"])
-          == ["app_mentions:read", "channels:join", "chat:write"],
-          "hear an @, answer it, and let itself into a public channel: those three, no more")
+          == ["app_mentions:read", "channels:join", "channels:read", "chat:write", "users:read"],
+          "hear an @, answer it, walk into a public channel, and see who is in the room")
+    check("users:read.email" not in m["oauth_config"]["scopes"]["bot"],
+          "but NOT the email scope — the member list is not the personnel file, and a separate "
+          "scope is exactly where Slack draws that line too")
     check("user" not in m["oauth_config"]["scopes"],
           "NO user scopes — they switch on token rotation, which disables the Install button and "
           "forces an OAuth redirect that then refuses bot scopes on loopback")

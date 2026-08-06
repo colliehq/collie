@@ -183,6 +183,40 @@ def main():
           "stderr is not merged into the reply — a huggingface warning is not an answer")
     check('"--print"' in src, "...and the run is asked for its answer alone")
 
+    # --- a pack that can be ADDRESSED, not only heard ---------------------------------------------
+    # Hearing was half of it. Asked to greet the two other dogs in its channel, a dog answered that
+    # it could find no trace of them and asked what they were called — and each of three separate
+    # things would have been enough on its own to keep it from ever reaching them.
+    mates = [{"id": "U1", "name": "Rowan", "is_bot": True},
+             {"id": "U2", "name": "Daming", "is_bot": False},
+             {"id": "UME", "name": "Cornetto", "is_bot": True}]
+
+    line = sb.roster_line(mates, me="UME")
+    check("Rowan <@U1>" in line and "Daming <@U2>" in line,
+          "the roster names the collies and the people, each with the token that reaches them")
+    check("Cornetto" not in line, "...and does not introduce the dog to itself")
+    check(sb.roster_line([{"id": "UME", "name": "C", "is_bot": True}], me="UME") == "",
+          "a dog alone in a channel hears about nobody, rather than about an empty list")
+
+    check(sb.keep_known_mentions("hi <@U1> and <@U9>", mates) == "hi <@U1> and ",
+          "an answer may ping whoever is in the channel, and nobody else")
+    check(sb.keep_known_mentions("hi <@U1|rowan>", mates) == "hi <@U1|rowan>",
+          "...including the labelled form, which the ask-side regex does not even match")
+    check(sb.keep_known_mentions("hi <@U1>", []) == "hi ",
+          "...and an empty roster addresses no one: a lookup that failed fails safe")
+
+    # Scoped to the ANSWER path on purpose: `queue` still fences its listing, and should — that one
+    # is a lined-up table nobody needs to @ anybody from.
+    # _run_one is the LAST method on Worker, so splitting on the next "    def " runs off the end of
+    # the class and swallows the rest of the module — `self.q.finish` is where it really stops.
+    answer_path = src.split("def _run_one")[1].split("self.q.finish(")[0]
+    check('```\\n' not in answer_path,
+          "the answer goes out as ordinary text — Slack renders NO mention inside a code fence, so "
+          "a fenced answer could never reach a packmate however correctly it was addressed")
+    check("re.escape(my_user)" in src,
+          "only the dog's OWN mention is stripped from an ask; everyone else's is the addressing "
+          "information, and deleting it deleted the only thing that can reach them")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 

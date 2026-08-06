@@ -73,22 +73,30 @@ AUTONOMY = {
 AUTONOMY_MODE = {"propose": "plan", "branch": "project", "main": "project"}
 
 
-def identity_text(ident: dict) -> str:
-    """Who the dog is, for the system prompt of the run it spawns.
+def identity_text(ident: dict, peers: str = "") -> str:
+    """Who the dog is, and who else is in the room, for the system prompt of the run it spawns.
 
     A pack whose whole premise is that members have names a person can hold in their head, and
     the member did not know its own: the name reached the Slack tag and stopped there.
+
+    The name is stated as a NAME and the breed separately, because the first version said "You are
+    Cornetto, a collie" and the dog, asked in Chinese to greet the others, introduced itself as
+    "collie" — it read the apposition as the answer to "what are you called". Both facts are still
+    here; only the sentence that let them be confused is gone.
     """
     a = ident.get("autonomy", "branch")
     lines = [
-        "You are %s, a collie: a coding agent working in a repository on %s (%s). That is your "
-        "name — answer to it." % (ident.get("name", "collie"), ident.get("machine", "this machine"),
-                                  ident.get("os", "")),
+        "Your name is %s. Introduce yourself by that name — 'collie' is what you are (a coding "
+        "agent), not what you are called." % ident.get("name", "collie"),
+        "You work in a repository on %s (%s)." % (ident.get("machine", "this machine"),
+                                                  ident.get("os", "")),
         "You are reached by @mention in a Slack channel, so answer briefly and say what you did.",
         "Your autonomy is '%s': %s." % (a, AUTONOMY.get(a, "?")),
     ]
     if a == "branch":
         lines.append("Do not push to main. Put the work on a branch and push that.")
+    if peers:
+        lines.append(peers)
     return "\n".join(lines)
 
 
@@ -189,11 +197,20 @@ def app_manifest(name: str) -> dict:
             # Without a messages tab the bot has no App Home, and a DM to it goes nowhere.
             "app_home": {"messages_tab_enabled": True, "messages_tab_read_only_enabled": False},
         },
-        # channels:join is the third and last one: it lets the dog walk into the public channels it
-        # was told to work in instead of standing outside until somebody remembers to `/invite` it.
-        # The permission it grants is the one the owner exercises anyway by typing that command —
-        # and it cannot reach a private channel, where an invitation is still the only way in.
-        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write", "channels:join"]}},
+        # channels:join lets the dog walk into the public channels it was told to work in instead of
+        # standing outside until somebody remembers to `/invite` it. The permission it grants is the
+        # one the owner exercises anyway by typing that command — and it cannot reach a private
+        # channel, where an invitation is still the only way in.
+        #
+        # channels:read + users:read are the pack's eyes, and the rule they follow is: a dog sees
+        # what a PERSON IN THAT CHANNEL sees, and nothing else. A member can open the member list
+        # and can look a name up in the directory; without these two a dog could be @-ed by another
+        # dog and have no way to answer it, because addressing anyone in Slack means knowing a
+        # <@U…> id and neither the id nor the name was reachable. Note what is NOT here:
+        # users:read.email is a SEPARATE scope and is not requested, so what reaches the model is
+        # the display name and whether the member is a bot — the member list, not the personnel file.
+        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write", "channels:join",
+                                            "channels:read", "users:read"]}},
         "settings": {
             # Socket Mode means this dog dials OUT: no public address, no tunnel, and a laptop
             # that changes network just reconnects. It also makes Slack mint the app-level
@@ -450,6 +467,99 @@ def join(token: str, channel: str, name: str = "collie") -> str:
     return str(r.get("error"))
 
 
+# Who else is in the room. The rule is one sentence: a dog sees what a PERSON IN THAT CHANNEL sees.
+#
+# It is needed because addressing anyone in Slack means writing a <@U…> id, and a dog had no way to
+# learn one. Asked to greet the two other dogs in its channel it answered "there is only one collie
+# here, tell me what they are called" — which was accurate. The kennel could not help: it is keyed
+# by name, holds no ids, and lives on ONE machine, while the pack is spread across several. Slack is
+# the thing all of them share, so Slack is where the roster comes from.
+_ROSTER_TTL = 120.0                 # seconds; a member list changes on human timescales
+_roster_cache: dict = {}            # channel -> (fetched_at, [member, …])
+_roster_warned = False              # the missing-scope note is worth saying once, not every ask
+
+
+def roster(token: str, channel: str, now: float = 0.0) -> list:
+    """[{id, name, is_bot}] for one channel, newest-first-effort and cached.
+
+    Never raises and never blocks a run: a roster that cannot be fetched comes back empty, and an
+    empty roster costs the dog the ability to address anyone — not the ability to answer. An app
+    provisioned before these scopes existed returns missing_scope here, which is exactly that case.
+    """
+    now = now or time.time()
+    hit = _roster_cache.get(channel)
+    if hit and (now - hit[0]) < _ROSTER_TTL:
+        return hit[1]
+    out = []
+    try:
+        ids, cursor = [], ""
+        for _ in range(10):                       # bounded: a channel is not an unbounded page walk
+            r = api("conversations.members", token, channel=channel, limit=200, cursor=cursor)
+            if not r.get("ok"):
+                # Say it ONCE, and say what to do. A dog provisioned before these scopes existed
+                # lands here on every ask, and an empty roster is invisible from the channel: it
+                # looks like a dog that chose not to answer anyone. Silence is how every other bug
+                # in this file stayed alive.
+                global _roster_warned
+                if r.get("error") == "missing_scope" and not _roster_warned:
+                    _roster_warned = True
+                    print("[slack] no roster: this app predates `channels:read`/`users:read` — "
+                          "reinstall it from its Slack app page to pick them up. It can still "
+                          "answer; it cannot address anyone.", file=sys.stderr)
+                return []
+            ids += r.get("members") or []
+            cursor = ((r.get("response_metadata") or {}).get("next_cursor") or "").strip()
+            if not cursor:
+                break
+        for uid in ids:
+            u = api("users.info", token, user=uid)
+            if not u.get("ok"):
+                continue
+            m = u.get("user") or {}
+            p = m.get("profile") or {}
+            nm = (p.get("display_name") or p.get("real_name") or m.get("name") or uid).strip()
+            out.append({"id": uid, "name": nm, "is_bot": bool(m.get("is_bot"))})
+    except Exception:
+        return []
+    _roster_cache[channel] = (now, out)
+    return out
+
+
+def roster_line(members: list, me: str = "") -> str:
+    """The roster as one line for the run's prompt, or "" when there is nobody to name."""
+    others = [m for m in members if m["id"] != me]
+    if not others:
+        return ""
+    dogs = ["%s <@%s>" % (m["name"], m["id"]) for m in others if m["is_bot"]]
+    folk = ["%s <@%s>" % (m["name"], m["id"]) for m in others if not m["is_bot"]]
+    parts = []
+    if dogs:
+        parts.append("collies: " + ", ".join(dogs))
+    if folk:
+        parts.append("people: " + ", ".join(folk))
+    return ("Also in this channel — %s. To address one, copy its <@…> token into your reply; that "
+            "is what reaches them." % "; ".join(parts))
+
+
+# Matches the plain <@U123> and the older labelled <@U123|name>. Deliberately wider than MENTION_RE:
+# that one strips the dog's own mention out of an ask, where missing a form is harmless, while this
+# one decides who a reply is allowed to ping, where missing a form is the whole failure.
+_MENTION_ANY = re.compile(r"<@([UW][A-Z0-9]+)(\|[^>]*)?>")
+
+
+def keep_known_mentions(text: str, members: list) -> str:
+    """Drop <@…> tokens from an outgoing answer that name nobody in this channel.
+
+    The answer is posted as ordinary text precisely so a mention in it reaches someone — which is
+    also why an id the model invented would reach someone. The bound is the ROSTER, not the wording
+    of the ask: a person in a channel may @ anyone in it, so a dog may too, and no further. With an
+    empty roster nothing is known to be addressable and every token goes, which is the safe way for
+    a failed lookup to fail.
+    """
+    ok = {m["id"] for m in members}
+    return _MENTION_ANY.sub(lambda mo: mo.group(0) if mo.group(1) in ok else "", text)
+
+
 def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
         broadcast: bool = False) -> str:
     """Reply in the thread the ask arrived in. Returns the message ts, so it can be edited.
@@ -514,6 +624,12 @@ class Worker(threading.Thread):
         # nothing ever reached Slack to show it was broken.
         self.q, self.dog, self.token = q, ident, bot_token
         self.cwd, self.provider = cwd, provider
+        # This dog's own Slack user id, so the roster it is handed does not introduce it to itself.
+        # auth.test needs no scope, so this works on an app provisioned before the roster existed.
+        try:
+            self.me = (api("auth.test", bot_token) or {}).get("user_id", "")
+        except Exception:
+            self.me = ""
         self.current: subprocess.Popen | None = None
         self._wake = threading.Event()
 
@@ -556,7 +672,12 @@ class Worker(threading.Thread):
                "--mode", AUTONOMY_MODE.get(self.dog.get("autonomy", ""), "project")]
         if self.provider:
             cmd += ["--provider", self.provider]
-        env = dict(os.environ, COLLIE_IDENTITY=identity_text(self.dog))
+        # Who else is in this channel, so the dog can answer the one who asked and hand work on to
+        # a packmate. Fetched per ask because the channel is per ask; cached, so this is one call
+        # in two minutes rather than one per task. An empty roster is survivable — see roster().
+        mates = roster(self.token, ch)
+        env = dict(os.environ,
+                   COLLIE_IDENTITY=identity_text(self.dog, roster_line(mates, self.me)))
         try:
             self.current = subprocess.Popen(
                 cmd, cwd=self.cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -594,7 +715,13 @@ class Worker(threading.Thread):
         # the outcome is addressed; "queued" and "on it" stay unmentioned, because being pinged
         # three times for one ask is how a colleague becomes a nuisance.
         back = "<@%s> " % item["user"] if item.get("user") else ""
-        say(self.token, ch, "%s%s\n```\n%s\n```" % (back, head, out or "(no output)"),
+        # ORDINARY TEXT, not a code fence. Slack does not render a mention inside ```, so an answer
+        # posted that way could never reach a packmate however correctly it was addressed — the
+        # asker's <@…> worked only because it sits outside the fence. The fence earned its place
+        # when the answer was raw CLI output with stats and warnings in it; --print made the answer
+        # prose, and prose in a fence loses its wrapping, its emphasis and its links as well.
+        # Whatever the model fences itself still renders as code.
+        say(self.token, ch, "%s%s\n%s" % (back, head, keep_known_mentions(out, mates) or "(no output)"),
             th, self.tag, broadcast=True)
         self.q.finish(item["id"])
 
@@ -1057,7 +1184,16 @@ def main(argv=None) -> int:
                 if event.get("type") != "app_mention":
                     continue
 
-                text = MENTION_RE.sub("", event.get("text", "")).strip()
+                # Strip only THIS dog's own mention. Everyone else's is the ask's ADDRESSING
+                # information, and removing it removed the only thing that can reach them:
+                # "@cornetto go ask @rowan about the branch" arrived as "go ask about the branch".
+                # So the remedy the dog itself proposes when it cannot find its packmates — tell me
+                # what they are called — did not work either, because the telling was deleted too.
+                # No my_user (auth.test failed) falls back to the old strip-everything: without an
+                # id of its own a dog cannot tell its mention from anyone else's.
+                _raw = event.get("text", "")
+                text = (re.sub(r"<@%s(\|[^>]*)?>" % re.escape(my_user), "", _raw) if my_user
+                        else MENTION_RE.sub("", _raw)).strip()
                 ch = event.get("channel", "")
                 th = event.get("thread_ts") or event.get("ts") or ""
                 user = event.get("user", "")
