@@ -30,40 +30,52 @@ LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "logo.s
 
 # The logo's fills, grouped by what they ARE. Two of these are the eyes — the symmetric pair at
 # translate(180,173) and (341,173) — which is why this needs no redrawing.
-ROLES = {
-    "eye":        ("#04030E",),
-    "catchlight": ("#ECEAEB", "#ECEBEC"),
-    "blaze":      ("#FCFCFB",),                          # the white stripe and ruff: never recoloured
-    "dark":       ("#0F0E19", "#020206", "#030206", "#2E2E3E",
-                   "#2E2E3D", "#1D1B27", "#070510", "#05040D"),
-    "mid":        ("#373746", "#5D5F6E", "#70717C", "#9998A2"),
-    "light":      ("#B2B1BB", "#C7C6CD", "#C5C4CB"),
-}
-_ROLE_OF = {c: r for r, cs in ROLES.items() for c in cs}
+# Paths by what they are, found by rendering the logo 23 times with one path flooded and looking.
+# It has the tonal structure of a real border collie, which is what makes recolouring possible:
+# a near-black mass of ears and skull, a mid-tone that frames the eyes, a pale ruff, a white blaze.
+EARS   = (1, 2, 7, 8, 11, 12)          # the dark mass — ears and the top of the head
+CHEEKS = (4, 5)                        # mid-tone, second-largest area, frames the eyes
+RUFF   = (0, 6, 9, 10, 16, 17, 22)     # the pale chest
+BLAZE  = (3,)                          # the white stripe and muzzle ring: never recoloured
+NOSE   = (13, 18, 19)
+EYES   = (14, 15)
+CATCH  = (20, 21)                      # the catchlights inside the eyes
 
-# Eye colours a border collie actually has, saturated hard on purpose: at 36px an eye is a few
-# pixels, and the muted versions of these read as "dark" like everything else around them.
-EYES = (
-    ("amber",  "#FFA31A"), ("ice",    "#7FD4F5"), ("moss",   "#7FD154"),
-    ("copper", "#FF6B2C"), ("gold",   "#FFD22E"), ("violet", "#B98CFF"),
-    ("blue",   "#4FA8FF"), ("rose",   "#FF7BA8"),
-)
+# ONE natural dark brown, for every dog. An earlier version varied the eye colour and saturated it
+# hard, on the evidence that at 36px the eye was the only thing that read. It read, all right: an
+# iris at lightness .59 on a face whose darks sit at .05 is a light bulb, and every dog looked
+# startled. An eye that varies is also an eye you look at, and the identity belongs to the coat.
+EYE = "#2B2118"
 
-# The plate behind the head. This is the only element with enough area to survive the member list,
-# so it does the work the coat cannot. Kept dark and low-chroma so a row of them still reads as
-# Slack chrome rather than a row of stickers.
-PLATES = (
-    ("ink",    "#171622"), ("pine",   "#132420"), ("wine",   "#241520"),
-    ("navy",   "#131C2C"), ("moor",   "#1E2016"), ("plum",   "#1F1526"),
-    ("clay",   "#261C15"), ("steel",  "#171D22"),
-)
-
-# Coat families. Kept because it reads on the profile card at 96px, and because a red collie beside
-# a blue one is simply nicer — but it is NOT load-bearing, so the range stays believable.
+# (name, hue, ear lightness, ear saturation, cheek lightness, cheek saturation, ruff warmth)
+#
+# The dark mass must genuinely CHANGE LIGHTNESS, which is the correction that made this work. The
+# first attempt preserved lightness exactly, so a hue rotation at lightness .05 was invisible and
+# the coat appeared not to read at small sizes at all — a property of the method, not of coats. A
+# red collie is red because its "black" areas are mid-brown.
 COATS = (
-    ("black", None, 1.00), ("blue", 215, 0.55), ("red", 18, 0.50), ("chocolate", 25, 0.42),
-    ("slate", 205, 0.30), ("sable", 35, 0.38), ("merle", 250, 0.30), ("gold", 42, 0.45),
+    ("black",     0.620, 0.075, 0.16, 0.20, 0.12, 0.00),
+    ("red",       0.045, 0.155, 0.44, 0.35, 0.38, 0.07),
+    ("chocolate", 0.075, 0.130, 0.40, 0.29, 0.32, 0.05),
+    ("blue",      0.600, 0.140, 0.24, 0.32, 0.20, 0.02),
+    ("sable",     0.095, 0.170, 0.36, 0.37, 0.30, 0.08),
+    ("lilac",     0.870, 0.150, 0.16, 0.32, 0.13, 0.03),
+    ("slate",     0.575, 0.115, 0.15, 0.27, 0.11, 0.01),
+    ("fawn",      0.110, 0.185, 0.30, 0.40, 0.24, 0.09),
 )
+
+# The plate is the largest flat area in the tile and the only thing that survives the member list at
+# 20px, where the head is a smudge. Its hue is an OFFSET FROM THE COAT rather than an independent
+# roll, because the two axes are not independent in practice: land the plate on the coat's own hue
+# and the dog disappears into its own background.
+PLATE_L, PLATE_S = 0.150, 0.42         # rich enough to be a colour, dark enough to stay Slack chrome
+# Evenly spaced around the wheel and all strictly inside one turn. An earlier table ran 0.10 to
+# 1.25 in steps of .05, and hue is taken mod 1 — so its last four offsets landed exactly on four it
+# already had, costing 17% of the range without any symptom except a few more lookalikes. Dividing
+# by 25 also means no offset is ever 0, so the plate never sits on the coat's own hue.
+PLATE_OFFSETS = tuple(round((i + 1) / 25.0, 4) for i in range(24))
+PLATE_NAMES = ("moss", "pine", "teal", "sea", "sky", "indigo", "violet", "plum",
+               "wine", "rose", "clay", "amber")
 
 
 def _hex2rgb(h):
@@ -75,44 +87,58 @@ def _rgb2hex(r, g, b):
     return "#%02X%02X%02X" % (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
 
 
-def _tint(hex_colour, hue_deg, sat_mul, dl=0.0):
-    """Push a colour toward a hue, KEEPING ITS LIGHTNESS.
-
-    Lightness carries the low-poly shading — the drawing reads as a face because each facet sits at
-    a particular brightness relative to its neighbours. Recolour in HLS, put L back, and a red
-    collie is the same drawing in another coat rather than a smear.
-    """
+def _lightness(hex_colour):
     r, g, b = (v / 255 for v in _hex2rgb(hex_colour))
-    h, l, s = colorsys.rgb_to_hls(r, g, b)
-    if hue_deg is not None:
-        h = hue_deg / 360.0
-        s = min(1.0, max(s, 0.10) * 3.0 * sat_mul)       # the source greys are nearly neutral
-    l = min(1.0, max(0.0, l + dl))
-    return _rgb2hex(*(round(v * 255) for v in colorsys.hls_to_rgb(h, l, s)))
+    return colorsys.rgb_to_hls(r, g, b)[1]
+
+
+def _hls(h, l, s):
+    return _rgb2hex(*(round(v * 255) for v in colorsys.hls_to_rgb(h % 1.0, l, s)))
 
 
 def traits(name: str) -> dict:
-    """The face of a name. Same name in, same face out — on any machine, forever."""
+    """The face of a name. Same name in, same face out — on any machine, forever.
+
+    Two axes, and only two: the coat of the coloured regions, and the plate behind them. 8 coats x
+    24 plate offsets is 192 faces, which is not the same as 192 dogs before a repeat — this is the
+    birthday problem, so two dogs in a kennel of sixteen may well look alike. That is accepted
+    rather than fixed: de-duplicating against the OTHER dogs on this machine would mean a dog's face
+    changed when it moved machine, and being the same dog everywhere is the entire point.
+    """
     d = hashlib.sha256(name.strip().lower().encode("utf-8")).digest()
-    eye, plate, coat = EYES[d[0] % 8], PLATES[d[1] % 8], COATS[d[2] % 8]
-    return {"name": name, "eye": eye[0], "eye_hex": eye[1],
-            "plate": plate[0], "plate_hex": plate[1],
-            "coat": coat[0], "_hue": coat[1], "_sat": coat[2],
-            "shade": (d[3] % 5 - 2) * 0.035}
+    coat = COATS[d[2] % len(COATS)]
+    off = PLATE_OFFSETS[d[1] % len(PLATE_OFFSETS)]
+    return {"name": name, "coat": coat[0], "eye_hex": EYE,
+            "plate": PLATE_NAMES[int(((coat[1] + off) % 1.0) * len(PLATE_NAMES))],
+            "plate_hex": _hls(coat[1] + off, PLATE_L, PLATE_S),
+            "_coat": coat}
 
 
 def svg(name: str, source: str = "") -> str:
     """The logo recoloured for one dog, on its plate. Geometry is never touched."""
     t = traits(name)
+    _, hue, ear_l, ear_s, cheek_l, cheek_s, warm = t["_coat"]
     src = source or open(LOGO, encoding="utf-8").read()
+    seen = [0]
 
     def swap(m):
-        role = _ROLE_OF.get(m.group(1).upper())
-        if role == "eye":
-            return 'fill="%s"' % t["eye_hex"]
-        if role in ("catchlight", "blaze", None):
+        i = seen[0]
+        seen[0] += 1
+        l0 = _lightness(m.group(1).upper())
+        if i in EYES:
+            return 'fill="%s"' % EYE
+        if i in CATCH or i in BLAZE:
             return m.group(0)                            # the white face is the face; leave it
-        return 'fill="%s"' % _tint(m.group(1).upper(), t["_hue"], t["_sat"], t["shade"])
+        if i in NOSE:
+            return 'fill="%s"' % _hls(hue, min(0.16, l0 + 0.04), 0.20)
+        if i in EARS:
+            # the source's own offset is carried through, so shading WITHIN the dark mass survives
+            return 'fill="%s"' % _hls(hue, max(0.03, ear_l + (l0 - 0.06) * 0.8), ear_s)
+        if i in CHEEKS:
+            return 'fill="%s"' % _hls(hue, cheek_l, cheek_s)
+        if i in RUFF:
+            return 'fill="%s"' % _hls(hue, l0, min(1.0, warm * 2.2))
+        return m.group(0)
 
     out = re.sub(r'fill="(#[0-9A-Fa-f]{6})"', swap, src)
     # The plate goes in as the first child so it sits behind everything, and outside the logo's own

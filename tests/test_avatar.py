@@ -66,10 +66,24 @@ def main():
           "the same name gives byte-identical PNGs — a face must survive a reinstall")
     check(avatar.traits("Rowan") != avatar.traits("Meg"), "different names differ")
 
-    seen = {(t["eye"], t["plate"], t["coat"], t["shade"])
-            for t in (avatar.traits(n) for n in KENNEL)}
-    check(len(seen) == len(KENNEL),
-          "all %d kennel names get distinct faces (%d/%d)" % (len(KENNEL), len(seen), len(KENNEL)))
+    # Two axes, 8 coats x 24 plate offsets. Distinctness is NOT guaranteed — that is the birthday
+    # problem, and de-duplicating against the other dogs on this machine would make a dog's face
+    # change when it moved machine. So this asserts the range is being used, not that it is lucky.
+    seen = {(t["coat"], t["plate_hex"]) for t in (avatar.traits(n) for n in KENNEL)}
+    check(len(seen) >= len(KENNEL) - 2,
+          "the kennel spreads across the range (%d distinct of %d names)" % (len(seen), len(KENNEL)))
+    # The declared range must be the REAL range. Hue is taken mod 1, so an offset table that runs
+    # past a full turn silently folds onto itself — which it did, costing 17% with no symptom.
+    want = len(avatar.COATS) * len(avatar.PLATE_OFFSETS)
+    wide = {(t["coat"], t["plate_hex"]) for t in
+            (avatar.traits("dog%d" % i) for i in range(20000))}
+    check(len(wide) == want,
+          "every coat x offset is a distinct face: %d of a declared %d" % (len(wide), want))
+
+    check(len({avatar.traits(n)["eye_hex"] for n in KENNEL}) == 1,
+          "every dog has the SAME natural dark eye — the coat carries the identity, not a bulb")
+    eye_l = sum(int(avatar.EYE[i:i + 2], 16) for i in (1, 3, 5)) / (3 * 255)
+    check(eye_l < 0.25, "and that eye is dark (mean %.2f) rather than a lamp" % eye_l)
 
     # --- the claim the design rests on: those two fills are the eyes -----------------------------
     src = open(avatar.LOGO, encoding="utf-8").read()
@@ -78,15 +92,20 @@ def main():
     check(marked.count('fill="%s"' % eye_hex) == 2,
           "exactly two fills become the eye colour — one eye each, nothing else recoloured with it")
 
-    # and it must be VISIBLE in the raster, not merely present in the markup
-    w, h, rows = png_pixels(avatar.png("Rowan", 128))
-    want = tuple(int(eye_hex[i:i + 2], 16) for i in (1, 3, 5))
+    # and those two fills must be WHERE THE EYES ARE. Proved with a colour that cannot be confused
+    # with anything else in the drawing: matching on the shipped eye colour would find the coat too,
+    # now that the eye is a natural brown sitting among browns — which it duly did, and passed.
+    marker = "#FF00FF"
+    probe = marked.replace('fill="%s"' % eye_hex, 'fill="%s"' % marker)
+    w, h, rows = png_pixels(avatar._png(
+        avatar._raster(avatar._polygons(probe), 128), 128))
+    want = (255, 0, 255)
 
     def close(p, q, tol=26):
         return all(abs(a - b) <= tol for a, b in zip(p, q))
 
     hits = [(x, y) for y in range(h) for x, px in enumerate(rows[y]) if close(px, want)]
-    check(len(hits) > 20, "the eye colour survives rasterising (%d px)" % len(hits))
+    check(len(hits) > 20, "the eye fills survive rasterising (%d px)" % len(hits))
     if hits:
         xs = [x for x, _ in hits]
         ys = [y for _, y in hits]
