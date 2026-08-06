@@ -119,21 +119,42 @@ def main():
           "a mention from another dog is no longer thrown away unread")
     check('peer == my_bot' in src and 'user == my_user' in src,
           "but a dog still never answers itself — the one loop needing no second party")
-    check("MENTION_RE" in src and 'say(' in src,
-          "replies are plain text: nothing in an answer re-triggers the dog that asked")
+    check('"<@%s> " % item["user"]' in src and "queued #" in src,
+          "the outcome is addressed to whoever asked; `queued` and `on it` are not, so one ask is "
+          "one ping and not three")
 
-    turns = {}
-    got = [sb.pack_gate(turns, "T1") for _ in range(sb.PACK_TURNS + 2)]
-    check(got == list(range(1, sb.PACK_TURNS + 3)), "dog-to-dog turns are counted per thread")
-    check(sum(1 for n in got if n <= sb.PACK_TURNS) == sb.PACK_TURNS,
-          "and %d of them pass before the thread is closed" % sb.PACK_TURNS)
-    check(sb.pack_gate(turns, "T2") == 1,
-          "a different thread starts fresh — the bound is on one conversation going round, not on "
-          "a pair of dogs ever speaking again")
+    # Being asked to @ another dog is the ordinary way work is handed on, so the bound cannot be
+    # "dogs may not mention dogs". It has to tell a chain that is getting somewhere from a pair
+    # bouncing — and what separates those is REPETITION, not volume.
+    st = {}
+    chain = [sb.pack_gate(st, "T1", p) for p in ("B1", "B2", "B3", "B4")]
+    check(chain == ["", "", "", ""],
+          "a delegation down four different dogs passes — every hop is new ground")
+
+    st = {}
+    laps = [sb.pack_gate(st, "T2", "B1") for _ in range(sb.PACK_LAPS + 1)]
+    check(laps[:sb.PACK_LAPS] == [""] * sb.PACK_LAPS,
+          "one dog may come back %d times — enough for an answer and a follow-up" % sb.PACK_LAPS)
+    check("loop" in laps[-1], "and the lap after that is refused, in words")
+    check(sb.pack_gate({}, "T3", "B1") == "",
+          "while a fresh thread starts clean — the bound is on one conversation, not on a pair of "
+          "dogs ever speaking again")
+
+    st = {}
+    hops = [sb.pack_gate(st, "T4", "B%d" % i) for i in range(sb.PACK_HOPS + 1)]
+    check(hops[-1] and "reaching" in hops[-1],
+          "a chain that never repeats an edge still stops at %d hops" % sb.PACK_HOPS)
+
     big = {}
     for i in range(600):
-        sb.pack_gate(big, "T%d" % i)
+        sb.pack_gate(big, "T%d" % i, "B1")
     check(len(big) <= 500, "and the tally cannot grow forever in a process that runs for weeks")
+
+    # The other half of delegating: an answer a dog cannot see is not an answer. A dog reads a
+    # channel only through its own mentions, so work handed back has to be addressed.
+    check('"<@%s> " % item["user"]' in src,
+          "an answer is addressed to the asker — for a dog that is the difference between an "
+          "answer and no answer, since it sees a channel only through its own mentions")
 
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
