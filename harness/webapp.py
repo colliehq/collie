@@ -1621,13 +1621,39 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._send_html(("missing %s" % name).encode(), 404, "text/plain; charset=utf-8")
 
+    @staticmethod
+    def _default_repo():
+        """The project to show when the request names none.
+
+        NOT simply the server's cwd. The web server is spawned without a cwd of its own, so from a
+        shortcut launch it inherits Explorer's — and the map dutifully drew C:\\Windows\\System32,
+        nebulae labelled DRIVERSTORE and SPOOL. When the cwd is not itself a project, use the one the
+        user most recently worked in, which the session records remember.
+        """
+        from . import codemap
+        cwd = os.getcwd()
+        if codemap.git_root(cwd) == cwd:
+            return cwd
+        try:
+            from . import sessions as _sess
+            for s in (_sess.recent(50) or []):
+                root = codemap.git_root((s or {}).get("cwd") or "") if isinstance(s, dict) else None
+                if root:
+                    return root
+        except Exception:
+            pass
+        for r in (Handler._REPOS_CACHE.get("repos") or []):
+            if r.get("root"):
+                return r["root"]
+        return cwd                                 # nothing better to offer; at least it is honest
+
     _TREE_CACHE: dict = {}
     def _serve_tree(self, qs=None):
         """GET /api/tree[?repo=ABS] -> a project's code galaxy (files with loc/defs/names/imports).
-        `repo` (must be a git repo under the user's home) picks any discovered project; default = the
-        server's cwd. Cached on the dir's mtime so repeated Map loads don't re-walk the tree."""
+        `repo` picks any project the server has discovered; default = the last project worked in.
+        Cached on the dir's mtime so repeated Map loads don't re-walk the tree."""
         from . import codemap
-        cwd = os.getcwd()
+        cwd = Handler._default_repo()
         repo = ((qs or {}).get("repo", [""])[0] or "").strip()
         if repo:
             home = os.path.realpath(os.path.expanduser("~"))
@@ -1721,7 +1747,10 @@ class Handler(BaseHTTPRequestHandler):
             if "repos" not in box:
                 return self._send_json({"cwd": os.getcwd(), "repos": [], "partial": True})
             Handler._REPOS_CACHE["repos"] = box["repos"]
-        self._send_json({"cwd": os.getcwd(), "repos": Handler._REPOS_CACHE["repos"]})
+        # `cwd` here is what the picker labels its default entry, so it must be the project /api/tree
+        # would actually serve — not os.getcwd(), which would label the default "System32" while the
+        # map drew something else.
+        self._send_json({"cwd": Handler._default_repo(), "repos": Handler._REPOS_CACHE["repos"]})
 
     def _serve_session_map(self, qs):
         """GET /api/session_map?id=SID -> the files THAT run touched, grouped by repo (nebulae), plus

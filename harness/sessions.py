@@ -222,15 +222,21 @@ def recent(n=10):
                     title = " ".join(c.split()); break
         # cheap edit/touch counts so the Map's run picker can flag (and sort) the runs that actually
         # changed code — the ones worth a diff — instead of burying them under chatty Q&A runs.
-        n_edit = n_touch = 0
+        # DISTINCT files, not tool calls. Counting calls made a run that read one file eleven times
+        # read as "·11" beside a run that changed eleven files, and the map's landing view believed
+        # it: it opened on a run whose whole footprint was two stars. What the picker promises is
+        # how much of the codebase the run is about, so that is what it has to count.
+        touched, edited = set(), set()
         for m in msgs:
             for tc in (m.get("tool_calls") or []):
                 name = (getattr(tc, "name", None) or (tc.get("name") if isinstance(tc, dict) else "") or "").lower()
                 args = getattr(tc, "args", None) or (tc.get("args") if isinstance(tc, dict) else {}) or {}
-                if args.get("path") or args.get("file_path") or args.get("file"):
-                    n_touch += 1
+                p = args.get("path") or args.get("file_path") or args.get("file")
+                if p:
+                    touched.add(str(p))
                     if any(k in name for k in ("edit", "write", "create")):
-                        n_edit += 1
+                        edited.add(str(p))
+        n_edit, n_touch = len(edited), len(touched)
         # `cwd` is where the run happened, and it is the only DURABLE record of where this user keeps
         # code: the web server is spawned without a cwd of its own, so on a shortcut launch it
         # inherits whatever Explorer hands it, and the in-memory run list is empty at startup. The

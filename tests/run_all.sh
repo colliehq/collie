@@ -155,6 +155,9 @@ if $PY tests/test_web_lan.py >/dev/null 2>&1; then echo "  web --lan OK"; else e
 echo "── which directories are a user's projects (star-map) ───"
 if $PY tests/test_repo_discovery.py >/dev/null 2>&1; then echo "  repo discovery OK"; else echo "  repo discovery FAIL"; rc=1; fi
 
+echo "── what the star-map shows when you just open it ────────"
+if $PY tests/test_map_landing.py >/dev/null 2>&1; then echo "  map landing OK"; else echo "  map landing FAIL"; rc=1; fi
+
 echo "── CLI surfaces (run/dashboard/repl/tui/acp/bridge, mock) ─"
 $PY tests/surfaces_test.py 2>&1 | grep -E "PASS|FAIL|SURFACES:"
 [ "${PIPESTATUS[0]}" = "0" ] || rc=1

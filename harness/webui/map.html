@@ -125,21 +125,16 @@
   }
   function populateSessions(cur){var sel=$("sessSel");if(!sel)return;fetch("/api/sessions?n=50").then(J).then(function(d){
     var recent=(d.sessions||[]);                                       // API order = most recent first
-    // Default to the last run that ACTUALLY TOUCHED CODE. Jumping to recent[0] unconditionally is
-    // how the map came to open black: most runs are bash / network / memory only, they map to no
-    // files, and the landing view was an empty canvas with a note telling you to pick something
-    // else. A run with no file work is not a star-map; when there is none, stay in explore and draw
-    // the project instead. "— explore —" sets ?explore=1 so the choice sticks.
-    var q=new URLSearchParams(location.search);
-    // Enough work to BE a map: an edit, or several files touched. A run that read one file plots a
-    // single dot on an empty field, which is indistinguishable from a broken page — the complaint
-    // that started this was a landing view exactly like that.
-    var withCode=recent.filter(function(s){return (s.edits||0)>0||(s.touches||0)>=3;});
-    if(!cur&&withCode.length&&!q.has("explore")&&!q.has("repo")){location.replace("?session="+encodeURIComponent(withCode[0].id||withCode[0]));return;}
+    // A bare /map lands on the PROJECT, not on the last run. It used to redirect to recent[0]
+    // "instead of an empty explore view" — but explore was empty because project discovery was
+    // broken, and that is fixed; explore now draws the whole codebase. The redirect was left
+    // pointing at the genuinely sparse view: a run constellation shows one run's footprint, which
+    // is a handful of stars on a black field even when the run went well. That is the black screen
+    // as reported. Runs stay one click away in the picker, and ?session= deep links are untouched.
     var ss=recent.slice();ss.sort(function(a,b){return (b.edits||0)-(a.edits||0)||(b.touches||0)-(a.touches||0);});   // runs that changed code first
     sel.innerHTML='<option value="">— explore (no run) —</option>'+ss.map(function(s){var id=s.id||s;var tag=s.edits?("✎"+s.edits+" "):(s.touches?("·"+s.touches+" "):"");var ti=tag+(s.title||s.last_answer||id||"").toString().replace(/</g,"&lt;").slice(0,40);return '<option value="'+id+'"'+(id===cur?" selected":"")+'>'+ti+'</option>';}).join("");
     sel.onchange=function(){location.search=this.value?("?session="+encodeURIComponent(this.value)):"?explore=1";};}).catch(function(){});}
-  function populateRepos(cur){var sel=$("repoSel");if(!sel)return;fetch("/api/repos").then(J).then(function(d){var here=d.cwd||"";sel.innerHTML='<option value="">◎ '+(here.split("/").pop()||"this repo")+'</option>'+((d.repos||[]).map(function(r){var s=(r.root===cur||r.name===cur)?" selected":"";return '<option value="'+r.root+'"'+s+'>'+r.name+'</option>';}).join(""));sel.onchange=function(){location.search=this.value?("?repo="+encodeURIComponent(this.value)):"";};}).catch(function(){});}
+  function populateRepos(cur){var sel=$("repoSel");if(!sel)return;fetch("/api/repos").then(J).then(function(d){var here=d.cwd||"";sel.innerHTML='<option value="">◎ '+(here.split(/[\/\\]/).pop()||"this repo")+'</option>'+((d.repos||[]).map(function(r){var s=(r.root===cur||r.name===cur)?" selected":"";return '<option value="'+r.root+'"'+s+'>'+r.name+'</option>';}).join(""));sel.onchange=function(){location.search=this.value?("?repo="+encodeURIComponent(this.value)):"";};}).catch(function(){});}
   go();
   function boot(TREE,AGENTS,DUR,REPOS,CWD){
   function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
