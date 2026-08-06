@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.20.31 — a collie that can be @-ed, and one that has an address of its own
+
+- **`collie slack` had never started.** `Worker` subclasses `threading.Thread` and its constructor
+  assigned `self.ident`, which is a read-only property holding the thread id — AttributeError,
+  raised before the socket was opened and before anything reached Slack. Shipped in v0.20.30 and
+  dead on arrival, invisible from the outside because a channel with no collie in it looks exactly
+  like a collie with nothing to say. Verified afterwards by a real dog reporting into a real
+  channel.
+
+- **`collie slack setup`: one Slack app per dog, created from a manifest.** Slack binds an @handle
+  to an app, so a pack whose members can be addressed separately needs an app each — and then
+  routing is Slack's problem rather than a name-matching heuristic. `apps.manifest.create` makes
+  that one command; run it again for the next dog. The kennel is keyed by name, not by machine, so
+  one laptop can run several dogs on different repositories. The manifest is bot-only because that
+  is the only shape that installs without a public https endpoint: user scopes switch on token
+  rotation, a rotating app cannot use the Install button, and Slack then refuses bot scopes on a
+  loopback redirect. Two clicks are left, and they are the two Slack exposes no API for.
+
+- **A dog can have an address, and wait for a letter.** `collie mail claim <handle> <email>` once,
+  then `collie mail add <dog>` gives `rowan.daming@collie.run`. The point is `collie mail wait
+  --subject verify`: a signup that ends in "check your email" stops being a handover to a human.
+  Mail is sealed to the dog's public key the moment it arrives, so the hosted relay stores
+  ciphertext it has no key for — and the limits are stated rather than glossed: SMTP is cleartext,
+  so the message is in Worker memory for an instant (never STORED in the clear); the relay sees
+  metadata; a compromised machine means that dog's mail is readable. Primitives are the existing
+  `e2e.py` ones — X25519 · HKDF-SHA256 · AES-256-GCM · HMAC-SHA256 — and no request carries a
+  bearer token, because a token on disk is a token that can be copied.
+
+- **The Python client and the Worker are checked against each other**, byte for byte: derived keys,
+  MAC framing, and an envelope sealed by one and opened by the other. It earned itself immediately
+  — WebCrypto imports an X25519 public key as `raw` and refuses a private one, which must arrive as
+  PKCS8. Both halves read as correct in isolation.
+
+- **`mcpctl_add` promised something the code did not do**, and three more in the same family: the
+  MCP panel could not draw a single server row (a variable read across a function boundary, with a
+  catch-all swallowing the ReferenceError), a refused POST was dropped instead of shown, the
+  callback port was picked fresh every sign-in so no provider requiring an exact redirect could
+  ever match, and no `scope` was requested — which produces a sign-in that succeeds and a token
+  every call then refuses.
+
 ## v0.20.30 — the two releases that were never tagged, and a browser that can finish a form
 
 - **v0.20.28 and v0.20.29 were written and never released.** Both have notes below and neither has
