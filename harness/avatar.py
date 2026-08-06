@@ -68,7 +68,8 @@ COATS = (
 # 20px, where the head is a smudge. Its hue is an OFFSET FROM THE COAT rather than an independent
 # roll, because the two axes are not independent in practice: land the plate on the coat's own hue
 # and the dog disappears into its own background.
-PLATE_L, PLATE_S = 0.150, 0.42         # rich enough to be a colour, dark enough to stay Slack chrome
+PLATE_S = 0.42                         # rich enough to be a colour, not so much it becomes a sticker
+PLATE_CONTRAST = 1.35                  # how far the plate sits from the head's darkest mass
 # Evenly spaced around the wheel and all strictly inside one turn. An earlier table ran 0.10 to
 # 1.25 in steps of .05, and hue is taken mod 1 — so its last four offsets landed exactly on four it
 # already had, costing 17% of the range without any symptom except a few more lookalikes. Dividing
@@ -100,6 +101,35 @@ def _hls(h, l, s):
     return _rgb2hex(*(round(v * 255) for v in colorsys.hls_to_rgb(h % 1.0, l, s)))
 
 
+def _lum(hex_colour):
+    """Relative luminance — what actually decides whether two areas separate to the eye."""
+    def ch(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = _hex2rgb(hex_colour)
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def _plate(hue, against, target=PLATE_CONTRAST):
+    """A plate of this hue, light enough to separate from `against` by `target`.
+
+    Solved in LUMINANCE, not lightness, and this is the point: HLS lightness treats a blue and a
+    yellow-green at L .17 as equals, while blue carries a twelfth of green's luminance. A fixed
+    plate lightness therefore landed on the same luminance as the ears for half the coats — measured
+    contrast 1.00 — and those dogs dissolved into their own background with nothing in the code
+    looking wrong. Luminance is monotonic in L for a fixed hue, so bisection is exact enough.
+    """
+    want = (_lum(against) + 0.05) * target - 0.05
+    lo, hi = 0.02, 0.42
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        if _lum(_hls(hue, mid, PLATE_S)) < want:
+            lo = mid
+        else:
+            hi = mid
+    return _hls(hue, (lo + hi) / 2, PLATE_S)
+
+
 def traits(name: str) -> dict:
     """The face of a name. Same name in, same face out — on any machine, forever.
 
@@ -112,7 +142,8 @@ def traits(name: str) -> dict:
     d = hashlib.sha256(name.strip().lower().encode("utf-8")).digest()
     coat = COATS[d[2] % len(COATS)]
     off = PLATE_OFFSETS[d[1] % len(PLATE_OFFSETS)]
-    plate_hex = _hls(coat[1] + off, PLATE_L, PLATE_S)
+    ears = _hls(coat[1], coat[2], coat[3])         # the head's darkest mass, which the plate must clear
+    plate_hex = _plate(coat[1] + off, ears)
     # Named from the FINAL hex, not from the hue that produced it. Rounding to 8-bit moves the hue
     # slightly, so a value sitting on a name boundary would otherwise be labelled from one side of
     # the line and drawn from the other. Deriving the word from the colour makes them unable to

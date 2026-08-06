@@ -93,6 +93,19 @@ def main():
             bad.append("%s: called %s, is %s" % (n, t["plate"], want))
     check(not bad, "each plate is called what it actually is (%s)" % (bad[:2] or "all correct"))
 
+    # No combination may hide the dog in its own background. Checked over the WHOLE space, not a
+    # sample: a fixed plate lightness passed every dog anyone happened to look at while leaving
+    # measured contrast 1.00 — identical luminance — for half the coats.
+    lo = 9.9
+    for coat in avatar.COATS:
+        ears = avatar._hls(coat[1], coat[2], coat[3])
+        for off in avatar.PLATE_OFFSETS:
+            p = avatar._plate(coat[1] + off, ears)
+            la, lb = avatar._lum(p), avatar._lum(ears)
+            lo = min(lo, (max(la, lb) + 0.05) / (min(la, lb) + 0.05))
+    check(lo > 1.25, "every one of the %d plates separates from its own head (worst %.2f)"
+          % (len(avatar.COATS) * len(avatar.PLATE_OFFSETS), lo))
+
     check(len({avatar.traits(n)["eye_hex"] for n in KENNEL}) == 1,
           "every dog has the SAME natural dark eye — the coat carries the identity, not a bulb")
     eye_l = sum(int(avatar.EYE[i:i + 2], 16) for i in (1, 3, 5)) / (3 * 255)
