@@ -346,21 +346,46 @@ def api(method: str, token: str, **params) -> dict:
         return json.loads(r.read().decode("utf-8"))
 
 
-def say(token: str, channel: str, text: str, thread: str = "", tag: str = "") -> None:
-    """Reply, in the thread the ask arrived in.
+def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
+        broadcast: bool = False) -> str:
+    """Reply in the thread the ask arrived in. Returns the message ts, so it can be edited.
 
-    In-thread on purpose: one run's output is long, and a channel that fills with
-    it stops being somewhere anyone reads.
+    In-thread on purpose: one run's output is long, and a channel that fills with it stops being
+    somewhere anyone reads. But a thread is also where an answer goes to be missed — so the one
+    message that is actually an ANSWER is sent with `reply_broadcast`, which keeps it a thread reply
+    and still surfaces it in the channel. Progress stays quiet; conclusions do not.
     """
     try:
         p = {"channel": channel, "text": (tag + " — " + text) if tag else text}
         if thread:
             p["thread_ts"] = thread
+            if broadcast:
+                p["reply_broadcast"] = "true"
         r = api("chat.postMessage", token, **p)
         if not r.get("ok"):
             print("[slack] postMessage failed: %s" % r.get("error"), file=sys.stderr)
+            return ""
+        return r.get("ts", "")
     except Exception as e:
         print("[slack] postMessage error: %s" % e, file=sys.stderr)
+        return ""
+
+
+def edit(token: str, channel: str, ts: str, text: str, tag: str = "") -> bool:
+    """Rewrite a message already sent. One ask used to produce `queued #1` and `on it — #1` a second
+    apart — two messages for one fact — before the result made a third. A status that CHANGES should
+    be one line that changes, not a transcript of its own state machine."""
+    if not ts:
+        return False
+    try:
+        r = api("chat.update", token, channel=channel, ts=ts,
+                text=(tag + " — " + text) if tag else text)
+        if not r.get("ok"):
+            print("[slack] update failed: %s" % r.get("error"), file=sys.stderr)
+        return bool(r.get("ok"))
+    except Exception as e:
+        print("[slack] update error: %s" % e, file=sys.stderr)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -412,8 +437,15 @@ class Worker(threading.Thread):
 
     def _run_one(self, item):
         ch, th = item["channel"], item["thread"]
-        say(self.token, ch, "on it — #%d" % item["id"], th, self.tag)
-        cmd = [sys.executable, "-m", "harness.cli", "run", "--task", item["text"]]
+        ts = item.get("status_ts", "")
+        if not edit(self.token, ch, ts, "on it — #%d" % item["id"], self.tag):
+            ts = say(self.token, ch, "on it — #%d" % item["id"], th, self.tag)
+        # `run` takes the task POSITIONALLY. It was passed as --task, which argparse rejects with
+        # exit 2 before a single token is spent — so every ask this bot ever accepted failed, while
+        # the thread filled with "on it" and "queued" and looked for all the world like it was
+        # working. Same shape as the constructor bug that stopped it starting at all: the failure
+        # was downstream of everything anyone watches.
+        cmd = [sys.executable, "-m", "harness.cli", "run", item["text"]]
         if self.provider:
             cmd += ["--provider", self.provider]
         try:
@@ -433,7 +465,12 @@ class Worker(threading.Thread):
         if len(out) > 3500:
             out = "…(trimmed)…\n" + out[-3500:]
         head = "#%d done" % item["id"] if rc == 0 else "#%d failed (exit %s)" % (item["id"], rc)
-        say(self.token, ch, "%s\n```\n%s\n```" % (head, out or "(no output)"), th, self.tag)
+        # The answer is the one message worth surfacing: broadcast so it appears in the channel as
+        # well as the thread. The status line above is left showing how it ended, so the thread reads
+        # as one request with one outcome rather than a log of a state machine.
+        edit(self.token, ch, ts, head, self.tag)
+        say(self.token, ch, "%s\n```\n%s\n```" % (head, out or "(no output)"),
+            th, self.tag, broadcast=True)
         self.q.finish(item["id"])
 
 
@@ -729,11 +766,14 @@ def main(argv=None) -> int:
                     say(bot_token, ch, "%s here. Ask me something, or say `queue`." % ident["name"], th, tag)
                 else:
                     item = q.add(text, ch, th, user)
-                    worker.nudge()
                     ahead = q.waiting() - 1
-                    say(bot_token, ch,
+                    # The ts is kept ON the item so the worker can edit this same line rather than
+                    # post another one under it.
+                    item["status_ts"] = say(
+                        bot_token, ch,
                         "queued #%d%s" % (item["id"], "" if ahead <= 0 else " — %d ahead of it" % ahead),
                         th, tag)
+                    worker.nudge()          # after the ts is stored, or the worker can beat it there
         except Exception as e:
             print("[slack] connection lost (%s) — reconnecting" % e, file=sys.stderr)
         finally:

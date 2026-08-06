@@ -166,6 +166,9 @@ else
   echo "  gate suite NOT RUN — pytest is not installed (pip install pytest)"; rc=1
 fi
 
+echo "── what `collie slack` does with an ask ─────────────────"
+if $PY tests/test_slack_worker.py >/dev/null 2>&1; then echo "  slack worker OK"; else echo "  slack worker FAIL"; rc=1; fi
+
 echo "── a face per dog (deterministic logo variants) ─────────"
 if $PY tests/test_avatar.py >/dev/null 2>&1; then echo "  avatar OK"; else echo "  avatar FAIL"; rc=1; fi
 
