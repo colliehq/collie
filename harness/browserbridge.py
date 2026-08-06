@@ -1458,9 +1458,20 @@ class BrowserScreenshot(Tool):
         except AttributeError:
             return ("ERROR: this harness build cannot attach images (ToolCtx has no .images), "
                     "so the capture would be invisible to you.")
-        return ("Captured %s at %sx%s — %s\n%s\nThe image is attached — look at it."
+        # State the conversion, because the two coordinate systems differ on any scaled display and
+        # the mismatch fails SILENTLY: a click read straight off the image lands elsewhere and still
+        # comes back ok. Measured here at 129% zoom, where it was 30% out.
+        scale = res.get("scale")
+        note = ""
+        if scale and abs(float(scale) - 1.0) > 0.01:
+            note = ("\nThis image is %s device pixels per CSS pixel (%sx%s CSS). browser_click x/y "
+                    "are CSS pixels: DIVIDE any coordinate you read off this image by %s."
+                    % (scale, res.get("css_width", "?"), res.get("css_height", "?"), scale))
+        elif scale:
+            note = "\nImage pixels and click coordinates match 1:1 on this display."
+        return ("Captured %s at %sx%s — %s\n%s%s\nThe image is attached — look at it."
                 % (res.get("how", "?"), res.get("width", "?"), res.get("height", "?"),
-                   res.get("title") or "(untitled)", res.get("url") or ""))
+                   res.get("title") or "(untitled)", res.get("url") or "", note))
 
 
 def register_browser_bridge(registry):

@@ -1802,8 +1802,29 @@ async function pageShot(fullPage, maxDim) {
     }
   }
   const small = await shrinkPng(dataUrl, maxDim || 1568);
-  return { data: small.data, width: small.width, height: small.height, how,
-           title: tab.title || "", url: tab.url || "" };
+  // A screenshot is measured in DEVICE pixels and every click takes CSS pixels, and on a scaled
+  // display those are not the same number. Without the ratio the caller is guessing: on a 129%
+  // display a click read off the image lands ~30% away and still returns ok, which is the worst
+  // kind of wrong. So the viewport is asked for its own CSS size and the conversion is handed back
+  // with the picture: css_x = image_x / scale.
+  let view = null;
+  try {
+    view = await exec(pageViewport, []);
+  } catch (e) { /* a page that refuses injection still gets a picture, just without the ratio */ }
+  const out = { data: small.data, width: small.width, height: small.height, how,
+                title: tab.title || "", url: tab.url || "" };
+  if (view && view.w) {
+    out.css_width = view.w;
+    out.css_height = view.h;
+    out.device_pixel_ratio = view.dpr;
+    out.scale = +(small.width / view.w).toFixed(4);      // image pixels per CSS pixel
+  }
+  return out;
+}
+
+// Self-contained (injected into the PAGE): what the page thinks its own size is.
+function pageViewport() {
+  return { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 };
 }
 
 // Decide trusted vs synthetic for THIS step: a command can force it (trusted:true/false), otherwise
