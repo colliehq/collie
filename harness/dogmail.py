@@ -147,11 +147,17 @@ def open_from_relay(dog_priv: bytes, env: dict) -> bytes:
 
 # ---------------------------------------------------------------- the relay
 
+# urllib's default User-Agent ("Python-urllib/3.x") is refused by Cloudflare's bot protection with
+# `error code: 1010` — the relay never sees the request. Found the hard way: the same URL answered
+# from PowerShell and not from here. A client that identifies itself is also the polite thing.
+UA = "collie-mail/1.0 (+https://collie.run)"
+
+
 def _post(path: str, payload: dict, headers: dict = None, relay: str = "") -> dict:
     url = (relay or RELAY).rstrip("/") + path
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers=dict({"content-type": "application/json"}, **(headers or {})))
+        headers=dict({"content-type": "application/json", "user-agent": UA}, **(headers or {})))
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8") or "{}")
@@ -165,7 +171,7 @@ def _post(path: str, payload: dict, headers: dict = None, relay: str = "") -> di
 
 def _get(path: str, headers: dict = None, relay: str = "") -> dict:
     url = (relay or RELAY).rstrip("/") + path
-    req = urllib.request.Request(url, headers=headers or {})
+    req = urllib.request.Request(url, headers=dict({"user-agent": UA}, **(headers or {})))
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read().decode("utf-8") or "{}")

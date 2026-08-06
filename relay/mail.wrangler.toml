@@ -1,0 +1,40 @@
+# The mail relay for collie's dogs. Deployed separately from the remote-control relay in
+# wrangler.toml — different data, different blast radius, and a bad deploy of one should not take
+# the other down.
+#
+#   npx wrangler deploy -c relay/mail.wrangler.toml
+#
+# Secrets (npx wrangler secret put -c relay/mail.wrangler.toml <NAME>):
+#   RELAY_PRIVATE_B64  the relay's X25519 private key — used ONLY to derive request-auth keys and
+#                      to check a handle's claim tag. It cannot open a message: those are sealed to
+#                      the dog's key with a per-message ephemeral, and this key is not a party to it.
+#   RELAY_PUBLIC_B64   its public half, served at /pubkey (WebCrypto cannot derive it from the
+#                      private half through a raw import, so it is stored rather than recomputed).
+
+name = "collie-mail"
+main = "mail_worker.js"
+compatibility_date = "2026-07-01"
+
+# A custom domain rather than workers.dev: that hostname is blocked in China, and the client's
+# default relay address should be one that resolves wherever the user is.
+[[routes]]
+pattern = "mail.collie.run"
+custom_domain = true
+
+[vars]
+MAIL_DOMAIN = "collie.run"
+
+[[kv_namespaces]]
+binding = "MAIL"
+id = "3519e848a362462ba78f5e11358de20d"
+
+[[kv_namespaces]]
+binding = "DIRECTORY"
+id = "4883260071e34fd7a708962105e21450"
+
+# Sending is only used for the one code that binds a handle to a key. Cloudflare's send_email
+# binding may only deliver to addresses VERIFIED on this account, which is enough for the first
+# user's own claim and not enough for a public sign-up — a real sending provider goes here before
+# this is offered to anyone else.
+[[send_email]]
+name = "MAILER"

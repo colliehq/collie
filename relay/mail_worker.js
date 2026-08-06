@@ -24,6 +24,9 @@
  *   secret RELAY_PRIVATE_B64 — the relay's X25519 private key (its public half is served at /pubkey)
  */
 
+// `cloudflare:email` is imported WHERE IT IS USED, not at the top. A static import of a
+// Workers-only module makes this file unloadable by node — which silently breaks the very tests
+// that prove this Worker and the Python client agree on the wire format. Caught by running them.
 const SKEW = 120;                     // seconds a request stamp may be off
 const TTL = 60 * 60 * 24 * 7;         // a week: long enough to be away, short enough not to hoard
 const MAX_BYTES = 512 * 1024;         // a verification mail is small; anything vast is not our job
@@ -127,6 +130,51 @@ async function certKey(env, handlePub) {
   return hkdf(shared, enc.encode("handle"), enc.encode("collie-mail-cert"));
 }
 
+/**
+ * Is this name one we will not put on the domain?
+ *
+ * The list is DATA in KV, not code: it changes without a deploy, and a repository does not need a
+ * slur list in its history. Both a handle and a dog name are checked, because both end up in the
+ * address — filtering only handles would leave half the surface open.
+ *
+ * Substring matching, with an explicit set of words that legitimately contain a blocked one — the
+ * Scunthorpe problem is not hypothetical, and refusing "assistant" or "analysis" is its own kind of
+ * broken. Nothing here is complete: leetspeak, other languages and things nobody thought of get
+ * through. **Revocation is the real backstop**, not the filter — which is why an address can be
+ * withdrawn after the fact.
+ */
+const LEET = { "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g",
+               "@": "a", "$": "s", "!": "i", "|": "i" };
+
+/**
+ * Two readings of a name: as typed, and as it would be heard.
+ *
+ * `n1gger` and `f4ck` walked straight through a plain substring check, which made the list mostly
+ * decorative — anyone deliberate just types a digit. Folding lookalikes and collapsing repeated
+ * letters catches that whole family (`fuuuck`, `sh1t`, `a$$hole`) for a few lines.
+ *
+ * The fold is also what rescues some false positives rather than causing them: "assistant" folds to
+ * "asistant", which no longer contains "ass". It creates others in the opposite direction —
+ * "shiitake" folds to "shitake" — which is what the allow list is for. Both forms are checked, so a
+ * name is refused if EITHER reading hits, and allowed if either reading is explicitly permitted.
+ */
+function foldName(name) {
+  const lowered = String(name).toLowerCase().replace(/[^a-z0-9@$!|]/g, "");
+  const mapped = lowered.replace(/[0134578 9@$!|]/g, (c) => LEET[c] || c);
+  return mapped.replace(/(.)\1+/g, "$1");         // fuuuck -> fuck
+}
+
+async function blockedName(env, name) {
+  const list = await env.DIRECTORY.get("config:blocked", "json");
+  if (!list) return "";
+  const { words = [], allow = [] } = list;
+  const flat = String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const folded = foldName(name);
+  if (allow.some((a) => flat === a || folded === foldName(a))) return "";
+  const hit = words.find((w) => flat.includes(w) || folded.includes(foldName(w)));
+  return hit ? "that name is not available" : "";
+}
+
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 
@@ -155,6 +203,7 @@ async function stamped(request, env, url) {
 // Exported for the cross-implementation test. Two halves of one protocol written in two languages
 // agree only if something checks — "it looked right in both" is how a wire format silently forks.
 export const _crypto = { lp, cat, x25519, hkdf, hmac, sameBytes, sealToDog, b64, ub64 };
+export const _names = { foldName, blockedName };
 
 export default {
   /** Incoming mail. Cloudflare Email Routing sends every address here via a catch-all rule. */
@@ -197,6 +246,8 @@ export default {
       const handle = String(d.handle || "").toLowerCase();
       if (!/^[a-z0-9][a-z0-9-]{1,30}$/.test(handle))
         return json({ ok: false, error: "a handle is 2-31 chars of a-z, 0-9 and -" }, 400);
+      const bad = await blockedName(env, handle);
+      if (bad) return json({ ok: false, error: bad }, 400);
       const existing = await env.DIRECTORY.get("handle:" + handle, "json");
       if (existing && existing.verified)
         return json({ ok: false, error: "that handle is taken" }, 409);
@@ -204,12 +255,29 @@ export default {
       await env.DIRECTORY.put("handle:" + handle,
         JSON.stringify({ pub: d.pub, email: d.email, code, verified: false }),
         { expirationTtl: 1800 });        // an unverified claim expires, so a squatter cannot park one
-      await env.MAILER.send({
-        to: d.email,
-        subject: `collie: your code is ${code}`,
-        text: `${code} is the code that binds the handle "${handle}" to this machine's key.\n\n`
-            + `If you did not ask for this, ignore it — the claim expires in 30 minutes.\n`,
-      });
+      // send_email takes an EmailMessage carrying a raw RFC-5322 message, not a {to, subject}
+      // object — the binding is a mail transport, not a mail composer. Built by hand because this
+      // Worker has no dependencies; the headers below are the minimum a receiver will not junk.
+      const from = `no-reply@${env.MAIL_DOMAIN || "collie.run"}`;
+      const raw =
+        `From: collie <${from}>\r\n` +
+        `To: ${d.email}\r\n` +
+        `Subject: collie: your code is ${code}\r\n` +
+        `Message-ID: <${crypto.randomUUID()}@${env.MAIL_DOMAIN || "collie.run"}>\r\n` +
+        `Date: ${new Date().toUTCString()}\r\n` +
+        `MIME-Version: 1.0\r\n` +
+        `Content-Type: text/plain; charset=utf-8\r\n\r\n` +
+        `${code} is the code that binds the handle "${handle}" to a key on your machine.\r\n\r\n` +
+        `If you did not ask for this, ignore it — the claim expires in 30 minutes.\r\n`;
+      try {
+        const { EmailMessage } = await import("cloudflare:email");
+        await env.MAILER.send(new EmailMessage(from, d.email, raw));
+      } catch (e) {
+        // Say which half failed. "could not claim" with no reason sends the reader to their own
+        // code, and the usual cause is on Cloudflare's side: send_email may only deliver to an
+        // address VERIFIED on this account.
+        return json({ ok: false, error: "could not send the code: " + (e && e.message) }, 502);
+      }
       return json({ ok: true, sent: true });
     }
 
@@ -234,6 +302,9 @@ export default {
         return json({ ok: false, error: "verify the handle first" }, 403);
       if (!address.endsWith("." + handle + "@" + (env.MAIL_DOMAIN || "collie.run")))
         return json({ ok: false, error: "that address is not under your handle" }, 403);
+      // The dog's name is in the address too, so it faces the same list as the handle.
+      const badDog = await blockedName(env, address.split(".")[0]);
+      if (badDog) return json({ ok: false, error: badDog }, 400);
       const want = await hmac(await certKey(env, ub64(row.pub)),
                               cat(lp(address), lp(ub64(d.pub))));
       if (!sameBytes(want, ub64(d.cert || "")))
