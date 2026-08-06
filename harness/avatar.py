@@ -74,8 +74,12 @@ PLATE_L, PLATE_S = 0.150, 0.42         # rich enough to be a colour, dark enough
 # already had, costing 17% of the range without any symptom except a few more lookalikes. Dividing
 # by 25 also means no offset is ever 0, so the plate never sits on the coat's own hue.
 PLATE_OFFSETS = tuple(round((i + 1) / 25.0, 4) for i in range(24))
-PLATE_NAMES = ("moss", "pine", "teal", "sea", "sky", "indigo", "violet", "plum",
-               "wine", "rose", "clay", "amber")
+# In hue order starting at 0, which is RED. The first version of this list started at "moss", so
+# every plate was named a third of the way around the wheel from its actual colour: rowan's navy
+# plate was reported as plum, and bracken's plum as clay. Nobody would have caught it from the
+# picture, because the picture was right — only the word for it was wrong.
+PLATE_NAMES = ("wine", "clay", "amber", "moss", "pine", "sea",
+               "teal", "navy", "indigo", "violet", "plum", "rose")
 
 
 def _hex2rgb(h):
@@ -108,10 +112,16 @@ def traits(name: str) -> dict:
     d = hashlib.sha256(name.strip().lower().encode("utf-8")).digest()
     coat = COATS[d[2] % len(COATS)]
     off = PLATE_OFFSETS[d[1] % len(PLATE_OFFSETS)]
+    plate_hex = _hls(coat[1] + off, PLATE_L, PLATE_S)
+    # Named from the FINAL hex, not from the hue that produced it. Rounding to 8-bit moves the hue
+    # slightly, so a value sitting on a name boundary would otherwise be labelled from one side of
+    # the line and drawn from the other. Deriving the word from the colour makes them unable to
+    # disagree.
+    r, g, b = (v / 255 for v in _hex2rgb(plate_hex))
+    hue = colorsys.rgb_to_hls(r, g, b)[0]
     return {"name": name, "coat": coat[0], "eye_hex": EYE,
-            "plate": PLATE_NAMES[int(((coat[1] + off) % 1.0) * len(PLATE_NAMES))],
-            "plate_hex": _hls(coat[1] + off, PLATE_L, PLATE_S),
-            "_coat": coat}
+            "plate": PLATE_NAMES[int(hue * len(PLATE_NAMES)) % len(PLATE_NAMES)],
+            "plate_hex": plate_hex, "_coat": coat}
 
 
 def svg(name: str, source: str = "") -> str:

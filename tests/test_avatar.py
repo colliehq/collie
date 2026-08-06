@@ -80,6 +80,19 @@ def main():
     check(len(wide) == want,
           "every coat x offset is a distinct face: %d of a declared %d" % (len(wide), want))
 
+    # The name for a plate has to be the name OF that plate. These are hue-ordered from red, and a
+    # list that starts anywhere else labels every dog a third of a wheel from its actual colour.
+    import colorsys as _cs
+    bad = []
+    for n in KENNEL + ["dog%d" % i for i in range(60)]:
+        t = avatar.traits(n)
+        r, g, b = (int(t["plate_hex"][i:i + 2], 16) / 255 for i in (1, 3, 5))
+        want = avatar.PLATE_NAMES[int(_cs.rgb_to_hls(r, g, b)[0] * len(avatar.PLATE_NAMES))
+                                  % len(avatar.PLATE_NAMES)]
+        if t["plate"] != want:
+            bad.append("%s: called %s, is %s" % (n, t["plate"], want))
+    check(not bad, "each plate is called what it actually is (%s)" % (bad[:2] or "all correct"))
+
     check(len({avatar.traits(n)["eye_hex"] for n in KENNEL}) == 1,
           "every dog has the SAME natural dark eye — the coat carries the identity, not a bulb")
     eye_l = sum(int(avatar.EYE[i:i + 2], 16) for i in (1, 3, 5)) / (3 * 255)
