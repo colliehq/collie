@@ -166,6 +166,9 @@ else
   echo "  gate suite NOT RUN — pytest is not installed (pip install pytest)"; rc=1
 fi
 
+echo "── a face per dog (deterministic logo variants) ─────────"
+if $PY tests/test_avatar.py >/dev/null 2>&1; then echo "  avatar OK"; else echo "  avatar FAIL"; rc=1; fi
+
 echo "── which directories are a user's projects (star-map) ───"
 if $PY tests/test_repo_discovery.py >/dev/null 2>&1; then echo "  repo discovery OK"; else echo "  repo discovery FAIL"; rc=1; fi
 

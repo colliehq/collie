@@ -510,6 +510,18 @@ def setup(argv=None) -> int:
         save_kennel(dogs)
         print("  app %s created" % entry["app_id"])
 
+    # This dog's face, derived from its name so it is the same face on every machine. Written even
+    # when the rest of setup cannot finish: it costs nothing, and having the file already there is
+    # what makes the icon a drag-and-drop rather than an errand.
+    face = ""
+    try:
+        from . import avatar
+        face = avatar.write(name)
+        t = avatar.traits(name)
+        print("  %s has %s eyes on a %s plate — %s" % (name, t["eye"], t["plate"], face))
+    except Exception as e:                               # never let a picture stop a setup
+        print("  (could not draw an avatar: %s)" % e)
+
     app_id = entry.get("app_id", "")
     install = "https://api.slack.com/apps/%s/install-on-team" % app_id
     tokens_page = "https://api.slack.com/apps/%s/general" % app_id
@@ -554,6 +566,13 @@ def setup(argv=None) -> int:
         return 1
     print("\n%s is ready — @%s in %s. Start it with:\n  collie slack --name %s --announce <channel id>"
           % (name, who.get("user", name.lower()), who.get("team", "your workspace"), name))
+    if face:
+        # Slack's manifest has display_information.{name,description,background_color} and NO icon
+        # field, and no apps.* method uploads one — so this last one genuinely cannot be automated
+        # either. Saying exactly where the file is turns it into a drag rather than a task.
+        print("  its face is drawn but not uploaded (Slack exposes no API for an app icon):\n"
+              "    %s\n    -> https://api.slack.com/apps/%s/general  (Display Information → icon)"
+              % (face, app_id))
     return 0
 
 
