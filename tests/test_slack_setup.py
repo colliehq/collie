@@ -74,6 +74,55 @@ def main():
           "a private channel says the one thing that does work there")
     sb.api = real_api
 
+    # ---- the face ------------------------------------------------------------------------------
+    # Shipped inside the wheel, not read out of the repo: `pip install collie-harness` has no
+    # assets/ directory, and an icon that only exists for developers is the same as no icon.
+    check(os.path.exists(sb.ICON), "the icon ships with the package (%s)" % os.path.basename(sb.ICON))
+    head = open(sb.ICON, "rb").read(24)
+    check(head[:8] == b"\x89PNG\r\n\x1a\n", "and it is a PNG")
+    w = int.from_bytes(head[16:20], "big")
+    h = int.from_bytes(head[20:24], "big")
+    check(w == h and w >= 512, "square and at least 512px — Slack refuses smaller (%dx%d)" % (w, h))
+
+    posted = {}
+
+    class _Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        posted["ctype"] = req.headers.get("Content-type") or req.get_header("Content-type")
+        posted["auth"] = req.get_header("Authorization")
+        posted["url"] = req.full_url
+        posted["body"] = req.data
+        return _Resp(posted.get("reply", b'{"ok":true}'))
+    real_urlopen = sb.urllib.request.urlopen
+    sb.urllib.request.urlopen = fake_urlopen
+
+    check(sb.set_icon("xoxe.xoxp-1", "A0BIGMAC") == "", "a successful upload reports nothing")
+    check(posted["url"].endswith("apps.icon.set"), "via apps.icon.set")
+    check(posted["auth"] == "Bearer xoxe.xoxp-1", "authenticated with the app-configuration token")
+    check("multipart/form-data" in (posted["ctype"] or ""), "as multipart, which is what it wants")
+    check(b'name="app_id"' in posted["body"] and b"A0BIGMAC" in posted["body"], "carrying the app id")
+    check(b'name="file"' in posted["body"] and b"\x89PNG" in posted["body"], "and the PNG itself")
+
+    posted["reply"] = b'{"ok":false,"error":"invalid_icon_size"}'
+    check(sb.set_icon("xoxe.xoxp-1", "A0BIGMAC") == "invalid_icon_size",
+          "a refusal comes back as Slack's reason")
+    sb.urllib.request.urlopen = real_urlopen
+    check(sb.set_icon("xoxe.xoxp-1", "A0BIGMAC", "/nope/missing.png").startswith("[Errno"),
+          "and a missing file is reported, not raised — an undocumented endpoint must never be "
+          "the thing that ends a setup")
+
     # ---- the kennel holds a PACK, keyed by name ---------------------------------------------
     check(sb.load_kennel() == {}, "an empty kennel reads as empty, not as an error")
     sb.save_kennel({"Rowan": {"app_id": "A1", "bot_token": "xoxb-1", "app_token": "xapp-1"},

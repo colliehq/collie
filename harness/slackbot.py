@@ -23,6 +23,7 @@ to do**, so its autonomy is never something you find out afterwards.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -194,6 +195,43 @@ def save_kennel(dogs: dict) -> None:
     except Exception:
         pass
     os.replace(tmp, STORE)
+
+
+ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "collie-icon-512.png")
+
+
+def set_icon(config_token: str, app_id: str, path: str = "") -> str:
+    """Give the app a face while we are already holding the credential that can. "" on success.
+
+    `apps.icon.set` is in no method list — the manifest has no icon field, and Slack's own CLI
+    uploads one on deploy, so something had to exist. It takes `app_id` and a `file` part, and a
+    square PNG of at least 512px (128 comes back `invalid_icon_size`).
+
+    Undocumented means it may change without warning, so this reports and never raises: an app
+    wearing Slack's grey default is a working app, and a setup that got everything else right
+    should not end in a traceback over a picture.
+    """
+    path = path or ICON
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except OSError as e:
+        return str(e)
+    boundary = "----collie%s" % base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
+    body = b"".join([
+        ("--%s\r\nContent-Disposition: form-data; name=\"app_id\"\r\n\r\n%s\r\n" % (boundary, app_id)).encode(),
+        ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"icon.png\"\r\n"
+         "Content-Type: image/png\r\n\r\n" % boundary).encode(),
+        blob, b"\r\n", ("--%s--\r\n" % boundary).encode()])
+    req = urllib.request.Request(
+        SLACK_API + "apps.icon.set", data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=" + boundary,
+                 "Authorization": "Bearer " + config_token})
+    try:
+        r = json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8"))
+    except Exception as e:
+        return str(e)
+    return "" if r.get("ok") else str(r.get("error"))
 
 
 def create_app(config_token: str, manifest: dict) -> dict:
@@ -537,6 +575,11 @@ def setup(argv=None) -> int:
         dogs[name] = entry
         save_kennel(dogs)
         print("  app %s created" % entry["app_id"])
+        # Now, while the config token is still in hand and before anyone has seen the app: an
+        # icon set later is a second visit to a settings page, which is the cost this command
+        # exists to remove.
+        icon_err = set_icon(a.config_token, entry["app_id"])
+        print("  face on" if not icon_err else "  (default icon — %s)" % icon_err)
 
     app_id = entry.get("app_id", "")
     install = "https://api.slack.com/apps/%s/install-on-team" % app_id
