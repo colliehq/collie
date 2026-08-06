@@ -553,6 +553,27 @@ class Worker(threading.Thread):
 MENTION_RE = re.compile(r"<@[UW][A-Z0-9]+>")
 
 
+def provider_hint() -> str:
+    """Name a provider that has a credential on THIS machine, or "" if none does.
+
+    "Pick one in the Settings panel" is advice a person can follow and still land on a provider
+    that cannot start: `anthropic` wants ANTHROPIC_API_KEY, and the machine that has a Claude
+    subscription instead has a token Claude Code minted, under a different provider name. The gap
+    between those two names is invisible until a dog refuses to run, so the refusal names the one
+    that would have worked.
+    """
+    try:
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return "\n  This machine has ANTHROPIC_API_KEY — try: --provider anthropic"
+        from . import providers
+        if providers._read_oauth_token():
+            return ("\n  This machine has a Claude Code token, which is a different provider name"
+                    " than\n  `anthropic`: --provider anthropic-oauth")
+    except Exception:
+        pass
+    return ""
+
+
 def _open_socket_url(app_token: str) -> str:
     r = api("apps.connections.open", app_token)
     if not r.get("ok"):
@@ -596,9 +617,15 @@ def setup(argv=None) -> int:
 
     name = a.name or next((k for k in KENNEL if k.lower() not in
                            {d.lower() for d in dogs}), "Collie%d" % (len(dogs) + 1))
-    if name in dogs and dogs[name].get("bot_token"):
+    # Papers means BOTH tokens. Checking only the bot token turned the half-provisioned case into a
+    # dead end: a dog whose xoxb- was saved and whose xapp- came later — which is the order the two
+    # pages hand them over in — was told it "already has papers" and refused, while `--list` said in
+    # the same breath that it needs its tokens. The one command that could finish it was the one
+    # command that would not run.
+    have = dogs.get(name) or {}
+    if have.get("bot_token") and have.get("app_token"):
         print("%s already has papers (app %s). Pick another name, or run "
-              "`collie slack --name %s`." % (name, dogs[name].get("app_id", "?"), name))
+              "`collie slack --name %s`." % (name, have.get("app_id", "?"), name))
         return 1
 
     entry = dict(dogs.get(name) or {})
@@ -824,10 +851,13 @@ def main(argv=None) -> int:
     # channel, for every ask. mock stays reachable, but only by NAME.
     if not args.provider:
         print("collie slack: no provider.\n"
-              "  Pick one in the Settings panel, or set COLLIE_PROVIDER, or pass --provider.\n"
+              "  Looked at: --provider, then COLLIE_PROVIDER (which the Settings panel injects).\n"
+              "  A value in `collie config` is not necessarily a saved one — that listing falls\n"
+              "  back to defaults, so it can name a provider nothing has actually configured.%s\n"
               "  Refusing rather than falling back to `mock`: mock answers from fixtures, and a\n"
               "  fixture in a channel reads exactly like a model that has gone wrong.\n"
-              "  To do that on purpose: --provider mock", file=sys.stderr)
+              "  To do that on purpose: --provider mock"
+              % provider_hint(), file=sys.stderr)
         return 2
 
     # Where it will work at all. Defaulting to "only the channel I was announced

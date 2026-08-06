@@ -86,6 +86,30 @@ def main():
     for name in ("channels", "allow", "install_autostart", "uninstall_autostart"):
         check(name in fwd, "...and cmd_slack forwards %s through" % name)
 
+    # Refusing without a provider is right; leaving the person to guess which one is not. On a
+    # machine with a Claude subscription the credential is a token Claude Code minted, and it lives
+    # under a DIFFERENT provider name than the `anthropic` that `collie config` displays — so
+    # "pick one in the Settings panel" can be followed exactly and still not start.
+    from harness import slackbot as sb
+    real_env = dict(os.environ)
+    try:
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-whatever"
+        check("--provider anthropic" in sb.provider_hint(),
+              "an API key on this machine is named as the provider to pass")
+        os.environ.pop("ANTHROPIC_API_KEY")
+        import harness.providers as pv
+        keep = pv._read_oauth_token
+        pv._read_oauth_token = lambda: "sk-ant-oat01-…"
+        check("anthropic-oauth" in sb.provider_hint(),
+              "a Claude Code token points at anthropic-oauth, not at anthropic")
+        pv._read_oauth_token = lambda: ""
+        check(sb.provider_hint() == "",
+              "and a machine with neither says nothing rather than inventing a suggestion")
+        pv._read_oauth_token = keep
+    finally:
+        os.environ.clear()
+        os.environ.update(real_env)
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 
