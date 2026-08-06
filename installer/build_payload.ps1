@@ -51,8 +51,21 @@ if (Test-Path $pth) {
 }
 
 # 3) bootstrap pip (embeddable has no ensurepip) ------------------------------------------------
-& (Join-Path $py "python.exe") -c "import pip" 2>$null
-if ($LASTEXITCODE -ne 0) {
+# The probe must not be fatal, and under $ErrorActionPreference="Stop" it was: a native command
+# that writes to stderr raises a terminating NativeCommandError regardless of its exit code, and
+# a missing pip prints a traceback. So the check that exists to detect "no pip yet" aborted the
+# build on precisely that case — every FIRST payload build on a clean machine, which is the only
+# time this step has anything to do. Same shape as the empty-array abort in build_mac_payload.sh:
+# the branch written for the absent thing was the branch that could not run without it.
+$hasPip = $false
+try {
+  $ErrorActionPreference = "Continue"
+  & (Join-Path $py "python.exe") -c "import pip" 2>&1 | Out-Null
+  $hasPip = ($LASTEXITCODE -eq 0)
+} finally {
+  $ErrorActionPreference = "Stop"
+}
+if (-not $hasPip) {
   Step "bootstrap pip (get-pip.py)"
   $getpip = Join-Path $env:TEMP "get-pip.py"
   Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getpip -UseBasicParsing
