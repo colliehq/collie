@@ -1081,7 +1081,8 @@ def _autostart_paths(name: str):
     return wp, boot, vbs
 
 
-def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "") -> int:
+def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "",
+                      autonomy: str = "") -> int:
     """Bring this dog back after a restart.
 
     A dog started from a terminal dies with the terminal, which is how one sat silent through a
@@ -1104,6 +1105,13 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
         argv += ["--channels", channels]
     if provider:
         argv += ["--provider", provider]
+    # Autonomy too, when it was stated. Every other flag the person typed is written into the
+    # launcher and this one was not, so a dog set to `main` came back after a reboot on whatever
+    # identity.json happened to hold — and if that file is ever lost or reset, on the default
+    # `branch` instead. Quieter than the setting it replaces, which is the wrong direction for the
+    # one knob whose entire purpose is that nobody discovers it by watching it get crossed.
+    if autonomy:
+        argv += ["--autonomy", autonomy]
     with open(boot, "w", encoding="utf-8") as f:
         # repr() every path: a username with an apostrophe closes a raw string early and the
         # generated launcher dies with a SyntaxError, silently, at logon.
@@ -1175,7 +1183,8 @@ def main(argv=None) -> int:
     if args.uninstall_autostart:
         return uninstall_autostart(args.name or "collie")
     if args.install_autostart:
-        return install_autostart(args.name or "collie", args.cwd, args.channels, args.provider)
+        return install_autostart(args.name or "collie", args.cwd, args.channels, args.provider,
+                                 args.autonomy)
 
     # The kennel first, the environment second. A pack means several dogs with several pairs of
     # tokens, and one pair of environment variables cannot hold them — but an env var still wins

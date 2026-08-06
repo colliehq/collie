@@ -260,6 +260,42 @@ def main():
     check(any(b"channel=C1" in (b or b"") for b in sent.get("bodies", [])),
           "...with the parameter in the body, where `missing required field` said it was not")
 
+    # --- the launcher has to carry the autonomy too ----------------------------------------------
+    # Every other flag the person typed was written into the generated .pyw; this one was not, so a
+    # dog set to `main` came back from a reboot on whatever identity.json happened to hold — and on
+    # the DEFAULT if that file were ever lost. The one setting whose whole point is that nobody
+    # discovers it by watching it get crossed should not be the one that goes unwritten.
+    import tempfile
+    from harness import plat as _plat
+
+    tmpd = tempfile.mkdtemp(prefix="collie_autostart_")
+    boot = os.path.join(tmpd, "slack-x.pyw")
+    vbs = os.path.join(tmpd, "collie-slack-x.vbs")
+
+    class _WP:
+        def _pkg_parent(self):
+            return r"/site-packages"
+
+        def pythonw(self):
+            return r"/pythonw.exe"
+
+    real_paths, real_win = sb._autostart_paths, _plat.is_windows
+    sb._autostart_paths = lambda name: (_WP(), boot, vbs)
+    _plat.is_windows = lambda: True          # so this runs on the Mac half of the pack too
+    try:
+        rc = sb.install_autostart("Cornetto", r"/repo", provider="anthropic-oauth",
+                                  autonomy="main")
+        written = open(boot, encoding="utf-8").read()
+    finally:
+        sb._autostart_paths, _plat.is_windows = real_paths, real_win
+
+    check(rc == 0 and "'--autonomy', 'main'" in written,
+          "the launcher it generates states the autonomy, rather than leaving a reboot to re-decide")
+    check("'--provider', 'anthropic-oauth'" in written and "'--name', 'Cornetto'" in written,
+          "...alongside the flags it already carried")
+    check("--autonomy" not in open(vbs, encoding="utf-8").read(),
+          "...in the .pyw, not smuggled into the .vbs, which only launches it")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 
