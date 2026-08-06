@@ -1,7 +1,6 @@
 # Changelog
 
-## v0.20.31 — a collie that can be @-ed, one that has an address of its own,
-and a gate on the part that leaves your machine
+## v0.20.31 — @-able, an address of its own, and a gate on the part that leaves your machine
 
 - **`collie slack` had never started.** `Worker` subclasses `threading.Thread` and its constructor
   assigned `self.ident`, which is a read-only property holding the thread id — AttributeError,
