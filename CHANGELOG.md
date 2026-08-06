@@ -2,6 +2,20 @@
 
 ## v0.20.31 — @-able, an address of its own, and a gate on the part that leaves your machine
 
+- **A dog has a face, derived from its name.** A name, an address and an @handle wanted a picture to
+  go with them, so `collie slack setup` now writes `~/.collie/avatars/<name>.{png,svg}` — the Collie
+  logo recoloured, never redrawn. The only entropy is `sha256(name)`, because the same dog has to
+  look the same on every machine and after every reinstall; `random` would give a different dog each
+  run, which is the one thing an avatar must not do. Two axes: the coat of the coloured regions, and
+  the plate behind them, with one natural dark eye on every dog. Palette decided by rendering at the
+  sizes Slack actually draws a bot rather than by taste — 20px in the member list, 36-48px beside a
+  message — and the plate's lightness is *solved in luminance* against the coat, since a fixed value
+  put half the coats at identical luminance to the head and those dogs dissolved into their own
+  background. Stdlib only, like the rest of the core: the PNG encoder is `zlib` + `struct` and the
+  rasteriser is a scanline fill, which suffices because no path in the logo has a curve or a stroke.
+  Slack exposes no API for an app icon — `display_information` carries name, description and
+  background colour and nothing else — so setup prints the file and the page rather than pretending.
+
 - **`collie slack` had never started.** `Worker` subclasses `threading.Thread` and its constructor
   assigned `self.ident`, which is a read-only property holding the thread id — AttributeError,
   raised before the socket was opened and before anything reached Slack. Shipped in v0.20.30 and
