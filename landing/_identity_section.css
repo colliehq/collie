@@ -1,0 +1,52 @@
+/* YOURS — uses the page's own tokens only; no new palette, no new fonts. */
+.yours { padding: 92px 0; border-top: 1px solid var(--line); background: var(--panel); }
+.yours .in { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+.ycard { display: grid; grid-template-columns: 300px 1fr; gap: 0;
+         border: 1px solid var(--line-2); border-radius: 16px; overflow: hidden;
+         background: var(--panel-2); }
+
+/* the meet-your-dog panel */
+.ymeet { padding: 30px 26px 28px; border-right: 1px solid var(--line-2);
+         background: var(--raise); text-align: center; }
+.yface { width: 148px; height: 148px; margin: 0 auto 20px; border-radius: 20px;
+         overflow: hidden; line-height: 0;
+         box-shadow: 0 2px 6px rgba(0,0,0,.35), 0 18px 40px rgba(0,0,0,.28); }
+.yface svg { width: 100%; height: 100%; display: block; }
+.ylabel { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+          text-transform: uppercase; color: var(--faint); margin-bottom: 8px; }
+.yinput input { width: 100%; text-align: center; font: inherit; font-size: 19px; font-weight: 600;
+                color: var(--ink); background: var(--panel); border: 1px solid var(--line-2);
+                border-radius: 10px; padding: 9px 12px; }
+.yinput input:focus { outline: 2px solid var(--accent); outline-offset: 1px;
+                      border-color: transparent; }
+.yhint { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+.yhint b { color: var(--accent-2); font-weight: 600; }
+.ynote { margin: 14px 0 0; font-size: 12px; line-height: 1.55; color: var(--faint); }
+
+/* the facts */
+.yfacts { padding: 8px 0; }
+.yrow { display: grid; grid-template-columns: 138px 1fr; gap: 18px; align-items: baseline;
+        padding: 17px 28px; border-bottom: 1px solid var(--line); }
+.yrow-last { border-bottom: 0; }
+.yk { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--faint); }
+.yv { min-width: 0; }
+.yv code { font-family: var(--mono); font-size: 13.5px; color: var(--accent-2);
+           background: var(--panel); border: 1px solid var(--line-2); border-radius: 6px;
+           padding: 2px 8px; overflow-wrap: anywhere; }
+.ychip { display: inline-block; font-size: 13.5px; font-weight: 600; color: var(--ink);
+         background: var(--panel); border: 1px solid var(--line-2); border-radius: 6px;
+         padding: 2px 9px; }
+.yperm { color: var(--warm); border-color: rgba(232,176,106,.32); font-weight: 500; }
+.ymut { display: block; margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+
+.ypack { max-width: 62ch; margin: 26px auto 0; text-align: center; font-size: 13.5px;
+         color: var(--faint); }
+
+@media (max-width: 780px) {
+  .yours { padding: 66px 0; }
+  .ycard { grid-template-columns: 1fr; }
+  .ymeet { border-right: 0; border-bottom: 1px solid var(--line-2); }
+  .yrow { grid-template-columns: 1fr; gap: 5px; padding: 15px 20px; }
+}

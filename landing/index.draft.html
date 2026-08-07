@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collie — a coding agent that lives on your computer</title>
+<meta name="description" content="Collie is a coding agent that runs on your own machine — it reaches your real environment (your logged-in browser, desktop, screen, files) and proves its work by running it. Local, private, no telemetry. One-click on Windows; free.">
+<link rel="icon" href="collie-logo.svg" type="image/svg+xml">
+<link rel="canonical" href="https://collie.run/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Collie">
+<meta property="og:url" content="https://collie.run/">
+<meta property="og:title" content="Collie — a coding agent that lives on your computer">
+<meta property="og:description" content="Local and private. It reaches your real environment and proves its work by running it. One click to install.">
+<meta property="og:image" content="https://collie.run/collie-logo.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Collie — a coding agent that lives on your computer">
+<meta name="twitter:description" content="Local and private. It reaches your real environment and proves its work by running it.">
+<meta name="twitter:image" content="https://collie.run/collie-logo.png">
+<meta name="theme-color" content="#0B0C11">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Collie",
+  "alternateName": "Collie Harness",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Windows, macOS, Linux",
+  "url": "https://collie.run/",
+  "downloadUrl": "https://github.com/colliehq/collie/releases/latest",
+  "softwareHelp": "https://colliehq.github.io/collie/",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "description": "An open-source coding agent that runs on your own computer and can automate your real environment — your browser, desktop, and files. Local, private, no telemetry.",
+  "sameAs": ["https://github.com/colliehq/collie"]
+}
+</script>
+<style>
+  :root{
+    --bg:#0B0C11; --panel:#13151D; --panel-2:#181B24; --raise:#1D202B;
+    --ink:#F0F2F8; --muted:#A2A8BA; --faint:#666C7E; --line:#23262F; --line-2:#2E323E;
+    --accent:#8E9BE8; --accent-2:#AAB4F0; --accent-deep:#5766B8;
+    --warm:#E8B06A; --ok:#63C495;
+    --font:"Inter","Segoe UI",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Menlo,monospace;
+    --maxw:1120px;
+  }
+  :root[data-theme="light"]{
+    --bg:#F5F6F9; --panel:#FFFFFF; --panel-2:#FAFBFD; --raise:#FFFFFF;
+    --ink:#14161F; --muted:#545A69; --faint:#8990A0; --line:#E4E6ED; --line-2:#D5D8E1;
+    --accent:#45569E; --accent-2:#33427A; --accent-deep:#45569E;
+    --warm:#B9822F; --ok:#2F8560;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme]){
+      --bg:#F5F6F9; --panel:#FFFFFF; --panel-2:#FAFBFD; --raise:#FFFFFF;
+      --ink:#14161F; --muted:#545A69; --faint:#8990A0; --line:#E4E6ED; --line-2:#D5D8E1;
+      --accent:#45569E; --accent-2:#33427A; --accent-deep:#45569E; --warm:#B9822F; --ok:#2F8560;
+    }
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html{scroll-behavior:smooth; -webkit-text-size-adjust:100%}
+  body{background:var(--bg); color:var(--ink); font-family:var(--font); line-height:1.55;
+    letter-spacing:-0.012em; -webkit-font-smoothing:antialiased; overflow-x:hidden}
+  a{color:inherit; text-decoration:none}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
+  .mono{font-family:var(--mono)}
+
+  header{position:sticky; top:0; z-index:60; background:color-mix(in srgb,var(--bg) 82%,transparent); backdrop-filter:blur(12px); border-bottom:1px solid var(--line)}
+  header .in{max-width:var(--maxw); margin:0 auto; padding:0 22px; height:60px; display:flex; align-items:center; justify-content:space-between}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:660; font-size:17px; letter-spacing:-0.02em}
+  .brand img{width:28px; height:28px}
+  nav{display:flex; align-items:center; gap:4px; font-size:14px}
+  nav a,nav button{color:var(--muted); padding:8px 13px; border-radius:9px; cursor:pointer; background:none; border:0; font-family:inherit; font-size:inherit}
+  nav a:hover,nav button:hover{color:var(--ink); background:var(--panel-2)}
+  nav .dl{color:#0B0C11; background:var(--accent); font-weight:600}
+  :root[data-theme="light"] nav .dl{color:#fff}
+  nav .dl:hover{background:var(--accent-2)}
+  .btn{display:inline-flex; align-items:center; justify-content:center; gap:10px; background:var(--accent); color:#0B0C11; font-weight:640; font-size:16px; padding:15px 26px; border-radius:13px; border:1px solid var(--accent); cursor:pointer; transition:transform .12s, background .15s}
+  :root[data-theme="light"] .btn{color:#fff}
+  .btn:hover{background:var(--accent-2); transform:translateY(-1px)}
+  .btn.ghost{background:none; color:var(--ink); border-color:var(--line-2); font-weight:560}
+  .btn.ghost:hover{border-color:var(--muted); background:var(--panel-2)}
+  .btn .sz{font-family:var(--mono); font-weight:500; opacity:.72; font-size:12.5px}
+
+  /* ---------- hero ---------- */
+  .hero{padding:60px 0 54px; position:relative}
+  .hero .halo{position:absolute; inset:0; z-index:-1; background:
+     radial-gradient(46ch 30ch at 80% 8%, color-mix(in srgb,var(--accent) 20%,transparent), transparent 62%)}
+  .hero-grid{display:grid; grid-template-columns:1.04fr 0.96fr; gap:50px; align-items:center}
+  .pill{display:inline-flex; align-items:center; gap:9px; font-size:13px; color:var(--muted);
+    background:var(--panel); border:1px solid var(--line); padding:6px 14px 6px 8px; border-radius:999px; margin-bottom:22px}
+  .pill b{background:var(--accent); color:#0B0C11; font-size:10.5px; font-weight:700; letter-spacing:.06em; padding:3px 8px; border-radius:999px; text-transform:uppercase}
+  :root[data-theme="light"] .pill b{color:#fff}
+  .hero h1{font-size:clamp(38px,4.7vw,60px); line-height:1.03; font-weight:700; letter-spacing:-0.035em}
+  .hero h1 .g{color:var(--accent)}
+  .hero .sub{margin:22px 0 0; max-width:46ch; font-size:18px; color:var(--muted)}
+  .hero .sub b{color:var(--ink); font-weight:600}
+  .cta{margin-top:30px; display:flex; gap:13px; justify-content:flex-start; align-items:center; flex-wrap:wrap}
+  .cta .note{width:100%; margin-top:6px; font-size:13px; color:var(--faint)}
+  @keyframes blink{50%{opacity:0}}
+
+  /* app panel (hero right) */
+  .app{background:var(--panel); border:1px solid var(--line-2); border-radius:18px; overflow:hidden;
+    box-shadow:0 44px 84px -52px color-mix(in srgb,var(--accent) 72%,transparent)}
+  .app-bar{display:flex; align-items:center; gap:11px; padding:12px 15px; border-bottom:1px solid var(--line); background:var(--panel-2)}
+  .app-bar .dots{display:flex; gap:6px} .app-bar .dots i{width:9px;height:9px;border-radius:50%;background:var(--line-2)}
+  .app-bar .ttl{display:flex; align-items:center; gap:7px; font-weight:600; font-size:13px}
+  .app-bar .ttl img{width:17px;height:17px}
+  .app-bar .ctx{margin-left:auto; font-family:var(--mono); font-size:11.5px; color:var(--faint)}
+  .app-body{padding:18px 17px; display:flex; flex-direction:column; gap:15px; min-height:258px; max-height:322px; overflow-y:auto; scroll-behavior:smooth}
+  .app-body::-webkit-scrollbar{width:7px} .app-body::-webkit-scrollbar-thumb{background:var(--line-2); border-radius:4px}
+  .who{font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); display:block; margin-bottom:7px}
+  .msg.you{display:flex; flex-direction:column; align-items:flex-end}
+  .msg.you .who{text-align:right}
+  .msg.you .bub{background:var(--accent); color:#0B0C11; padding:11px 14px; border-radius:13px 13px 4px 13px; font-size:14.5px; font-weight:520; max-width:82%}
+  :root[data-theme="light"] .msg.you .bub{color:#fff}
+  .acts{display:flex; flex-direction:column; gap:9px}
+  .act{display:flex; align-items:center; gap:10px; font-size:14px; color:var(--ink)}
+  .act .i{width:19px;height:19px;flex:none;border-radius:50%;background:color-mix(in srgb,var(--ok) 22%,transparent);color:var(--ok);display:grid;place-items:center;font-size:11px;font-style:normal}
+  .act b{font-weight:620} .act .dim{color:var(--faint)}
+  .done{margin-top:3px; display:flex; align-items:center; gap:9px; font-size:14px; color:var(--muted); background:var(--bg); border:1px solid var(--line); border-radius:11px; padding:10px 13px}
+  .done img{width:18px;height:18px}
+  .app-input{display:flex; align-items:center; gap:11px; padding:13px 14px; border-top:1px solid var(--line); background:var(--panel-2)}
+  .app-input .ii{width:22px;height:22px;flex:none;opacity:.92}
+  .app-input .itxt{flex:1; font-size:14.5px; color:var(--ink); min-height:20px}
+  .app-input .ph{color:var(--faint)}
+  .app-input .cur{display:inline-block; width:2px; height:16px; background:var(--accent); vertical-align:-2px; margin-left:1px; animation:blink 1.05s steps(1) infinite}
+  .app-input .send{width:32px;height:32px;flex:none;border-radius:9px;background:var(--accent);color:#0B0C11;display:grid;place-items:center;border:0;cursor:pointer}
+  :root[data-theme="light"] .app-input .send{color:#fff}
+  .ifield{position:relative; flex:1; display:flex; align-items:center}
+  #askInput{width:100%; background:none; border:0; outline:0; color:var(--ink); font-family:var(--font); font-size:14.5px; padding:0; letter-spacing:inherit}
+  .pho{position:absolute; inset:0; display:flex; align-items:center; pointer-events:none}
+  .pho.hide{display:none}
+  /* guided response */
+  .rbub{background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:13px 15px}
+  .rbub p{font-size:13.8px; color:var(--ink); line-height:1.5} .rbub p b{font-weight:660}
+  .rbtn{display:inline-flex; align-items:center; gap:8px; margin-top:12px; background:var(--accent); color:#0B0C11; font-weight:620; font-size:13.5px; padding:9px 15px; border-radius:10px}
+  :root[data-theme="light"] .rbtn{color:#fff}
+  .rbtn:hover{background:var(--accent-2)}
+  .rnote{display:block; margin-top:9px; font-size:11px; color:var(--faint); font-family:var(--mono); letter-spacing:.02em}
+  .typing{display:flex; gap:5px; padding:6px 2px}
+  .typing i{width:7px;height:7px;border-radius:50%;background:var(--faint);animation:bob 1.1s infinite}
+  .typing i:nth-child(2){animation-delay:.15s} .typing i:nth-child(3){animation-delay:.3s}
+  @keyframes bob{0%,60%,100%{opacity:.35;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+  #askInput:disabled{cursor:default}
+  .app-input.capped .send{opacity:.4; pointer-events:none}
+
+  /* ---------- marquee of asks ---------- */
+  .band{padding:52px 0}
+  .lead-h{text-align:center; margin-bottom:30px}
+  .lead-h .eye{font-size:13px; color:var(--accent); font-weight:600; letter-spacing:.02em}
+  .lead-h h2{font-size:clamp(26px,4vw,40px); font-weight:680; letter-spacing:-0.03em; margin-top:10px}
+  .lead-h p{color:var(--muted); font-size:17px; margin:12px auto 0; max-width:50ch}
+  .marq{position:relative; display:flex; flex-direction:column; gap:14px; overflow:hidden; -webkit-mask:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent); mask:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent)}
+  .track{display:flex; gap:14px; width:max-content; animation:scroll 46s linear infinite}
+  .track.rev{animation-direction:reverse; animation-duration:54s}
+  @keyframes scroll{to{transform:translateX(-50%)}}
+  .marq:hover .track{animation-play-state:paused}
+  .chip{display:inline-flex; align-items:center; gap:11px; white-space:nowrap; background:var(--panel);
+    border:1px solid var(--line); border-radius:12px; padding:14px 18px; font-size:15px; color:var(--ink)}
+  .chip .q{font-family:var(--mono); color:var(--accent); font-size:13px}
+  .chip .tag{font-size:11px; color:var(--faint); border:1px solid var(--line); border-radius:6px; padding:2px 7px; margin-left:2px}
+
+  /* ---------- how (3 steps, mass-market) ---------- */
+  .how{background:var(--panel); border-top:1px solid var(--line); border-bottom:1px solid var(--line)}
+  .how .in{max-width:var(--maxw); margin:0 auto; padding:56px 22px; display:grid; grid-template-columns:repeat(3,1fr); gap:20px}
+  .stp{text-align:center; padding:0 10px}
+  .stp .big{font-size:34px; font-weight:720; color:var(--accent); letter-spacing:-0.03em}
+  .stp h3{font-size:20px; font-weight:660; margin:12px 0 8px}
+  .stp p{color:var(--muted); font-size:15px}
+
+  /* ---------- trust strip ---------- */
+  .trust{display:grid; grid-template-columns:repeat(4,1fr); gap:20px; text-align:center}
+  .trust .t{padding:14px}
+  .trust .t .ic{width:26px;height:26px;margin:0 auto 12px;color:var(--accent)}
+  .trust .t h4{font-size:15.5px; font-weight:620; margin-bottom:5px}
+  .trust .t p{font-size:13px; color:var(--muted)}
+
+  /* ---------- download ---------- */
+  .get{background:var(--panel); border-top:1px solid var(--line)}
+  .get .in{max-width:920px; margin:0 auto; padding:60px 22px}
+  .dlcard{background:var(--bg); border:1px solid var(--line-2); border-radius:20px; overflow:hidden}
+  .dlcard .top{display:flex; align-items:center; gap:14px; padding:20px 24px; border-bottom:1px solid var(--line)}
+  .dlcard .top img{width:40px;height:40px}
+  .dlcard .top .t{font-weight:660; font-size:18px}
+  .dlcard .top .s{color:var(--faint); font-size:13px; font-family:var(--mono)}
+  .tabs{display:grid; grid-template-columns:repeat(3,1fr)}
+  .tabs button{font-size:14.5px; color:var(--muted); background:none; border:0; border-bottom:2px solid transparent; padding:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:9px; font-family:inherit; font-weight:520}
+  .tabs button svg{width:17px;height:17px}
+  .tabs button[aria-selected="true"]{color:var(--ink); border-bottom-color:var(--accent); background:var(--panel-2)}
+  .pane{display:none; padding:28px 26px}
+  .pane.on{display:block}
+  .pane .lead{color:var(--muted); font-size:15px; margin-bottom:18px; max-width:60ch}
+  .pane .btn{width:100%; font-size:17px; padding:17px}
+  .cmd{display:flex; align-items:center; gap:11px; font-family:var(--mono); font-size:14px; background:var(--panel); border:1px solid var(--line-2); border-radius:12px; padding:15px 16px; cursor:pointer; color:var(--ink)}
+  .cmd .pr{color:var(--accent)} .cmd .cp{margin-left:auto; font-size:12px; color:var(--faint)}
+  .incl{margin-top:20px; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:13.5px; color:var(--muted)}
+  .incl div{display:flex; gap:9px; align-items:center} .incl .k{color:var(--accent)}
+  .fine{margin-top:20px; font-size:12.5px; color:var(--faint); display:flex; gap:16px; flex-wrap:wrap}
+  .fine a{color:var(--accent)}
+
+  footer{border-top:1px solid var(--line)}
+  footer .in{max-width:var(--maxw); margin:0 auto; padding:26px 22px; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; color:var(--faint); font-size:13.5px}
+  footer a{color:var(--muted)} footer a:hover{color:var(--ink)}
+  footer .r{display:flex; gap:20px}
+
+  @media (max-width:900px){
+    .hero-grid{grid-template-columns:1fr; gap:38px}
+    .hero-l{text-align:center}
+    .hero h1,.hero .sub{margin-left:auto; margin-right:auto}
+    .cta{justify-content:center}
+    .app{max-width:520px; margin:0 auto; width:100%}
+  }
+  @media (max-width:820px){
+    .how .in{grid-template-columns:1fr; gap:34px}
+    .trust{grid-template-columns:1fr 1fr; gap:26px}
+  }
+  @media (prefers-reduced-motion:reduce){ .track{animation:none} .ask .cur{animation:none} }
+
+/* ---- identity section ---- */
+/* YOURS — uses the page's own tokens only; no new palette, no new fonts. */
+.yours { padding: 92px 0; border-top: 1px solid var(--line); background: var(--panel); }
+.yours .in { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+.ycard { display: grid; grid-template-columns: 300px 1fr; gap: 0;
+         border: 1px solid var(--line-2); border-radius: 16px; overflow: hidden;
+         background: var(--panel-2); }
+
+/* the meet-your-dog panel */
+.ymeet { padding: 30px 26px 28px; border-right: 1px solid var(--line-2);
+         background: var(--raise); text-align: center; }
+.yface { width: 148px; height: 148px; margin: 0 auto 20px; border-radius: 20px;
+         overflow: hidden; line-height: 0;
+         box-shadow: 0 2px 6px rgba(0,0,0,.35), 0 18px 40px rgba(0,0,0,.28); }
+.yface svg { width: 100%; height: 100%; display: block; }
+.ylabel { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+          text-transform: uppercase; color: var(--faint); margin-bottom: 8px; }
+.yinput input { width: 100%; text-align: center; font: inherit; font-size: 19px; font-weight: 600;
+                color: var(--ink); background: var(--panel); border: 1px solid var(--line-2);
+                border-radius: 10px; padding: 9px 12px; }
+.yinput input:focus { outline: 2px solid var(--accent); outline-offset: 1px;
+                      border-color: transparent; }
+.yhint { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+.yhint b { color: var(--accent-2); font-weight: 600; }
+.ynote { margin: 14px 0 0; font-size: 12px; line-height: 1.55; color: var(--faint); }
+
+/* the facts */
+.yfacts { padding: 8px 0; }
+.yrow { display: grid; grid-template-columns: 138px 1fr; gap: 18px; align-items: baseline;
+        padding: 17px 28px; border-bottom: 1px solid var(--line); }
+.yrow-last { border-bottom: 0; }
+.yk { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--faint); }
+.yv { min-width: 0; }
+.yv code { font-family: var(--mono); font-size: 13.5px; color: var(--accent-2);
+           background: var(--panel); border: 1px solid var(--line-2); border-radius: 6px;
+           padding: 2px 8px; overflow-wrap: anywhere; }
+.ychip { display: inline-block; font-size: 13.5px; font-weight: 600; color: var(--ink);
+         background: var(--panel); border: 1px solid var(--line-2); border-radius: 6px;
+         padding: 2px 9px; }
+.yperm { color: var(--warm); border-color: rgba(232,176,106,.32); font-weight: 500; }
+.ymut { display: block; margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+
+.ypack { max-width: 62ch; margin: 26px auto 0; text-align: center; font-size: 13.5px;
+         color: var(--faint); }
+
+@media (max-width: 780px) {
+  .yours { padding: 66px 0; }
+  .ycard { grid-template-columns: 1fr; }
+  .ymeet { border-right: 0; border-bottom: 1px solid var(--line-2); }
+  .yrow { grid-template-columns: 1fr; gap: 5px; padding: 15px 20px; }
+}
+
+  .hero-sub2{margin-top:9px;font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;
+             text-transform:uppercase;color:var(--faint)}
+</style>
+<!-- Google Analytics 4 (property "Collie", stream collie.run). Cloudflare Web Analytics stays
+     alongside it: it is the one that keeps working when an ad blocker eats gtag.js, which on a page
+     whose visitors are developers is most of them. -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-4SZK6MYMY7"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-4SZK6MYMY7');
+</script>
+</head>
+<body>
+
+<header><div class="in">
+  <div class="brand"><img src="collie-logo.svg" alt=""><span>Collie</span></div>
+  <nav>
+    <a href="https://github.com/colliehq/collie#readme">How it works</a>
+    <a href="https://github.com/colliehq/collie">GitHub</a>
+    <button id="theme" title="light / dark">◐</button>
+    <a href="#get" class="dl">Download</a>
+  </nav>
+</div></header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero"><div class="halo"></div><div class="wrap hero-grid">
+    <div class="hero-l">
+      <span class="pill"><b>New</b> a coding agent that lives on your computer</span>
+      <h1>A coding agent that lives on your computer — and can <span class="g">actually run it</span>.</h1>
+      <p class="sub">Local and private. Collie reaches your <b>real environment</b> — your logged-in browser, your desktop, your screen, your files — and <b>proves its work by running it.</b></p>
+      <div class="cta">
+        <a class="btn" href="#get">↓ Get Collie — it's free</a>
+        <div class="hero-sub2">meet your first collie</div>
+        <a class="btn ghost" href="#see">See what it can do</a>
+        <span class="note">One click on Windows · also on macOS &amp; Linux · runs on your own machine</span>
+      </div>
+    </div>
+
+    <div class="hero-r">
+      <div class="app">
+        <div class="app-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="ttl"><img src="collie-logo.svg" alt="">Collie</span>
+          <span class="ctx">~/staging</span>
+        </div>
+        <div class="app-body">
+          <div class="msg you"><span class="who">You</span><div class="bub">Fix the timeout bug in checkout — and prove it's fixed</div></div>
+          <div class="msg col">
+            <span class="who">Collie</span>
+            <div class="acts">
+              <div class="act"><i class="i">✓</i> Found it → <b>checkout/pay.py:42</b></div>
+              <div class="act"><i class="i">✓</i> Wrote a failing reproduction <span class="dim">· red before the fix</span></div>
+              <div class="act"><i class="i">✓</i> Made the fix <span class="dim">· +1 −1</span></div>
+              <div class="act"><i class="i">✓</i> Re-ran it — <b>verified passing ✓</b></div>
+            </div>
+            <div class="done"><img src="collie-logo.svg" alt="">Fixed and verified. Anything else?</div>
+          </div>
+        </div>
+        <form class="app-input" id="askForm" autocomplete="off">
+          <img class="ii" src="collie-logo.svg" alt="">
+          <div class="ifield">
+            <input id="askInput" type="text" aria-label="Ask Collie to do something">
+            <span class="pho" id="pho"><span id="typed"></span><span class="ph">Ask Collie to…</span><span class="cur"></span></span>
+          </div>
+          <button class="send" type="submit" aria-label="Ask Collie"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+        </form>
+      </div>
+    </div>
+  </div></section>
+
+  <!-- WHAT YOU CAN ASK -->
+  <section class="band" id="see">
+    <div class="wrap lead-h">
+      <div class="eye">CODING IS THE CORE · YOUR MACHINE IS THE REACH</div>
+      <h2>If you can describe it, Collie can do it.</h2>
+      <p>Its coding agent built the desktop console, the real-browser control, the recorder, the phone remote — the range is the proof. You ask; it does the whole thing, on your own machine.</p>
+    </div>
+    <div class="marq">
+      <div class="track">
+        <span class="chip"><span class="q">›</span>Fix the checkout bug — and prove it's fixed<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
+        <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
+        <span class="chip"><span class="q">›</span>Clean up and organize my Downloads folder<span class="tag">files</span></span>
+        <!-- duplicate for seamless loop -->
+        <span class="chip"><span class="q">›</span>Fix the checkout bug — and prove it's fixed<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
+        <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
+        <span class="chip"><span class="q">›</span>Clean up and organize my Downloads folder<span class="tag">files</span></span>
+      </div>
+      <div class="track rev">
+        <span class="chip"><span class="q">›</span>Rename this project everywhere in the code<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Summarize these 40 PDFs into one note<span class="tag">files</span></span>
+        <span class="chip"><span class="q">›</span>Fill out this application form with my details<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Find every place this function is used<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Download my invoices and total them up<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Rename this project everywhere in the code<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Summarize these 40 PDFs into one note<span class="tag">files</span></span>
+        <span class="chip"><span class="q">›</span>Fill out this application form with my details<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Find every place this function is used<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Download my invoices and total them up<span class="tag">web</span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW SIMPLE -->
+  <section class="how"><div class="in">
+    <div class="stp"><div class="big">1</div><h3>Say it in plain words</h3><p>No commands, no setup. Talk to Collie the way you'd ask a person for help.</p></div>
+    <div class="stp"><div class="big">2</div><h3>It does the whole thing</h3><p>It opens your browser, runs the steps, edits the files — the actual work, not just advice.</p></div>
+    <div class="stp"><div class="big">3</div><h3>It proves it worked</h3><p>It runs the change to check it's actually done, shows you exactly what it did, and hands back the result.</p></div>
+  </div></section>
+
+  <!-- TRUST -->
+  <section class="band"><div class="wrap">
+    <div class="trust">
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div><h4>Uses your real browser</h4><p>Signed into your accounts — it does what you'd do, in your own session.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></div><h4>Proves its work</h4><p>Writes a check, runs it, and only calls a task done when it actually passes.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg></div><h4>Runs on your machine</h4><p>Local and private, on your own AI subscription. Your files stay with you.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M3 8h18M8 21h8"/></svg></div><h4>Windows, Mac &amp; Linux</h4><p>One click to install on Windows; a single line on macOS and Linux.</p></div>
+    </div>
+  </div></section>
+
+  <!-- GET -->
+  <!-- YOURS — the identity section. Sits between "how it works" and the download, because it is the
+     answer to "what do I actually get", and the download is the next thing you want after it. -->
+<section class="yours" id="yours"><div class="in">
+  <div class="lead-h" style="margin-bottom:30px">
+    <div class="eye">WHAT YOU GET</div>
+    <h2>Not an account. A collie of your own.</h2>
+    <p>Every machine you install it on gets one, and it keeps what it is: a name, a face, an
+      address, and a plain statement of what it&rsquo;s allowed to do. Move it to another laptop and
+      it&rsquo;s still the same one.</p>
+  </div>
+
+  <div class="ycard">
+    <div class="ymeet">
+      <div class="yface" id="yface" aria-live="polite"></div>
+      <label class="ylabel" for="yname">Name yours</label>
+      <div class="yinput">
+        <input id="yname" type="text" value="Rowan" maxlength="18" spellcheck="false"
+               autocomplete="off" aria-label="Name your collie">
+      </div>
+      <p class="yhint" id="yhint">a <b>red</b> collie on a <b>navy</b> plate</p>
+      <p class="ynote">Drawn from the name and nothing else &mdash; so the same name is the same
+        dog on every machine you own, and after every reinstall.</p>
+    </div>
+
+    <div class="yfacts">
+      <div class="yrow">
+        <div class="yk">Its name</div>
+        <div class="yv"><span class="ychip" id="y-name">Rowan</span>
+          <span class="ymut">yours to change, once, and then it keeps it</span></div>
+      </div>
+      <div class="yrow">
+        <div class="yk">In Slack</div>
+        <div class="yv"><code id="y-handle">@rowan</code>
+          <span class="ymut">its own bot user &mdash; @ it in a channel and it goes to work</span></div>
+      </div>
+      <div class="yrow">
+        <div class="yk">Its address</div>
+        <div class="yv"><code id="y-mail">rowan.you@collie.run</code>
+          <span class="ymut">a real inbox, so &ldquo;check your email to confirm&rdquo; stops being
+            a hand-off to you</span></div>
+      </div>
+      <div class="yrow">
+        <div class="yk">Where it lives</div>
+        <div class="yv"><code>your laptop</code>
+          <span class="ymut">it says which machine, in front of every message</span></div>
+      </div>
+      <div class="yrow yrow-last">
+        <div class="yk">What it may do</div>
+        <div class="yv"><span class="ychip yperm">works on a branch &mdash; main is yours</span>
+          <span class="ymut">announced out loud, so the boundary isn&rsquo;t something you find out
+            afterwards</span></div>
+      </div>
+    </div>
+  </div>
+
+  <p class="ypack">Install it on your desktop too and you have two, with different names, that can
+    hand work to each other.</p>
+</div></section>
+
+
+<section class="get" id="get"><div class="in">
+    <div class="lead-h" style="margin-bottom:26px">
+      <div class="eye">GET COLLIE</div>
+      <h2>Free, and installed in a minute.</h2>
+      <p>Pick your system — we already guessed it below.</p>
+    </div>
+    <div class="dlcard">
+      <div class="top"><img src="collie-logo.svg" alt=""><div><div class="t">Collie</div><div class="s" data-version>v0.20.24 · free · MIT · open-source</div></div></div>
+      <div class="tabs" role="tablist">
+        <!-- Windows 11's four squares, inset. The old tilted mark spanned the whole 24×24 box while
+             the Apple and Linux glyphs sit well inside theirs, so at 17px on a dark background it
+             stopped reading as a logo and became a solid white block with two hairlines through it.
+             Equal panes with a real gap read as four shapes instead of a lined square. -->
+        <button role="tab" data-os="win" aria-selected="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h6.1v6.1H5V5Zm7.9 0H19v6.1h-6.1V5ZM5 12.9h6.1V19H5v-6.1Zm7.9 0H19V19h-6.1v-6.1Z"/></svg>Windows</button>
+        <button role="tab" data-os="mac" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.9c0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.7-.8-2.8-.8-1.4 0-2.8.8-3.5 2.1-1.5 2.6-.4 6.5 1.1 8.6.7 1 1.5 2.2 2.6 2.1 1-.04 1.4-.7 2.7-.7 1.2 0 1.6.7 2.7.66 1.1-.02 1.8-1 2.5-2 .8-1.2 1.1-2.3 1.1-2.3-.02-.02-2.1-.8-2.1-3.2ZM14.3 6.3c.6-.7 1-1.7.9-2.7-.9.04-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .07 1.9-.5 2.5-1.2Z"/></svg>macOS</button>
+        <button role="tab" data-os="linux" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c2.2 0 3.3 1.9 3.3 4.2 0 1.3-.4 2.2-.4 3.2 0 .9.7 1.5 1.4 2.8.8 1.5 1.7 3.1 1.7 4.7 0 1.6-1.1 2.5-1.9 2.6.2.6-.1 1.4-.9 1.7-.8.3-2.1.3-3.4.3s-2.6 0-3.4-.3c-.8-.3-1.1-1.1-.9-1.7-.8-.1-1.9-1-1.9-2.6 0-1.6.9-3.2 1.7-4.7.7-1.3 1.4-1.9 1.4-2.8 0-1-.4-1.9-.4-3.2C8.7 3.9 9.8 2 12 2Z"/></svg>Linux</button>
+      </div>
+      <div class="pane on" data-os="win">
+        <p class="lead">The easy way: no Python, no terminal. Download, double-click, pick your language — done. Everything's bundled inside.</p>
+        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-Setup.exe">↓ Download for Windows <span class="sz">Collie-Setup.exe · 48 MB</span></a>
+        <div class="incl">
+          <div><span class="k">✓</span> No setup or configuring</div>
+          <div><span class="k">✓</span> Desktop app + live wallpaper</div>
+          <div><span class="k">✓</span> Installs for you only, no admin</div>
+          <div><span class="k">✓</span> Uninstalls cleanly anytime</div>
+        </div>
+        <div class="fine"><span>Windows 10 / 11</span><a href="https://github.com/colliehq/collie/releases/latest">all downloads →</a></div>
+      </div>
+      <div class="pane" data-os="mac">
+        <p class="lead">The easy way: no Python, no terminal. Download, drag it to Applications, open it — signed and notarised by Apple, so it opens without a warning.</p>
+        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-arm64.dmg">↓ Download for macOS <span class="sz">Collie-arm64.dmg · 137 MB</span></a>
+        <div class="incl">
+          <div><span class="k">✓</span> No setup or configuring</div>
+          <div><span class="k">✓</span> Desktop app + menu-bar controls</div>
+          <div><span class="k">✓</span> Installs for you only, no admin</div>
+          <div><span class="k">✓</span> Drag to the Bin to uninstall</div>
+        </div>
+        <div class="fine"><span>Apple silicon · macOS 12+</span><a href="https://github.com/colliehq/collie/releases/latest">all downloads →</a></div>
+      </div>
+      <div class="pane" data-os="linux">
+        <p class="lead">One package, one line. Everything works on plain localhost.</p>
+        <div class="cmd" data-copy='pip install "git+https://github.com/colliehq/collie"'><span class="pr">$</span><span>pip install "git+https://github.com/colliehq/collie"</span><span class="cp">copy</span></div>
+        <div class="fine"><span>needs Python 3.12+</span><a href="https://github.com/colliehq/collie#readme">step-by-step guide →</a></div>
+      </div>
+    </div>
+  </div></section>
+</main>
+
+<footer><div class="in">
+  <span>Collie · <a href="https://collie.run">collie.run</a> · free &amp; open-source (MIT) · runs locally</span>
+  <span class="r"><a href="https://github.com/colliehq/collie">GitHub</a><a href="https://github.com/colliehq/collie/releases">Downloads</a><a href="https://github.com/colliehq/collie#readme">Docs</a></span>
+</div></footer>
+
+<script>
+(function(){
+  "use strict";
+  var root=document.documentElement;
+  document.getElementById("theme").addEventListener("click",function(){
+    var c=root.getAttribute("data-theme");
+    if(!c) c=matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light";
+    root.setAttribute("data-theme", c==="dark"?"light":"dark");
+  });
+  // OS tabs
+  function os(){
+    var p=(((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||"")+" "+(navigator.userAgent||"")).toLowerCase();
+    if(p.indexOf("win")>-1)return"win";
+    if(p.indexOf("mac")>-1||p.indexOf("iphone")>-1||p.indexOf("ipad")>-1)return"mac";
+    if(p.indexOf("linux")>-1||p.indexOf("android")>-1)return"linux";
+    return"win";
+  }
+  var tabs=[].slice.call(document.querySelectorAll('.tabs button')), panes=[].slice.call(document.querySelectorAll('.pane'));
+  function sel(o){tabs.forEach(function(t){t.setAttribute("aria-selected",t.dataset.os===o);});panes.forEach(function(p){p.classList.toggle("on",p.dataset.os===o);});}
+  tabs.forEach(function(t){t.addEventListener("click",function(){sel(t.dataset.os);});}); sel(os());
+  // copy
+  document.querySelectorAll('.cmd[data-copy]').forEach(function(el){
+    el.addEventListener("click",function(){var cp=el.querySelector('.cp');
+      (navigator.clipboard?navigator.clipboard.writeText(el.dataset.copy):Promise.reject())
+      .then(function(){if(cp){var o=cp.textContent;cp.textContent="copied ✓";setTimeout(function(){cp.textContent=o;},1400);}}).catch(function(){});});
+  });
+  // ---- interactive ask panel ----
+  var input=document.getElementById("askInput"), pho=document.getElementById("pho"),
+      typed=document.getElementById("typed"), form=document.getElementById("askForm"),
+      body=document.querySelector(".app-body"), reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
+
+  // typewriter placeholder — runs only while the field is empty & unfocused
+  var lines=["fix the login bug and prove it's fixed","renew the cert and open the dashboard",
+    "pull my orders into a spreadsheet","clean up my Downloads folder","get this project running on my machine",
+    "fill out this form with my details"];
+  var li=0, ci=0, del=false, run=false, tok=0;
+  function tick(t){
+    if(t!==tok||!run) return;
+    var w=lines[li];
+    if(!del){ typed.textContent=w.slice(0,ci++); if(ci>w.length){ del=true; setTimeout(function(){tick(t);},1400); return; } }
+    else{ typed.textContent=w.slice(0,ci--); if(ci<0){ del=false; ci=0; li=(li+1)%lines.length; } }
+    setTimeout(function(){tick(t);}, del?32:54);
+  }
+  function startTw(){ if(reduce) return; run=true; tok++; tick(tok); }
+  function stopTw(){ run=false; tok++; }
+  input.addEventListener("focus", function(){ stopTw(); pho.classList.add("hide"); });
+  input.addEventListener("input", function(){ pho.classList.add("hide"); });
+  input.addEventListener("blur", function(){ if(!input.value){ typed.textContent=""; pho.classList.remove("hide"); startTw(); } });
+  var phStatic=pho.querySelector(".ph");
+  if(reduce){ typed.textContent=""; }
+  else{ if(phStatic) phStatic.style.display="none"; setTimeout(startTw,700); }
+
+  // guided, honest reply -> download
+  function cat(t){ t=t.toLowerCase();
+    if(/(browser|chrome|edge|website|\bsite\b|login|log in|sign in|dashboard|portal|order|form|invoice|book|email|gmail|scrape|\bweb\b|\bpage\b|account)/.test(t)) return "browser";
+    if(/(bug|\bcode\b|coding|repo|function|refactor|deploy|\btest|build|project|rename|\bgit\b|\bapi\b|compile|\bfix\b|feature|typescript|python|javascript)/.test(t)) return "code";
+    if(/(file|folder|pdf|organi|photo|document|spreadsheet|csv|summari|downloads|clean\s?up|\bsort\b)/.test(t)) return "files";
+    return "generic";
+  }
+  var REPLY={
+    browser:"On it — that’s a <b>browser</b> job. I’d open your own logged-in Chrome or Edge and handle it, click by click.",
+    code:"Nice, a <b>coding</b> task — my favourite. I’d dig into your project, make the change, and prove it actually works.",
+    files:"Easy — I’d go through your <b>files</b> and sort the whole thing out for you.",
+    generic:"Love it — that’s exactly my kind of job."
+  };
+  function osDl(){
+    var p=(((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||"")+" "+(navigator.userAgent||"")).toLowerCase();
+    if(p.indexOf("win")>-1) return {href:"https://github.com/colliehq/collie/releases/latest/download/Collie-Setup.exe", label:"↓ Install Collie for Windows — free", note:"WINDOWS 10 / 11 · ALSO MACOS · LINUX"};
+      // A Mac visitor used to get a button that scrolled to a panel telling them to run pip.
+      // There has been a signed, notarised .dmg in every release since v0.20.16; hand them the
+      // file, the same way Windows gets one.
+      if(p.indexOf("mac")>-1) return {href:"https://github.com/colliehq/collie/releases/latest/download/Collie-arm64.dmg", label:"↓ Install Collie for macOS — free", note:"APPLE SILICON · ALSO ON WINDOWS &amp; LINUX"};
+    return {href:"#get", label:"↓ Get Collie — it’s free", note:"MACOS · LINUX · WINDOWS · RUNS ON YOUR MACHINE"};
+  }
+  function esc(s){ return s.replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+
+  var history=[], msgCount=0, MAX_MSGS=6, busy=false;
+  function down(){ body.scrollTop=body.scrollHeight; }
+  function addYou(v){
+    var e=document.createElement("div"); e.className="msg you";
+    e.innerHTML='<span class="who">You</span><div class="bub">'+esc(v)+'</div>';
+    body.appendChild(e); down();
+  }
+  function addTyping(){
+    var e=document.createElement("div"); e.className="msg col";
+    e.innerHTML='<span class="who">Collie</span><div class="typing"><i></i><i></i><i></i></div>';
+    body.appendChild(e); down(); return e;
+  }
+  function addReply(text){
+    var dl=osDl();
+    var e=document.createElement("div"); e.className="msg col";
+    e.innerHTML='<span class="who">Collie</span><div class="rbub"><p>'+esc(text)+'</p>'+
+      '<a class="rbtn" href="'+dl.href+'">'+dl.label+'</a><span class="rnote">'+dl.note+'</span></div>';
+    body.appendChild(e); down();
+  }
+  function fallback(v){
+    return REPLY[cat(v)]+' But I do the real thing on your own computer — so I can’t run it from this web page. Install me and I’ll actually do it.';
+  }
+  function capNotice(){
+    input.disabled=true; form.classList.add("capped"); pho.classList.add("hide"); typed.textContent="";
+    var dl=osDl();
+    var e=document.createElement("div"); e.className="msg col";
+    e.innerHTML='<span class="who">Collie</span><div class="rbub"><p>That’s the tour! 🐾 To actually get any of this done, bring me onto your own computer — it’s free.</p><a class="rbtn" href="'+dl.href+'">'+dl.label+'</a><span class="rnote">'+dl.note+'</span></div>';
+    body.appendChild(e); down();
+  }
+  form.addEventListener("submit", async function(e){
+    e.preventDefault();
+    if(busy || input.disabled) return;
+    var v=input.value.trim(); if(!v) return;
+    stopTw(); pho.classList.add("hide");
+    addYou(v); history.push({role:"user",content:v});
+    input.value=""; msgCount++; busy=true;
+    var t=addTyping();
+    var reply=null, limited=false;
+    try{
+      var res=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({message:v, history:history.slice(0,-1)})});
+      if(res.status===429){ limited=true; }
+      else if(res.ok){ var d=await res.json(); if(d&&d.reply) reply=d.reply; }
+    }catch(_){}
+    t.remove();
+    if(limited) reply="I’ve chatted plenty today! To keep going — and to actually get things done — install me on your computer. It’s free.";
+    else if(!reply) reply=fallback(v);
+    history.push({role:"assistant",content:reply});
+    if(history.length>8) history=history.slice(-8);
+    addReply(reply); busy=false;
+    if(msgCount>=MAX_MSGS) capNotice();
+    else setTimeout(function(){ if(!input.disabled) input.focus(); },40);
+  });
+})();
+</script>
+<!-- Cloudflare Web Analytics: no cookies, no cross-site identifiers, nothing to consent to. -->
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "dbb5ee67fbbd4995a2cae84e3f0af217"}'></script>
+<script>
+// The version was typed into the page by hand and stopped being true: the card still read v0.20.0
+// with four releases shipped since. Ask GitHub instead, and leave the typed one as the fallback so a
+// rate-limited or offline visitor sees a number rather than a gap.
+fetch("https://api.github.com/repos/colliehq/collie/releases/latest")
+  .then(function (r) { return r.ok ? r.json() : null; })
+  .then(function (j) {
+    if (!j || !j.tag_name) return;
+    document.querySelectorAll("[data-version]").forEach(function (el) {
+      el.textContent = j.tag_name + " · free · MIT · open-source";
+    });
+  })
+  .catch(function () {});
+</script>
+<script>
+
+// Ported from harness/avatar.py — the SAME tables, exported from it so the two cannot drift.
+// The face is derived from the name and nothing else: sha256(name) sliced into a coat and a plate.
+const AV = {"COATS":[["black",0.62,0.075,0.16,0.2,0.12,0.0],["red",0.045,0.155,0.44,0.35,0.38,0.07],["chocolate",0.075,0.13,0.4,0.29,0.32,0.05],["blue",0.6,0.14,0.24,0.32,0.2,0.02],["sable",0.095,0.17,0.36,0.37,0.3,0.08],["lilac",0.87,0.15,0.16,0.32,0.13,0.03],["slate",0.575,0.115,0.15,0.27,0.11,0.01],["fawn",0.11,0.185,0.3,0.4,0.24,0.09]],"PLATE_OFFSETS":[0.04,0.08,0.12,0.16,0.2,0.24,0.28,0.32,0.36,0.4,0.44,0.48,0.52,0.56,0.6,0.64,0.68,0.72,0.76,0.8,0.84,0.88,0.92,0.96],"PLATE_S":0.42,"PLATE_CONTRAST":1.35,"EYE":"#2B2118","EARS":[1,2,7,8,11,12],"CHEEKS":[4,5],"RUFF":[0,6,9,10,16,17,22],"BLAZE":[3],"NOSE":[13,18,19],"EYES":[14,15],"CATCH":[20,21],"PLATE_NAMES":["wine","clay","amber","moss","pine","sea","teal","navy","indigo","violet","plum","rose"]};
+const LOGO = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 590 590\" role=\"img\" aria-label=\"collie\"><!-- collie logo: low-poly border collie head (traced from Kling AI art, VTracer polygon mode) --><g transform=\"translate(20,0)\"><path d=\"M0,0 L13,4 L18,7 L22,9 L27,11 L36,15 L50,21 L62,27 L67,30 L76,33 L89,38 L97,44 L105,46 L116,52 L123,55 L129,59 L131,73 L132,85 L133,107 L136,149 L137,167 L137,180 L134,180 L123,174 L114,168 L103,163 L96,159 L91,161 L89,166 L85,171 L80,175 L72,186 L73,191 L76,197 L79,206 L86,221 L89,231 L98,256 L107,280 L115,300 L117,309 L112,308 L97,304 L92,303 L89,301 L81,301 L79,305 L79,317 L80,327 L82,358 L83,366 L84,378 L78,378 L71,374 L58,370 L51,376 L37,402 L31,411 L25,422 L22,426 L15,438 L12,443 L9,449 L2,460 L-3,467 L-8,477 L-13,485 L-18,484 L-28,471 L-35,464 L-39,463 L-48,473 L-57,484 L-62,488 L-70,499 L-79,509 L-86,517 L-90,522 L-95,528 L-99,534 L-110,546 L-119,557 L-122,558 L-130,550 L-139,538 L-146,530 L-156,519 L-163,511 L-167,506 L-174,498 L-185,485 L-191,478 L-196,473 L-205,463 L-209,465 L-218,473 L-220,477 L-227,485 L-231,483 L-237,472 L-240,467 L-243,462 L-249,453 L-254,445 L-257,439 L-263,430 L-266,424 L-272,416 L-280,402 L-282,400 L-284,393 L-290,386 L-295,376 L-298,373 L-304,371 L-317,375 L-323,380 L-327,380 L-327,359 L-326,358 L-324,339 L-323,303 L-326,300 L-333,301 L-346,306 L-356,309 L-360,309 L-359,303 L-358,300 L-355,290 L-352,286 L-344,262 L-342,256 L-340,249 L-338,247 L-335,238 L-330,224 L-325,212 L-321,203 L-318,194 L-315,188 L-316,184 L-330,167 L-337,159 L-347,163 L-356,169 L-367,175 L-373,179 L-380,180 L-381,170 L-380,160 L-379,138 L-376,104 L-375,80 L-373,61 L-372,57 L-365,55 L-353,49 L-339,42 L-323,34 L-317,32 L-307,27 L-302,25 L-287,17 L-278,14 L-270,10 L-264,7 L-253,2 L-243,1 L-231,13 L-226,15 L-222,20 L-218,21 L-212,28 L-207,30 L-199,36 L-195,41 L-189,42 L-163,42 L-158,43 L-94,43 L-90,44 L-87,43 L-70,42 L-61,42 L-50,41 L-44,37 L-36,29 L-27,22 L-16,13 L-5,4 Z \" fill=\"#B2B1BB\" transform=\"translate(396,16)\"/><path d=\"M0,0 L5,0 L17,12 L22,14 L26,19 L30,20 L36,27 L41,29 L49,35 L53,40 L59,41 L85,41 L92,43 L95,86 L97,108 L99,150 L101,176 L101,194 L84,219 L75,232 L64,248 L52,265 L44,276 L43,277 L42,336 L13,346 L0,350 L-10,354 L-20,357 L-32,361 L-34,363 L-45,366 L-62,372 L-70,375 L-75,379 L-79,379 L-79,358 L-78,357 L-76,338 L-75,302 L-78,299 L-85,300 L-98,305 L-108,308 L-112,308 L-111,302 L-110,299 L-107,289 L-104,285 L-96,261 L-94,255 L-92,248 L-90,246 L-87,237 L-82,223 L-77,211 L-73,202 L-70,193 L-67,187 L-68,183 L-82,166 L-89,158 L-99,162 L-108,168 L-119,174 L-125,178 L-132,179 L-133,169 L-132,159 L-131,137 L-128,103 L-127,79 L-125,60 L-124,56 L-117,54 L-105,48 L-91,41 L-75,33 L-69,31 L-59,26 L-54,24 L-39,16 L-30,13 L-22,9 L-16,6 L-5,1 Z \" fill=\"#0F0E19\" transform=\"translate(148,17)\"/><path d=\"M0,0 L13,4 L18,7 L22,9 L27,11 L36,15 L50,21 L62,27 L67,30 L76,33 L89,38 L97,44 L105,46 L116,52 L123,55 L129,59 L131,73 L132,85 L133,107 L136,149 L137,167 L137,180 L134,180 L123,174 L114,168 L103,163 L96,159 L91,161 L89,166 L85,171 L80,175 L72,186 L73,191 L76,197 L79,206 L86,221 L89,231 L98,256 L107,280 L115,300 L117,309 L112,308 L97,304 L92,303 L89,301 L81,301 L79,305 L79,317 L80,327 L82,358 L83,366 L84,378 L78,378 L71,374 L59,370 L46,366 L25,358 L9,353 L2,350 L-11,346 L-19,343 L-37,337 L-38,279 L-50,262 L-62,245 L-75,226 L-84,213 L-94,198 L-96,195 L-96,178 L-92,119 L-90,95 L-88,63 L-86,43 L-70,42 L-61,42 L-50,41 L-44,37 L-36,29 L-27,22 L-16,13 L-5,4 Z \" fill=\"#0F0E19\" transform=\"translate(396,16)\"/><path d=\"M0,0 L57,0 L61,1 L65,0 L64,20 L61,68 L59,88 L56,135 L56,152 L68,170 L81,189 L93,206 L106,225 L113,235 L113,295 L109,300 L101,307 L92,316 L84,322 L82,323 L70,323 L54,315 L35,305 L33,301 L38,295 L48,287 L61,276 L66,271 L67,269 L69,269 L68,239 L55,225 L4,225 L-5,234 L-9,239 L-9,268 L-1,277 L10,286 L23,297 L27,300 L27,303 L5,315 L-11,324 L-22,323 L-29,319 L-44,305 L-52,298 L-54,295 L-54,234 L-43,219 L-30,200 L-23,190 L-7,167 L3,152 L3,134 L1,108 L-2,51 L-4,34 L-5,14 L-5,1 Z \" fill=\"#FCFCFB\" transform=\"translate(245,59)\"/><path d=\"M0,0 L8,1 L34,1 L41,3 L44,46 L46,68 L48,110 L50,136 L50,154 L33,179 L24,192 L13,208 L1,225 L-7,236 L-9,237 L-15,228 L-23,217 L-37,198 L-51,179 L-64,161 L-76,145 L-75,138 L-68,123 L-62,110 L-57,98 L-54,93 L-51,86 L-45,71 L-38,57 L-30,38 L-22,27 L-11,14 L-3,3 Z \" fill=\"#373746\" transform=\"translate(199,57)\"/><path d=\"M0,0 L3,4 L7,9 L9,13 L14,18 L20,25 L20,27 L23,28 L29,37 L32,42 L35,49 L40,59 L44,70 L44,72 L46,72 L49,80 L52,87 L52,90 L54,90 L55,96 L57,96 L62,109 L66,117 L71,128 L79,143 L78,147 L68,161 L56,177 L42,196 L35,206 L27,216 L15,232 L10,239 L6,234 L-5,219 L-18,200 L-30,183 L-42,165 L-48,156 L-48,139 L-44,80 L-42,56 L-40,24 L-38,4 L-22,3 L-13,3 L-2,2 Z \" fill=\"#373746\" transform=\"translate(348,55)\"/><path d=\"M0,0 L51,0 L60,9 L65,15 L65,45 L63,45 L61,50 L48,61 L37,70 L31,75 L30,79 L44,87 L61,95 L66,98 L78,98 L84,94 L96,83 L99,80 L104,77 L106,77 L104,82 L98,91 L97,94 L95,94 L93,99 L82,115 L80,119 L78,119 L76,124 L74,128 L71,130 L70,133 L68,133 L66,138 L61,147 L58,148 L56,152 L52,158 L49,164 L46,168 L44,168 L42,173 L38,180 L28,195 L25,198 L25,196 L23,196 L17,187 L12,178 L10,177 L7,171 L2,164 L2,162 L-1,161 L-2,156 L-6,154 L-16,139 L-19,133 L-22,130 L-32,115 L-38,106 L-38,104 L-41,103 L-42,98 L-45,97 L-46,92 L-49,91 L-53,84 L-53,82 L-57,83 L-57,74 L-53,76 L-45,83 L-32,95 L-26,98 L-15,99 L5,88 L21,79 L23,79 L21,75 L7,64 L-3,55 L-11,48 L-14,44 L-14,15 L-2,2 Z \" fill=\"#9998A2\" transform=\"translate(249,283)\"/><path d=\"M0,0 L4,0 L2,9 L0,16 L-2,16 L-3,22 L-9,40 L-14,52 L-19,67 L-22,75 L-29,94 L-35,110 L-40,123 L-49,131 L-60,138 L-69,144 L-82,152 L-89,156 L-90,158 L-106,166 L-109,169 L-119,174 L-125,178 L-132,179 L-133,169 L-132,159 L-131,137 L-128,103 L-127,79 L-125,60 L-124,56 L-117,54 L-105,48 L-91,41 L-75,33 L-69,31 L-59,26 L-54,24 L-39,16 L-30,13 L-22,9 L-16,6 L-5,1 Z \" fill=\"#2E2E3E\" transform=\"translate(148,17)\"/><path d=\"M0,0 L13,4 L18,7 L22,9 L27,11 L36,15 L50,21 L62,27 L67,30 L76,33 L89,38 L97,44 L105,46 L116,52 L123,55 L129,59 L131,73 L132,85 L133,107 L136,149 L137,167 L137,180 L134,180 L123,174 L114,168 L103,163 L96,159 L94,159 L92,156 L83,151 L73,144 L59,135 L51,129 L46,124 L41,114 L36,101 L30,85 L24,69 L15,44 L11,35 L9,25 L7,25 L3,14 L0,4 Z \" fill=\"#2E2E3D\" transform=\"translate(396,16)\"/><path d=\"M0,0 L1,0 L2,60 L3,62 L1,62 L1,184 L-10,193 L-14,199 L-21,207 L-25,205 L-31,194 L-34,189 L-37,184 L-43,175 L-48,167 L-51,161 L-57,152 L-60,146 L-66,138 L-74,124 L-76,122 L-78,115 L-84,108 L-89,98 L-92,95 L-97,93 L-93,90 L-81,86 L-75,84 L-67,81 L-57,77 L-48,74 L-34,69 L-20,65 L-5,60 L0,59 Z \" fill=\"#C7C6CD\" transform=\"translate(190,294)\"/><path d=\"M0,0 L8,1 L20,5 L30,9 L39,12 L52,16 L67,21 L79,26 L91,30 L86,35 L81,43 L68,66 L63,74 L58,83 L55,87 L48,99 L45,104 L42,110 L35,121 L30,128 L25,138 L20,146 L15,145 L5,132 L-2,125 L-5,123 L-5,48 L-4,3 L-1,3 Z \" fill=\"#C7C6CD\" transform=\"translate(363,355)\"/><path d=\"M0,0 L2,3 L6,16 L8,21 L8,24 L10,24 L13,34 L18,46 L26,68 L30,80 L35,92 L39,104 L44,116 L49,125 L57,131 L69,139 L80,146 L90,153 L95,156 L95,158 L91,162 L89,166 L84,171 L74,183 L72,185 L67,178 L65,177 L62,172 L52,161 L44,151 L36,142 L29,133 L17,118 L17,116 L15,116 L4,102 L-5,92 L-12,83 L-14,79 L-17,76 L-23,69 L-29,62 L-36,54 L-36,52 L-40,50 L-43,45 L-46,41 L-44,37 L-35,28 L-26,21 L-15,12 L-4,3 Z \" fill=\"#020206\" transform=\"translate(395,17)\"/><path d=\"M0,0 L7,6 L13,12 L18,14 L22,19 L26,20 L32,27 L37,29 L45,35 L48,40 L40,49 L34,57 L26,67 L20,75 L16,80 L13,80 L12,85 L6,92 L5,94 L3,94 L1,98 L-9,110 L-18,122 L-20,122 L-22,127 L-26,132 L-28,132 L-30,136 L-34,142 L-39,147 L-51,161 L-60,172 L-67,180 L-71,184 L-82,171 L-90,161 L-94,156 L-81,148 L-68,140 L-55,131 L-45,123 L-37,102 L-33,91 L-26,72 L-22,60 L-17,48 L-9,24 L-6,16 L-4,16 L-2,6 Z \" fill=\"#030206\" transform=\"translate(152,17)\"/><path d=\"M0,0 L51,0 L60,9 L65,15 L65,45 L63,45 L61,50 L48,61 L37,70 L27,78 L22,76 L5,62 L-6,53 L-14,44 L-14,15 L-2,2 Z \" fill=\"#1D1B27\" transform=\"translate(249,283)\"/><path d=\"M0,0 L26,0 L32,4 L39,16 L43,26 L42,34 L35,46 L32,52 L25,58 L0,58 L-6,53 L-11,44 L-11,42 L-13,42 L-16,34 L-16,26 L-11,14 L-5,4 Z \" fill=\"#04030E\" transform=\"translate(341,173)\"/><path d=\"M0,0 L27,0 L33,4 L42,20 L44,24 L44,34 L35,51 L30,57 L2,57 L-3,53 L-11,40 L-15,30 L-14,23 L-6,7 Z \" fill=\"#04030E\" transform=\"translate(180,173)\"/><path d=\"M0,0 L2,1 L3,4 L30,18 L38,22 L45,23 L45,24 L37,26 L25,31 L0,41 L-7,40 L-19,35 L-27,32 L-42,26 L-47,25 L-43,23 L-23,12 L-7,3 L-5,3 L-5,1 Z \" fill=\"#C5C4CB\" transform=\"translate(277,359)\"/><path d=\"M0,0 L51,0 L60,9 L65,15 L65,45 L64,45 L64,16 L-13,16 L-13,44 L-14,44 L-14,15 L-2,2 Z \" fill=\"#5D5F6E\" transform=\"translate(249,283)\"/><path d=\"M0,0 L20,0 L23,4 L23,23 L6,22 L1,19 L0,18 Z \" fill=\"#070510\" transform=\"translate(237,312)\"/><path d=\"M0,0 L21,0 L21,18 L17,19 L16,22 L-1,22 L-1,1 Z \" fill=\"#05040D\" transform=\"translate(291,312)\"/><path d=\"M0,0 L7,0 L13,4 L14,6 L13,15 L11,17 L7,18 L-1,18 L-5,12 L-5,5 Z \" fill=\"#ECEAEB\" transform=\"translate(197,185)\"/><path d=\"M0,0 L8,0 L8,2 L12,4 L13,5 L13,12 L9,17 L7,18 L0,18 L-5,14 L-6,12 L-6,6 L-2,1 Z \" fill=\"#ECEBEC\" transform=\"translate(344,185)\"/><path d=\"M0,0 L5,5 L7,7 L7,37 L6,37 L6,8 L-71,8 L-71,36 L-72,36 L-72,7 L0,5 Z \" fill=\"#70717C\" transform=\"translate(307,291)\"/></g></svg>";
+
+const hex2rgb = h => [1,3,5].map(i => parseInt(h.slice(i,i+2),16));
+function hls2hex(h,l,s){
+  h=((h%1)+1)%1;
+  const f=n=>{const k=(n+h*12)%12, a=s*Math.min(l,1-l);
+    return Math.round(255*(l-a*Math.max(-1,Math.min(k-3,Math.min(9-k,1)))));};
+  return "#"+[f(0),f(8),f(4)].map(v=>v.toString(16).padStart(2,"0")).join("").toUpperCase();
+}
+function lightness(hex){
+  const [r,g,b]=hex2rgb(hex).map(v=>v/255);
+  return (Math.max(r,g,b)+Math.min(r,g,b))/2;
+}
+// Relative luminance — what decides whether the head separates from its ground. A fixed plate
+// lightness put half the coats at the SAME luminance as the ears and those dogs vanished.
+function lum(hex){
+  const c=hex2rgb(hex).map(v=>{v/=255; return v<=0.04045? v/12.92 : Math.pow((v+0.055)/1.055,2.4);});
+  return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];
+}
+function plateFor(hue, against){
+  const want=(lum(against)+0.05)*AV.PLATE_CONTRAST-0.05;
+  let lo=0.02, hi=0.42;
+  for(let i=0;i<30;i++){const mid=(lo+hi)/2;
+    if(lum(hls2hex(hue,mid,AV.PLATE_S))<want) lo=mid; else hi=mid;}
+  return hls2hex(hue,(lo+hi)/2,AV.PLATE_S);
+}
+async function traits(name){
+  const buf=await crypto.subtle.digest("SHA-256",
+    new TextEncoder().encode(name.trim().toLowerCase()));
+  const d=new Uint8Array(buf);
+  const coat=AV.COATS[d[2]%AV.COATS.length];
+  const off=AV.PLATE_OFFSETS[d[1]%AV.PLATE_OFFSETS.length];
+  const ears=hls2hex(coat[1],coat[2],coat[3]);
+  const plate=plateFor(coat[1]+off, ears);
+  const [r,g,b]=hex2rgb(plate).map(v=>v/255);
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+  let h=0; const dd=mx-mn;
+  if(dd){ h = mx===r ? ((g-b)/dd+(g<b?6:0)) : mx===g ? ((b-r)/dd+2) : ((r-g)/dd+4); h/=6; }
+  return {coat:coat[0], _coat:coat, plate_hex:plate,
+          plate:AV.PLATE_NAMES[Math.floor(h*AV.PLATE_NAMES.length)%AV.PLATE_NAMES.length]};
+}
+function faceSvg(t){
+  const [,hue,el,es,cl,cs,warm]=t._coat;
+  let i=-1;
+  const out=LOGO.replace(/fill="(#[0-9A-Fa-f]{6})"/g,(m,c)=>{
+    i++;
+    const l0=lightness(c);
+    if(AV.EYES.includes(i)) return 'fill="'+AV.EYE+'"';
+    if(AV.CATCH.includes(i)||AV.BLAZE.includes(i)) return m;
+    if(AV.NOSE.includes(i)) return 'fill="'+hls2hex(hue,Math.min(0.16,l0+0.04),0.20)+'"';
+    if(AV.EARS.includes(i)) return 'fill="'+hls2hex(hue,Math.max(0.03,el+(l0-0.06)*0.8),es)+'"';
+    if(AV.CHEEKS.includes(i)) return 'fill="'+hls2hex(hue,cl,cs)+'"';
+    if(AV.RUFF.includes(i)) return 'fill="'+hls2hex(hue,l0,Math.min(1,warm*2.2))+'"';
+    return m;
+  });
+  return out.replace(">", '><rect x="0" y="0" width="590" height="590" fill="'+t.plate_hex+'"/>',1);
+}
+
+// Wire the section: name in, dog out. Debounced only by how fast crypto.subtle resolves.
+(function(){
+  const nameEl=document.getElementById("yname"), faceEl=document.getElementById("yface");
+  if(!nameEl||!faceEl) return;
+  const hintEl=document.getElementById("yhint");
+  const slug=s=>s.trim().toLowerCase().replace(/[^a-z0-9]+/g,"")||"collie";
+  async function draw(){
+    const raw=nameEl.value.trim()||"Collie";
+    const t=await traits(raw);
+    faceEl.innerHTML=faceSvg(t);
+    const s=slug(raw);
+    hintEl.innerHTML="a <b>"+t.coat+"</b> collie on a <b>"+t.plate+"</b> plate";
+    document.getElementById("y-name").textContent=raw;
+    document.getElementById("y-handle").textContent="@"+s;
+    document.getElementById("y-mail").textContent=s+".you@collie.run";
+  }
+  nameEl.addEventListener("input",draw);
+  draw();
+})();
+</script>
+</body>
+</html>
