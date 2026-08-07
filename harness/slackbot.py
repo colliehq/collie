@@ -77,8 +77,14 @@ THREADS = os.path.expanduser("~/.collie/threads.json")   # slack thread -> the r
 _THREAD_CAP = 200
 
 
-def thread_session(channel: str, thread: str, sid: str = "") -> str:
+def thread_session(channel: str, thread: str, sid: str = "", dog: str = "") -> str:
     """The collie session a Slack thread continues. Pass `sid` to remember one; returns it either way.
+
+    Keyed by DOG as well as by thread. One machine can run several — that is what the kennel is for,
+    and they work in different repositories — and two of them in one thread share this file. Without
+    the name in the key the second one to be @-ed reads the first one's session id and resumes it:
+    someone else's conversation, in someone else's repository, reported as its own memory of what
+    was just said. A session id belongs to the dog that made it.
 
     A thread IS the conversation, and every ask in one used to start a run that remembered nothing:
     a follow-up met a dog with no idea what had just been said, and a peer asked to explain "#9"
@@ -89,7 +95,7 @@ def thread_session(channel: str, thread: str, sid: str = "") -> str:
     Bounded and pruned oldest-first: a dog that runs for weeks should not carry every conversation
     it has ever had, and losing the oldest costs a resume, not an answer.
     """
-    key = "%s/%s" % (channel, thread)
+    key = "%s/%s/%s" % (dog or "-", channel, thread)
     try:
         with open(THREADS, encoding="utf-8") as f:
             data = json.load(f) or {}
@@ -807,7 +813,7 @@ class Worker(threading.Thread):
                "--mode", AUTONOMY_MODE.get(self.dog.get("autonomy", ""), "project")]
         if self.provider:
             cmd += ["--provider", self.provider]
-        prior = thread_session(ch, th)
+        prior = thread_session(ch, th, dog=self.dog.get("name", ""))
         if prior:
             cmd += ["--resume", prior]
         # Who else is in this channel, so the dog can answer the one who asked and hand work on to
@@ -841,7 +847,9 @@ class Worker(threading.Thread):
         except Exception:
             res = {}
         if res.get("session"):
-            thread_session(ch, th, res["session"])          # this thread continues that run
+            # this thread continues that run — for THIS dog; a packmate in the same thread keeps
+            # its own, because a session is a conversation in a particular repository.
+            thread_session(ch, th, res["session"], dog=self.dog.get("name", ""))
         answer = (res.get("answer") or "").strip()
         why = (res.get("error") or "").strip()
         if rc == 0 and answer:

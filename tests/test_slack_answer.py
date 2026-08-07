@@ -92,6 +92,22 @@ def main():
     check(len(posted) == 1 and posted[0]["text"].strip() != "<@U_HUMAN>",
           "an empty run still comes back with something rather than nothing")
 
+    # ---- a thread's memory belongs to the dog that made it ---------------------------------------
+    # One machine can run several dogs — that is what the kennel is for, and they work in different
+    # repositories — and two of them in one Slack thread share threads.json. Keyed by thread alone,
+    # the second one to be @-ed resumes the first one's session: another dog's conversation, in
+    # another repository, offered as its own memory of what was just said.
+    import tempfile
+    sb.THREADS = os.path.join(tempfile.mkdtemp(prefix="collie_threads_"), "threads.json")
+    sb.thread_session("C1", "T9", "session-of-bigmac", dog="BigMac")
+    check(sb.thread_session("C1", "T9", dog="BigMac") == "session-of-bigmac",
+          "a dog resumes the session it made in this thread")
+    check(sb.thread_session("C1", "T9", dog="Cornetto") == "",
+          "and a packmate in the SAME thread gets none of it, rather than someone else's run")
+    sb.thread_session("C1", "T9", "session-of-cornetto", dog="Cornetto")
+    check(sb.thread_session("C1", "T9", dog="BigMac") == "session-of-bigmac",
+          "the two coexist — neither overwrites the other")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack answer: all green"))
     return 1 if fails else 0
 
