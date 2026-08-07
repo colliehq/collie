@@ -740,7 +740,8 @@ def _ensure_server(port):
     import time
     try:
         subprocess.Popen([sys.executable, "-m", "harness.cli", "browser-bridge", "--port", str(port)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **plat.new_group_kwargs())
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         **plat.new_group_kwargs(), **plat.no_window_kwargs())
     except Exception:
         return False
     for _ in range(30):                       # ~6s for it to bind

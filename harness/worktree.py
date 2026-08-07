@@ -32,8 +32,10 @@ PREFIX = "collie/"                       # branch namespace, so `git branch --li
 def _git(args, cwd, timeout=60):
     """Run one git command. Returns (ok, output) — never raises for a non-zero exit."""
     try:
+        from . import plat
         p = subprocess.run(["git"] + list(args), cwd=cwd, timeout=timeout,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           **plat.no_window_kwargs())
         return p.returncode == 0, (p.stdout or "").strip()
     except (OSError, subprocess.SubprocessError) as e:
         return False, "%s: %s" % (type(e).__name__, e)

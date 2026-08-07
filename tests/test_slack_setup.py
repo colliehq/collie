@@ -40,7 +40,8 @@ def main():
     # users:read are the member list and the name behind an id — without them a dog that is @-ed by
     # a packmate has no way to answer it, because addressing anyone means writing a <@U…>.
     check(sorted(m["oauth_config"]["scopes"]["bot"])
-          == ["app_mentions:read", "channels:join", "channels:read", "chat:write", "users:read"],
+          == ["app_mentions:read", "channels:join", "channels:read", "chat:write",
+              "reactions:write", "users:read"],
           "hear an @, answer it, walk into a public channel, and see who is in the room")
     check("users:read.email" not in m["oauth_config"]["scopes"]["bot"],
           "but NOT the email scope — the member list is not the personnel file, and a separate "
@@ -198,7 +199,8 @@ def main():
     # reset an app to creation defaults would be a worse bug than the staleness it cures.
     pushed = next(v for k, v in seen if k == "pushed")
     check(sorted(pushed["oauth_config"]["scopes"]["bot"])
-          == ["app_mentions:read", "channels:join", "channels:read", "chat:write", "users:read"],
+          == ["app_mentions:read", "channels:join", "channels:read", "chat:write",
+              "reactions:write", "users:read"],
           "the scopes converge on today's manifest — that is the point of the exercise")
     check(pushed["features"]["bot_user"]["display_name"] == "Rowan",
           "...and so does the name, which is how the capital reaches a dog made before the fix")

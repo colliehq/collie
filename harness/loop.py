@@ -173,8 +173,11 @@ def _tree_diff(cwd):
     """Net worktree diff vs HEAD (tracked files — the shape of a code fix). '' on non-git/error,
     which also disarms the whole guard: no snapshot -> no nudge -> no restore."""
     try:
+        # windowless like every other spawn: this one runs on EVERY turn, so under pythonw it was
+        # a console window per turn on top of one per shell command.
+        from . import plat as _plat
         r = subprocess.run(["git", "diff", "HEAD"], cwd=cwd, capture_output=True,
-                           text=True, timeout=30)
+                           text=True, timeout=30, **_plat.no_window_kwargs())
         return r.stdout if r.returncode == 0 else ""
     except Exception:
         return ""
@@ -186,8 +189,10 @@ def _tree_empty(cwd):
     if _tree_diff(cwd).strip():
         return False
     try:
+        from . import plat as _plat
         r = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd,
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30,
+                           **_plat.no_window_kwargs())
         return not [p for p in r.stdout.splitlines()
                     if p.strip() and not any(j in p for j in _JUNK_UNTRACKED)]
     except Exception:
@@ -198,8 +203,10 @@ def _apply_diff(cwd, diff):
     """Re-apply a captured diff; --3way fallback for drifted context. True on success."""
     for extra in ([], ["--3way"]):
         try:
+            from . import plat as _plat
             r = subprocess.run(["git", "apply", "--whitespace=nowarn"] + extra, cwd=cwd,
-                               input=diff, capture_output=True, text=True, timeout=60)
+                               input=diff, capture_output=True, text=True, timeout=60,
+                               **_plat.no_window_kwargs())
             if r.returncode == 0:
                 return True
         except Exception:

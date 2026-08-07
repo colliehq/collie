@@ -7,10 +7,12 @@ ever checked against the parser that has to accept it, so this checks precisely 
 
     python3 tests/test_slack_worker.py
 """
+import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -62,11 +64,17 @@ def main():
           "the ANSWER is broadcast, so a thread is not where it goes to be missed")
     check('p["reply_broadcast"]' in src,
           "...via reply_broadcast, which keeps it a thread reply as well")
-    check("status_ts" in src,
-          "the status message's ts is carried so the worker can edit the queuer's line")
+    # Status is a REACTION on the ask now, not a message about it. `queued #N` and `on it — #N`
+    # were two messages narrating one fact in a channel people are trying to read — and the task
+    # number in them indexes one dog's LOCAL queue, which a peer took for a shared reference and
+    # went hunting through its own repository for.
+    check("ask_ts" in src and "reactions.add" in src,
+          "the ask's own ts is carried, and the state is put on that message")
+    check('"queued #' not in src and '"on it — #' not in src,
+          "...instead of a line saying so, and a second line correcting the first")
 
     # --- and the ordering that makes that possible ----------------------------------------------
-    i_ts = src.find('item["status_ts"] = say(')
+    i_ts = src.find('item["ask_ts"] = ')
     i_nudge = src.find("worker.nudge()", i_ts if i_ts > 0 else 0)
     check(i_ts > 0 and i_nudge > i_ts,
           "the worker is nudged AFTER the ts is stored — otherwise it can start before it exists")
@@ -181,7 +189,30 @@ def main():
     # --- the answer is the answer ----------------------------------------------------------------
     check("stderr=subprocess.STDOUT" not in src,
           "stderr is not merged into the reply — a huggingface warning is not an answer")
-    check('"--print"' in src, "...and the run is asked for its answer alone")
+    check('"--json"' in src,
+          "...and the answer arrives as a FIELD, not as whatever happened to land on stdout")
+
+    # --- a thread is a conversation ---------------------------------------------------------------
+    # Every ask started a run that remembered nothing, so a follow-up in the same thread met a dog
+    # with no idea what had just been said — and a peer asked about "#9" went hunting through its
+    # own repository for a number that only ever existed in someone else's queue.
+    check('"--resume"' in src, "a thread that has a session continues it instead of starting over")
+    tmp_threads = os.path.join(tempfile.mkdtemp(prefix="collie_threads_"), "threads.json")
+    real_threads, sb.THREADS = sb.THREADS, tmp_threads
+    try:
+        check(sb.thread_session("C1", "t1") == "", "an unknown thread continues nothing")
+        sb.thread_session("C1", "t1", "20260806-1")
+        check(sb.thread_session("C1", "t1") == "20260806-1", "a remembered one comes back")
+        check(sb.thread_session("C1", "t2") == "",
+              "...and belongs to THAT thread, not to the channel")
+        for i in range(sb._THREAD_CAP + 20):
+            sb.thread_session("C1", "bulk%d" % i, "s%d" % i)
+        kept = json.load(open(tmp_threads, encoding="utf-8"))
+        check(len(kept) <= sb._THREAD_CAP,
+              "and a dog that runs for weeks does not carry every thread it has ever seen (%d)"
+              % len(kept))
+    finally:
+        sb.THREADS = real_threads
 
     # --- a pack that can be ADDRESSED, not only heard ---------------------------------------------
     # Hearing was half of it. Asked to greet the two other dogs in its channel, a dog answered that
@@ -265,7 +296,6 @@ def main():
     # dog set to `main` came back from a reboot on whatever identity.json happened to hold — and on
     # the DEFAULT if that file were ever lost. The one setting whose whole point is that nobody
     # discovers it by watching it get crossed should not be the one that goes unwritten.
-    import tempfile
     from harness import plat as _plat
 
     tmpd = tempfile.mkdtemp(prefix="collie_autostart_")

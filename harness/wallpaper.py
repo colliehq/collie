@@ -252,7 +252,7 @@ def launch_engine(port: int) -> bool:
     # older /wallpaper (dark galaxy + on-desktop chat) stays available for anyone who navigates to it.
     env = dict(os.environ, COLLIE_WALLPAPER_URL="http://127.0.0.1:%d/ambient" % port)
     try:
-        subprocess.Popen([exe], cwd=src_dir(), env=env)
+        subprocess.Popen([exe], cwd=src_dir(), env=env, **_quiet())
         return True
     except Exception:
         return False
@@ -335,7 +335,7 @@ def run_app(port_pref: int = 8787) -> int:
         return 1
     env = dict(os.environ, COLLIE_WALLPAPER_URL="http://127.0.0.1:%d/" % port)
     try:
-        subprocess.Popen([exe, "--window"], cwd=src_dir(), env=env)
+        subprocess.Popen([exe, "--window"], cwd=src_dir(), env=env, **_quiet())
     except Exception as e:
         print("collie app: %s" % e, file=sys.stderr)
         return 1

@@ -73,6 +73,45 @@ AUTONOMY = {
 AUTONOMY_MODE = {"propose": "plan", "branch": "project", "main": "project"}
 
 
+THREADS = os.path.expanduser("~/.collie/threads.json")   # slack thread -> the run it continues
+_THREAD_CAP = 200
+
+
+def thread_session(channel: str, thread: str, sid: str = "") -> str:
+    """The collie session a Slack thread continues. Pass `sid` to remember one; returns it either way.
+
+    A thread IS the conversation, and every ask in one used to start a run that remembered nothing:
+    a follow-up met a dog with no idea what had just been said, and a peer asked to explain "#9"
+    went looking through its own repository for a number that only existed in someone else's queue.
+    Reading a whole channel is not on offer — a dog sees only its own mentions — but the thread it
+    was mentioned in is exactly the slice that belongs to it.
+
+    Bounded and pruned oldest-first: a dog that runs for weeks should not carry every conversation
+    it has ever had, and losing the oldest costs a resume, not an answer.
+    """
+    key = "%s/%s" % (channel, thread)
+    try:
+        with open(THREADS, encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+    if not sid:
+        return (data.get(key) or {}).get("session", "")
+    data[key] = {"session": sid, "at": time.time()}
+    if len(data) > _THREAD_CAP:
+        for k in sorted(data, key=lambda k: data[k].get("at", 0))[:len(data) - _THREAD_CAP]:
+            data.pop(k, None)
+    try:
+        os.makedirs(os.path.dirname(THREADS), exist_ok=True)
+        tmp = "%s.%d.tmp" % (THREADS, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, THREADS)
+    except Exception:
+        pass                        # a thread that cannot be remembered still gets answered
+    return sid
+
+
 def identity_text(ident: dict, peers: str = "") -> str:
     """Who the dog is, and who else is in the room, for the system prompt of the run it spawns.
 
@@ -142,8 +181,10 @@ def fingerprint() -> str:
             m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
             raw = m.group(1) if m else ""
         elif sys.platform == "win32":
+            from . import plat as _plat
             out = subprocess.run(["reg", "query", r"HKLM\SOFTWARE\Microsoft\Cryptography",
-                                  "/v", "MachineGuid"], capture_output=True, text=True, timeout=5).stdout
+                                  "/v", "MachineGuid"], capture_output=True, text=True, timeout=5,
+                                 **_plat.no_window_kwargs()).stdout
             m = re.search(r"MachineGuid\s+REG_SZ\s+(\S+)", out)
             raw = m.group(1) if m else ""
         else:
@@ -209,8 +250,15 @@ def app_manifest(name: str) -> dict:
         # <@U…> id and neither the id nor the name was reachable. Note what is NOT here:
         # users:read.email is a SEPARATE scope and is not requested, so what reaches the model is
         # the display name and whether the member is a bot — the member list, not the personnel file.
+        #
+        # reactions:write is status. Progress used to be MESSAGES — `queued #3`, then `on it — #3`,
+        # then that line edited to `#3 done` — so a channel filled with a state machine narrating
+        # itself, and a task number written for one dog's local queue leaked into a pack where it
+        # means nothing (a peer went looking through its own repository for a "#9" that only ever
+        # existed here). A reaction sits on the message that ASKED, which is where anyone looking
+        # for the state of their own request already is.
         "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write", "channels:join",
-                                            "channels:read", "users:read"]}},
+                                            "channels:read", "users:read", "reactions:write"]}},
         "settings": {
             # Socket Mode means this dog dials OUT: no public address, no tunnel, and a laptop
             # that changes network just reconnects. It also makes Slack mint the app-level
@@ -621,7 +669,7 @@ def keep_known_mentions(text: str, members: list) -> str:
     return _MENTION_ANY.sub(lambda mo: mo.group(0) if mo.group(1) in ok else "", text)
 
 
-def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
+def say(token: str, channel: str, text: str, thread: str = "",
         broadcast: bool = False) -> str:
     """Reply in the thread the ask arrived in. Returns the message ts, so it can be edited.
 
@@ -629,9 +677,13 @@ def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
     somewhere anyone reads. But a thread is also where an answer goes to be missed — so the one
     message that is actually an ANSWER is sent with `reply_broadcast`, which keeps it a thread reply
     and still surfaces it in the channel. Progress stays quiet; conclusions do not.
+
+    No name prefix. Every message used to open with "Cornetto · HUO4S4H — ", which Slack already
+    shows above it in the avatar and the name — and the machine half is noise to everyone except
+    the person who owns the machine. `who` still says where a dog lives, on request.
     """
     try:
-        p = {"channel": channel, "text": (tag + " — " + text) if tag else text}
+        p = {"channel": channel, "text": text}
         if thread:
             p["thread_ts"] = thread
             if broadcast:
@@ -646,15 +698,37 @@ def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
         return ""
 
 
-def edit(token: str, channel: str, ts: str, text: str, tag: str = "") -> bool:
+# The three states a request can be in, as the marks a person would leave on it.
+SEEN, DONE, FAILED = "eyes", "white_check_mark", "warning"
+
+
+def react(token: str, channel: str, ts: str, emoji: str, on: bool = True) -> None:
+    """Put the state ON the ask, rather than posting a line about it. Never fatal.
+
+    An app provisioned before `reactions:write` existed answers missing_scope here, and the right
+    outcome then is a dog that works without status marks — not a dog that stops. Same for
+    already_reacted, which is what a retry looks like and is not a problem to report.
+    """
+    if not ts:
+        return
+    try:
+        api("reactions.add" if on else "reactions.remove", token,
+            channel=channel, timestamp=ts, name=emoji)
+    except Exception:
+        pass
+
+
+def edit(token: str, channel: str, ts: str, text: str) -> bool:
     """Rewrite a message already sent. One ask used to produce `queued #1` and `on it — #1` a second
     apart — two messages for one fact — before the result made a third. A status that CHANGES should
-    be one line that changes, not a transcript of its own state machine."""
+    be one line that changes, not a transcript of its own state machine.
+
+    No name prefix, for the same reason `say` dropped it: Slack shows who spoke, above the message.
+    """
     if not ts:
         return False
     try:
-        r = api("chat.update", token, channel=channel, ts=ts,
-                text=(tag + " — " + text) if tag else text)
+        r = api("chat.update", token, channel=channel, ts=ts, text=text)
         if not r.get("ok"):
             print("[slack] update failed: %s" % r.get("error"), file=sys.stderr)
         return bool(r.get("ok"))
@@ -678,7 +752,6 @@ class Worker(threading.Thread):
 
     def __init__(self, q: TaskQueue, ident: dict, bot_token: str, cwd: str, provider: str):
         super().__init__(daemon=True)
-        self.tag = "%s · %s" % (ident["name"], machine_label())
         # NOT self.ident: Worker is a Thread, and Thread.ident is a read-only property holding the
         # thread id. Assigning to it raises AttributeError in the constructor, which is why this
         # command has never started since it shipped — the crash is before the first connection, so
@@ -718,9 +791,7 @@ class Worker(threading.Thread):
 
     def _run_one(self, item):
         ch, th = item["channel"], item["thread"]
-        ts = item.get("status_ts", "")
-        if not edit(self.token, ch, ts, "on it — #%d" % item["id"], self.tag):
-            ts = say(self.token, ch, "on it — #%d" % item["id"], th, self.tag)
+        ask = item.get("ask_ts", "")            # the message that asked — the state goes ON it
         # `run` takes the task POSITIONALLY. It was passed as --task, which argparse rejects with
         # exit 2 before a single token is spent — so every ask this bot ever accepted failed, while
         # the thread filled with "on it" and "queued" and looked for all the world like it was
@@ -729,10 +800,16 @@ class Worker(threading.Thread):
         # --print: the answer, and nothing else on stdout. --mode: the autonomy this dog was
         # ANNOUNCED with, finally bounding what the run may do rather than only what it said.
         # COLLIE_IDENTITY: its name, which until now reached the Slack tag and no further.
-        cmd = [sys.executable, "-m", "harness.cli", "run", item["text"], "--print",
+        # --json, not --print: the answer arrives as a FIELD instead of as whatever landed on
+        # stdout, and the same object carries the session id, which is what lets the next ask in
+        # this thread continue the last one rather than meet a dog with no memory of it.
+        cmd = [sys.executable, "-m", "harness.cli", "run", item["text"], "--json",
                "--mode", AUTONOMY_MODE.get(self.dog.get("autonomy", ""), "project")]
         if self.provider:
             cmd += ["--provider", self.provider]
+        prior = thread_session(ch, th)
+        if prior:
+            cmd += ["--resume", prior]
         # Who else is in this channel, so the dog can answer the one who asked and hand work on to
         # a packmate. Fetched per ask because the channel is per ask; cached, so this is one call
         # in two minutes rather than one per task. An empty roster is survivable — see roster().
@@ -740,9 +817,13 @@ class Worker(threading.Thread):
         env = dict(os.environ,
                    COLLIE_IDENTITY=identity_text(self.dog, roster_line(mates, self.me)))
         try:
+            # windowless: the dog runs under pythonw, which has no console of its own, so Windows
+            # hands every child a brand new one. One black box per task, popping up over whatever
+            # the owner of the machine was doing.
+            from . import plat as _plat
             self.current = subprocess.Popen(
                 cmd, cwd=self.cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace")
+                text=True, encoding="utf-8", errors="replace", **_plat.no_window_kwargs())
             out, err = self.current.communicate()
             rc = self.current.returncode
         except Exception as e:
@@ -751,23 +832,34 @@ class Worker(threading.Thread):
             self.current = None
 
         out, err = (out or "").strip(), (err or "").strip()
-        # stderr is diagnostics, not the answer. Merged into stdout (stderr=STDOUT) it went to the
-        # channel AS the reply: a huggingface_hub "unauthenticated requests" warning and the run's
-        # own stats line sat above the answer inside one code fence, and the warning is what the
-        # person then asked about. A failed run is the exception — there, stderr is the only thing
-        # that says why, and silence would be worse than noise.
-        out = out or ("(no output)" if rc == 0 else "")
-        if rc != 0:
-            out = (out + "\n" + err).strip() or "(no output)"
+        # The answer is a field now, so nothing else on either stream can be mistaken for it: a
+        # huggingface_hub warning and the run's own stats line used to ride into the channel as
+        # part of the reply, and the warning is what the person then asked about.
+        res = {}
+        try:
+            res = json.loads(out) if out.startswith("{") else {}
+        except Exception:
+            res = {}
+        if res.get("session"):
+            thread_session(ch, th, res["session"])          # this thread continues that run
+        answer = (res.get("answer") or "").strip()
+        why = (res.get("error") or "").strip()
+        if rc == 0 and answer:
+            out = answer
+        else:
+            # A failure still has to say why, and stderr is the only thing that does. The ⚠️ is the
+            # one piece of protocol a peer reads: a reply that failed is worth a packmate's turn,
+            # a reply that succeeded is not.
+            out = "⚠️ " + (why or answer or err or out or "the run failed with no output")
         # Slack rejects a message over 40k; keeping the tail keeps the conclusion,
         # which is the part anyone reads.
         if len(out) > 3500:
             out = "…(trimmed)…\n" + out[-3500:]
-        head = "#%d done" % item["id"] if rc == 0 else "#%d failed (exit %s)" % (item["id"], rc)
-        # The answer is the one message worth surfacing: broadcast so it appears in the channel as
-        # well as the thread. The status line above is left showing how it ended, so the thread reads
-        # as one request with one outcome rather than a log of a state machine.
-        edit(self.token, ch, ts, head, self.tag)
+        # How it ended goes on the ask, not into the channel as another line. The task NUMBER goes
+        # nowhere near a pack: it indexes this dog's own queue, and a peer that read one went
+        # hunting through its repository for a task that only ever existed over here.
+        react(self.token, ch, ask, SEEN, on=False)
+        react(self.token, ch, ask, DONE if rc == 0 else FAILED)
         # Addressed to whoever asked — dog or person, the same way. For a dog it is the difference
         # between an answer and no answer: it reads a channel only through its own mentions, so work
         # it delegated would come back somewhere it cannot see. For a person it is the difference
@@ -776,6 +868,8 @@ class Worker(threading.Thread):
         # the outcome is addressed; "queued" and "on it" stay unmentioned, because being pinged
         # three times for one ask is how a colleague becomes a nuisance.
         back = "<@%s> " % item["user"] if item.get("user") else ""
+        # One message per ask now: the answer. No `queued`, no `on it`, no `#N done` — those were
+        # three messages narrating one fact, and the fact is on the ask as a reaction.
         # ORDINARY TEXT, not a code fence. Slack does not render a mention inside ```, so an answer
         # posted that way could never reach a packmate however correctly it was addressed — the
         # asker's <@…> worked only because it sits outside the fence. The fence earned its place
@@ -783,7 +877,7 @@ class Worker(threading.Thread):
         # prose, and prose in a fence loses its wrapping, its emphasis and its links as well.
         # Whatever the model fences itself still renders as code.
         say(self.token, ch, "%s%s\n%s" % (back, head, keep_known_mentions(out, mates) or "(no output)"),
-            th, self.tag, broadcast=True)
+            th, broadcast=True)
         self.q.finish(item["id"])
 
 
@@ -1246,8 +1340,9 @@ def main(argv=None) -> int:
 
     # What every message is signed with. Name for who, machine for where — the
     # machine part is recomputed on each start, so moving the name to another
-    # laptop changes what the channel sees rather than quietly lying.
-    tag = "%s · %s" % (ident["name"], machine_label())
+    # laptop changes what the channel sees rather than quietly lying. It appears in the greeting
+    # and in `who` — the two places someone is asking where a dog lives — and no longer on every
+    # message, where Slack already shows who spoke.
     who = ("*%s* on *%s* (%s · %s), working in `%s`\nautonomy: *%s* — %s\nscope: %s · %s" % (
         ident["name"], machine_label(), ident["os"], fingerprint(), args.cwd,
         ident["autonomy"], AUTONOMY.get(ident["autonomy"], "?"),
@@ -1258,7 +1353,7 @@ def main(argv=None) -> int:
         first = ident.pop("_fresh", False)
         hello = who + ("\n_reporting in. I picked the name myself — say `rename <name>` if you would rather._"
                        if first else "\n_reporting in._")
-        say(bot_token, args.announce, hello, tag=tag)
+        say(bot_token, args.announce, hello)
 
     # Who this dog is to Slack. Needed only since the pack can talk: "is this me" cannot be answered
     # from the name, and answering your own mention is the one loop with no second party to tire of
@@ -1346,7 +1441,7 @@ def main(argv=None) -> int:
                         # bounded exchange looks identical to a broken one.
                         if not pack[th].get("said"):
                             pack[th]["said"] = True
-                            say(bot_token, ch, stop, th, tag)
+                            say(bot_token, ch, stop, th)
                         continue
 
                 # Two gates, and they are checked before the text is read as
@@ -1354,43 +1449,41 @@ def main(argv=None) -> int:
                 # that goes silent reads as broken, and someone will debug it by
                 # inviting it somewhere else.
                 if channels and ch not in channels:
-                    say(bot_token, ch, "I only work in the channel I was set up in.", th, tag)
+                    say(bot_token, ch, "I only work in the channel I was set up in.", th)
                     continue
                 if allowed and user not in allowed:
                     say(bot_token, ch, "I take work from %s here." %
-                        ", ".join("<@%s>" % u for u in sorted(allowed)), th, tag)
+                        ", ".join("<@%s>" % u for u in sorted(allowed)), th)
                     continue
 
                 if low.startswith("rename "):
                     new = text.split(None, 1)[1].strip()[:24]
                     if not new.isalnum():
-                        say(bot_token, ch, "a name with letters and digits only, please", th, tag)
+                        say(bot_token, ch, "a name with letters and digits only, please", th)
                     else:
                         load_identity(name=new)
                         say(bot_token, ch,
-                            "I answer to *%s* now — restart me so Slack sees it too." % new, th, tag)
+                            "I answer to *%s* now — restart me so Slack sees it too." % new, th)
                 elif low in ("who", "who?", "status"):
-                    say(bot_token, ch, "%s\n%d waiting" % (who, q.waiting()), th, tag)
+                    say(bot_token, ch, "%s\n%d waiting" % (who, q.waiting()), th)
                 elif low in ("queue", "q", "queue?"):
-                    say(bot_token, ch, "```\n%s\n```" % q.listing(), th, tag)
+                    say(bot_token, ch, "```\n%s\n```" % q.listing(), th)
                 elif low == "stop":
-                    say(bot_token, ch, worker.stop_current(), th, tag)
+                    say(bot_token, ch, worker.stop_current(), th)
                 elif low.startswith("drop "):
                     try:
-                        say(bot_token, ch, q.drop(int(low.split()[1])), th, tag)
+                        say(bot_token, ch, q.drop(int(low.split()[1])), th)
                     except (ValueError, IndexError):
-                        say(bot_token, ch, "say `drop <id>` — the ids are in `queue`", th, tag)
+                        say(bot_token, ch, "say `drop <id>` — the ids are in `queue`", th)
                 elif not text:
-                    say(bot_token, ch, "%s here. Ask me something, or say `queue`." % ident["name"], th, tag)
+                    say(bot_token, ch, "%s here. Ask me something, or say `queue`." % ident["name"], th)
                 else:
                     item = q.add(text, ch, th, user, from_dog=bool(peer))
-                    ahead = q.waiting() - 1
-                    # The ts is kept ON the item so the worker can edit this same line rather than
-                    # post another one under it.
-                    item["status_ts"] = say(
-                        bot_token, ch,
-                        "queued #%d%s" % (item["id"], "" if ahead <= 0 else " — %d ahead of it" % ahead),
-                        th, tag)
+                    # The ask's OWN ts, kept on the item so the worker can mark that message rather
+                    # than post a line under it. `queued #N` and `on it — #N` are gone: two messages
+                    # narrating one fact, in a channel people are trying to read.
+                    item["ask_ts"] = event.get("ts", "")
+                    react(bot_token, ch, item["ask_ts"], SEEN)
                     worker.nudge()          # after the ts is stored, or the worker can beat it there
         except Exception as e:
             print("[slack] connection lost (%s) — reconnecting" % e, file=sys.stderr)

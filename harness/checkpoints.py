@@ -61,8 +61,9 @@ class Checkpoint:
 
 
 def _git(cwd: str, args, env=None, check=True, timeout=120) -> str:
+    from . import plat
     p = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
-                       env=env, timeout=timeout)
+                       env=env, timeout=timeout, **plat.no_window_kwargs())
     if check and p.returncode != 0:
         raise CheckpointError("git %s failed (%d): %s"
                               % (" ".join(args[:2]), p.returncode, (p.stderr or "").strip()[:300]))
@@ -90,7 +91,9 @@ def _untracked_parent(cwd: str) -> str:
     Built in a temp index so the user's staged changes are untouched — staging into the real
     index to take a snapshot would corrupt whatever they had staged.
     """
+    from . import plat as _plat
     listing = subprocess.run(["git", "-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
+                             **_plat.no_window_kwargs(),
                              capture_output=True, text=True, timeout=300)
     files = [f for f in (listing.stdout or "").split("\0") if f]
     # NOTE the empty case still produces a commit, holding an EMPTY tree. "There were no untracked

@@ -457,9 +457,16 @@ class BashTool(Tool):
             # OS: POSIX uses /bin/sh; Windows uses Git Bash/MSYS2 if present (else cmd.exe, degraded).
             # Inside the try so a missing `command` key returns a graceful ERROR, never raises.
             _cmdargs, _use_shell = plat.shell_argv(args["command"])
+            # no_window: this is the single most-run subprocess in the codebase, and started from a
+            # windowless parent (pythonw — the Slack dog, the wallpaper, the desktop app) Windows
+            # gives each child its OWN console. A run doing twenty shell steps threw twenty black
+            # boxes across the screen of whoever happened to be using the machine. Harmless to the
+            # run and impossible to ignore. new_group_kwargs() is {} on Windows, so the two spread
+            # cleanly side by side rather than one overwriting the other's creationflags.
             p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                 env=_shim_env(), **plat.new_group_kwargs())
+                                 env=_shim_env(), **plat.new_group_kwargs(),
+                                 **plat.no_window_kwargs())
         except Exception as e:
             return "ERROR: %s" % e
         timed_out = False
@@ -529,7 +536,8 @@ class RunInEnvTool(Tool):
         cmd = args.get("command", "")
         try:
             diff = subprocess.run(["git", "-C", ctx.cwd, "diff", "--no-color"],
-                                  capture_output=True, text=True, timeout=30).stdout
+                                  capture_output=True, text=True, timeout=30,
+                                  **plat.no_window_kwargs()).stdout
         except Exception:
             diff = ""
 
@@ -545,7 +553,8 @@ class RunInEnvTool(Tool):
             docker = ["docker", "run", "--rm", "-v", pf.name + ":/tmp/e.patch:ro",
                       image, "bash", "-lc", inner]
             try:
-                p = subprocess.run(docker, capture_output=True, text=True, timeout=timeout + 40)
+                p = subprocess.run(docker, capture_output=True, text=True, timeout=timeout + 40,
+                                   **plat.no_window_kwargs())
                 o = (p.stdout or "") + (("\n[stderr] " + p.stderr) if p.stderr else "")
                 return p.returncode, (o.strip() or "(no output)")
             except subprocess.TimeoutExpired:
@@ -632,7 +641,8 @@ class GrepTool(Tool):
         import signal as _sig
         _cmdargs, _use_shell = plat.shell_argv(cmd)          # POSIX shell on every OS (Git Bash on Win)
         p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, **plat.new_group_kwargs())
+                             stderr=subprocess.DEVNULL, text=True, **plat.new_group_kwargs(),
+                             **plat.no_window_kwargs())
         try:
             out, _ = p.communicate(timeout=25)
             return ((out or "").strip() or "(no matches)")[:6000]
