@@ -9,6 +9,20 @@ way" for eight releases after the dmg started shipping, and how the version labe
 Whatever used to be in this directory was a different, older page that had not been deployed since
 before v0.20.0 — it has been replaced by the real thing.
 
+## One directory, because two cost us the chat box
+
+There were two working copies of this site and they were each half of it. This one had the newer
+page — GA4, the signed `.dmg` for macOS, a live version label, and the Windows tab icon that had
+been rendering as a solid white block. `collie-web/` had the Pages *function*: `/api/chat`, the
+"Ask Collie" box, with its Workers AI and KV bindings.
+
+Whichever was deployed last wiped the other half. The last deploy came from here, so `/api/chat`
+stopped existing while the page that calls it stayed — a POST to it returned 405 and any GET fell
+through to the homepage HTML. The box was on the page, and broken, and nothing said so.
+
+So the function, `_redirects` and `wrangler.toml` now live here too. **This directory is the whole
+site.** If you find yourself editing a second copy, you are re-creating the bug.
+
 ## Deploy
 
     set -a; . ~/.cloudflare-collie.env; set +a          # Pages:Edit; the scoped relay token lacks it
