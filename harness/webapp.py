@@ -70,6 +70,52 @@ _AUDIO_OK_HOSTS = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaize
 _MCP_LOGIN_ERR = {}                  # server name -> last login error
 _MCP_LOGIN_BUSY = set()              # server names with a login in flight
 
+# A Web/Desktop process is already Collie's long-lived local process, so it also
+# wakes due Missions. The ticker owns no plan: each pass only finds durable rows
+# and calls the Mission driver, which asks Collie for the next action. SQL run
+# tokens make this safe alongside `collie jobs daemon` and manual Check now.
+_MISSION_TICK_LOCK = threading.Lock()
+_MISSION_TICK_THREAD = None
+_MISSION_TICK_ERROR = ""
+
+
+def start_mission_ticker(interval=30.0):
+    """Start one process-local Mission wake loop (idempotent)."""
+    global _MISSION_TICK_THREAD
+    with _MISSION_TICK_LOCK:
+        if _MISSION_TICK_THREAD and _MISSION_TICK_THREAD.is_alive():
+            return _MISSION_TICK_THREAD
+
+        def _loop():
+            global _MISSION_TICK_ERROR
+            while True:
+                svc = None
+                try:
+                    from . import settings
+                    from .missionweb import MissionService
+                    settings.apply()
+                    if (settings.get("PROVIDER") or "") in ("", "mock"):
+                        raise RuntimeError("configure a real provider to run Missions")
+                    svc = MissionService()
+                    svc.tick()
+                    _MISSION_TICK_ERROR = ""
+                except Exception as e:
+                    # No provider/network is recoverable: leave durable rows intact
+                    # and try again. The Web request/status surface stays available.
+                    _MISSION_TICK_ERROR = "%s: %s" % (type(e).__name__, e)
+                finally:
+                    if svc is not None:
+                        try:
+                            svc.close()
+                        except Exception:
+                            pass
+                time.sleep(max(1.0, float(interval)))
+
+        _MISSION_TICK_THREAD = threading.Thread(
+            target=_loop, name="collie-mission-ticker", daemon=True)
+        _MISSION_TICK_THREAD.start()
+        return _MISSION_TICK_THREAD
+
 
 def _audio_host_ok(target):
     """True only for an https URL whose host is one of _AUDIO_OK_HOSTS — matched EXACTLY or as a
@@ -348,6 +394,40 @@ BOOT = os.urandom(8).hex()
 # desktop control panel at /remote and the local-only /api/remote/* routes. None in plain `collie web`
 # until the panel's "开启远程" toggle lazily creates one via _ensure_remote().
 REMOTE = None
+
+# WHICH DOG this server speaks for. `collie web --name Rowan`.
+#
+# The pack made a machine the wrong unit. One laptop can run several dogs — that is what the kennel
+# is for, and they work in different repositories — so a phone that has paired with "your Mac" cannot
+# say which of them it is about to task. Slack solved this with one app per dog; here it is one
+# server per dog, and this is the name it answers to.
+DOG_NAME = ""
+
+
+def whoami() -> dict:
+    """Who is on the other end of this connection — for a phone that has paired with several.
+
+    Deliberately does NOT report an autonomy. Autonomy is enforced by `collie slack` when it spawns
+    a run (AUTONOMY_MODE -> the gate's mode); this server spawns runs on its own terms and would be
+    stating a limit it does not keep. A sentence in a greeting that nothing enforces is the exact
+    defect that was just taken out of the Slack side, and it is not worth re-introducing here for
+    the sake of a fuller-looking payload.
+    """
+    from . import slackbot
+    name = DOG_NAME
+    if not name:
+        # Unnamed is a real answer, not a guess. With one dog in the kennel the choice is obvious;
+        # with several, picking one would be indistinguishable from picking the wrong one, and the
+        # phone can fall back to the machine label — which is what it shows today.
+        try:
+            dogs = list(slackbot.load_kennel())
+            name = dogs[0] if len(dogs) == 1 else ""
+        except Exception:
+            name = ""
+    from . import __version__ as ver
+    return {"name": name, "machine": slackbot.machine_label(), "os": slackbot.os_label(),
+            "fingerprint": slackbot.fingerprint(), "repo": os.getcwd(), "version": ver,
+            "avatar": "/api/avatar.png"}
 
 
 def _ensure_remote(port):
@@ -820,6 +900,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ver":
                 # non-secret per-process id; a long-lived desktop page polls this and reloads when it changes
                 return self._send_html(BOOT.encode(), 200, "text/plain; charset=utf-8")
+            if path == "/api/whoami":
+                # Behind the same pairing gate as everything else: which dog this is, and which
+                # repository it is standing in, is not public.
+                return self._send_json(whoami())
+            if path == "/api/avatar.png":
+                return self._serve_avatar()
             if path == "/api/tree":
                 return self._serve_tree(urllib.parse.parse_qs(parsed.query))
             if path == "/api/repos":
@@ -1082,19 +1168,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": sessions.set_title(sid, title)})
             if path.startswith("/api/session/"):
                 return self._serve_session(path[len("/api/session/"):])
-            # Missions are disabled (the router rewrites mission->chat). Enforce that HERE too — not
-            # only in router+UI — so the endpoints can't be driven directly. Delete to re-enable.
-            if path in ("/api/mission", "/api/missions"):
-                return self._send_json({"error": "missions are disabled"}, 404)
             if path == "/api/mission":                    # delegate: one mission's live status
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
                 from .missionweb import MissionService
                 mid = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
                 svc = MissionService()
                 try:
-                    return self._send_json(svc.status(mid) if mid else {"error": "id required"})
+                    if not mid:
+                        return self._send_json({"error": "id required"}, 400)
+                    out = svc.status(mid)
+                    return self._send_json(out, 404 if out.get("error") else 200)
                 finally:
                     svc.close()
             if path == "/api/missions":                   # delegate: the mission list (sidebar)
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
                 from .missionweb import MissionService
                 svc = MissionService()
                 try:
@@ -1498,13 +1587,10 @@ class Handler(BaseHTTPRequestHandler):
                         % (", ".join("COLLIE_" + k for k in pin),
                            settings.get("PROVIDER", "") or "the pinned provider"))
                 return self._send_json(out)
-            if path in ("/api/mission", "/api/mission/confirm", "/api/mission/resume",
-                        "/api/mission/tick"):
-                # Missions are disabled (the router rewrites mission->chat). Enforce it server-side so
-                # a CSRF-token holder still can't start a durable model-driven campaign the product
-                # says is impossible. Delete this guard (and the router rewrite) to re-enable.
-                return self._send_json({"error": "missions are disabled"}, 404)
-            if path in ("/api/_mission_disabled",):
+            if path in ("/api/mission", "/api/mission/run", "/api/mission/confirm",
+                        "/api/mission/pause", "/api/mission/resume", "/api/mission/cancel",
+                        "/api/mission/continue", "/api/mission/accept", "/api/mission/check",
+                        "/api/mission/reconcile", "/api/mission/tick"):
                 # The NL front door: start/gate/carry a delegate mission from the chat.
                 # CSRF-gated like every state-changing route — a mission runs the model
                 # and can fire (gated) real-world actions, so a drive-by must never start one.
@@ -1522,19 +1608,45 @@ class Handler(BaseHTTPRequestHandler):
                         goal = (body.get("goal") or "").strip()
                         if not goal:
                             return self._send_json({"error": "goal required"}, 400)
-                        bounds = {}
-                        if body.get("price_floor") is not None:
-                            bounds["price_floor"] = body["price_floor"]
-                        return self._send_json(svc.start(
-                            goal, autonomous=bool(body.get("autonomous")), **bounds))
+                        bounds = {k: body[k] for k in
+                                  ("allowed_domains", "actions_per_hour",
+                                   "max_irreversible_actions", "max_total_steps",
+                                   "spend_max_usd") if body.get(k) is not None}
+                        try:
+                            created = svc.start(
+                                goal, autonomous=bool(body.get("autonomous")), **bounds)
+                        except ValueError as e:
+                            return self._send_json({"error": str(e)}, 400)
+                        return self._send_json(created, 201)
                     mid = (body.get("id") or "").strip()
-                    if not mid:
+                    if not mid and path != "/api/mission/tick":
                         return self._send_json({"error": "id required"}, 400)
                     if path == "/api/mission/confirm":
-                        return self._send_json(svc.confirm(mid, (body.get("nonce") or "").strip()))
-                    if path == "/api/mission/resume":
-                        return self._send_json(svc.resume(mid))
-                    return self._send_json(svc.tick(mid))     # /api/mission/tick
+                        nonce = (body.get("nonce") or "").strip()
+                        if not nonce:
+                            return self._send_json({"error": "nonce required"}, 400)
+                        out = svc.confirm(mid, nonce)
+                    elif path == "/api/mission/run":
+                        out = svc.run(mid)
+                    elif path == "/api/mission/pause":
+                        out = svc.pause(mid)
+                    elif path == "/api/mission/resume":
+                        out = svc.resume(mid)
+                    elif path == "/api/mission/cancel":
+                        out = svc.cancel(mid)
+                    elif path == "/api/mission/accept":
+                        out = svc.accept(mid)
+                    elif path == "/api/mission/continue":
+                        out = svc.continue_after_human(mid, body.get("note") or "")
+                    elif path == "/api/mission/reconcile":
+                        out = svc.reconcile(mid, body.get("note") or "")
+                    elif path == "/api/mission/check":
+                        out = svc.check(mid)
+                    else:
+                        out = svc.tick(mid or None)             # daemon/debug global tick
+                    code = 404 if out.get("error") == "unknown mission" else \
+                        (409 if out.get("error") else 200)
+                    return self._send_json(out, code)
                 finally:
                     svc.close()
             if path == "/api/route":
@@ -1682,6 +1794,39 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except FileNotFoundError:
             self._send_html(b"logo missing", 404, "text/plain; charset=utf-8")
+
+    def _serve_avatar(self):
+        """This dog's face, drawn here rather than re-implemented on the client.
+
+        The phone needs a picture per dog to make a switcher worth looking at, and the obvious
+        shortcut — port the derivation (sha256 of the name -> coat, plate) into Swift — is two
+        implementations of one identity, which drift and then show the same dog two different
+        colours on two screens. One generator, served. An unnamed server falls back to the plain
+        collie mark: no name, no face of its own, and inventing one would be a lie the switcher
+        then teaches people to recognise.
+        """
+        name = whoami().get("name") or ""
+        body = b""
+        if name:
+            try:
+                from . import avatar
+                body = avatar.png(name)
+            except Exception:
+                body = b""
+        if not body:
+            try:
+                with open(os.path.join(HERE, "webui", "collie-icon-512.png"), "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self._send_html(b"no avatar", 404, "text/plain; charset=utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "image/png")
+        # Keyed by name, so it only changes when the dog is renamed — but a rename must not leave a
+        # stale face on a phone for a day, which is what a long max-age would do.
+        self.send_header("cache-control", "max-age=300")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_index(self):
         try:
@@ -2426,6 +2571,9 @@ def main(argv=None, on_bound=None):
             lan = True; i += 1; continue
         if a == "--qr":
             want_qr = True; i += 1; continue
+        if a == "--name" and i + 1 < len(argv):
+            global DOG_NAME
+            DOG_NAME = argv[i + 1]; i += 2; continue
         i += 1
 
     if not os.path.exists(INDEX_HTML):
@@ -2460,6 +2608,7 @@ def main(argv=None, on_bound=None):
         print("error: ports %d–%d are all in use. Is `collie web` already running? "
               "Open http://127.0.0.1:%d/ , or pass --port <free port>." % (requested, requested + 11, requested))
         return 1
+    start_mission_ticker()
     # a nicer local URL than a bare loopback IP: browsers resolve any *.localhost name to the
     # loopback address per RFC 6761 (zero setup, no /etc/hosts), so collie.localhost:PORT works
     # out of the box while the server still binds 127.0.0.1. VS Code parses the 127.0.0.1 line below.

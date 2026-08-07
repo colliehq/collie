@@ -900,8 +900,12 @@
   .mchip.state-needs_you { background: color-mix(in srgb, #e8a33d 30%, transparent); }
   .mchip.state-waiting { background: color-mix(in srgb, #4a90d9 24%, transparent); }
   .mchip.state-running { background: color-mix(in srgb, var(--meadow) 30%, transparent); }
+  .mchip.state-paused { background: color-mix(in srgb, #9a78d1 28%, transparent); }
+  .mchip.state-pausing { background: color-mix(in srgb, #d5a441 30%, transparent); }
+  .mchip.state-recovery_required { background: color-mix(in srgb, #d85a5a 34%, transparent); }
+  .mchip.state-reconciling { background: color-mix(in srgb, #d85a5a 24%, transparent); }
   .mchip.state-done_verified, .mchip.state-done_accepted { background: color-mix(in srgb, var(--pine) 34%, transparent); }
-  .mchip.state-failed { background: color-mix(in srgb, #d95c5c 30%, transparent); }
+  .mchip.state-failed, .mchip.state-cancelled { background: color-mix(in srgb, #d95c5c 30%, transparent); }
   .mcase { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--faint);
            border-left: 2px solid var(--line); padding-left: 10px; }
   .msteps { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -2697,24 +2701,127 @@
       body: JSON.stringify(body || {})
     }).then(function (r) { return r.json(); });
   }
+  function missionGet(path) {
+    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT))
+      .then(function (r) { return r.json(); });
+  }
   function mchip(txt, cls) {
     var s = document.createElement("span"); s.className = "mchip " + (cls || "");
     s.textContent = txt; return s;
   }
-  function _startMissionCard(goal) {
+  function newMissionCard() {
     var card = document.createElement("div");
     card.className = "msg assistant mission";
     card.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div>' +
       '<div class="bubble"><div class="who">Collie · delegate</div><div class="mbody"></div></div>';
     var w = $("welcome"); if (w) w.remove();
     $("log").appendChild(card); scrollDown(true);
-    card.querySelector(".mbody").textContent = t("starting the mission…");
-    missionPost("/api/mission", { goal: goal }).then(function (st) {
+    return card;
+  }
+  function missionTerminal(state) {
+    return /^(done_verified|done_accepted|failed|cancelled)$/.test(state || "");
+  }
+  function scheduleMissionPoll(card, st) {
+    if (card._missionTimer) clearTimeout(card._missionTimer);
+    if (!st || !st.mission_id || missionTerminal(st.state) || st.state === "paused") return;
+    var delay = st.state === "waiting" || st.state === "needs_you" ? 10000 : 2000;
+    card._missionTimer = setTimeout(function () {
+      missionGet("/api/mission?id=" + encodeURIComponent(st.mission_id)).then(function (fresh) {
+        renderMission(card, fresh);
+      }).catch(function () {});
+    }, delay);
+  }
+  function runMissionCard(card, mid) {
+    missionPost("/api/mission/run", { id: mid }).then(function (st) {
       renderMission(card, st);
+    }).catch(function () {});
+  }
+  function _startMissionCard(goal, autonomous, bounds) {
+    var card = newMissionCard();
+    card.querySelector(".mbody").textContent = t("creating the mission…");
+    var payload = Object.assign({ goal: goal, autonomous: !!autonomous }, bounds || {});
+    missionPost("/api/mission", payload).then(function (st) {
+      renderMission(card, st);                    // id is visible before any long step starts
+      if (st && st.mission_id && !st.error) runMissionCard(card, st.mission_id);
     }).catch(function (e) { card.querySelector(".mbody").textContent = "error: " + e; });
   }
-  function startMission(goal) { addMsg("user", "/mission " + goal); _startMissionCard(goal); }
-  function startMissionFromGoal(goal) { _startMissionCard(goal); }   // the router already showed the user msg
+  function showMission(mid) {
+    var card = newMissionCard();
+    card.querySelector(".mbody").textContent = t("loading mission…");
+    missionGet("/api/mission?id=" + encodeURIComponent(mid)).then(function (st) {
+      renderMission(card, st);
+    });
+  }
+  function showMissions() {
+    var card = newMissionCard(), b = card.querySelector(".mbody");
+    b.textContent = t("loading missions…");
+    missionGet("/api/missions").then(function (out) {
+      b.textContent = "";
+      var rows = (out && out.missions) || [];
+      if (!rows.length) { b.textContent = t("No missions yet. Try /mission <goal>."); return; }
+      rows.forEach(function (m) {
+        var btn = document.createElement("button"); btn.className = "mbtn";
+        btn.textContent = m.state + " · " + m.mission_id + " · " + m.goal;
+        btn.onclick = function () { showMission(m.mission_id); };
+        b.appendChild(btn);
+      });
+    });
+  }
+  function missionHelp() {
+    var card = newMissionCard();
+    card.querySelector(".mbody").textContent =
+      "/mission <goal> · /mission --auto <goal> · /mission list · " +
+      "/mission --auto --domains=x.com,*.y.com --rate=6 <goal> · " +
+      "/mission status|pause|resume|cancel|check|continue|accept|reconcile <id>";
+  }
+  function handleMissionCommand(text) {
+    var hit = /^\/(?:mission|delegate)(?:\s+(.*))?$/i.exec(text || "");
+    if (!hit) return false;
+    var raw = (hit[1] || "").trim();
+    if (!raw || /^(?:list|ls)$/i.test(raw)) { showMissions(); return true; }
+    if (/^help$/i.test(raw)) { missionHelp(); return true; }
+    if (/^start$/i.test(raw)) {
+      addErr(t("Mission goal required after start.")); return true;
+    }
+    if (/^(?:list|ls|help)\s+/i.test(raw)) {
+      addErr(t("This Mission command does not take arguments.")); return true;
+    }
+    var ctl = /^(status|pause|resume|cancel|check|continue|accept|reconcile|run)\s+(\S+)\s*$/i.exec(raw);
+    if (ctl) {
+      var action = ctl[1].toLowerCase(), mid = ctl[2];
+      if (action === "status") { showMission(mid); return true; }
+      var card = newMissionCard(); card.querySelector(".mbody").textContent = t("updating mission…");
+      if (action === "cancel" && !window.confirm(t("Cancel this mission? Its audit history will be kept."))) {
+        card.remove(); return true;
+      }
+      if (action === "reconcile" && !window.confirm(t(
+          "The previous worker crashed while an external action may have fired. Inspect the site and receipts first. Continue only if a duplicate is safe."))) {
+        card.remove(); return true;
+      }
+      missionPost("/api/mission/" + action, { id: mid }).then(function (st) {
+        renderMission(card, st);
+        if (action === "resume" && st.state === "queued" && !st.error) runMissionCard(card, mid);
+      });
+      return true;
+    }
+    if (/^(status|pause|resume|cancel|check|continue|accept|reconcile|run)(?:\s|$)/i.test(raw)) {
+      addErr(t("Mission command needs exactly one mission id.")); return true;
+    }
+    var explicit = /^start\s+([\s\S]+)$/i.exec(raw);
+    var goal = explicit ? explicit[1].trim() : raw;
+    var autonomous = false, bounds = {}, option;
+    while ((option = /^--(auto|autonomous|domains=\S+|rate=\d+|max-actions=\d+|max-steps=\d+)(?:\s+|$)/i.exec(goal))) {
+      var rawOpt = option[1]; goal = goal.slice(option[0].length).trim();
+      if (/^(auto|autonomous)$/i.test(rawOpt)) autonomous = true;
+      else if (/^domains=/i.test(rawOpt)) bounds.allowed_domains = rawOpt.slice(rawOpt.indexOf("=") + 1).split(",").filter(Boolean);
+      else if (/^rate=/i.test(rawOpt)) bounds.actions_per_hour = Number(rawOpt.split("=")[1]);
+      else if (/^max-actions=/i.test(rawOpt)) bounds.max_irreversible_actions = Number(rawOpt.split("=")[1]);
+      else if (/^max-steps=/i.test(rawOpt)) bounds.max_total_steps = Number(rawOpt.split("=")[1]);
+    }
+    if (!goal) { missionHelp(); return true; }
+    _startMissionCard(goal, autonomous, bounds);
+    return true;
+  }
 
   // a tiny "routing…" placeholder shown while the classifying head decides
   function addRoutingHint() {
@@ -2725,25 +2832,9 @@
     $("log").appendChild(m); scrollDown();
     return m;
   }
-  // abstain affordance: the model leaned mission but below the bar -> we ran chat,
-  // and offer a one-click promote (CLINC150 abstain, RouteLLM threshold).
-  function offerPromote(goal, kind) {
-    var m = document.createElement("div");
-    m.className = "msg assistant";
-    m.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div>' +
-      '<div class="bubble"><div class="who">Collie</div></div>';
-    var b = m.querySelector(".bubble");
-    var note = document.createElement("span"); note.className = "mnote";
-    note.textContent = t("Looks like this could be a delegated task. ");
-    var btn = document.createElement("button"); btn.className = "mbtn accept";
-    btn.textContent = t("Run as mission");
-    btn.onclick = function () { btn.disabled = true; startMissionFromGoal(goal); };
-    b.appendChild(note); b.appendChild(btn);
-    $("log").appendChild(m); scrollDown();
-  }
   function renderMission(card, st) {
     var b = card.querySelector(".mbody"); b.textContent = "";
-    if (st.error && !st.mission_id) { b.textContent = "error: " + st.error; return; }
+    if (st.error && !st.state) { b.textContent = "error: " + st.error; return; }
     var head = document.createElement("div"); head.className = "mhead";
     head.appendChild(mchip(st.state, "state-" + st.state));
     if (st.error) head.appendChild(mchip(st.error, "state-failed"));
@@ -2751,6 +2842,11 @@
     var goal = document.createElement("div"); goal.className = "mgoal"; goal.textContent = st.goal;
     b.appendChild(goal);
     if (st.result) { var r = document.createElement("div"); r.className = "mnote"; r.textContent = st.result; b.appendChild(r); }
+    if (st.action_in_flight) {
+      var inflight = document.createElement("div"); inflight.className = "mnote";
+      inflight.textContent = t("An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.");
+      b.appendChild(inflight);
+    }
     var keys = Object.keys(st.case || {});
     if (keys.length) {
       var cl = document.createElement("div"); cl.className = "mcase";
@@ -2779,18 +2875,70 @@
       var ap = document.createElement("div"); ap.className = "margs";
       ap.textContent = t("will run with") + ": " + JSON.stringify(st.inbox.args).slice(0, 220);
       acts.appendChild(ap);
+      if (st.inbox.target) {
+        var tp = document.createElement("div"); tp.className = "margs";
+        tp.textContent = t("target page") + ": " + JSON.stringify(st.inbox.target).slice(0, 260);
+        acts.appendChild(tp);
+      }
     } else if (st.needs_human) {            // hand-off: your call
+      var hbtn = document.createElement("button"); hbtn.className = "mbtn confirm";
+      hbtn.textContent = t("I handled it — continue");
+      hbtn.onclick = function () { hbtn.disabled = true; missionPost("/api/mission/continue", { id: st.mission_id }).then(function (x) {
+        reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
+      }); };
+      acts.appendChild(hbtn);
       var abtn = document.createElement("button"); abtn.className = "mbtn accept";
       abtn.textContent = t("Accept & take over");
-      abtn.onclick = function () { abtn.disabled = true; missionPost("/api/mission/resume", { id: st.mission_id }).then(reload); };
+      abtn.onclick = function () { abtn.disabled = true; missionPost("/api/mission/accept", { id: st.mission_id }).then(reload); };
       acts.appendChild(abtn);
-    } else if (st.state === "waiting") {    // durable poll pending
+    }
+    if ((st.controls || []).indexOf("check") >= 0) {
       var kbtn = document.createElement("button"); kbtn.className = "mbtn check";
       kbtn.textContent = t("Check now");
-      kbtn.onclick = function () { kbtn.disabled = true; missionPost("/api/mission/tick", { id: st.mission_id }).then(reload); };
+      kbtn.onclick = function () { kbtn.disabled = true; missionPost("/api/mission/check", { id: st.mission_id }).then(reload); };
       acts.appendChild(kbtn);
     }
+    if ((st.controls || []).indexOf("run") >= 0) {
+      var rbtn = document.createElement("button"); rbtn.className = "mbtn"; rbtn.textContent = t("Run");
+      rbtn.onclick = function () { rbtn.disabled = true; runMissionCard(card, st.mission_id); };
+      acts.appendChild(rbtn);
+    }
+    if ((st.controls || []).indexOf("pause") >= 0) {
+      var pbtn = document.createElement("button"); pbtn.className = "mbtn"; pbtn.textContent = t("Pause");
+      pbtn.onclick = function () { pbtn.disabled = true; missionPost("/api/mission/pause", { id: st.mission_id }).then(reload); };
+      acts.appendChild(pbtn);
+    }
+    if ((st.controls || []).indexOf("resume") >= 0) {
+      var ubtn = document.createElement("button"); ubtn.className = "mbtn"; ubtn.textContent = t("Resume");
+      ubtn.onclick = function () { ubtn.disabled = true; missionPost("/api/mission/resume", { id: st.mission_id }).then(function (x) {
+        reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
+      }); };
+      acts.appendChild(ubtn);
+    }
+    if ((st.controls || []).indexOf("reconcile") >= 0) {
+      var qbtn = document.createElement("button"); qbtn.className = "mbtn confirm";
+      qbtn.textContent = t("Reconcile uncertain run");
+      qbtn.onclick = function () {
+        if (!window.confirm(t("The prior external action may already have fired. Inspect the target site and receipts before continuing."))) return;
+        qbtn.disabled = true;
+        missionPost("/api/mission/reconcile", {
+          id: st.mission_id, note: "user inspected uncertain external state"
+        }).then(function (x) {
+          reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
+        });
+      };
+      acts.appendChild(qbtn);
+    }
+    if ((st.controls || []).indexOf("cancel") >= 0) {
+      var xbtn = document.createElement("button"); xbtn.className = "mbtn"; xbtn.textContent = t("Cancel");
+      xbtn.onclick = function () {
+        if (!window.confirm(t("Cancel this mission? Its audit history will be kept."))) return;
+        xbtn.disabled = true; missionPost("/api/mission/cancel", { id: st.mission_id }).then(reload);
+      };
+      acts.appendChild(xbtn);
+    }
     if (acts.children.length) b.appendChild(acts);
+    scheduleMissionPoll(card, st);
     scrollDown();
   }
 
@@ -3514,6 +3662,14 @@
     var input = $("input");
     var q = input.value.trim();
     var imgs = attached.slice();
+    // Mission control is an out-of-band command, even while an interactive run
+    // is streaming. Never feed pause/cancel to the model as steering text.
+    if (/^\/(?:mission|delegate)(?:\s|$)/i.test(q)) {
+      input.value = ""; input.style.height = "auto";
+      addMsg("user", q); clearAttached();
+      handleMissionCommand(q);
+      return;
+    }
     // While a run streams, a send STEERS it — the message is queued and delivered at the next turn
     // boundary (Claude Code model), NOT a new run. Text-only for now; images still start fresh runs.
     if (running) {
@@ -3532,29 +3688,25 @@
     var forced = null;
     if (/^\/code\s+/i.test(q)) { forced = "code"; q = q.replace(/^\/code\s+/i, ""); }
     else if (/^\/chat\s+/i.test(q)) { forced = "chat"; q = q.replace(/^\/chat\s+/i, ""); }
-    // mission route is disabled — '/mission' and '/delegate' just run as a normal chat
-    else if (/^\/(mission|delegate)\s+/i.test(q)) { forced = "chat"; q = q.replace(/^\/(mission|delegate)\s+/i, ""); }
     input.value = ""; input.style.height = "auto";
     addMsg("user", q, imgs);            // show text + attached image thumbnails
     clearAttached();
-    // the classifying head: plain text is routed (chat/code -> stream, mission -> the
-    // delegate); images or an explicit prefix skip straight to the stream.
-    if (forced || imgs.length) { runStream(q, imgs, null); return; }
+    // The classifying head handles only chat/code. Mission is slash-command-only.
+    if (forced || imgs.length) { runStream(q, imgs); return; }
     var routeHint = addRoutingHint();
     missionPost("/api/route", { text: q }).then(function (d) {
       if (routeHint && routeHint.remove) routeHint.remove();
       if (d && d.error === "model_unavailable") {
         addErr(t("model unavailable — set a working provider in Settings")); return;
       }
-      if (d && d.kind === "mission") { startMissionFromGoal(d.goal || q); return; }
-      runStream(q, imgs, (d && d.abstained) ? (d.suggested || "mission") : null);
+      runStream(q, imgs);
     }).catch(function () {          // the local server itself is unreachable -> let the stream surface it
-      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs, null);
+      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs);
     });
   }
 
   // the interactive stream run (chat/code) — extracted so the classifying head can gate it
-  function runStream(q, imgs, promote) {
+  function runStream(q, imgs) {
     var input = $("input");
     addPending();                       // live "thinking" bubble in the conversation
     scrollDown(true);                   // sending always jumps to the latest
@@ -3568,8 +3720,6 @@
     $("sendIcon").innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
     // input stays ENABLED so you can steer while it works; the button becomes Stop.
     input.placeholder = t("Steer while Collie works — Enter to send");
-    if (promote) offerPromote(q, promote);   // abstained mission -> offer a one-click promote
-
     // upload any attached images first (-> ids), then open the stream referencing them
     var launch = function (imgIds) {
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false;

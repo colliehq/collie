@@ -9,7 +9,7 @@ SAME five — only the args (which the model fills) differ:
   compose    (read)        turn facts into text (a listing, a reply, an email)
   observe    (read)        re-observe the world (logged-out fetch for evidence, or
                            an authed browser read to poll an inbox)
-  web.submit (IRREVERSIBLE) fill + submit a form (publish a listing, place an order)
+  web.submit (IRREVERSIBLE) fill + submit a non-commerce form (publish a listing)
   web.send   (IRREVERSIBLE) send a message (a reply, a negotiation, an email)
 
 Risk is fixed by PRIMITIVE, not by errand (plan §5.1): the irreversible ones are
@@ -35,10 +35,14 @@ own account, gated the same way every other action is.
 from __future__ import annotations
 
 import json
+import hashlib
+import fnmatch
+import os
 import re
 import time
+from urllib.parse import urlsplit
 
-from .jobs import Capability, register
+from .jobs import Capability, get_capability, register
 from .verifier import FAILED, INCONCLUSIVE, VERIFIED, Observation, Verdict
 
 
@@ -172,12 +176,16 @@ def _real_observe(actuator=None, fetch=None):
         text, how = "", ""
         if authed:
             # poll an authed page (e.g. the message inbox) via the logged-in browser
-            act = actuator or _live_actuator()
+            act = _space_actuator(actuator, getattr(rec, "job_id", ""))
             if act is None:
                 return {"case": {"observe_count": n}, "present": None,
                         "detail": "no browser to read the authed page"}
             try:
                 act.open(url)
+                scope_error = _actuator_scope_error(act, a, url)
+                if scope_error:
+                    return {"case": {"observe_count": n}, "present": None,
+                            "detail": scope_error}
                 text, how = act.read(4000), "authed-browser-read"
             except Exception as e:
                 return {"case": {"observe_count": n}, "present": None,
@@ -205,11 +213,14 @@ def _real_web_submit(actuator=None):
         url = a.get("url") or ""
         fields = a.get("fields") or {}
         submit_sel = a.get("submit") or a.get("submit_selector") or ""
-        act = actuator or _live_actuator()
+        act = _space_actuator(actuator, getattr(rec, "job_id", ""))
         if act is None:
             return {"submitted": False, "error": "no browser available (start `collie browser-bridge` and connect the extension)"}
         try:
             act.open(url)
+            scope_error = _actuator_scope_error(act, a, url)
+            if scope_error:
+                return {"submitted": False, "error": scope_error}
             for sel, text in (fields.items() if isinstance(fields, dict) else []):
                 act.type(sel, text)
             result_url = act.click(submit_sel) if submit_sel else act.current_url()
@@ -217,8 +228,7 @@ def _real_web_submit(actuator=None):
             return {"submitted": False, "error": f"submit failed: {type(e).__name__}: {e}"}
         return {"case": {"submitted": True, "url": result_url or url},
                 "submitted": True, "url": result_url or url, "published_at": time.time(),
-                "expect_title": a.get("expect_title") or a.get("title") or "",
-                "price_max": a.get("price_floor")}
+                "expect_title": a.get("expect_title") or a.get("title") or ""}
     return execute
 
 
@@ -230,7 +240,6 @@ def _real_submit_verify(rec, result):
     from .observe import donecheck_listing
     now = time.time()
     return donecheck_listing(r["url"], r.get("expect_title") or "",
-                             price_max=r.get("price_max"),
                              at=now, publish_at=r.get("published_at") or (now - 1))
 
 
@@ -241,20 +250,38 @@ def _real_web_send(actuator=None):
         text = a.get("text") or ""
         msg_sel = a.get("selector") or a.get("message_selector") or ""
         send_sel = a.get("send") or a.get("send_selector") or ""
-        act = actuator or _live_actuator()
+        act = _space_actuator(actuator, getattr(rec, "job_id", ""))
         if act is None:
             return {"sent": False, "error": "no browser available"}
         try:
             if url:
                 act.open(url)
+                scope_error = _actuator_scope_error(act, a, url)
+                if scope_error:
+                    return {"sent": False, "error": scope_error}
             if msg_sel:
                 act.type(msg_sel, text)
             if send_sel:
                 act.click(send_sel)
         except Exception as e:
             return {"sent": False, "error": f"send failed: {type(e).__name__}: {e}"}
-        return {"case": {"sent": True, "last_sent_to": a.get("to") or url},
-                "sent": True, "to": a.get("to") or url, "text": text}
+        try:
+            page = act.read(4000) or ""
+            form = _actuator_form(act, _mission_space(getattr(rec, "job_id", "")))
+        except Exception:
+            page, form = "", []
+        want = str(a.get("success_text") or "").strip()
+        composer_still_has_text = bool(text and any(
+            str(f.get("value") or "").strip() == str(text).strip() for f in form))
+        failure = re.search(r"\b(error|failed|could not|couldn't|rate limit|try again)\b",
+                            page, re.I)
+        confirmed = bool(not failure and ((want and want.casefold() in page.casefold()) or
+                                          (text and text in page and
+                                           not composer_still_has_text)))
+        return {"case": ({"sent": True, "last_sent_to": a.get("to") or url}
+                         if confirmed else {}),
+                "sent": True, "confirmed": confirmed,
+                "to": a.get("to") or url, "text": text}
     return execute
 
 
@@ -262,15 +289,33 @@ def _real_send_verify(rec, result):
     r = result or {}
     if not r.get("sent"):
         return Verdict(FAILED, r.get("error") or "message not sent")
-    # A DM has no logged-out channel to confirm receipt independently; the send is
-    # the deliverable and it was gated by a human confirm before firing. Honest:
-    # verified as SENT, not as READ.
-    return Verdict(VERIFIED, "message sent (acting channel; no independent read-receipt)")
+    if not r.get("confirmed"):
+        return Verdict(INCONCLUSIVE,
+                       "send click fired but a fresh thread/composer read did not confirm delivery")
+    # This proves the outgoing bubble/composer state, not that the recipient read it.
+    return Verdict(VERIFIED, "fresh thread state confirms message sent (not read)")
 
 
 def _live_actuator():
     from .webact import get_actuator
     return get_actuator()
+
+
+def _actuator_scope_error(act, args, requested_url=""):
+    """Validate the actual post-navigation origin before any read/type/click."""
+    try:
+        landed = urlsplit(str(act.current_url() or ""))
+        requested = urlsplit(str(requested_url or ""))
+    except Exception:
+        return "browser target identity is unavailable"
+    host = (landed.hostname or "").lower()
+    allowed = (((args or {}).get("_leash") or {}).get("allowed_domains") or [])
+    if allowed:
+        ok = any(fnmatch.fnmatchcase(host, str(p).lower()) for p in allowed)
+    else:
+        first = (requested.hostname or "").lower()
+        ok = bool(host and first and (host == first or host.endswith("." + first)))
+    return "browser redirect left the Mission domain boundary" if not ok else ""
 
 
 # ── browse: run the agent loop with the browser tools to DO a web task ───────
@@ -285,7 +330,94 @@ def _browse_dir():
     return d
 
 
-def _live_browse(goal):
+def _mission_space(job_id):
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(job_id or "standalone"))
+    return ("mission-" + safe)[:40]
+
+
+class _BoundBrowserTool:
+    """Delegate a browser tool while pinning it to a Mission tab and narrowing args."""
+    def __init__(self, inner, space, kind, name="", boundary=None):
+        self.inner, self.space, self.kind = inner, space, kind
+        self.boundary = boundary or {"domains": [], "first_host": ""}
+        self.name, self.tier = getattr(inner, "name", name), getattr(inner, "tier", "always")
+        self.description = getattr(inner, "description", "Mission-scoped browser tool")
+        schema = getattr(inner, "schema", {}) or {}
+        props = dict(schema.get("properties") or {})
+        props.pop("space", None); props.pop("adopt", None); props.pop("submit", None)
+        self.schema = dict(schema)
+        self.schema["properties"] = props
+
+    def provider_schema(self):
+        return {"name": self.name, "description": self.description,
+                "input_schema": self.schema}
+
+    def run(self, args, ctx):
+        from .browserbridge import browser_space, space_identity
+        clean = dict(args or {})
+        clean.pop("space", None); clean.pop("adopt", None)
+        if self.kind == "type":
+            clean["submit"] = False
+        domains = self.boundary.get("domains") or []
+        first = self.boundary.get("first_host") or ""
+
+        def allowed(host):
+            host = (host or "").lower()
+            if not host:
+                return True
+            if domains:
+                return any(fnmatch.fnmatchcase(host, str(p).lower()) for p in domains)
+            return not first or host == first or host.endswith("." + first)
+
+        # A previous JS navigation/redirect cannot grant the child authority on a
+        # new origin.  Refuse before read/type and suppress any off-scope result.
+        current = space_identity(self.space) or {}
+        current_host = urlsplit(str(current.get("url") or "")).hostname or ""
+        if current_host and not allowed(current_host):
+            return "ERROR(browser): live page left the Mission domain boundary"
+        if self.kind == "open":
+            u = urlsplit(str(clean.get("url") or ""))
+            if u.scheme not in ("http", "https") or not u.netloc:
+                return "ERROR(browser): Mission browse only opens http(s) pages"
+            host = (u.hostname or "").lower()
+            if domains and not allowed(host):
+                return "ERROR(browser): target domain is outside Mission leash"
+            if not domains and first and host != first and not host.endswith("." + first):
+                return "ERROR(browser): reversible browse cannot leave its first site"
+            # GET endpoints can themselves be consequential.  Activation,
+            # unsubscribe, logout and destructive links belong at an outer gated
+            # capability, not inside reversible browsing.
+            if re.search(r"(?:^|[/?&=])(?:log-?out|sign-?out|unsubscribe|delete|remove|"
+                         r"deactivate|activate|verify|confirm)(?:[/?&=]|$)",
+                         u.path + "?" + u.query, re.I):
+                return "ERROR(browser): consequential navigation requires an outer Mission gate"
+            if not first:
+                self.boundary["first_host"] = host
+                first = host
+        with browser_space(self.space):
+            out = self.inner.run(clean, ctx)
+        landed = space_identity(self.space) or {}
+        landed_host = urlsplit(str(landed.get("url") or "")).hostname or ""
+        if landed_host and not allowed(landed_host):
+            return "ERROR(browser): redirect/navigation left the Mission domain boundary"
+        return out
+
+
+def _restrict_browse_child(h, space, allowed_domains=None):
+    """Positive authority list: nothing desktop/MCP/filesystem can survive."""
+    allow = {"browser_open", "browser_read", "browser_snapshot", "browser_fields",
+             "browser_links", "browser_type", "browser_pick"}
+    for name in list(h.registry._tools):
+        if name not in allow:
+            h.registry._tools.pop(name, None)
+    boundary = {"domains": list(allowed_domains or []), "first_host": ""}
+    for name in list(h.registry._tools):
+        kind = "type" if name == "browser_type" else "open" if name == "browser_open" else "read"
+        h.registry._tools[name] = _BoundBrowserTool(
+            h.registry._tools[name], space, kind, name, boundary)
+
+
+def _live_browse(goal, space="mission-standalone", allowed_domains=None):
     import os
     os.environ.setdefault("COLLIE_BROWSER_BRIDGE", "1")   # drive the user's real browser via the bridge
     from .cli import make_harness
@@ -293,8 +425,9 @@ def _live_browse(goal):
     _s.apply()
     h = make_harness(_browse_dir(), provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
                      project="browse", embed="hash")
-    for name in ("edit_file", "write_file", "bash", "run_in_env"):   # act ONLY through the browser
-        h.registry._tools.pop(name, None)
+    # Prompt text is not an authority boundary.  Keep a positive list, wrap every
+    # survivor in this Mission's isolated browser space, and force type.submit off.
+    _restrict_browse_child(h, space, allowed_domains)
     h.self_verify = False
     try:
         h.force_edit = False
@@ -302,8 +435,10 @@ def _live_browse(goal):
         pass
     h.max_turns = int(os.environ.get("COLLIE_BROWSE_TURNS", "35"))
     prompt = (goal.strip() + "\n\n"
-              "Act ONLY through the browser_* tools (browser_open / browser_fields / browser_type with a "
-              "`label` / browser_pick / browser_click / browser_read). The form is DYNAMIC: picking a "
+              "Act ONLY through the available reversible browser tools (browser_open / browser_fields / "
+              "browser_type with a `label` / browser_pick / browser_read). Generic click, Enter, script, "
+              "and upload are intentionally unavailable; if one is needed, stop and report the exact "
+              "button/action so the outer Mission can gate it. The form is DYNAMIC: picking a "
               "value can REVEAL or CHANGE other fields (e.g. after Vehicle type, Make becomes a dropdown "
               "and Mileage/Body-style/Condition appear).\n"
               "WORKFLOW — repeat until complete:\n"
@@ -331,27 +466,74 @@ def _live_browse(goal):
 # is a FRESH read, not the agent's self-report, so it can refute a "done" that
 # didn't actually fill the form.
 _FORM_SNAPSHOT = (
-    "JSON.stringify([...document.querySelectorAll('input,textarea,[role=combobox]')].map(e=>{"
-    "var l=e.closest('label');var lab=l?(l.innerText||'').trim().split('\\n')[0]:(e.getAttribute('aria-label')||'');"
-    "var val=e.getAttribute('role')==='combobox'?(l?(l.innerText||'').replace(/\\n/g,' ').trim():''):(e.value||'');"
-    "return {label:lab,value:val};}).filter(x=>x.label&&x.value&&x.value!==x.label))")
+    "JSON.stringify([...document.querySelectorAll('input,textarea,[role=combobox],[contenteditable]')].map(e=>{"
+    "var l=e.closest('label');var lab=l?(l.innerText||'').trim().split('\\n')[0]:(e.getAttribute('aria-label')||e.getAttribute('data-testid')||e.getAttribute('role')||e.tagName);"
+    "var val=e.getAttribute('role')==='combobox'?(l?(l.innerText||'').replace(/\\n/g,' ').trim():''):(e.value||e.innerText||'');"
+    "var meta=[lab,e.type,e.name,e.id,e.autocomplete,e.getAttribute('aria-label')].join(' ');"
+    "var sensitive=e.type==='password'||e.type==='email'||e.type==='tel'||/(pass(word|code)?|secret|token|api.?key|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);"
+    "return {label:lab,value:sensitive?'[redacted]':val,sensitive:!!sensitive,filled:!!val};}).filter(x=>x.label&&x.filled))")
 
 
-def _read_form():
+_SENSITIVE_FIELD = re.compile(
+    r"pass(word|code)?|secret|token|api.?key|otp|one.?time|verification.?code|"
+    r"cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|"
+    r"street.?address|postal|zip.?code|birth|dob|user.?name", re.I)
+
+
+def _sanitize_form(form):
+    """Never persist browser credentials/PII in Mission case, events or snapshots."""
+    out = []
+    for item in form if isinstance(form, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "")[:160]
+        raw = item.get("value")
+        filled = bool(item.get("filled", raw not in (None, "")))
+        sensitive = bool(item.get("sensitive") or _SENSITIVE_FIELD.search(label))
+        if not label or not filled:
+            continue
+        out.append({"label": label,
+                    "value": "[redacted]" if sensitive else str(raw or "")[:1000],
+                    **({"sensitive": True} if sensitive else {})})
+    return out
+
+
+def _read_form(space=""):
     from . import browserbridge as _bb
     try:
-        r = _bb._call({"action": "eval", "expr": _FORM_SNAPSHOT})
+        r = _bb._call({"action": "eval", "expr": _FORM_SNAPSHOT,
+                       "space": space} if space else
+                      {"action": "eval", "expr": _FORM_SNAPSHOT})
         data = r.get("data", {}).get("value") if isinstance(r, dict) else None
-        return json.loads(data) if isinstance(data, str) else (data or [])
+        return _sanitize_form(json.loads(data) if isinstance(data, str) else (data or []))
     except Exception:
         return []
+
+
+def _actuator_form(act, space):
+    if act is not None and hasattr(act, "eval"):
+        try:
+            data = act.eval(_FORM_SNAPSHOT)
+            return _sanitize_form(json.loads(data) if isinstance(data, str) else (data or []))
+        except Exception:
+            return []
+    return _read_form(space)
 
 
 def _real_browse(runner=None, form_reader=None):
     def execute(rec):
         goal = (rec.args or {}).get("goal") or (rec.args or {}).get("task") or ""
-        out = (runner or _live_browse)(goal)
-        form = (form_reader or _read_form)()          # INDEPENDENT re-read for the done-check
+        space = _mission_space(getattr(rec, "job_id", ""))
+        domains = ((rec.args or {}).get("_leash") or {}).get("allowed_domains") or []
+        out = runner(goal) if runner else _live_browse(goal, space, domains)
+        # Child summaries are durable case/event material.  Defense in depth for
+        # a child that ignored the prompt and echoed signup/contact credentials.
+        out = str(out or "")
+        out = re.sub(r"(?i)((?:password|passcode|secret|token|otp|e-?mail|phone|"
+                     r"card(?: number)?)\s*(?:is|=|:)\s*)\S+", r"\1[redacted]", out)
+        out = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+                     "[redacted-email]", out, flags=re.I)
+        form = _sanitize_form(form_reader()) if form_reader else _read_form(space)
         return {"case": {"browsed": True, "browse_result": (out or "")[:600]},
                 "result": out, "form": form}
     return execute
@@ -390,17 +572,120 @@ def _browse_verify(rec, result):
                    "could not confirm the form was filled (re-read found %d field(s))" % len(form))
 
 
+def _space_actuator(actuator, job_id):
+    act = actuator or _live_actuator()
+    if act is not None and hasattr(act, "for_space"):
+        act = act.for_space(_mission_space(job_id))
+    return act
+
+
+def _find_button(snapshot, button):
+    wanted = str(button or "").strip().casefold()
+    hits = []
+    for line in str((snapshot or {}).get("snapshot") or "").splitlines():
+        m = re.search(r"\[([^\]]+)\]\s+(?:button|link|menuitem)\s+\"([^\"]+)\"", line)
+        if m and m.group(2).strip().casefold() == wanted:
+            if re.search(r"×\s*[2-9]\d*|identical siblings", line, re.I):
+                return None
+            hits.append({"ref": m.group(1), "line": line.strip()})
+    return hits[0] if len(hits) == 1 else None
+
+
+def _browse_target_snapshot(actuator):
+    def snap(args, job_id):
+        button = (args or {}).get("button") or (args or {}).get("text") or "Publish"
+        if re.search(r"\b(pay|purchase|buy|checkout|place\s+order)\b",
+                     str(button), re.I):
+            raise RuntimeError("commerce requires a dedicated pay capability with a bound amount")
+        act = _space_actuator(actuator, job_id)
+        if act is None or not hasattr(act, "page_identity") or not hasattr(act, "snapshot"):
+            raise RuntimeError("cannot snapshot the browser target")
+        ident = act.page_identity() or {}
+        tree = act.snapshot() or {}
+        target = _find_button(tree, button)
+        full_url = tree.get("url") or ident.get("url")
+        if not full_url or not target:
+            raise RuntimeError("target page/button is missing or ambiguous; prepare the page again")
+        u = urlsplit(str(full_url or ""))
+        form = _actuator_form(act, _mission_space(job_id))
+        form_json = json.dumps(form, sort_keys=True, ensure_ascii=False,
+                               separators=(",", ":"))
+        return {"space": _mission_space(job_id), "tab_id": ident.get("tab_id"),
+                "title": ident.get("title") or "", "url": full_url,
+                "origin": "%s://%s" % (u.scheme, u.netloc),
+                "button": str(button), "ref": target["ref"],
+                "target": target["line"],
+                "form_digest": hashlib.sha256(form_json.encode("utf-8")).hexdigest(),
+                "form": form[:20]}
+    return snap
+
+
+def _browse_target_unchanged(actuator):
+    def unchanged(rec):
+        old = rec.snapshot or {}
+        act = _space_actuator(actuator, getattr(rec, "job_id", ""))
+        if act is None:
+            return False
+        ident = act.page_identity() or {}
+        tree = act.snapshot() or {}
+        target = _find_button(tree, old.get("button"))
+        full_url = tree.get("url") or ident.get("url")
+        form = _actuator_form(act, _mission_space(getattr(rec, "job_id", "")))
+        form_json = json.dumps(form, sort_keys=True, ensure_ascii=False,
+                               separators=(",", ":"))
+        form_digest = hashlib.sha256(form_json.encode("utf-8")).hexdigest()
+        return bool(target and ident.get("tab_id") == old.get("tab_id") and
+                    full_url == old.get("url") and
+                    target.get("line") == old.get("target") and
+                    target.get("ref") == old.get("ref") and
+                    form_digest == old.get("form_digest"))
+    return unchanged
+
+
 def _real_browse_submit(actuator=None):
     def execute(rec):
         button = (rec.args or {}).get("button") or (rec.args or {}).get("text") or "Publish"
-        act = actuator or _live_actuator()
+        act = _space_actuator(actuator, getattr(rec, "job_id", ""))
         if act is None:
             return {"submitted": False, "error": "no browser available"}
         try:
-            act.click_text(button)
+            ref = (getattr(rec, "snapshot", None) or {}).get("ref")
+            if not ref or not hasattr(act, "click_ref"):
+                return {"submitted": False, "error": "approved button identity is missing"}
+            act.click_ref(ref)
         except Exception as e:
             return {"submitted": False, "error": "publish click failed: %s: %s" % (type(e).__name__, e)}
-        return {"case": {"published": True}, "submitted": True, "button": button}
+        old = getattr(rec, "snapshot", None) or {}
+        try:
+            ident = act.page_identity() or {}
+            tree = act.snapshot() or {}
+        except Exception as e:
+            return {"submitted": True, "confirmed": False, "button": button,
+                    "error": "clicked, but fresh postcondition read failed: %s" % e}
+        new_url = str(tree.get("url") or ident.get("url") or "")
+        page = "\n".join((str(ident.get("title") or ""),
+                           str(tree.get("snapshot") or "")))
+        failure = re.search(r"\b(error|required|could not|couldn't|failed|captcha|"
+                            r"rate limit|try again|something went wrong)\b", page, re.I)
+        success_text = str((rec.args or {}).get("success_text") or "").strip()
+        success_url = str((rec.args or {}).get("success_url_contains") or "").strip()
+        explicit = ((success_text and success_text.casefold() in page.casefold()) or
+                    (success_url and success_url in new_url))
+        marker = re.search(r"\b(published|posted|sent successfully|your post is live|"
+                           r"view post|successfully published)\b", page, re.I)
+        target_gone = _find_button(tree, old.get("button")) is None
+        navigated = bool(new_url and new_url != str(old.get("url") or ""))
+        permalink = re.search(
+            r"/(?:posts?|status|items?|listings?|p|reels?|videos?|updates?)/[^/?#]+",
+            urlsplit(new_url).path, re.I) if new_url else None
+        confirmed = bool(not failure and (((explicit or marker) and
+                                            (navigated or target_gone)) or
+                                           (permalink and navigated and target_gone)))
+        return {"case": {"published": True} if confirmed else {},
+                "submitted": True, "confirmed": confirmed, "button": button,
+                "target": new_url, "postcondition":
+                    ("fresh success state observed" if confirmed else
+                     "click fired; no fresh publication evidence")}
     return execute
 
 
@@ -408,7 +693,10 @@ def _browse_submit_verify(rec, result):
     r = result or {}
     if not r.get("submitted"):
         return Verdict(FAILED, r.get("error") or "publish click did not fire")
-    return Verdict(VERIFIED, "clicked %r (human-confirmed)" % r.get("button"))
+    if not r.get("confirmed"):
+        return Verdict(INCONCLUSIVE,
+                       r.get("error") or "click fired but publication was not independently observed")
+    return Verdict(VERIFIED, "fresh page state confirms %r completed" % r.get("button"))
 
 
 def _stub_browse(rec):
@@ -421,22 +709,85 @@ def _stub_browse(rec):
 
 
 def _stub_browse_submit(rec):
-    return {"case": {"published": True}, "submitted": True,
+    return {"case": {"published": True}, "submitted": True, "confirmed": True,
             "button": (rec.args or {}).get("button") or "Publish"}
 
 
 # ── code: coding is a capability like any other — run collie's coding agent ───
 # The delegate's positioning is a human-delegate; coding is ONE function under it.
-# `code` runs collie's own coding loop (read/edit/search/run) with its executed-
-# verification gate, so a mission can compose a coding step with web/world steps.
+# `code` runs a filesystem-confined read/edit/search loop. General command execution
+# stays unavailable inside Mission; a real edit therefore hands off as INCONCLUSIVE
+# unless an injected, separately sandboxed runner supplies executed verification.
+class _BoundCodeTool:
+    """Confine every path-bearing code tool to one approved real workspace."""
+    def __init__(self, inner, root, path_key="path", default_path=None):
+        self.inner, self.root = inner, os.path.realpath(root)
+        self.path_key, self.default_path = path_key, default_path
+        self.name, self.tier = inner.name, getattr(inner, "tier", "always")
+        self.description = getattr(inner, "description", "Mission-scoped code tool")
+        self.schema = getattr(inner, "schema", {}) or {}
+
+    def provider_schema(self):
+        return {"name": self.name, "description": self.description,
+                "input_schema": self.schema}
+
+    def run(self, args, ctx):
+        clean = dict(args or {})
+        raw = clean.get(self.path_key, self.default_path)
+        if raw is None:
+            return "ERROR(code): path is required"
+        try:
+            raw = str(raw)
+            candidate = os.path.realpath(raw if os.path.isabs(raw)
+                                         else os.path.join(self.root, raw))
+            if os.path.commonpath([self.root, candidate]) != self.root:
+                return "ERROR(code): path is outside the approved Mission workspace"
+        except (OSError, ValueError):
+            return "ERROR(code): invalid or cross-volume path"
+        clean[self.path_key] = candidate
+        return self.inner.run(clean, ctx)
+
+
+def _restrict_code_child(h, root):
+    # `glob` can traverse directory symlinks and general shell/execute tools can
+    # escape any path wrapper. code_search already provides safe repo discovery.
+    allow = {"read_file", "write_file", "edit_file", "grep",
+             "plan", "undo", "code_search"}
+    for name in list(h.registry._tools):
+        if name not in allow:
+            h.registry._tools.pop(name, None)
+    for name in ("read_file", "write_file", "edit_file"):
+        if name in h.registry._tools:
+            h.registry._tools[name] = _BoundCodeTool(h.registry._tools[name], root)
+    if "grep" in h.registry._tools:
+        h.registry._tools["grep"] = _BoundCodeTool(
+            h.registry._tools["grep"], root, default_path=".")
+
+
 def _live_code(goal, workspace=None):
     import os
     from .cli import make_harness
     from . import settings as _s
     _s.apply()
-    cwd = workspace or os.getcwd()
+    cwd = os.path.realpath(os.path.abspath(workspace or os.getcwd()))
+    roots = [os.path.realpath(os.path.abspath(p)) for p in
+             (os.environ.get("COLLIE_MISSION_CODE_ROOTS") or "").split(os.pathsep) if p]
+    try:
+        approved = any(os.path.commonpath([cwd, root]) == root for root in roots)
+    except ValueError:
+        approved = False
+    if not roots or not approved:
+        return {"answer": "Mission code is disabled for this workspace; add an approved root to "
+                          "COLLIE_MISSION_CODE_ROOTS and explicitly allow the code capability.",
+                "verified": False}
+    if not os.path.isdir(cwd):
+        return {"answer": "approved code workspace does not exist", "verified": False}
+    project = "mission-code-" + hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:12]
     h = make_harness(cwd, provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
-                     project="code", embed="hash", code_search=True, exec_code=True)
+                     project=project, embed="hash", code_search=True, exec_code=False)
+    # Positive authority list: a capability advertised as reversible cannot load
+    # browser/desktop/MCP hands or a general shell behind Mission's outer gate.
+    _restrict_code_child(h, cwd)
     h.max_turns = int(os.environ.get("COLLIE_CODE_TURNS", "30"))
     res = h.run("code", goal)
     verified = bool(getattr(res, "verified", False))
@@ -459,6 +810,13 @@ def _real_code(runner=None):
     return execute
 
 
+def _code_resource(rec):
+    """Serialize edits to the same canonical workspace across Missions/processes."""
+    ws = (rec.args or {}).get("workspace") or (rec.args or {}).get("cwd") or os.getcwd()
+    root = os.path.realpath(os.path.abspath(str(ws)))
+    return "code-workspace:" + hashlib.sha256(root.encode("utf-8")).hexdigest()
+
+
 def _code_verify(rec, result):
     """Done-check = collie's OWN executed verification (a repro that fails on the
     broken code, an edit that flips it, a re-run that passes). Verified only when the
@@ -477,6 +835,27 @@ def _stub_code(rec):
             "result": "(stub) fixed: " + goal[:50], "verified": True}
 
 
+def _semantic_web_submit(args):
+    """Canonical executor inputs; aliases/verification hints cannot split a key."""
+    a = args or {}
+    return {"url": a.get("url") or "", "fields": a.get("fields") or {},
+            "submit": a.get("submit") or a.get("submit_selector") or ""}
+
+
+def _semantic_web_send(args):
+    a = args or {}
+    # `to` is display/case metadata only; the executor binds the actual thread by
+    # URL + selectors. Letting `to` split the key could resend on that same thread.
+    return {"url": a.get("url") or "", "text": a.get("text") or "",
+            "selector": a.get("selector") or a.get("message_selector") or "",
+            "send": a.get("send") or a.get("send_selector") or ""}
+
+
+def _semantic_browse_submit(args):
+    a = args or {}
+    return {"button": a.get("button") or a.get("text") or "Publish"}
+
+
 # ══════════════════════════ registration ═════════════════════════════════════
 def register_primitives(stub: bool = True, actuator=None, provider=None,
                         research_runner=None, browse_runner=None, code_runner=None):
@@ -493,6 +872,7 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         browse_exec, browse_verify = _stub_browse, _browse_verify
         bsubmit_exec, bsubmit_verify = _stub_browse_submit, _browse_submit_verify
         code_exec, code_verify = _stub_code, _code_verify
+        browser_resource = code_resource = bsubmit_snapshot = bsubmit_unchanged = None
     else:
         research_exec, research_verify = _real_research(research_runner), _real_research_verify
         compose_exec, compose_verify = _real_compose(provider), _compose_verify
@@ -502,6 +882,10 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         browse_exec, browse_verify = _real_browse(browse_runner), _browse_verify
         bsubmit_exec, bsubmit_verify = _real_browse_submit(actuator), _browse_submit_verify
         code_exec, code_verify = _real_code(code_runner), _code_verify
+        browser_resource = "browser-profile"
+        bsubmit_snapshot = _browse_target_snapshot(actuator)
+        bsubmit_unchanged = _browse_target_unchanged(actuator)
+        code_resource = _code_resource
 
     register(Capability(
         name="research", execute=research_exec, verify=research_verify, reversible=True,
@@ -513,19 +897,25 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         args_hint='{"facts","text"}'))
     register(Capability(
         name="observe", execute=observe_exec, verify=observe_verify, reversible=True,
-        risk="read", description="Re-observe the world (logged-out fetch for evidence, "
+        risk="read", resource=browser_resource,
+        description="Re-observe the world (logged-out fetch for evidence, "
         "or authed browser read to poll an inbox).",
         args_hint='{"url","expect","authed"}'))
     register(Capability(
         name="web.submit", execute=submit_exec, verify=submit_verify, reversible=False,
-        risk="publish", description="Fill and submit a form (publish / place an order).",
-        args_hint='{"url","fields","submit","expect_title"}'))
+        risk="publish", resource=browser_resource,
+        description="Fill and submit a non-commerce form (for example, publish a listing).",
+        args_hint='{"url","fields","submit","expect_title"}',
+        semantic_args=_semantic_web_submit))
     register(Capability(
         name="web.send", execute=send_exec, verify=send_verify, reversible=False,
-        risk="send", description="Send a message (reply / negotiate / email).",
-        args_hint='{"url","selector","text","send"}'))
+        risk="send", resource=browser_resource,
+        description="Send a message (reply / negotiate / email).",
+        args_hint='{"url","selector","text","send","success_text"}',
+        semantic_args=_semantic_web_send))
     register(Capability(
         name="browse", execute=browse_exec, verify=browse_verify, reversible=True, risk="read",
+        resource=browser_resource,
         description="Do a task on a website by driving the real browser adaptively (fill a form, "
         "navigate, act) — handles dynamic/obfuscated sites like Facebook Marketplace. Fills up to the "
         "final submit then STOPS (reversible). Pass `expect` (the field->value map you intend to fill) "
@@ -534,13 +924,17 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
                   '"expect": {"Make":"Toyota","Model":"Corolla","Year":"2015","Price":"9500"}}'))
     register(Capability(
         name="browse.submit", execute=bsubmit_exec, verify=bsubmit_verify, reversible=False,
-        risk="publish", description="Click the final IRREVERSIBLE button (Publish / Post / Place "
-        "order) after `browse` has filled the form. Gated — parks for your confirm.",
-        args_hint='{"button": "Publish"}'))
+        risk="publish", snapshot=bsubmit_snapshot, unchanged=bsubmit_unchanged,
+        resource=browser_resource,
+        description="Click one exact snapshotted final IRREVERSIBLE button (Publish / Post) "
+        "after `browse` has filled the form. Gated — parks for your confirm.",
+        args_hint='{"button": "Publish"}', semantic_args=_semantic_browse_submit))
     register(Capability(
         name="code", execute=code_exec, verify=code_verify, reversible=True, risk="code",
-        description="Write / fix / refactor code in a workspace by running collie's coding agent "
-        "(read/edit/search/run) with its executed-verification gate (a repro that fails on the broken "
-        "code, an edit that flips it, a re-run that passes). Reversible (version control). Use for the "
-        "coding step of an errand.",
+        resource=code_resource,
+        description="Read / write / refactor code inside one explicitly approved workspace using "
+        "a filesystem-confined child. Mission grants no shell; unverified edits hand off for review.",
         args_hint='{"goal": "fix the null-pointer in parser.py", "workspace": "/path/to/repo"}'))
+    return [get_capability(name) for name in
+            ("research", "compose", "observe", "web.submit", "web.send",
+             "browse", "browse.submit", "code")]

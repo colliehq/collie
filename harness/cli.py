@@ -393,6 +393,8 @@ def cmd_web(args):
         argv.append("--lan")
     if getattr(args, "qr", False):
         argv.append("--qr")
+    if getattr(args, "name", ""):
+        argv += ["--name", str(args.name)]
     return web_main(argv)
 
 
@@ -421,11 +423,17 @@ def _cmd_web_remote(args):
 
     relay = os.environ.get("COLLIE_RELAY", "wss://collie.run").rstrip("/")
 
+    # The remote path binds its own server rather than going through webapp.main(), so the flag has
+    # to be carried here too — a phone reaching this desktop over the relay is exactly the case that
+    # needs to know which dog answered.
+    if getattr(args, "name", ""):
+        webapp.DOG_NAME = str(args.name)
     try:
         httpd, port = webapp.bind_server(args.port)
     except OSError as e:
         print("collie web --remote: %s (pass --port <free port>)" % e)
         return 1
+    webapp.start_mission_ticker()
     threading.Thread(target=httpd.serve_forever, name="collie-web", daemon=True).start()
 
     state = RemoteState(relay, port, webapp.TOKEN, logf=lambda *a: print(*a, flush=True))
@@ -1565,6 +1573,28 @@ def cmd_jobs(args):
             rec = acts.get(nonce)
             if not rec:
                 print("unknown nonce"); return 1
+            # A Mission action must go back through its campaign driver. Running it
+            # with the one-shot Job Executor would fire the side effect but leave
+            # the Mission's parked step unresolved (and could bypass pause/cancel).
+            from .mission import MissionStore
+            mstore = MissionStore(os.path.join(d, "jobs.db"))
+            try:
+                owner = mstore.get(rec.job_id) if rec.job_id else None
+            finally:
+                mstore.close()
+            if owner:
+                from . import settings as _mst
+                from .missionweb import MissionService
+                _mst.apply()
+                svc = MissionService(state_dir=d)
+                try:
+                    out = svc.confirm(owner.mission_id, nonce)
+                    print("mission %s → %s%s" % (
+                        owner.mission_id, out.get("state", "unknown"),
+                        (": " + out["error"]) if out.get("error") else ""))
+                    return 1 if out.get("error") else 0
+                finally:
+                    svc.close()
             # confirm() raises on a non-pending nonce (already approved/executed);
             # don't let that abort the command — report state and, if it already
             # fired, reconcile the job from its receipt rather than crashing.
@@ -1611,6 +1641,16 @@ def cmd_jobs(args):
             print("catch-up: fired %d due wait(s); %d still pending"
                   % (fired, len(sched.pending_waits())))
             sched.close()
+            try:
+                from . import settings as _mst
+                from .missionweb import MissionService
+                _mst.apply()
+                msvc = MissionService(state_dir=d)
+                mout = msvc.tick(now=int(_t.time()))
+                print("missions: advanced %d" % mout.get("advanced", 0))
+                msvc.close()
+            except Exception as e:
+                print("missions not advanced: %s" % e)
         elif args.action == "ask":
             # natural language -> compile to a job -> drive it
             from . import mandate
@@ -1644,16 +1684,34 @@ def cmd_jobs(args):
             from .jobsweb import serve
             serve(port=int(args.port) if args.port else 8794, state_dir=d)
         elif args.action == "daemon":
-            # colliejobd: catch up on start, then tick on an interval. Owns no
-            # model process — it only drives due, already-materialized actions.
+            # colliejobd: catch up on start, then tick jobs plus model-driven
+            # Missions on an interval (the Mission lane cannot delay reminders).
             from .scheduler import Scheduler
             sched = Scheduler(acts, jobs, db_path=os.path.join(d, "jobs.db"))
-            print("colliejobd: catch-up + tick every %ss (Ctrl-C to stop)" % args.interval)
+            from . import settings as _mst
+            from .missionweb import MissionService
+            _mst.apply()
+            msvc = MissionService(state_dir=d)
+            last_mission_error = [""]
+
+            def _mission_tick(now):
+                try:
+                    msvc.tick(now=now)
+                    last_mission_error[0] = ""
+                except Exception as e:
+                    msg = "%s: %s" % (type(e).__name__, e)
+                    if msg != last_mission_error[0]:
+                        print("mission tick paused: %s" % msg)
+                        last_mission_error[0] = msg
+
+            print("colliejobd: jobs + missions, catch-up + tick every %ss (Ctrl-C to stop)"
+                  % args.interval)
             try:
-                sched.serve(interval=float(args.interval))
+                sched.serve(interval=float(args.interval), extra_tick=_mission_tick)
             except KeyboardInterrupt:
                 print("\ncolliejobd stopped")
             finally:
+                msvc.close()
                 sched.close()
         elif args.action == "receipts":
             rows = acts.receipts(args.text or None)
@@ -1669,6 +1727,85 @@ def cmd_jobs(args):
         acts.close()
         jobs.close()
     return rc
+
+
+def cmd_mission(args):
+    """Manage durable campaigns without opening the Web UI."""
+    import json as _json
+    from . import settings as _mst
+    from .missionweb import MissionService
+    _mst.apply()
+    svc = MissionService(state_dir=_state_dir())
+    try:
+        action = args.action
+        if action == "ls":
+            out = {"missions": svc.missions()}
+        elif action == "start":
+            goal = (args.text or "").strip()
+            if not goal:
+                print('usage: collie mission start "<goal>" [--auto]'); return 1
+            bounds = {}
+            if args.domains:
+                bounds["allowed_domains"] = [x.strip() for x in args.domains.split(",")
+                                              if x.strip()]
+            if args.actions_per_hour is not None:
+                bounds["actions_per_hour"] = args.actions_per_hour
+            if args.max_actions is not None:
+                bounds["max_irreversible_actions"] = args.max_actions
+            if args.max_steps is not None:
+                bounds["max_total_steps"] = args.max_steps
+            try:
+                out = svc.start(goal, autonomous=bool(args.auto), **bounds)
+            except ValueError as e:
+                print("invalid Mission leash: %s" % e); return 1
+            if args.run and not out.get("error"):
+                out = svc.run(out["mission_id"])
+        else:
+            mid = (args.text or "").strip()
+            if not mid:
+                print("usage: collie mission %s <mission-id>" % action); return 1
+            if action == "status":
+                out = svc.status(mid)
+            elif action == "run":
+                out = svc.run(mid)
+            elif action == "pause":
+                out = svc.pause(mid)
+            elif action == "resume":
+                out = svc.resume(mid)
+            elif action == "cancel":
+                out = svc.cancel(mid)
+            elif action == "accept":
+                out = svc.accept(mid)
+            elif action == "continue":
+                out = svc.continue_after_human(mid)
+            elif action == "reconcile":
+                out = svc.reconcile(mid, args.note or "")
+            elif action == "check":
+                out = svc.check(mid)
+            else:  # confirm
+                nonce = (args.nonce or "").strip()
+                if not nonce:
+                    print("usage: collie mission confirm <mission-id> <nonce>"); return 1
+                out = svc.confirm(mid, nonce)
+        if args.json:
+            print(_json.dumps(out, ensure_ascii=False))
+        elif action == "ls":
+            rows = out.get("missions", [])
+            if not rows:
+                print("(no missions)")
+            for m in rows:
+                print("  %-16s %-14s %s" % (
+                    m["mission_id"], m["state"], (m.get("goal") or "")[:70]))
+        else:
+            print("%s  %s  %s" % (
+                out.get("mission_id", ""), out.get("state", "unknown"),
+                out.get("error") or out.get("result") or out.get("goal") or ""))
+            if action == "start" and not args.run and not out.get("error"):
+                print("queued; `collie jobs daemon` will run it, or use `collie mission run %s`"
+                      % out["mission_id"])
+        return 1 if out.get("error") else 0
+    finally:
+        svc.close()
 
 
 def cmd_init(args):
@@ -2037,7 +2174,7 @@ def cmd_mcp(args):
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
-        "setup", "jobs", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit"}
+        "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit"}
 
 
 def _setup_wizard(force=False):
@@ -2250,6 +2387,9 @@ def main(argv=None):
     pw.add_argument("--qr", action="store_true",
                     help="with --lan, also print a QR fallback of the one-shot pairing secret "
                          "(for when a camera can't read the ring code)")
+    pw.add_argument("--name", default="",
+                    help="which dog this server speaks for (CollieIOS shows it, and its face); "
+                         "defaults to the kennel's dog when there is exactly one")
     pw.set_defaults(open=True, fn=cmd_web)
 
     # wallpaper: collie owns its own live desktop window (no third-party wallpaper engine)
@@ -2446,6 +2586,31 @@ def main(argv=None):
     pj.add_argument("--interval", default=60, type=float, help="daemon tick seconds")
     pj.add_argument("--port", default=0, type=int, help="dashboard port (web; default 8794)")
     pj.set_defaults(fn=cmd_jobs)
+
+    pmis = sub.add_parser(
+        "mission", help="durable campaigns: start/list/run/pause/resume/cancel/reconcile")
+    pmis.add_argument("action",
+                      choices=["start", "ls", "status", "run", "pause", "resume",
+                               "cancel", "confirm", "continue", "accept", "check",
+                               "reconcile"])
+    pmis.add_argument("text", nargs="?", default="", help="goal (start) or mission id")
+    pmis.add_argument("nonce", nargs="?", default="", help="confirmation nonce")
+    pmis.add_argument("--auto", action="store_true",
+                      help="pre-authorize irreversible actions within the mission leash")
+    pmis.add_argument("--domains", default="",
+                      help="comma-separated browser domain allowlist (supports globs)")
+    pmis.add_argument("--actions-per-hour", type=int, default=None,
+                      help="durable rolling limit for irreversible actions")
+    pmis.add_argument("--max-actions", type=int, default=None,
+                      help="durable campaign total for irreversible actions")
+    pmis.add_argument("--max-steps", type=int, default=None,
+                      help="durable campaign model-decision ceiling")
+    pmis.add_argument("--run", action="store_true",
+                      help="for start: run synchronously instead of leaving it queued")
+    pmis.add_argument("--json", action="store_true")
+    pmis.add_argument("--note", default="",
+                      help="inspection note for recovery reconciliation")
+    pmis.set_defaults(fn=cmd_mission)
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally
     # have the model write AGENTS.md — the friendly "collie, meet my repo" moment.

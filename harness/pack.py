@@ -27,9 +27,14 @@ def _ignore(_dir, names):
 def _isolate(cwd):
     """A throwaway copy of the working tree (heavy/vcs dirs excluded) for one attempt."""
     dst = tempfile.mkdtemp(prefix="collie_pack_")
-    shutil.copytree(cwd, os.path.join(dst, "w"), ignore=_ignore, symlinks=True,
-                    dirs_exist_ok=True)
-    return os.path.join(dst, "w")
+    try:
+        # Return the directory we own. Cleanup can then delete this exact path;
+        # deriving a parent from a test double once caused all of %TEMP% to be targeted.
+        shutil.copytree(cwd, dst, ignore=_ignore, symlinks=True, dirs_exist_ok=True)
+    except BaseException:
+        shutil.rmtree(dst, ignore_errors=True)
+        raise
+    return dst
 
 
 def _run_check(cmd, cwd, timeout=300):
@@ -245,5 +250,5 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None,
     # clean the throwaway trees (a slot stays empty when its copy never succeeded)
     for d in dirs:
         if d:
-            shutil.rmtree(os.path.dirname(d), ignore_errors=True)
+            shutil.rmtree(d, ignore_errors=True)
     return result

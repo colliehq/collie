@@ -103,6 +103,28 @@ def test_emit_is_serialized_across_workers(monkeypatch):
     assert max(overlaps) == 1, "the caller's emit was written against a sequential loop"
 
 
+def test_cleanup_deletes_only_the_owned_attempt_directory(monkeypatch, tmp_path):
+    """A test double may return any attempt root; cleanup must never derive its parent."""
+    _stub_backends(monkeypatch, [])
+    parent = tmp_path / "parent"
+    attempt = parent / "attempt"
+    attempt.mkdir(parents=True)
+    sentinel = parent / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(pack, "_isolate", lambda _cwd: str(attempt))
+    real_rmtree = pack.shutil.rmtree
+    removed = []
+
+    def guarded_rmtree(path, *args, **kwargs):
+        removed.append(os.path.abspath(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(pack.shutil, "rmtree", guarded_rmtree)
+    pack.run_pack("t", str(tmp_path), n=1, roster=["groq"])
+    assert removed == [os.path.abspath(attempt)]
+    assert sentinel.exists(), "the attempt's parent and sibling data must survive cleanup"
+
+
 def test_a_tree_is_copied_only_when_its_attempt_starts(monkeypatch):
     """Copying all N up front makes a sequential pack wait through N copytrees of the whole repo
     before the first model call."""

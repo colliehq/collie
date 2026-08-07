@@ -38,8 +38,10 @@ def check(cond, msg):
 
 
 class _Rec:
-    def __init__(self, args):
+    def __init__(self, args, job_id="", snapshot=None):
         self.args = args
+        self.job_id = job_id
+        self.snapshot = snapshot or {}
 
 
 class _MockProvider:
@@ -149,7 +151,7 @@ def test_web_submit_no_browser_degrades():
 
 def test_web_send_real_drives():
     print("test_web_send_real_drives")
-    fake = FakeActuator()
+    fake = FakeActuator(page_text="Still available — can you meet locally?")
     _register(0, actuator=fake)
     cap = get_capability("web.send")
     r = cap.execute(_Rec({"url": "https://m.test/thread/1", "selector": "#msg",
@@ -157,12 +159,14 @@ def test_web_send_real_drives():
     check(r.get("sent") is True, "send completed")
     check(("type", "#msg", "Still available — can you meet locally?") in fake.calls, "typed the message")
     check(("click", "#send") in fake.calls, "clicked send")
-    check(cap.verify(_Rec({}), r).status == VERIFIED, "send verifies as sent")
+    check(r.get("confirmed") and cap.verify(_Rec({}), r).status == VERIFIED,
+          "send verifies only after a fresh outgoing-thread observation")
 
 
 def test_browse_and_submit_real():
     print("test_browse_and_submit_real")
-    fake = FakeActuator()
+    fake = FakeActuator(page_text="Post published — View post")
+    fake._url = "https://example.test/compose"
     clear_registry()
     register_primitives(stub=False, actuator=fake,
                         browse_runner=lambda goal: "Filled the Corolla listing "
@@ -188,10 +192,181 @@ def test_browse_and_submit_real():
 
     sub = get_capability("browse.submit")
     check(sub.reversible is False and sub.risk == "publish", "browse.submit is irreversible (gated)")
-    sr = sub.execute(_Rec({"button": "Publish"}))
-    check(sr.get("submitted") is True and ("click_text", "Publish") in fake.calls,
-          "browse.submit clicks the Publish button by text")
-    check(sub.verify(_Rec({}), sr).status == VERIFIED, "browse.submit verifies as clicked")
+    args = {"button": "Publish"}
+    snap = sub.snapshot(args, "m-browser")
+    sr = sub.execute(_Rec(args, job_id="m-browser", snapshot=snap))
+    check(sr.get("submitted") is True and ("click_ref", "e1") in fake.calls,
+          "browse.submit clicks the exact snapshotted Publish element")
+    check(sr.get("confirmed") is True and sub.verify(_Rec({}), sr).status == VERIFIED,
+          "browse.submit verifies only after a fresh success state")
+
+    uncertain = FakeActuator(result_url="https://example.test/compose")
+    uncertain._url = "https://example.test/compose"
+    clear_registry(); register_primitives(stub=False, actuator=uncertain,
+                                           browse_runner=lambda _g: "prepared")
+    usub = get_capability("browse.submit")
+    usnap = usub.snapshot(args, "m-uncertain")
+    ur = usub.execute(_Rec(args, job_id="m-uncertain", snapshot=usnap))
+    check(ur.get("submitted") and not ur.get("confirmed") and
+          usub.verify(_Rec({}), ur).status == INCONCLUSIVE,
+          "a click without a permalink/toast/state change is not called published")
+
+
+def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
+    print("test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target")
+    from harness.primitives import _find_button, _sanitize_form
+    raw = [{"label": "Email", "value": "owner@example.test"},
+           {"label": "Password", "value": "hunter2"},
+           {"label": "Card number", "value": "4111111111111111"},
+           {"label": "Description", "value": "A safe listing"}]
+    safe = _sanitize_form(raw)
+    encoded = repr(safe)
+    check("owner@example.test" not in encoded and "hunter2" not in encoded and
+          "4111111111111111" not in encoded and encoded.count("[redacted]") == 3,
+          "credentials and signup/payment PII never enter durable form snapshots")
+    collapsed = {"snapshot": '[e1] button "Publish" ×2 (identical siblings: e1–e2)'}
+    check(_find_button(collapsed, "Publish") is None,
+          "a collapsed row with two identical Publish buttons is ambiguous")
+
+
+def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():
+    print("test_bridge_propagates_nested_click_error_and_forces_exact_node_click")
+    from harness.webact import BridgeActuator
+
+    class BB:
+        def __init__(self): self.cmd = None
+        def _call(self, cmd):
+            self.cmd = cmd
+            return {"ok": True, "data": {"click": {
+                "error": "no live element for ref e1"}, "page": {}}}
+
+    bb = BB()
+    act = BridgeActuator.__new__(BridgeActuator)
+    act._bb, act._space = bb, "mission-one"
+    try:
+        act.click_ref("e1")
+        check(False, "a detached exact ref must raise")
+    except RuntimeError:
+        check(True, "nested extension click errors reach the verifier")
+    check(bb.cmd.get("trusted") is False and bb.cmd.get("ref") == "e1",
+          "final Mission click targets the exact live node, never stale screen coordinates")
+
+
+def test_browse_domain_boundary_survives_redirects_and_blocks_action_gets():
+    print("test_browse_domain_boundary_survives_redirects_and_blocks_action_gets")
+    from contextlib import nullcontext
+    from unittest.mock import patch
+    from harness.primitives import _BoundBrowserTool
+    state = {"url": "https://allowed.test/start"}
+
+    class Inner:
+        name, tier, description, schema = "browser_open", "always", "open", {}
+        def run(self, _args, _ctx):
+            state["url"] = "https://evil.test/collect"
+            return "SECRET PAGE"
+
+    wrapped = _BoundBrowserTool(
+        Inner(), "mission-one", "open", boundary={"domains": ["allowed.test"],
+                                                   "first_host": ""})
+    with patch("harness.browserbridge.space_identity",
+               side_effect=lambda _space: dict(state)), \
+         patch("harness.browserbridge.browser_space",
+               side_effect=lambda _space: nullcontext()):
+        out = wrapped.run({"url": "https://allowed.test/redirect"}, None)
+        check(out.startswith("ERROR") and "SECRET PAGE" not in out,
+              "an allowed-domain redirect cannot expose or act on an off-scope origin")
+        state["url"] = "https://allowed.test/start"
+        blocked = wrapped.run({"url": "https://allowed.test/logout"}, None)
+        check(blocked.startswith("ERROR") and state["url"].endswith("/start"),
+              "consequential GET routes stay outside reversible browsing")
+
+
+def test_code_tools_are_confined_to_the_approved_workspace():
+    print("test_code_tools_are_confined_to_the_approved_workspace")
+    from harness.primitives import _BoundCodeTool, _code_resource, _restrict_code_child
+    root = tempfile.mkdtemp(prefix="collie-code-root-")
+    outside = tempfile.mkdtemp(prefix="collie-code-outside-")
+
+    class Tool:
+        tier, description, schema = "always", "fake", {}
+        def __init__(self, name): self.name, self.seen = name, []
+        def provider_schema(self): return {}
+        def run(self, args, _ctx): self.seen.append(dict(args)); return "ok"
+
+    inner = Tool("write_file")
+    bound = _BoundCodeTool(inner, root)
+    check(bound.run({"path": os.path.join("..", os.path.basename(outside), "x")}, None)
+          .startswith("ERROR"), ".. cannot escape an approved code root")
+    check(bound.run({"path": os.path.join(outside, "x")}, None).startswith("ERROR"),
+          "an absolute path outside the code root is refused")
+    check(bound.run({"path": "inside.py"}, None) == "ok" and
+          inner.seen[-1]["path"].startswith(os.path.realpath(root)),
+          "an in-root path is canonicalized and delegated")
+
+    class Registry:
+        def __init__(self):
+            self._tools = {n: Tool(n) for n in
+                           ("read_file", "write_file", "edit_file", "grep", "glob",
+                            "bash", "execute_code", "plan", "undo", "code_search")}
+    h = type("H", (), {"registry": Registry()})()
+    _restrict_code_child(h, root)
+    check("bash" not in h.registry._tools and "execute_code" not in h.registry._tools and
+          "glob" not in h.registry._tools,
+          "Mission code has no general execution or symlink-traversing glob tool")
+    one = _Rec({"workspace": root}); two = _Rec({"workspace": os.path.join(root, ".")})
+    check(_code_resource(one) == _code_resource(two),
+          "canonical workspace identity serializes concurrent code Missions")
+
+
+def test_live_browse_cannot_bypass_the_outer_action_gate():
+    print("test_live_browse_cannot_bypass_the_outer_action_gate")
+    from unittest.mock import patch
+    from harness.primitives import _live_browse
+
+    class Obj:
+        def close(self):
+            pass
+
+    class Registry:
+        def __init__(self):
+            class Tool:
+                tier, description, schema = "always", "fake", {
+                    "type": "object", "properties": {"submit": {"type": "boolean"},
+                    "space": {"type": "string"}, "adopt": {"type": "boolean"}}}
+                def __init__(self, name): self.name, self.calls = name, []
+                def run(self, args, _ctx): self.calls.append(dict(args)); return "ok"
+            self._tools = {name: Tool(name) for name in (
+                "browser_open", "browser_read", "browser_fields", "browser_type",
+                "browser_pick", "browser_snapshot", "browser_links", "browser_click",
+                "browser_press", "browser_drag", "browser_upload", "browser_script",
+                "browser_eval", "bash", "desktop_click", "desktop_type",
+                "enable_capability", "mcpctl_add", "slack_send", "load_tools")}
+
+    class FakeHarness:
+        def __init__(self):
+            self.registry, self.memory, self.recorder = Registry(), Obj(), Obj()
+            self.answer = ""
+
+        def run(self, _task_id, prompt):
+            allowed = {"browser_open", "browser_read", "browser_snapshot", "browser_fields",
+                       "browser_links", "browser_type", "browser_pick"}
+            check(set(self.registry._tools) == allowed,
+                  "reversible browse child is a positive browser-only authority list")
+            wrapped = self.registry._tools["browser_type"]
+            wrapped.run({"text": "x", "submit": True}, None)
+            check(wrapped.inner.calls[-1].get("submit") is False and
+                  "submit" not in wrapped.schema.get("properties", {}),
+                  "browser_type cannot smuggle Enter/submit through the outer gate")
+            opened = self.registry._tools["browser_open"]
+            check(opened.run({"url": "https://social.test/start"}, None) == "ok" and
+                  opened.run({"url": "https://evil.test/collect"}, None).startswith("ERROR"),
+                  "unscoped browse is pinned to its first site against cross-site exfiltration")
+            check("outer Mission can gate it" in prompt,
+                  "child is told to hand consequential actions back to Mission")
+            return type("R", (), {"answer": "prepared", "error": ""})()
+
+    with patch("harness.cli.make_harness", return_value=FakeHarness()):
+        check(_live_browse("prepare the form") == "prepared", "safe browse child still runs")
 
 
 def test_code_primitive():
@@ -217,6 +392,11 @@ def test_code_primitive():
 def main():
     test_research_real()
     test_browse_and_submit_real()
+    test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target()
+    test_bridge_propagates_nested_click_error_and_forces_exact_node_click()
+    test_browse_domain_boundary_survives_redirects_and_blocks_action_gets()
+    test_code_tools_are_confined_to_the_approved_workspace()
+    test_live_browse_cannot_bypass_the_outer_action_gate()
     test_code_primitive()
     test_compose_real()
     test_observe_loggedout_real()

@@ -89,8 +89,15 @@ def new_group_kwargs() -> dict:
     """Popen kwargs to isolate the child so a timeout can reap the WHOLE tree.
     POSIX: start_new_session (setsid) → its own process group. Windows: taskkill /T
     walks the PID tree directly, so no special flag is needed (and
-    CREATE_NEW_PROCESS_GROUP would change Ctrl-C semantics), so return nothing."""
-    return {} if is_windows() else {"start_new_session": True}
+    CREATE_NEW_PROCESS_GROUP would change Ctrl-C semantics), so return nothing.
+
+    A Slack executor is already a dedicated process group whose lifetime is
+    guarded externally.  Its descendants must inherit that group; starting a
+    second session here would let an ordinary shell tool survive cancellation.
+    A tool timeout in that mode intentionally ends the whole guarded task.
+    """
+    return {} if (is_windows() or os.environ.get("COLLIE_PROCESS_OWNER") == "slackexec") \
+        else {"start_new_session": True}
 
 
 def no_window_kwargs() -> dict:

@@ -15,6 +15,8 @@ Load the extension: harness/browser_ext/ (see docs), then set COLLIE_BROWSER_BRI
 browser_* tools register in a collie run and talk to the server over localhost.
 """
 import base64
+import contextlib
+import contextvars
 import hmac
 import json
 import mimetypes
@@ -752,6 +754,7 @@ def _ensure_server(port):
 
 
 _CURRENT_SPACE = [None]
+_SPACE_CONTEXT = contextvars.ContextVar("collie_browser_space", default="")
 
 
 def _space():
@@ -761,7 +764,39 @@ def _space():
     reason a run once walked into the middle of another job's half-filled form. Set
     COLLIE_BROWSER_SPACE per run and they get a tab each; a tool can also switch this process's
     space explicitly (browser_open space=…)."""
-    return _CURRENT_SPACE[0] or os.environ.get("COLLIE_BROWSER_SPACE") or "default"
+    return (_SPACE_CONTEXT.get() or _CURRENT_SPACE[0] or
+            os.environ.get("COLLIE_BROWSER_SPACE") or "default")
+
+
+@contextlib.contextmanager
+def browser_space(name):
+    """Bind browser commands in this execution context to one isolated tab lane.
+
+    ContextVar (rather than a process environment variable) keeps concurrent Web
+    ticker/daemon threads from changing each other's tab.
+    """
+    token = _SPACE_CONTEXT.set((name or "default")[:40])
+    try:
+        yield
+    finally:
+        _SPACE_CONTEXT.reset(token)
+
+
+def space_identity(space, timeout=4):
+    """Fresh target identity used by payload snapshots and TOCTOU checks."""
+    try:
+        env = _call({"action": "spaces", "space": (space or "default")[:40]},
+                    timeout=timeout)
+    except Exception:
+        return {}
+    if not isinstance(env, dict) or not env.get("ok", True):
+        return {}
+    data = env.get("data", env)
+    rows = data.get("spaces") if isinstance(data, dict) else None
+    for row in rows or []:
+        if isinstance(row, dict) and row.get("space") == (space or "default")[:40]:
+            return {k: row.get(k) for k in ("space", "tab_id", "title", "url")}
+    return {}
 
 
 def _call(cmd, timeout=60):

@@ -161,6 +161,58 @@ def verify_macos(path):
     return True, "notarised, team %s" % TEAM_ID
 
 
+def _loaded_slack_agents():
+    """Loaded per-dog LaunchAgents whose old runtime must be replaced too."""
+    if sys.platform != "darwin":
+        return []
+    directory = os.path.expanduser("~/Library/LaunchAgents")
+    try:
+        names = sorted(name[:-6] for name in os.listdir(directory)
+                       if re.fullmatch(r"run\.collie\.slack\.[A-Za-z0-9_-]+\.plist", name))
+    except OSError:
+        return []
+    loaded = []
+    for label in names:
+        target = "gui/%d/%s" % (os.getuid(), label)
+        try:
+            r = subprocess.run(["launchctl", "print", target],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            if r.returncode == 0:
+                loaded.append(label)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return loaded
+
+
+def _restart_slack_agents(labels):
+    """Force loaded agents onto the newly swapped app; return failures."""
+    if sys.platform != "darwin":
+        return []
+    failures = []
+    uid = os.getuid()
+    for label in labels:
+        if not re.fullmatch(r"run\.collie\.slack\.[A-Za-z0-9_-]+", label):
+            failures.append(label)
+            continue
+        target = "gui/%d/%s" % (uid, label)
+        try:
+            r = subprocess.run(["launchctl", "kickstart", "-k", target],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                continue
+            # A loaded job can disappear during the app swap. Re-bootstrap its
+            # stable plist instead of leaving it offline until next login.
+            plist = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % label)
+            subprocess.run(["launchctl", "bootout", target], capture_output=True, timeout=15)
+            r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, plist],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                failures.append(label)
+        except (OSError, subprocess.SubprocessError):
+            failures.append(label)
+    return failures
+
+
 def apply_macos(dmg, on_note=print):
     """Replace /Applications/Collie.app from a verified dmg. Returns (ok, detail)."""
     ok, why = verify_macos(dmg)
@@ -168,6 +220,7 @@ def apply_macos(dmg, on_note=print):
     if not ok:
         return False, why
 
+    slack_agents = _loaded_slack_agents()
     mnt = tempfile.mkdtemp(prefix="collie-update-")
     try:
         r = subprocess.run(["hdiutil", "attach", dmg, "-nobrowse", "-quiet", "-mountpoint", mnt],
@@ -202,7 +255,15 @@ def apply_macos(dmg, on_note=print):
                 os.rename(old, APP_PATH)        # put it back rather than leave nothing installed
             return False, "could not replace %s: %s" % (APP_PATH, e)
         shutil.rmtree(old, ignore_errors=True)
-        return True, "installed to " + APP_PATH
+        failed = _restart_slack_agents(slack_agents)
+        if failed:
+            on_note("  warning: could not restart Slack agent(s): %s" % ", ".join(failed))
+        elif slack_agents:
+            on_note("  restarted Slack agent(s): %s" % ", ".join(slack_agents))
+        detail = "installed to " + APP_PATH
+        if failed:
+            detail += "; Slack restart failed for " + ", ".join(failed)
+        return True, detail
     finally:
         subprocess.run(["hdiutil", "detach", mnt, "-quiet"], capture_output=True, timeout=120)
         shutil.rmtree(mnt, ignore_errors=True)
@@ -228,8 +289,9 @@ def _install_root():
 def running_parts(root):
     """Which pieces of Collie are up right now, so the same ones can be brought back afterwards.
 
-    Returned as plain strings ('wallpaper', 'bridge', 'window') rather than pids: everything here is
-    about to be killed, so a pid is worthless by the time it would be used.
+    Returned as plain strings (including ``slack:<launcher>``) rather than pids:
+    everything here is about to be killed, so a pid is worthless by the time it
+    would be used.
     """
     parts = []
     # The wallpaper and the app window are the SAME exe in two modes, told apart only by `--window`
@@ -237,6 +299,8 @@ def running_parts(root):
     # it open whether or not a window exists — using the port would pop a window open after every
     # update on a machine that only ever ran the wallpaper.
     ps = ("Get-CimInstance Win32_Process -Filter \"Name like 'collie-wallpaper%' or Name like 'cw-build%'\""
+          " | ForEach-Object { $_.CommandLine }; "
+          "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' or Name = 'pythonw.exe'\""
           " | ForEach-Object { $_.CommandLine }")
     try:
         out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
@@ -245,10 +309,30 @@ def running_parts(root):
     except Exception:
         out = ""
     lines = [l for l in out.splitlines() if l.strip()]
-    if any("--window" in l for l in lines):
+    wallpaper_lines = [line for line in lines
+                       if "collie-wallpaper" in line.lower() or "cw-build" in line.lower()]
+    if any("--window" in l for l in wallpaper_lines):
         parts.append("window")
-    if any("--window" not in l for l in lines):
+    if any("--window" not in l for l in wallpaper_lines):
         parts.append("wallpaper")
+
+    # Inno closes every python/pythonw living under the install root.  Slack
+    # listeners are launched by per-dog .pyw files outside that root, so record
+    # exactly which of those launchers is active and bring only those back.
+    # The filename is generated from a strict slug; retaining only the basename
+    # also keeps it safe to embed in the post-install PowerShell script.
+    kennel = os.path.join(os.path.expanduser("~"), ".collie")
+    runtime = os.path.normcase(os.path.abspath(os.path.join(root, "python"))).replace("/", "\\")
+    normalized = [os.path.normcase(line).replace("/", "\\") for line in lines]
+    try:
+        launchers = sorted(name for name in os.listdir(kennel)
+                           if re.fullmatch(r"slack-[A-Za-z0-9_-]+\.pyw", name))
+    except OSError:
+        launchers = []
+    for name in launchers:
+        path = os.path.normcase(os.path.abspath(os.path.join(kennel, name))).replace("/", "\\")
+        if any(runtime in line and path in line for line in normalized):
+            parts.append("slack:" + name)
     try:
         import socket
         s = socket.create_connection(("127.0.0.1", 8677), timeout=0.6)
@@ -297,6 +381,21 @@ _RESTART = {
 }
 
 
+def _restart_script(part, root):
+    if part in _RESTART:
+        return _RESTART[part].replace("{root}", root)
+    if part.startswith("slack:"):
+        launcher = part.split(":", 1)[1]
+        if not re.fullmatch(r"slack-[A-Za-z0-9_-]+\.pyw", launcher):
+            return ""
+        return ('"[collie-update] restarting %s"\n' % launcher
+                + 'Start-Process -FilePath $pyw -ArgumentList '
+                  '([char]34 + "$env:USERPROFILE\\.collie\\%s" + [char]34) '
+                  '-WindowStyle Hidden\n' % launcher
+                + 'Start-Sleep -Seconds 2')
+    return ""
+
+
 def apply_windows(exe, digest, on_note=print):
     """Re-run Collie-Setup.exe over the existing install. Returns (ok, detail).
 
@@ -321,6 +420,15 @@ def apply_windows(exe, digest, on_note=print):
     if not ok:
         return False, why
 
+    # A Slack task is deliberately inside a kill-on-close Job Object. The
+    # PowerShell bootstrap must outlive this Python process, so launching it
+    # here would produce a convincing "handed off" and then have the guard kill
+    # both bootstrap and installer. Refuse honestly; an interactive/app update
+    # runs outside that ownership boundary.
+    if os.environ.get("COLLIE_PROCESS_OWNER") == "slackexec":
+        return False, ("self-update cannot be handed off from a Slack task; run `collie update "
+                       "--yes` in a terminal or use the Collie app")
+
     root = _install_root()
     if not root:
         # Not inside the install tree (a pip-style layout): nothing will close us, so run it here
@@ -335,7 +443,7 @@ def apply_windows(exe, digest, on_note=print):
 
     parts = running_parts(root)
     log = os.path.join(tempfile.gettempdir(), "collie-update.log")
-    restarts = "\n".join(_RESTART[p].replace("{root}", root) for p in parts) or \
+    restarts = "\n".join(line for line in (_restart_script(p, root) for p in parts) if line) or \
         '"[collie-update] nothing was running; not starting anything"'
     script = _BOOTSTRAP.format(pid=os.getpid(), exe=exe, root=root, log=log, restarts=restarts)
     sp = os.path.join(tempfile.gettempdir(), "collie-update.ps1")

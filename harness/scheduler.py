@@ -107,14 +107,51 @@ class Scheduler:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM waits WHERE state=? ORDER BY fire_at", (PENDING_W,))]
 
-    def serve(self, interval: float = 60.0, now_fn=time.time, stop=None):
-        """Thin daemon loop: catch up immediately, then tick on an interval. The
-        daemon owns no model process — it only drives due, already-materialized
-        actions. `stop` is a callable for tests / clean shutdown."""
-        self.tick(int(now_fn()))                      # catch-up-on-wake
-        while not (stop and stop()):
-            time.sleep(interval)
-            self.tick(int(now_fn()))
+    def serve(self, interval: float = 60.0, now_fn=time.time, stop=None,
+              extra_tick=None):
+        """Catch up immediately, then tick on an interval.
+
+        ``extra_tick`` runs in a non-overlapping worker so a slow Mission model or
+        browser call cannot delay ordinary reminders.  Shutdown waits for that
+        worker's current boundary before callers close its durable stores.
+        ``stop`` is a callable for tests / clean shutdown.
+        """
+        extra_worker = [None]
+        extra_lock = threading.Lock()
+
+        def _run_extra(now):
+            try:
+                extra_tick(now)
+            finally:
+                with extra_lock:
+                    extra_worker[0] = None
+
+        def _tick():
+            now = int(now_fn())
+            self.tick(now)
+            if extra_tick:
+                # A Mission tick can spend minutes in a model/browser call. Run
+                # it in its own lane so ordinary reminders remain punctual, and
+                # never overlap two Mission scans in this process.
+                with extra_lock:
+                    if extra_worker[0] is None:
+                        t = threading.Thread(target=_run_extra, args=(now,),
+                                             name="mission-tick", daemon=True)
+                        extra_worker[0] = t
+                        t.start()
+
+        try:
+            _tick()                                  # catch-up-on-wake
+            while not (stop and stop()):
+                time.sleep(interval)
+                _tick()
+        finally:
+            t = extra_worker[0]
+            if t:
+                # The caller owns resources used by extra_tick and closes them as
+                # soon as serve() returns.  A timed join could therefore close a
+                # live Mission SQLite connection underneath this worker.
+                t.join()
 
     def close(self):
         self.db.close()

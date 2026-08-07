@@ -65,7 +65,7 @@ def test_three_kinds():
     print("test_three_kinds")
     d = classify("sell my 2018 corolla, local only", Prov('{"kind":"mission","goal":"sell corolla","confidence":0.95}'))
     check(d["kind"] == "chat" and not d["abstained"],
-          "mission route disabled -> even a clear world errand runs as chat")
+          "ordinary language never auto-starts a mission, even at high confidence")
     check(classify("add a --json flag", Prov('{"kind":"code","confidence":0.9}'))["kind"] == "code",
           "a workspace change -> code")
     check(classify("why is this flaky?", Prov('{"kind":"chat","confidence":0.9}'))["kind"] == "chat",
@@ -74,14 +74,14 @@ def test_three_kinds():
           "research/find-out -> chat (epistemic, not a mission)")
 
 
-def test_mission_route_disabled():
-    print("test_mission_route_disabled")
-    # the mission route was removed from the UX — any 'mission' label collapses to chat, at ANY
-    # confidence, with no abstain/promote affordance.
+def test_mission_route_is_explicit_only():
+    print("test_mission_route_is_explicit_only")
+    # Any model-produced mission label collapses to chat at ANY confidence. Only
+    # prefix_override below is allowed to enter durable work.
     for conf in (0.5, 0.99):
         d = classify("maybe post this somewhere?", Prov(f'{{"kind":"mission","confidence":{conf}}}'))
         check(d["kind"] == "chat" and not d["abstained"] and "suggested" not in d,
-              f"mission@{conf} -> plain chat, no promote-to-mission affordance")
+              f"model mission@{conf} -> plain chat, no promote affordance")
 
 
 def test_unparsed_falls_back_to_chat():
@@ -126,18 +126,34 @@ def test_prefix_override_skips_model():
     print("test_prefix_override_skips_model")
     boom = Boom()                                   # would raise if the model were called
     d = classify("/mission sell my car", boom)
-    check(d["kind"] == "chat" and d["goal"] == "sell my car" and d["source"] == "override",
-          "/mission is disabled -> runs as chat, still without a model call")
+    check(d["kind"] == "mission" and d["goal"] == "sell my car" and d["source"] == "override",
+          "/mission explicitly enters Mission without a classifier call")
     check(boom.calls == 0, "an explicit prefix must NOT call the model")
     check(classify("/code fix the bug", boom)["kind"] == "code", "/code -> code")
     check(classify("/chat what is X", boom)["kind"] == "chat", "/chat -> chat")
-    check(classify("/delegate book a table", boom)["kind"] == "chat", "/delegate is disabled -> chat")
+    check(classify("/delegate book a table", boom)["kind"] == "mission", "/delegate aliases mission")
+    ctl = classify("/mission cancel msn_123", boom)
+    check(ctl["mission_command"] == "cancel" and ctl["mission_id"] == "msn_123" and
+          ctl["goal"] == "", "management command is not misrepresented as a new goal")
+    start = classify("/mission --auto share weekly updates", boom)
+    check(start["mission_command"] == "start" and start["autonomous"] and
+          start["goal"] == "share weekly updates", "shared parser preserves explicit autonomy")
+    bare = classify("/mission", boom)
+    check(bare["mission_command"] == "list" and boom.calls == 0,
+          "bare /mission is an explicit list command with zero model calls")
+    for malformed in ("/mission start", "/mission list extra", "/mission ls extra"):
+        bad = classify(malformed, boom)
+        check(bad["mission_command"] == "invalid" and bad.get("command_error") and
+              boom.calls == 0,
+              f"malformed management syntax is never persisted as a goal: {malformed}")
     check(prefix_override("no prefix here") is None, "a bare message has no override")
+    check(prefix_override("/missionary work") is None, "/missionary is not a mission command")
+    check(prefix_override("please use /mission later") is None, "a slash word in prose is not a command")
 
 
 def main():
     test_three_kinds()
-    test_mission_route_disabled()
+    test_mission_route_is_explicit_only()
     test_unparsed_falls_back_to_chat()
     test_model_unavailable_raises()
     test_transient_overload_retries_then_succeeds()

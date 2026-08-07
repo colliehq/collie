@@ -29,18 +29,32 @@ class BridgeActuator:
     open/type/click/read map 1:1 to the bridge's command vocabulary — the exact
     commands the browser_* tools already use, so nothing new is invented here."""
 
-    def __init__(self):
+    def __init__(self, space=""):
         from . import browserbridge as _bb
         self._bb = _bb
+        self._space = (space or "")[:40]
 
     def _cmd(self, cmd):
+        cmd = dict(cmd)
+        if self._space:
+            cmd["space"] = self._space
         r = self._bb._call(cmd)
         if isinstance(r, dict):
             if r.get("ok") is False:
                 raise BrowserUnavailable(r.get("error") or "bridge command failed")
             if r.get("error"):                       # in-tab failure wrapped in ok:True
                 raise RuntimeError("browser: %s" % r["error"])
-            return r.get("data", r)                  # the extension returns page text/result in "data"
+            data = r.get("data", r)                  # extension payload lives in "data"
+            if isinstance(data, dict):
+                if data.get("error"):
+                    raise RuntimeError("browser: %s" % data["error"])
+                # click returns {click: {clicked|error}, page: ...}.  An outer
+                # ok:true only means the bridge round-trip worked; it must not
+                # turn a detached ref into a successful publish.
+                click = data.get("click")
+                if isinstance(click, dict) and click.get("error"):
+                    raise RuntimeError("browser: %s" % click["error"])
+            return data
         if isinstance(r, str) and r.startswith("ERROR(browser)"):
             raise RuntimeError(r)
         return r
@@ -57,21 +71,43 @@ class BridgeActuator:
     def click(self, selector: str) -> str:
         # the bridge click matches by visible text OR css selector; it returns the
         # resulting page text, not a URL, so callers verify by re-observing.
-        self._cmd({"action": "click", "selector": selector})
+        self._cmd({"action": "click", "selector": selector, "trusted": False})
         return getattr(self, "_url", "")
 
     def click_text(self, text: str) -> str:
         # click a button/link by its VISIBLE text (e.g. the "Publish" button) — the
         # gated irreversible action's single deterministic step.
-        self._cmd({"action": "click", "text": text})
+        self._cmd({"action": "click", "text": text, "trusted": False})
         return getattr(self, "_url", "")
+
+    def click_ref(self, ref: str) -> str:
+        # Synthetic element.click targets the exact snapshotted live node.  The
+        # bridge's optional trusted path converts a ref to screen coordinates and
+        # can hit a different element if layout shifts during its cursor delay —
+        # unacceptable for the final irreversible Mission boundary.
+        self._cmd({"action": "click", "ref": ref, "trusted": False})
+        return getattr(self, "_url", "")
+
+    def snapshot(self):
+        r = self._cmd({"action": "snapshot", "max": 400, "text": False})
+        return r if isinstance(r, dict) else {}
+
+    def eval(self, expr):
+        return self._cmd({"action": "eval", "expr": expr})
 
     def read(self, max_chars: int = 2000) -> str:
         r = self._cmd({"action": "read"})
         return (r if isinstance(r, str) else str(r))[:max_chars]
 
     def current_url(self) -> str:
-        return getattr(self, "_url", "")
+        ident = self.page_identity()
+        return ident.get("url") or getattr(self, "_url", "")
+
+    def for_space(self, space):
+        return BridgeActuator(space)
+
+    def page_identity(self):
+        return self._bb.space_identity(self._space or self._bb._space())
 
 
 def bridge_live() -> bool:
@@ -119,9 +155,38 @@ class FakeActuator:
         self._url = self.result_url
         return self.result_url
 
+    def click_ref(self, ref):
+        self.calls.append(("click_ref", ref))
+        self._url = self.result_url
+        return self.result_url
+
+    def snapshot(self):
+        self.calls.append(("snapshot",))
+        clicked = any(c[0] == "click_ref" for c in self.calls)
+        body = (self.page_text or "(no interactive elements found)") if clicked \
+            else '[e1] button "Publish"'
+        return {"url": self.current_url(), "snapshot": body,
+                "count": 1}
+
+    def eval(self, expr):
+        self.calls.append(("eval",))
+        return "[]"
+
     def read(self, max_chars=2000):
         self.calls.append(("read",))
         return self.page_text[:max_chars]
 
     def current_url(self):
         return self._url or self.result_url
+
+    def for_space(self, space):
+        self.space = space
+        return self
+
+    def page_identity(self):
+        from urllib.parse import urlsplit
+        url = self.current_url()
+        return {"space": getattr(self, "space", "default"), "tab_id": 1,
+                "title": self.page_text[:60], "url": url,
+                "origin": "%s://%s" % (urlsplit(url).scheme, urlsplit(url).netloc)
+                if url else ""}

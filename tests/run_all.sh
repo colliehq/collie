@@ -106,6 +106,7 @@ if $PY tests/test_worktree.py >/dev/null 2>&1; then echo "  worktree OK"; else e
 if $PY tests/test_mcp_catalog.py >/dev/null 2>&1; then echo "  mcp_catalog OK"; else echo "  mcp_catalog FAIL"; rc=1; fi
 if $PY tests/test_mcp_confidential.py >/dev/null 2>&1; then echo "  mcp_confidential OK"; else echo "  mcp_confidential FAIL"; rc=1; fi
 if $PY tests/test_slackbot.py >/dev/null 2>&1; then echo "  slackbot OK"; else echo "  slackbot FAIL"; rc=1; fi
+if $PY tests/test_slack_guard.py >/dev/null 2>&1; then echo "  slack guard (parent/process-tree ownership) OK"; else echo "  slack guard FAIL"; rc=1; fi
 if $PY tests/test_slack_setup.py >/dev/null 2>&1; then echo "  slack setup (one app per dog) OK"; else echo "  slack setup FAIL"; rc=1; fi
 if $PY tests/test_dogmail.py >/dev/null 2>&1; then echo "  dog mail (sealed to the dog, replay-proof) OK"; else echo "  dog mail FAIL"; rc=1; fi
 if $PY tests/test_dogmail_wire.py >/dev/null 2>&1; then echo "  dog mail wire (python ↔ worker agree on the bytes) OK"; else echo "  dog mail wire FAIL"; rc=1; fi
@@ -154,13 +155,14 @@ echo "── web --lan host guard (phone pairing) ──────────
 if $PY tests/test_web_lan.py >/dev/null 2>&1; then echo "  web --lan OK"; else echo "  web --lan FAIL"; rc=1; fi
 
 echo "── the permission gate (pytest-style: 185 checks) ───────"
-# These EIGHT files are written as bare `def test_*` with no __main__ block, so `$PY tests/x.py`
+# These files are written as bare `def test_*` with no __main__ block, so `$PY tests/x.py`
 # imports them, runs nothing, and exits 0 — which is how the whole gate feature shipped with a
 # green suite that had never executed one of its assertions. They need a runner.
 if $PY -c "import pytest" >/dev/null 2>&1; then
   if $PY -m pytest -q tests/test_gate.py tests/test_loop_gate.py tests/test_risk.py \
       tests/test_inbox.py tests/test_trust.py tests/test_audit.py tests/test_overrides.py \
-      tests/test_personas.py >/dev/null 2>&1; then echo "  gate/risk/inbox/trust/audit OK"
+      tests/test_personas.py tests/test_cli_mission.py tests/test_web_mission_api.py \
+      >/dev/null 2>&1; then echo "  gate/risk/inbox/trust/audit + mission CLI/HTTP OK"
   else echo "  gate/risk/inbox/trust/audit FAIL"; rc=1; fi
 else
   # Not silently skipped: an unrunnable suite is a fact about this checkout, not a pass.
@@ -169,6 +171,8 @@ fi
 
 echo "── what `collie slack` does with an ask ─────────────────"
 if $PY tests/test_slack_worker.py >/dev/null 2>&1; then echo "  slack worker OK"; else echo "  slack worker FAIL"; rc=1; fi
+if $PY tests/test_whoami.py >/dev/null 2>&1; then echo "  whoami (which dog is this) OK"; else echo "  whoami FAIL"; rc=1; fi
+if $PY tests/test_slack_answer.py >/dev/null 2>&1; then echo "  slack answer (executed) OK"; else echo "  slack answer FAIL"; rc=1; fi
 
 echo "── a face per dog (deterministic logo variants) ─────────"
 if $PY tests/test_avatar.py >/dev/null 2>&1; then echo "  avatar OK"; else echo "  avatar FAIL"; rc=1; fi

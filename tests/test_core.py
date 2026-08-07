@@ -140,6 +140,12 @@ def test_update_handoff_does_not_detach_the_bootstrap():
     # on Windows; the assertion follows the expression, not the other way round.
     assert "no_window_kwargs()" in launch, "expected CREATE_NO_WINDOW (via plat) for the bootstrap"
 
+def test_windows_update_refuses_a_guard_owned_handoff():
+    from harness import update as up
+    src = inspect.getsource(up.apply_windows)
+    assert "COLLIE_PROCESS_OWNER" in src and "cannot be handed off" in src, \
+        "a Slack-owned bootstrap would be killed with its guard and must not report success"
+
 def test_update_bootstrap_waits_installs_and_refuses_to_restart_after_a_failure():
     from harness import update as up
     s = up._BOOTSTRAP.format(pid=4242, exe="C:\\x\\setup.exe", root="C:\\r",
@@ -160,6 +166,57 @@ def test_update_tells_wallpaper_and_window_apart():
     code = "\n".join(l.split("#", 1)[0] for l in src.splitlines())
     assert "8787" not in code, \
         "8787 is the server and the wallpaper holds it too — using it opens a window that was never there"
+
+def test_update_inventory_and_restart_include_live_slack_listener():
+    """An installer kills bundled pythonw, so a live dog must be explicit restart inventory."""
+    from harness import update as up
+    home = tempfile.mkdtemp(prefix="collie-update-slack-")
+    kennel = os.path.join(home, ".collie")
+    os.makedirs(kennel)
+    launcher = os.path.join(kennel, "slack-cornetto.pyw")
+    open(launcher, "w", encoding="utf-8").close()
+    root = os.path.join(home, "Programs", "Collie")
+    runtime = os.path.join(root, "python", "pythonw.exe")
+
+    class Result:
+        returncode = 0
+        stdout = '"%s" "%s"\n' % (runtime, launcher)
+        stderr = ""
+
+    real_run, real_expand = up.subprocess.run, up.os.path.expanduser
+    up.subprocess.run = lambda *a, **k: Result()
+    up.os.path.expanduser = lambda path: home if path == "~" else real_expand(path)
+    try:
+        parts = up.running_parts(root)
+    finally:
+        up.subprocess.run, up.os.path.expanduser = real_run, real_expand
+    assert "slack:slack-cornetto.pyw" in parts, \
+        "the active bundled Slack launcher must survive installer process teardown"
+    restart = up._restart_script("slack:slack-cornetto.pyw", root)
+    assert ("slack-cornetto.pyw" in restart and "Start-Process" in restart
+            and restart.count("[char]34") == 2), \
+        "post-install restart must use the newly installed pythonw with that exact launcher"
+    assert up._restart_script("slack:../bad.pyw", root) == "", \
+        "restart inventory cannot inject an arbitrary path into PowerShell"
+
+def test_new_windows_installer_migrates_pre_slack_updaters():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    iss = open(os.path.join(root, "installer", "collie.iss"), encoding="utf-8").read()
+    prepare = iss.split("function PrepareToInstall", 1)[1].split("procedure InitializeWizard", 1)[0]
+    run = iss.split("[Run]", 1)[1].split("[UninstallRun]", 1)[0]
+    assert "taskkill.exe /PID $_.Id /T /F" in prepare, \
+        "the first upgrade must quiesce each legacy listener's external child tree"
+    assert "slack-*.pyw" in run and "subprocess.Popen([sys.executable,p]" in run, \
+        "the new installer itself must restart Slack when the old updater did not inventory it"
+
+def test_macos_update_kickstarts_loaded_slack_agents():
+    from harness import update as up
+    install = inspect.getsource(up.apply_macos)
+    restart = inspect.getsource(up._restart_slack_agents)
+    assert "_loaded_slack_agents" in install and "_restart_slack_agents" in install, \
+        "the app swap must inventory listeners before replacement and restart them after"
+    assert '"kickstart", "-k"' in restart and '"bootstrap"' in restart, \
+        "a loaded old runtime is replaced, with re-bootstrap if it vanished during the swap"
 
 def test_pack_selection():
     from harness.pack import select

@@ -1,7 +1,7 @@
 """Front-door router — the classifying "head" that types each message and routes it.
 
-Every incoming message gets ONE cheap model call that classifies it into a small,
-principled set of task kinds; the caller then routes to the right executor. The
+Ordinary messages get ONE cheap model call that classifies them into a small,
+principled set of interactive task kinds; the caller then routes to the right executor. The
 taxonomy is not ad-hoc — it is two orthogonal axes from the literature,
 discretized into three kinds (see docs/ROUTER_DESIGN.md for citations):
 
@@ -16,15 +16,12 @@ discretized into three kinds (see docs/ROUTER_DESIGN.md for citations):
   chat    — produce information (answer / explain / find out on the web). Research
             lives HERE (epistemic, read-only) — never its own top-level kind.
   code    — create/modify/debug code or files in the workspace (reversible).
-  mission — a durable, multi-step real-world errand that may take IRREVERSIBLE
-            actions (send/publish/buy/apply/book/pay) or wait for external events.
+  mission — a durable, multi-step real-world errand, entered ONLY through an
+            explicit `/mission ...` (or legacy `/delegate ...`) command.
 
-Two design rules taken straight from the literature:
-  * calibrated confidence + a per-route threshold, highest for the irreversible
-    MISSION route (RouteLLM, Ong et al. 2024) — below it we ABSTAIN to the cheap,
-    reversible path (chat) and let the user promote it;
-  * an explicit abstain rather than force-fitting every message (CLINC150 out-of-
-    scope, Larson et al. 2019).
+The irreversible route is command-only. Even if the classifier calls ordinary
+language a mission, it is defensively collapsed to chat. This makes starting a
+durable campaign an unambiguous user action rather than a probabilistic guess.
 
 Honesty about the model: the model is a HARD dependency of every route (chat,
 code, and mission all need it). So if the model is genuinely unavailable, we do
@@ -41,10 +38,8 @@ import time
 
 KINDS = ("chat", "code", "mission")
 
-# Per-route acceptance threshold. Only the irreversible MISSION route is gated:
-# routing INTO a consequential campaign demands high confidence; below it we
-# abstain to chat (reversible) and surface a one-click "run as mission". code/chat
-# share the interactive backend, so their boundary needs no gate.
+# Retained for import compatibility with older clients. Mission is now command-only,
+# so no model confidence value can activate it.
 MISSION_THRESHOLD = 0.7
 
 # The router's default model on anthropic providers (Sonnet: fast + capable; the
@@ -92,12 +87,19 @@ class ModelUnavailable(RuntimeError):
 def prefix_override(text: str):
     """Explicit user override: '/mission …' '/code …' '/chat …' ('/delegate' == mission).
     Returns (kind, stripped_text) or None. Handled BEFORE any model call (zero latency)."""
+    from .missioncmd import parse as parse_mission
+    mission = parse_mission(text or "")
+    if mission is not None:
+        # Body is retained for backward compatibility; classify() replaces it
+        # with structured command/goal fields below.
+        body = re.sub(r"^\s*/(?:mission|delegate)\b", "", text or "",
+                      count=1, flags=re.I).strip()
+        return "mission", body
     m = _PREFIX.match(text or "")
     if not m:
         return None
     word = m.group(1).lower()
-    # the mission route is disabled (unmanageable in the UI) — '/mission' and '/delegate' run as chat
-    kind = "chat" if word in ("mission", "delegate") else word
+    kind = "mission" if word in ("mission", "delegate") else word
     return kind, m.group(2).strip()
 
 
@@ -133,8 +135,7 @@ def _decide(comp, text: str) -> dict:
     conf = max(0.0, min(1.0, conf))
     goal = (plan.get("goal") or text).strip()
     reason = (plan.get("reason") or "")[:200]
-    # the mission route is DISABLED (its live view/kill/manage UI wasn't usable) — anything the model
-    # would have called a mission just runs as chat, with no "promote to mission" affordance.
+    # Mission is EXPLICIT-ONLY. A model label can never start durable work.
     if kind == "mission":
         return {"kind": "chat", "goal": text, "confidence": conf, "reason": reason,
                 "source": "model", "abstained": False}
@@ -158,8 +159,19 @@ def classify(text: str, provider, ctx: dict = None, retries: int = 3, _sleep=Non
     ov = prefix_override(text)
     if ov:
         kind, body = ov
-        return {"kind": kind, "goal": body or text, "confidence": 1.0,
-                "reason": "explicit prefix", "source": "override", "abstained": False}
+        out = {"kind": kind, "goal": body or text, "confidence": 1.0,
+               "reason": "explicit prefix", "source": "override", "abstained": False}
+        if kind == "mission":
+            from .missioncmd import parse
+            command = parse(text)
+            if command:
+                out.update({"mission_command": command.action,
+                            "mission_id": command.mission_id,
+                            "autonomous": command.autonomous,
+                            "goal": command.goal})
+                if command.error:
+                    out["command_error"] = command.error
+        return out
 
     if provider is None:
         raise ModelUnavailable("no model provider configured")

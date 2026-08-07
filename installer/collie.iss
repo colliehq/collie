@@ -178,6 +178,15 @@ Filename: "{#PyW}"; Parameters: "-m harness.cli browser-bridge --install"; Worki
   StatusMsg: "{cm:StatusBridge}"; Flags: runhidden waituntilterminated; Tasks: bridge
 
 ; 4) launch it
+;    A previous release's updater does not know Slack listeners exist. The NEW
+;    installer therefore owns this migration: after replacing the runtime,
+;    restart every per-dog launcher the user opted into. A duplicate loses the
+;    per-dog OS lock and exits harmlessly.
+Filename: "{#PyW}"; \
+  Parameters: "-c ""import glob,os,subprocess,sys; [subprocess.Popen([sys.executable,p], creationflags=0x08000000) for p in glob.glob(os.path.expanduser('~/.collie/slack-*.pyw'))]"""; \
+  StatusMsg: "Restarting Slack agents..."; Flags: runhidden waituntilterminated
+
+; 5) launch the app
 Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"; \
   Description: "{cm:RunApp}"; Flags: runhidden postinstall nowait skipifsilent
 
@@ -367,11 +376,13 @@ begin
     { let it shut the wallpaper down cleanly first (best-effort) }
     try Exec(app + '\python\pythonw.exe', '-m harness.cli wallpaper --stop', '',
              SW_HIDE, ewWaitUntilTerminated, rc); except end;
-    { then force-stop anything still running from the install dir so its files are unlocked }
+    { Then stop each exact app-runtime tree. Stop-Process killed only the
+      python parent; a legacy Slack task's shell/node/git descendants could
+      continue editing during the upgrade and overlap the replacement worker. }
     Exec(ExpandConstant('{cmd}'),
          '/C powershell -NoProfile -Command "Get-Process python,pythonw,collie-wallpaper '
          + '-ErrorAction SilentlyContinue | Where-Object { $_.Path -like ''' + app + '\*'' } '
-         + '| Stop-Process -Force"',
+         + '| ForEach-Object { & taskkill.exe /PID $_.Id /T /F | Out-Null }"',
          '', SW_HIDE, ewWaitUntilTerminated, rc);
     Sleep(700);
   end;
