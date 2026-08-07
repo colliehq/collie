@@ -370,7 +370,10 @@
   .set-hint { font-size: 11.5px; line-height: 1.5; color: var(--faint); margin: -2px 0 4px; max-width: 92%; }
   .set-group .set-row + .set-hint { padding-bottom: 2px; }
   /* toggle switch for bool knobs */
-  .set-toggle { position: relative; display: inline-block; width: 40px; height: 23px; flex: 0 0 auto; cursor: pointer; }
+  /* .set-row label { flex:1 } outranks a lone .set-toggle — and the toggle IS a label, so every
+     bool row stretched its switch across the free half of the row (knob still translating 17px,
+     which made ON and OFF read identically). Match the row-scoped specificity. */
+  .set-toggle, .set-row label.set-toggle { position: relative; display: inline-block; width: 40px; height: 23px; flex: 0 0 auto; cursor: pointer; }
   .set-toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
   .set-toggle .tk {
     position: absolute; inset: 0; border-radius: 999px; background: var(--line);
