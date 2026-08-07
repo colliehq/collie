@@ -541,8 +541,10 @@ def _open_window_wsl(url, kiosk):
         "Start-Process $e -ArgumentList " + argl
     )
     try:
+        from . import plat as _plat
         r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
-                           capture_output=True, text=True, timeout=25)
+                           capture_output=True, text=True, timeout=25,
+                           **_plat.no_window_kwargs())
     except Exception as e:
         return False, "launch error: %s" % e
     if r.returncode != 0:

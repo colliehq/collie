@@ -7,10 +7,12 @@ ever checked against the parser that has to accept it, so this checks precisely 
 
     python3 tests/test_slack_worker.py
 """
+import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -62,11 +64,17 @@ def main():
           "the ANSWER is broadcast, so a thread is not where it goes to be missed")
     check('p["reply_broadcast"]' in src,
           "...via reply_broadcast, which keeps it a thread reply as well")
-    check("status_ts" in src,
-          "the status message's ts is carried so the worker can edit the queuer's line")
+    # Status is a REACTION on the ask now, not a message about it. `queued #N` and `on it — #N`
+    # were two messages narrating one fact in a channel people are trying to read — and the task
+    # number in them indexes one dog's LOCAL queue, which a peer took for a shared reference and
+    # went hunting through its own repository for.
+    check("ask_ts" in src and "reactions.add" in src,
+          "the ask's own ts is carried, and the state is put on that message")
+    check('"queued #' not in src and '"on it — #' not in src,
+          "...instead of a line saying so, and a second line correcting the first")
 
     # --- and the ordering that makes that possible ----------------------------------------------
-    i_ts = src.find('item["status_ts"] = say(')
+    i_ts = src.find('item["ask_ts"] = ')
     i_nudge = src.find("worker.nudge()", i_ts if i_ts > 0 else 0)
     check(i_ts > 0 and i_nudge > i_ts,
           "the worker is nudged AFTER the ts is stored — otherwise it can start before it exists")
@@ -181,7 +189,142 @@ def main():
     # --- the answer is the answer ----------------------------------------------------------------
     check("stderr=subprocess.STDOUT" not in src,
           "stderr is not merged into the reply — a huggingface warning is not an answer")
-    check('"--print"' in src, "...and the run is asked for its answer alone")
+    check('"--json"' in src,
+          "...and the answer arrives as a FIELD, not as whatever happened to land on stdout")
+
+    # --- a thread is a conversation ---------------------------------------------------------------
+    # Every ask started a run that remembered nothing, so a follow-up in the same thread met a dog
+    # with no idea what had just been said — and a peer asked about "#9" went hunting through its
+    # own repository for a number that only ever existed in someone else's queue.
+    check('"--resume"' in src, "a thread that has a session continues it instead of starting over")
+    tmp_threads = os.path.join(tempfile.mkdtemp(prefix="collie_threads_"), "threads.json")
+    real_threads, sb.THREADS = sb.THREADS, tmp_threads
+    try:
+        check(sb.thread_session("C1", "t1") == "", "an unknown thread continues nothing")
+        sb.thread_session("C1", "t1", "20260806-1")
+        check(sb.thread_session("C1", "t1") == "20260806-1", "a remembered one comes back")
+        check(sb.thread_session("C1", "t2") == "",
+              "...and belongs to THAT thread, not to the channel")
+        for i in range(sb._THREAD_CAP + 20):
+            sb.thread_session("C1", "bulk%d" % i, "s%d" % i)
+        kept = json.load(open(tmp_threads, encoding="utf-8"))
+        check(len(kept) <= sb._THREAD_CAP,
+              "and a dog that runs for weeks does not carry every thread it has ever seen (%d)"
+              % len(kept))
+    finally:
+        sb.THREADS = real_threads
+
+    # --- a pack that can be ADDRESSED, not only heard ---------------------------------------------
+    # Hearing was half of it. Asked to greet the two other dogs in its channel, a dog answered that
+    # it could find no trace of them and asked what they were called — and each of three separate
+    # things would have been enough on its own to keep it from ever reaching them.
+    mates = [{"id": "U1", "name": "Rowan", "is_bot": True},
+             {"id": "U2", "name": "Daming", "is_bot": False},
+             {"id": "UME", "name": "Cornetto", "is_bot": True}]
+
+    line = sb.roster_line(mates, me="UME")
+    check("Rowan <@U1>" in line and "Daming <@U2>" in line,
+          "the roster names the collies and the people, each with the token that reaches them")
+    check("Cornetto" not in line, "...and does not introduce the dog to itself")
+    check(sb.roster_line([{"id": "UME", "name": "C", "is_bot": True}], me="UME") == "",
+          "a dog alone in a channel hears about nobody, rather than about an empty list")
+
+    check(sb.keep_known_mentions("hi <@U1> and <@U9>", mates) == "hi <@U1> and ",
+          "an answer may ping whoever is in the channel, and nobody else")
+    check(sb.keep_known_mentions("hi <@U1|rowan>", mates) == "hi <@U1|rowan>",
+          "...including the labelled form, which the ask-side regex does not even match")
+    check(sb.keep_known_mentions("hi <@U1>", []) == "hi ",
+          "...and an empty roster addresses no one: a lookup that failed fails safe")
+
+    # Scoped to the ANSWER path on purpose: `queue` still fences its listing, and should — that one
+    # is a lined-up table nobody needs to @ anybody from.
+    # _run_one is the LAST method on Worker, so splitting on the next "    def " runs off the end of
+    # the class and swallows the rest of the module — `self.q.finish` is where it really stops.
+    answer_path = src.split("def _run_one")[1].split("self.q.finish(")[0]
+    check('```\\n' not in answer_path,
+          "the answer goes out as ordinary text — Slack renders NO mention inside a code fence, so "
+          "a fenced answer could never reach a packmate however correctly it was addressed")
+    check("re.escape(my_user)" in src,
+          "only the dog's OWN mention is stripped from an ask; everyone else's is the addressing "
+          "information, and deleting it deleted the only thing that can reach them")
+
+    # --- and the lookups have to be FORM-encoded --------------------------------------------------
+    # api() posts JSON, which Slack's WRITE methods accept and its LOOKUP methods quietly ignore.
+    # conversations.members answered `invalid_arguments — missing required field: channel` for a
+    # call that carried channel, so the roster came back empty with every scope granted and the
+    # channel right there — a shape that reads as "the permission did not work".
+    sent = {}
+
+    class _Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(req, timeout=None):
+        sent["ctype"] = req.headers.get("Content-type") or req.get_header("Content-type")
+        sent.setdefault("bodies", []).append(req.data)
+        if req.full_url.endswith("conversations.members"):
+            return _Resp(b'{"ok":true,"members":["U1"]}')
+        return _Resp(b'{"ok":true,"user":{"is_bot":true,"profile":{"display_name":"rowan"}}}')
+
+    real_open = sb.urllib.request.urlopen
+    sb.urllib.request.urlopen = fake_open
+    sb._roster_cache.clear()
+    try:
+        got = sb.roster("xoxb-1", "C1", now=1.0)
+    finally:
+        sb.urllib.request.urlopen = real_open
+        sb._roster_cache.clear()
+
+    check(got == [{"id": "U1", "name": "rowan", "is_bot": True}],
+          "the roster comes back carrying the member Slack named")
+    check("x-www-form-urlencoded" in (sent.get("ctype") or ""),
+          "...because a lookup goes out form-encoded, which is the only encoding Slack reads it in")
+    check(any(b"channel=C1" in (b or b"") for b in sent.get("bodies", [])),
+          "...with the parameter in the body, where `missing required field` said it was not")
+
+    # --- the launcher has to carry the autonomy too ----------------------------------------------
+    # Every other flag the person typed was written into the generated .pyw; this one was not, so a
+    # dog set to `main` came back from a reboot on whatever identity.json happened to hold — and on
+    # the DEFAULT if that file were ever lost. The one setting whose whole point is that nobody
+    # discovers it by watching it get crossed should not be the one that goes unwritten.
+    from harness import plat as _plat
+
+    tmpd = tempfile.mkdtemp(prefix="collie_autostart_")
+    boot = os.path.join(tmpd, "slack-x.pyw")
+    vbs = os.path.join(tmpd, "collie-slack-x.vbs")
+
+    class _WP:
+        def _pkg_parent(self):
+            return r"/site-packages"
+
+        def pythonw(self):
+            return r"/pythonw.exe"
+
+    real_paths, real_win = sb._autostart_paths, _plat.is_windows
+    sb._autostart_paths = lambda name: (_WP(), boot, vbs)
+    _plat.is_windows = lambda: True          # so this runs on the Mac half of the pack too
+    try:
+        rc = sb.install_autostart("Cornetto", r"/repo", provider="anthropic-oauth",
+                                  autonomy="main")
+        written = open(boot, encoding="utf-8").read()
+    finally:
+        sb._autostart_paths, _plat.is_windows = real_paths, real_win
+
+    check(rc == 0 and "'--autonomy', 'main'" in written,
+          "the launcher it generates states the autonomy, rather than leaving a reboot to re-decide")
+    check("'--provider', 'anthropic-oauth'" in written and "'--name', 'Cornetto'" in written,
+          "...alongside the flags it already carried")
+    check("--autonomy" not in open(vbs, encoding="utf-8").read(),
+          "...in the .pyw, not smuggled into the .vbs, which only launches it")
 
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0

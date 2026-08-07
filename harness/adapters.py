@@ -76,7 +76,8 @@ class HarnessAdapter:
             resolved = shutil.which(cmd[0])
             if resolved:
                 cmd[0] = resolved
-            r = subprocess.run(cmd, cwd=cwd,
+            from . import plat as _plat
+            r = subprocess.run(cmd, cwd=cwd, **_plat.no_window_kwargs(),
                                capture_output=True, text=True, timeout=timeout, env=env)
             d = self.parse(r.stdout, r.stderr)
             res.input_tokens = d.get("input_tokens", 0)

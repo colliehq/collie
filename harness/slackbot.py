@@ -73,22 +73,69 @@ AUTONOMY = {
 AUTONOMY_MODE = {"propose": "plan", "branch": "project", "main": "project"}
 
 
-def identity_text(ident: dict) -> str:
-    """Who the dog is, for the system prompt of the run it spawns.
+THREADS = os.path.expanduser("~/.collie/threads.json")   # slack thread -> the run it continues
+_THREAD_CAP = 200
+
+
+def thread_session(channel: str, thread: str, sid: str = "") -> str:
+    """The collie session a Slack thread continues. Pass `sid` to remember one; returns it either way.
+
+    A thread IS the conversation, and every ask in one used to start a run that remembered nothing:
+    a follow-up met a dog with no idea what had just been said, and a peer asked to explain "#9"
+    went looking through its own repository for a number that only existed in someone else's queue.
+    Reading a whole channel is not on offer — a dog sees only its own mentions — but the thread it
+    was mentioned in is exactly the slice that belongs to it.
+
+    Bounded and pruned oldest-first: a dog that runs for weeks should not carry every conversation
+    it has ever had, and losing the oldest costs a resume, not an answer.
+    """
+    key = "%s/%s" % (channel, thread)
+    try:
+        with open(THREADS, encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+    if not sid:
+        return (data.get(key) or {}).get("session", "")
+    data[key] = {"session": sid, "at": time.time()}
+    if len(data) > _THREAD_CAP:
+        for k in sorted(data, key=lambda k: data[k].get("at", 0))[:len(data) - _THREAD_CAP]:
+            data.pop(k, None)
+    try:
+        os.makedirs(os.path.dirname(THREADS), exist_ok=True)
+        tmp = "%s.%d.tmp" % (THREADS, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, THREADS)
+    except Exception:
+        pass                        # a thread that cannot be remembered still gets answered
+    return sid
+
+
+def identity_text(ident: dict, peers: str = "") -> str:
+    """Who the dog is, and who else is in the room, for the system prompt of the run it spawns.
 
     A pack whose whole premise is that members have names a person can hold in their head, and
     the member did not know its own: the name reached the Slack tag and stopped there.
+
+    The name is stated as a NAME and the breed separately, because the first version said "You are
+    Cornetto, a collie" and the dog, asked in Chinese to greet the others, introduced itself as
+    "collie" — it read the apposition as the answer to "what are you called". Both facts are still
+    here; only the sentence that let them be confused is gone.
     """
     a = ident.get("autonomy", "branch")
     lines = [
-        "You are %s, a collie: a coding agent working in a repository on %s (%s). That is your "
-        "name — answer to it." % (ident.get("name", "collie"), ident.get("machine", "this machine"),
-                                  ident.get("os", "")),
+        "Your name is %s. Introduce yourself by that name — 'collie' is what you are (a coding "
+        "agent), not what you are called." % ident.get("name", "collie"),
+        "You work in a repository on %s (%s)." % (ident.get("machine", "this machine"),
+                                                  ident.get("os", "")),
         "You are reached by @mention in a Slack channel, so answer briefly and say what you did.",
         "Your autonomy is '%s': %s." % (a, AUTONOMY.get(a, "?")),
     ]
     if a == "branch":
         lines.append("Do not push to main. Put the work on a branch and push that.")
+    if peers:
+        lines.append(peers)
     return "\n".join(lines)
 
 
@@ -134,8 +181,10 @@ def fingerprint() -> str:
             m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
             raw = m.group(1) if m else ""
         elif sys.platform == "win32":
+            from . import plat as _plat
             out = subprocess.run(["reg", "query", r"HKLM\SOFTWARE\Microsoft\Cryptography",
-                                  "/v", "MachineGuid"], capture_output=True, text=True, timeout=5).stdout
+                                  "/v", "MachineGuid"], capture_output=True, text=True, timeout=5,
+                                 **_plat.no_window_kwargs()).stdout
             m = re.search(r"MachineGuid\s+REG_SZ\s+(\S+)", out)
             raw = m.group(1) if m else ""
         else:
@@ -189,11 +238,27 @@ def app_manifest(name: str) -> dict:
             # Without a messages tab the bot has no App Home, and a DM to it goes nowhere.
             "app_home": {"messages_tab_enabled": True, "messages_tab_read_only_enabled": False},
         },
-        # channels:join is the third and last one: it lets the dog walk into the public channels it
-        # was told to work in instead of standing outside until somebody remembers to `/invite` it.
-        # The permission it grants is the one the owner exercises anyway by typing that command —
-        # and it cannot reach a private channel, where an invitation is still the only way in.
-        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write", "channels:join"]}},
+        # channels:join lets the dog walk into the public channels it was told to work in instead of
+        # standing outside until somebody remembers to `/invite` it. The permission it grants is the
+        # one the owner exercises anyway by typing that command — and it cannot reach a private
+        # channel, where an invitation is still the only way in.
+        #
+        # channels:read + users:read are the pack's eyes, and the rule they follow is: a dog sees
+        # what a PERSON IN THAT CHANNEL sees, and nothing else. A member can open the member list
+        # and can look a name up in the directory; without these two a dog could be @-ed by another
+        # dog and have no way to answer it, because addressing anyone in Slack means knowing a
+        # <@U…> id and neither the id nor the name was reachable. Note what is NOT here:
+        # users:read.email is a SEPARATE scope and is not requested, so what reaches the model is
+        # the display name and whether the member is a bot — the member list, not the personnel file.
+        #
+        # reactions:write is status. Progress used to be MESSAGES — `queued #3`, then `on it — #3`,
+        # then that line edited to `#3 done` — so a channel filled with a state machine narrating
+        # itself, and a task number written for one dog's local queue leaked into a pack where it
+        # means nothing (a peer went looking through its own repository for a "#9" that only ever
+        # existed here). A reaction sits on the message that ASKED, which is where anyone looking
+        # for the state of their own request already is.
+        "oauth_config": {"scopes": {"bot": ["app_mentions:read", "chat:write", "channels:join",
+                                            "channels:read", "users:read", "reactions:write"]}},
         "settings": {
             # Socket Mode means this dog dials OUT: no public address, no tunnel, and a laptop
             # that changes network just reconnects. It also makes Slack mint the app-level
@@ -277,6 +342,49 @@ def create_app(config_token: str, manifest: dict) -> dict:
     if not r.get("ok"):
         detail = r.get("errors") or r.get("error")
         raise RuntimeError("apps.manifest.create failed: %s" % json.dumps(detail))
+    return r
+
+
+def export_app(config_token: str, app_id: str) -> dict:
+    """apps.manifest.export — what Slack holds for this app right now."""
+    r = api("apps.manifest.export", config_token, app_id=app_id)
+    if not r.get("ok"):
+        raise RuntimeError("apps.manifest.export failed: %s" % (r.get("error") or r.get("errors")))
+    return r.get("manifest") or {}
+
+
+def merge_manifest(live: dict, ours: dict) -> dict:
+    """Ours wins where we declare something; anything else the app carries survives.
+
+    apps.manifest.update REPLACES — it is not a patch — so pushing our manifest at an app that
+    already exists deletes every field we do not mention. Measured on two dogs made by older
+    versions: a wholesale push would have dropped four keys Slack echoes back (home_tab_enabled,
+    pkce_enabled, is_mcp_enabled, token_rotation_enabled — all false, so all harmless) and would
+    ALSO have turned off interactivity, which was on for reasons this file has no idea about.
+
+    Updating a scope is not a licence to reset everything else, so the rule is: converge what
+    collie declares, and leave alone what it has no opinion on.
+    """
+    out = dict(live)
+    for k, v in (ours or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_manifest(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def update_app(config_token: str, app_id: str, manifest: dict) -> dict:
+    """apps.manifest.update — the same whole-app call, aimed at one that already exists.
+
+    `permissions_updated` in the reply is the part worth reading: true means the SCOPES changed and
+    a reinstall has to grant them, false means the change was cosmetic and is already live. Both
+    are ordinary outcomes, so both are reported rather than one being treated as a failure.
+    """
+    r = api("apps.manifest.update", config_token, app_id=app_id, manifest=json.dumps(manifest))
+    if not r.get("ok"):
+        detail = r.get("errors") or r.get("error")
+        raise RuntimeError("apps.manifest.update failed: %s" % json.dumps(detail))
     return r
 
 
@@ -426,6 +534,24 @@ def api(method: str, token: str, **params) -> dict:
         return json.loads(r.read().decode("utf-8"))
 
 
+def api_q(method: str, token: str, **params) -> dict:
+    """Same, FORM-encoded — for the query methods that will not read a JSON body.
+
+    Slack's write methods (chat.postMessage, conversations.join) take application/json. Its
+    lookup methods do not: conversations.members and users.info silently ignore a JSON body and
+    answer `invalid_arguments — missing required field: channel` for a call that plainly carried
+    one. Sent as a form they work. The split is Slack's, so it is a second function rather than a
+    guess inside the first: a caller picks the encoding its method actually accepts.
+    """
+    data = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
+    req = urllib.request.Request(
+        SLACK_API + method, data=data.encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                 "Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 def join(token: str, channel: str, name: str = "collie") -> str:
     """Walk into a channel. "" on success, else the reason, in words.
 
@@ -450,7 +576,100 @@ def join(token: str, channel: str, name: str = "collie") -> str:
     return str(r.get("error"))
 
 
-def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
+# Who else is in the room. The rule is one sentence: a dog sees what a PERSON IN THAT CHANNEL sees.
+#
+# It is needed because addressing anyone in Slack means writing a <@U…> id, and a dog had no way to
+# learn one. Asked to greet the two other dogs in its channel it answered "there is only one collie
+# here, tell me what they are called" — which was accurate. The kennel could not help: it is keyed
+# by name, holds no ids, and lives on ONE machine, while the pack is spread across several. Slack is
+# the thing all of them share, so Slack is where the roster comes from.
+_ROSTER_TTL = 120.0                 # seconds; a member list changes on human timescales
+_roster_cache: dict = {}            # channel -> (fetched_at, [member, …])
+_roster_warned = False              # the missing-scope note is worth saying once, not every ask
+
+
+def roster(token: str, channel: str, now: float = 0.0) -> list:
+    """[{id, name, is_bot}] for one channel, newest-first-effort and cached.
+
+    Never raises and never blocks a run: a roster that cannot be fetched comes back empty, and an
+    empty roster costs the dog the ability to address anyone — not the ability to answer. An app
+    provisioned before these scopes existed returns missing_scope here, which is exactly that case.
+    """
+    now = now or time.time()
+    hit = _roster_cache.get(channel)
+    if hit and (now - hit[0]) < _ROSTER_TTL:
+        return hit[1]
+    out = []
+    try:
+        ids, cursor = [], ""
+        for _ in range(10):                       # bounded: a channel is not an unbounded page walk
+            r = api_q("conversations.members", token, channel=channel, limit=200, cursor=cursor)
+            if not r.get("ok"):
+                # Say it ONCE, and say what to do. A dog provisioned before these scopes existed
+                # lands here on every ask, and an empty roster is invisible from the channel: it
+                # looks like a dog that chose not to answer anyone. Silence is how every other bug
+                # in this file stayed alive.
+                global _roster_warned
+                if r.get("error") == "missing_scope" and not _roster_warned:
+                    _roster_warned = True
+                    print("[slack] no roster: this app predates `channels:read`/`users:read` — "
+                          "reinstall it from its Slack app page to pick them up. It can still "
+                          "answer; it cannot address anyone.", file=sys.stderr)
+                return []
+            ids += r.get("members") or []
+            cursor = ((r.get("response_metadata") or {}).get("next_cursor") or "").strip()
+            if not cursor:
+                break
+        for uid in ids:
+            u = api_q("users.info", token, user=uid)
+            if not u.get("ok"):
+                continue
+            m = u.get("user") or {}
+            p = m.get("profile") or {}
+            nm = (p.get("display_name") or p.get("real_name") or m.get("name") or uid).strip()
+            out.append({"id": uid, "name": nm, "is_bot": bool(m.get("is_bot"))})
+    except Exception:
+        return []
+    _roster_cache[channel] = (now, out)
+    return out
+
+
+def roster_line(members: list, me: str = "") -> str:
+    """The roster as one line for the run's prompt, or "" when there is nobody to name."""
+    others = [m for m in members if m["id"] != me]
+    if not others:
+        return ""
+    dogs = ["%s <@%s>" % (m["name"], m["id"]) for m in others if m["is_bot"]]
+    folk = ["%s <@%s>" % (m["name"], m["id"]) for m in others if not m["is_bot"]]
+    parts = []
+    if dogs:
+        parts.append("collies: " + ", ".join(dogs))
+    if folk:
+        parts.append("people: " + ", ".join(folk))
+    return ("Also in this channel — %s. To address one, copy its <@…> token into your reply; that "
+            "is what reaches them." % "; ".join(parts))
+
+
+# Matches the plain <@U123> and the older labelled <@U123|name>. Deliberately wider than MENTION_RE:
+# that one strips the dog's own mention out of an ask, where missing a form is harmless, while this
+# one decides who a reply is allowed to ping, where missing a form is the whole failure.
+_MENTION_ANY = re.compile(r"<@([UW][A-Z0-9]+)(\|[^>]*)?>")
+
+
+def keep_known_mentions(text: str, members: list) -> str:
+    """Drop <@…> tokens from an outgoing answer that name nobody in this channel.
+
+    The answer is posted as ordinary text precisely so a mention in it reaches someone — which is
+    also why an id the model invented would reach someone. The bound is the ROSTER, not the wording
+    of the ask: a person in a channel may @ anyone in it, so a dog may too, and no further. With an
+    empty roster nothing is known to be addressable and every token goes, which is the safe way for
+    a failed lookup to fail.
+    """
+    ok = {m["id"] for m in members}
+    return _MENTION_ANY.sub(lambda mo: mo.group(0) if mo.group(1) in ok else "", text)
+
+
+def say(token: str, channel: str, text: str, thread: str = "",
         broadcast: bool = False) -> str:
     """Reply in the thread the ask arrived in. Returns the message ts, so it can be edited.
 
@@ -458,9 +677,13 @@ def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
     somewhere anyone reads. But a thread is also where an answer goes to be missed — so the one
     message that is actually an ANSWER is sent with `reply_broadcast`, which keeps it a thread reply
     and still surfaces it in the channel. Progress stays quiet; conclusions do not.
+
+    No name prefix. Every message used to open with "Cornetto · HUO4S4H — ", which Slack already
+    shows above it in the avatar and the name — and the machine half is noise to everyone except
+    the person who owns the machine. `who` still says where a dog lives, on request.
     """
     try:
-        p = {"channel": channel, "text": (tag + " — " + text) if tag else text}
+        p = {"channel": channel, "text": text}
         if thread:
             p["thread_ts"] = thread
             if broadcast:
@@ -475,15 +698,37 @@ def say(token: str, channel: str, text: str, thread: str = "", tag: str = "",
         return ""
 
 
-def edit(token: str, channel: str, ts: str, text: str, tag: str = "") -> bool:
+# The three states a request can be in, as the marks a person would leave on it.
+SEEN, DONE, FAILED = "eyes", "white_check_mark", "warning"
+
+
+def react(token: str, channel: str, ts: str, emoji: str, on: bool = True) -> None:
+    """Put the state ON the ask, rather than posting a line about it. Never fatal.
+
+    An app provisioned before `reactions:write` existed answers missing_scope here, and the right
+    outcome then is a dog that works without status marks — not a dog that stops. Same for
+    already_reacted, which is what a retry looks like and is not a problem to report.
+    """
+    if not ts:
+        return
+    try:
+        api("reactions.add" if on else "reactions.remove", token,
+            channel=channel, timestamp=ts, name=emoji)
+    except Exception:
+        pass
+
+
+def edit(token: str, channel: str, ts: str, text: str) -> bool:
     """Rewrite a message already sent. One ask used to produce `queued #1` and `on it — #1` a second
     apart — two messages for one fact — before the result made a third. A status that CHANGES should
-    be one line that changes, not a transcript of its own state machine."""
+    be one line that changes, not a transcript of its own state machine.
+
+    No name prefix, for the same reason `say` dropped it: Slack shows who spoke, above the message.
+    """
     if not ts:
         return False
     try:
-        r = api("chat.update", token, channel=channel, ts=ts,
-                text=(tag + " — " + text) if tag else text)
+        r = api("chat.update", token, channel=channel, ts=ts, text=text)
         if not r.get("ok"):
             print("[slack] update failed: %s" % r.get("error"), file=sys.stderr)
         return bool(r.get("ok"))
@@ -507,13 +752,18 @@ class Worker(threading.Thread):
 
     def __init__(self, q: TaskQueue, ident: dict, bot_token: str, cwd: str, provider: str):
         super().__init__(daemon=True)
-        self.tag = "%s · %s" % (ident["name"], machine_label())
         # NOT self.ident: Worker is a Thread, and Thread.ident is a read-only property holding the
         # thread id. Assigning to it raises AttributeError in the constructor, which is why this
         # command has never started since it shipped — the crash is before the first connection, so
         # nothing ever reached Slack to show it was broken.
         self.q, self.dog, self.token = q, ident, bot_token
         self.cwd, self.provider = cwd, provider
+        # This dog's own Slack user id, so the roster it is handed does not introduce it to itself.
+        # auth.test needs no scope, so this works on an app provisioned before the roster existed.
+        try:
+            self.me = (api("auth.test", bot_token) or {}).get("user_id", "")
+        except Exception:
+            self.me = ""
         self.current: subprocess.Popen | None = None
         self._wake = threading.Event()
 
@@ -541,9 +791,7 @@ class Worker(threading.Thread):
 
     def _run_one(self, item):
         ch, th = item["channel"], item["thread"]
-        ts = item.get("status_ts", "")
-        if not edit(self.token, ch, ts, "on it — #%d" % item["id"], self.tag):
-            ts = say(self.token, ch, "on it — #%d" % item["id"], th, self.tag)
+        ask = item.get("ask_ts", "")            # the message that asked — the state goes ON it
         # `run` takes the task POSITIONALLY. It was passed as --task, which argparse rejects with
         # exit 2 before a single token is spent — so every ask this bot ever accepted failed, while
         # the thread filled with "on it" and "queued" and looked for all the world like it was
@@ -552,15 +800,30 @@ class Worker(threading.Thread):
         # --print: the answer, and nothing else on stdout. --mode: the autonomy this dog was
         # ANNOUNCED with, finally bounding what the run may do rather than only what it said.
         # COLLIE_IDENTITY: its name, which until now reached the Slack tag and no further.
-        cmd = [sys.executable, "-m", "harness.cli", "run", item["text"], "--print",
+        # --json, not --print: the answer arrives as a FIELD instead of as whatever landed on
+        # stdout, and the same object carries the session id, which is what lets the next ask in
+        # this thread continue the last one rather than meet a dog with no memory of it.
+        cmd = [sys.executable, "-m", "harness.cli", "run", item["text"], "--json",
                "--mode", AUTONOMY_MODE.get(self.dog.get("autonomy", ""), "project")]
         if self.provider:
             cmd += ["--provider", self.provider]
-        env = dict(os.environ, COLLIE_IDENTITY=identity_text(self.dog))
+        prior = thread_session(ch, th)
+        if prior:
+            cmd += ["--resume", prior]
+        # Who else is in this channel, so the dog can answer the one who asked and hand work on to
+        # a packmate. Fetched per ask because the channel is per ask; cached, so this is one call
+        # in two minutes rather than one per task. An empty roster is survivable — see roster().
+        mates = roster(self.token, ch)
+        env = dict(os.environ,
+                   COLLIE_IDENTITY=identity_text(self.dog, roster_line(mates, self.me)))
         try:
+            # windowless: the dog runs under pythonw, which has no console of its own, so Windows
+            # hands every child a brand new one. One black box per task, popping up over whatever
+            # the owner of the machine was doing.
+            from . import plat as _plat
             self.current = subprocess.Popen(
                 cmd, cwd=self.cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace")
+                text=True, encoding="utf-8", errors="replace", **_plat.no_window_kwargs())
             out, err = self.current.communicate()
             rc = self.current.returncode
         except Exception as e:
@@ -569,23 +832,34 @@ class Worker(threading.Thread):
             self.current = None
 
         out, err = (out or "").strip(), (err or "").strip()
-        # stderr is diagnostics, not the answer. Merged into stdout (stderr=STDOUT) it went to the
-        # channel AS the reply: a huggingface_hub "unauthenticated requests" warning and the run's
-        # own stats line sat above the answer inside one code fence, and the warning is what the
-        # person then asked about. A failed run is the exception — there, stderr is the only thing
-        # that says why, and silence would be worse than noise.
-        out = out or ("(no output)" if rc == 0 else "")
-        if rc != 0:
-            out = (out + "\n" + err).strip() or "(no output)"
+        # The answer is a field now, so nothing else on either stream can be mistaken for it: a
+        # huggingface_hub warning and the run's own stats line used to ride into the channel as
+        # part of the reply, and the warning is what the person then asked about.
+        res = {}
+        try:
+            res = json.loads(out) if out.startswith("{") else {}
+        except Exception:
+            res = {}
+        if res.get("session"):
+            thread_session(ch, th, res["session"])          # this thread continues that run
+        answer = (res.get("answer") or "").strip()
+        why = (res.get("error") or "").strip()
+        if rc == 0 and answer:
+            out = answer
+        else:
+            # A failure still has to say why, and stderr is the only thing that does. The ⚠️ is the
+            # one piece of protocol a peer reads: a reply that failed is worth a packmate's turn,
+            # a reply that succeeded is not.
+            out = "⚠️ " + (why or answer or err or out or "the run failed with no output")
         # Slack rejects a message over 40k; keeping the tail keeps the conclusion,
         # which is the part anyone reads.
         if len(out) > 3500:
             out = "…(trimmed)…\n" + out[-3500:]
-        head = "#%d done" % item["id"] if rc == 0 else "#%d failed (exit %s)" % (item["id"], rc)
-        # The answer is the one message worth surfacing: broadcast so it appears in the channel as
-        # well as the thread. The status line above is left showing how it ended, so the thread reads
-        # as one request with one outcome rather than a log of a state machine.
-        edit(self.token, ch, ts, head, self.tag)
+        # How it ended goes on the ask, not into the channel as another line. The task NUMBER goes
+        # nowhere near a pack: it indexes this dog's own queue, and a peer that read one went
+        # hunting through its repository for a task that only ever existed over here.
+        react(self.token, ch, ask, SEEN, on=False)
+        react(self.token, ch, ask, DONE if rc == 0 else FAILED)
         # Addressed to whoever asked — dog or person, the same way. For a dog it is the difference
         # between an answer and no answer: it reads a channel only through its own mentions, so work
         # it delegated would come back somewhere it cannot see. For a person it is the difference
@@ -594,8 +868,16 @@ class Worker(threading.Thread):
         # the outcome is addressed; "queued" and "on it" stay unmentioned, because being pinged
         # three times for one ask is how a colleague becomes a nuisance.
         back = "<@%s> " % item["user"] if item.get("user") else ""
-        say(self.token, ch, "%s%s\n```\n%s\n```" % (back, head, out or "(no output)"),
-            th, self.tag, broadcast=True)
+        # One message per ask now: the answer. No `queued`, no `on it`, no `#N done` — those were
+        # three messages narrating one fact, and the fact is on the ask as a reaction.
+        # ORDINARY TEXT, not a code fence. Slack does not render a mention inside ```, so an answer
+        # posted that way could never reach a packmate however correctly it was addressed — the
+        # asker's <@…> worked only because it sits outside the fence. The fence earned its place
+        # when the answer was raw CLI output with stats and warnings in it; --print made the answer
+        # prose, and prose in a fence loses its wrapping, its emphasis and its links as well.
+        # Whatever the model fences itself still renders as code.
+        say(self.token, ch, "%s%s\n%s" % (back, head, keep_known_mentions(out, mates) or "(no output)"),
+            th, broadcast=True)
         self.q.finish(item["id"])
 
 
@@ -682,6 +964,63 @@ def _open_socket_url(app_token: str) -> str:
     return r["url"]
 
 
+def _refresh(name: str, entry: dict, config_token: str) -> int:
+    """Bring one already-provisioned dog up to the manifest setup would build TODAY.
+
+    Every member of a pack was created at some point in this file's history and keeps the manifest
+    of that day — scopes, display name and face are all fixed at creation and none of them follow
+    a later change. The first dog to need the roster scopes was brought up to date by hand over the
+    API, once, which is exactly the per-dog handwork this command exists to remove; and there is
+    never only one such dog. `--config-token` on a finished dog means this, for any of them.
+    """
+    app_id = entry.get("app_id", "")
+    print("bringing %s up to the current manifest (app %s)…" % (name, app_id))
+    want = app_manifest(name)
+    # A NARROW patch, not the whole manifest. Two things force that. apps.manifest.update replaces
+    # rather than patches, so everything we do not mention is deleted — and our manifest also states
+    # creation-time defaults (interactivity off, no app-home tab) which are right for a NEW app and
+    # are not ours to reimpose on one that has been running: both older dogs measured here had
+    # interactivity ON, for reasons this file does not know. So converge the four things collie
+    # actually needs to work — who it is, what it may do, and the two settings that make an @ arrive
+    # — and leave every other switch exactly as the app has it.
+    patch = {
+        "display_information": {"name": want["display_information"]["name"]},
+        "features": {"bot_user": {"display_name": want["features"]["bot_user"]["display_name"]}},
+        "oauth_config": {"scopes": {"bot": want["oauth_config"]["scopes"]["bot"]}},
+        "settings": {"socket_mode_enabled": want["settings"]["socket_mode_enabled"],
+                     "event_subscriptions": want["settings"]["event_subscriptions"]},
+    }
+    try:
+        live = export_app(config_token, app_id)
+        before = sorted((live.get("oauth_config") or {}).get("scopes", {}).get("bot") or [])
+        res = update_app(config_token, app_id, merge_manifest(live, patch))
+    except Exception as e:
+        print("  %s" % e, file=sys.stderr)
+        return 1
+    after = sorted(patch["oauth_config"]["scopes"]["bot"])
+    gained = [s for s in after if s not in before]
+    print("  manifest updated%s" % ("  (+%s)" % ", ".join(gained) if gained else ""))
+
+    face = ""
+    try:
+        from . import avatar
+        face = avatar.write(name)
+    except Exception as e:
+        print("  (could not draw an avatar: %s)" % e)
+    icon_err = set_icon(config_token, app_id, face)
+    print("  face on" if not icon_err else "  (icon unchanged — %s)" % icon_err)
+
+    if res.get("permissions_updated"):
+        print("\n  the SCOPES changed, so one reinstall is needed to grant them — Slack exposes no\n"
+              "  API for that, it is the install itself that authorizes:\n"
+              "    https://api.slack.com/apps/%s/install-on-team\n"
+              "  then hand the new bot token back:\n"
+              "    collie slack setup --name %s --bot-token xoxb-…" % (app_id, name))
+    else:
+        print("  no scope changed — nothing to reinstall, it is already live")
+    return 0
+
+
 def setup(argv=None) -> int:
     """`collie slack setup` — give one more dog its own app, its own handle, its own tokens.
 
@@ -723,8 +1062,16 @@ def setup(argv=None) -> int:
     # command that would not run.
     have = dogs.get(name) or {}
     if have.get("bot_token") and have.get("app_token"):
-        print("%s already has papers (app %s). Pick another name, or run "
-              "`collie slack --name %s`." % (name, have.get("app_id", "?"), name))
+        # A finished dog is not a dead end: it is the one that goes STALE. Scopes, the display name
+        # and the face are all fixed at creation, so every dog provisioned before a change to the
+        # manifest keeps the old one forever — and the only fix was to reach for the API by hand,
+        # once per dog, which is exactly the per-dog handwork this command exists to remove. Given
+        # the credential that can, bring it up to today's manifest instead of refusing.
+        if a.config_token and have.get("app_id"):
+            return _refresh(name, have, a.config_token)
+        print("%s already has papers (app %s). Pick another name, run `collie slack --name %s`, "
+              "or pass --config-token to bring its app up to the current manifest (scopes, name "
+              "and face)." % (name, have.get("app_id", "?"), name))
         return 1
 
     entry = dict(dogs.get(name) or {})
@@ -828,7 +1175,8 @@ def _autostart_paths(name: str):
     return wp, boot, vbs
 
 
-def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "") -> int:
+def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "",
+                      autonomy: str = "") -> int:
     """Bring this dog back after a restart.
 
     A dog started from a terminal dies with the terminal, which is how one sat silent through a
@@ -851,6 +1199,13 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
         argv += ["--channels", channels]
     if provider:
         argv += ["--provider", provider]
+    # Autonomy too, when it was stated. Every other flag the person typed is written into the
+    # launcher and this one was not, so a dog set to `main` came back after a reboot on whatever
+    # identity.json happened to hold — and if that file is ever lost or reset, on the default
+    # `branch` instead. Quieter than the setting it replaces, which is the wrong direction for the
+    # one knob whose entire purpose is that nobody discovers it by watching it get crossed.
+    if autonomy:
+        argv += ["--autonomy", autonomy]
     with open(boot, "w", encoding="utf-8") as f:
         # repr() every path: a username with an apostrophe closes a raw string early and the
         # generated launcher dies with a SyntaxError, silently, at logon.
@@ -922,7 +1277,8 @@ def main(argv=None) -> int:
     if args.uninstall_autostart:
         return uninstall_autostart(args.name or "collie")
     if args.install_autostart:
-        return install_autostart(args.name or "collie", args.cwd, args.channels, args.provider)
+        return install_autostart(args.name or "collie", args.cwd, args.channels, args.provider,
+                                 args.autonomy)
 
     # The kennel first, the environment second. A pack means several dogs with several pairs of
     # tokens, and one pair of environment variables cannot hold them — but an env var still wins
@@ -984,8 +1340,9 @@ def main(argv=None) -> int:
 
     # What every message is signed with. Name for who, machine for where — the
     # machine part is recomputed on each start, so moving the name to another
-    # laptop changes what the channel sees rather than quietly lying.
-    tag = "%s · %s" % (ident["name"], machine_label())
+    # laptop changes what the channel sees rather than quietly lying. It appears in the greeting
+    # and in `who` — the two places someone is asking where a dog lives — and no longer on every
+    # message, where Slack already shows who spoke.
     who = ("*%s* on *%s* (%s · %s), working in `%s`\nautonomy: *%s* — %s\nscope: %s · %s" % (
         ident["name"], machine_label(), ident["os"], fingerprint(), args.cwd,
         ident["autonomy"], AUTONOMY.get(ident["autonomy"], "?"),
@@ -996,7 +1353,7 @@ def main(argv=None) -> int:
         first = ident.pop("_fresh", False)
         hello = who + ("\n_reporting in. I picked the name myself — say `rename <name>` if you would rather._"
                        if first else "\n_reporting in._")
-        say(bot_token, args.announce, hello, tag=tag)
+        say(bot_token, args.announce, hello)
 
     # Who this dog is to Slack. Needed only since the pack can talk: "is this me" cannot be answered
     # from the name, and answering your own mention is the one loop with no second party to tire of
@@ -1057,7 +1414,16 @@ def main(argv=None) -> int:
                 if event.get("type") != "app_mention":
                     continue
 
-                text = MENTION_RE.sub("", event.get("text", "")).strip()
+                # Strip only THIS dog's own mention. Everyone else's is the ask's ADDRESSING
+                # information, and removing it removed the only thing that can reach them:
+                # "@cornetto go ask @rowan about the branch" arrived as "go ask about the branch".
+                # So the remedy the dog itself proposes when it cannot find its packmates — tell me
+                # what they are called — did not work either, because the telling was deleted too.
+                # No my_user (auth.test failed) falls back to the old strip-everything: without an
+                # id of its own a dog cannot tell its mention from anyone else's.
+                _raw = event.get("text", "")
+                text = (re.sub(r"<@%s(\|[^>]*)?>" % re.escape(my_user), "", _raw) if my_user
+                        else MENTION_RE.sub("", _raw)).strip()
                 ch = event.get("channel", "")
                 th = event.get("thread_ts") or event.get("ts") or ""
                 user = event.get("user", "")
@@ -1075,7 +1441,7 @@ def main(argv=None) -> int:
                         # bounded exchange looks identical to a broken one.
                         if not pack[th].get("said"):
                             pack[th]["said"] = True
-                            say(bot_token, ch, stop, th, tag)
+                            say(bot_token, ch, stop, th)
                         continue
 
                 # Two gates, and they are checked before the text is read as
@@ -1083,43 +1449,41 @@ def main(argv=None) -> int:
                 # that goes silent reads as broken, and someone will debug it by
                 # inviting it somewhere else.
                 if channels and ch not in channels:
-                    say(bot_token, ch, "I only work in the channel I was set up in.", th, tag)
+                    say(bot_token, ch, "I only work in the channel I was set up in.", th)
                     continue
                 if allowed and user not in allowed:
                     say(bot_token, ch, "I take work from %s here." %
-                        ", ".join("<@%s>" % u for u in sorted(allowed)), th, tag)
+                        ", ".join("<@%s>" % u for u in sorted(allowed)), th)
                     continue
 
                 if low.startswith("rename "):
                     new = text.split(None, 1)[1].strip()[:24]
                     if not new.isalnum():
-                        say(bot_token, ch, "a name with letters and digits only, please", th, tag)
+                        say(bot_token, ch, "a name with letters and digits only, please", th)
                     else:
                         load_identity(name=new)
                         say(bot_token, ch,
-                            "I answer to *%s* now — restart me so Slack sees it too." % new, th, tag)
+                            "I answer to *%s* now — restart me so Slack sees it too." % new, th)
                 elif low in ("who", "who?", "status"):
-                    say(bot_token, ch, "%s\n%d waiting" % (who, q.waiting()), th, tag)
+                    say(bot_token, ch, "%s\n%d waiting" % (who, q.waiting()), th)
                 elif low in ("queue", "q", "queue?"):
-                    say(bot_token, ch, "```\n%s\n```" % q.listing(), th, tag)
+                    say(bot_token, ch, "```\n%s\n```" % q.listing(), th)
                 elif low == "stop":
-                    say(bot_token, ch, worker.stop_current(), th, tag)
+                    say(bot_token, ch, worker.stop_current(), th)
                 elif low.startswith("drop "):
                     try:
-                        say(bot_token, ch, q.drop(int(low.split()[1])), th, tag)
+                        say(bot_token, ch, q.drop(int(low.split()[1])), th)
                     except (ValueError, IndexError):
-                        say(bot_token, ch, "say `drop <id>` — the ids are in `queue`", th, tag)
+                        say(bot_token, ch, "say `drop <id>` — the ids are in `queue`", th)
                 elif not text:
-                    say(bot_token, ch, "%s here. Ask me something, or say `queue`." % ident["name"], th, tag)
+                    say(bot_token, ch, "%s here. Ask me something, or say `queue`." % ident["name"], th)
                 else:
                     item = q.add(text, ch, th, user, from_dog=bool(peer))
-                    ahead = q.waiting() - 1
-                    # The ts is kept ON the item so the worker can edit this same line rather than
-                    # post another one under it.
-                    item["status_ts"] = say(
-                        bot_token, ch,
-                        "queued #%d%s" % (item["id"], "" if ahead <= 0 else " — %d ahead of it" % ahead),
-                        th, tag)
+                    # The ask's OWN ts, kept on the item so the worker can mark that message rather
+                    # than post a line under it. `queued #N` and `on it — #N` are gone: two messages
+                    # narrating one fact, in a channel people are trying to read.
+                    item["ask_ts"] = event.get("ts", "")
+                    react(bot_token, ch, item["ask_ts"], SEEN)
                     worker.nudge()          # after the ts is stored, or the worker can beat it there
         except Exception as e:
             print("[slack] connection lost (%s) — reconnecting" % e, file=sys.stderr)

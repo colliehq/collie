@@ -716,7 +716,7 @@ def _kill_pid(pid) -> bool:
         if not pid:
             return False
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], creationflags=_NOWIN,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             import signal as _sig

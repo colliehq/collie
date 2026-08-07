@@ -37,7 +37,8 @@ def _run_check(cmd, cwd, timeout=300):
     _cmdargs, _use_shell = plat.shell_argv(cmd)              # POSIX predicate on every OS
     try:
         p = subprocess.run(_cmdargs, shell=_use_shell, cwd=cwd, timeout=timeout,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           **plat.no_window_kwargs())
         return p.returncode == 0, (p.stdout or "")[-2000:]
     except subprocess.TimeoutExpired:
         return False, "(check timed out after %ds)" % timeout

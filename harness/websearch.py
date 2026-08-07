@@ -117,7 +117,9 @@ def _chrome_search(query, k, chrome):
            "--disable-blink-features=AutomationControlled", "--lang=en-US",
            "--user-data-dir=" + _winpath(prof, chrome), "--dump-dom", url]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        from . import plat as _plat
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                           **_plat.no_window_kwargs())
         return _parse_bing(p.stdout or "", k)
     finally:
         if not persistent:

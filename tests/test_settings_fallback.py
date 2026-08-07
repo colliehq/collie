@@ -97,7 +97,33 @@ def main():
         check(os.environ.get("COLLIE_PROVIDER") == "anthropic-oauth",
               "and a failed read does not pop it back to unset")
 
-        # 5. the second line of defence: no provider is "", never a fixture
+        # 5. the one path that can DELETE settings must not merge into a guess.
+        #    This is the loss as it actually happened, reproduced: the cache empty (a read that
+        #    failed) while the file on disk is complete, and then a panel save of ONE key. update()
+        #    merging into {} is a REPLACE — that is how four saved keys became one, taking the
+        #    provider with them and dropping a live web server onto the mock model mid-conversation.
+        st4 = _fresh_settings(path)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"LANG": "en", "PROVIDER": "anthropic-oauth",
+                       "MODEL": "claude-sonnet-5", "WALLPAPER": "on"}, f)
+        st4._cache["data"] = {}                      # a first read that failed, on a fresh process:
+        st4._cache["mtime"] = os.path.getmtime(path)  # nothing good to fall back to, and no re-read
+        check(st4._load() == {}, "the poisoned cache really does read as empty")
+
+        st4.update({"LANG": "zh"})                   # the language change that did it
+        back = json.load(open(path, encoding="utf-8"))
+        check(back.get("PROVIDER") == "anthropic-oauth" and back.get("MODEL") == "claude-sonnet-5"
+              and back.get("WALLPAPER") == "on",
+              "a one-key save does not delete the other three when the cache is empty")
+        check(back.get("LANG") == "zh", "...and still writes the key it was asked to write")
+
+        #    A file that genuinely holds nothing is a different thing, and must still be writable.
+        st5 = _fresh_settings(os.path.join(tmp, "empty.json"))
+        st5.update({"LANG": "zh"})
+        check(json.load(open(os.path.join(tmp, "empty.json"), encoding="utf-8")) == {"LANG": "zh"},
+              "a settings file that does not exist yet is created, not refused")
+
+        # 6. the second line of defence: no provider is "", never a fixture
         from harness import webapp
         os.environ.pop("COLLIE_PROVIDER", None)
         check(webapp._provider() == "", "_provider() with nothing set is empty, not mock")

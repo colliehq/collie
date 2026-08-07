@@ -147,8 +147,9 @@ class ExecuteCodeTool(Tool):
             # stdlib on sys.path, so a repo file named json.py/urllib.py would shadow and RUN in
             # place of the stdlib module on any import. The preamble appends cwd AFTER the stdlib.
             try:
+                from . import plat as _plat
                 p = subprocess.run([sys.executable, path], cwd=ctx.cwd, env=env,
-                                   capture_output=True, text=True,
+                                   capture_output=True, text=True, **_plat.no_window_kwargs(),
                                    encoding="utf-8", errors="replace", timeout=timeout)
             except subprocess.TimeoutExpired:
                 return "ERROR: execute_code timed out after %ds" % timeout

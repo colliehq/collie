@@ -113,7 +113,8 @@ def kill_tree(proc) -> None:
     try:
         if is_windows():
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           **no_window_kwargs())
             return
         import signal
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)   # session leader + all grandchildren
@@ -206,7 +207,7 @@ def play_stream(url: str):
             try:
                 return subprocess.Popen(argv, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                                        **new_group_kwargs())
+                                        **new_group_kwargs(), **no_window_kwargs())
             except Exception:
                 continue
     try:
@@ -289,7 +290,11 @@ def ask_allow_deny(title: str, message: str, allow: str = "Allow", deny: str = "
                      ["kdialog", "--title", title, "--yesno", message]):
             if not shutil.which(argv[0]):
                 continue
-            out = subprocess.run(argv, capture_output=True, timeout=timeout + 15)
+            # zenity/kdialog are Linux-only, so this is a no-op there — but the scan reads the CALL,
+            # and the call says only `argv`. Carrying the helper is cheaper than an exemption that
+            # depends on someone remembering what the loop above it iterates over.
+            out = subprocess.run(argv, capture_output=True, timeout=timeout + 15,
+                                 **no_window_kwargs())
             return out.returncode == 0
         return None
     except Exception:

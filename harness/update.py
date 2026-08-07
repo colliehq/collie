@@ -326,7 +326,8 @@ def apply_windows(exe, digest, on_note=print):
         # Not inside the install tree (a pip-style layout): nothing will close us, so run it here
         # and report the real outcome.
         r = subprocess.run([exe, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
-                           capture_output=True, text=True, timeout=1800)
+                           capture_output=True, text=True, timeout=1800,
+                           **plat.no_window_kwargs())
         if r.returncode != 0:
             return False, "installer exited %d: %s" % (r.returncode,
                                                        (r.stdout or r.stderr or "").strip()[:160])
@@ -359,7 +360,8 @@ def apply_pip(wheel_url, on_note=print):
     """Upgrade the installed package straight from the release wheel (collie is not on PyPI)."""
     cmd = [sys.executable, "-m", "pip", "install", "--upgrade", wheel_url]
     on_note("  %s" % " ".join(cmd[-3:]))
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                       **plat.no_window_kwargs())
     if r.returncode != 0:
         return False, (r.stderr or r.stdout or "pip failed").strip().splitlines()[-1][:180]
     return True, "upgraded"

@@ -87,7 +87,8 @@ def _grep_matches(root, terms, timeout=25):
     argv, use_shell = plat.shell_argv(rg + " || " + gr)
     try:
         p = subprocess.run(argv, shell=use_shell, cwd=root, stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, text=True, timeout=timeout)
+                           stderr=subprocess.DEVNULL, text=True, timeout=timeout,
+                           **plat.no_window_kwargs())
     except Exception:
         return {}
     low_terms = [(t, t.lower()) for t in terms]

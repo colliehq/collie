@@ -850,7 +850,9 @@ class ClaudeCliProvider(ModelProvider):
         env = dict(os.environ)
         if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
             env.pop("ANTHROPIC_API_KEY", None)
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, env=env)
+        from . import plat as _plat
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, env=env,
+                           **_plat.no_window_kwargs())
         data = _cc_json(r.stdout)
         u = data.get("usage", {}) or {}
         usage = Usage(input_tokens=u.get("input_tokens", 0),

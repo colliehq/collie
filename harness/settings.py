@@ -304,10 +304,31 @@ def save(values: dict) -> dict:
     return clean
 
 
+def _read_uncached() -> dict:
+    """settings.json, read NOW, past the cache. Raises if it exists and will not parse.
+
+    update() must not merge into a guess. A merge that starts from {} is a REPLACE, and that is
+    exactly how a settings file holding LANG, PROVIDER, MODEL and WALLPAPER became one holding LANG
+    alone: one unreadable read left the cache empty, and the next panel save — a language change —
+    committed the emptiness to disk. The provider went with it, and the web server fell to the mock
+    model mid-conversation.
+
+    _load() no longer keeps emptiness, but a process whose FIRST read fails has no last-good values
+    to keep, and that window is still wide enough to lose a file in. So the one path that can
+    DELETE settings reads the file itself and lets a failure fail the save: loud, and the values
+    are still on disk. The alternative was silent, and they were not.
+    """
+    try:
+        with open(_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except FileNotFoundError:
+        return {}                     # nothing saved yet — the one honest empty
+
+
 def update(partial: dict) -> dict:
     """MERGE known keys into the saved settings, unlike save() which replaces the whole file.
     Used by the model picker so switching (PROVIDER/MODEL) never clobbers LANG/tools/etc."""
-    data = dict(_load())
+    data = dict(_read_uncached())
     for k, v in (partial or {}).items():
         if k in _KEYS:
             data[k] = v
