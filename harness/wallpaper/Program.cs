@@ -220,7 +220,11 @@ class CollieWallpaper : Form
         // COM/GPU processes -> DCOM 10010 storm -> the Hyper-V/WSL network cascade).
         try
         {
-            _quit = new EventWaitHandle(false, EventResetMode.AutoReset, "collie-wallpaper-quit");
+            // Per-mode name: the quit event is AutoReset, so one Set wakes ONE waiter — with a shared
+            // name, "stop the wallpaper" could just as easily close the app WINDOW (same exe, both
+            // listening). The wallpaper keeps the historic name so existing stop paths still work.
+            _quit = new EventWaitHandle(false, EventResetMode.AutoReset,
+                                        _windowMode ? "collie-wallpaper-quit-window" : "collie-wallpaper-quit");
             var qt = new Thread(delegate () { _quit.WaitOne(); try { BeginInvoke((MethodInvoker)delegate { Close(); }); } catch { } });
             qt.IsBackground = true; qt.Start();
         }
@@ -238,6 +242,7 @@ class CollieWallpaper : Form
                                       "collie", _windowMode ? "webview2-win" : "webview2");
             var opts = new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required");
             var env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
+            _env = env;   // child windows (the star map, the meadow) initialise from this same profile
             await _web.EnsureCoreWebView2Async(env);
         }
         catch (Exception ex) { Log("InitWeb EXCEPTION: " + ex.Message); }
@@ -361,6 +366,7 @@ class CollieWallpaper : Form
 
     // A second ordinary Collie window — used for target=_blank links (star map, meadow) so they stay
     // in the app instead of escaping to the browser.
+    static CoreWebView2Environment _env;   // set once by InitWeb; child windows share its profile
     static void OpenChildWindow(string url)
     {
         try
@@ -373,12 +379,17 @@ class CollieWallpaper : Form
             f.Icon = AppIcon();
             WebView2 w = new WebView2();
             w.Dock = DockStyle.Fill;
+            w.DefaultBackgroundColor = Color.Black;
             w.CoreWebView2InitializationCompleted += delegate
             {
                 try { w.CoreWebView2.Navigate(url); } catch (Exception e) { Log("child nav: " + e.Message); }
             };
             f.Controls.Add(w);
             f.Show();
+            // Subscribing to InitializationCompleted does not START initialisation — nothing does
+            // until EnsureCoreWebView2Async (or Source=) is called. Without this the event never
+            // fires, Navigate never runs, and the child is a permanently black window.
+            w.EnsureCoreWebView2Async(_env);
         }
         catch (Exception ex) { Log("child window failed: " + ex.Message); }
     }
