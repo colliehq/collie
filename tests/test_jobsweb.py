@@ -50,6 +50,23 @@ def _req(url, method="GET", body=None, header=True, origin=None):
 def main():
     caps.register_builtins()
     state = tempfile.mkdtemp(prefix="collie-web-state-")
+
+    # Seed a paused Mission with a concrete parked publish action. The legacy
+    # dashboard confirm endpoint must not execute it through the one-shot Job path.
+    from harness.missionweb import MissionService
+    from harness.actions import ActionStore
+
+    class OnePublish:
+        def __call__(self, *_args):
+            return {"action": "web.submit", "args": {"what": "post"}, "reason": "publish"}
+
+    msvc = MissionService(state_dir=state, decider=OnePublish(), stub=True)
+    mst = msvc.start("publish safely", autonomous=False)
+    mst = msvc.run(mst["mission_id"])
+    mission_nonce = mst["inbox"]["nonce"]
+    msvc.pause(mst["mission_id"])
+    msvc.close()
+
     srv = ThreadingHTTPServer(("127.0.0.1", 0), jobsweb._make_handler(state))
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -101,6 +118,14 @@ def main():
     r = json.loads(out)
     check(code == 200 and r.get("status") == "verified",
           f"a same-origin browser POST (Origin set + header) must succeed, got {code} {out}")
+
+    print("test_dashboard_confirm_cannot_bypass_paused_mission")
+    code, out = _req(base + "/api/confirm", "POST", {"nonce": mission_nonce})
+    got = json.loads(out)
+    actions = ActionStore(os.path.join(state, "actions.db"))
+    check(code == 200 and got.get("error") and actions.get(mission_nonce).state == "pending",
+          "dashboard routes Mission nonce through lifecycle checks; paused action stays pending")
+    actions.close()
 
     srv.shutdown()
     if _fails:

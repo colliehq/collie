@@ -154,13 +154,14 @@ echo "── web --lan host guard (phone pairing) ──────────
 if $PY tests/test_web_lan.py >/dev/null 2>&1; then echo "  web --lan OK"; else echo "  web --lan FAIL"; rc=1; fi
 
 echo "── the permission gate (pytest-style: 185 checks) ───────"
-# These EIGHT files are written as bare `def test_*` with no __main__ block, so `$PY tests/x.py`
+# These files are written as bare `def test_*` with no __main__ block, so `$PY tests/x.py`
 # imports them, runs nothing, and exits 0 — which is how the whole gate feature shipped with a
 # green suite that had never executed one of its assertions. They need a runner.
 if $PY -c "import pytest" >/dev/null 2>&1; then
   if $PY -m pytest -q tests/test_gate.py tests/test_loop_gate.py tests/test_risk.py \
       tests/test_inbox.py tests/test_trust.py tests/test_audit.py tests/test_overrides.py \
-      tests/test_personas.py >/dev/null 2>&1; then echo "  gate/risk/inbox/trust/audit OK"
+      tests/test_personas.py tests/test_cli_mission.py tests/test_web_mission_api.py \
+      >/dev/null 2>&1; then echo "  gate/risk/inbox/trust/audit + mission CLI/HTTP OK"
   else echo "  gate/risk/inbox/trust/audit FAIL"; rc=1; fi
 else
   # Not silently skipped: an unrunnable suite is a fact about this checkout, not a pass.

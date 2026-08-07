@@ -197,12 +197,13 @@ function pageClick(text, selector) {
   }
   const el = all[0];
   if (!el) return { error: "no element for " + (selector || text) };
+  if (all.length > 1) return {
+    error: "ambiguous click target (" + all.length + " matches) — take a browser_snapshot and use one exact ref",
+    matches: all.length,
+    candidates: all.slice(0, 5).map((e) => (e.innerText || e.value || e.tagName || "").trim().slice(0, 40))
+  };
   el.scrollIntoView(); el.click();
   const out = { clicked: (el.innerText || el.value || selector || text).trim().slice(0, 80) };
-  if (all.length > 1) {
-    out.matches = all.length;
-    out.candidates = all.slice(0, 5).map((e) => (e.innerText || e.value || e.tagName || "").trim().slice(0, 40));
-  }
   return out;
 }
 
@@ -231,15 +232,16 @@ function pagePoint(text, selector, broad) {
   }
   const el = all[0];
   if (!el) return { error: "no element for " + (selector || text) };
+  if (all.length > 1) return {
+    error: "ambiguous click target (" + all.length + " matches) — take a browser_snapshot and use one exact ref",
+    matches: all.length,
+    candidates: all.slice(0, 5).map((e) => (e.innerText || e.value || e.tagName || "").trim().slice(0, 40))
+  };
   el.scrollIntoView({ block: "center", inline: "center" });
   const r = el.getBoundingClientRect();
   const x = r.left + r.width / 2, y = r.top + r.height / 2;
   const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
   const out = { x, y, inView, label: (el.innerText || el.value || selector || text || "").trim().slice(0, 80) };
-  if (all.length > 1) {   // same ambiguity warning as pageClick — the trusted path picks the first too
-    out.matches = all.length;
-    out.candidates = all.slice(0, 5).map((e) => (e.innerText || e.value || e.tagName || "").trim().slice(0, 40));
-  }
   return out;
 }
 

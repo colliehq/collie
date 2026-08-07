@@ -8,6 +8,7 @@ and that an irreversible parked action parks (needs_you) instead of auto-firing.
 import os
 import sys
 import tempfile
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -90,6 +91,47 @@ def test_irreversible_parks_not_autofires():
     check(not fired["v"], "a timer must NOT auto-fire an irreversible action")
     check(jobs.get("j").state == NEEDS_YOU, "it parks in needs_you for a human confirm")
     check(len(sched.pending_waits()) == 0, "the wait itself is spent (won't re-fire in a loop)")
+    sched.close(); acts.close(); jobs.close()
+
+
+def test_daemon_loop_runs_the_mission_tick_on_catchup():
+    print("test_daemon_loop_runs_the_mission_tick_on_catchup")
+    clear_registry(); caps.register_builtins()
+    ap, jp = _paths()
+    acts, jobs = ActionStore(ap), JobStore(jp)
+    sched = Scheduler(acts, jobs, db_path=jp)
+    mission_ticks = []
+    sched.serve(interval=0, now_fn=lambda: 123,
+                stop=lambda: bool(mission_ticks),
+                extra_tick=lambda now: mission_ticks.append(now))
+    check(mission_ticks == [123], "daemon catch-up ticks jobs and missions in one round")
+    sched.close(); acts.close(); jobs.close()
+
+
+def test_daemon_shutdown_waits_for_active_mission_tick():
+    print("test_daemon_shutdown_waits_for_active_mission_tick")
+    clear_registry(); caps.register_builtins()
+    ap, jp = _paths()
+    acts, jobs = ActionStore(ap), JobStore(jp)
+    sched = Scheduler(acts, jobs, db_path=jp)
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_mission(_now):
+        entered.set()
+        release.wait(2)
+
+    def run_daemon():
+        sched.serve(interval=0, now_fn=lambda: 123, stop=lambda: entered.is_set(),
+                    extra_tick=slow_mission)
+        returned.set()
+
+    thread = threading.Thread(target=run_daemon)
+    thread.start()
+    check(entered.wait(1), "the Mission lane started")
+    check(not returned.wait(.05),
+          "serve does not return while its Mission worker still owns shared stores")
+    release.set(); thread.join(1)
+    check(returned.is_set(), "serve returns after the active Mission boundary finishes")
     sched.close(); acts.close(); jobs.close()
 
 

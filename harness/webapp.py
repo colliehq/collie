@@ -70,6 +70,52 @@ _AUDIO_OK_HOSTS = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaize
 _MCP_LOGIN_ERR = {}                  # server name -> last login error
 _MCP_LOGIN_BUSY = set()              # server names with a login in flight
 
+# A Web/Desktop process is already Collie's long-lived local process, so it also
+# wakes due Missions. The ticker owns no plan: each pass only finds durable rows
+# and calls the Mission driver, which asks Collie for the next action. SQL run
+# tokens make this safe alongside `collie jobs daemon` and manual Check now.
+_MISSION_TICK_LOCK = threading.Lock()
+_MISSION_TICK_THREAD = None
+_MISSION_TICK_ERROR = ""
+
+
+def start_mission_ticker(interval=30.0):
+    """Start one process-local Mission wake loop (idempotent)."""
+    global _MISSION_TICK_THREAD
+    with _MISSION_TICK_LOCK:
+        if _MISSION_TICK_THREAD and _MISSION_TICK_THREAD.is_alive():
+            return _MISSION_TICK_THREAD
+
+        def _loop():
+            global _MISSION_TICK_ERROR
+            while True:
+                svc = None
+                try:
+                    from . import settings
+                    from .missionweb import MissionService
+                    settings.apply()
+                    if (settings.get("PROVIDER") or "") in ("", "mock"):
+                        raise RuntimeError("configure a real provider to run Missions")
+                    svc = MissionService()
+                    svc.tick()
+                    _MISSION_TICK_ERROR = ""
+                except Exception as e:
+                    # No provider/network is recoverable: leave durable rows intact
+                    # and try again. The Web request/status surface stays available.
+                    _MISSION_TICK_ERROR = "%s: %s" % (type(e).__name__, e)
+                finally:
+                    if svc is not None:
+                        try:
+                            svc.close()
+                        except Exception:
+                            pass
+                time.sleep(max(1.0, float(interval)))
+
+        _MISSION_TICK_THREAD = threading.Thread(
+            target=_loop, name="collie-mission-ticker", daemon=True)
+        _MISSION_TICK_THREAD.start()
+        return _MISSION_TICK_THREAD
+
 
 def _audio_host_ok(target):
     """True only for an https URL whose host is one of _AUDIO_OK_HOSTS — matched EXACTLY or as a
@@ -1122,19 +1168,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": sessions.set_title(sid, title)})
             if path.startswith("/api/session/"):
                 return self._serve_session(path[len("/api/session/"):])
-            # Missions are disabled (the router rewrites mission->chat). Enforce that HERE too — not
-            # only in router+UI — so the endpoints can't be driven directly. Delete to re-enable.
-            if path in ("/api/mission", "/api/missions"):
-                return self._send_json({"error": "missions are disabled"}, 404)
             if path == "/api/mission":                    # delegate: one mission's live status
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
                 from .missionweb import MissionService
                 mid = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
                 svc = MissionService()
                 try:
-                    return self._send_json(svc.status(mid) if mid else {"error": "id required"})
+                    if not mid:
+                        return self._send_json({"error": "id required"}, 400)
+                    out = svc.status(mid)
+                    return self._send_json(out, 404 if out.get("error") else 200)
                 finally:
                     svc.close()
             if path == "/api/missions":                   # delegate: the mission list (sidebar)
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
                 from .missionweb import MissionService
                 svc = MissionService()
                 try:
@@ -1538,13 +1587,10 @@ class Handler(BaseHTTPRequestHandler):
                         % (", ".join("COLLIE_" + k for k in pin),
                            settings.get("PROVIDER", "") or "the pinned provider"))
                 return self._send_json(out)
-            if path in ("/api/mission", "/api/mission/confirm", "/api/mission/resume",
-                        "/api/mission/tick"):
-                # Missions are disabled (the router rewrites mission->chat). Enforce it server-side so
-                # a CSRF-token holder still can't start a durable model-driven campaign the product
-                # says is impossible. Delete this guard (and the router rewrite) to re-enable.
-                return self._send_json({"error": "missions are disabled"}, 404)
-            if path in ("/api/_mission_disabled",):
+            if path in ("/api/mission", "/api/mission/run", "/api/mission/confirm",
+                        "/api/mission/pause", "/api/mission/resume", "/api/mission/cancel",
+                        "/api/mission/continue", "/api/mission/accept", "/api/mission/check",
+                        "/api/mission/reconcile", "/api/mission/tick"):
                 # The NL front door: start/gate/carry a delegate mission from the chat.
                 # CSRF-gated like every state-changing route — a mission runs the model
                 # and can fire (gated) real-world actions, so a drive-by must never start one.
@@ -1562,19 +1608,45 @@ class Handler(BaseHTTPRequestHandler):
                         goal = (body.get("goal") or "").strip()
                         if not goal:
                             return self._send_json({"error": "goal required"}, 400)
-                        bounds = {}
-                        if body.get("price_floor") is not None:
-                            bounds["price_floor"] = body["price_floor"]
-                        return self._send_json(svc.start(
-                            goal, autonomous=bool(body.get("autonomous")), **bounds))
+                        bounds = {k: body[k] for k in
+                                  ("allowed_domains", "actions_per_hour",
+                                   "max_irreversible_actions", "max_total_steps",
+                                   "spend_max_usd") if body.get(k) is not None}
+                        try:
+                            created = svc.start(
+                                goal, autonomous=bool(body.get("autonomous")), **bounds)
+                        except ValueError as e:
+                            return self._send_json({"error": str(e)}, 400)
+                        return self._send_json(created, 201)
                     mid = (body.get("id") or "").strip()
-                    if not mid:
+                    if not mid and path != "/api/mission/tick":
                         return self._send_json({"error": "id required"}, 400)
                     if path == "/api/mission/confirm":
-                        return self._send_json(svc.confirm(mid, (body.get("nonce") or "").strip()))
-                    if path == "/api/mission/resume":
-                        return self._send_json(svc.resume(mid))
-                    return self._send_json(svc.tick(mid))     # /api/mission/tick
+                        nonce = (body.get("nonce") or "").strip()
+                        if not nonce:
+                            return self._send_json({"error": "nonce required"}, 400)
+                        out = svc.confirm(mid, nonce)
+                    elif path == "/api/mission/run":
+                        out = svc.run(mid)
+                    elif path == "/api/mission/pause":
+                        out = svc.pause(mid)
+                    elif path == "/api/mission/resume":
+                        out = svc.resume(mid)
+                    elif path == "/api/mission/cancel":
+                        out = svc.cancel(mid)
+                    elif path == "/api/mission/accept":
+                        out = svc.accept(mid)
+                    elif path == "/api/mission/continue":
+                        out = svc.continue_after_human(mid, body.get("note") or "")
+                    elif path == "/api/mission/reconcile":
+                        out = svc.reconcile(mid, body.get("note") or "")
+                    elif path == "/api/mission/check":
+                        out = svc.check(mid)
+                    else:
+                        out = svc.tick(mid or None)             # daemon/debug global tick
+                    code = 404 if out.get("error") == "unknown mission" else \
+                        (409 if out.get("error") else 200)
+                    return self._send_json(out, code)
                 finally:
                     svc.close()
             if path == "/api/route":
@@ -2536,6 +2608,7 @@ def main(argv=None, on_bound=None):
         print("error: ports %d–%d are all in use. Is `collie web` already running? "
               "Open http://127.0.0.1:%d/ , or pass --port <free port>." % (requested, requested + 11, requested))
         return 1
+    start_mission_ticker()
     # a nicer local URL than a bare loopback IP: browsers resolve any *.localhost name to the
     # loopback address per RFC 6761 (zero setup, no /etc/hosts), so collie.localhost:PORT works
     # out of the box while the server still binds 127.0.0.1. VS Code parses the 127.0.0.1 line below.

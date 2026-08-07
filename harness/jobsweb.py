@@ -220,6 +220,27 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
                 rec = acts.get(nonce)
                 if not rec:
                     return {"error": "unknown nonce"}
+                # Mission-owned actions must be confirmed by the campaign driver,
+                # never by the one-shot Job Executor. Otherwise pause/cancel can be
+                # bypassed and the Mission's parked step is left orphaned after fire.
+                from .mission import MissionStore
+                missions = MissionStore(jpath)
+                try:
+                    owner = missions.get(rec.job_id) if rec.job_id else None
+                finally:
+                    missions.close()
+                if owner:
+                    from . import settings
+                    from .missionweb import MissionService
+                    settings.apply()
+                    svc = MissionService(state_dir=state_dir)
+                    try:
+                        out = svc.confirm(owner.mission_id, nonce)
+                        if out.get("error"):
+                            return {"error": out["error"], "status": out.get("state")}
+                        return {"status": out.get("state"), "reason": out.get("result", "")}
+                    finally:
+                        svc.close()
                 try:
                     acts.confirm(nonce)
                 except RefusedError as e:

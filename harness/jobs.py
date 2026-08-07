@@ -39,6 +39,10 @@ from .verifier import FAILED, INCONCLUSIVE, NOT_ARMED, VERIFIED, Verdict
 QUEUED = "queued"
 RUNNING = "running"
 WAITING = "waiting"
+PAUSED = "paused"
+PAUSING = "pausing"
+RECOVERY_REQUIRED = "recovery_required"
+RECONCILING = "reconciling"
 NEEDS_YOU = "needs_you"
 DONE_VERIFIED = "done_verified"
 DONE_ACCEPTED = "done_accepted"
@@ -76,8 +80,12 @@ class Capability:
     reversible: bool = False
     risk: str = "irreversible"
     compensate: object = None             # optional fn(ActionRecord) -> None
+    snapshot: object = None               # optional fn(args, job_id) -> target identity
+    unchanged: object = None              # optional fn(ActionRecord) -> bool (TOCTOU)
+    resource: object = None               # optional shared external-resource key / fn(record)
     description: str = ""                 # for the natural-language compiler (mandate.py)
     args_hint: str = ""                   # e.g. '{"file": name, "text": the note}'
+    semantic_args: object = None           # exact action-identity fields for Mission dedupe
 
 
 _REGISTRY: dict = {}

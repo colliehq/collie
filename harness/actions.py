@@ -252,6 +252,33 @@ class ActionStore:
                 raise RefusedError("not pending (lost confirm race)")
         return self.get(nonce)
 
+    def refuse(self, nonce, reason="cancelled") -> bool:
+        """Atomically prevent a not-yet-claimed action from ever firing.
+
+        PENDING and APPROVED are both still revocable. EXECUTING is deliberately
+        excluded: an already-started external side effect cannot honestly be
+        recalled, and its receipt remains the source of truth.
+        """
+        now = int(time.time())
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE pending_actions SET state=?,refuse_reason=?,decided_at=? "
+                "WHERE nonce=? AND state IN (?,?)",
+                (REFUSED, reason[:200], now, nonce, PENDING, APPROVED))
+            self.db.commit()
+        return cur.rowcount == 1
+
+    def refuse_for_job(self, job_id, reason="mission cancelled") -> int:
+        """Revoke every unclaimed action owned by a cancelled mission/job."""
+        now = int(time.time())
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE pending_actions SET state=?,refuse_reason=?,decided_at=? "
+                "WHERE job_id=? AND state IN (?,?)",
+                (REFUSED, reason[:200], now, job_id, PENDING, APPROVED))
+            self.db.commit()
+        return cur.rowcount
+
     # ── execute: the deterministic, model-free executor ──
     def execute(self, nonce, side_effect_fn, donecheck_fn=None,
                 unchanged_fn=None, redact_fn=None) -> Receipt:
