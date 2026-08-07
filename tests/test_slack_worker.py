@@ -326,6 +326,32 @@ def main():
     check("--autonomy" not in open(vbs, encoding="utf-8").read(),
           "...in the .pyw, not smuggled into the .vbs, which only launches it")
 
+    # ---- coming back after a restart, on this OS too --------------------------------------------
+    # A dog started from a terminal dies with the terminal — one sat silent through a day of
+    # @-mentions with nothing anywhere saying it had gone. Windows had a launcher; macOS printed
+    # "not written yet", which is the same silence with a sentence in front of it.
+    import xml.dom.minidom
+    check("_install_launch_agent" in src and 'sys.platform == "darwin"' in src,
+          "macOS installs a LaunchAgent rather than refusing")
+    check(sb._agent_label("Big Mac!") == "run.collie.slack.bigmac",
+          "the label is a reverse-DNS id Slack-safe and launchctl-safe (%s)"
+          % sb._agent_label("Big Mac!"))
+    check(sb._agent_path("BigMac").endswith("/Library/LaunchAgents/run.collie.slack.bigmac.plist"),
+          "in ~/Library/LaunchAgents, where a per-user background job lives")
+
+    argv = ["/venv/bin/python", "-m", "harness.cli", "slack", "--name", "Big & Mac"]
+    p = sb._plist("run.collie.slack.bigmac", argv, "/repo/a & b", "/log/x.log")
+    xml.dom.minidom.parseString(p)                     # a malformed plist is a silent no-start
+    check("&amp;" in p and "&" not in p.replace("&amp;", ""),
+          "a path or name containing & is escaped — launchd rejects the plist otherwise")
+    check("<key>KeepAlive</key><true/>" in p.replace("\n", ""),
+          "KeepAlive: the point is a dog that is THERE, through a crash or a dropped socket")
+    check("ThrottleInterval" in p,
+          "with a throttle, so a dog that cannot start does not respawn in a spin")
+    check("<key>RunAtLoad</key><true/>" in p.replace("\n", ""), "and starts at login")
+    check("--announce" not in "".join(argv) and "--announce" not in p,
+          "no --announce: a greeting on every wake and every restart is not a greeting")
+
     print("\n  " + ("%d FAILED" % len(fails) if fails else "slack worker: all green"))
     return 1 if fails else 0
 

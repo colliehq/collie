@@ -1183,6 +1183,101 @@ def _autostart_paths(name: str):
     return wp, boot, vbs
 
 
+def _agent_label(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "", name.lower()) or "collie"
+    return "run.collie.slack.%s" % slug
+
+
+def _agent_path(name: str) -> str:
+    return os.path.expanduser("~/Library/LaunchAgents/%s.plist" % _agent_label(name))
+
+
+def _plist(label: str, argv: list, cwd: str, log: str) -> str:
+    """A LaunchAgent for one dog. Escaped, because a path can contain & and a name can contain '."""
+    from xml.sax.saxutils import escape
+    args = "".join("    <string>%s</string>\n" % escape(a) for a in argv)
+    # KeepAlive, because the point is a dog that is THERE: a crash, a dropped socket that outlives
+    # the reconnect loop, a laptop waking on a different network. ThrottleInterval is the other half
+    # — a dog that exits immediately (a token revoked, a provider gone) would otherwise respawn
+    # forever at launchd's 10s default, and 60 makes that visible in the log as a slow heartbeat
+    # rather than a spin.
+    return ("""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+%s  </array>
+  <key>WorkingDirectory</key><string>%s</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+</dict>
+</plist>
+""" % (escape(label), args, escape(cwd), escape(log), escape(log)))
+
+
+def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str = "",
+                          autonomy: str = "") -> int:
+    """The macOS half: a LaunchAgent, which is what a per-user background job is here.
+
+    No wrapper script, unlike Windows: launchd takes an argv and two log paths directly, so the
+    interpreter is this one (`sys.executable` — the venv the command was run from, not whatever
+    `python3` will mean at the next login) and there is one file to delete.
+    """
+    label, path = _agent_label(name), _agent_path(name)
+    log = os.path.expanduser("~/.collie/slack-%s.log" % _agent_label(name).rsplit(".", 1)[-1])
+    argv = [sys.executable, "-m", "harness.cli", "slack", "--name", name, "--cwd", cwd]
+    for flag, v in (("--channels", channels), ("--provider", provider), ("--autonomy", autonomy)):
+        if v:
+            argv += [flag, v]
+    # Announce on every start would post a greeting on every wake and every crash-restart. The
+    # channel it WORKS in is what matters and that is --channels; reporting in is for a person
+    # starting it by hand.
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_plist(label, argv, cwd, log))
+
+    uid = os.getuid()
+    # bootout first: without it, re-running this leaves the OLD arguments running and the new plist
+    # loaded but inert, which reads as "the flag I just changed did nothing".
+    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, label)],
+                   capture_output=True, text=True)
+    r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, path],
+                       capture_output=True, text=True)
+    if r.returncode != 0:                       # older macOS, or a session launchctl cannot address
+        r = subprocess.run(["launchctl", "load", "-w", path], capture_output=True, text=True)
+    if r.returncode != 0:
+        print("wrote %s but launchctl refused it: %s"
+              % (path, (r.stderr or r.stdout or "").strip()), file=sys.stderr)
+        return 1
+    print("%s will come back after a restart, and after a crash.\n"
+          "  agent : %s\n  log   : %s\n  remove: collie slack --uninstall-autostart --name %s"
+          % (name, path, log, name))
+    return 0
+
+
+def _uninstall_launch_agent(name: str) -> int:
+    label, path = _agent_label(name), _agent_path(name)
+    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), label)],
+                   capture_output=True, text=True)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            print("removed %s; %s will not start itself again." % (path, name))
+            return 0
+    except OSError as e:
+        print("could not remove %s: %s" % (path, e), file=sys.stderr)
+        return 1
+    print("no autostart was installed for %s." % name)
+    return 0
+
+
 def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "",
                       autonomy: str = "") -> int:
     """Bring this dog back after a restart.
@@ -1195,10 +1290,16 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
     Per DOG, not per machine: the pack is keyed by name, and two dogs on one laptop want two
     entries.
     """
+    # Which OS this is comes from plat and nothing else. Asking sys.platform first looked harmless
+    # and made this function unstubbable: the suite fakes plat.is_windows to exercise the launcher
+    # on a Mac, and a darwin check ahead of it ignored the fake — so running the tests installed a
+    # real LaunchAgent for a dog that does not live here.
     from . import plat
     if not plat.is_windows():
-        print("collie slack --install-autostart is Windows-only for now "
-              "(macOS wants a LaunchAgent; not written yet).", file=sys.stderr)
+        if sys.platform == "darwin":
+            return _install_launch_agent(name, cwd, channels, provider, autonomy)
+        print("collie slack --install-autostart has no Linux form yet "
+              "(a systemd --user unit is the shape it wants).", file=sys.stderr)
         return 2
     wp, boot, vbs = _autostart_paths(name)
     log = os.path.join(os.path.expanduser("~"), ".collie", "slack.log")
@@ -1238,6 +1339,9 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
 
 
 def uninstall_autostart(name: str) -> int:
+    from . import plat
+    if not plat.is_windows() and sys.platform == "darwin":
+        return _uninstall_launch_agent(name)
     _, boot, vbs = _autostart_paths(name)
     gone = []
     for p in (vbs, boot):
