@@ -259,12 +259,19 @@ def launch_engine(port: int) -> bool:
 
 
 def engine_running() -> bool:
+    """Is the BACKGROUND wallpaper engine running? The app window is the same exe in --window mode,
+    so the old tasklist-by-image-name check saw an open `collie app` window and skipped the wallpaper
+    forever ("already running", desktop bare). Ask for the bg instance's own mutex instead."""
     if not plat.is_windows():
         return False
     try:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq collie-wallpaper.exe"],
-                             capture_output=True, text=True, timeout=10, **_quiet()).stdout
-        return "collie-wallpaper.exe" in out
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        h = ctypes.windll.kernel32.OpenMutexW(SYNCHRONIZE, False, "collie-wallpaper-bg")
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+        return False
     except Exception:
         return False
 
