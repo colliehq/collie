@@ -58,8 +58,9 @@ def main():
     # --- one ask should not produce three messages ----------------------------------------------
     check("def edit(" in src,
           "there is a way to rewrite a status line instead of posting another one")
-    check(src.count("say(self.token, ch,") <= 2,
-          "the worker posts at most two messages per ask (status + answer)")
+    delivery_path = src.split("def _deliver_one")[1].split("def _stop_task")[0]
+    check(delivery_path.count("say(self.token, ch,") == 1,
+          "the normal worker path posts one answer per ask")
     check("broadcast=True" in src,
           "the ANSWER is broadcast, so a thread is not where it goes to be missed")
     check('p["reply_broadcast"]' in src,
@@ -74,10 +75,14 @@ def main():
           "...instead of a line saying so, and a second line correcting the first")
 
     # --- and the ordering that makes that possible ----------------------------------------------
-    i_ts = src.find('item["ask_ts"] = ')
+    i_ts = src.find('ask_ts=event.get("ts", "")')
     i_nudge = src.find("worker.nudge()", i_ts if i_ts > 0 else 0)
     check(i_ts > 0 and i_nudge > i_ts,
-          "the worker is nudged AFTER the ts is stored — otherwise it can start before it exists")
+          "the worker is nudged AFTER the ts is durably queued — otherwise it can start before it exists")
+    i_enqueue = src.find("item = q.add(text")
+    i_ack = src.find("acknowledge()", i_enqueue)
+    check(i_enqueue > 0 and i_ack > i_enqueue and "source_id=source_id" in src[i_enqueue:i_ack],
+          "a Slack ask and its durable dedupe key are queued before ACK")
 
     # --- every flag the logon launcher writes must survive `collie` -----------------------------
     # The launcher goes through harness.cli, whose slack subparser was NARROWER than slackbot's own
@@ -149,6 +154,11 @@ def main():
           "dogs ever speaking again")
 
     st = {}
+    same = [sb.pack_gate(st, "T3b", "B1", source_id="event:E1") for _ in range(5)]
+    check(same == [""] * 5 and st["T3b"]["n"] == 1,
+          "Socket redelivery of one peer event counts as one turn, even before queue persistence")
+
+    st = {}
     hops = [sb.pack_gate(st, "T4", "B%d" % i) for i in range(sb.PACK_HOPS + 1)]
     check(hops[-1] and "reaching" in hops[-1],
           "a chain that never repeats an edge still stops at %d hops" % sb.PACK_HOPS)
@@ -185,6 +195,10 @@ def main():
     check("COLLIE_IDENTITY" in src, "...and the spawn hands that to the run")
     check("Do not push to main" in sb.identity_text({"name": "x", "autonomy": "branch"}),
           "branch states the half no gate mode can hold — a destination, not a permission")
+    rename_path = src.split('if low.startswith("rename "):', 1)[1].split(
+        'elif low in ("who", "who?", "status"):', 1)[0]
+    check("load_identity" not in rename_path and "I did not rename" in rename_path,
+          "chat cannot rename the queue/lock key underneath live or waiting work")
 
     # --- the answer is the answer ----------------------------------------------------------------
     check("stderr=subprocess.STDOUT" not in src,
@@ -238,9 +252,7 @@ def main():
 
     # Scoped to the ANSWER path on purpose: `queue` still fences its listing, and should — that one
     # is a lined-up table nobody needs to @ anybody from.
-    # _run_one is the LAST method on Worker, so splitting on the next "    def " runs off the end of
-    # the class and swallows the rest of the module — `self.q.finish` is where it really stops.
-    answer_path = src.split("def _run_one")[1].split("self.q.finish(")[0]
+    answer_path = src.split("def _run_one")[1].split("completed = self.q.complete")[0]
     check('```\\n' not in answer_path,
           "the answer goes out as ordinary text — Slack renders NO mention inside a code fence, so "
           "a fenced answer could never reach a packmate however correctly it was addressed")

@@ -24,6 +24,7 @@ to do**, so its autonomy is never something you find out afterwards.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import queue
@@ -38,6 +39,7 @@ import urllib.parse
 import urllib.request
 
 from . import wsclient
+from .slackguard import INTERRUPTED_EXIT as GUARD_INTERRUPTED_EXIT
 
 SLACK_API = "https://slack.com/api/"
 IDENTITY = os.path.expanduser("~/.collie/identity.json")
@@ -441,6 +443,176 @@ def load_identity(name: str = "", autonomy: str = "") -> dict:
 # The queue
 # ---------------------------------------------------------------------------
 
+def _message_source_key(channel: str, ts: str) -> str:
+    return "message:%s:%s" % (channel, ts) if channel and ts else ""
+
+
+def _legacy_signature(channel: str, thread: str, user: str, text: str) -> str:
+    raw = "\0".join((channel, thread, user, text)).encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+_LEGACY_REDELIVERY_WINDOW = 10 * 60
+
+
+def _matching_legacy_receipt(receipts: list[str], channel: str, thread: str,
+                             user: str, text: str, event_ts: str) -> str:
+    """Return one ambiguous pre-receipt marker only near its original enqueue.
+
+    Old queue rows did not retain Slack's event id or message timestamp.  A
+    short tuple/time match bridges one upgrade-time redelivery, but it must not
+    suppress a perfectly legitimate repeat of the same words hours or days
+    later.  The caller consumes this marker as soon as it can replace it with
+    Slack's exact identifiers.
+    """
+    try:
+        when = float(event_ts)
+    except (TypeError, ValueError):
+        return ""
+    signature = _legacy_signature(channel, thread, user, text)
+    for receipt in receipts:
+        if not receipt.startswith("legacy:"):
+            continue
+        try:
+            _, queued, saved = receipt.split(":", 2)
+            if (saved == signature
+                    and abs(when - float(queued)) <= _LEGACY_REDELIVERY_WINDOW):
+                return receipt
+        except ValueError:
+            continue
+    return ""
+
+
+class QueuePersistenceError(RuntimeError):
+    """The queue could not durably record a state transition."""
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a recorded guard process still exists, without signalling it."""
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        if os.name == "nt":
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+                return bool(ok and code.value == 259)       # STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _process_identity(pid: int) -> str:
+    """Creation identity paired with a PID, so PID reuse cannot hold a fence."""
+    try:
+        if not _pid_alive(pid):
+            return ""
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.windll.kernel32
+            k.OpenProcess.restype = wintypes.HANDLE
+            handle = k.OpenProcess(0x1000, False, int(pid))
+            if not handle:
+                return ""
+            try:
+                created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+                if not k.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                         ctypes.byref(kernel), ctypes.byref(user)):
+                    return ""
+                return "%08x%08x" % (created.dwHighDateTime, created.dwLowDateTime)
+            finally:
+                k.CloseHandle(handle)
+        try:
+            with open("/proc/%d/stat" % int(pid), encoding="ascii") as f:
+                return f.read().split()[21]
+        except FileNotFoundError:
+            # macOS has no /proc. This is recovery-only and never handles task
+            # text, so invoking ps directly is bounded and shell-free.
+            return subprocess.check_output(
+                ["ps", "-o", "lstart=", "-p", str(int(pid))],
+                text=True, timeout=2).strip()
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return ""
+
+
+def _same_process(pid: int, started: str) -> bool:
+    # A legacy PID without a creation identity is never authoritative.  With a
+    # persisted identity, however, a live PID plus a transient identity lookup
+    # failure must fail closed: only a positive mismatch proves PID reuse.
+    if not started or not _pid_alive(pid):
+        return False
+    current = _process_identity(pid)
+    return not current or current == started
+
+
+def _execution_alive(item: dict) -> bool:
+    """Whether either the supervisor or its gated executor is still alive."""
+    if _same_process(item.get("guard_pid", 0), item.get("guard_started", "")):
+        return True
+    state = item.get("guard_state", "")
+    if state:
+        try:
+            with open(state, encoding="utf-8") as f:
+                saved = json.load(f) or {}
+                return _same_process(saved.get("exec_pid", 0), saved.get("exec_started", ""))
+        except (OSError, ValueError, TypeError):
+            pass
+    return False
+
+
+class SlackInstanceLock:
+    """One live Slack listener per dog, released by the OS when its process dies."""
+
+    def __init__(self, name: str):
+        safe = re.sub(r"[^a-z0-9_.-]", "_", name.lower())
+        os.makedirs(QUEUE_DIR, exist_ok=True)
+        self.path = os.path.join(QUEUE_DIR, "slack-%s.lock" % safe)
+        self._file = open(self.path, "a+b")
+        self._file.seek(0, os.SEEK_END)
+        if self._file.tell() == 0:
+            self._file.write(b"\0")
+            self._file.flush()
+        self._file.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, IOError) as e:
+            self._file.close()
+            self._file = None
+            raise RuntimeError("Slack dog %s is already running" % name) from e
+
+    def close(self):
+        f = self._file
+        if f is None:
+            return
+        try:
+            f.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        finally:
+            f.close()
+            self._file = None
+
+
 class TaskQueue:
     """FIFO of asks, persisted so a restart does not silently drop work.
 
@@ -449,68 +621,400 @@ class TaskQueue:
     and there is nothing on screen to tell the difference.
     """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, recover_running: bool = False):
         self.path = os.path.join(QUEUE_DIR, "queue-%s.json" % name.lower())
         self._lock = threading.Lock()
         self.items: list[dict] = []
         self.next_id = 1
-        self._load()
+        self.receipts: list[str] = []
+        self._load(recover_running)
 
-    def _load(self):
+    def _load(self, recover_running: bool):
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
-            self.items = d.get("items", [])
-            self.next_id = d.get("next_id", 1)
-        except Exception:
-            self.items, self.next_id = [], 1
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            # This file is the authority for work that may already have made
+            # external changes.  A malformed file is not an empty queue.
+            raise QueuePersistenceError(
+                "cannot read %s; it was left untouched" % self.path) from e
+        if (not isinstance(d, dict) or not isinstance(d.get("items", []), list)
+                or not isinstance(d.get("next_id", 1), int)
+                or not isinstance(d.get("receipts", []), list)):
+            raise QueuePersistenceError("invalid queue data in %s" % self.path)
+        self.items = [dict(item) for item in d.get("items", [])]
+        self.next_id = d.get("next_id", 1)
+        self.receipts = [str(key) for key in d.get("receipts", [])][-5000:]
+        migrated = False
+        # Old queue files predate event_id receipts, but they do retain the
+        # message ts. Tombstone that stable key before Slack can redeliver the
+        # already-accepted mention during this upgrade.
+        for item in self.items:
+            key = _message_source_key(item.get("channel", ""), item.get("ask_ts", ""))
+            if key and key not in self.receipts:
+                self.receipts.append(key)
+                migrated = True
+            elif not item.get("source_id"):
+                try:
+                    queued_at = float(item.get("queued_at", 0) or 0)
+                except (TypeError, ValueError):
+                    queued_at = 0.0
+                legacy = "legacy:%.3f:%s" % (
+                    queued_at,
+                    _legacy_signature(item.get("channel", ""), item.get("thread", ""),
+                                      item.get("user", ""), item.get("text", "")))
+                if legacy not in self.receipts:
+                    self.receipts.append(legacy)
+                    migrated = True
+        self.receipts = self.receipts[-5000:]
+        if recover_running:
+            # A process cannot still own a `running` item after that process has
+            # gone away: the caller holds SlackInstanceLock, so no same-name
+            # worker can still be alive. Do not silently rerun it, though.
+            recovered, discard = False, []
+            for item in self.items:
+                if item.get("state") == "running":
+                    if _execution_alive(item):
+                        # The old listener is gone, but its guard is still
+                        # terminating the execution tree. Never overlap a retry.
+                        item["state"] = "orphaned"
+                    else:
+                        item["state"] = "interrupted"
+                        item["interrupted_at"] = time.time()
+                    recovered = True
+                elif item.get("state") == "orphaned" and not _execution_alive(item):
+                    item["state"] = "interrupted"
+                    item["interrupted_at"] = time.time()
+                    discard.append(item.get("guard_state", ""))
+                    item.pop("guard_pid", None)
+                    item.pop("guard_started", None)
+                    item.pop("guard_state", None)
+                    recovered = True
+                elif item.get("state") == "delivering":
+                    # The Slack post may have landed before the process died.
+                    # Keep the completed result, but require a person to inspect
+                    # the thread before choosing retry (delivery only) or drop.
+                    item["state"] = "delivery_interrupted"
+                    item["interrupted_at"] = time.time()
+                    recovered = True
+            if recovered or migrated:
+                self._write(self.items, self.next_id, self.receipts)
+                for path in discard:
+                    self._discard_guard_state(path)
+        elif migrated:
+            self._write(self.items, self.next_id, self.receipts)
 
-    def _save(self):
+    def _write(self, items: list[dict], next_id: int, receipts: list[str] | None = None):
+        """Atomically persist a proposed state before exposing or acting on it."""
+        tmp = "%s.tmp-%d-%d" % (self.path, os.getpid(), threading.get_ident())
         try:
             os.makedirs(QUEUE_DIR, exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump({"items": self.items, "next_id": self.next_id}, f, indent=2)
-        except Exception:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"items": items, "next_id": next_id,
+                           "receipts": self.receipts if receipts is None else receipts}, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+        except Exception as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise QueuePersistenceError("cannot persist %s" % self.path) from e
+
+    def _commit(self, items: list[dict], next_id: int | None = None,
+                receipts: list[str] | None = None):
+        new_next = self.next_id if next_id is None else next_id
+        new_receipts = self.receipts if receipts is None else receipts
+        self._write(items, new_next, new_receipts)
+        self.items, self.next_id, self.receipts = items, new_next, new_receipts
+
+    def _discard_guard_state(self, path: str):
+        """Remove only an attempt file derived from this exact queue path."""
+        if not path:
+            return
+        full, prefix = os.path.abspath(path), os.path.abspath(self.path) + ".guard-"
+        if not full.startswith(prefix) or os.path.dirname(full) != os.path.dirname(prefix):
+            return
+        try:
+            os.remove(full)
+        except OSError:
             pass
 
-    def add(self, text: str, channel: str, thread: str, user: str, from_dog: bool = False) -> dict:
+    def add(self, text: str, channel: str, thread: str, user: str,
+            from_dog: bool = False, ask_ts: str = "", source_id: str = "") -> dict | None:
         with self._lock:
+            if self._duplicate_locked(source_id, channel, ask_ts, thread, user, text):
+                return None
             item = {"id": self.next_id, "text": text, "channel": channel,
                     "thread": thread, "user": user, "state": "waiting",
                     "from_dog": from_dog,      # kept for `queue`/receipts: who is waiting on this
+                    "ask_ts": ask_ts,
+                    "source_id": source_id,
                     "queued_at": time.time()}
-            self.next_id += 1
-            self.items.append(item)
-            self._save()
-            return item
+            items = [dict(i) for i in self.items] + [item]
+            message_id = _message_source_key(channel, ask_ts)
+            keys = [key for key in (source_id, message_id)
+                    if key and key not in self.receipts]
+            receipts = (self.receipts + keys)[-5000:]
+            self._commit(items, self.next_id + 1, receipts)
+            return self.items[-1]
 
     def take(self) -> dict | None:
         with self._lock:
-            for it in self.items:
-                if it["state"] == "waiting":
-                    it["state"] = "running"
-                    self._save()
-                    return it
+            items = [dict(i) for i in self.items]
+            for n, item in enumerate(items):
+                state = item.get("state", "")
+                # Only an outcome-unknown EXECUTION fences the working tree.
+                # Completed outbox items are independent and must not freeze
+                # later work because Slack had a transient posting problem.
+                if state in ("running", "interrupted", "orphaned"):
+                    return None
+                if state in ("delivery_failed", "delivery_interrupted", "delivering"):
+                    continue
+                if state not in ("waiting", "delivery_ready"):
+                    return None
+                item["state"] = "running" if state == "waiting" else "delivering"
+                self._commit(items)
+                return self.items[n]
             return None
 
     def finish(self, task_id: int):
         with self._lock:
-            self.items = [i for i in self.items if i["id"] != task_id]
-            self._save()
+            self._commit([dict(i) for i in self.items if i["id"] != task_id])
 
-    def drop(self, task_id: int) -> str:
+    def complete(self, task_id: int, text: str, ok: bool) -> dict | None:
+        """Persist a completed run and its answer before trying Slack delivery."""
+        with self._lock:
+            items = [dict(i) for i in self.items]
+            for n, item in enumerate(items):
+                if item["id"] == task_id:
+                    guard_state = item.get("guard_state", "")
+                    # Linearize completion against a durable stop intent. If
+                    # stop won this queue lock, the answer must not overwrite
+                    # it with `delivering` and then delete the task.
+                    if item.get("stop_requested_at"):
+                        item["state"] = "interrupted"
+                        item["interrupted_at"] = time.time()
+                        item.pop("guard_pid", None)
+                        item.pop("guard_started", None)
+                        item.pop("guard_state", None)
+                        self._commit(items)
+                        self._discard_guard_state(guard_state)
+                        return None
+                    item["state"] = "delivering"
+                    item["delivery_text"] = text
+                    item["delivery_ok"] = bool(ok)
+                    item["completed_at"] = time.time()
+                    item.pop("guard_pid", None)
+                    item.pop("guard_started", None)
+                    item.pop("guard_state", None)
+                    self._commit(items)
+                    self._discard_guard_state(guard_state)
+                    return self.items[n]
+            raise QueuePersistenceError("task #%d vanished before completion" % task_id)
+
+    def attach_process(self, task_id: int, pid: int, state_path: str):
+        """Record the execution guard before allowing its child to start."""
+        started = _process_identity(pid)
+        if not started:
+            raise QueuePersistenceError("cannot identify execution guard %s" % pid)
+        with self._lock:
+            items = [dict(i) for i in self.items]
+            for item in items:
+                if item["id"] == task_id:
+                    item["guard_pid"] = int(pid)
+                    item["guard_started"] = started
+                    item["guard_state"] = state_path
+                    self._commit(items)
+                    return
+            raise QueuePersistenceError("task #%d vanished before process attach" % task_id)
+
+    def reap_orphans(self) -> int:
+        """Resolve guards that finished shutting down after their parent died."""
+        with self._lock:
+            items = [dict(i) for i in self.items]
+            changed, discard = 0, []
+            for item in items:
+                if item.get("state") == "orphaned" and not _execution_alive(item):
+                    item["state"] = "interrupted"
+                    item["interrupted_at"] = time.time()
+                    discard.append(item.get("guard_state", ""))
+                    item.pop("guard_pid", None)
+                    item.pop("guard_started", None)
+                    item.pop("guard_state", None)
+                    changed += 1
+            if changed:
+                self._commit(items)
+                for path in discard:
+                    self._discard_guard_state(path)
+            return changed
+
+    def mark_orphaned(self, task_id: int, pid: int):
+        """Fence recovery while an old execution guard is still shutting down."""
+        with self._lock:
+            items = [dict(i) for i in self.items]
+            for item in items:
+                if item["id"] == task_id:
+                    item["state"] = "orphaned"
+                    item["guard_pid"] = int(pid)
+                    self._commit(items)
+                    return
+
+    def delivery_failed(self, task_id: int):
+        with self._lock:
+            items = [dict(i) for i in self.items]
+            for item in items:
+                if item["id"] == task_id:
+                    # A transport timeout cannot tell "not posted" from "Slack
+                    # accepted it and the response was lost". Even a known-good
+                    # post can be followed by a failed queue cleanup. Both are
+                    # outcome-unknown and require inspecting the thread.
+                    item["state"] = "delivery_interrupted"
+                    item["delivery_failed_at"] = time.time()
+                    self._commit(items)
+                    return
+
+    def interrupt(self, task_id: int):
+        """Keep a crashed task, but never guess that repeating it is safe."""
+        with self._lock:
+            items = [dict(i) for i in self.items]
+            for item in items:
+                if item["id"] == task_id:
+                    guard_state = item.get("guard_state", "")
+                    item["state"] = ("delivery_interrupted"
+                                     if item.get("delivery_text") else "interrupted")
+                    item["interrupted_at"] = time.time()
+                    item.pop("guard_pid", None)
+                    item.pop("guard_started", None)
+                    item.pop("guard_state", None)
+                    self._commit(items)
+                    self._discard_guard_state(guard_state)
+                    return
+
+    def _control_receipts_locked(self, source_id: str, channel: str,
+                                 ask_ts: str) -> tuple[list[str], bool]:
+        keys = [key for key in (source_id, _message_source_key(channel, ask_ts)) if key]
+        seen = any(key in self.receipts for key in keys)
+        receipts = list(self.receipts)
+        receipts.extend(key for key in keys if key not in receipts)
+        return receipts[-5000:], seen
+
+    def record_event(self, source_id: str, channel: str, ask_ts: str) -> bool:
+        """Persist a non-task event before ACK; false means it was already handled."""
+        with self._lock:
+            receipts, seen = self._control_receipts_locked(source_id, channel, ask_ts)
+            if seen:
+                return False
+            if receipts != self.receipts:
+                self._commit([dict(item) for item in self.items], receipts=receipts)
+            return True
+
+    def record_stop(self, source_id: str, channel: str, ask_ts: str) -> int:
+        """Atomically bind one stop event to the execution running right now.
+
+        Returns its task id, 0 when there is no execution, and -1 for a
+        duplicate control event. The receipt and target marker share one queue
+        commit, so delayed redelivery can never stop a later task.
+        """
+        with self._lock:
+            receipts, seen = self._control_receipts_locked(source_id, channel, ask_ts)
+            if seen:
+                return -1
+            items = [dict(item) for item in self.items]
+            target = next((item for item in items if item.get("state") == "running"), None)
+            if target is not None:
+                target["stop_requested_at"] = time.time()
+                if source_id:
+                    target["stop_source_id"] = source_id
+            if target is not None or receipts != self.receipts:
+                self._commit(items, receipts=receipts)
+            return int(target["id"]) if target is not None else 0
+
+    def stop_requested(self, task_id: int) -> bool:
+        with self._lock:
+            return any(item.get("id") == task_id and item.get("stop_requested_at")
+                       for item in self.items)
+
+    def retry(self, task_id: int, confirm_delivery: bool = False,
+              source_id: str = "", channel: str = "", ask_ts: str = "") -> str:
+        """Explicitly put an outcome-unknown task back at the head of the FIFO."""
+        with self._lock:
+            items = [dict(i) for i in self.items]
+            receipts, seen = self._control_receipts_locked(source_id, channel, ask_ts)
+            if seen:
+                return "that retry event was already handled"
+
+            def finish_control(answer: str, changed: bool = False) -> str:
+                if changed or receipts != self.receipts:
+                    self._commit(items, receipts=receipts)
+                return answer
+
+            for item in items:
+                if item["id"] != task_id:
+                    continue
+                if item["state"] == "orphaned":
+                    return finish_control(
+                        "#%d's old process tree is still shutting down — wait." % task_id)
+                if item["state"] in ("running", "delivering"):
+                    return finish_control("#%d is still running — say `stop` first." % task_id)
+                if item["state"] in ("waiting", "delivery_ready"):
+                    return finish_control("#%d is already waiting" % task_id)
+                if item["state"] == "interrupted":
+                    item["state"] = "waiting"
+                    answer = "retrying #%d" % task_id
+                elif item["state"] in ("delivery_failed", "delivery_interrupted"):
+                    if not confirm_delivery:
+                        return finish_control(
+                            "#%d has a completed answer whose Slack delivery is uncertain. "
+                            "Inspect the thread, then say `retry delivery %d` or `drop %d`." %
+                            (task_id, task_id, task_id))
+                    item["state"] = "delivery_ready"
+                    item.pop("delivery_failed_at", None)
+                    answer = ("retrying delivery for #%d (the work will not run again; "
+                              "the Slack reply may repeat)" % task_id)
+                else:
+                    return finish_control(
+                        "#%d cannot be retried from %s" % (task_id, item["state"]))
+                item.pop("interrupted_at", None)
+                item.pop("stop_requested_at", None)
+                item.pop("stop_source_id", None)
+                # Retried work goes first: it already waited once, and leaving it
+                # behind newer asks makes recovery look as if it did nothing.
+                items.remove(item)
+                items.insert(0, item)
+                return finish_control(answer, changed=True)
+            return finish_control("no #%d in the queue" % task_id)
+
+    def drop(self, task_id: int, source_id: str = "", channel: str = "",
+             ask_ts: str = "") -> str:
         """Remove a task that has not started. A running one is not dropped from
         under itself — `stop` is the word for that, and conflating the two is how
         someone cancels a half-written commit by accident."""
         with self._lock:
-            for it in self.items:
-                if it["id"] == task_id:
-                    if it["state"] == "running":
-                        return "#%d is already running — say `stop` to interrupt it." % task_id
-                    self.items.remove(it)
-                    self._save()
-                    return "dropped #%d" % task_id
-            return "no #%d in the queue" % task_id
+            items = [dict(i) for i in self.items]
+            receipts, seen = self._control_receipts_locked(source_id, channel, ask_ts)
+            if seen:
+                return "that drop event was already handled"
+
+            def finish_control(answer: str, changed: bool = False) -> str:
+                if changed or receipts != self.receipts:
+                    self._commit(items, receipts=receipts)
+                return answer
+
+            for item in items:
+                if item["id"] == task_id:
+                    if item["state"] == "orphaned":
+                        return finish_control(
+                            "#%d's old process tree is still shutting down — wait." % task_id)
+                    if item["state"] in ("running", "delivering"):
+                        return finish_control(
+                            "#%d is already running — say `stop` to interrupt it." % task_id)
+                    items.remove(item)
+                    return finish_control("dropped #%d" % task_id, changed=True)
+            return finish_control("no #%d in the queue" % task_id)
 
     def listing(self) -> str:
         with self._lock:
@@ -518,13 +1022,66 @@ class TaskQueue:
                 return "queue is empty"
             out = []
             for it in self.items:
-                mark = "▶" if it["state"] == "running" else "·"
+                mark = ({"running": "▶", "orphaned": "▶", "delivering": "▶", "interrupted": "⚠",
+                         "delivery_failed": "↥", "delivery_interrupted": "↥",
+                         "delivery_ready": "↥"}.get(it["state"], "·"))
                 out.append("%s #%d  %s" % (mark, it["id"], it["text"][:70]))
             return "\n".join(out)
 
     def waiting(self) -> int:
         with self._lock:
             return sum(1 for i in self.items if i["state"] == "waiting")
+
+    def unresolved(self) -> int:
+        with self._lock:
+            return sum(1 for i in self.items if i["state"] in (
+                "interrupted", "orphaned", "delivery_failed", "delivery_interrupted"))
+
+    def has_receipt(self, source_id: str) -> bool:
+        with self._lock:
+            return bool(source_id and source_id in self.receipts)
+
+    def _duplicate_locked(self, source_id: str, channel: str, ask_ts: str,
+                          thread: str, user: str, text: str) -> bool:
+        """Check exact receipts and atomically retire one legacy fuzzy marker."""
+        message_id = _message_source_key(channel, ask_ts)
+        if ((source_id and source_id in self.receipts)
+                or (message_id and message_id in self.receipts)):
+            return True
+
+        legacy = _matching_legacy_receipt(
+            self.receipts, channel, thread, user, text, ask_ts)
+        if not legacy:
+            return False
+
+        # Once Slack supplies exact identifiers, consume the fuzzy marker.  A
+        # future distinct event with identical text must be allowed through.
+        keys = [key for key in (source_id, message_id) if key]
+        if keys:
+            items = [dict(item) for item in self.items]
+            for item in items:
+                try:
+                    queued_at = float(item.get("queued_at", 0) or 0)
+                except (TypeError, ValueError):
+                    queued_at = 0.0
+                marker = "legacy:%.3f:%s" % (
+                    queued_at,
+                    _legacy_signature(item.get("channel", ""), item.get("thread", ""),
+                                      item.get("user", ""), item.get("text", "")))
+                if marker == legacy:
+                    item["source_id"] = source_id
+                    item["ask_ts"] = ask_ts
+                    break
+            receipts = [receipt for receipt in self.receipts if receipt != legacy]
+            receipts.extend(key for key in keys if key not in receipts)
+            self._commit(items, receipts=receipts[-5000:])
+        return True
+
+    def is_duplicate(self, source_id: str, channel: str, ask_ts: str,
+                     thread: str, user: str, text: str) -> bool:
+        """Durably recognize a Socket Mode retry before acknowledging it."""
+        with self._lock:
+            return self._duplicate_locked(source_id, channel, ask_ts, thread, user, text)
 
 
 # ---------------------------------------------------------------------------
@@ -777,33 +1334,237 @@ class Worker(threading.Thread):
         except Exception:
             self.me = ""
         self.current: subprocess.Popen | None = None
+        self._current_item: dict | None = None
+        self._guard = None
+        self._process_lock = threading.Lock()
         self._wake = threading.Event()
+        self._shutdown = threading.Event()
+        self._stop_requested = threading.Event()
+        # A terminal queue write can fail after its process tree is already
+        # gone.  Keep that reconciliation in memory and fence all later work
+        # until the durable state catches up; otherwise one transient disk
+        # error leaves a forever-`running` row in an otherwise live listener.
+        self._pending_recovery: tuple[str, int, int] | None = None
 
     def nudge(self):
         self._wake.set()
 
-    def stop_current(self) -> str:
-        p = self.current
-        if not p or p.poll() is not None:
+    def shutdown(self):
+        """End the worker loop; primarily useful to make lifecycle tests finite."""
+        self._shutdown.set()
+        self._wake.set()
+
+    def stop_current(self, source_id: str = "", channel: str = "",
+                     ask_ts: str = "") -> str:
+        # Bind the source event to the queue's current running id first. q.take
+        # commits `running` before returning, so this also sees the narrow claim
+        # window in which _current_item has not yet been published. Only after
+        # that receipt+target commit may cancellation touch a process.
+        target_id = self.q.record_stop(source_id, channel, ask_ts)
+        if target_id < 0:
+            return "that stop event was already handled"
+        if not target_id:
             return "nothing running"
+        self._stop_requested.set()
+        with self._process_lock:
+            # `_current_item` is set as soon as take() claims it, before roster
+            # lookup or spawn. This closes the old claim→Popen stop race.
+            if (self._current_item is None
+                    or int(self._current_item.get("id", 0)) != target_id):
+                self._stop_requested.clear()
+                return "stop recorded for #%d; its owner is recovering" % target_id
+            guard = self._guard
+            self._guard = None
+            if guard is not None:
+                try:
+                    guard.close()       # EOF makes slackguard terminate the whole tree
+                except OSError:
+                    pass
+            return "asked task #%d to stop" % target_id
+
+    def _abort_current(self) -> int:
+        """Close the parent-life pipe and wait for slackguard to kill its tree.
+
+        Returns a still-live guard PID only when shutdown itself timed out.
+        """
+        with self._process_lock:
+            guard, self._guard = self._guard, None
+            process = self.current
+            if guard is not None:
+                try:
+                    guard.close()
+                except OSError:
+                    pass
+        if process is None:
+            return 0
         try:
-            p.terminate()
-            return "asked it to stop"
+            if process.poll() is None:
+                process.wait(timeout=15)
+        except (subprocess.TimeoutExpired, OSError):
+            return int(getattr(process, "pid", 0) or 0)
+        return 0
+
+    def _defer_recovery(self, action: str, task_id: int, pid: int = 0):
+        self._pending_recovery = (action, int(task_id), int(pid or 0))
+        self._wake.set()
+
+    def _reconcile_pending(self) -> bool:
+        """Retry a failed terminal write; false means later work stays fenced."""
+        pending = self._pending_recovery
+        if pending is None:
+            return True
+        action, task_id, pid = pending
+        try:
+            if action == "orphan":
+                self.q.mark_orphaned(task_id, pid)
+            elif action == "delivery":
+                self.q.delivery_failed(task_id)
+            else:
+                self.q.interrupt(task_id)
         except Exception as e:
-            return "could not stop it: %s" % e
+            print("[slack] queue reconciliation for task #%d failed: %s" %
+                  (task_id, e), file=sys.stderr)
+            return False
+        if self._pending_recovery == pending:
+            self._pending_recovery = None
+        return True
+
+    def _should_stop(self, item: dict) -> bool:
+        return self._stop_requested.is_set() or self.q.stop_requested(item["id"])
 
     def run(self):
-        while True:
-            item = self.q.take()
+        while not self._shutdown.is_set():
+            if not self._reconcile_pending():
+                self._wake.wait(timeout=5)
+                self._wake.clear()
+                continue
+            item = None
+            try:
+                self.q.reap_orphans()
+                # Claim and publish the current item under the same lock that
+                # stop_current reads. There must be no durable-running window
+                # in which `stop` can truthfully-but-wrongly say "nothing".
+                with self._process_lock:
+                    item = self.q.take()
+                    if item is not None and item.get("state") != "delivering":
+                        self._current_item = item
+            except QueuePersistenceError as e:
+                # A claim that was not durably recorded must never execute. Keep
+                # the thread alive so a transient disk problem can recover.
+                print("[slack] queue claim failed: %s" % e, file=sys.stderr)
+                self._wake.wait(timeout=5)
+                self._wake.clear()
+                continue
             if item is None:
                 self._wake.wait(timeout=5)
                 self._wake.clear()
                 continue
-            self._run_one(item)
+            if item.get("state") == "delivering":
+                self._deliver_safely(item)
+            else:
+                self._run_safely(item)
+
+    def _run_safely(self, item):
+        """Contain one bad task so the Slack connection cannot outlive its worker.
+
+        `_run_one` normally turns provider failures into an ordinary Slack answer.
+        This boundary is for bugs in the worker itself.  Their outcome is unknown,
+        so the item stays visible and requires an explicit retry rather than being
+        repeated behind the owner's back.
+        """
+        with self._process_lock:
+            self._current_item = item
+        try:
+            try:
+                completed = self._run_one(item)
+                if completed is not None:
+                    self._deliver_safely(completed)
+            except Exception as e:
+                print("[slack] task #%s crashed: %s: %s" %
+                      (item.get("id", "?"), type(e).__name__, e), file=sys.stderr)
+                live_guard = self._abort_current()
+                try:
+                    if live_guard:
+                        self.q.mark_orphaned(item["id"], live_guard)
+                    else:
+                        self.q.interrupt(item["id"])
+                except Exception as qe:
+                    print("[slack] could not persist interrupted task #%s: %s" %
+                          (item.get("id", "?"), qe), file=sys.stderr)
+                    self._defer_recovery(
+                        "orphan" if live_guard else "interrupt", item["id"], live_guard)
+                ch, th = item.get("channel", ""), item.get("thread", "")
+                ask = item.get("ask_ts", "")
+                react(self.token, ch, ask, SEEN, on=False)
+                react(self.token, ch, ask, FAILED)
+                # A reply addressed to another bot is itself a new ask. Do not
+                # turn an internal crash into a delegation loop; people get a ping.
+                back = ("<@%s> " % item["user"]
+                        if item.get("user") and not item.get("from_dog") else "")
+                say(self.token, ch,
+                    ("%s⚠️ I hit an internal worker error. I kept task #%d as interrupted "
+                     "instead of guessing whether it is safe to run twice. Say `retry %d` "
+                     "or `drop %d`." % (back, item["id"], item["id"], item["id"])),
+                    th, broadcast=True)
+        finally:
+            with self._process_lock:
+                guard, self._guard = self._guard, None
+                self.current = None
+                self._current_item = None
+                if guard is not None:
+                    try:
+                        guard.close()
+                    except OSError:
+                        pass
+            self._stop_requested.clear()
+
+    def _deliver_safely(self, item):
+        """Deliver a persisted result without ever rerunning the completed work."""
+        try:
+            self._deliver_one(item)
+        except Exception as e:
+            print("[slack] delivery for task #%s failed: %s: %s" %
+                  (item.get("id", "?"), type(e).__name__, e), file=sys.stderr)
+            try:
+                self.q.delivery_failed(item["id"])
+            except Exception as qe:
+                print("[slack] could not persist failed delivery #%s: %s" %
+                      (item.get("id", "?"), qe), file=sys.stderr)
+                self._defer_recovery("delivery", item["id"])
+
+    def _deliver_one(self, item):
+        ch, th, ask = item["channel"], item["thread"], item.get("ask_ts", "")
+        posted = say(self.token, ch, item.get("delivery_text") or "(no output)",
+                     th, broadcast=True)
+        react(self.token, ch, ask, SEEN, on=False)
+        react(self.token, ch, ask,
+              (DONE if item.get("delivery_ok") else FAILED) if posted else FAILED)
+        if posted:
+            self.q.finish(item["id"])
+        else:
+            # The run is complete. Keep its answer as an outbox item; retrying
+            # this state sends only that answer and cannot repeat tool effects.
+            self.q.delivery_failed(item["id"])
+
+    def _stop_task(self, item):
+        """Persist the outcome-unknown result of an explicit stop."""
+        ch, th, ask = item["channel"], item["thread"], item.get("ask_ts", "")
+        self.q.interrupt(item["id"])
+        react(self.token, ch, ask, SEEN, on=False)
+        react(self.token, ch, ask, FAILED)
+        back = ("<@%s> " % item["user"]
+                if item.get("user") and not item.get("from_dog") else "")
+        say(self.token, ch,
+            ("%sstopped; task #%d is interrupted because it may have made partial changes. "
+             "Say `retry %d` or `drop %d`." %
+             (back, item["id"], item["id"], item["id"])), th, broadcast=True)
+        return None
 
     def _run_one(self, item):
         ch, th = item["channel"], item["thread"]
         ask = item.get("ask_ts", "")            # the message that asked — the state goes ON it
+        if self._should_stop(item):
+            return self._stop_task(item)
         # `run` takes the task POSITIONALLY. It was passed as --task, which argparse rejects with
         # exit 2 before a single token is spent — so every ask this bot ever accepted failed, while
         # the thread filled with "on it" and "queued" and looked for all the world like it was
@@ -828,30 +1589,85 @@ class Worker(threading.Thread):
         mates = roster(self.token, ch)
         env = dict(os.environ,
                    COLLIE_IDENTITY=identity_text(self.dog, roster_line(mates, self.me)))
+        if self._should_stop(item):
+            return self._stop_task(item)
         try:
             # windowless: the dog runs under pythonw, which has no console of its own, so Windows
             # hands every child a brand new one. One black box per task, popping up over whatever
             # the owner of the machine was doing.
             from . import plat as _plat
-            self.current = subprocess.Popen(
-                cmd, cwd=self.cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace", **_plat.no_window_kwargs())
+            guard_state = "%s.guard-%d-%d.json" % (
+                self.q.path, item["id"], time.time_ns())
+            guarded = [sys.executable, "-m", "harness.slackguard",
+                       "--state", guard_state, "--"] + cmd
+            with self._process_lock:
+                cancelled = self._should_stop(item)
+                if not cancelled:
+                    self.current = subprocess.Popen(
+                        guarded, cwd=self.cwd, env=env, stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, encoding="utf-8", errors="replace", **_plat.no_window_kwargs())
+                    self._guard = self.current.stdin
+            if cancelled:
+                return self._stop_task(item)
+
+            # The guard cannot start the actual CLI until its PID is durable.
+            # If this write fails, finally closes stdin and the guard exits 75.
+            self.q.attach_process(item["id"], self.current.pid, guard_state)
+            with self._process_lock:
+                if self._should_stop(item):
+                    guard, self._guard = self._guard, None
+                    if guard is not None:
+                        guard.close()
+                else:
+                    self._guard.write("go\n")
+                    self._guard.flush()
+                # communicate() closes Popen.stdin automatically. Keep the
+                # actual pipe in self._guard so it remains open as a parent-life
+                # signal until the guarded process exits.
+                self.current.stdin = None
             out, err = self.current.communicate()
             rc = self.current.returncode
+            # A requested stop commonly makes the guard return the same 76 an
+            # unexpected signal uses. The durable target marker decides which
+            # meaning won; classify it before the generic abrupt-tree check.
+            if self._should_stop(item):
+                return self._stop_task(item)
+            if rc == GUARD_INTERRUPTED_EXIT:
+                raise RuntimeError(
+                    "the guarded execution tree ended abruptly; its effects are unknown")
         except Exception as e:
+            if self.current is not None:
+                # Once the guard exists, an orchestration error has an unknown
+                # execution outcome. Let the outer boundary stop it and preserve
+                # an explicit recovery choice; never report it as a normal run.
+                raise
             out, err, rc = "", str(e), -1
-        finally:
-            self.current = None
+
+        stopped = self._should_stop(item)
+        if stopped:
+            return self._stop_task(item)
 
         out, err = (out or "").strip(), (err or "").strip()
         # The answer is a field now, so nothing else on either stream can be mistaken for it: a
         # huggingface_hub warning and the run's own stats line used to ride into the channel as
         # part of the reply, and the warning is what the person then asked about.
         res = {}
+        valid_envelope = False
         try:
-            res = json.loads(out) if out.startswith("{") else {}
+            parsed = json.loads(out) if out.startswith("{") else None
+            if isinstance(parsed, dict):
+                res = parsed
+                valid_envelope = True
         except Exception:
             res = {}
+        if not valid_envelope:
+            # The JSON envelope is the executor's completion record. A killed
+            # guard itself cannot translate its child's signal to 76, so an
+            # empty/malformed stream must also remain outcome-unknown rather
+            # than being posted and deleted as a completed provider failure.
+            raise RuntimeError(
+                "the guarded run exited without a valid completion envelope")
         if res.get("session"):
             # this thread continues that run — for THIS dog; a packmate in the same thread keeps
             # its own, because a session is a conversation in a particular repository.
@@ -869,11 +1685,6 @@ class Worker(threading.Thread):
         # which is the part anyone reads.
         if len(out) > 3500:
             out = "…(trimmed)…\n" + out[-3500:]
-        # How it ended goes on the ask, not into the channel as another line. The task NUMBER goes
-        # nowhere near a pack: it indexes this dog's own queue, and a peer that read one went
-        # hunting through its repository for a task that only ever existed over here.
-        react(self.token, ch, ask, SEEN, on=False)
-        react(self.token, ch, ask, DONE if rc == 0 else FAILED)
         # Addressed to whoever asked — dog or person, the same way. For a dog it is the difference
         # between an answer and no answer: it reads a channel only through its own mentions, so work
         # it delegated would come back somewhere it cannot see. For a person it is the difference
@@ -890,9 +1701,11 @@ class Worker(threading.Thread):
         # when the answer was raw CLI output with stats and warnings in it; --print made the answer
         # prose, and prose in a fence loses its wrapping, its emphasis and its links as well.
         # Whatever the model fences itself still renders as code.
-        say(self.token, ch, "%s%s" % (back, keep_known_mentions(out, mates) or "(no output)"),
-            th, broadcast=True)
-        self.q.finish(item["id"])
+        delivery = "%s%s" % (back, keep_known_mentions(out, mates) or "(no output)")
+        completed = self.q.complete(item["id"], delivery, rc == 0)
+        if completed is None:
+            return self._stop_task(item)
+        return completed
 
 
 # ---------------------------------------------------------------------------
@@ -900,6 +1713,17 @@ class Worker(threading.Thread):
 # ---------------------------------------------------------------------------
 
 MENTION_RE = re.compile(r"<@[UW][A-Z0-9]+>")
+
+
+def slack_event_key(payload: dict, event: dict) -> str:
+    """A stable source id across Socket Mode redelivery and process restart."""
+    event_id = str(payload.get("event_id") or "").strip()
+    if event_id:
+        return "event:" + event_id
+    # Older/test payloads may not carry event_id. A Slack message timestamp is
+    # stable even when the envelope carrying it is replaced during redelivery.
+    ch, ts = str(event.get("channel") or ""), str(event.get("ts") or "")
+    return _message_source_key(ch, ts)
 
 # ---------------------------------------------------------------------------
 # The pack, talking to itself
@@ -931,21 +1755,28 @@ PACK_LAPS = 2                      # times one particular dog may reach this one
 PACK_HOPS = 8                      # dog-to-dog turns in a thread, however many dogs are involved
 
 
-def pack_gate(state: dict, thread: str, peer: str,
+def pack_gate(state: dict, thread: str, peer: str, source_id: str = "",
               laps: int = PACK_LAPS, hops: int = PACK_HOPS) -> str:
-    """Record a dog-to-dog turn. "" to go ahead, else the reason to stop, in words."""
-    t = state.setdefault(thread, {"n": 0, "edges": {}})
+    """Record one dog turn, idempotently across Socket Mode redelivery."""
+    t = state.setdefault(thread, {"n": 0, "edges": {}, "sources": {}})
     if len(state) > 500:                       # a process that runs for weeks cannot grow forever
         state.pop(next(iter(state)), None)
+    sources = t.setdefault("sources", {})
+    if source_id and source_id in sources:
+        return sources[source_id]
     t["n"] += 1
     t["edges"][peer] = t["edges"].get(peer, 0) + 1
     if t["edges"][peer] > laps:
-        return ("we have been round this %d times in this thread — stopping before it becomes a "
-                "loop. A person, or a new thread, starts it again." % laps)
-    if t["n"] > hops:
-        return ("that is %d hands-off in one thread — stopping here; whatever this was meant to "
-                "reach, it is not reaching it." % hops)
-    return ""
+        result = ("we have been round this %d times in this thread — stopping before it becomes a "
+                  "loop. A person, or a new thread, starts it again." % laps)
+    elif t["n"] > hops:
+        result = ("that is %d hands-off in one thread — stopping here; whatever this was meant to "
+                  "reach, it is not reaching it." % hops)
+    else:
+        result = ""
+    if source_id:
+        sources[source_id] = result
+    return result
 
 
 def provider_hint() -> str:
@@ -1442,6 +2273,14 @@ def main(argv=None) -> int:
 
     ident = load_identity(args.name, args.autonomy)
 
+    # Acquire before queue recovery. Without the OS-held lock, a second copy
+    # could mistake the first copy's live task for a crashed one and run it twice.
+    try:
+        instance_lock = SlackInstanceLock(ident["name"])
+    except RuntimeError as e:
+        print("[slack] %s" % e, file=sys.stderr)
+        return 1
+
     # Into those channels, under its own steam. Not fatal when it fails: a private channel it was
     # already invited to works perfectly, and a dog that refuses to start over a channel it can
     # already hear would be trading a working pack for a tidy rule.
@@ -1452,7 +2291,7 @@ def main(argv=None) -> int:
         else:
             print("[slack] in %s" % ch)
 
-    q = TaskQueue(ident["name"])
+    q = TaskQueue(ident["name"], recover_running=True)
     worker = Worker(q, ident, bot_token, args.cwd, args.provider)
     worker.start()
 
@@ -1469,7 +2308,7 @@ def main(argv=None) -> int:
     print(who.replace("*", ""))
     if args.announce:
         first = ident.pop("_fresh", False)
-        hello = who + ("\n_reporting in. I picked the name myself — say `rename <name>` if you would rather._"
+        hello = who + ("\n_reporting in. I picked the name used by my queue, Slack app, and launcher._"
                        if first else "\n_reporting in._")
         say(bot_token, args.announce, hello)
 
@@ -1511,25 +2350,31 @@ def main(argv=None) -> int:
                     continue
 
                 env_id = env.get("envelope_id")
-                if env_id:
-                    # Ack first and always. Slack re-delivers anything unacked
-                    # within three seconds, and an ack sent *after* the work would
-                    # mean every slow task runs twice.
+                def acknowledge(remember: bool = True):
+                    """Ack quickly, but only after a new task is durably queued."""
+                    if not env_id:
+                        return
+                    if remember and env_id not in seen:
+                        seen.add(env_id)
+                        seen_order.append(env_id)
+                        if len(seen_order) > 500:
+                            seen.discard(seen_order.pop(0))
                     try:
                         ws.send_text(json.dumps({"envelope_id": env_id}))
                     except Exception:
                         pass
-                    if env_id in seen:
-                        continue
-                    seen.add(env_id)
-                    seen_order.append(env_id)
-                    if len(seen_order) > 500:
-                        seen.discard(seen_order.pop(0))
+
+                if env_id and env_id in seen:
+                    acknowledge(remember=False)
+                    continue
 
                 if env.get("type") != "events_api":
+                    acknowledge()
                     continue
-                event = (env.get("payload") or {}).get("event") or {}
+                payload = env.get("payload") or {}
+                event = payload.get("event") or {}
                 if event.get("type") != "app_mention":
+                    acknowledge()
                     continue
 
                 # Strip only THIS dog's own mention. Everyone else's is the ask's ADDRESSING
@@ -1546,15 +2391,29 @@ def main(argv=None) -> int:
                 th = event.get("thread_ts") or event.get("ts") or ""
                 user = event.get("user", "")
                 low = text.lower()
+                source_id = slack_event_key(payload, event)
+
+                # A task receipt outlives both the queue item and this process.
+                # ACK its redelivery, but never create a second local task id.
+                if q.is_duplicate(source_id, ch, event.get("ts", ""), th, user, text):
+                    acknowledge()
+                    continue
 
                 # Another dog may ask; this dog may not ask itself. Self-mention is the one loop
                 # with no bound — it re-triggers on its own reply and never needs a second party.
                 peer = event.get("bot_id", "")
                 if (peer and peer == my_bot) or (user and user == my_user):
+                    acknowledge()
                     continue
                 if peer:
-                    stop = pack_gate(pack, th, peer)
+                    stop = pack_gate(pack, th, peer, source_id=source_id)
                     if stop:
+                        # Persist the refusal before ACK. Otherwise an ACK loss
+                        # plus listener restart clears the in-memory lap count,
+                        # and the exact event rejected as a loop can redeliver
+                        # as apparently fresh executable work.
+                        q.record_event(source_id, ch, event.get("ts", ""))
+                        acknowledge()
                         # Said once, to the dog that asked, and then not again: silence is how a
                         # bounded exchange looks identical to a broken one.
                         if not pack[th].get("said"):
@@ -1567,40 +2426,96 @@ def main(argv=None) -> int:
                 # that goes silent reads as broken, and someone will debug it by
                 # inviting it somewhere else.
                 if channels and ch not in channels:
+                    acknowledge()
                     say(bot_token, ch, "I only work in the channel I was set up in.", th)
                     continue
                 if allowed and user not in allowed:
+                    acknowledge()
                     say(bot_token, ch, "I take work from %s here." %
                         ", ".join("<@%s>" % u for u in sorted(allowed)), th)
                     continue
 
                 if low.startswith("rename "):
-                    new = text.split(None, 1)[1].strip()[:24]
-                    if not new.isalnum():
-                        say(bot_token, ch, "a name with letters and digits only, please", th)
-                    else:
-                        load_identity(name=new)
-                        say(bot_token, ch,
-                            "I answer to *%s* now — restart me so Slack sees it too." % new, th)
+                    # The display name is also the stable key for credentials,
+                    # queue, instance lock and autostart. Changing only identity
+                    # strands old work and lets a new listener bypass its guard.
+                    # Provisioning a new named dog is an explicit offline
+                    # migration, never a live chat-side mutation.
+                    reply = ("I did not rename this live dog: its name owns its Slack app, queue, "
+                             "lock, and launcher. Provision the new name with `collie slack setup "
+                             "--name <new-name>` and move work only after this queue is empty.")
+                    q.record_event(source_id, ch, event.get("ts", ""))
+                    acknowledge()
+                    say(bot_token, ch, reply, th)
                 elif low in ("who", "who?", "status"):
-                    say(bot_token, ch, "%s\n%d waiting" % (who, q.waiting()), th)
+                    reply = "%s\n%d waiting · %d unresolved" % (
+                        who, q.waiting(), q.unresolved())
+                    q.record_event(source_id, ch, event.get("ts", ""))
+                    acknowledge()
+                    say(bot_token, ch, reply, th)
                 elif low in ("queue", "q", "queue?"):
-                    say(bot_token, ch, "```\n%s\n```" % q.listing(), th)
+                    reply = "```\n%s\n```" % q.listing()
+                    q.record_event(source_id, ch, event.get("ts", ""))
+                    acknowledge()
+                    say(bot_token, ch, reply, th)
                 elif low == "stop":
-                    say(bot_token, ch, worker.stop_current(), th)
+                    # Latch cancellation before ACK. If the listener dies in
+                    # the tiny gap after this, closing its pipe is itself the
+                    # process-tree stop and recovery preserves `interrupted`.
+                    reply = worker.stop_current(
+                        source_id, ch, event.get("ts", ""))
+                    acknowledge()
+                    say(bot_token, ch, reply, th)
                 elif low.startswith("drop "):
                     try:
-                        say(bot_token, ch, q.drop(int(low.split()[1])), th)
+                        reply = q.drop(int(low.split()[1]), source_id=source_id,
+                                       channel=ch, ask_ts=event.get("ts", ""))
                     except (ValueError, IndexError):
-                        say(bot_token, ch, "say `drop <id>` — the ids are in `queue`", th)
+                        reply = "say `drop <id>` — the ids are in `queue`"
+                        q.record_event(source_id, ch, event.get("ts", ""))
+                    # The queue mutation is durable before Slack is told the
+                    # command was accepted. A crash cannot resurrect a dropped
+                    # waiting task and execute it after restart.
+                    acknowledge()
+                    say(bot_token, ch, reply, th)
+                elif low.startswith("retry "):
+                    try:
+                        words = low.split()
+                        delivery_retry = len(words) == 3 and words[1] == "delivery"
+                        task_id = int(words[2] if delivery_retry else words[1])
+                        if len(words) != (3 if delivery_retry else 2):
+                            raise ValueError
+                        reply = q.retry(task_id, confirm_delivery=delivery_retry,
+                                        source_id=source_id, channel=ch,
+                                        ask_ts=event.get("ts", ""))
+                        worker.nudge()
+                    except (ValueError, IndexError):
+                        reply = ("say `retry <id>`, or `retry delivery <id>` "
+                                 "after checking the thread")
+                        q.record_event(source_id, ch, event.get("ts", ""))
+                    acknowledge()
+                    say(bot_token, ch, reply, th)
                 elif not text:
+                    q.record_event(source_id, ch, event.get("ts", ""))
+                    acknowledge()
                     say(bot_token, ch, "%s here. Ask me something, or say `queue`." % ident["name"], th)
                 else:
-                    item = q.add(text, ch, th, user, from_dog=bool(peer))
+                    try:
+                        item = q.add(text, ch, th, user, from_dog=bool(peer),
+                                     ask_ts=event.get("ts", ""), source_id=source_id)
+                    except QueuePersistenceError as e:
+                        print("[slack] could not queue ask: %s" % e, file=sys.stderr)
+                        say(bot_token, ch,
+                            "I could not save that task safely, so I did not start it.", th)
+                        continue
+                    # Durable enqueue precedes ACK: a crash can cause a retry,
+                    # but the source receipt turns that retry into a no-op.
+                    acknowledge()
+                    if item is None:
+                        continue
                     # The ask's OWN ts, kept on the item so the worker can mark that message rather
                     # than post a line under it. `queued #N` and `on it — #N` are gone: two messages
                     # narrating one fact, in a channel people are trying to read.
-                    item["ask_ts"] = event.get("ts", "")
                     react(bot_token, ch, item["ask_ts"], SEEN)
                     worker.nudge()          # after the ts is stored, or the worker can beat it there
         except Exception as e:
