@@ -349,6 +349,40 @@ BOOT = os.urandom(8).hex()
 # until the panel's "开启远程" toggle lazily creates one via _ensure_remote().
 REMOTE = None
 
+# WHICH DOG this server speaks for. `collie web --name Rowan`.
+#
+# The pack made a machine the wrong unit. One laptop can run several dogs — that is what the kennel
+# is for, and they work in different repositories — so a phone that has paired with "your Mac" cannot
+# say which of them it is about to task. Slack solved this with one app per dog; here it is one
+# server per dog, and this is the name it answers to.
+DOG_NAME = ""
+
+
+def whoami() -> dict:
+    """Who is on the other end of this connection — for a phone that has paired with several.
+
+    Deliberately does NOT report an autonomy. Autonomy is enforced by `collie slack` when it spawns
+    a run (AUTONOMY_MODE -> the gate's mode); this server spawns runs on its own terms and would be
+    stating a limit it does not keep. A sentence in a greeting that nothing enforces is the exact
+    defect that was just taken out of the Slack side, and it is not worth re-introducing here for
+    the sake of a fuller-looking payload.
+    """
+    from . import slackbot
+    name = DOG_NAME
+    if not name:
+        # Unnamed is a real answer, not a guess. With one dog in the kennel the choice is obvious;
+        # with several, picking one would be indistinguishable from picking the wrong one, and the
+        # phone can fall back to the machine label — which is what it shows today.
+        try:
+            dogs = list(slackbot.load_kennel())
+            name = dogs[0] if len(dogs) == 1 else ""
+        except Exception:
+            name = ""
+    from . import __version__ as ver
+    return {"name": name, "machine": slackbot.machine_label(), "os": slackbot.os_label(),
+            "fingerprint": slackbot.fingerprint(), "repo": os.getcwd(), "version": ver,
+            "avatar": "/api/avatar.png"}
+
 
 def _ensure_remote(port):
     """Lazily build the RemoteState so ANY `collie web` (incl. the desktop app) can turn remote on
@@ -820,6 +854,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ver":
                 # non-secret per-process id; a long-lived desktop page polls this and reloads when it changes
                 return self._send_html(BOOT.encode(), 200, "text/plain; charset=utf-8")
+            if path == "/api/whoami":
+                # Behind the same pairing gate as everything else: which dog this is, and which
+                # repository it is standing in, is not public.
+                return self._send_json(whoami())
+            if path == "/api/avatar.png":
+                return self._serve_avatar()
             if path == "/api/tree":
                 return self._serve_tree(urllib.parse.parse_qs(parsed.query))
             if path == "/api/repos":
@@ -1683,6 +1723,39 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._send_html(b"logo missing", 404, "text/plain; charset=utf-8")
 
+    def _serve_avatar(self):
+        """This dog's face, drawn here rather than re-implemented on the client.
+
+        The phone needs a picture per dog to make a switcher worth looking at, and the obvious
+        shortcut — port the derivation (sha256 of the name -> coat, plate) into Swift — is two
+        implementations of one identity, which drift and then show the same dog two different
+        colours on two screens. One generator, served. An unnamed server falls back to the plain
+        collie mark: no name, no face of its own, and inventing one would be a lie the switcher
+        then teaches people to recognise.
+        """
+        name = whoami().get("name") or ""
+        body = b""
+        if name:
+            try:
+                from . import avatar
+                body = avatar.png(name)
+            except Exception:
+                body = b""
+        if not body:
+            try:
+                with open(os.path.join(HERE, "webui", "collie-icon-512.png"), "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self._send_html(b"no avatar", 404, "text/plain; charset=utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "image/png")
+        # Keyed by name, so it only changes when the dog is renamed — but a rename must not leave a
+        # stale face on a phone for a day, which is what a long max-age would do.
+        self.send_header("cache-control", "max-age=300")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _serve_index(self):
         try:
             with open(INDEX_HTML, "rb") as f:
@@ -2426,6 +2499,9 @@ def main(argv=None, on_bound=None):
             lan = True; i += 1; continue
         if a == "--qr":
             want_qr = True; i += 1; continue
+        if a == "--name" and i + 1 < len(argv):
+            global DOG_NAME
+            DOG_NAME = argv[i + 1]; i += 2; continue
         i += 1
 
     if not os.path.exists(INDEX_HTML):

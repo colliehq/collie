@@ -393,6 +393,8 @@ def cmd_web(args):
         argv.append("--lan")
     if getattr(args, "qr", False):
         argv.append("--qr")
+    if getattr(args, "name", ""):
+        argv += ["--name", str(args.name)]
     return web_main(argv)
 
 
@@ -421,6 +423,11 @@ def _cmd_web_remote(args):
 
     relay = os.environ.get("COLLIE_RELAY", "wss://collie.run").rstrip("/")
 
+    # The remote path binds its own server rather than going through webapp.main(), so the flag has
+    # to be carried here too — a phone reaching this desktop over the relay is exactly the case that
+    # needs to know which dog answered.
+    if getattr(args, "name", ""):
+        webapp.DOG_NAME = str(args.name)
     try:
         httpd, port = webapp.bind_server(args.port)
     except OSError as e:
@@ -2250,6 +2257,9 @@ def main(argv=None):
     pw.add_argument("--qr", action="store_true",
                     help="with --lan, also print a QR fallback of the one-shot pairing secret "
                          "(for when a camera can't read the ring code)")
+    pw.add_argument("--name", default="",
+                    help="which dog this server speaks for (CollieIOS shows it, and its face); "
+                         "defaults to the kennel's dog when there is exactly one")
     pw.set_defaults(open=True, fn=cmd_web)
 
     # wallpaper: collie owns its own live desktop window (no third-party wallpaper engine)

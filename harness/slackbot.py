@@ -171,6 +171,12 @@ def machine_label() -> str:
     return (h or "unknown")[:24]
 
 
+def os_label() -> str:
+    """"macOS" / "Windows" / the platform tag — the OS as a person says it, in one place now that
+    the web surface introduces itself with the same three facts the channel greeting uses."""
+    return {"darwin": "macOS", "win32": "Windows"}.get(sys.platform, sys.platform)
+
+
 def fingerprint() -> str:
     """Four hex characters that stay put across renames.
 
@@ -418,7 +424,7 @@ def load_identity(name: str = "", autonomy: str = "") -> dict:
         ident["_fresh"] = True   # so the first greeting can offer a rename, once
     ident.setdefault("autonomy", "branch")
     ident["machine"] = _hostname()
-    ident["os"] = {"darwin": "macOS", "win32": "Windows"}.get(sys.platform, sys.platform)
+    ident["os"] = os_label()
     try:
         os.makedirs(os.path.dirname(IDENTITY), exist_ok=True)
         with open(IDENTITY, "w", encoding="utf-8") as f:

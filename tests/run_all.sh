@@ -169,6 +169,7 @@ fi
 
 echo "── what `collie slack` does with an ask ─────────────────"
 if $PY tests/test_slack_worker.py >/dev/null 2>&1; then echo "  slack worker OK"; else echo "  slack worker FAIL"; rc=1; fi
+if $PY tests/test_whoami.py >/dev/null 2>&1; then echo "  whoami (which dog is this) OK"; else echo "  whoami FAIL"; rc=1; fi
 if $PY tests/test_slack_answer.py >/dev/null 2>&1; then echo "  slack answer (executed) OK"; else echo "  slack answer FAIL"; rc=1; fi
 
 echo "── a face per dog (deterministic logo variants) ─────────"
