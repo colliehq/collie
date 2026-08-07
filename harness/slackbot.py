@@ -876,7 +876,7 @@ class Worker(threading.Thread):
         # when the answer was raw CLI output with stats and warnings in it; --print made the answer
         # prose, and prose in a fence loses its wrapping, its emphasis and its links as well.
         # Whatever the model fences itself still renders as code.
-        say(self.token, ch, "%s%s\n%s" % (back, head, keep_known_mentions(out, mates) or "(no output)"),
+        say(self.token, ch, "%s%s" % (back, keep_known_mentions(out, mates) or "(no output)"),
             th, broadcast=True)
         self.q.finish(item["id"])
 
