@@ -7,7 +7,19 @@ workers_dev = true
 name = "RELAY"
 class_name = "RelayRoom"
 
-# SQLite-backed DO class → works on the Workers free plan (we don't use storage, just WS + memory).
+# Dog liveness is isolated from phone-remote rooms: one PresencePack Durable Object per pack.
+# Provisioning requires a Worker secret (never put it in this file):
+#   npx wrangler secret put PRESENCE_ADMIN_TOKEN
+[[durable_objects.bindings]]
+name = "PRESENCE"
+class_name = "PresencePack"
+
+# SQLite-backed Durable Objects work on the Workers free plan; RelayRoom and PresencePack both use
+# storage for the small pieces of state that must survive hibernation/restart.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RelayRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PresencePack"]

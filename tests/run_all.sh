@@ -79,6 +79,7 @@ echo "$live_out" | grep -E "SKIP|FAIL|passed ==" | sed 's/^/  /'
 echo "── relay pairing handshake (JS) ─────────────────────────"
 if command -v node >/dev/null 2>&1; then
   node tests/relay_pairing_test.js || rc=1
+  node tests/relay_presence_test.js || rc=1
 else
   echo "  (node not found — skipping relay suite)"
 fi
@@ -86,6 +87,7 @@ fi
 echo "── relay push + APNs bearer token (JS) ──────────────────"
 if command -v node >/dev/null 2>&1; then
   node tests/relay_push_test.js || rc=1
+  node tests/slack_presence_worker_test.js || rc=1
 else
   echo "  (node not found — skipping push suite)"
 fi
@@ -162,6 +164,7 @@ if $PY -c "import pytest" >/dev/null 2>&1; then
   if $PY -m pytest -q tests/test_gate.py tests/test_loop_gate.py tests/test_risk.py \
       tests/test_inbox.py tests/test_trust.py tests/test_audit.py tests/test_overrides.py \
       tests/test_personas.py tests/test_cli_mission.py tests/test_web_mission_api.py \
+      tests/test_presence.py tests/test_slack_presence.py \
       >/dev/null 2>&1; then echo "  gate/risk/inbox/trust/audit + mission CLI/HTTP OK"
   else echo "  gate/risk/inbox/trust/audit FAIL"; rc=1; fi
 else

@@ -92,11 +92,13 @@ def main():
     i = cli_src.find('sub.add_parser("slack"')
     sub = cli_src[i:cli_src.find("set_defaults(fn=cmd_slack)", i)]
     for flag in ("--name", "--cwd", "--provider", "--announce", "--channels", "--allow",
-                 "--install-autostart", "--uninstall-autostart"):
+                 "--presence-url", "--presence-token", "--install-autostart",
+                 "--uninstall-autostart"):
         check(flag in sub, "`collie slack` accepts %s" % flag)
     j = cli_src.find("def cmd_slack")
     fwd = cli_src[j:cli_src.find("\ndef ", j + 5)]
-    for name in ("channels", "allow", "install_autostart", "uninstall_autostart"):
+    for name in ("channels", "allow", "presence_url", "presence_token",
+                 "install_autostart", "uninstall_autostart"):
         check(name in fwd, "...and cmd_slack forwards %s through" % name)
 
     # Refusing without a provider is right; leaving the person to guess which one is not. On a
@@ -326,7 +328,7 @@ def main():
     _plat.is_windows = lambda: True          # so this runs on the Mac half of the pack too
     try:
         rc = sb.install_autostart("Cornetto", r"/repo", provider="anthropic-oauth",
-                                  autonomy="main")
+                                  autonomy="main", presence_url="wss://presence.example")
         written = open(boot, encoding="utf-8").read()
     finally:
         sb._autostart_paths, _plat.is_windows = real_paths, real_win
@@ -335,6 +337,9 @@ def main():
           "the launcher it generates states the autonomy, rather than leaving a reboot to re-decide")
     check("'--provider', 'anthropic-oauth'" in written and "'--name', 'Cornetto'" in written,
           "...alongside the flags it already carried")
+    check("'--presence-url', 'wss://presence.example'" in written and
+          "presence_token" not in written and "COLLIE_PRESENCE_TOKEN" not in written,
+          "the launcher carries only the public Presence URL, never its bearer credential")
     check("--autonomy" not in open(vbs, encoding="utf-8").read(),
           "...in the .pyw, not smuggled into the .vbs, which only launches it")
 

@@ -28,10 +28,25 @@ const PAIR_MAX = 5;
 // enough that a request abandoned on a shared screen does not stay live.
 const PAIR_APPROVE_MS = 3 * 60 * 1000;
 
+// Dog presence is deliberately NOT Slack presence. Slack's Events/Socket Mode green dot cannot be
+// driven from a listener's socket, so this is the truthful signal Collie itself can use when choosing
+// a packmate: a short, renewable lease held only while that dog's listener is healthy.
+//
+// Provisioning is an explicit operator action. PRESENCE_ADMIN_TOKEN is a Worker secret and is used
+// only at POST/DELETE /presence/enroll; POST mints a credential and DELETE retires one (pack,dog).
+// Only a domain-separated SHA-256 digest of the dog credential is stored. Runtime credentials are
+// accepted in Authorization headers only — never URLs, messages, attachments, status responses or
+// logs. If the admin secret/binding is missing, enrollment fails closed.
+// Clients should heartbeat every 20-25s. Seventy-five seconds tolerates two missed beats while still
+// bounding a hard crash/power loss to a short, explicit stale window.
+const PRESENCE_LEASE_MS = 75 * 1000;
+const PRESENCE_HEALTH = new Set(["ok", "degraded"]);
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname;
+    if (p.startsWith("/presence/")) return presenceFront(request, env, url);
     let room = null;
     if (p === "/relay/agent") room = url.searchParams.get("room");
     else if (p.startsWith("/r/")) room = p.split("/")[2] || null;
@@ -486,7 +501,425 @@ export class RelayRoom {
   sendAgent(agent, obj) { try { agent.send(JSON.stringify(obj)); } catch (e) {} }
 }
 
+// ---------------------------------------------------------------- dog presence
+
+/**
+ * Route presence before the phone-remote room router.
+ *
+ * The Durable Object id is derived from PACK, never from a caller-supplied object id. A pack is the
+ * consistency boundary: every dog in it is read and fenced by one single-threaded PresencePack.
+ * `dog` on /status names the credential owner (the caller); an authenticated member may see the
+ * small online/offline roster for its own pack, but no session ids, machine data, tasks or secrets.
+ */
+async function presenceFront(request, env, url) {
+  if (!env.PRESENCE) return json({ ok: false, error: "presence unavailable" }, 503);
+  const pack = url.searchParams.get("pack") || "";
+  const dog = url.searchParams.get("dog") || "";
+  if (!presenceID(pack, 128) || !presenceID(dog, 80))
+    return json({ ok: false, error: "invalid pack or dog" }, 400);
+
+  if (url.pathname === "/presence/enroll") {
+    if (request.method !== "POST" && request.method !== "DELETE")
+      return json({ ok: false, error: "method not allowed" }, 405);
+    if (!env.PRESENCE_ADMIN_TOKEN)
+      return json({ ok: false, error: "presence enrollment is not configured" }, 503);
+    if (!(await bearerEquals(request, env.PRESENCE_ADMIN_TOKEN)))
+      return json({ ok: false, error: "unauthorized" }, 401);
+  } else if (url.pathname === "/presence/ws") {
+    if (request.method !== "GET" ||
+        (request.headers.get("Upgrade") || "").toLowerCase() !== "websocket")
+      return json({ ok: false, error: "expected websocket" }, 426);
+    if (!presenceID(url.searchParams.get("session") || "", 128, 8))
+      return json({ ok: false, error: "invalid session" }, 400);
+  } else if (url.pathname === "/presence/status") {
+    if (request.method !== "GET") return json({ ok: false, error: "method not allowed" }, 405);
+  } else {
+    return json({ ok: false, error: "not found" }, 404);
+  }
+
+  return env.PRESENCE.get(env.PRESENCE.idFromName(pack)).fetch(request);
+}
+
+/**
+ * One strongly-consistent, hibernatable presence registry per pack.
+ *
+ * Storage keys:
+ *   auth:<dog>  -> {hash}                         credential verifier, never returned
+ *   lease:<dog> -> {session,owner,seq,health,expiresAt}
+ *
+ * `owner` is random per accepted socket and never crosses the wire. Session ids fence an old
+ * process from a new process; owner additionally fences two sockets that accidentally reuse the
+ * same session. A stale heartbeat/bye therefore cannot revive or erase the replacement lease.
+ */
+export class PresencePack {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const pack = url.searchParams.get("pack") || "";
+    const dog = url.searchParams.get("dog") || "";
+    if (!presenceID(pack, 128) || !presenceID(dog, 80))
+      return json({ ok: false, error: "invalid pack or dog" }, 400);
+
+    if (url.pathname === "/presence/enroll")
+      return request.method === "DELETE" ? this.unenroll(request, pack, dog)
+                                         : this.enroll(request, pack, dog);
+    if (url.pathname === "/presence/ws") return this.connect(request, pack, dog,
+      url.searchParams.get("session") || "");
+    if (url.pathname === "/presence/status") return this.status(request, pack, dog);
+    return json({ ok: false, error: "not found" }, 404);
+  }
+
+  async enroll(request, pack, dog) {
+    // Validate again inside the DO. Today all traffic arrives through presenceFront, but keeping the
+    // authority check at the mutation boundary means a future internal caller cannot accidentally
+    // turn the binding itself into an unauthenticated provisioning API.
+    if (request.method !== "POST") return json({ ok: false, error: "method not allowed" }, 405);
+    if (!this.env.PRESENCE_ADMIN_TOKEN)
+      return json({ ok: false, error: "presence enrollment is not configured" }, 503);
+    if (!(await bearerEquals(request, this.env.PRESENCE_ADMIN_TOKEN)))
+      return json({ ok: false, error: "unauthorized" }, 401);
+
+    const credential = randToken();
+    const hash = await presenceTokenHash(pack, dog, credential);
+    // Credential rotation and lease revocation are one commit. Without the transaction, a process
+    // death between the two writes can leave either the old token live or its old lease advertised.
+    await this.state.storage.transaction(async (txn) => {
+      await txn.put("auth:" + dog, { hash, enrolledAt: Date.now() });
+      await txn.delete("lease:" + dog);
+    });
+    for (const ws of this._sockets()) {
+      const a = this._attachment(ws);
+      if (a.dog === dog) this._close(ws, 4003, "credential rotated");
+    }
+    await this._rescheduleAlarm();
+    return presenceJson({ ok: true, pack, dog, credential });
+  }
+
+  async unenroll(request, pack, dog) {
+    if (request.method !== "DELETE") return json({ ok: false, error: "method not allowed" }, 405);
+    // Keep authorization at the mutation boundary as well as at the public front door.
+    if (!this.env.PRESENCE_ADMIN_TOKEN)
+      return json({ ok: false, error: "presence enrollment is not configured" }, 503);
+    if (!(await bearerEquals(request, this.env.PRESENCE_ADMIN_TOKEN)))
+      return json({ ok: false, error: "unauthorized" }, 401);
+    // Idempotent retirement: authority and liveness disappear in the same commit.
+    await this.state.storage.transaction(async (txn) => {
+      await txn.delete("auth:" + dog);
+      await txn.delete("lease:" + dog);
+    });
+    for (const ws of this._sockets()) {
+      const a = this._attachment(ws);
+      if (a.dog === dog) this._close(ws, 4003, "dog unenrolled");
+    }
+    await this._rescheduleAlarm();
+    return presenceJson({ ok: true, pack, dog, enrolled: false });
+  }
+
+  async connect(request, pack, dog, session) {
+    if (request.method !== "GET" ||
+        (request.headers.get("Upgrade") || "").toLowerCase() !== "websocket")
+      return json({ ok: false, error: "expected websocket" }, 426);
+    if (!presenceID(session, 128, 8)) return json({ ok: false, error: "invalid session" }, 400);
+    const authHash = await this._dogAuthHash(request, pack, dog);
+    if (!authHash)
+      return json({ ok: false, error: "unauthorized" }, 401);
+
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    this.state.acceptWebSocket(server, ["presence"]);
+    server.serializeAttachment({ kind: "presence", phase: "pending", pack, dog, session,
+                                 authHash });
+    // A connection is not online yet. Its first application frame must be the matching v1 hello;
+    // this prevents a successful HTTP upgrade from becoming a lease before protocol negotiation.
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async status(request, pack, dog) {
+    if (request.method !== "GET") return json({ ok: false, error: "method not allowed" }, 405);
+    if (!(await this._dogAuthorized(request, pack, dog)))
+      return json({ ok: false, error: "unauthorized" }, 401);
+
+    const now = Date.now();
+    await this._expireLeases(now);
+    const auth = await this.state.storage.list({ prefix: "auth:" });
+    const leases = await this.state.storage.list({ prefix: "lease:" });
+    const dogs = [];
+    for (const key of auth.keys()) {
+      const name = key.slice(5);
+      const lease = leases.get("lease:" + name);
+      const connected = !!(lease && lease.expiresAt > now);
+      // A process that can heartbeat but has lost its Slack socket is useful diagnostic evidence,
+      // not an addressable dog. Only an unexpired `ok` lease is advertised online.
+      const online = connected && lease.health === "ok";
+      dogs.push({
+        dog: name,
+        connected,
+        online,
+        health: connected ? lease.health : "offline",
+        expires_at: connected ? Math.floor(lease.expiresAt / 1000) : 0,
+      });
+    }
+    dogs.sort((a, b) => a.dog.localeCompare(b.dog));
+    return presenceJson({ ok: true, pack, lease_ms: PRESENCE_LEASE_MS, dogs });
+  }
+
+  async webSocketMessage(ws, message) {
+    const a = this._attachment(ws);
+    if (a.kind !== "presence") return;
+    let msg;
+    try {
+      if (typeof message !== "string" || message.length > 2048) throw new Error("bad frame");
+      msg = JSON.parse(message);
+    } catch (e) {
+      this._close(ws, 4002, "invalid presence frame");
+      return;
+    }
+
+    try {
+      if (a.phase === "pending") {
+        if (!this._matches(msg, a, "hello") || !presenceHealth(msg.health)) {
+          this._close(ws, 4002, "expected matching hello");
+          return;
+        }
+        await this._activate(ws, a, msg.health);
+        return;
+      }
+
+      if (msg.t === "heartbeat") {
+        if (!this._matches(msg, a, "heartbeat") || !presenceHealth(msg.health) ||
+            !Number.isSafeInteger(msg.seq) || msg.seq <= 0) {
+          await this._dropIfOwner(a);
+          this._close(ws, 4002, "invalid heartbeat");
+          return;
+        }
+        const key = "lease:" + a.dog;
+        const outcome = await this.state.storage.transaction(async (txn) => {
+          const lease = await txn.get(key);
+          if (!lease || lease.session !== a.session || lease.owner !== a.owner)
+            return { kind: "stale" };
+          if (msg.seq <= lease.seq) {
+            await txn.delete(key);
+            return { kind: "replay" };
+          }
+          lease.seq = msg.seq;
+          lease.health = msg.health;
+          lease.expiresAt = Date.now() + PRESENCE_LEASE_MS;
+          await txn.put(key, lease);
+          return { kind: "accepted", expiresAt: lease.expiresAt };
+        });
+        if (outcome.kind === "stale") {
+          this._close(ws, 4004, "stale session");
+          return;
+        }
+        if (outcome.kind === "replay") {
+          await this._rescheduleAlarm();
+          this._close(ws, 4004, "stale heartbeat");
+          return;
+        }
+        a.seq = msg.seq;
+        ws.serializeAttachment(a);
+        await this._ensureAlarm(outcome.expiresAt);
+        this._send(ws, { t: "heartbeat_ack", v: 1, seq: msg.seq,
+                         lease_ms: PRESENCE_LEASE_MS });
+        return;
+      }
+
+      if (msg.t === "bye") {
+        if (!this._matches(msg, a, "bye")) {
+          await this._dropIfOwner(a);
+          this._close(ws, 4002, "invalid bye");
+          return;
+        }
+        await this._dropIfOwner(a);
+        this._close(ws, 1000, "bye");
+        return;
+      }
+      await this._dropIfOwner(a);
+      this._close(ws, 4002, "unknown presence frame");
+    } catch (e) {
+      // Storage is the authority. If it cannot be updated, stop accepting heartbeats rather than
+      // displaying an online state we failed to durably fence.
+      this._close(ws, 1011, "presence unavailable");
+    }
+  }
+
+  async _activate(ws, a, health) {
+    // Enrollment may rotate a credential after HTTP upgrade but before hello. Bind the socket to
+    // the verifier generation it authenticated with and refuse to resurrect a rotated lease.
+    const owner = randToken();                    // server-only connection generation
+    const expiresAt = Date.now() + PRESENCE_LEASE_MS;
+    const activated = await this.state.storage.transaction(async (txn) => {
+      const auth = await txn.get("auth:" + a.dog);
+      if (!auth || !auth.hash || !constantTextEqual(auth.hash, a.authHash)) return false;
+      await txn.put("lease:" + a.dog,
+        { session: a.session, owner, seq: 0, health, expiresAt });
+      return true;
+    });
+    if (!activated) {
+      this._close(ws, 4003, "credential rotated");
+      return;
+    }
+    const active = { ...a, phase: "active", owner, seq: 0 };
+    ws.serializeAttachment(active);
+
+    // The put above is the linearization point. Any old socket that races after it reads a different
+    // owner and cannot renew or delete this lease, even if close delivery is delayed.
+    for (const other of this._sockets()) {
+      if (other === ws) continue;
+      const old = this._attachment(other);
+      if (old.dog === a.dog) this._close(other, 4004, "replaced by newer session");
+    }
+    await this._ensureAlarm(expiresAt);
+    this._send(ws, { t: "hello_ack", v: 1, lease_ms: PRESENCE_LEASE_MS });
+  }
+
+  _matches(msg, a, type) {
+    return !!msg && msg.t === type && msg.v === 1 &&
+      msg.pack === a.pack && msg.dog === a.dog && msg.session === a.session;
+  }
+
+  async _dogAuthHash(request, pack, dog) {
+    const token = bearerToken(request);
+    if (!token) return "";
+    const row = await this.state.storage.get("auth:" + dog);
+    if (!row || !row.hash) return "";
+    const got = await presenceTokenHash(pack, dog, token);
+    return constantTextEqual(row.hash, got) ? row.hash : "";
+  }
+
+  async _dogAuthorized(request, pack, dog) {
+    return !!(await this._dogAuthHash(request, pack, dog));
+  }
+
+  _sockets() {
+    try { return this.state.getWebSockets("presence") || []; } catch (e) { return []; }
+  }
+
+  _attachment(ws) {
+    try { return ws.deserializeAttachment() || {}; } catch (e) { return {}; }
+  }
+
+  _send(ws, obj) {
+    try { ws.send(JSON.stringify(obj)); } catch (e) {}
+  }
+
+  _close(ws, code, reason) {
+    try { ws.close(code, reason); } catch (e) {}
+  }
+
+  async _dropIfOwner(a) {
+    if (!a || a.phase !== "active") return false;
+    const key = "lease:" + a.dog;
+    const dropped = await this.state.storage.transaction(async (txn) => {
+      const lease = await txn.get(key);
+      if (!lease || lease.session !== a.session || lease.owner !== a.owner) return false;
+      await txn.delete(key);
+      return true;
+    });
+    if (!dropped) return false;
+    await this._rescheduleAlarm();
+    return true;
+  }
+
+  async webSocketClose(ws) {
+    try { await this._dropIfOwner(this._attachment(ws)); } catch (e) {}
+  }
+
+  async webSocketError(ws) {
+    try { await this._dropIfOwner(this._attachment(ws)); } catch (e) {}
+  }
+
+  async alarm() {
+    await this._expireLeases(Date.now());
+    await this._rescheduleAlarm();
+  }
+
+  async _expireLeases(now) {
+    const leases = await this.state.storage.list({ prefix: "lease:" });
+    for (const [key, seen] of leases) {
+      if (!seen || seen.expiresAt > now) continue;
+      // Re-read and conditionally delete in one transaction: an alarm can target an earlier
+      // generation, and a fresh heartbeat/new session must survive even if it lands concurrently.
+      const current = await this.state.storage.transaction(async (txn) => {
+        const value = await txn.get(key);
+        if (!value || value.owner !== seen.owner || value.expiresAt > now) return null;
+        await txn.delete(key);
+        return value;
+      });
+      if (!current) continue;
+      const dog = key.slice(6);
+      for (const ws of this._sockets()) {
+        const a = this._attachment(ws);
+        if (a.dog === dog && a.owner === current.owner)
+          this._close(ws, 4001, "lease expired");
+      }
+    }
+  }
+
+  async _ensureAlarm(expiresAt) {
+    const current = await this.state.storage.getAlarm();
+    if (current == null || expiresAt < current) await this.state.storage.setAlarm(expiresAt);
+  }
+
+  async _rescheduleAlarm() {
+    const leases = await this.state.storage.list({ prefix: "lease:" });
+    let next = null;
+    for (const [, lease] of leases) {
+      if (lease && Number.isFinite(lease.expiresAt))
+        next = next == null ? lease.expiresAt : Math.min(next, lease.expiresAt);
+    }
+    if (next == null) await this.state.storage.deleteAlarm();
+    else await this.state.storage.setAlarm(next);
+  }
+}
+
 // ---------------------------------------------------------------- helpers
+function presenceID(value, max, min = 1) {
+  return typeof value === "string" && value.length >= min && value.length <= max &&
+    /^[A-Za-z0-9][A-Za-z0-9_.:@-]*$/.test(value);
+}
+
+function presenceHealth(value) {
+  return typeof value === "string" && PRESENCE_HEALTH.has(value);
+}
+
+function presenceJson(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
+}
+
+function bearerToken(request) {
+  const m = (request.headers.get("Authorization") || "").match(/^Bearer ([\x21-\x7e]+)$/);
+  return m ? m[1] : "";
+}
+
+function constantTextEqual(a, b) {
+  a = String(a || ""); b = String(b || "");
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function bearerEquals(request, expected) {
+  const got = bearerToken(request);
+  if (!got || !expected) return false;
+  // Compare fixed-width digests so the equality loop does not reveal which byte of an operator
+  // credential differed. The token is still expected to be a high-entropy Worker secret.
+  return constantTextEqual(await sha256hex(got), await sha256hex(String(expected)));
+}
+
+async function presenceTokenHash(pack, dog, token) {
+  // Domain separation prevents a copied verifier row from authorizing another dog or another pack.
+  return sha256hex("collie-presence-v1\0" + pack + "\0" + dog + "\0" + token);
+}
+
 async function sha256hex(s) {
   const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");

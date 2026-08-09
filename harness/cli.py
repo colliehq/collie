@@ -971,14 +971,16 @@ def cmd_slack(args):
         # Provisioning takes a different set of flags, and `--cwd`/`--provider` default to
         # something on every run — passing them through would look like they meant something here.
         argv = ["setup"]
-        for flag in ("name", "config_token", "bot_token", "app_token"):
+        for flag in ("name", "config_token", "bot_token", "app_token",
+                     "presence_url", "presence_token"):
             v = getattr(args, flag, "")
             if v:
                 argv += ["--" + flag.replace("_", "-"), str(v)]
         if getattr(args, "list_dogs", False):
             argv += ["--list"]
         return slackbot.main(argv)
-    for flag in ("name", "autonomy", "cwd", "provider", "announce", "channels", "allow"):
+    for flag in ("name", "autonomy", "cwd", "provider", "announce", "channels", "allow",
+                 "presence_url"):
         v = getattr(args, flag, "")
         if v:
             argv += ["--" + flag, str(v)]
@@ -2426,6 +2428,10 @@ def main(argv=None):
                      help="setup: app-configuration token (xoxe.xoxp-…) from api.slack.com/apps")
     psl.add_argument("--bot-token", dest="bot_token", default="", help="setup: xoxb-… if you have it")
     psl.add_argument("--app-token", dest="app_token", default="", help="setup: xapp-… if you have it")
+    psl.add_argument("--presence-url", dest="presence_url", default="",
+                     help="Collie Presence Worker base URL; setup saves it for this dog")
+    psl.add_argument("--presence-token", dest="presence_token", default="",
+                     help="setup: per-dog Presence credential (stored privately; never put in autostart)")
     psl.add_argument("--list", dest="list_dogs", action="store_true", help="setup: show the pack")
     psl.add_argument("--name", default="", help="the name this collie answers to (kept across restarts)")
     psl.add_argument("--autonomy", default="", choices=["propose", "branch", "main"],
