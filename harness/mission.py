@@ -335,21 +335,34 @@ class MissionStore:
 
     def create(self, mission_id, goal, leash=None, case=None, *, lane="mission",
                external_run_id="") -> Mission:
-        now = int(time.time())
+        now, case = int(time.time()), dict(case or {})
         with self._lock:
-            self.db.execute(
-                "INSERT INTO missions(mission_id,goal,leash_json,case_json,state,"
-                "result,created_at,updated_at,paused_from,run_token,lease_until) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (mission_id, goal, _js(leash or {}), _js(case or {}), QUEUED, "",
-                 now, now, "", "", 0))
-            self.db.execute(
-                "INSERT INTO mission_runtime(mission_id,progress_at,active_phase,storage_bytes,"
-                "lane,external_run_id) VALUES(?,?,?,?,?,?)",
-                (mission_id, now, "created", len(_js(case or {}).encode("utf-8")),
-                 str(lane or "mission")[:40], str(external_run_id or "")[:100]))
-            self.db.commit()
-        return Mission(mission_id, goal, leash or {}, case or {}, QUEUED, "", now, now)
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                parent_mid = str(case.get("_parent_mission_id") or "") \
+                    if str(lane or "mission") == "specialist" else ""
+                if parent_mid:
+                    parent = self.db.execute(
+                        "SELECT state FROM missions WHERE mission_id=?", (parent_mid,)).fetchone()
+                    if not parent or parent["state"] in (
+                            DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+                        raise ValueError("specialist parent Mission is stopping or terminal")
+                self.db.execute(
+                    "INSERT INTO missions(mission_id,goal,leash_json,case_json,state,"
+                    "result,created_at,updated_at,paused_from,run_token,lease_until) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (mission_id, goal, _js(leash or {}), _js(case), QUEUED, "",
+                     now, now, "", "", 0))
+                self.db.execute(
+                    "INSERT INTO mission_runtime(mission_id,progress_at,active_phase,storage_bytes,"
+                    "lane,external_run_id) VALUES(?,?,?,?,?,?)",
+                    (mission_id, now, "created", len(_js(case).encode("utf-8")),
+                     str(lane or "mission")[:40], str(external_run_id or "")[:100]))
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+        return Mission(mission_id, goal, leash or {}, case, QUEUED, "", now, now)
 
     def get(self, mission_id) -> Mission:
         with self._lock:
@@ -1683,6 +1696,28 @@ class MissionDriver:
         return result if isinstance(result, Verdict) else Verdict(
             INCONCLUSIVE, "goal verifier returned no typed evidence verdict")
 
+    @staticmethod
+    def _goal_evidence(verdict):
+        """Return bounded, receipt-safe independent observations from a goal verdict."""
+        evidence = []
+        for item in tuple(getattr(verdict, "evidence", ()) or ())[:20]:
+            if isinstance(item, dict):
+                channel, at, ok = item.get("channel"), item.get("at"), item.get("ok")
+                asserted, detail = item.get("asserted", False), item.get("detail", "")
+            else:
+                channel, at, ok = (getattr(item, "channel", ""),
+                                   getattr(item, "at", None), getattr(item, "ok", None))
+                asserted, detail = (getattr(item, "asserted", False),
+                                    getattr(item, "detail", ""))
+            channel = str(channel or "").strip()
+            if (not channel or channel.lower() in ("model", "self-report", "model-self-report")
+                    or not isinstance(at, (int, float)) or isinstance(at, bool)
+                    or not isinstance(ok, bool)):
+                continue
+            evidence.append({"channel": channel[:120], "at": float(at), "ok": ok,
+                             "asserted": bool(asserted), "detail": str(detail or "")[:1000]})
+        return evidence
+
     def _dispatch_hook(self, event, payload, subject=""):
         if self.hooks is None:
             return None
@@ -2005,12 +2040,22 @@ class MissionDriver:
                     if not isinstance(verdict, Verdict):
                         verdict = Verdict(INCONCLUSIVE,
                                           "mission goal verifier returned no typed verdict")
+                    evidence = self._goal_evidence(verdict)
+                    if verdict.status == VERIFIED and (
+                            not str(verdict.reason or "").strip() or
+                            not any(item["ok"] for item in evidence)):
+                        verdict = Verdict(
+                            INCONCLUSIVE,
+                            "goal verifier reported verified without scoped independent evidence")
+                        evidence = []
                     self.store.record_event(
                         mission_id, "goal_verification", DONE,
-                        payload={"verdict": verdict.status, "reason": verdict.reason})
+                        payload={"verdict": verdict.status, "reason": verdict.reason,
+                                 "evidence": evidence})
                     self.store.record_checkpoint(
                         mission_id, token, "goal_verdict",
-                        {"verdict": verdict.status, "reason": verdict.reason}, case=m.case)
+                        {"verdict": verdict.status, "reason": verdict.reason,
+                         "evidence": evidence}, case=m.case)
                     if verdict.status == VERIFIED:
                         return self._finish(mission_id, token, DONE_VERIFIED,
                                             verdict.reason or "goal independently verified")

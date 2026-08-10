@@ -141,20 +141,31 @@ class ContextComposer:
         self.auto_prefetch = auto_prefetch
         self.prefetch_k = prefetch_k
         self._prefetch_cache: dict = {}   # (project,user_msg) -> hits; embed once/msg
-        self._skill_cache: dict = {}      # cwd -> skill index string (byte-stable per cwd; point 10)
+        self._skill_cache: dict = {}      # cwd -> (Library generation, skill index)
 
     def _skill_index(self, cwd: str) -> str:
-        """Byte-stable-per-cwd skill index string (point 10). Cached: discovery walks the filesystem
-        once per cwd; the result never changes mid-session, so the cached prefix stays intact."""
-        if cwd not in self._skill_cache:
+        """Cache ordinary discovery, but invalidate when the Library lifecycle changes.
+
+        Enable, disable, revocation, rollback, and integrity state must be visible to a 24x7 process;
+        otherwise an already-created composer can keep advertising a capability that the user has
+        explicitly withdrawn.
+        """
+        try:
+            from .extensions import registry_generation
+            generation = registry_generation()
+        except Exception:
+            generation = "unavailable"
+        cached = self._skill_cache.get(cwd)
+        if not cached or cached[0] != generation:
             try:
                 from . import settings, skills
                 extra = settings.get("SKILL_DIRS", "") or ""
                 dirs = [d for d in extra.split(os.pathsep) if d.strip()] if extra else []
-                self._skill_cache[cwd] = skills.format_skill_index(skills.discover_skills(cwd, dirs))
+                value = skills.format_skill_index(skills.discover_skills(cwd, dirs))
             except Exception:
-                self._skill_cache[cwd] = ""
-        return self._skill_cache[cwd]
+                value = ""
+            self._skill_cache[cwd] = (generation, value)
+        return self._skill_cache[cwd][1]
 
     def _project_rules(self, cwd: str, cap: int = 4000) -> str:
         parts = []                       # merge ALL rule files, not just the first found
@@ -217,8 +228,8 @@ class ContextComposer:
                    "lives elsewhere on this machine, go find it and use its absolute path — never "
                    "conclude it does not exist merely because it is not in this directory." % cwd)
         # SKILLS index (point 10): lazy name+description+path lines, ~20 tok/skill, read on demand.
-        # Cached per cwd so it's byte-stable within a session (a skill installed mid-session won't
-        # show until the next process — documented trade-off, keeps the cached prefix intact).
+        # Ordinary sources remain cached per cwd; a Library lifecycle/integrity generation change
+        # deliberately invalidates the prefix so enable/disable/revoke is truthful in 24x7 runs.
         skill_index = self._skill_index(cwd)
         # RESPONSE LANGUAGE + GROUNDING sit right after identity so they survive identity overrides
         # (the desktop persona in webapp.py replaces self.identity wholesale but never touches these

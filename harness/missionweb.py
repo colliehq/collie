@@ -409,31 +409,115 @@ class MissionService:
             self.store.release_reconcile(mid, reconcile_token)
             raise
 
+    def _cancel_record(self, mid, reason, *, user_requested, parent_mission_id=""):
+        """Cancel one Mission row and its pending authority; safe to repeat after a partial retry."""
+        mission = self.store.get(mid)
+        if not mission or mission.state in (DONE_VERIFIED, DONE_ACCEPTED, FAILED_S):
+            return False
+        if mission.state != CANCELLED and self._hooks is not None:
+            payload = {"mission_id": mid, "state": CANCELLED, "result": reason,
+                       "user_requested": bool(user_requested)}
+            if parent_mission_id:
+                payload["parent_mission_id"] = parent_mission_id
+            try:
+                self._hooks.dispatch("Stop", payload, subject=CANCELLED)
+            except Exception:
+                pass  # cancellation is a safety boundary and cannot be vetoed by an audit hook
+        self.store.cancel(mid, reason)
+        self.actions.refuse_for_job(mid, "mission cancelled")
+        _name, nonce = self.store.last_parked(mid)
+        if nonce:
+            self.store.resolve_parked(nonce, CANCELLED)
+        return True
+
     def cancel(self, mid: str) -> dict:
         m = self.store.get(mid)
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
         if m.state in (DONE_VERIFIED, DONE_ACCEPTED, FAILED_S):
             return {**self.status(mid), "error": f"cannot cancel terminal mission ({m.state})"}
-        reason = "cancelled; an in-flight action may still finish" if m.state in (RUNNING, PAUSING) \
-            else "cancelled by user"
-        if self._hooks is not None:
-            try:
-                self._hooks.dispatch(
-                    "Stop", {"mission_id": mid, "state": CANCELLED,
-                             "result": reason, "user_requested": True},
-                    subject=CANCELLED)
-            except Exception:
-                pass  # explicit user cancellation cannot be vetoed by an audit hook
-        self.store.cancel(mid, reason)
+        # Snapshot both representations before changing either database. A Mission may be the root
+        # of its own tree, a specialist inside another tree, or (at the depth limit) both.
+        tree_targets = set()
+        for key in ("_run_id", "_specialist_run_id"):
+            if str((m.case or {}).get(key) or ""):
+                tree_targets.add(str(m.case[key]))
         specialist = self._specialist_run(mid)
         if specialist:
-            self._run_tree.request_cancel(specialist["run_id"])
-        self.actions.refuse_for_job(mid, "mission cancelled")
-        _name, nonce = self.store.last_parked(mid)
-        if nonce:
-            self.store.resolve_parked(nonce, CANCELLED)
-        return self.status(mid)
+            tree_targets.add(specialist["run_id"])
+        descendant_missions = set()
+        tree_errors = []
+        live_specialist = False
+
+        def collect_bound_missions(run_id):
+            nonlocal live_specialist
+            try:
+                for row in self._run_tree.tree(run_id).get("flat", []):
+                    if row.get("status") in ("running", "cancel_requested"):
+                        live_specialist = True
+                    child_mid = str(row.get("mission_id") or "")
+                    if child_mid and child_mid != mid:
+                        descendant_missions.add(child_mid)
+            except Exception as exc:
+                tree_errors.append("%s: %s" % (type(exc).__name__, exc))
+
+        def collect_linked_missions():
+            """Follow Mission parent links too, including records not yet bound into the tree."""
+            nonlocal live_specialist
+            known_parents = {mid}
+            candidates = self.store.list()
+            changed = True
+            while changed:
+                changed = False
+                for child in candidates:
+                    parent_mid = str((child.case or {}).get("_parent_mission_id") or "")
+                    if parent_mid in known_parents and child.mission_id not in known_parents:
+                        known_parents.add(child.mission_id)
+                        descendant_missions.add(child.mission_id)
+                        if child.state in (RUNNING, PAUSING):
+                            live_specialist = True
+                        changed = True
+
+        if self._run_tree is not None:
+            for run_id in sorted(tree_targets):
+                collect_bound_missions(run_id)
+        collect_linked_missions()
+
+        reason = ("cancelled; an in-flight action may still finish"
+                  if m.state in (RUNNING, PAUSING) or live_specialist else
+                  "cancelled by user")
+        self._cancel_record(mid, reason, user_requested=True)
+
+        # This operation is transactionally subtree-wide. Queued descendants become terminal;
+        # running descendants are fenced and receive a durable cancel message for their next safe
+        # boundary. Re-read afterwards to include a child that won a spawn race before the fence.
+        if self._run_tree is not None:
+            for run_id in sorted(tree_targets):
+                try:
+                    self._run_tree.request_cancel(run_id)
+                except Exception as exc:
+                    tree_errors.append("%s: %s" % (type(exc).__name__, exc))
+                collect_bound_missions(run_id)
+
+        # Repeat after fencing the tree to include a child creation that committed just before the
+        # cancellation transaction. The atomic parent-state check in MissionStore rejects one that
+        # tries to commit after this Mission became terminal.
+        collect_linked_missions()
+        for child_mid in sorted(descendant_missions):
+            child = self.store.get(child_mid)
+            if not child or child.state in (DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+                continue
+            child_reason = ("cancelled with parent mission; an in-flight action may still finish"
+                            if child.state in (RUNNING, PAUSING) else
+                            "cancelled with parent mission")
+            self._cancel_record(
+                child_mid, child_reason, user_requested=False, parent_mission_id=mid)
+
+        result = self.status(mid)
+        if tree_errors:
+            result["error"] = ("mission cancelled, but specialist cancellation needs retry: " +
+                               "; ".join(dict.fromkeys(tree_errors))[:500])
+        return result
 
     def accept(self, mid: str) -> dict:
         m = self.store.get(mid)

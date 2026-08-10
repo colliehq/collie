@@ -86,6 +86,125 @@ def test_activity_health_and_hooks_are_authenticated_and_content_safe(
     assert status["pending"] and status["pending"][0]["sha256"]
 
 
+def test_pending_approvals_snapshot_is_authenticated_and_only_lists_live_items(
+        web_server, tmp_path):
+    from harness import webapp
+    from harness.inbox import InboxStore, R_DENY
+
+    base, token, _ = web_server
+    store = InboxStore(str(tmp_path / "live-inbox.db"))
+    first = store.add("session-a", tool="browser_click", title="Publish release?",
+                      body="button: Publish v1.4.0", target="https://example.test/release",
+                      risk="external write", rule_offer="")
+    resolved = store.add("session-a", tool="browser_read", title="Read status?")
+    store.resolve(resolved.id, R_DENY)
+    webapp.Handler._inbox_open("session-a", store)
+    try:
+        code, denied = _json(base + "/api/approvals")
+        assert code == 403 and denied["error"] == "forbidden"
+
+        code, snapshot = _json(base + "/api/approvals?token=" + token)
+        assert code == 200
+        assert snapshot == {"approvals": [{
+            "id": first.id, "session": "session-a", "tool": "browser_click",
+            "body": "button: Publish v1.4.0", "title": "Publish release?",
+            "target": "https://example.test/release", "risk": "external write",
+            "rule_offer": "", "state": "pending",
+        }]}
+    finally:
+        webapp.Handler._inbox_close("session-a")
+
+
+def test_library_snapshot_and_lifecycle_actions_are_authenticated_and_explicit(
+        web_server, monkeypatch):
+    from harness.extensions import ExtensionStore
+
+    base, token, _ = web_server
+    row = {
+        "id": "example.release", "name": "Release helper", "publisher": "Example",
+        "description": "Reviewable release assets", "enabled": False,
+        "active_version": "", "versions": [{
+            "version": "1.2.0", "digest": "a" * 64, "scope_hash": "b" * 64,
+            "trust_state": "unreviewed", "approved": False, "revoked": False,
+            "integrity_ok": True,
+        }],
+        "permissions": {"network": ["api.example.test"], "host_hooks": False},
+        "components": {"skills": 1, "hooks": 0, "connections": 1,
+                       "templates": 0, "assets": 0},
+    }
+    calls = []
+    monkeypatch.setattr(ExtensionStore, "list", lambda self: [row])
+    monkeypatch.setattr(ExtensionStore, "enable", lambda self, ext_id, version="", approve=False:
+                        calls.append(("enable", ext_id, version, approve)) or
+                        dict(row, enabled=True, active_version=version or "1.2.0"))
+    monkeypatch.setattr(ExtensionStore, "disable", lambda self, ext_id:
+                        calls.append(("disable", ext_id)) or row)
+    monkeypatch.setattr(ExtensionStore, "rollback", lambda self, ext_id, approve=False:
+                        calls.append(("rollback", ext_id, approve)) or row)
+    monkeypatch.setattr(ExtensionStore, "uninstall",
+                        lambda self, ext_id, version="", force=False:
+                        calls.append(("uninstall", ext_id, version, force)) or
+                        {"id": ext_id, "removed_versions": [version or "1.2.0"]})
+
+    code, denied = _json(base + "/api/library")
+    assert code == 403 and denied["error"] == "forbidden"
+    code, listing = _json(base + "/api/library?token=" + token)
+    assert code == 200 and listing == {"extensions": [row]}
+
+    code, denied = _json(base + "/api/library/action", "POST", {
+        "action": "enable", "id": row["id"], "version": "1.2.0", "approve": True})
+    assert code == 403 and denied["error"] == "forbidden"
+    code, invalid = _json(base + "/api/library/action?token=" + token, "POST", {
+        "action": "enable", "id": row["id"], "approve": "yes"})
+    assert code == 400 and "approve" in invalid["error"]
+
+    code, enabled = _json(base + "/api/library/action?token=" + token, "POST", {
+        "action": "enable", "id": row["id"], "version": "1.2.0", "approve": True})
+    assert code == 200 and enabled["extension"]["enabled"] is True
+    code, removed = _json(base + "/api/library/action?token=" + token, "POST", {
+        "action": "uninstall", "id": row["id"], "version": "1.2.0"})
+    assert code == 200 and removed["extension"]["removed_versions"] == ["1.2.0"]
+    assert calls == [
+        ("enable", "example.release", "1.2.0", True),
+        ("uninstall", "example.release", "1.2.0", False),
+    ]
+
+
+def test_vscode_embed_headers_require_the_exact_high_entropy_process_token(
+        web_server, monkeypatch):
+    base, _, _ = web_server
+    secret = "vscode-test-" + "a" * 52
+    monkeypatch.setenv("COLLIE_VSCODE_EMBED_TOKEN", secret)
+
+    def headers(path):
+        with urllib.request.urlopen(base + path, timeout=8) as response:
+            response.read()
+            return response.headers
+
+    normal = headers("/")
+    assert normal.get("X-Frame-Options") == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in normal.get("Content-Security-Policy", "")
+
+    wrong = headers("/?vscode_embed=wrong")
+    assert wrong.get("X-Frame-Options") == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in wrong.get("Content-Security-Policy", "")
+
+    embedded = headers("/?vscode_embed=" + secret)
+    assert embedded.get("X-Frame-Options") is None
+    csp = embedded.get("Content-Security-Policy", "")
+    assert "frame-ancestors vscode-webview: https://*.vscode-cdn.net" in csp
+    assert "frame-ancestors 'self'" not in csp
+
+    # The token grants no general header bypass: every non-index document remains same-origin.
+    remote = headers("/remote?vscode_embed=" + secret)
+    assert remote.get("X-Frame-Options") == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in remote.get("Content-Security-Policy", "")
+
+    monkeypatch.setenv("COLLIE_VSCODE_EMBED_TOKEN", "short")
+    short = headers("/?vscode_embed=short")
+    assert short.get("X-Frame-Options") == "SAMEORIGIN"
+
+
 def test_recovery_list_detail_and_explicit_reconcile(web_server):
     from harness import sessions
 

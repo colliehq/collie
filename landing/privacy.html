@@ -15,7 +15,7 @@
   <header><a href="/"><img src="/collie-logo.svg" alt="">Collie</a></header>
   <main>
     <h1>Privacy</h1>
-    <p class="date">Effective August 9, 2026</p>
+    <p class="date">Effective August 10, 2026</p>
     <p>Collie is open-source software designed to run on your computer. The product has no Collie account, advertising, usage analytics, or telemetry.</p>
 
     <h2>This website</h2>
@@ -23,7 +23,7 @@
 
     <h2>“Ask Collie” website demo</h2>
     <p>Nothing is sent until you submit the form. The question and up to six recent messages from that demo are sent through a Cloudflare Pages Function to Cloudflare Workers AI. Product files and local Collie sessions are not attached.</p>
-    <p>To limit abuse, the service derives a per-day counter key from your network address. The counter stores only a number and expiry, not the address itself, and is deleted within 48 hours. The limit is applied before an AI request is made.</p>
+    <p>To limit abuse, the service processes your network address through a secret-keyed one-way function to derive a new identifier each day. The raw address is not used as a Durable Object name or stored by the site code. The object stores only a number and expiry and is deleted within 48 hours. The limit is applied before an AI request is made.</p>
     <p>The site code does not write questions or answers to R2, KV, or Durable Object content storage; its Durable Object stores only the abuse counter. Cloudflare publishes separate <a href="https://developers.cloudflare.com/workers-ai/platform/data-usage/">Workers AI data-usage information</a>.</p>
 
     <h2>The app</h2>

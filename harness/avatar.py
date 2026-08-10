@@ -11,15 +11,17 @@ low-poly trace whose 23 paths are flat fills of straight segments, with the two 
 addressable pair.
 
 Sizes decided the palette, not taste. Rendered at the sizes Slack actually draws a bot avatar
-(20px in the member list, 36-48px beside a message), a lightness-preserving coat tint is invisible
-and the eyes are the only thing that reads — so the eyes carry the identity, and a background plate
-carries what is left at 20px, where the head itself is a smudge.
+(20px in the member list, 36-48px beside a message), a lightness-preserving coat tint is invisible.
+The optional background plate carries identity at those tiny external sizes. First-party Collie UI
+uses the same deterministic coat without the plate: the dog belongs in the surface, not on a
+coloured app-icon tile.
 
 Stdlib only, because collie's core is (`dependencies = []`): the PNG encoder is zlib + struct, and
 the rasteriser is a scanline fill, which is enough because every path in the logo is straight
 segments with no stroke, curve or gradient.
 """
 import colorsys
+import functools
 import hashlib
 import os
 import re
@@ -155,8 +157,13 @@ def traits(name: str) -> dict:
             "plate_hex": plate_hex, "_coat": coat}
 
 
-def svg(name: str, source: str = "") -> str:
-    """The logo recoloured for one dog, on its plate. Geometry is never touched."""
+def svg(name: str, source: str = "", plate: bool = True) -> str:
+    """The logo recoloured for one dog. ``plate`` retains the tiny external-avatar tile.
+
+    The default stays plated for compatibility with generated Slack/app icons. Product surfaces
+    explicitly request ``plate=False`` and get a transparent dog mark with the same coat.
+    Geometry is never touched in either form.
+    """
     t = traits(name)
     _, hue, ear_l, ear_s, cheek_l, cheek_s, warm = t["_coat"]
     src = source or open(LOGO, encoding="utf-8").read()
@@ -182,10 +189,12 @@ def svg(name: str, source: str = "") -> str:
         return m.group(0)
 
     out = re.sub(r'fill="(#[0-9A-Fa-f]{6})"', swap, src)
-    # The plate goes in as the first child so it sits behind everything, and outside the logo's own
-    # <g transform>, which is why it is inserted after the opening <svg> rather than wrapped around.
-    return out.replace(">", '><rect x="0" y="0" width="590" height="590" fill="%s"/>'
-                       % t["plate_hex"], 1)
+    if plate:
+        # The plate goes in as the first child so it sits behind everything, and outside the logo's
+        # own <g transform>, which is why it is inserted after <svg> rather than wrapped around.
+        out = out.replace(">", '><rect x="0" y="0" width="590" height="590" fill="%s"/>'
+                          % t["plate_hex"], 1)
+    return out
 
 
 # ---------------------------------------------------------------- rasterising, stdlib only
@@ -268,23 +277,92 @@ def _raster(polys, size, ss=3):
     return small
 
 
-def _png(rgb: bytes, size: int) -> bytes:
+def _raster_rgba(polys, size, ss=3):
+    """Rasterise onto transparent pixels for Collie's first-party, plate-free UI avatar."""
+    n = size * ss
+    buf = bytearray(n * n * 4)
+    for pts, (r, g, b) in polys:
+        ys = [p[1] for p in pts]
+        y0 = max(0, int(min(ys) * n / 590))
+        y1 = min(n - 1, int(max(ys) * n / 590) + 1)
+        k = n / 590.0
+        for y in range(y0, y1 + 1):
+            yc = (y + 0.5) / k
+            xs = []
+            for i in range(len(pts)):
+                (x1, ya), (x2, yb) = pts[i], pts[(i + 1) % len(pts)]
+                if (ya <= yc < yb) or (yb <= yc < ya):
+                    xs.append(x1 + (yc - ya) * (x2 - x1) / (yb - ya))
+            xs.sort()
+            row = y * n * 4
+            for i in range(0, len(xs) - 1, 2):
+                a, z = int(xs[i] * k + 0.5), int(xs[i + 1] * k + 0.5)
+                for x in range(max(0, a), min(n, z)):
+                    o = row + x * 4
+                    buf[o] = r; buf[o + 1] = g; buf[o + 2] = b; buf[o + 3] = 255
+    if ss == 1:
+        return buf
+    small = bytearray(size * size * 4)
+    m = ss * ss
+    for y in range(size):
+        for x in range(size):
+            rgba = [0, 0, 0, 0]
+            for dy in range(ss):
+                base = ((y * ss + dy) * n + x * ss) * 4
+                for dx in range(ss):
+                    o = base + dx * 4
+                    for c in range(4):
+                        rgba[c] += buf[o + c]
+            o = (y * size + x) * 4
+            # PNG stores straight (not premultiplied) alpha. Average the colour over COVERED
+            # subpixels, while alpha records coverage; averaging both over the whole box creates
+            # a dark fringe when the browser composites an antialiased edge.
+            if rgba[3]:
+                for c in range(3):
+                    small[o + c] = min(255, rgba[c] * 255 // rgba[3])
+            small[o + 3] = rgba[3] // m
+    return small
+
+
+def _png(rgb: bytes, size: int, alpha: bool = False) -> bytes:
     """A minimal PNG. zlib and struct are the whole dependency list."""
-    raw = b"".join(b"\x00" + bytes(rgb[y * size * 3:(y + 1) * size * 3]) for y in range(size))
+    channels = 4 if alpha else 3
+    raw = b"".join(b"\x00" + bytes(rgb[y * size * channels:(y + 1) * size * channels])
+                   for y in range(size))
 
     def chunk(tag, data):
         c = tag + data
         return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
 
     return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6 if alpha else 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw, 9))
             + chunk(b"IEND", b""))
 
 
-def png(name: str, size: int = 512, source: str = "") -> bytes:
-    """This dog's avatar as a PNG. 512 is Slack's recommended app-icon size."""
-    return _png(_raster(_polygons(svg(name, source)), size), size)
+def _render_png(name: str, size: int, source: str, plate: bool) -> bytes:
+    art = svg(name, source, plate=plate)
+    if plate:
+        return _png(_raster(_polygons(art), size), size)
+    return _png(_raster_rgba(_polygons(art), size), size, alpha=True)
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_named_png(name: str, size: int, plate: bool) -> bytes:
+    """Bound repeated UI requests without turning arbitrary source SVG into retained state."""
+    return _render_png(name, size, "", plate)
+
+
+def png(name: str, size: int = 512, source: str = "", plate: bool = True) -> bytes:
+    """This dog's avatar as PNG. Plated by default for existing Slack/app-icon callers.
+
+    First-party pages poll identity so a rename made elsewhere appears live. Their browser requests
+    deliberately bypass HTTP caches; retain at most 64 deterministic renders in-process so those
+    polls do not repeatedly run the pure-Python rasterizer. Custom source art bypasses the cache.
+    """
+    if source:
+        return _render_png(name, size, source, plate)
+    return _cached_named_png(name.strip().lower(), size, bool(plate))
 
 
 def write(name: str, directory: str = "", size: int = 512) -> str:

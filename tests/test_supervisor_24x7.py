@@ -3,6 +3,8 @@ import os
 import subprocess
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from harness import supervisor
 from harness.ops import OpsStore
 
@@ -148,12 +150,26 @@ def test_supervisor_detects_sleep_resume_and_wakes_all_workers(tmp_path):
 def test_default_config_never_persists_secret_environment(tmp_path):
     spec = supervisor.WorkerSpec.from_dict({
         "name": "x", "argv": ["python"],
-        "env": {"NORMAL": "yes", "API_KEY": "secret", "ACCESS_TOKEN": "secret"},
+        "env": {"NORMAL": "yes", "API_KEY": "secret", "ACCESS_TOKEN": "secret",
+                "OPENAI_APIKEY": "secret", "GITHUB_PAT": "secret",
+                "AWS_ACCESS_KEY_ID": "secret", "AUTHORIZATION": "secret"},
     })
     assert spec.env == {"NORMAL": "yes"}
     config = supervisor.default_config(str(tmp_path), python="python")
     supervisor.save_config(config, str(tmp_path / "supervisor.json"))
     assert "secret" not in (tmp_path / "supervisor.json").read_text(encoding="utf-8")
+
+
+def test_worker_identity_cannot_escape_log_root_or_persist_probe_credentials():
+    with pytest.raises(ValueError, match="path-safe"):
+        supervisor.WorkerSpec.from_dict({
+            "name": "../outside", "argv": ["python"],
+        })
+    with pytest.raises(ValueError, match="embed credentials"):
+        supervisor.WorkerSpec.from_dict({
+            "name": "safe", "argv": ["python"],
+            "probe_url": "https://user:password@example.com/health",
+        })
 
 
 def test_slack_worker_adopts_fresh_legacy_heartbeat_then_takes_over(tmp_path):

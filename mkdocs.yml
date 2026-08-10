@@ -46,6 +46,7 @@ nav:
   - Providers: providers.md
   - CLI reference: cli.md
   - The desktop app: desktop.md
+  - Extensions: extensions.md
   - Code signing: signing.md
   - Privacy: privacy.md
 

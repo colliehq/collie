@@ -59,6 +59,116 @@ def test_ecosystem_shell_exposes_missions_pack_library_and_global_approvals():
     assert 'cls._mirror_pub(sid, "permission_resolved"' in server
 
 
+def test_library_is_a_real_digest_and_authority_lifecycle_surface():
+    desktop = read("harness/webui/index.html")
+    server = read("harness/webapp.py")
+
+    assert 'id="libraryPanel"' in desktop and 'id="libraryGrid"' in desktop
+    library_click = desktop.split('$("navLibrary").onclick', 1)[1].split(";", 2)[:2]
+    assert "setLibraryOpen(true)" in ";".join(library_click)
+    assert '$("navLibrary").onclick = function () { setProductNav("library"); openSettings' not in desktop
+    for value in ("/api/library", "/api/library/action", "SHA-256 digest", "Declared authority",
+                  "Scope change", "integrity_ok", "rollback_version"):
+        assert value in desktop or value in server
+    assert 'approve: !version.approved' in desktop
+    assert 'window.confirm(libraryApprovalText' in desktop
+    assert 'force=False' in server and 'force=True' not in server.split('if path == "/api/library/action"', 1)[1].split('if path ', 1)[0]
+
+
+def test_pack_page_reports_operational_state_without_inventing_device_presence():
+    page = read("harness/webui/remote.html")
+
+    assert "<title>Pack — Collie</title>" in page and 'id="packcard"' in page
+    for endpoint in ("/api/whoami", "/api/run-capabilities", "/api/healthz",
+                     "/api/activity", "/api/approvals", "/api/remote/status"):
+        assert endpoint in page
+    assert 'id="packmembers"' in page and 'id="packassignments"' in page
+    assert "Worker freshness is reported by local heartbeats" in page
+    assert "Paired · live reachability not reported" in page
+    assert 'colspan="4"' in page and "pendingError(" in page
+
+
+def test_dedicated_surfaces_expose_safe_activity_and_recovery_controls():
+    pages = {
+        name: read(f"harness/webui/{name}.html")
+        for name in ("mobile", "remote", "ambient")
+    }
+
+    for name, page in pages.items():
+        for endpoint in ("/api/activity", "/api/healthz", "/api/recovery/reconcile",
+                         "/api/mission/specialist/steer",
+                         "/api/mission/specialist/cancel"):
+            assert endpoint in page, (name, endpoint)
+        assert "confirmed:true" in page, name
+        assert "Inspect the external system" in page, name
+        assert "not_fired" in page and (
+            'resolution:"cancel"' in page or "resolution:'cancel'" in page), name
+        assert "活动与恢复" in page and "活動與復原" in page, name
+
+    assert 'tOps("Service")' in pages["ambient"]
+    assert '"Describe the outcome you want…":"描述你想完成的结果…"' in pages["ambient"]
+    assert '"Service":"服务"' in pages["remote"]
+
+    # The dedicated operations renderers consume only the server's allowlisted lifecycle fields.
+    blocks = {
+        "mobile": pages["mobile"].split("// ---- authenticated Activity", 1)[1].split(
+            "// Independent run controls", 1)[0],
+        "remote": pages["remote"].split("function activityStateLabel", 1)[1].split(
+            "function renderPack", 1)[0],
+        "ambient": pages["ambient"].split("// ── compact Activity", 1)[1].split(
+            "// ── in-page music", 1)[0],
+    }
+    for name, block in blocks.items():
+        for private_field in ("data.task", "data.result", "data.workspace", "data.resources",
+                              "data.leash", "data.args", "data.prompt", "data.messages"):
+            assert private_field not in block, (name, private_field)
+
+
+def test_mobile_and_remote_render_compact_parent_child_specialist_trees():
+    mobile = read("harness/webui/mobile.html")
+    remote = read("harness/webui/remote.html")
+
+    assert 'id="mobileRunTree"' in mobile and "function mobileWalkTree" in mobile
+    assert "row.parent_run_id" in mobile and "--tree-indent" in mobile
+    assert 'id="remoteRunTree"' in remote and "function walkActivityTree" in remote
+    assert "row.parent_run_id" in remote and "--tree-indent" in remote
+    for page in (mobile, remote):
+        assert "Only lifecycle metadata is shown; task content and tool arguments stay private." in page
+        assert "Steer this specialist at its next safe boundary:" in page
+        assert "Request specialist cancellation?" in page
+
+
+def test_approval_snapshots_recover_after_refresh_without_stale_resurrection():
+    desktop = read("harness/webui/index.html")
+    mobile = read("harness/webui/mobile.html")
+    ambient = read("harness/webui/ambient.html")
+    server = read("harness/webapp.py")
+
+    assert 'path == "/api/approvals"' in server and "_inbox_pending_all" in server
+    assert "PERMISSION_EPOCH" in desktop and "requestEpoch !== PERMISSION_EPOCH" in desktop
+    assert "approvalEpoch" in mobile and "requestEpoch!==approvalEpoch" in mobile
+    assert "opsApprovalEpoch" in ambient and "requestEpoch!==opsApprovalEpoch" in ambient
+
+
+def test_desktop_language_updates_the_document_accessibility_metadata():
+    desktop = read("harness/webui/index.html")
+    assert "document.documentElement.lang = UI_LANG" in desktop
+    assert "UI_LANG = resolveLang" in desktop and "applyLang();" in desktop
+
+
+def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failures():
+    desktop = read("harness/webui/index.html")
+
+    assert 'done_verified:"Verified against contract"' in desktop
+    assert 'done_accepted:"Completed without independent verification"' in desktop
+    assert "Completed by user acceptance; no independent verification was recorded." in desktop
+    accepted_css = re.search(r"\.mchip\.state-done_accepted\s*\{([^}]+)\}", desktop)
+    assert accepted_css and "--meadow" not in accepted_css.group(1)
+    assert "function missionResponse" in desktop and "if (!r.ok) throw new Error" in desktop
+    assert "missionError(card" in desktop and "Activity could not refresh" in desktop
+    assert 'fetch("/api/healthz?token=" + encodeURIComponent(CT))' in desktop
+
+
 def test_visual_run_views_name_scoped_checks_without_universal_verification_claims():
     wallpaper = read("harness/webui/wallpaper.html")
     explorer = read("harness/webui/map.html")
@@ -274,16 +384,79 @@ def test_strict_csp_has_no_inline_event_handlers():
         assert not parser.handlers, f"{path.name}: {parser.handlers}"
 
 
-def test_landing_csp_hashes_match_the_exact_inline_scripts():
+class _ButtonTypeParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.missing = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "button":
+            return
+        values = dict(attrs)
+        if not values.get("type"):
+            self.missing.append(values.get("id") or values.get("class") or "<button>")
+
+
+def test_companion_surfaces_keep_product_positioning_and_localized_a11y_copy():
+    mobile = read("harness/webui/mobile.html")
+    ambient = read("harness/webui/ambient.html")
+    remote = read("harness/webui/remote.html")
+
+    for page in (mobile, ambient):
+        assert "execution system" not in page.lower()
+        assert "operations system" in page.lower()
+    assert '"Personal AI operations system":"个人 AI 运营系统"' in mobile
+    assert '"Personal AI operations system":"個人 AI 營運系統"' in mobile
+    assert '"your AI operations system":"你的 AI 运营系统"' in ambient
+    assert '"your AI operations system":"你的 AI 營運系統"' in ambient
+
+    assert '<div class="reply" id="reply"><button' in ambient
+    assert 'id="replyBody" role="status" aria-live="polite"' in ambient
+    assert '<div class="reply" id="reply" role="status"' not in ambient
+    assert 'b.setAttribute("data-ops-open-name",app.label||"")' in ambient
+    assert 'document.querySelectorAll("[data-ops-open-name]")' in ambient
+    assert 'b.setAttribute("data-ops-title",labels[0])' in ambient
+    assert 'b.setAttribute("data-ops-aria",labels[1])' in ambient
+    assert 'document.querySelectorAll("[data-ops-title]")' in ambient
+    assert 'function opsLocale(){return OPS_LANG==="zh-tw"?"zh-TW":(OPS_LANG==="zh"?"zh-CN":"en");}' in ambient
+    assert 'new Intl.DateTimeFormat(opsLocale()' in ambient
+    assert 'd.toLocaleDateString(opsLocale()' in ambient
+
+    assert 'data-i-aria="Pending pairing request"' in remote
+    assert 'document.querySelectorAll("[data-i-aria]")' in remote
+    assert 'data-i="Check this matches the number on the phone."' in remote
+    assert '"Pending pairing request":"待處理的配對請求"' in remote
+    assert "t('Some Pack state is unavailable')" in remote
+    assert "t('Assignments unavailable.')" in remote
+    assert "activityStateLabel(row.state)" in remote
+    assert "missing:'Not running'" in remote
+    assert '"Not running":"未运行"' in remote
+    assert '"Not running":"未執行"' in remote
+
+
+def test_dedicated_companion_surfaces_use_explicit_static_button_types():
+    for path in (
+        "harness/webui/mobile.html",
+        "harness/webui/remote.html",
+        "harness/webui/ambient.html",
+        "landing/index.html",
+    ):
+        parser = _ButtonTypeParser()
+        parser.feed(read(path))
+        assert not parser.missing, f"{path}: buttons missing type: {parser.missing}"
+
+
+def test_landing_csp_template_and_builder_bind_the_exact_inline_scripts():
     page = (ROOT / "landing/index.html").read_bytes().decode("utf-8")
     headers = read("landing/_headers")
+    build = read("landing/build.mjs")
     scripts = re.findall(r"<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script\s*>", page,
                          flags=re.IGNORECASE | re.DOTALL)
     assert scripts
-    for script in scripts:
-        normalized = script.replace("\r\n", "\n").replace("\r", "\n")
-        digest = base64.b64encode(hashlib.sha256(normalized.encode()).digest()).decode()
-        assert f"'sha256-{digest}'" in headers
+    assert headers.count("__COLLIE_INLINE_SCRIPT_HASHES__") == 1
+    assert 'script.replace(/\\r\\n?/g, "\\n")' in build
+    assert 'createHash("sha256").update(browserText, "utf8").digest("base64")' in build
+    assert 'headerTemplate.replace(cspPlaceholder, hashes.join(" "))' in build
     assert "frame-ancestors 'none'" in headers and "object-src 'none'" in headers
     assert "base-uri 'none'" in headers and "X-Content-Type-Options: nosniff" in headers
 

@@ -62,17 +62,24 @@
     backdrop-filter:blur(18px) saturate(1.25); -webkit-backdrop-filter:blur(18px) saturate(1.25); pointer-events:auto;}
   .opsidentity{min-width:0; display:flex; align-items:center; gap:7px; color:var(--mut); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .opsidentity img{width:17px; height:17px; flex:none;}
-  .opsstate{display:inline-flex; align-items:center; gap:6px; color:var(--mut); font-size:11px; font-weight:650; white-space:nowrap;}
+  .opsstate{display:inline-flex; align-items:center; gap:6px; padding:4px 5px; border:0; border-radius:999px; background:transparent; color:var(--mut); font:inherit; font-size:11px; font-weight:650; white-space:nowrap; cursor:pointer;}
+  .opsstate:hover{background:var(--hover);color:var(--panel-ink)}
   .opsstate i{width:7px; height:7px; border-radius:50%; background:rgb(var(--accent)); box-shadow:0 0 0 3px rgba(var(--accent),.12);}
   .opsstate[data-state="running"]{color:var(--panel-ink)}
   .opsstate[data-state="running"] i{animation:opspulse 1.4s ease-in-out infinite}
   .opsstate[data-state="needs"]{color:#e6b65f}
   .opsstate[data-state="needs"] i{background:#e6b65f; box-shadow:0 0 0 3px rgba(230,182,95,.14); animation:none}
+  .opsstate[data-state="connecting"] i{background:var(--mut);box-shadow:none;animation:opspulse 1.4s ease-in-out infinite}
+  .opsstate[data-state="offline"]{color:#e36b79}
+  .opsstate[data-state="offline"] i{background:#e36b79;box-shadow:0 0 0 3px rgba(227,107,121,.14);animation:none}
   @keyframes opspulse{50%{opacity:.35}}
   .open-collie{display:inline-flex; align-items:center; min-height:28px; padding:0 10px; border-radius:999px; text-decoration:none;
     background:rgba(var(--accent),.92); color:var(--send-ink); font-size:11px; font-weight:750; white-space:nowrap; transition:transform .15s,background .15s;}
   .open-collie:hover{transform:translateY(-1px); background:rgb(var(--accent));}
-  @media(max-width:520px){.opsidentity{display:none}.opsbar{right:10px;top:10px}}
+  .ops-panel{position:fixed;top:58px;right:18px;z-index:12;width:min(410px,calc(100vw - 36px));max-height:min(76vh,680px);display:flex;flex-direction:column;border:1px solid var(--panel-line);border-radius:17px;background:var(--panel);color:var(--panel-ink);box-shadow:0 22px 70px rgba(0,0,0,.3);backdrop-filter:blur(24px) saturate(1.35);-webkit-backdrop-filter:blur(24px) saturate(1.35);pointer-events:auto;overflow:hidden}
+  .ops-panel[hidden]{display:none}.ops-panel-head{display:flex;align-items:center;gap:8px;padding:11px 12px;border-bottom:1px solid var(--panel-line)}.ops-panel-head h2{flex:1;font-size:13px;letter-spacing:.03em}.ops-panel-head button{min-height:31px;padding:4px 9px;border:1px solid var(--panel-line);border-radius:9px;background:var(--hover);color:var(--panel-ink);font:inherit;font-size:11px;font-weight:650;cursor:pointer}.ops-panel-head .close{width:31px;padding:0;font-size:17px}.ops-panel-body{overflow:auto;padding:10px 11px 13px;user-select:text}.ops-panel-notice{min-height:1.35em;margin:0 1px 8px;color:var(--faint);font-size:11px}.ops-panel-notice.bad{color:#e36b79}
+  .ops-section{margin-bottom:9px;border:1px solid var(--panel-line);border-radius:11px;overflow:hidden}.ops-section:last-child{margin-bottom:0}.ops-section h3{padding:8px 9px;border-bottom:1px solid var(--panel-line);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}.ops-help{padding:7px 9px 0;color:var(--faint);font-size:10px;line-height:1.4}.ops-rows{padding:3px 8px}.ops-empty{padding:9px 1px;color:var(--faint);font-size:11px}.ops-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:7px 1px;border-bottom:1px solid var(--panel-line);font-size:11px}.ops-row:last-child{border-bottom:0}.ops-row-main{min-width:0}.ops-row-name{font-weight:650;overflow-wrap:anywhere}.ops-row-meta{margin-top:1px;color:var(--faint);font-size:9.5px;overflow-wrap:anywhere}.ops-row-state{color:rgb(var(--accent));font:9.5px ui-monospace,Consolas,monospace}.ops-row-state.warn{color:#e6b65f}.ops-row-state.bad{color:#e36b79}.ops-row-actions{grid-column:1/-1;display:flex;gap:5px;flex-wrap:wrap}.ops-row-actions button{min-height:29px;padding:4px 8px;border:1px solid var(--panel-line);border-radius:8px;background:var(--hover);color:var(--panel-ink);font:inherit;font-size:10px;font-weight:650;cursor:pointer}.ops-row-actions button.primary{color:rgb(var(--accent));border-color:rgba(var(--accent),.45)}.ops-row-actions button.danger{color:#e36b79}.ops-row-actions button:disabled{opacity:.45}.ops-lane{padding:7px 1px 2px;color:var(--faint);font-size:9px;font-weight:750;letter-spacing:.06em;text-transform:uppercase}
+  @media(max-width:520px){.opsidentity{display:none}.opsbar{right:10px;top:10px}.ops-panel{right:10px;top:52px;width:calc(100vw - 20px);max-height:78vh}}
 
   /* ── slots ──────────────────────────────────────────────────────────────────────────────── */
   .slot{position:fixed; z-index:4; display:flex; flex-direction:column; gap:16px; pointer-events:none; transition:opacity .5s;}
@@ -276,9 +283,18 @@
   <div class="grain"></div>
   <div class="opsbar" aria-label="Collie operational status">
     <div class="opsidentity"><img src="/logo.svg" alt=""><span id="opsIdentity">Collie</span></div>
-    <div class="opsstate" id="opsState" data-state="ready" role="status" aria-live="polite"><i></i><span id="opsStateText">Ready</span></div>
-    <a class="open-collie" href="/" target="_blank" rel="noopener">Open Collie</a>
+    <button class="opsstate" id="opsState" type="button" data-state="connecting" aria-label="Open Activity" aria-controls="opsPanel" aria-expanded="false"><i></i><span id="opsStateText" role="status" aria-live="polite">Connecting…</span></button>
+    <a class="open-collie" id="opsOpen" href="/" target="_blank" rel="noopener">Open Collie</a>
   </div>
+  <aside class="ops-panel" id="opsPanel" role="dialog" aria-modal="true" aria-labelledby="opsPanelTitle" hidden inert>
+    <header class="ops-panel-head"><h2 id="opsPanelTitle" data-ops-t="Activity & recovery">Activity &amp; recovery</h2><button type="button" id="opsPanelRefresh" data-ops-t="Refresh">Refresh</button><button type="button" class="close" id="opsPanelClose" aria-label="Close Activity" data-ops-aria="Close Activity">×</button></header>
+    <div class="ops-panel-body">
+      <p class="ops-panel-notice" id="opsPanelNotice" role="status" aria-live="polite"></p>
+      <section class="ops-section"><h3 data-ops-t="Session recovery">Session recovery</h3><p class="ops-help" data-ops-t="Inspect the external system first. Collie will not replay an uncertain action automatically.">Inspect the external system first. Collie will not replay an uncertain action automatically.</p><div class="ops-rows" id="ambientRecovery"><div class="ops-empty" data-ops-t="Loading…">Loading…</div></div></section>
+      <section class="ops-section"><h3 data-ops-t="Specialists">Specialists</h3><div class="ops-rows" id="ambientSpecialists"><div class="ops-empty" data-ops-t="Loading…">Loading…</div></div></section>
+      <section class="ops-section"><h3 data-ops-t="Operational activity">Operational activity</h3><div class="ops-rows" id="ambientOther"><div class="ops-empty" data-ops-t="Loading…">Loading…</div></div></section>
+    </div>
+  </aside>
 
   <div class="dropzones">
     <div class="dz dtl" data-slot="tl">top-left</div>
@@ -304,18 +320,18 @@
   <audio id="au" preload="none"></audio>
 
   <div class="edithint">Drag any widget to a corner · click ✓ when done</div>
-  <button class="editbtn" id="editbtn" title="Edit layout" aria-label="Edit desktop layout">
+  <button class="editbtn" id="editbtn" type="button" title="Edit layout" aria-label="Edit desktop layout">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
   </button>
 
   <div class="dock">
-    <div class="reply" id="reply" role="status" aria-live="polite"><button class="x" id="replyX" title="Dismiss" aria-label="Dismiss reply">×</button><div id="replyBody"></div></div>
+    <div class="reply" id="reply"><button class="x" id="replyX" type="button" title="Dismiss" aria-label="Dismiss reply">×</button><div id="replyBody" role="status" aria-live="polite"></div></div>
     <div class="composer" id="composer">
       <textarea id="input" rows="1" aria-label="Message Collie" placeholder="Describe the outcome you want…"></textarea>
-      <button class="iconbtn mic" id="mic" title="Voice input" aria-label="Voice input" style="display:none">
+      <button class="iconbtn mic" id="mic" type="button" title="Voice input" aria-label="Voice input" style="display:none">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
       </button>
-      <button class="iconbtn send" id="send" title="Send" aria-label="Send">
+      <button class="iconbtn send" id="send" type="button" title="Send" aria-label="Send">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>
       </button>
     </div>
@@ -325,28 +341,91 @@
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
-  var opsLocalNeeds = false, opsGlobalNeeds = false, opsLocalRunning = false, opsGlobalPending = {}, OPS_IDENTITY = {};
-  function ambientName(){var raw=String(OPS_IDENTITY.name||"Collie");return raw.charAt(0).toUpperCase()+raw.slice(1);}
+  var opsLocalNeeds = false, opsGlobalNeeds = false, opsRecoveryNeeds = false, opsLocalRunning = false, opsGlobalPending = {}, opsBackend = "connecting", opsApprovalEpoch = 0, OPS_IDENTITY = {}, OPS_LANG="en";
+  var OPS_ZH={"Open Activity":"打开活动与恢复","Activity & recovery":"活动与恢复","Refresh":"刷新","Close Activity":"关闭活动与恢复","Session recovery":"会话恢复","Inspect the external system first. Collie will not replay an uncertain action automatically.":"请先检查外部系统。Collie 不会自动重放不确定操作。","Specialists":"专员","Operational activity":"运行活动","Loading…":"加载中…","Ready":"就绪","Running":"运行中","Needs you":"等你决定","Connecting…":"连接中…","Unavailable":"不可用","Open Collie":"打开 Collie","No recovery decisions.":"没有待处理的恢复决定。","No specialist runs.":"没有专员运行。","No other activity.":"没有其他活动。","Completed":"已完成","Not fired":"未发生","Cancel run":"取消运行","Steer":"补充要求","Cancel":"取消","Action failed":"操作失败","Confirm only after inspecting the external system: the action completed.":"请仅在检查外部系统并确认操作已完成后继续。","Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"请仅在检查外部系统并确认操作未发生后继续。Collie 之后可以安全重试。","Cancel this recovery without replaying the uncertain action?":"要取消此次恢复且不重放不确定操作吗？","Steer this specialist at its next safe boundary:":"在下一个安全边界向该专员补充要求：","Request specialist cancellation?":"要请求取消该专员吗？","Resolution recorded":"已记录恢复决定","Steer queued":"补充要求已排队","Cancellation requested":"已请求取消","Some operational lanes are unavailable":"部分运行通道暂不可用","Activity is unavailable":"活动暂不可用","Services":"服务","Service":"服务","Missions":"任务","Automations":"自动化","Mission":"任务","Automation":"自动化","Queued":"排队中","Blocked":"已阻塞","Waiting":"等待中","Paused":"已暂停","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿","Describe the outcome you want…":"描述你想完成的结果…","Message Collie":"给 Collie 发消息","Voice input":"语音输入","Send":"发送","Edit layout":"编辑布局","Edit desktop layout":"编辑桌面布局","Dismiss":"关闭","Dismiss reply":"关闭回复","Drag any widget to a corner · click ✓ when done":"将任意组件拖到角落 · 完成后点击 ✓","your AI operations system":"你的 AI 运营系统"};
+  var OPS_ZHTW={"Open Activity":"開啟活動與復原","Activity & recovery":"活動與復原","Refresh":"重新整理","Close Activity":"關閉活動與復原","Session recovery":"工作階段復原","Inspect the external system first. Collie will not replay an uncertain action automatically.":"請先檢查外部系統。Collie 不會自動重播不確定操作。","Specialists":"專員","Operational activity":"執行活動","Loading…":"載入中…","Ready":"就緒","Running":"執行中","Needs you":"等你決定","Connecting…":"連線中…","Unavailable":"無法使用","Open Collie":"開啟 Collie","No recovery decisions.":"沒有待處理的復原決定。","No specialist runs.":"沒有專員執行。","No other activity.":"沒有其他活動。","Completed":"已完成","Not fired":"未發生","Cancel run":"取消執行","Steer":"補充要求","Cancel":"取消","Action failed":"操作失敗","Confirm only after inspecting the external system: the action completed.":"請只在檢查外部系統並確認操作已完成後繼續。","Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"請只在檢查外部系統並確認操作未發生後繼續。Collie 之後可以安全重試。","Cancel this recovery without replaying the uncertain action?":"要取消此次復原且不重播不確定操作嗎？","Steer this specialist at its next safe boundary:":"在下一個安全邊界向該專員補充要求：","Request specialist cancellation?":"要請求取消該專員嗎？","Resolution recorded":"已記錄復原決定","Steer queued":"補充要求已排入佇列","Cancellation requested":"已請求取消","Some operational lanes are unavailable":"部分執行通道暫時無法使用","Activity is unavailable":"活動暫時無法使用","Services":"服務","Service":"服務","Missions":"任務","Automations":"自動化","Mission":"任務","Automation":"自動化","Queued":"排隊中","Blocked":"已封鎖","Waiting":"等待中","Paused":"已暫停","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿","Describe the outcome you want…":"描述你想完成的結果…","Message Collie":"傳訊息給 Collie","Voice input":"語音輸入","Send":"傳送","Edit layout":"編輯版面","Edit desktop layout":"編輯桌面版面","Dismiss":"關閉","Dismiss reply":"關閉回覆","Drag any widget to a corner · click ✓ when done":"將任意元件拖到角落 · 完成後按一下 ✓","your AI operations system":"你的 AI 營運系統"};
+  Object.assign(OPS_ZH,{"Open":"打开","app":"应用","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暂停","Play or pause":"播放或暂停","Next":"下一首","Next track":"下一首曲目"});
+  Object.assign(OPS_ZHTW,{"Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目"});
+  function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
+  function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
+  function opsLocale(){return OPS_LANG==="zh-tw"?"zh-TW":(OPS_LANG==="zh"?"zh-CN":"en");}
+  function applyOpsStatic(){
+    document.documentElement.lang=OPS_LANG;
+    document.querySelectorAll("[data-ops-t]").forEach(function(node){node.textContent=tOps(node.getAttribute("data-ops-t"));});
+    document.querySelectorAll("[data-ops-aria]").forEach(function(node){node.setAttribute("aria-label",tOps(node.getAttribute("data-ops-aria")));});
+    document.querySelectorAll("[data-ops-title]").forEach(function(node){node.title=tOps(node.getAttribute("data-ops-title"));});
+    document.querySelectorAll("[data-ops-open-name]").forEach(function(node){var name=node.getAttribute("data-ops-open-name");node.setAttribute("aria-label",tOps("Open")+" "+(name||tOps("app")));});
+    $("opsState").setAttribute("aria-label",tOps("Open Activity"));$("input").placeholder=tOps("Describe the outcome you want…");$("input").setAttribute("aria-label",tOps("Message Collie"));$("mic").title=tOps("Voice input");$("mic").setAttribute("aria-label",tOps("Voice input"));$("send").title=tOps("Send");$("send").setAttribute("aria-label",tOps("Send"));$("editbtn").title=tOps("Edit layout");$("editbtn").setAttribute("aria-label",tOps("Edit desktop layout"));$("replyX").title=tOps("Dismiss");$("replyX").setAttribute("aria-label",tOps("Dismiss reply"));document.querySelector(".edithint").textContent=tOps("Drag any widget to a corner · click ✓ when done");paintOps();paintIdentity();tick();
+  }
+  function ambientName(){return String(OPS_IDENTITY.name||"Collie");}
   function paintIdentity(){
     var name=ambientName(),parts=[name];if(OPS_IDENTITY.machine)parts.push(OPS_IDENTITY.machine);$("opsIdentity").textContent=parts.join(" · ");
-    var opsAvatar=document.querySelector(".opsidentity img");if(opsAvatar){opsAvatar.src="/api/avatar.png";opsAvatar.onerror=function(){this.onerror=null;this.src="/logo.svg";};}
+    var avatar=OPS_IDENTITY.avatar||"/api/avatar.png";
+    var opsAvatar=document.querySelector(".opsidentity img");if(opsAvatar){opsAvatar.src=avatar;opsAvatar.onerror=function(){this.onerror=null;this.src="/logo.svg";};}
     document.querySelectorAll(".brand .word b").forEach(function(el){el.textContent=name;});
-    document.querySelectorAll(".brand .tag").forEach(function(el){el.textContent="your AI execution system"+(OPS_IDENTITY.machine?" · "+OPS_IDENTITY.machine:"");});
-    document.querySelectorAll(".brand img.logo").forEach(function(img){img.src="/api/avatar.png";img.onerror=function(){this.onerror=null;this.src="/logo.svg";};});
+    document.querySelectorAll(".brand .tag").forEach(function(el){el.textContent=tOps("your AI operations system")+(OPS_IDENTITY.machine?" · "+OPS_IDENTITY.machine:"");});
+    document.querySelectorAll(".brand img.logo").forEach(function(img){img.src=avatar;img.onerror=function(){this.onerror=null;this.src="/logo.svg";};});
   }
   function authUrl(path){ return path + (path.indexOf("?") < 0 ? "?" : "&") + "token=" + encodeURIComponent(CT); }
   function paintOps(){
-    var state=(opsLocalNeeds||opsGlobalNeeds)?"needs":((opsLocalRunning||(typeof activeRuns!=="undefined"&&activeRuns>0))?"running":"ready");
-    var label=state==="needs"?"Needs you":(state==="running"?"Running":"Ready");
+    var state=opsBackend==="offline"?"offline":(opsBackend==="connecting"?"connecting":
+      ((opsLocalNeeds||opsGlobalNeeds||opsRecoveryNeeds)?"needs":((opsLocalRunning||(typeof activeRuns!=="undefined"&&activeRuns>0))?"running":"ready")));
+    var label=state==="offline"?tOps("Unavailable"):(state==="connecting"?tOps("Connecting…"):(state==="needs"?tOps("Needs you"):(state==="running"?tOps("Running"):tOps("Ready"))));
     $("opsState").setAttribute("data-state",state);$("opsStateText").textContent=label;
+    var open=$("opsOpen");if(open)open.textContent=tOps("Open Collie");
   }
-  fetch(authUrl("/api/whoami")).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}).then(function(d){
-    OPS_IDENTITY=d||{};paintIdentity();
-  }).catch(function(){});
+  function refreshOpsIdentity(){return fetch(authUrl("/api/whoami"),{cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}).then(function(d){OPS_IDENTITY=d||{};paintIdentity();}).catch(function(){});}
+  refreshOpsIdentity();setInterval(refreshOpsIdentity,15000);
+  function getOps(path){return fetch(authUrl(path)).then(function(r){return r.json().catch(function(){return{};}).then(function(d){if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d;});});}
+  function refreshOperationalSnapshot(){
+    var before=Object.keys(opsGlobalPending),requestEpoch=opsApprovalEpoch;
+    return Promise.all([getOps("/api/runs"),getOps("/api/approvals"),getOps("/api/activity")]).then(function(values){
+      opsBackend="ready";
+      activeRuns=(values[0].runs||[]).filter(function(row){return row&&["running","canceling"].indexOf(row.state)>=0;}).length;
+      if(requestEpoch!==opsApprovalEpoch){paintOps();setTimeout(refreshOperationalSnapshot,0);return;}
+      var live={};(values[1].approvals||[]).forEach(function(item){if(item&&item.id){live[item.id]=true;opsGlobalPending[item.id]=item.session||"";}});
+      before.forEach(function(id){if(!live[id])delete opsGlobalPending[id];});
+      opsGlobalNeeds=Object.keys(opsGlobalPending).length>0;var activity=values[2]||{};
+      opsRecoveryNeeds=(activity.sessions||[]).some(function(row){return row.recovery_required;})||
+        (activity.task_runs||[]).some(function(row){return ["needs_you","recovery_required","workspace_required"].indexOf(row.status)>=0;})||
+        (activity.missions||[]).some(function(row){return ["needs_you","recovery_required","review_required"].indexOf(row.state)>=0;})||
+        (activity.automations||[]).some(function(row){return row.state==="needs_you";});paintOps();
+    }).catch(function(){opsBackend="offline";paintOps();});
+  }
   function esc(s){ return String(s == null ? "" : s).replace(/[&<>]/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; }); }
   function api(path, body){ return fetch(path + "?token=" + encodeURIComponent(CT), {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body||{})})
     .then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(d.error||d.message||("HTTP "+r.status));return d;});})
     .catch(function(e){ try{showReply("err","⚠ "+esc(e&&e.message?e.message:"Request failed"));}catch(_){} return {ok:false,error:(e&&e.message)||"Request failed"}; }); }
+
+  // ── compact Activity + recovery panel (allowlisted operational metadata only) ───────────────
+  var opsPanelOpen=false,opsPanelRequest=0;
+  function opsTerminal(state){return ["completed","succeeded","failed","cancelled","dead"].indexOf(String(state||""))>=0;}
+  function opsMissionActive(state){return ["done_verified","done_accepted","failed","cancelled"].indexOf(String(state||""))<0;}
+  function opsStateLabel(state){var labels={queued:"Queued",running:"Running",blocked:"Blocked",waiting:"Waiting",needs_you:"Needs you",paused:"Paused",completed:"Completed",succeeded:"Completed",failed:"Failed",dead:"Failed",cancel_requested:"Cancel requested",cancelled:"Cancelled",recovery_required:"Recovery required",workspace_required:"Workspace required",done_verified:"Verified against contract",done_accepted:"Completed without independent verification",review_required:"Review required",draft:"Draft"};return tOps(labels[state]||String(state||"unknown").replace(/_/g," "));}
+  function opsTone(state){state=String(state||"");if(/failed|dead|cancelled/.test(state))return"bad";if(/needs_you|blocked|waiting|paused|cancel_requested|recovery|required/.test(state))return"warn";return"";}
+  function opsPost(path,body){return fetch(authUrl(path),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body||{})}).then(function(r){return r.json().catch(function(){return{};}).then(function(d){if(!r.ok)throw new Error(d.error||d.message||("HTTP "+r.status));return d;});});}
+  function opsPanelNotice(message,bad){var node=$("opsPanelNotice");node.textContent=message||"";node.classList.toggle("bad",!!bad);}
+  function opsEmpty(parent,message){var empty=document.createElement("div");empty.className="ops-empty";empty.textContent=tOps(message);parent.appendChild(empty);}
+  function opsLane(parent,label){var node=document.createElement("div");node.className="ops-lane";node.textContent=tOps(label);parent.appendChild(node);}
+  function opsRow(parent,title,meta,state){var row=document.createElement("div");row.className="ops-row";var main=document.createElement("div");main.className="ops-row-main";var name=document.createElement("div");name.className="ops-row-name";name.textContent=title||"—";main.appendChild(name);if(meta){var detail=document.createElement("div");detail.className="ops-row-meta";detail.textContent=meta;main.appendChild(detail);}var status=document.createElement("div");status.className="ops-row-state "+opsTone(state);status.textContent=opsStateLabel(state);row.appendChild(main);row.appendChild(status);parent.appendChild(row);return row;}
+  function opsAction(row,label,className,run){var actions=row.querySelector(".ops-row-actions");if(!actions){actions=document.createElement("div");actions.className="ops-row-actions";row.appendChild(actions);}var button=document.createElement("button");button.type="button";button.textContent=tOps(label);if(className)button.className=className;button.onclick=function(){var result;try{result=run();}catch(error){opsPanelNotice(tOps("Action failed")+": "+(error.message||error),true);return;}if(result===false||result==null)return;button.disabled=true;opsPanelNotice("");Promise.resolve(result).then(function(message){opsPanelNotice(tOps(message),false);return refreshAmbientActivity();}).catch(function(error){opsPanelNotice(tOps("Action failed")+": "+(error.message||error),true);}).finally(function(){button.disabled=false;});};actions.appendChild(button);}
+  function renderAmbientRecovery(activity){var box=$("ambientRecovery");box.textContent="";var rows=(activity.sessions||[]).filter(function(row){return row.recovery_required;});if(!rows.length){opsEmpty(box,"No recovery decisions.");return;}rows.forEach(function(data){var row=opsRow(box,data.session_id,data.reason||"",data.state);
+      opsAction(row,"Completed","primary",function(){if(!confirm(tOps("Confirm only after inspecting the external system: the action completed.")))return false;return opsPost("/api/recovery/reconcile",{session:data.session_id,resolution:"completed",confirmed:true}).then(function(){return"Resolution recorded";});});
+      opsAction(row,"Not fired","",function(){if(!confirm(tOps("Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.")))return false;return opsPost("/api/recovery/reconcile",{session:data.session_id,resolution:"not_fired",confirmed:true}).then(function(){return"Resolution recorded";});});
+      opsAction(row,"Cancel run","danger",function(){if(!confirm(tOps("Cancel this recovery without replaying the uncertain action?")))return false;return opsPost("/api/recovery/reconcile",{session:data.session_id,resolution:"cancel",confirmed:true}).then(function(){return"Resolution recorded";});});});}
+  function ambientRecent(rows,active,max){var out=(rows||[]).filter(active);(rows||[]).slice(-max).forEach(function(row){if(out.indexOf(row)<0)out.push(row);});return out.slice(-max);}
+  function renderAmbientSpecialists(activity){var box=$("ambientSpecialists"),rows=ambientRecent(activity.task_runs||[],function(row){return !opsTerminal(row.status);},12);box.textContent="";if(!rows.length){opsEmpty(box,"No specialist runs.");return;}rows.forEach(function(data){var meta=data.mission_id?tOps("Mission")+" · "+data.mission_id:"";var row=opsRow(box,(data.role||"specialist")+" · "+data.run_id,meta,data.status);if(!opsTerminal(data.status)){
+        opsAction(row,"Steer","primary",function(){var text=prompt(tOps("Steer this specialist at its next safe boundary:"),"");if(text==null||!text.trim())return false;return opsPost("/api/mission/specialist/steer",{run_id:data.run_id,text:text.trim()}).then(function(){return"Steer queued";});});
+        opsAction(row,"Cancel","danger",function(){if(!confirm(tOps("Request specialist cancellation?")))return false;return opsPost("/api/mission/specialist/cancel",{run_id:data.run_id}).then(function(){return"Cancellation requested";});});}});}
+  function renderAmbientOther(activity,health){var box=$("ambientOther");box.textContent="";var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};if(Object.keys(workers).length||Object.keys(services).length){opsLane(box,"Services");Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};opsRow(box,name,worker.age_s==null?"":Math.round(worker.age_s)+"s",worker.fresh?"running":"recovery_required");count++;});Object.keys(services).sort().forEach(function(name){opsRow(box,name,tOps("Service"),services[name].ok?"running":"failed");count++;});}
+    var missions=ambientRecent(activity.missions||[],function(row){return opsMissionActive(row.state);},6);if(missions.length){opsLane(box,"Missions");missions.forEach(function(data){opsRow(box,data.mission_id,data.lane||tOps("Mission"),data.state);count++;});}
+    var automations=ambientRecent(activity.automations||[],function(row){return !opsTerminal(row.state);},6);if(automations.length){opsLane(box,"Automations");automations.forEach(function(data){opsRow(box,(data.automation_id||tOps("Automation"))+" · "+(data.execution_id||"—"),tOps("Automation"),data.state);count++;});}if(!count)opsEmpty(box,"No other activity.");}
+  function renderAmbientActivity(activity,health,failures){renderAmbientRecovery(activity);renderAmbientSpecialists(activity);renderAmbientOther(activity,health);var lanes=Object.keys(activity.errors||{}).concat(Object.keys((health&&health.activity_errors)||{})),issues=(failures||[]).slice();if(lanes.length)issues.push(tOps("Some operational lanes are unavailable")+": "+lanes.join(", "));opsPanelNotice(issues.join(" · "),issues.length>0);}
+  function refreshAmbientActivity(){if(!opsPanelOpen)return Promise.resolve();var request=++opsPanelRequest;opsPanelNotice(tOps("Loading…"),false);return Promise.all([["activity","/api/activity"],["health","/api/healthz"]].map(function(spec){return getOps(spec[1]).then(function(value){return{key:spec[0],value:value};}).catch(function(){return{key:spec[0],error:true};});})).then(function(results){if(request!==opsPanelRequest||!opsPanelOpen)return;var parts={},failures=[];results.forEach(function(result){if(result.error)failures.push(result.key);else parts[result.key]=result.value;});if(!parts.activity){opsPanelNotice(tOps("Activity is unavailable"),true);["ambientRecovery","ambientSpecialists","ambientOther"].forEach(function(id){var box=$(id);box.textContent="";opsEmpty(box,"Activity is unavailable");});return;}renderAmbientActivity(parts.activity,parts.health,failures);});}
+  function setOpsPanelOpen(open){opsPanelOpen=!!open;var panel=$("opsPanel");if(open){panel.hidden=false;panel.removeAttribute("inert");$("opsState").setAttribute("aria-expanded","true");refreshAmbientActivity();$("opsPanelClose").focus();}else{opsPanelRequest++;panel.hidden=true;panel.setAttribute("inert","");$("opsState").setAttribute("aria-expanded","false");$("opsState").focus();}}
+  $("opsState").onclick=function(){setOpsPanelOpen(!opsPanelOpen);};$("opsPanelClose").onclick=function(){setOpsPanelOpen(false);};$("opsPanelRefresh").onclick=refreshAmbientActivity;
+  $("opsPanel").addEventListener("keydown",function(e){if(e.key!=="Tab")return;var items=Array.prototype.slice.call(this.querySelectorAll('button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])'));if(!items.length)return;var first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
+  document.addEventListener("keydown",function(e){if(e.key==="Escape"&&opsPanelOpen)setOpsPanelOpen(false);});setInterval(refreshAmbientActivity,5000);
 
   // ── in-page music: <audio> fed a same-origin proxied yt-dlp stream + a REAL Web Audio analyser ──
   var au = $("au"), musicPlaying = false, curTrack = null;
@@ -476,7 +555,7 @@
     d.innerHTML = '<img class="logo" src="/api/avatar.png" alt="">' +
       '<div class="word"><b></b></div><div class="tag"></div>';
     d.querySelector(".word b").textContent=ambientName();
-    d.querySelector(".tag").textContent="your AI execution system"+(OPS_IDENTITY.machine?" · "+OPS_IDENTITY.machine:"");
+    d.querySelector(".tag").textContent=tOps("your AI operations system")+(OPS_IDENTITY.machine?" · "+OPS_IDENTITY.machine:"");
     var logo = d.querySelector("img.logo");
     if (logo) logo.addEventListener("error", function(){ logo.src="/logo.svg"; }, {once:true});
     el.appendChild(d);
@@ -489,7 +568,7 @@
   function renderLauncher(w, el){
     var box = document.createElement("div"); box.className = "apps card";
     (w.apps || []).forEach(function(app){
-      var b = document.createElement("button"); b.type = "button"; b.className = "app"; b.title = app.label || ""; b.setAttribute("aria-label", "Open " + (app.label || "app"));
+      var b = document.createElement("button"); b.type = "button"; b.className = "app"; b.title = app.label || ""; b.setAttribute("data-ops-open-name",app.label||"");b.setAttribute("aria-label", tOps("Open") + " " + (app.label || tOps("app")));
       // letter placeholder shown immediately; the real icon (extracted on first request, ~1-2s) swaps in
       var fb = document.createElement("span"); fb.className = "fallback"; fb.textContent = (app.label||"?").slice(0,1).toUpperCase();
       var lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = app.label || "";
@@ -508,11 +587,13 @@
       '<div class="np" id="wNp"></div>' +
       '<div class="eq" id="wEq">' + Array(15).join("<span></span>") + '</div>' +
       '<div class="mbtns">' +
-        '<button type="button" class="mbtn" data-cmd="prev" title="Previous" aria-label="Previous track">' + SVG.prev + '</button>' +
-        '<button type="button" class="mbtn pp" data-cmd="playpause" title="Play / Pause" aria-label="Play or pause">' + SVG.play + '</button>' +
-        '<button type="button" class="mbtn" data-cmd="next" title="Next" aria-label="Next track">' + SVG.next + '</button>' +
-      '</div>';
+        '<button type="button" class="mbtn" data-cmd="prev">' + SVG.prev + '</button>' +
+        '<button type="button" class="mbtn pp" data-cmd="playpause">' + SVG.play + '</button>' +
+        '<button type="button" class="mbtn" data-cmd="next">' + SVG.next + '</button>' +
+       '</div>';
+    var musicLabels={prev:["Previous","Previous track"],playpause:["Play / Pause","Play or pause"],next:["Next","Next track"]};
     d.querySelectorAll(".mbtn").forEach(function(b){
+      var labels=musicLabels[b.getAttribute("data-cmd")];b.setAttribute("data-ops-title",labels[0]);b.setAttribute("data-ops-aria",labels[1]);b.title=tOps(labels[0]);b.setAttribute("aria-label",tOps(labels[1]));
       b.onclick = function(){ musicControl(b.getAttribute("data-cmd")); };
     });
     el.appendChild(d); updateNp();
@@ -612,9 +693,12 @@
   function two(n){ return (n < 10 ? "0" : "") + n; }
   function tick(){
     var t = $("wTime"); if (!t) return;
-    var d = new Date(), h = d.getHours(), ap = h < 12 ? "AM" : "PM", h12 = h % 12; if (h12 === 0) h12 = 12;
-    t.innerHTML = h12 + ":" + two(d.getMinutes()) + '<span class="ampm">' + ap + "</span>";
-    var dd = $("wDate"); if (dd) { try { dd.textContent = d.toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"}); } catch(e){ dd.textContent = d.toDateString(); } }
+    var d = new Date();
+    try {
+      var parts=new Intl.DateTimeFormat(opsLocale(),{hour:"numeric",minute:"2-digit"}).formatToParts(d);t.textContent="";
+      parts.forEach(function(part){if(part.type==="dayPeriod"){var ap=document.createElement("span");ap.className="ampm";ap.textContent=part.value;t.appendChild(ap);}else t.appendChild(document.createTextNode(part.value));});
+    } catch(e){t.textContent=two(d.getHours())+":"+two(d.getMinutes());}
+    var dd = $("wDate"); if (dd) { try { dd.textContent = d.toLocaleDateString(opsLocale(),{weekday:"long",month:"long",day:"numeric"}); } catch(e){ dd.textContent = d.getFullYear()+"-"+two(d.getMonth()+1)+"-"+two(d.getDate()); } }
   }
   setInterval(tick, 10000);
 
@@ -720,6 +804,7 @@
   function activity(){ enterCoding(); bumpHard(); if (activeRuns <= 0) armGrace(); else clearTimeout(codeGrace); }
   try {
     var live = new EventSource("/api/live");
+    live.addEventListener("live_hello", refreshOperationalSnapshot);
     // The star-map IS the code map, so it belongs to runs that touch code — not to every
     // answer. Entering on `start` meant "计算一下24*24" swapped the whole desktop into the
     // coding view in order to say 576, and `tool` did the same for a web search. Counting
@@ -727,21 +812,21 @@
     // an edit or a reproduction — actual code work.
     live.addEventListener("start", function(){ activeRuns++; paintOps(); bumpHard(); clearTimeout(codeGrace); });
     live.addEventListener("permission", function(e){
-      try{var d=JSON.parse(e.data||"{}");if(d.id)opsGlobalPending[d.id]=d.session||"";}catch(_){}
+      try{var d=JSON.parse(e.data||"{}");opsApprovalEpoch++;if(d.id)opsGlobalPending[d.id]=d.session||"";}catch(_){}
       opsGlobalNeeds=Object.keys(opsGlobalPending).length>0;paintOps();
     });
     live.addEventListener("permission_resolved", function(e){
-      try{var d=JSON.parse(e.data||"{}");if(d.id)delete opsGlobalPending[d.id];}catch(_){}
+      try{var d=JSON.parse(e.data||"{}");opsApprovalEpoch++;if(d.id)delete opsGlobalPending[d.id];}catch(_){}
       opsGlobalNeeds=Object.keys(opsGlobalPending).length>0;paintOps();
     });
     live.addEventListener("edit", function(){ paintOps();activity(); });
     live.addEventListener("repro", function(){ paintOps();activity(); });
     live.addEventListener("done",  function(e){ activeRuns = Math.max(0, activeRuns - 1);
-      try{var d=JSON.parse(e.data||"{}");Object.keys(opsGlobalPending).forEach(function(id){if(!d.session||opsGlobalPending[id]===d.session)delete opsGlobalPending[id];});}catch(_){}
-      if(activeRuns<=0)opsGlobalPending={};
+      try{var d=JSON.parse(e.data||"{}");opsApprovalEpoch++;Object.keys(opsGlobalPending).forEach(function(id){if(!d.session||opsGlobalPending[id]===d.session)delete opsGlobalPending[id];});}catch(_){}
       opsGlobalNeeds=Object.keys(opsGlobalPending).length>0;paintOps();bumpHard(); if (activeRuns <= 0) armGrace(); });
     live.onerror = function(){};
   } catch(_){}
+  refreshOperationalSnapshot();setInterval(refreshOperationalSnapshot,4000);
   // while you're browsing the star-map (runs already done), your interaction keeps it up
   ["mousemove", "mousedown", "wheel", "keydown"].forEach(function(ev){
     document.addEventListener(ev, function(){ if (document.body.classList.contains("coding") && activeRuns <= 0) armGrace(); }, { passive: true });
@@ -856,9 +941,9 @@
   var VOICE_LANG = navigator.language || "en-US";
   var LOCALE = { en:"en-US", zh:"zh-CN", "zh-tw":"zh-TW", ja:"ja-JP", ko:"ko-KR", es:"es-ES",
                  fr:"fr-FR", de:"de-DE", pt:"pt-BR", ru:"ru-RU" };
-  fetch("/api/settings").then(function(r){ return r.json(); }).then(function(s){
-    var l = ((s && s.values && s.values.LANG) || "").toLowerCase(); if (LOCALE[l]) VOICE_LANG = LOCALE[l];
-  }).catch(function(){});
+  fetch(authUrl("/api/settings")).then(function(r){ if(!r.ok)throw new Error("HTTP "+r.status);return r.json(); }).then(function(s){
+    var l = ((s && s.values && s.values.LANG) || "").toLowerCase(); if (LOCALE[l]) VOICE_LANG = LOCALE[l];OPS_LANG=resolveOpsLang(l);applyOpsStatic();
+  }).catch(function(){OPS_LANG=resolveOpsLang("");applyOpsStatic();});
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition, mic = $("mic"), recog = null, recording = false;
   if (SR) {
     mic.style.display = "grid";

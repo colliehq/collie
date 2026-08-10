@@ -28,10 +28,12 @@ feature inherently requires:
   plus your approval on the desktop.
 - **"Ask Collie" chat on collie.run (optional).** Nothing is sent until you submit the website form.
   Your question and up to six recent messages from that demo go to Cloudflare Workers AI. For abuse
-  prevention, the service derives a daily counter key from your network address; only the counter and
-  expiry are stored, not the address itself, and they are deleted within 48 hours. This is unrelated
-  to the app and does not attach your product files or local sessions. The static site loads no
-  analytics or tracking beacon.
+  prevention, the service processes your network address through a secret-keyed one-way function to
+  derive a new identifier each day. The raw address is not used as a Durable Object name or stored by
+  the site code; the object stores only the counter and expiry, which are deleted within 48 hours.
+  Cloudflare still processes ordinary request data to deliver and secure the service. This is
+  unrelated to the app and does not attach your product files or local sessions. The static site
+  loads no analytics or tracking beacon.
 
 Local features — driving your logged-in browser, arranging your desktop, controlling other apps,
 recording your screen — run **entirely on your own computer**. Their output stays local unless you

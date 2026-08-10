@@ -13,6 +13,7 @@ Nothing here downloads anything unless asked: `collie update` reports, `collie u
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -30,6 +31,7 @@ from . import __version__
 REPO = os.environ.get("COLLIE_UPDATE_REPO", "colliehq/collie")
 API = "https://api.github.com/repos/%s/releases/latest" % REPO
 TEAM_ID = "58Y98W3QQK"          # the Developer ID the macOS builds are signed with
+WINDOWS_PUBLISHER_CN = "Daming Wu"  # Azure Artifact Signing identity used by release.yml
 APP_PATH = "/Applications/Collie.app"
 UPDATE_JOURNAL_SCHEMA = 1
 
@@ -161,9 +163,10 @@ def latest():
     return {"tag": d.get("tag_name") or "", "notes": (d.get("body") or "").strip(),
             "url": d.get("html_url") or "",
             "assets": {a["name"]: a["browser_download_url"] for a in (d.get("assets") or [])},
-            # GitHub reports "sha256:<hex>" per asset. It is what makes the Windows path safe at
-            # all: Collie-Setup.exe carries no Authenticode signature, so there is nothing in the
-            # file itself to check, and this digest is the only integrity claim available.
+            # GitHub reports "sha256:<hex>" per asset. Windows also verifies the installer's
+            # Authenticode chain and publisher before execution; the digest remains necessary because
+            # it binds those signed bytes to this specific release rather than merely to Collie's
+            # signing identity.
             "digests": {a["name"]: (a.get("digest") or "") for a in (d.get("assets") or [])}}
 
 
@@ -177,9 +180,11 @@ def sha256_of(path):
 
 
 def verify_digest(path, claimed):
-    """(ok, detail) against GitHub's "sha256:<hex>". Weaker than a signature — it proves the bytes
-    are the ones the release lists, not who built them — but it is what Windows has until
-    Collie-Setup.exe is signed, and it does stop a truncated or swapped download."""
+    """(ok, detail) against GitHub's ``sha256:<hex>`` release-asset digest.
+
+    This binds bytes to a particular release but does not identify their publisher. Windows updates
+    therefore require this *and* :func:`verify_windows_authenticode` before executing the installer.
+    """
     want = (claimed or "").split(":")[-1].strip().lower()
     if not want:
         return False, "the release publishes no digest for this asset"
@@ -187,6 +192,91 @@ def verify_digest(path, claimed):
     if got != want:
         return False, "sha256 mismatch (got %s…, expected %s…)" % (got[:12], want[:12])
     return True, "sha256 matches the release listing"
+
+
+_AUTHENTICODE_CHECK = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$securityModule = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+Import-Module -Name $securityModule -Force -ErrorAction Stop
+$signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
+  -LiteralPath $env:COLLIE_AUTHENTICODE_PATH
+$publisher = ''
+$subject = ''
+if ($null -ne $signature.SignerCertificate) {
+  $publisher = $signature.SignerCertificate.GetNameInfo(
+    [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+  $subject = [string]$signature.SignerCertificate.Subject
+}
+[PSCustomObject]@{
+  status = [string]$signature.Status
+  publisher = [string]$publisher
+  subject = [string]$subject
+} | ConvertTo-Json -Compress
+"""
+
+
+def _system_powershell():
+    """Resolve in-box Windows PowerShell without trusting PATH or mutable environment variables."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        count = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))  # type: ignore[attr-defined]
+        if count <= 0 or count >= len(buf):
+            return ""
+        return os.path.join(buf.value, "WindowsPowerShell", "v1.0", "powershell.exe")
+    except Exception:
+        return ""
+
+
+def verify_windows_authenticode(path, expected_publisher=WINDOWS_PUBLISHER_CN):
+    """Return ``(ok, detail)`` for the Windows trust-chain and publisher boundary.
+
+    ``Get-AuthenticodeSignature`` asks Windows to validate the PE signature and its certificate
+    chain. The certificate's parsed SimpleName must also exactly match the Azure Artifact Signing
+    identity used by ``release.yml``; a merely valid executable from another publisher is refused.
+    The check is non-interactive and fail-closed on every execution or decoding error.
+    """
+    if not plat.is_windows():
+        return False, "Authenticode verification is only available on Windows"
+    artifact = os.path.abspath(path)
+    if not os.path.isfile(artifact):
+        return False, "installer is missing: %s" % artifact
+
+    # Use Windows' in-box, absolute PowerShell rather than PATH or SystemRoot environment resolution.
+    # An updater must not run a powershell.exe planted beside the installer or named by hostile env.
+    powershell = _system_powershell()
+    if not os.path.isfile(powershell):
+        return False, "Windows PowerShell is unavailable; cannot verify Authenticode"
+
+    encoded = base64.b64encode(_AUTHENTICODE_CHECK.encode("utf-16le")).decode("ascii")
+    env = os.environ.copy()
+    env["COLLIE_AUTHENTICODE_PATH"] = artifact
+    try:
+        result = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-EncodedCommand", encoded],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+            env=env, **plat.no_window_kwargs())
+    except Exception as exc:
+        return False, "could not verify Authenticode: %s" % str(exc)[:160]
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "PowerShell verification failed").strip()
+        return False, "could not verify Authenticode: %s" % detail[:160]
+    try:
+        report = json.loads((result.stdout or "").strip().lstrip("\ufeff"))
+    except (TypeError, ValueError) as exc:
+        return False, "could not decode Authenticode result: %s" % str(exc)[:120]
+
+    status = str(report.get("status") or "") if isinstance(report, dict) else ""
+    publisher = str(report.get("publisher") or "") if isinstance(report, dict) else ""
+    subject = str(report.get("subject") or "") if isinstance(report, dict) else ""
+    if status != "Valid":
+        return False, "Authenticode signature is not valid (status=%s)" % (status or "unknown")
+    if publisher != expected_publisher:
+        return False, ("Authenticode publisher is not allowed (expected CN=%s, got %s)" %
+                       (expected_publisher, subject or publisher or "none"))
+    return True, "Authenticode chain is valid; publisher CN=%s" % expected_publisher
 
 
 def install_kind():
@@ -532,6 +622,10 @@ def apply_windows(exe, digest, on_note=print):
     'handed off', not 'installed', because at that point it genuinely does not know yet.
     """
     ok, why = verify_digest(exe, digest)
+    on_note("  verify: %s" % why)
+    if not ok:
+        return False, why
+    ok, why = verify_windows_authenticode(exe)
     on_note("  verify: %s" % why)
     if not ok:
         return False, why

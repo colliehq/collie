@@ -8,7 +8,7 @@ from harness.missionweb import MissionService
 from harness.tasktree import (BLOCKED, CANCEL_REQUESTED, CANCELLED, COMPLETED,
                               QUEUED, RECOVERY_REQUIRED, RUNNING,
                               WORKSPACE_REQUIRED, TaskTreeStore, narrow_leash)
-from harness.verifier import VERIFIED, Verdict
+from harness.verifier import VERIFIED, Observation, Verdict
 
 
 def _root(store, tmp_path, **leash_overrides):
@@ -79,6 +79,15 @@ def test_write_ownership_is_visible_and_sibling_conflicts_fail(tmp_path):
             resources=[{"kind": "file", "id": str(owned), "mode": "write"}],
             workspace=str(repo))
 
+    observed = repo / "observed.py"
+    reader = store.spawn_specialist(
+        root["run_id"], "reader", "inspect without mutation",
+        resources=[{"kind": "file", "id": str(observed), "mode": "read"}],
+        workspace=str(repo))
+    ok, reason = store.can_access(root["run_id"], str(observed), "write")
+    assert not ok and reader["run_id"] in reason, (
+        "a parent write must not race a delegated reader's stable view")
+
 
 def test_background_progress_steer_and_cancel_ack_are_durable(tmp_path):
     path = str(tmp_path / "tree.db")
@@ -104,6 +113,45 @@ def test_background_progress_steer_and_cancel_ack_are_durable(tmp_path):
     assert store.notifications()[0]["kind"] == "cancelled"
     store.close()
     assert TaskTreeStore(path).get(root["run_id"])["cancel_ack_at"] > 0
+
+
+def test_parent_cancel_atomically_stops_queued_and_running_descendants(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, repo = _root(store, tmp_path)
+    running = store.spawn_specialist(
+        root["run_id"], "reader", "currently running",
+        resources=[{"kind": "file", "id": str(repo), "mode": "read"}],
+        workspace=str(repo))
+    queued = store.spawn_specialist(
+        root["run_id"], "queued", "must never start",
+        resources=[{"kind": "file", "id": str(repo / "queued.py"), "mode": "read"}],
+        workspace=str(repo))
+    grandchild = store.spawn_specialist(
+        running["run_id"], "nested", "must also never start",
+        resources=[{"kind": "file", "id": str(repo / "nested.py"), "mode": "read"}],
+        workspace=str(repo))
+    token = store.claim(running["run_id"])
+    assert token
+
+    assert store.request_cancel(root["run_id"])
+    assert store.get(root["run_id"])["status"] == CANCELLED
+    assert store.get(queued["run_id"])["status"] == CANCELLED
+    assert store.get(grandchild["run_id"])["status"] == CANCELLED
+    assert store.get(running["run_id"])["status"] == CANCEL_REQUESTED
+    assert store.claim(queued["run_id"]) is None
+    assert store.claim(grandchild["run_id"]) is None
+    with pytest.raises(ValueError, match="stopping or terminal"):
+        store.spawn_specialist(
+            running["run_id"], "late", "must not gain authority after cancel",
+            resources=[], workspace=str(repo))
+
+    # Repeating the parent decision is safe while its live descendant drains and does not enqueue
+    # duplicate cancellation messages.
+    assert store.request_cancel(root["run_id"])
+    messages = store.claim_messages(running["run_id"], token)
+    assert [row["kind"] for row in messages] == ["cancel"]
+    assert store.ack_cancel(running["run_id"], token)
+    assert not store.request_cancel(root["run_id"])
 
 
 def test_block_resume_completion_and_child_mailbox(tmp_path):
@@ -142,6 +190,66 @@ def test_child_usage_charges_every_ancestor_and_stale_claim_fails_closed(tmp_pat
     assert store.get(child["run_id"])["status"] == RECOVERY_REQUIRED
     assert store.reconcile(child["run_id"], "worktree inspected")
     assert store.get(child["run_id"])["status"] == QUEUED
+
+
+def test_stale_worker_requeues_unacked_steering_and_reconcile_supersedes_cancel(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, _repo = _root(store, tmp_path)
+    token = store.claim(root["run_id"], lease_s=1)
+    steer_id = store.steer(root["run_id"], "preserve this direction")
+    assert store.claim_messages(root["run_id"], token)[0]["message_id"] == steer_id
+    assert store.recover_stale(int(time.time()) + 2) == 1
+    assert store.reconcile(root["run_id"], "worker inspected")
+    fresh = store.claim(root["run_id"])
+    replayed = store.claim_messages(root["run_id"], fresh)
+    assert [row["message_id"] for row in replayed] == [steer_id]
+    assert store.ack_message(root["run_id"], fresh, steer_id)
+
+    assert store.request_cancel(root["run_id"])
+    cancel = store.claim_messages(root["run_id"], fresh)
+    assert cancel and cancel[0]["kind"] == "cancel"
+    assert store.recover_stale(int(time.time()) + 400) == 1
+    assert store.reconcile(root["run_id"], "explicitly resume instead of cancel")
+    resumed = store.claim(root["run_id"])
+    assert store.claim_messages(root["run_id"], resumed) == []
+
+
+def test_specialist_scheduler_poll_recovers_crashed_worker(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, repo = _root(store, tmp_path)
+    child = store.spawn_specialist(
+        root["run_id"], "reader", "survive a dispatcher restart",
+        resources=[{"kind": "file", "id": str(repo / "a.py"), "mode": "read"}],
+        workspace=str(repo))
+    assert store.claim(child["run_id"], lease_s=0)
+
+    # MissionService's specialist dispatcher polls through this query.  A
+    # durable worker must therefore become recoverable without a separate
+    # operator/API call after the process restarts.
+    recoverable = store.list_runs(RECOVERY_REQUIRED, specialists_only=True)
+    assert [run["run_id"] for run in recoverable] == [child["run_id"]]
+    assert store.get(child["run_id"])["owner_token"] == ""
+
+
+def test_exhausted_ancestor_budget_blocks_fresh_specialist_claim(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, repo = _root(store, tmp_path, max_model_tokens=5)
+    first = store.spawn_specialist(
+        root["run_id"], "first", "consume shared budget",
+        resources=[{"kind": "file", "id": str(repo / "a.py"), "mode": "read"}],
+        workspace=str(repo))
+    second = store.spawn_specialist(
+        root["run_id"], "second", "must not escape shared budget",
+        resources=[{"kind": "file", "id": str(repo / "b.py"), "mode": "read"}],
+        workspace=str(repo))
+    token = store.claim(first["run_id"])
+    store.account_usage(first["run_id"], token, input_tokens=5)
+    assert store.complete(first["run_id"], token, "spent")
+
+    assert store.claim(second["run_id"]) is None
+    blocked = store.get(second["run_id"])
+    assert blocked["status"] == "needs_you"
+    assert root["run_id"] in blocked["result"]
 
 
 def test_standalone_narrow_leash_rejects_capability_and_autonomy_expansion():
@@ -183,7 +291,10 @@ def test_specialist_dispatcher_runs_real_child_model_and_tool_to_completion(tmp_
 
     service = MissionService(
         base=str(tmp_path / "svc"), decider=decider, stub=True, run_tree=tree,
-        goal_verifier=lambda *_: Verdict(VERIFIED, "independent child evidence"),
+        goal_verifier=lambda *_: Verdict(
+            VERIFIED, "independent child evidence", (
+                Observation("specialist-contract", time.time(), True,
+                            asserted=True, detail="child outcome observed"),)),
         specialist_workers=2)
     mission = service.start("orchestrate", may=["research"])
     repo = tmp_path / "repo"
@@ -231,7 +342,9 @@ def test_task_and_mission_lifecycle_hooks_have_backend_dispatch_points(tmp_path)
     service = MissionService(
         base=str(tmp_path / "svc"), decider=lambda *_: {"action": "done"},
         stub=True, hooks=hooks,
-        goal_verifier=lambda *_: Verdict(VERIFIED, "verified"))
+        goal_verifier=lambda *_: Verdict(
+            VERIFIED, "verified", (
+                Observation("hook-contract", time.time(), True, asserted=True),)))
     mission = service.start("finish")
     service.run(mission["mission_id"])
     assert any(event == "Stop" and payload["mission_id"] == mission["mission_id"]

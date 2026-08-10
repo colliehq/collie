@@ -46,34 +46,21 @@ def _data_dir() -> str:
     override = os.environ.get("COLLIE_DATA_DIR")
     if override:
         return override
-    # An explicitly set COLLIE_STATE_DIR outranks the source-checkout default. It used to lose to
-    # it: from a checkout this returned ROOT/data unconditionally, so a caller that set
-    # COLLIE_STATE_DIR to isolate a run got the shared repo store instead — silently, since the
-    # variable was accepted and ignored. That is the exact failure a benchmark cannot survive:
-    # Collie has memory, repeated runs of one task are where it would read its own earlier notes,
-    # and a comparison against a memoryless harness would be measuring that instead of the harness.
-    # It also explains a `collie compare` run whose records landed in the repo rather than the
-    # isolated directory it was given.
-    # KNOWN GAP, deliberately not changed here. From a source checkout this returns ROOT/data and
-    # ignores COLLIE_STATE_DIR — the variable is accepted and silently dropped, so a caller asking
-    # for an isolated store shares the repository one instead. That matters for benchmarking:
-    # Collie has memory, repeats of a task are exactly where it reads its own earlier notes, and a
-    # comparison against a memoryless harness would be measuring that. Honouring the variable here
-    # is a one-line change and it turns several spill tests red, because they encode this
-    # precedence — fixing it means updating that contract too, which is its own change. Until then
-    # an isolated run must set COLLIE_DATA_DIR, which is honoured above.
+    # Explicit state is an isolation boundary even from a source checkout.  Ignoring it here made
+    # benchmarks, tests, and parallel supervisors silently share the repository's memory/runs DB.
+    state_env = os.environ.get("COLLIE_STATE_DIR")
+    if state_env:
+        return os.path.join(state_env, "data")
     if os.path.exists(os.path.join(ROOT, "pyproject.toml")):     # a source checkout, not an install
         return os.path.join(ROOT, "data")
-    state_env = os.environ.get("COLLIE_STATE_DIR")
-    state = state_env or os.path.expanduser("~/.collie")
+    state = os.path.expanduser("~/.collie")
     new = os.path.join(state, "data")
     # Only rescue into the DEFAULT store. The rescue is a move, not a copy, so running it against an
     # explicitly requested directory empties ROOT/data into it — asking for an isolated run would
     # relocate the repository's own memory, runs and benchmark instance lists, and deleting that
     # scratch directory afterwards would take them with it. Observed exactly once, on the first
     # isolated run after COLLIE_STATE_DIR started being honoured here; the data was recovered.
-    if not state_env:
-        _migrate_legacy_data(os.path.join(ROOT, "data"), new)    # rescue pre-0.20.13 install data (once)
+    _migrate_legacy_data(os.path.join(ROOT, "data"), new)        # rescue pre-0.20.13 install data (once)
     return new
 
 
@@ -1771,6 +1758,82 @@ def cmd_activity(args):
     return 0 if (not args.health or value.get("ok")) else 1
 
 
+def cmd_library(args):
+    """Inspect and operate the digest-pinned local extension lifecycle."""
+    from .extensions import ExtensionError, ExtensionStore, scaffold_package, validate_package
+    store = ExtensionStore(args.state_dir or None)
+    action, value = args.action, args.value
+    try:
+        if action == "list":
+            result = {"extensions": store.list()}
+        elif action == "scaffold":
+            if not value:
+                raise ExtensionError("scaffold requires a new local directory")
+            report = scaffold_package(value, args.extension_id, args.name, args.publisher)
+            result = {key: report[key] for key in ("root", "digest", "manifest")}
+        elif action == "connections":
+            result = {"connections": store.connections()}
+        elif action == "audit":
+            result = {"audit": store.audit(args.limit)}
+        elif action == "validate":
+            if not value:
+                raise ExtensionError("validate requires a local package directory")
+            report = validate_package(value)
+            result = {key: report[key] for key in
+                      ("digest", "scope_hash", "manifest", "file_hashes")}
+        elif action == "plan":
+            if not value:
+                raise ExtensionError("plan requires a local package directory")
+            result = store.plan(value)
+        elif action == "install":
+            if not value:
+                raise ExtensionError("install requires a local package directory")
+            result = store.install(value, expected_digest=args.digest,
+                                   approve=args.approve)
+            if args.enable:
+                installed_version = result.get("installed_version") or ""
+                if args.version and args.version != installed_version:
+                    raise ExtensionError(
+                        "--version must match the package being installed (%s)" % installed_version)
+                result = store.enable(result["id"], installed_version,
+                                      approve=args.approve)
+        elif action == "show":
+            if not value: raise ExtensionError("show requires an extension id")
+            result = store.get(value)
+        elif action == "enable":
+            if not value: raise ExtensionError("enable requires an extension id")
+            result = store.enable(value, args.version or "", approve=args.approve)
+        elif action == "disable":
+            if not value: raise ExtensionError("disable requires an extension id")
+            result = store.disable(value)
+        elif action == "rollback":
+            if not value: raise ExtensionError("rollback requires an extension id")
+            result = store.rollback(value, approve=args.approve)
+        elif action == "uninstall":
+            if not value: raise ExtensionError("uninstall requires an extension id")
+            if not args.yes:
+                current = store.get(value)
+                print(json.dumps({"will_remove": value,
+                                  "version": args.version or "all installed versions",
+                                  "current": current}, ensure_ascii=False, indent=2))
+                print("repeat with --yes after reviewing this removal", file=sys.stderr)
+                return 2
+            result = store.uninstall(value, args.version or "", force=args.force)
+        elif action == "revoke":
+            if not value: raise ExtensionError("revoke requires an extension id")
+            if not args.yes:
+                print("revocation disables matching active bytes; repeat with --yes", file=sys.stderr)
+                return 2
+            result = store.revoke(value, args.digest, args.reason)
+        else:  # argparse owns the action enum; this is a defensive protocol boundary.
+            raise ExtensionError("unsupported Library action: %s" % action)
+    except ExtensionError as exc:
+        print("library %s refused: %s" % (action, exc), file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
 def cmd_recovery(args):
     """Inspect or explicitly reconcile crash-uncertain interactive tool boundaries."""
     from . import sessions
@@ -2765,7 +2828,7 @@ def cmd_mcp(args):
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit",
-        "activity", "recovery", "hooks", "supervisor", "automations"}
+        "activity", "recovery", "hooks", "supervisor", "automations", "library"}
 
 
 def _setup_wizard(force=False):
@@ -3156,6 +3219,35 @@ def main(argv=None):
     pact.add_argument("--no-probe", action="store_true",
                       help="skip live HTTP probes when using --health")
     pact.set_defaults(fn=cmd_activity)
+
+    plib = sub.add_parser(
+        "library", help="trusted extensions: validate, install, review, enable, rollback, remove")
+    plib.add_argument("action", nargs="?", default="list",
+                      choices=["list", "show", "scaffold", "validate", "plan", "install", "enable",
+                               "disable", "rollback", "uninstall", "revoke", "connections",
+                               "audit"])
+    plib.add_argument("value", nargs="?", default="",
+                      help="local package directory (validate/plan/install) or extension id")
+    plib.add_argument("--version", default="")
+    plib.add_argument("--id", dest="extension_id", default="",
+                      help="stable reverse-domain id for scaffold")
+    plib.add_argument("--name", default="", help="human-readable extension name for scaffold")
+    plib.add_argument("--publisher", default="", help="publisher name for scaffold")
+    plib.add_argument("--digest", default="",
+                      help="expected SHA-256 provenance pin (install) or exact digest (revoke)")
+    plib.add_argument("--reason", default="", help="security reason for revoke")
+    plib.add_argument("--approve", action="store_true",
+                      help="approve this exact digest and declared authority after review")
+    plib.add_argument("--enable", action="store_true",
+                      help="enable immediately after install (requires prior or --approve review)")
+    plib.add_argument("--force", action="store_true",
+                      help="allow uninstall of the active version; disable is safer")
+    plib.add_argument("--yes", action="store_true",
+                      help="confirm uninstall or digest revocation")
+    plib.add_argument("--limit", type=int, default=100)
+    plib.add_argument("--state-dir", default="",
+                      help="state root for this command; set COLLIE_STATE_DIR for runtime use")
+    plib.set_defaults(fn=cmd_library)
 
     prec = sub.add_parser(
         "recovery", help="inspect or explicitly reconcile crash-uncertain tool boundaries")

@@ -1,8 +1,8 @@
 # Collie for VS Code
 
-Collie — the from-scratch coding-agent harness — docked in a VS Code sidebar. It's the full
-`collie web` GUI (chat, the executed **verification gate**, live diffs, the code **map**, mid-run
-steering, image upload) embedded in a Webview panel. The extension manages the server for you:
+Collie — your personal AI operations system — docked in a VS Code sidebar. It's the full
+`collie web` GUI (Missions, global Needs You, scoped verification evidence, live diffs, Pack,
+Library, Activity, steering, and image upload) embedded in a Webview panel. The extension manages the server for you:
 one `collie web` process, your workspace folder as its working directory, on a free port, reachable
 through the webview even over WSL / Remote-SSH / Codespaces (via `asExternalUri`).
 
@@ -13,10 +13,13 @@ through the webview even over WSL / Remote-SSH / Codespaces (via `asExternalUri`
 
 ## Use it
 
-1. Open your project folder in VS Code.
-2. Click the **Collie** icon in the Activity Bar (left rail). The panel starts the server and loads
+1. Download **`Collie-VSCode.vsix`** from the
+   [latest release](https://github.com/colliehq/collie/releases/latest), then run
+   `code --install-extension Collie-VSCode.vsix` (or use **Extensions: Install from VSIX…**).
+2. Open your project folder in VS Code.
+3. Click the **Collie** icon in the Activity Bar (left rail). The panel starts the server and loads
    the GUI. First open takes a second while the server warms up.
-3. Ask Collie to fix, build, or explain. It operates on the open workspace.
+4. Ask Collie to fix, build, or explain. It operates on the open workspace.
 
 Commands (⇧⌘P / Ctrl+Shift+P):
 
@@ -45,8 +48,8 @@ code path/to/collie/vscode-collie
 
 ```bash
 cd path/to/collie/vscode-collie
-npx --yes @vscode/vsce package        # -> collie-0.1.0.vsix
-code --install-extension collie-0.1.0.vsix
+npx --yes @vscode/vsce package        # -> collie-0.2.0.vsix
+code --install-extension collie-0.2.0.vsix
 ```
 
 ## What this is (and isn't)

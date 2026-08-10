@@ -83,6 +83,28 @@ User -> Collie -> Mission -> Pack -> Brain / Skill / Connection
 A chat is an interaction channel. It is not a ninth domain object. A conversation may create,
 inspect, steer, or resume a Mission, but closing a chat must not erase Mission ownership.
 
+### Companion identity and naming
+
+`Collie` is the product and breed; the companion instance may have a personal display name such as
+`Rowan`. First run offers an adoption-style naming step with Skip and a calm default, while **My
+Collie** remains the permanent rename path. The chosen display name propagates to Home, Mobile,
+Remote, and Ambient without a reload. It does not claim to rename external Slack apps, `@` handles,
+or mail addresses; those identities have separate provider workflows.
+
+Name resolution is deterministic and never guesses among several kennel dogs:
+
+1. explicit `collie web --name` (selects the server's kennel dog; read-only in this Settings session);
+2. hard-set `COLLIE_COMPANION_NAME` (read-only until restart without the override);
+3. the saved `COMPANION_NAME` display setting;
+4. the only kennel dog, when exactly one exists;
+5. generic product label `Collie` when no personal identity was chosen.
+
+The coat remains a deterministic hash of the effective name. First-party UI renders that dog on a
+transparent background so it belongs to the desktop surface. The coloured contrast plate remains
+the default for generated tiny external/Slack app icons, where the silhouette otherwise disappears
+at member-list size. A rename changes the avatar URL and the response is non-cacheable, so an open
+surface cannot keep showing the previous coat.
+
 ## Information architecture
 
 The primary navigation has five destinations. **Needs You** is a global priority queue that can be
@@ -319,6 +341,22 @@ Every installable package must have a stable manifest covering:
 - Verification contracts and evidence types the package can produce.
 - Data retention, export, and uninstall behavior.
 
+### Current extension runtime
+
+The local trusted-runtime portion of this contract is implemented. Manifest schema v1 accepts
+Skills, exact-hash Hooks, HTTPS connection descriptors, templates, and assets; it deliberately
+rejects executable model tools and workers until there is isolation capable of enforcing their
+declared authority. Install is inert. Validation enforces a complete file inventory, compatibility,
+size/path/link limits, secret references, and a deterministic digest. Activation requires review of
+the exact version and scopes; integrity failure, disable, or revocation removes the components from
+runtime discovery. CLI and desktop Library surfaces expose install state, trust state, permission
+review, enable/disable, rollback, uninstall, and audit history. See [Build a Collie
+extension](extensions.md).
+
+Publisher signatures, reviewed public discovery, and sandboxed executable components remain
+distribution/runtime work. A digest pin is equivalent provenance for privately transferred bytes,
+but is not presented as proof of publisher identity.
+
 The ecosystem runtime must provide:
 
 - Reviewable install and update diffs.
@@ -409,7 +447,7 @@ or obscure risk.
 
 Settings should be organized around user intent:
 
-1. **My Collie:** identity, voice, personality, and appearance.
+1. **My Collie:** personal display name, effective-name source/lock, voice, personality, and appearance.
 2. **Autonomy & approvals:** default Leash, unattended behavior, escalation, and budgets.
 3. **Brains & routing:** connected providers and Fast / Balanced / Deep / Local-only policy.
 4. **Capabilities & connections:** files, browser, desktop, apps, MCP, and accounts.

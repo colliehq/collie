@@ -312,6 +312,14 @@ class TaskTreeStore:
         status = QUEUED if workspace or workspace_mode != "worktree" else WORKSPACE_REQUIRED
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
+            current_parent = self.db.execute(
+                "SELECT status,cancel_requested FROM agent_runs WHERE run_id=?",
+                (parent_run_id,)).fetchone()
+            if (not current_parent or current_parent["status"] in _TERMINAL or
+                    current_parent["status"] == CANCEL_REQUESTED or
+                    current_parent["cancel_requested"]):
+                self.db.rollback()
+                raise ValueError("specialist parent is stopping or terminal")
             count = self.db.execute(
                 "SELECT COUNT(*) n FROM agent_runs WHERE parent_run_id=? AND status NOT IN (?,?,?)",
                 (parent_run_id, COMPLETED, FAILED, CANCELLED)).fetchone()["n"]
@@ -398,6 +406,63 @@ class TaskTreeStore:
     def claim(self, run_id, lease_s=300):
         token, now = secrets.token_hex(16), int(time.time())
         with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            candidate = self.db.execute(
+                "SELECT parent_run_id,status,cancel_requested FROM agent_runs WHERE run_id=?",
+                (run_id,)).fetchone()
+            if not candidate or candidate["status"] != QUEUED:
+                self.db.commit()
+                return None
+            ancestry = [run_id]
+            stopping = (run_id, "cancellation already requested") \
+                if candidate["cancel_requested"] else None
+            parent_id = candidate["parent_run_id"]
+            while parent_id:
+                ancestry.append(parent_id)
+                parent = self.db.execute(
+                    "SELECT parent_run_id,status,cancel_requested FROM agent_runs WHERE run_id=?",
+                    (parent_id,)).fetchone()
+                if not parent:
+                    stopping = (parent_id, "ancestor is missing")
+                    break
+                if parent["status"] in _TERMINAL or parent["status"] == CANCEL_REQUESTED or \
+                        parent["cancel_requested"]:
+                    stopping = (parent_id, "ancestor is %s" % parent["status"])
+                    break
+                parent_id = parent["parent_run_id"] if parent else ""
+            if stopping:
+                missing = stopping[1] == "ancestor is missing"
+                state = NEEDS_YOU if missing else CANCELLED
+                cur = self.db.execute(
+                    "UPDATE agent_runs SET status=?,result=?,cancel_requested=?,cancel_ack_at=?,"
+                    "updated_at=? WHERE run_id=? AND status=? AND owner_token=''",
+                    (state, "%s: %s" % stopping, 0 if missing else 1,
+                     0 if missing else now, now, run_id, QUEUED))
+                if cur.rowcount:
+                    kind = "needs_you" if missing else "cancelled"
+                    self._event_locked(run_id, "ancestor_stopped_claim", {
+                        "ancestor_run_id": stopping[0], "reason": stopping[1]}, now)
+                    self._notify_locked(run_id, kind, {"reason": stopping[1]}, now)
+                self.db.commit()
+                return None
+            exhausted = None
+            for rid in ancestry:
+                reason = self.budget_reason(rid)
+                if reason:
+                    exhausted = (rid, reason)
+                    break
+            if exhausted:
+                reason = "%s: %s" % exhausted
+                cur = self.db.execute(
+                    "UPDATE agent_runs SET status=?,result=?,updated_at=? WHERE run_id=? "
+                    "AND status=? AND owner_token=''",
+                    (NEEDS_YOU, reason[:4000], now, run_id, QUEUED))
+                if cur.rowcount:
+                    self._event_locked(run_id, "budget_blocked", {
+                        "budget_run_id": exhausted[0], "reason": exhausted[1]}, now)
+                    self._notify_locked(run_id, "needs_you", {"reason": reason[:1000]}, now)
+                self.db.commit()
+                return None
             cur = self.db.execute(
                 "UPDATE agent_runs SET status=?,owner_token=?,lease_until=?,updated_at=? "
                 "WHERE run_id=? AND status=? AND owner_token='' AND cancel_requested=0",
@@ -506,6 +571,9 @@ class TaskTreeStore:
                 (CANCELLED, str(result)[:4000], now, now, run_id,
                  RUNNING, CANCEL_REQUESTED, token))
             if cur.rowcount:
+                self.db.execute(
+                    "UPDATE agent_mailbox SET state='acked',acked_at=? WHERE run_id=? "
+                    "AND kind='cancel' AND state IN ('queued','delivered')", (now, run_id))
                 self._event_locked(run_id, "cancel_acknowledged", {}, now)
                 self._notify_locked(run_id, "cancelled", {"acknowledged": True}, now)
             self.db.commit()
@@ -546,13 +614,24 @@ class TaskTreeStore:
     def reconcile(self, run_id, note=""):
         now = int(time.time())
         with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            before = self.db.execute(
+                "SELECT cancel_requested FROM agent_runs WHERE run_id=? AND status=? "
+                "AND owner_token=''", (run_id, RECOVERY_REQUIRED)).fetchone()
             cur = self.db.execute(
-                "UPDATE agent_runs SET status=?,result=?,updated_at=? WHERE run_id=? "
-                "AND status=? AND owner_token='' AND cancel_requested=0",
+                "UPDATE agent_runs SET status=?,result=?,cancel_requested=0,updated_at=? "
+                "WHERE run_id=? AND status=? AND owner_token=''",
                 (QUEUED, str(note or "explicitly reconciled")[:4000], now,
                  run_id, RECOVERY_REQUIRED))
             if cur.rowcount:
                 self._event_locked(run_id, "reconciled", {"note": note}, now)
+                if before and before["cancel_requested"]:
+                    # Reconcile is the explicit decision to resume despite an interrupted cancel.
+                    # Retire its old mailbox item so the fresh worker is not immediately cancelled.
+                    self.db.execute(
+                        "UPDATE agent_mailbox SET state='acked',acked_at=? WHERE run_id=? "
+                        "AND kind='cancel' AND state IN ('queued','delivered')", (now, run_id))
+                    self._event_locked(run_id, "cancel_superseded_by_reconcile", {}, now)
             self.db.commit()
         return cur.rowcount == 1
 
@@ -573,30 +652,65 @@ class TaskTreeStore:
         return cur.lastrowid
 
     def request_cancel(self, run_id, sender_run_id=""):
+        """Cancel a run and its whole delegated subtree atomically.
+
+        Work which has not started is terminally cancelled in the same transaction.  A live owner
+        is fenced as ``cancel_requested`` and receives one durable mailbox message, so it stops at
+        its next safe boundary.  Descendants are included because cancelling an orchestrator while
+        leaving delegated authority runnable would violate the parent's stop decision.
+        """
         now = int(time.time())
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
-            row = self.db.execute("SELECT status FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
-            if not row or row["status"] in _TERMINAL:
+            rows = self.db.execute(
+                "WITH RECURSIVE subtree(run_id) AS ("
+                "SELECT run_id FROM agent_runs WHERE run_id=? UNION "
+                "SELECT child.run_id FROM agent_runs child JOIN subtree parent "
+                "ON child.parent_run_id=parent.run_id) "
+                "SELECT run_id,status,owner_token,cancel_requested FROM agent_runs "
+                "WHERE run_id IN (SELECT run_id FROM subtree) ORDER BY depth DESC,run_id",
+                (run_id,)).fetchall()
+            if not rows:
                 self.db.commit()
                 return False
-            if row["status"] == CANCEL_REQUESTED:
+            active = [row for row in rows if row["status"] not in _TERMINAL]
+            if not active:
                 self.db.commit()
-                return True
-            if row["status"] == RUNNING:
-                self.db.execute(
-                    "UPDATE agent_runs SET status=?,cancel_requested=1,updated_at=? WHERE run_id=?",
-                    (CANCEL_REQUESTED, now, run_id))
-                self.db.execute(
-                    "INSERT INTO agent_mailbox(run_id,sender_run_id,kind,payload_json,state,created_at) "
-                    "VALUES(?,?,'cancel','{}','queued',?)", (run_id, sender_run_id, now))
-                self._event_locked(run_id, "cancel_requested", {}, now)
-            else:
-                self.db.execute(
-                    "UPDATE agent_runs SET status=?,cancel_requested=1,cancel_ack_at=?,updated_at=? "
-                    "WHERE run_id=?", (CANCELLED, now, now, run_id))
-                self._event_locked(run_id, "cancel_acknowledged", {"without_worker": True}, now)
-                self._notify_locked(run_id, "cancelled", {"acknowledged": True}, now)
+                return False
+            for row in active:
+                child_id = row["run_id"]
+                if row["status"] in (RUNNING, CANCEL_REQUESTED) and row["owner_token"]:
+                    transitioned = row["status"] != CANCEL_REQUESTED
+                    self.db.execute(
+                        "UPDATE agent_runs SET status=?,cancel_requested=1,updated_at=? "
+                        "WHERE run_id=? AND status IN (?,?)",
+                        (CANCEL_REQUESTED, now, child_id, RUNNING, CANCEL_REQUESTED))
+                    pending = self.db.execute(
+                        "SELECT 1 FROM agent_mailbox WHERE run_id=? AND kind='cancel' "
+                        "AND state IN ('queued','delivered') AND acked_at=0 LIMIT 1",
+                        (child_id,)).fetchone()
+                    if not pending:
+                        self.db.execute(
+                            "INSERT INTO agent_mailbox(run_id,sender_run_id,kind,payload_json,"
+                            "state,created_at) VALUES(?,?,'cancel','{}','queued',?)",
+                            (child_id, sender_run_id, now))
+                    if transitioned:
+                        self._event_locked(child_id, "cancel_requested", {
+                            "cascade_from": run_id if child_id != run_id else ""}, now)
+                    continue
+                cur = self.db.execute(
+                    "UPDATE agent_runs SET status=?,result=?,owner_token='',lease_until=0,"
+                    "cancel_requested=1,cancel_ack_at=?,updated_at=? WHERE run_id=? "
+                    "AND status NOT IN (?,?,?)",
+                    (CANCELLED, "cancelled before execution", now, now, child_id,
+                     COMPLETED, FAILED, CANCELLED))
+                if cur.rowcount:
+                    self._event_locked(child_id, "cancel_acknowledged", {
+                        "without_worker": True,
+                        "cascade_from": run_id if child_id != run_id else ""}, now)
+                    self._notify_locked(child_id, "cancelled", {
+                        "acknowledged": True,
+                        "cascade_from": run_id if child_id != run_id else ""}, now)
             self.db.commit()
         return True
 
@@ -719,21 +833,32 @@ class TaskTreeStore:
 
     def recover_stale(self, now=None):
         now = int(now if now is not None else time.time())
+        changed = 0
         with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
             rows = self.db.execute(
-                "SELECT run_id FROM agent_runs WHERE status IN (?,?) AND owner_token<>'' "
+                "SELECT run_id,owner_token,status FROM agent_runs "
+                "WHERE status IN (?,?) AND owner_token<>'' "
                 "AND lease_until>0 AND lease_until<=?", (RUNNING, CANCEL_REQUESTED, now)).fetchall()
             for row in rows:
-                self.db.execute(
+                cur = self.db.execute(
                     "UPDATE agent_runs SET status=?,owner_token='',lease_until=0,result=?,updated_at=? "
-                    "WHERE run_id=? AND lease_until<=?",
+                    "WHERE run_id=? AND owner_token=? AND status IN (?,?) AND lease_until<=?",
                     (RECOVERY_REQUIRED,
                      "worker lease expired; inspect its worktree/resources before resume",
-                     now, row["run_id"], now))
-                self._event_locked(row["run_id"], "recovery_required", {}, now)
+                     now, row["run_id"], row["owner_token"], RUNNING, CANCEL_REQUESTED, now))
+                if not cur.rowcount:
+                    continue
+                replayed = self.db.execute(
+                    "UPDATE agent_mailbox SET state='queued',delivered_at=0 "
+                    "WHERE run_id=? AND state='delivered' AND acked_at=0",
+                    (row["run_id"],)).rowcount
+                self._event_locked(row["run_id"], "recovery_required", {
+                    "previous_status": row["status"], "messages_requeued": replayed}, now)
                 self._notify_locked(row["run_id"], "recovery_required", {}, now)
+                changed += 1
             self.db.commit()
-        return len(rows)
+        return changed
 
     def can_access(self, run_id, resource, mode="write"):
         """Check declared scope and active descendant ownership before a tool call."""
@@ -756,8 +881,7 @@ class TaskTreeStore:
                 if row["run_id"] not in descendants:
                     continue
                 for delegated in _jl(row["resources_json"], []):
-                    if delegated["mode"] == "write" and (
-                            _resource_contains(delegated, wanted) or
+                    if (_resource_contains(delegated, wanted) or
                             _resource_contains(wanted, delegated)):
                         return False, "write ownership delegated to %s" % row["run_id"]
         return True, "owned"
@@ -772,6 +896,13 @@ class TaskTreeStore:
                 for row in reversed(rows)]
 
     def list_runs(self, status=None, *, specialists_only=False):
+        # ``specialists_only`` is the scheduler's polling API (rather than the
+        # read-only Activity/control-plane listing).  Make that poll the
+        # durable recovery clock as well, otherwise a process crash can leave
+        # a specialist in RUNNING forever: no queued row exists for the
+        # dispatcher to claim and nothing else invokes recover_stale().
+        if specialists_only:
+            self.recover_stale()
         where, args = [], []
         if status:
             states = (status,) if isinstance(status, str) else tuple(status)

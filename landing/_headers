@@ -3,4 +3,5 @@
   Referrer-Policy: no-referrer
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()
   X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-c0u7gcFc1tag/aItxD4TRt9KYWePkENhMpbQoNozmsA=' 'sha256-xnO/4fCPW9Ci5KAGuNMGwzjCq7G1uXsO718vVCKh+4c='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'
+  Strict-Transport-Security: max-age=31536000
+  Content-Security-Policy: default-src 'self'; script-src 'self' __COLLIE_INLINE_SCRIPT_HASHES__; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'

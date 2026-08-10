@@ -66,6 +66,14 @@ def _config_paths(cwd: str, state_dir: str | None = None) -> list[str]:
         trusted = False
     if trusted:
         paths.append(os.path.join(canonical(cwd), ".collie", "hooks.json"))
+    # Extension hooks are included only while an approved package is enabled.  Library lookup
+    # rechecks the package digest and revocation state; HookTrustStore independently pins the exact
+    # JSON bytes, so either trust layer failing makes the hook disappear/fail closed.
+    try:
+        from .extensions import enabled_component_paths
+        paths.extend(enabled_component_paths("hooks", state))
+    except Exception:
+        pass
     # Preserve precedence/order while preventing the same file from firing twice.
     out, seen = [], set()
     for path in paths:
@@ -115,24 +123,35 @@ class HookTrustStore:
         return self._load().get(key) == digest
 
     def set(self, path: str, trusted=True) -> str:
-        key = os.path.normcase(os.path.abspath(path))
-        values = self._load()
-        digest = _digest(path)
-        if trusted: values[key] = digest
-        else: values.pop(key, None)
+        # Trust writes can arrive from ``collie hooks trust`` while Library activation is adding
+        # another exact hash.  Serialize the read-modify-replace across processes so neither
+        # successful operation silently loses the other's entry.
+        from .extensions import _Lock
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        tmp = "%s.%d.tmp" % (self.path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"trusted": values}, fh, indent=2, sort_keys=True)
-            fh.write("\n"); fh.flush(); os.fsync(fh.fileno())
-        try: os.chmod(tmp, 0o600)
-        except OSError: pass
-        os.replace(tmp, self.path)
-        return digest
+        with _Lock(self.path + ".lock"):
+            key = os.path.normcase(os.path.abspath(path))
+            values = self._load()
+            digest = _digest(path)
+            if trusted: values[key] = digest
+            else: values.pop(key, None)
+            tmp = "%s.%d.%d.tmp" % (self.path, os.getpid(), threading.get_ident())
+            try:
+                with open(tmp, "x", encoding="utf-8") as fh:
+                    json.dump({"trusted": values}, fh, indent=2, sort_keys=True)
+                    fh.write("\n"); fh.flush(); os.fsync(fh.fileno())
+                try: os.chmod(tmp, 0o600)
+                except OSError: pass
+                os.replace(tmp, self.path)
+            finally:
+                try:
+                    if os.path.exists(tmp): os.unlink(tmp)
+                except OSError:
+                    pass
+            return digest
 
 
 class HookManager:
-    """Load trusted command hooks once and dispatch them with bounded runtime."""
+    """Load trusted command hooks and dispatch them with bounded runtime."""
 
     def __init__(self, cwd: str, configs: list[dict] | None = None,
                  state_dir: str | None = None,
@@ -141,6 +160,9 @@ class HookManager:
         self._groups: dict[str, list[dict]] = {}
         self._lock = threading.RLock()
         self.pending: list[dict[str, str]] = []
+        self._dynamic = configs is None
+        self._state_dir = state_dir
+        self._trust_store = trust_store
         if configs is None:
             configs = []
             trust = trust_store or HookTrustStore(
@@ -178,17 +200,33 @@ class HookManager:
                     g = dict(group); g["_source"] = source
                     self._groups.setdefault(str(event), []).append(g)
 
+    def _refresh_dynamic(self):
+        """Observe Library disable/revoke/config changes in a long-lived agent process."""
+        if not self._dynamic:
+            return
+        fresh = HookManager(self.cwd, state_dir=self._state_dir,
+                            trust_store=self._trust_store)
+        with self._lock:
+            self._groups = fresh._groups
+            self.pending = fresh.pending
+
     @property
     def active(self) -> bool:
-        return bool(self._groups)
+        self._refresh_dynamic()
+        with self._lock:
+            return bool(self._groups)
 
     def events(self) -> list[str]:
-        return sorted(self._groups)
+        self._refresh_dynamic()
+        with self._lock:
+            return sorted(self._groups)
 
     def dispatch(self, event: str, payload: dict | None = None,
                  subject: str = "") -> HookResult:
+        self._refresh_dynamic()
         result = HookResult()
-        groups = list(self._groups.get(event, ()))
+        with self._lock:
+            groups = list(self._groups.get(event, ()))
         if not groups:
             return result
         envelope = dict(payload or {})

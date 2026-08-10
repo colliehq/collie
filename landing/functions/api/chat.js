@@ -3,6 +3,7 @@
 // Bindings (landing/wrangler.toml):
 //   AI           Cloudflare Workers AI
 //   RATE_LIMITER external Durable Object namespace from collie-chat-rate-limiter
+//   RATE_LIMIT_SALT encrypted secret used to pseudonymize daily network-address buckets
 
 // The Durable Object makes the daily limit atomic. If either binding is unavailable, this endpoint
 // fails closed instead of quietly serving an unlimited public model proxy.
@@ -118,10 +119,22 @@ async function takeRateLimit(env, request) {
   if (!env.RATE_LIMITER || typeof env.RATE_LIMITER.idFromName !== "function") {
     return { error: json({ error: "The website demo is not configured safely yet." }, 503) };
   }
-  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const salt = typeof env.RATE_LIMIT_SALT === "string" ? env.RATE_LIMIT_SALT : "";
+  const ip = (request.headers.get("CF-Connecting-IP") || "").trim();
+  if (utf8Length(salt) < 32 || !ip || ip.length > 128) {
+    return { error: json({ error: "The website demo is not configured safely yet." }, 503) };
+  }
   const day = new Date().toISOString().slice(0, 10);
   try {
-    const id = env.RATE_LIMITER.idFromName(`${day}:${ip}`);
+    // Never use a raw address as a globally visible Durable Object name. A secret-keyed daily HMAC
+    // gives the limiter a stable bucket while preventing object ids from becoming an address index.
+    const hmacKey = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(salt), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const signature = await crypto.subtle.sign(
+      "HMAC", hmacKey, new TextEncoder().encode(`${day}\0${ip}`));
+    const bucket = [...new Uint8Array(signature)]
+      .map((value) => value.toString(16).padStart(2, "0")).join("");
+    const id = env.RATE_LIMITER.idFromName(bucket);
     const stub = env.RATE_LIMITER.get(id);
     const result = await stub.fetch("https://rate-limit.internal/take", {
       method: "POST",

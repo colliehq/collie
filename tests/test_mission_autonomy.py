@@ -1,19 +1,36 @@
 import json
 import time
 
+import pytest
+
 from harness.actions import ActionStore
-from harness.jobs import (Capability, DONE_VERIFIED, FAILED_S, NEEDS_YOU, PAUSED,
+from harness.jobs import (CANCELLED, Capability, DONE_VERIFIED, FAILED_S, NEEDS_YOU, PAUSED,
                           QUEUED, RECOVERY_REQUIRED, RUNNING, WAITING)
 from harness.mission import (MissionDriver, MissionStore, ModelDecider, create_mission,
                              world_leash)
 from harness.missionweb import MissionService
 from harness.providers import Completion, Usage
-from harness.verifier import FAILED, VERIFIED, Verdict
+from harness.verifier import FAILED, VERIFIED, Observation, Verdict
 
 
 def _stores(tmp_path):
     return (MissionStore(str(tmp_path / "missions.db")),
             ActionStore(str(tmp_path / "actions.db")))
+
+
+def test_specialist_creation_cannot_race_past_parent_cancellation(tmp_path):
+    store, actions = _stores(tmp_path)
+    create_mission(store, "parent", "parent", leash=world_leash())
+    assert store.cancel("parent")
+    with pytest.raises(ValueError, match="parent Mission is stopping or terminal"):
+        create_mission(
+            store, "late-child", "must never run",
+            case={"_parent_mission_id": "parent"}, leash=world_leash(),
+            lane="specialist", external_run_id="run_late")
+    assert store.get("parent").state == CANCELLED
+    assert store.get("late-child") is None
+    store.close()
+    actions.close()
 
 
 def test_hung_decider_is_bounded_and_heartbeat_cannot_fake_progress(tmp_path):
@@ -90,8 +107,13 @@ def test_goal_verifier_is_only_path_to_done_verified(tmp_path):
     store, actions = _stores(tmp_path)
     create_mission(store, "verified", "prove it", leash=world_leash())
     driver = MissionDriver(store, actions, lambda *_: {"action": "done"}, [],
-                           goal_verifier=lambda *_: Verdict(VERIFIED, "fresh evidence"))
+                           goal_verifier=lambda *_: Verdict(
+                               VERIFIED, "targeted contract passed", (
+                                   Observation("independent-check", time.time(), True,
+                                               asserted=True, detail="expected state observed"),)))
     assert driver.advance("verified") == DONE_VERIFIED
+    event = store.events("verified")[-1]
+    assert event["payload"]["evidence"][0]["channel"] == "independent-check"
 
     create_mission(store, "failed", "prove it", leash=world_leash())
     driver = MissionDriver(store, actions, lambda *_: {"action": "done"}, [],
@@ -101,6 +123,13 @@ def test_goal_verifier_is_only_path_to_done_verified(tmp_path):
     create_mission(store, "unverified", "prove it", leash=world_leash())
     assert MissionDriver(store, actions, lambda *_: {"action": "done"}, []).advance(
         "unverified") == NEEDS_YOU
+
+    create_mission(store, "unscoped", "prove it", leash=world_leash())
+    unscoped = MissionDriver(
+        store, actions, lambda *_: {"action": "done"}, [],
+        goal_verifier=lambda *_: Verdict(VERIFIED, "trust me"))
+    assert unscoped.advance("unscoped") == NEEDS_YOU
+    assert "without scoped independent evidence" in store.get("unscoped").result
 
 
 def test_human_wait_escalates_then_pauses_and_resumes_exact_state(tmp_path):

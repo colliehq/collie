@@ -185,6 +185,38 @@ def test_an_exploding_approver_denies(tmp_path):
     assert not ran
 
 
+def test_a_broken_audit_ledger_blocks_an_approved_consequential_call(tmp_path):
+    class BrokenAudit:
+        def record(self, **_kwargs):
+            raise OSError("audit disk unavailable")
+
+    ran = []
+    h = _h(tmp_path, gate=Gate(cwd=tmp_path),
+           approve=lambda *a: Outcome.ALLOW_ONCE.value)
+    h.audit = BrokenAudit()
+    h.provider = _ScriptProvider(_calls(("browser_click", {"ref": "e1"})))
+    h.registry.register(_spy("browser_click", ran))
+
+    _run(h)
+    assert not ran
+    assert "audit ledger is unavailable" in _results(h)[0]["content"]
+
+
+def test_durable_tool_does_not_run_when_pre_action_checkpoint_fails(tmp_path):
+    ran = []
+    h = _h(tmp_path, gate=None)
+    h.durable_session_id = "durable-session"
+    h._session_checkpoint = lambda *args, **kwargs: False
+    h.provider = _ScriptProvider(_calls(("write_file", {
+        "path": "should-not-exist.txt", "content": "unsafe",
+    })))
+    h.registry.register(_spy("write_file", ran))
+
+    _run(h)
+    assert not ran
+    assert "durability checkpoint failed" in _results(h)[0]["content"]
+
+
 # -- back-compat ------------------------------------------------------------
 def test_no_gate_means_no_change(tmp_path):
     """Benchmarks, `pack` and the delegate child build harnesses through the same

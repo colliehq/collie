@@ -9,7 +9,8 @@ onboarding when nothing is configured. Full help for any command: `collie <comma
 |---|---|
 | `collie` | Terminal chat (TUI). First run picks a provider. |
 | `collie -p "<task>"` / `collie run "<task>"` | Run one task headlessly. |
-| `collie web` | Serve the browser GUI — streams the verification gate live. |
+| `collie web` | Serve the browser GUI — streams the verification gate live. First run offers a companion display name; rename later under **Settings → My Collie**. |
+| `collie web --name Rowan` | Serve explicitly as kennel dog `Rowan`. This selection outranks the editable companion display setting and appears read-only for that server; it does not rename the Slack app or mail address. |
 | `collie web --lan` | Same, but also listen on this machine's network address so the iOS app (CollieIOS) can pair. Network clients get **nothing** until they pair: the token is handed to loopback only, and `/pair` shows a one-shot code the phone trades for it at `/api/pair` (HMAC challenge/response — the secret never crosses the wire). Add `--qr` for a QR fallback of the same one-shot secret. |
 | `collie app` | Open the native desktop window (Windows). |
 | `collie tui` | Rich terminal chat with a live tool/gate/diff timeline. |
@@ -37,6 +38,10 @@ onboarding when nothing is configured. Full help for any command: `collie <comma
 | `collie config KEY` | Print one setting. |
 | `collie config KEY VALUE` | Set one setting (e.g. `collie config LANG zh-tw`). |
 | `collie mcp list \| login \| logout \| tools` | Manage MCP servers. |
+| `collie library scaffold \| list \| show \| validate \| plan` | Create a safe starter, inspect installed extensions, or review a local package and its exact digest/scopes. |
+| `collie library install \| enable \| disable \| rollback \| uninstall` | Operate the trusted extension lifecycle; activation and removal have explicit review boundaries. |
+| `collie library revoke <id> --digest <sha256> --reason "…" --yes` | Revoke one exact installed digest; active matching code is disabled fail-closed. |
+| `collie library connections \| audit` | List active data-only connection descriptors or inspect lifecycle audit records. |
 
 ## Desktop (Windows)
 
@@ -74,3 +79,8 @@ See [The desktop app](desktop.md) for what these do and how they fit together.
 `COLLIE_<KEY>` environment variable → `~/.collie/settings.json` (the Settings panel /
 `collie config`) → built-in default. A hard-set env var always wins. A token/cost budget
 (`COLLIE_MAX_COST` / `COLLIE_MAX_TOTAL_TOKENS`) stops a run at a ceiling.
+
+For first-party identity, explicit `collie web --name` → hard-set `COLLIE_COMPANION_NAME` → saved
+`COMPANION_NAME` → a single kennel dog → generic `Collie`. The saved name is display-only across
+Home, Mobile, Remote, and Ambient; Slack apps, `@` handles, and dog-mail addresses keep their own
+external identities until renamed through those systems' workflows.

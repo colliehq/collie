@@ -127,8 +127,8 @@ least fails loudly. `build_mac.sh` does this in the right order and then asks Ga
 | Extensions actually load inside it | done — needed the nested-entitlements fix |
 | Signature survives first launch | done — bytecode is precompiled, so the seal is never broken |
 | App icon | done — rsvg-convert, else Chrome |
-| Both architectures | done in CI — `macos-14` (arm64) + `macos-13` (Intel) |
+| Release architecture | arm64 in CI; `--arch x86_64` remains available for local Intel builds |
 | Developer ID signature + notarisation | done — cert `58Y98W3QQK`, notarised and stapled |
 | Published next to `Collie-Setup.exe` | done in CI — the `dmg` job feeds the same release |
-| Landing page download button | still says "coming soon"; flip it when the first signed dmg ships |
-| Auto-update | not built. Homebrew users get `brew upgrade`; dmg users re-download. |
+| Landing page download button | live — points to `Collie-arm64.dmg` on the latest release |
+| Auto-update | built — `collie update --yes` verifies the DMG with Gatekeeper before replacing the app |

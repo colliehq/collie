@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "id": "org.collie.release-helper",
+  "name": "Release Helper",
+  "version": "1.0.0",
+  "publisher": "Collie examples",
+  "description": "A small, data-only example showing the trusted Library lifecycle.",
+  "license": "MIT",
+  "collie": {
+    "min_version": "0.21.0",
+    "max_version": "1.0.0"
+  },
+  "platforms": [
+    "windows",
+    "macos",
+    "linux"
+  ],
+  "files": [
+    "skills/release/SKILL.md"
+  ],
+  "components": {
+    "skills": [
+      "skills/release/SKILL.md"
+    ],
+    "hooks": [],
+    "connections": [],
+    "templates": [],
+    "assets": []
+  },
+  "permissions": {
+    "filesystem": [],
+    "network": [],
+    "credentials": [],
+    "browser": [],
+    "desktop": [],
+    "external_actions": [],
+    "host_hooks": false
+  },
+  "data": {
+    "retention": "none",
+    "export": true,
+    "uninstall": "remove"
+  },
+  "verification": [
+    {
+      "kind": "pytest",
+      "description": "Collie's extension lifecycle regression suite",
+      "command": "python -m pytest -q tests/test_extensions.py"
+    }
+  ]
+}

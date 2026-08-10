@@ -24,6 +24,7 @@ import hmac
 import http.client
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -43,18 +44,38 @@ _DROP_HEADERS = {
 _CHUNK = 2048
 
 
+def _validated_relay_url(relay_url: str) -> str:
+    """Return a normalized relay origin, rejecting network-visible plaintext transports."""
+    value = str(relay_url or "").strip()
+    parts = urllib.parse.urlsplit(value)
+    try:
+        _ = parts.port
+    except ValueError as exc:
+        raise ValueError("invalid Collie relay URL") from exc
+    host = (parts.hostname or "").lower()
+    loopback = host in {"localhost", "127.0.0.1", "::1"}
+    if parts.scheme not in {"wss", "ws"} or not host:
+        raise ValueError("Collie relay URL must be a WebSocket origin")
+    if parts.scheme == "ws" and not loopback:
+        raise ValueError("hosted Collie remote requires wss:// (ws:// is loopback-only)")
+    if (parts.username is not None or parts.password is not None or
+            parts.path not in {"", "/"} or parts.query or parts.fragment):
+        raise ValueError("Collie relay URL must be an origin without credentials, path, query, or fragment")
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+
 class RelayClient:
     PAIR_WINDOW_S = 10 * 60
     PAIR_MAX = 5
     PAIR_PENDING_S = 3 * 60
     PAIR_SECRET_TTL_S = 3 * 60
     REPLAY_TTL_S = 30 * 24 * 60 * 60
-    REPLAY_MAX = 2048
+    REPLAY_MAX = 8192
 
     def __init__(self, relay_url: str, identity, pairing_secret: str,
                  local_host: str, local_port: int, local_token: str, logf=None,
                  pairing_expires_at=None):
-        self.relay_url = relay_url.rstrip("/")
+        self.relay_url = _validated_relay_url(relay_url)
         self.identity = identity          # harness.remote_identity.Identity (durable device store)
         self.room = identity.room
         self.agent_key = identity.agent_key
@@ -79,7 +100,9 @@ class RelayClient:
         self.pending_pair = None             # verified proof waiting on the human
         self.approved_devices = set(identity.approved_ids())
         self._pair_failures = []
-        self._approved_pair_keys = {}        # device_id -> K_dev until device_added arrives
+        # Human-approved, one-shot pairing material. The request id binds a later device_added to
+        # the exact number-match decision; neither a stale nor invented relay message can consume it.
+        self._approved_pair_keys = {}        # device_id -> {key, pair_id, approved_at}
         # Hosted mode has no plaintext fallback.  Starting remote without the crypto extra is an
         # actionable configuration error, not permission to expose prompts to the operator.
         self._e2e_keys = self._make_e2e_keys()
@@ -215,7 +238,9 @@ class RelayClient:
         if pending and pending.get("id") == rid:
             did = pending.get("device_id") or ""
             if ok and did:
-                self._approved_pair_keys[did] = pending["k_dev"]
+                self._approved_pair_keys[did] = {
+                    "key": pending["k_dev"], "pair_id": str(rid), "approved_at": time.time(),
+                }
             elif did:
                 self._approved_pair_keys.pop(did, None)
         try:
@@ -311,20 +336,73 @@ class RelayClient:
         elif t == "pair_request":
             self._begin_pair(ws, msg)
         elif t == "device_added":
-            # a client completed pairing → the relay minted its session token and tells us the client's
-            # stable device_id + the token HASH (never the token). Keyed by device_id, so the SAME
-            # client re-pairing updates its row instead of duplicating. Re-push the deduped hash set.
+            # The untrusted relay may only finish the exact pairing a human just approved. Persist
+            # both token hash and K_dev before ACKing; the relay withholds the bearer until this ACK.
+            ack_id = str(msg.get("id") or "")
+            pair_id = str(msg.get("pair_id") or "")
             did = str(msg.get("device_id") or "")
-            self.identity.add_or_update(did, msg.get("hash", ""), msg.get("name", ""))
-            k_dev = self._approved_pair_keys.pop(did, None)
-            if k_dev is not None:
-                self._e2e_devices[did] = k_dev
+            token_hash = str(msg.get("hash") or "")
+            staged = self._approved_pair_keys.get(did)
+            valid = (
+                bool(ack_id) and len(ack_id) <= 128 and bool(did) and len(did) <= 128 and
+                bool(pair_id) and isinstance(staged, dict) and
+                hmac.compare_digest(str(staged.get("pair_id") or ""), pair_id) and
+                0 <= time.time() - float(staged.get("approved_at") or 0) <= self.PAIR_PENDING_S and
+                re.fullmatch(r"[0-9a-f]{64}", token_hash) is not None and
+                isinstance(staged.get("key"), bytes) and len(staged["key"]) == 32
+            )
+            ok = False
+            old_entry = None
+            had_old_entry = False
+            if valid:
+                devices = self.identity._d.setdefault("devices", {})  # noqa: SLF001
+                had_old_entry = did in devices
+                if had_old_entry:
+                    old_entry = dict(devices[did])
                 try:
-                    self.identity.set_device_key(did, base64.b64encode(k_dev).decode("ascii"))
-                except Exception:
-                    pass
-            self.refresh_devices()
-            self._log("relay: device paired (%s)" % (msg.get("name") or msg.get("device_id", "")[:8]))
+                    k_dev = staged["key"]
+                    encoded_key = base64.b64encode(k_dev).decode("ascii")
+                    name = str(msg.get("name") or "")[:60]
+                    now = int(time.time())
+                    if had_old_entry:
+                        stored = dict(old_entry)
+                        stored.update({"token_sha": token_hash, "last_seen": now,
+                                       "k_dev": encoded_key})
+                        if name and not stored.get("name"):
+                            stored["name"] = name
+                    else:
+                        stored = {"name": name or "device", "token_sha": token_hash,
+                                  "paired_at": now, "last_seen": now, "k_dev": encoded_key}
+                    devices[did] = stored
+                    # One atomic file replacement contains hash + K_dev. A crash cannot persist the
+                    # bearer allowlist without the decryption key or vice versa.
+                    self.identity._save()                             # noqa: SLF001
+                    self._e2e_devices[did] = k_dev
+                    self._approved_pair_keys.pop(did, None)
+                    self.approved_devices.add(did)
+                    ok = True
+                except Exception as exc:                              # noqa: BLE001
+                    devices = self.identity._d.setdefault("devices", {})  # noqa: SLF001
+                    if had_old_entry:
+                        devices[did] = old_entry
+                    else:
+                        devices.pop(did, None)
+                    try:
+                        self.identity._save()                         # noqa: SLF001
+                    except Exception:
+                        pass
+                    self._log("relay: could not persist paired device: %s" % exc)
+            try:
+                ws.send_text(json.dumps({"t": "device_stored", "id": ack_id,
+                                         "hash": token_hash, "ok": ok}))
+            except Exception:
+                pass
+            if ok:
+                self.refresh_devices()
+                self._log("relay: device paired (%s)" %
+                          (msg.get("name") or msg.get("device_id", "")[:8]))
+            else:
+                self._log("relay: rejected unbound device registration")
         elif t == "device_revoke":
             token_hash = str(msg.get("hash") or "")
             ok = self._revoke_hash(token_hash)
@@ -506,8 +584,10 @@ class RelayClient:
         if not req.get("enc") or int(req.get("seq", -1)) != 0:
             return None, None, None, None
         from . import e2e
-        session = str(req.get("session") or "s1")
-        cid = str(req.get("cid") or req.get("id"))
+        session = str(req.get("session") or "")
+        cid = str(req.get("cid") or "")
+        if not session or len(session) > 256 or not cid or len(cid) > 128:
+            return None, None, None, None
         try:
             enc = json.loads(req["enc"])
             if not isinstance(enc, dict):
@@ -518,11 +598,6 @@ class RelayClient:
         # that can open the request; the number of devices is intentionally small and bounded by the
         # human-managed device list.
         candidates = list(self._e2e_devices.items())
-        # Approval precedes the relay's device_added acknowledgement on a different connection.
-        # Try the staged key too, closing that small cross-channel race without persisting a key for
-        # a token the relay may fail to issue. Keep the old key first during an intentional re-pair.
-        candidates.extend((did, key) for did, key in self._approved_pair_keys.items()
-                          if self._e2e_devices.get(did) != key)
         for device_id, k_dev in candidates:
             try:
                 key = e2e.session_key(k_dev, session)
@@ -546,17 +621,25 @@ class RelayClient:
         now = int(time.time())
         with self._replay_lock:
             data = getattr(self.identity, "_d", {})       # noqa: SLF001 — same private durable file
-            seen = [x for x in (data.get("remote_v2_seen") or [])
+            original = data.get("remote_v2_seen")
+            seen = [x for x in (original or [])
                     if isinstance(x, dict) and now - int(x.get("t") or 0) < self.REPLAY_TTL_S]
             if any(x.get("d") == device_id and x.get("c") == cid for x in seen):
                 return False
+            # Never evict an unexpired claim: doing so would make the oldest state change replayable.
+            # Capacity exhaustion rejects new work until records expire, preserving fail-closed E2E.
+            if len(seen) >= self.REPLAY_MAX:
+                return False
             seen.append({"d": device_id, "c": cid, "t": now})
-            data["remote_v2_seen"] = seen[-self.REPLAY_MAX:]
+            data["remote_v2_seen"] = seen
             try:
                 self.identity._save()                     # noqa: SLF001
             except Exception:
                 # Fail closed: executing without recording would make a dropped reply replayable.
-                data["remote_v2_seen"].pop()
+                if original is None:
+                    data.pop("remote_v2_seen", None)
+                else:
+                    data["remote_v2_seen"] = original
                 return False
         return True
 
@@ -598,10 +681,16 @@ class RelayClient:
             method = str(envelope.get("method") or "GET").upper()
             raw_path = str(envelope.get("path") or "/")
             parsed = urllib.parse.urlsplit(raw_path)
-            if parsed.scheme or parsed.netloc or not raw_path.startswith("/"):
+            if method not in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}:
+                raise ValueError("invalid inner request method")
+            if (len(raw_path) > 8192 or parsed.scheme or parsed.netloc or parsed.fragment or
+                    not raw_path.startswith("/")):
                 raise ValueError("invalid inner request path")
             path = self._inject_token(raw_path)
-            headers = {str(k): str(v) for k, v in (envelope.get("headers") or {}).items()
+            raw_headers = envelope.get("headers") or {}
+            if not isinstance(raw_headers, dict) or len(raw_headers) > 128:
+                raise ValueError("invalid inner request headers")
+            headers = {str(k): str(v) for k, v in raw_headers.items()
                        if str(k).lower() not in _DROP_HEADERS}
             body = envelope.get("body") or b""
 
@@ -712,8 +801,10 @@ class RemoteState:
 
     def __init__(self, relay_url: str, local_port: int, local_token: str, logf=None):
         from . import remote_identity
-        self.relay_url = relay_url.rstrip("/")
-        self.web_base = self.relay_url.replace("wss://", "https://").replace("ws://", "http://")
+        self.relay_url = _validated_relay_url(relay_url)
+        relay_parts = urllib.parse.urlsplit(self.relay_url)
+        web_scheme = "https" if relay_parts.scheme == "wss" else "http"
+        self.web_base = urllib.parse.urlunsplit((web_scheme, relay_parts.netloc, "", "", ""))
         self.local_port = local_port
         self.local_token = local_token
         self._log = logf or (lambda *a: None)

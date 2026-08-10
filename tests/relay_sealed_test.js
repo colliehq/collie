@@ -63,8 +63,13 @@ async function main() {
     const plaintext = await room.fetch(request(token, {
       "X-Collie-Enc": envelope, "X-Collie-Rid": "legacy", "X-Collie-Session": "s",
     }));
-    check(plaintext.status === 400 && agent.sent.length === 0,
+    check(plaintext.status === 415 && agent.sent.length === 0,
           "a legacy ciphertext header is not accepted as a body-less downgrade");
+    const noSession = await room.fetch(request(token, {
+      "content-type": "application/octet-stream", "X-Collie-Rid": "no-session",
+    }, envelope));
+    check(noSession.status === 400 && agent.sent.length === 0,
+          "a sealed request without explicit session binding fails closed");
   }
 
   {
@@ -125,6 +130,33 @@ async function main() {
     let rejected = false;
     try { await response.text(); } catch (error) { rejected = true; }
     check(rejected, "a duplicate response record errors the stream");
+  }
+
+  {
+    const { room, agent, token } = await fixture();
+    room.responseHeadMs = 10;
+    const { responsePromise } = await open(room, agent, token);
+    const response = await responsePromise;
+    check(response.status === 502 && room.pending.size === 0 &&
+          (await response.json()).error.includes("timed out"),
+          "a desktop that never returns a response head releases the relay slot");
+  }
+
+  {
+    const { room, agent, token } = await fixture();
+    room.maxInflight = 1;
+    const first = await open(room, agent, token);
+    const overloaded = await room.fetch(request(token, {
+      "content-type": "application/octet-stream",
+      "X-Collie-Rid": crypto.randomUUID(), "X-Collie-Session": "opaque-session",
+    }, envelope));
+    check(overloaded.status === 429 && agent.sent.length === 1,
+          "a room cannot allocate more than its bounded number of in-flight streams");
+    const id = agent.sent[0].id;
+    await room.webSocketMessage(agent, JSON.stringify({ t: "res", id, enc: "head", seq: 0 }));
+    const response = await first.responsePromise;
+    await response.body.cancel();
+    check(room.pending.size === 0, "phone stream cancellation releases its relay slot");
   }
 
   console.log(failures.length ? `\n  ${failures.length} FAILED` : "\n  relay sealed transport: all green");

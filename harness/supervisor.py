@@ -25,12 +25,14 @@ import html
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+import urllib.parse
 from dataclasses import dataclass, field
 
 from . import plat
@@ -40,6 +42,13 @@ from .ops import (OpsStore, RotatingLog, aggregate_health, enqueue_health_alerts
 
 TASK_NAME = r"\Collie\Supervisor"
 SCHEMA = 1
+_WORKER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
+_SECRET_ENV_RE = re.compile(
+    r"TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|APIKEY|CREDENTIAL|AUTH|COOKIE|SESSION|"
+    r"PRIVATE_?KEY|ACCESS_?KEY|SIGNING_?KEY|ENCRYPTION_?KEY|BEARER|"
+    r"(?:^|_)PAT(?:_|$)|(?:^|_)KEY(?:_|$)|DSN|CONNECTION_?STRING",
+    re.I,
+)
 
 
 def state_dir(path: str | None = None) -> str:
@@ -73,7 +82,7 @@ def _safe_env(env: dict | None) -> dict:
     out = {}
     for key, value in (env or {}).items():
         key = str(key)
-        if any(piece in key.upper() for piece in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")):
+        if _SECRET_ENV_RE.search(key):
             continue
         out[key] = str(value)
     return out
@@ -103,6 +112,12 @@ class WorkerSpec:
         if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
             raise ValueError("worker %s needs a string argv" % value.get("name"))
         name = str(value["name"])
+        if not _WORKER_NAME_RE.fullmatch(name):
+            raise ValueError("worker name must be 1-80 path-safe characters")
+        probe_url = str(value.get("probe_url") or "")
+        parsed_probe = urllib.parse.urlsplit(probe_url)
+        if probe_url and (parsed_probe.username is not None or parsed_probe.password is not None):
+            raise ValueError("worker probe_url must not embed credentials")
         adopt_heartbeat = str(value.get("adopt_heartbeat") or "")
         # Schema-1 supervisor files created before heartbeat adoption did not carry this field.
         # Infer it for Collie's generated Slack workers so upgrades can immediately adopt an
@@ -112,7 +127,7 @@ class WorkerSpec:
         return cls(
             name=name, argv=list(argv), enabled=bool(value.get("enabled", True)),
             critical=bool(value.get("critical", True)), cwd=str(value.get("cwd") or ""),
-            env=_safe_env(value.get("env")), probe_url=str(value.get("probe_url") or ""),
+            env=_safe_env(value.get("env")), probe_url=probe_url,
             probe_json_key=str(value.get("probe_json_key") or ""),
             adopt_heartbeat=adopt_heartbeat,
             startup_grace_s=float(value.get("startup_grace_s", 30)),

@@ -56,6 +56,7 @@ if $PY tests/test_codex_oauth.py >/dev/null 2>&1; then echo "  codex_oauth OK"; 
 echo "── renderer tests (JS) ──────────────────────────────────"
 if command -v node >/dev/null 2>&1; then
   node tests/render_test.js || rc=1
+  node tests/mail_names_test.js || rc=1
 else
   echo "  (node not found — skipping renderer suite)"
 fi
@@ -63,8 +64,9 @@ fi
 echo "── browser extension: page-side logic (JS) ──────────────"
 if command -v node >/dev/null 2>&1; then
   node tests/browser_ext_test.js || rc=1
+  node tests/vscode_extension_test.js || rc=1
 else
-  echo "  (node not found — skipping browser extension suite)"
+  echo "  (node not found — skipping browser + VS Code extension suites)"
 fi
 
 echo "── browser bridge tools (batching / spaces / warnings) ──"
@@ -88,8 +90,9 @@ fi
 echo "── relay push + APNs bearer token (JS) ──────────────────"
 if command -v node >/dev/null 2>&1; then
   node tests/relay_push_test.js || rc=1
+  node tests/landing_security_test.mjs || rc=1
 else
-  echo "  (node not found — skipping push suite)"
+  echo "  (node not found — skipping push + landing security suites)"
 fi
 
 echo "── phone notifications: when a run is worth a buzz ──────"
@@ -100,6 +103,9 @@ if $PY tests/test_playhere.py >/dev/null 2>&1; then echo "  playhere OK"; else e
 if app_out=$($PY tests/test_app_port.py 2>&1); then echo "  app_port OK"; else echo "  app_port FAIL"; echo "$app_out" | tail -20 | sed 's/^/      /'; rc=1; fi
 if $PY tests/test_output_encoding.py >/dev/null 2>&1; then echo "  output_encoding OK"; else echo "  output_encoding FAIL"; rc=1; fi
 if $PY tests/test_data_dir.py >/dev/null 2>&1; then echo "  data_dir OK"; else echo "  data_dir FAIL"; rc=1; fi
+if $PY tests/test_model_pin.py >/dev/null 2>&1; then echo "  model_pin OK"; else echo "  model_pin FAIL"; rc=1; fi
+if $PY tests/test_no_console_flash.py >/dev/null 2>&1; then echo "  no_console_flash OK"; else echo "  no_console_flash FAIL"; rc=1; fi
+if $PY tests/test_settings_fallback.py >/dev/null 2>&1; then echo "  settings_fallback OK"; else echo "  settings_fallback FAIL"; rc=1; fi
 if $PY tests/test_relay_keepalive.py >/dev/null 2>&1; then echo "  relay_keepalive OK"; else echo "  relay_keepalive FAIL"; rc=1; fi
 if $PY -m pytest -q tests/test_remote_protocol_v2.py >/dev/null 2>&1; then echo "  remote_protocol_v2 OK"; else echo "  remote_protocol_v2 FAIL"; rc=1; fi
 if $PY tests/test_repos_deadline.py >/dev/null 2>&1; then echo "  repos_deadline OK"; else echo "  repos_deadline FAIL"; rc=1; fi
@@ -157,17 +163,19 @@ if $PY tests/test_qr.py >/dev/null 2>&1; then echo "  qr OK"; else echo "  qr FA
 echo "── web --lan host guard (phone pairing) ─────────────────"
 if $PY tests/test_web_lan.py >/dev/null 2>&1; then echo "  web --lan OK"; else echo "  web --lan FAIL"; rc=1; fi
 
-echo "── the permission gate (pytest-style: 185 checks) ───────"
-# These files are written as bare `def test_*` with no __main__ block, so `$PY tests/x.py`
-# imports them, runs nothing, and exits 0 — which is how the whole gate feature shipped with a
-# green suite that had never executed one of its assertions. They need a runner.
+echo "── all collected pytest regressions ─────────────────────"
+# Many files are written as bare `def test_*` with no __main__ block, so `$PY tests/x.py` imports
+# them, runs nothing, and exits 0. Run the complete collected suite here—not a hand-maintained list
+# that silently forgets each new runtime, Library, release, or security regression file.
 if $PY -c "import pytest" >/dev/null 2>&1; then
-  if $PY -m pytest -q tests/test_gate.py tests/test_loop_gate.py tests/test_risk.py \
-      tests/test_inbox.py tests/test_trust.py tests/test_audit.py tests/test_overrides.py \
-      tests/test_personas.py tests/test_cli_mission.py tests/test_web_mission_api.py \
-      tests/test_core_fixes.py tests/test_run_options.py tests/test_ui_site_fixes.py \
-      >/dev/null 2>&1; then echo "  gate/risk/inbox/trust/audit + mission CLI/HTTP OK"
-  else echo "  gate/risk/inbox/trust/audit FAIL"; rc=1; fi
+  pytest_out=$($PY -m pytest -q 2>&1); pytest_rc=$?
+  if [ "$pytest_rc" = "0" ]; then
+    echo "  $(echo "$pytest_out" | tail -1)"
+  else
+    echo "  pytest suite FAIL (exit $pytest_rc)"
+    echo "$pytest_out" | tail -80 | sed 's/^/    /'
+    rc=1
+  fi
 else
   # Not silently skipped: an unrunnable suite is a fact about this checkout, not a pass.
   echo "  gate suite NOT RUN — pytest is not installed (pip install pytest)"; rc=1

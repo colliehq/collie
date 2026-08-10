@@ -1,6 +1,6 @@
 # Collie product TODO
 
-Last reviewed: 2026-08-09. This is the product backlog, not a release checklist. Items are ordered
+Last reviewed: 2026-08-10. This is the product backlog, not a release checklist. Items are ordered
 by user value and by whether Collie can implement them honestly across providers.
 
 ## P0 — make run controls truthful and composable
@@ -41,7 +41,7 @@ by user value and by whether Collie can implement them honestly across providers
 - [x] Persist and expose a durable task TODO/progress backend for long runs, including blocked items,
   background state, notifications, resume, steer, and cancellation acknowledgement.
 - [x] Render durable task/progress state in the CLI Activity view and authenticated Web Activity panel.
-- [ ] Carry the same Activity/recovery controls into the dedicated mobile, remote, and ambient pages.
+- [x] Carry the same Activity/recovery controls into the dedicated mobile, remote, and ambient pages.
 - [x] Add hooks for deterministic pre/post actions such as formatting, tests, and policy checks.
 
 ## P3 — orchestration without UI clutter
@@ -49,7 +49,7 @@ by user value and by whether Collie can implement them honestly across providers
 - [x] Add executable scoped specialist agents with explicit prompts, narrowed tool/resource authority,
   worktree isolation, and a durable run-tree API.
 - [x] Render the specialist lifecycle in one compact run tree on the authenticated Web Activity surface.
-- [ ] Add the compact run tree to the dedicated mobile/remote surfaces when they support long runs.
+- [x] Add the compact run tree to the dedicated mobile/remote surfaces when they support long runs.
 - [x] Add scheduled/event-triggered automations with isolated workspaces, budgets, notification rules,
   and auditable permissions.
 - [x] Add evaluated model routing behind `Auto`; keep model/provider details in an advanced drawer.

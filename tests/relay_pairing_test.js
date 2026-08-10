@@ -4,7 +4,7 @@
  *   node tests/relay_pairing_test.js
  */
 import { webcrypto } from "node:crypto";
-import { RelayRoom } from "../relay/worker.js";
+import relayWorker, { RelayRoom } from "../relay/worker.js";
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
@@ -57,6 +57,24 @@ const proof = (id = "phone-1") => ({
   pub: "A".repeat(44),
   confirm: "B".repeat(44),
 });
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+async function waitForAgentMessage(agent, type) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const found = [...agent.sent].reverse().find((message) => message.t === type);
+    if (found) return found;
+    await tick();
+  }
+  throw new Error(`desktop never received ${type}`);
+}
+
+async function acknowledgeStored(room, agent, issuing) {
+  const command = await waitForAgentMessage(agent, "device_added");
+  await room.webSocketMessage(agent, JSON.stringify({
+    t: "device_stored", id: command.id, hash: command.hash, ok: true,
+  }));
+  return issuing;
+}
 
 async function begin(room, body = proof()) {
   const response = await room.pair(pairRequest(body));
@@ -72,17 +90,58 @@ async function ready(room, agent, pending, num = "0427") {
 }
 
 async function main() {
+  {
+    let allocated = false;
+    const response = await relayWorker.fetch(
+      new Request("https://relay/r/guess/pair", { method: "POST" }),
+      { RELAY: { idFromName() { allocated = true; }, get() { throw new Error("unreachable"); } } });
+    check(response.status === 400 && !allocated,
+          "invalid room names are rejected before allocating a Durable Object");
+  }
+
+  {
+    let allocated = false;
+    const response = await relayWorker.fetch(
+      new Request("https://relay/r/valid_room_123456/pair", { method: "POST" }),
+      { RELAY: { idFromName() { allocated = true; }, get() { throw new Error("unreachable"); } } });
+    check(response.status === 503 && !allocated,
+          "a deployment missing APNs bindings fails closed before routing Remote traffic");
+
+    const health = await relayWorker.fetch(new Request("https://relay/relay/health"), {
+      APNS_KEY: "-----BEGIN PRIVATE KEY-----\nconfigured\n-----END PRIVATE KEY-----",
+      APNS_KEY_ID: "ABC1234567", APNS_TEAM_ID: "58Y98W3QQK",
+      APNS_TOPIC: "com.wudaming00.collie-ios",
+    });
+    check(health.status === 200,
+          "the relay health check becomes ready when every APNs binding is structurally valid");
+  }
+
   // The socket attachment is an allowlist. Even a buggy/old desktop cannot make the relay persist
   // a pairing secret by placing it in hello.
   {
     const { room, agent } = fakeRoom();
+    const validHash = "a".repeat(64);
     await room.webSocketMessage(agent, JSON.stringify({
-      t: "hello", v: 2, e2eRequired: true, approve: true, devices: [], e2ePub: "pub",
+      t: "hello", v: 2, e2eRequired: true, approve: true,
+      devices: [validHash, validHash, "not-a-token-hash"], e2ePub: "pub",
       paircode: "THIS-MUST-NOT-BE-STORED",
     }));
     const stored = agent.deserializeAttachment();
     check(!Object.prototype.hasOwnProperty.call(stored, "paircode"),
           "the relay never stores a QR/pairing secret from hello");
+    check(stored.devices.length === 1 && stored.devices[0] === validHash,
+          "desktop bearer hashes are validated, deduplicated, and bounded before attachment storage");
+  }
+
+  // Production uses the storage transaction: two first-claim races cannot both own one room.
+  {
+    const { room, storage } = fakeRoom();
+    const claims = await Promise.all([
+      room.claimAgentKeyHash("1".repeat(64)), room.claimAgentKeyHash("2".repeat(64)),
+    ]);
+    check(claims.filter(Boolean).length === 1 &&
+          ["1".repeat(64), "2".repeat(64)].includes(storage.m.get("agentKeyHash")),
+          "the room agent-key first claim is atomic under concurrent attempts");
   }
 
   // Old clients fail visibly rather than sending their credential into a downgraded flow.
@@ -132,7 +191,8 @@ async function main() {
           "after validation the phone receives the authenticated approval transcript");
 
     await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: true }));
-    const issued = await room.pairWait(pending.body.ticket, waitRequest());
+    const issued = await acknowledgeStored(
+      room, agent, room.pairWait(pending.body.ticket, waitRequest()));
     const issuedBody = await issued.json();
     check(issued.status === 200 && issuedBody.token && issuedBody.pub === "desktop-public",
           "approval issues one bearer token with the authenticated desktop proof");
@@ -182,12 +242,43 @@ async function main() {
     const pending = await begin(room, proof("racing-polls"));
     const forwarded = await ready(room, agent, pending);
     await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: true }));
-    const responses = await Promise.all([
+    const issuing = [
       room.pairWait(pending.body.ticket, waitRequest()),
       room.pairWait(pending.body.ticket, waitRequest()),
-    ]);
+    ];
+    await acknowledgeStored(room, agent, Promise.resolve());
+    const responses = await Promise.all(issuing);
     check(responses.filter((r) => r.status === 200).length === 1,
           "concurrent approval polls mint exactly one token");
+  }
+
+  // Sending a command is not persistence. A negative/missing desktop ACK must not mint a bearer.
+  {
+    const { room, agent } = fakeRoom();
+    const pending = await begin(room, proof("store-failure"));
+    const forwarded = await ready(room, agent, pending);
+    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: true }));
+    const issuing = room.pairWait(pending.body.ticket, waitRequest());
+    const command = await waitForAgentMessage(agent, "device_added");
+    await room.webSocketMessage(agent, JSON.stringify({
+      t: "device_stored", id: command.id, hash: command.hash, ok: false,
+    }));
+    const refused = await issuing;
+    check(refused.status === 500 && !(await refused.json()).token &&
+          agent.deserializeAttachment().devices.length === 0,
+          "a failed durable-store acknowledgement never issues the bearer token");
+  }
+
+  {
+    const { room, agent } = fakeRoom();
+    room.deviceStoreAckMs = 10;
+    const pending = await begin(room, proof("store-timeout"));
+    const forwarded = await ready(room, agent, pending);
+    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: true }));
+    const issued = await room.pairWait(pending.body.ticket, waitRequest());
+    check(issued.status === 500 && room.deviceStoreWaiters.size === 0 &&
+          agent.deserializeAttachment().devices.length === 0,
+          "a missing durable-store acknowledgement times out without leaking a waiter or bearer");
   }
 
   // If the socket dies between approval and device_added, do not hand the phone a credential that

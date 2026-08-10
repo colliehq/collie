@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -138,6 +140,41 @@ def test_verification_detection_evidence_and_session_receipt_persist(monkeypatch
                               {"role": "assistant", "content": "two"}])
     saved = sessions.load("receipt")
     assert saved["run_receipts"][-1]["verification_evidence"]["passed"] is True
+
+
+def test_verification_freshness_detects_edits_during_the_check(tmp_path):
+    from harness.verification import run_verification_command
+
+    if not shutil.which("git"):
+        pytest.skip("git is unavailable")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"],
+                   cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Collie Test"],
+                   cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=tmp_path,
+                   check=True, capture_output=True)
+
+    stable = run_verification_command(
+        'python -c "print(123)"', str(tmp_path), source="test")
+    assert stable["passed"] and stable["ran_after_last_edit"]
+    assert stable["freshness"] == "fresh"
+
+    mutating = run_verification_command(
+        'python -c "from pathlib import Path; Path(\'tracked.txt\').write_text(\'after\')"',
+        str(tmp_path), source="test")
+    assert mutating["command_passed"] is True, "exit zero remains visible as raw check evidence"
+    assert mutating["passed"] is False, "stale evidence cannot make Required verification green"
+    assert mutating["ran_after_last_edit"] is False
+    assert mutating["freshness"] == "changed_during_check"
+    assert mutating["working_tree_changed_during_check"] is True
+
+    absent = run_verification_command("", str(tmp_path), source="test")
+    assert absent["passed"] is False and absent["ran_after_last_edit"] is False
+    assert absent["freshness"] == "not_run"
 
 
 def test_web_refuses_uncertain_recovery_before_loading_history(monkeypatch, tmp_path):

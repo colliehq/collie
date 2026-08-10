@@ -23,6 +23,7 @@ Routes:
 from __future__ import annotations
 
 import base64
+import hmac
 import hashlib
 import json
 import os
@@ -652,8 +653,13 @@ def whoami() -> dict:
     defect that was just taken out of the Slack side, and it is not worth re-introducing here for
     the sake of a fuller-looking payload.
     """
-    from . import slackbot
+    from . import settings, slackbot
     name = DOG_NAME
+    source = "explicit" if name else ""
+    if not name:
+        name = settings.get("COMPANION_NAME", "") or ""
+        if name:
+            source = "environment" if settings.pinned("COMPANION_NAME") else "settings"
     if not name:
         # Unnamed is a real answer, not a guess. With one dog in the kennel the choice is obvious;
         # with several, picking one would be indistinguishable from picking the wrong one, and the
@@ -661,12 +667,23 @@ def whoami() -> dict:
         try:
             dogs = list(slackbot.load_kennel())
             name = dogs[0] if len(dogs) == 1 else ""
+            if name:
+                source = "kennel"
         except Exception:
             name = ""
+    if not source:
+        source = "default"
+    # The URL changes with the effective name, while the endpoint itself also refuses durable
+    # caching. Both matter: already-open surfaces can poll whoami and swap the dog immediately,
+    # while a browser can never reuse the old coat after a rename.
+    avatar_key = hashlib.sha256(("collie-ui-avatar-v1\0" + (name or "Collie").strip().lower())
+                                .encode("utf-8")).hexdigest()[:12]
     from . import __version__ as ver
     return {"name": name, "machine": slackbot.machine_label(), "os": slackbot.os_label(),
             "fingerprint": slackbot.fingerprint(), "repo": os.getcwd(), "version": ver,
-            "avatar": "/api/avatar.png"}
+            "name_source": source,
+            "name_editable": source not in ("explicit", "environment"),
+            "avatar": "/api/avatar.png?v=" + avatar_key}
 
 
 def _ensure_remote(port):
@@ -926,6 +943,27 @@ class Handler(BaseHTTPRequestHandler):
         return [_perm(i) for i in store.pending(sid)] if store is not None else []
 
     @classmethod
+    def _inbox_pending_all(cls):
+        """Snapshot every live run's still-actionable approval.
+
+        ``/api/live`` is intentionally a live bus, not a durable queue.  A page opened after an
+        approval was published therefore needs this read before its global Needs You indicator can
+        be truthful.  Keep the snapshot tied to the in-memory run stores: ``_inbox_close`` removes
+        the store and orphans its questions as soon as the run can no longer act on an answer.
+        """
+        with cls._inbox_lock:
+            stores = list(cls._inbox_runs.items())
+        out = []
+        for sid, store in stores:
+            try:
+                out.extend(dict(_perm(item), session=sid) for item in store.pending(sid))
+            except Exception:
+                # One closing run must not hide the other runs' decisions.  A following refresh
+                # will observe the stable post-close snapshot.
+                continue
+        return out
+
+    @classmethod
     def _notify_waiting(cls, sid, item):
         """Push the question to a paired phone.
 
@@ -1114,12 +1152,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy",
                          "camera=(self), microphone=(self), display-capture=(self), "
                          "geolocation=(), payment=(), usb=(), browsing-topics=()")
-        # Ambient intentionally embeds the same-origin wallpaper/map; block every other origin.
-        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        # Ambient intentionally embeds the same-origin wallpaper/map.  The sole exception is an
+        # authenticated index response requested by Collie's VS Code webview; XFO cannot express
+        # that narrow scheme/host allowlist, so CSP frame-ancestors owns that one response.
+        if not getattr(self, "_vscode_embed", False):
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
         super().end_headers()
 
     @staticmethod
-    def _html_csp(body: bytes) -> str:
+    def _html_csp(body: bytes, vscode_embed: bool = False) -> str:
         """Authorize this exact document's inline scripts without allowing arbitrary inline JS."""
         scripts = re.findall(
             br"<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script\s*>", body,
@@ -1134,6 +1175,8 @@ class Handler(BaseHTTPRequestHandler):
             if value not in hashes:
                 hashes.append(value)
         script_src = "script-src 'self'" + ((" " + " ".join(hashes)) if hashes else "")
+        frame_ancestors = ("vscode-webview: https://*.vscode-cdn.net"
+                           if vscode_embed else "'self'")
         return "; ".join((
             "default-src 'self'",
             script_src,
@@ -1142,7 +1185,7 @@ class Handler(BaseHTTPRequestHandler):
             "media-src 'self' data: blob:",
             "connect-src 'self' https://ipapi.co https://api.open-meteo.com",
             "frame-src 'self'",
-            "frame-ancestors 'self'",
+            "frame-ancestors " + frame_ancestors,
             "object-src 'none'",
             "base-uri 'none'",
             "form-action 'self'",
@@ -1154,7 +1197,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         if ctype.lower().startswith("text/html"):
-            self.send_header("Content-Security-Policy", self._html_csp(body))
+            self.send_header("Content-Security-Policy", self._html_csp(
+                body, vscode_embed=bool(getattr(self, "_vscode_embed", False))))
         self.end_headers()
         self.wfile.write(body)
 
@@ -1211,6 +1255,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ routing
     def do_GET(self):
+        # BaseHTTPRequestHandler may reuse one handler for multiple HTTP/1.1 requests.  Never let
+        # an authenticated embed response relax headers on a later request over that connection.
+        self._vscode_embed = False
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if not self._host_ok():
@@ -1219,6 +1266,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "pairing required"}, 403)
         try:
             if path in ("/", "/index.html"):
+                self._vscode_embed = self._vscode_embed_ok(parsed)
                 return self._serve_index()
             if path == "/pair":
                 return self._serve_pair_page()
@@ -1244,7 +1292,7 @@ class Handler(BaseHTTPRequestHandler):
                 # repository it is standing in, is not public.
                 return self._send_json(whoami())
             if path == "/api/avatar.png":
-                return self._serve_avatar()
+                return self._serve_avatar(parsed)
             if path == "/api/tree":
                 return self._serve_tree(urllib.parse.parse_qs(parsed.query))
             if path == "/api/repos":
@@ -1273,6 +1321,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._send_json({"runs": Handler._runs_snapshot()})
+            if path == "/api/approvals":
+                # The live bus only carries new events.  This authenticated snapshot restores the
+                # cross-session Needs You queue after a refresh or an SSE reconnect.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._send_json({"approvals": Handler._inbox_pending_all()})
+            if path == "/api/library":
+                # Installed extension metadata is operational state: keep it behind the same
+                # process token as Activity and Settings.  ExtensionStore already returns an
+                # allowlisted view (digest/trust/scopes/component counts, never package paths).
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .extensions import ExtensionError, ExtensionStore
+                try:
+                    return self._send_json({"extensions": ExtensionStore(_state_root()).list()})
+                except ExtensionError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path in ("/api/activity", "/api/healthz", "/api/recovery", "/api/hooks") or \
                     path.startswith("/api/recovery/"):
                 if not self._authed(parsed):
@@ -1354,7 +1419,8 @@ class Handler(BaseHTTPRequestHandler):
                         vals["WALLPAPER"] = "on" if os.path.exists(_wp._startup_vbs()) else "off"
                 except Exception:
                     pass
-                return self._send_json({"schema": settings.SCHEMA, "values": vals})
+                return self._send_json({"schema": settings.SCHEMA, "values": vals,
+                                        "identity": whoami()})
             if path == "/api/run-capabilities":
                 # Static provider/model truth for the run setup.  In particular the
                 # UI hides Fast unless this exact pair has a known same-model wire
@@ -1668,6 +1734,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        self._vscode_embed = False
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if not self._host_ok():
@@ -1689,6 +1756,43 @@ class Handler(BaseHTTPRequestHandler):
                 out = Handler._run_cancel(sid, str(body.get("run") or "").strip() or None)
                 code = 200 if out.get("ok") else (409 if out.get("status") == "run_mismatch" else 404)
                 return self._send_json(out, code)
+            if path == "/api/library/action":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                action = str(body.get("action") or "").strip().lower()
+                ext_id = str(body.get("id") or "").strip()
+                version = str(body.get("version") or "").strip()
+                if action not in ("enable", "disable", "rollback", "uninstall"):
+                    return self._send_json({"error": "unknown Library action"}, 400)
+                if not ext_id or len(ext_id) > 128:
+                    return self._send_json({"error": "extension id required"}, 400)
+                if version and len(version) > 128:
+                    return self._send_json({"error": "invalid extension version"}, 400)
+                if "approve" in body and not isinstance(body.get("approve"), bool):
+                    return self._send_json({"error": "approve must be true or false"}, 400)
+                approve = body.get("approve") is True
+                from .extensions import ExtensionError, ExtensionStore
+                store = ExtensionStore(_state_root())
+                try:
+                    if action == "enable":
+                        result = store.enable(ext_id, version, approve=approve)
+                    elif action == "disable":
+                        result = store.disable(ext_id)
+                    elif action == "rollback":
+                        if version:
+                            return self._send_json(
+                                {"error": "rollback chooses the previous installed version"}, 400)
+                        result = store.rollback(ext_id, approve=approve)
+                    else:
+                        # Deliberately never force removal from the web surface: an active package
+                        # must first be disabled, making the state transition visible and reversible.
+                        result = store.uninstall(ext_id, version, force=False)
+                except ExtensionError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
+                return self._send_json({"ok": True, "action": action, "extension": result})
             if path in ("/api/plan", "/api/plan/approve", "/api/review/handoff"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -1978,7 +2082,10 @@ class Handler(BaseHTTPRequestHandler):
                 # MERGE, don't replace: a partial POST (e.g. the onboarding ambient step sending only
                 # {WALLPAPER}) must NOT wipe PROVIDER/MODEL/LANG. update() loads + merges + saves; a
                 # full modal payload merges to the same result as a replace.
-                saved = settings.update(body)
+                try:
+                    saved = settings.update(body)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
                 settings.apply()                              # take effect for the next query now
                 # Ambient-desktop autostart is USER-controlled: toggling WALLPAPER creates/removes the
                 # logon launcher — install() also starts it now, uninstall() stops it. Only on a change.
@@ -2371,35 +2478,42 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._send_html(b"logo missing", 404, "text/plain; charset=utf-8")
 
-    def _serve_avatar(self):
-        """This dog's face, drawn here rather than re-implemented on the client.
+    def _serve_avatar(self, parsed=None):
+        """This dog's transparent first-party face, drawn once on the desktop.
 
         The phone needs a picture per dog to make a switcher worth looking at, and the obvious
         shortcut — port the derivation (sha256 of the name -> coat, plate) into Swift — is two
         implementations of one identity, which drift and then show the same dog two different
-        colours on two screens. One generator, served. An unnamed server falls back to the plain
-        collie mark: no name, no face of its own, and inventing one would be a lie the switcher
-        then teaches people to recognise.
+        colours on two screens. One generator, served. An unnamed server gets the deterministic
+        generic Collie coat, still without the external app-icon plate.
         """
-        name = whoami().get("name") or ""
+        name = whoami().get("name") or "Collie"
+        qs = urllib.parse.parse_qs(parsed.query if parsed is not None else "")
+        preview = (qs.get("preview") or [""])[0]
+        if preview:
+            if not self._authed(parsed):
+                return self._send_json({"error": "forbidden"}, 403)
+            try:
+                from .settings import normalize_companion_name
+                name = normalize_companion_name(preview, allow_empty=False)
+            except ValueError as exc:
+                return self._send_json({"error": str(exc)}, 400)
         body = b""
-        if name:
-            try:
-                from . import avatar
-                body = avatar.png(name)
-            except Exception:
-                body = b""
+        try:
+            from . import avatar
+            # 256 px is still >3x the largest first-party display size at 1x and keeps a 2x/3x
+            # screen crisp. The library's external icon default remains 512 px; using it here made
+            # the pure-Python first render several seconds slower for pixels no Collie UI displays.
+            body = avatar.png(name, size=256, plate=False)
+        except Exception:
+            body = b""
         if not body:
-            try:
-                with open(os.path.join(HERE, "webui", "collie-icon-512.png"), "rb") as f:
-                    body = f.read()
-            except OSError:
-                return self._send_html(b"no avatar", 404, "text/plain; charset=utf-8")
+            return self._send_html(b"no avatar", 404, "text/plain; charset=utf-8")
         self.send_response(200)
         self.send_header("content-type", "image/png")
-        # Keyed by name, so it only changes when the dog is renamed — but a rename must not leave a
-        # stale face on a phone for a day, which is what a long max-age would do.
-        self.send_header("cache-control", "max-age=300")
+        # whoami's URL is versioned too, but no-store makes direct/hard-coded callers just as safe:
+        # a rename must not leave yesterday's coat on a phone or ambient desktop.
+        self.send_header("cache-control", "private, no-store")
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2632,6 +2746,21 @@ class Handler(BaseHTTPRequestHandler):
             return (self.headers.get("X-Collie-Relay") or "") == "1"
         except Exception:
             return False
+
+    def _vscode_embed_ok(self, parsed) -> bool:
+        """Authorize only the main document inside Collie's VS Code webview.
+
+        Loopback is not sufficient here: any site can try to frame localhost.  The extension mints
+        one per-process secret, supplies it in the child URL, and passes the same value to the web
+        process through its environment.  A minimum length prevents an accidentally configured
+        human word from turning this narrowly-scoped exception into a guessable frame bypass.
+        """
+        expected = str(os.environ.get("COLLIE_VSCODE_EMBED_TOKEN") or "")
+        values = urllib.parse.parse_qs(parsed.query, keep_blank_values=True).get("vscode_embed", [])
+        if len(expected) < 32 or len(expected) > 512 or len(values) != 1:
+            return False
+        got = str(values[0] or "")
+        return len(got) == len(expected) and hmac.compare_digest(got, expected)
 
     def _embed_token(self) -> str:
         """The CSRF token to bake into a served HTML page — but ONLY for a direct loopback page load.

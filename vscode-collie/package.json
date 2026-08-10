@@ -2,9 +2,14 @@
   "name": "collie",
   "displayName": "Collie",
   "description": "Collie's IDE entrance — start or supervise Missions, inspect scoped evidence and diffs, and share one runtime with desktop, terminal, and phone.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "collie",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/colliehq/collie.git",
+    "directory": "vscode-collie"
+  },
   "engines": { "vscode": "^1.84.0" },
   "categories": ["AI", "Chat", "Other"],
   "keywords": ["collie", "agent", "coding-agent", "acp"],

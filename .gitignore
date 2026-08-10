@@ -8,6 +8,7 @@ venv/
 
 # local dev scratch / logs (never publish)
 .web.log
+.qa-state/
 data/proxy.log
 
 # collie runtime data (regenerated)
@@ -102,9 +103,11 @@ installer/payload/
 installer/Output/
 # wizard branding BMPs — make_art.py regenerates
 installer/art/
-# generated [Languages] + chip/dropdown data — gen_langs.py regenerates
+# generated [Languages] + chip/dropdown data + current-Inno compatibility language files —
+# gen_langs.py regenerates them
 installer/languages.iss
 installer/langdata.iss
+installer/lang_compat/
 # throwaway .iss experiments
 installer/_probe/
 

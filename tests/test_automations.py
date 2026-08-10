@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from harness.automations import (AutomationExecutor, AutomationSpec, AutomationStore,
+from harness.automations import (AutomationDaemon, AutomationExecutor, AutomationSpec, AutomationStore,
                                  BudgetExceeded, DefaultCollieRunner,
                                  FilePredicateTrigger, NEEDS_YOU, PENDING,
                                  PagePredicateTrigger, PermissionDenied,
@@ -182,6 +182,85 @@ def test_budget_exhaustion_and_crash_recovery_park_external_writes(tmp_path):
             guard.consume(model_tokens=2)
     finally:
         guard_store.close()
+
+
+def test_expired_attempt_is_token_fenced_and_filesystem_writes_are_not_replayed(tmp_path):
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        store.upsert(_spec("read-only", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2}), now=1)
+        TriggerEngine(store).tick(1)
+        first = store.claim(now=2, lease_s=1)
+        assert first and first["lease_token"]
+        assert store.recover_expired(now=4) == 1
+        assert store.executions()[0]["state"] == PENDING
+        second = store.claim(now=5, lease_s=30)
+        assert second["lease_token"] != first["lease_token"]
+
+        # A late result from the expired worker cannot overwrite the fresh attempt.
+        assert not store.finish(
+            first["execution_id"], SUCCEEDED, {"summary": "stale"},
+            lease_token=first["lease_token"], now=6)
+        assert store.executions()[0]["state"] == "running"
+        assert store.finish(
+            second["execution_id"], SUCCEEDED, {"summary": "fresh"},
+            lease_token=second["lease_token"], now=7)
+
+        writable = _spec("writable", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2})
+        writable["permissions"].update({
+            "write_roots": [str(tmp_path)], "tools": ["write_file"],
+        })
+        store.upsert(writable, now=10)
+        TriggerEngine(store).tick(10)
+        claimed = next(row for row in (store.claim(now=11, lease_s=1),)
+                       if row and row["automation_id"] == "writable")
+        assert claimed
+        assert store.recover_expired(now=13) == 1
+        assert next(row for row in store.executions("writable"))["state"] == NEEDS_YOU
+
+        uncertain = _spec("uncertain-write", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2})
+        uncertain["permissions"].update({
+            "write_roots": [str(tmp_path)], "tools": ["write_file"],
+        })
+        uncertain_spec = store.upsert(uncertain, now=20)
+        store.enqueue(uncertain_spec, "manual:uncertain-write", {"kind": "test"}, now=20)
+
+        def mutate_then_fail(_request, _guard):
+            (tmp_path / "side-effect.txt").write_text("may have happened", encoding="utf-8")
+            raise RuntimeError("receipt channel failed after mutation")
+
+        executor = AutomationExecutor(
+            store, mutate_then_fail,
+            workspace_allocator=WorkspaceAllocator(str(tmp_path / "workspaces")))
+        assert executor.step(now=21) == NEEDS_YOU
+        assert store.executions("uncertain-write")[0]["state"] == NEEDS_YOU
+
+
+def test_daemon_recovers_a_lone_expired_running_execution_after_restart(tmp_path):
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        value = _spec("stale", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2})
+        value["permissions"].update({
+            "write_roots": [str(tmp_path)], "tools": ["write_file"],
+        })
+        store.upsert(value, now=1)
+        engine = TriggerEngine(store)
+        engine.tick(1)
+        assert store.claim(now=2, lease_s=1)
+
+        ran = []
+        executor = AutomationExecutor(store, lambda *_: ran.append(True) or {})
+        daemon = AutomationDaemon(engine, executor, interval_s=1)
+        detail = daemon.step(now=4)
+
+        assert detail["recovered"] == 1 and detail["pending"] == 0
+        assert store.executions("stale")[0]["state"] == NEEDS_YOU
+        assert ran == [], "an uncertain write is parked, not replayed during recovery"
 
 
 def test_default_tool_wrapper_denies_out_of_root_and_unsafe_ambient_tools(tmp_path):

@@ -53,7 +53,10 @@ including a known device id, requires approval.
 The phone polls `/pair/wait?ticket=…`: `validating` → `approval` (with authenticated `pubD`,
 `confirmD`, and number) → approved/denied. It verifies `pubD`, `confirmD`, and the number before
 display. An approved ticket is claimed transactionally and can mint exactly one bearer token. `K_dev`
-is saved only after that token is issued. Pairing secrets and device keys never reach the relay.
+and the new token hash are saved atomically by the desktop first; the desktop returns a correlated
+`device_stored` acknowledgement, and only then does the relay return the bearer token to the phone.
+An invented, stale, malformed, timed-out, or persistence-failed `device_added` is rejected and never
+mints a usable credential. Pairing secrets and device keys never reach the relay.
 
 This is authenticated ECDH with a high-entropy out-of-band secret, not a short-password protocol; it
 does not need a PAKE's offline-dictionary protection. The QR remains sensitive until its 180-second
@@ -104,7 +107,8 @@ only closes transport; it does not prove completion.
 
 Phone request ids are random UUIDs. The desktop persists a bounded 30-day ledger of accepted
 non-idempotent ids and answers a duplicate with authenticated `409 duplicate_request`; GET/HEAD remain
-retryable. The iOS run client never automatically replays a streamed question after disconnect,
+retryable. The ledger never evicts an unexpired claim: when its bound is exhausted, new state-changing
+work fails closed until entries expire. The iOS run client never automatically replays a streamed question after disconnect,
 because it cannot know whether execution already began. It tells the user to reopen/reattach to the
 session or decide explicitly whether to create another run.
 
@@ -118,6 +122,12 @@ is authorization failure.
 `/pair`, `/pair/wait`, `/push/register`, and `/device/revoke` are explicit relay-control endpoints.
 They expose only pairing proof/ticket state, APNs metadata, or token hashes—not application content.
 Push alert text is fixed and generic; caller-supplied run titles/output never enter the relay.
+
+The transport origin must be `wss://`; plaintext `ws://` is accepted only for an exact loopback
+development host. Relay rooms allow at most 64 in-flight sealed streams, require an explicit opaque
+session id and binary content type, and release a slot on phone cancellation. A desktop that does not
+produce a response head within 30 seconds fails that request; established long-running/SSE streams do
+not receive a short absolute timeout.
 
 ## Verification
 

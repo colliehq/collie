@@ -54,7 +54,7 @@ needs a specific boundary.
 | 🖥️ | **Desktop home** | Home, Missions, Pack, Library, Activity, and Needs You form the control plane; optional Ambient mode keeps status and handoff one gesture away. |
 | 🎬 | **Screen recorder** | `collie record` captures screen + camera + mic (Windows and macOS) — a built-in way to demo or document a run. |
 | 📱 | **Phone supervision** | Pair once, then follow runs, answer approvals, steer, stop, or start work from the phone. |
-| 🔌 | **Library & connections** | Skills, MCP servers, browser access, and future extensions are capability-scoped parts of the same system. |
+| 🔌 | **Library & connections** | Install digest-pinned Skills, Hooks, connection descriptors, templates, and assets. Packages stay inert until their exact version and authority are approved; changes, revocation, or tampering fail closed. |
 
 ## Where it runs
 
@@ -66,7 +66,7 @@ runtime, so work can continue when a window closes. Every surface below reaches 
 | **Terminal** | `collie` (TUI) · `collie -p "task"` | anywhere — SSH, CI, tmux |
 | **Desktop / Browser Home** | `collie web` | Home, Missions, Pack, Library, Activity, approvals, evidence, diffs, and settings |
 | **iPhone** | `collie web --lan` (same Wi-Fi) or `--remote` (anywhere, via the relay) + the companion app | supervise runs, answer approvals, steer, stop, or start work |
-| **VS Code** | the bundled `vscode-collie` extension | Collie docked in a sidebar panel (manages its own server) |
+| **VS Code** | install `Collie-VSCode.vsix` from the latest release | Collie docked in a sidebar panel (manages its own server) |
 | **Editors (ACP)** | `collie acp` | Zed · JetBrains · neovim · VS Code — one adapter, every [ACP](https://agentclientprotocol.com) editor |
 | **Streaming / CI** | `collie run "task" --stream-json` | NDJSON events (tool · edit · repro-gate · receipt) |
 

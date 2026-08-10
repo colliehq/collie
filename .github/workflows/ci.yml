@@ -57,10 +57,10 @@ jobs:
       - name: Install Collie + test extras
         # core is stdlib-only; extras cover the surfaces the suite exercises
         #   browser=playwright (GUI) · tui=rich · acp=agent-client-protocol · search=ddgs · dev=pytest
-        # (fastembed/`local` is intentionally omitted — tests use the hash embedder)
+        # (fastembed/`local` is intentionally omitted — tests exercise the BM25 fallback)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[browser,tui,acp,search,dev]"
+          pip install -e ".[browser,tui,acp,search,remote,dev]"
 
       - name: Install Playwright Chromium
         # --with-deps installs the OS libraries chromium needs, but that flag is Linux-only;

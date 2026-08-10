@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from harness.missionweb import MissionService
-from harness.tasktree import CANCELLED, TaskTreeStore
+from harness.tasktree import CANCEL_REQUESTED, CANCELLED, TaskTreeStore
 
 
 def test_production_defaults_bind_durable_tasktree_and_pending_hooks(tmp_path, monkeypatch):
@@ -75,6 +75,46 @@ def test_default_tasktree_create_spawn_steer_cancel_and_inspect(tmp_path):
         assert reopened.get(child["run_id"])["status"] == CANCELLED
     finally:
         reopened.close()
+
+
+def test_parent_mission_cancel_propagates_to_bound_specialists(tmp_path):
+    tree = TaskTreeStore(str(tmp_path / "tasktree.db"))
+    service = MissionService(
+        base=str(tmp_path / "svc"), decider=lambda *_: {"action": "done"},
+        stub=True, run_tree=tree)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    mission = service.start("coordinate cancellable specialists", may=["research"])
+    mid = mission["mission_id"]
+    root = service.create_run_tree(
+        mid, [{"kind": "file", "id": str(repo), "mode": "write"}],
+        workspace=str(repo))["root"]
+    running = service.spawn_specialist(
+        mid, "running", "stop at its next boundary",
+        resources=[{"kind": "file", "id": str(repo / "running.py"), "mode": "read"}],
+        workspace=str(repo))
+    queued = service.spawn_specialist(
+        mid, "queued", "never start",
+        resources=[{"kind": "file", "id": str(repo / "queued.py"), "mode": "read"}],
+        workspace=str(repo))
+    token = tree.claim(running["run_id"])
+    assert token
+
+    cancelled = service.cancel(mid)
+    assert cancelled["state"] == CANCELLED and "error" not in cancelled
+    assert "in-flight action may still finish" in cancelled["result"]
+    assert tree.get(root["run_id"])["status"] == CANCELLED
+    assert tree.get(queued["run_id"])["status"] == CANCELLED
+    assert tree.get(running["run_id"])["status"] == CANCEL_REQUESTED
+    assert service.store.get(queued["mission_id"]).state == CANCELLED
+    assert service.store.get(running["mission_id"]).state == CANCELLED
+    assert service.tick()["specialists_advanced"] == 0
+    assert tree.claim(queued["run_id"]) is None
+    assert [row["kind"] for row in tree.claim_messages(running["run_id"], token)] == [
+        "cancel"]
+
+    service.close()
+    tree.close()
 
 
 def test_close_preserves_injected_tasktree_and_hooks(tmp_path):

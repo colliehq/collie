@@ -8,8 +8,9 @@ for a checkout, wrong everywhere else:
   * Had it been writable, each update replaces the bundle — and takes the history with it.
   * From pip it landed in site-packages, which the next upgrade deletes.
 
-A checkout must keep its own data/ (the suite and a dev box depend on it, and an existing store must
-not be orphaned); everything else belongs beside the user's other collie state.
+A checkout with no override keeps its own data/ (the suite and a dev box depend on it, and an
+existing store must not be orphaned). An explicit state directory is always an isolation boundary;
+installed copies otherwise keep data beside the user's other Collie state.
 
     python3 tests/test_data_dir.py
 """
@@ -42,6 +43,14 @@ def main():
     out, err = ask(ROOT, dict(os.environ, PYTHONPATH=ROOT))
     check(out == os.path.join(ROOT, "data"),
           "a source checkout still uses its own data/ (got %s)" % (out or err[-120:]))
+
+    isolated = tempfile.mkdtemp(prefix="collie-source-state-")
+    isolated_env = dict(os.environ, PYTHONPATH=ROOT, COLLIE_STATE_DIR=isolated)
+    isolated_env.pop("COLLIE_DATA_DIR", None)
+    out, err = ask(ROOT, isolated_env)
+    check(out == os.path.join(isolated, "data"),
+          "explicit state isolates a source checkout too (got %s)" % (out or err[-120:]))
+    shutil.rmtree(isolated, ignore_errors=True)
 
     # An install must not: copy the package somewhere with no pyproject.toml beside it, which is
     # exactly the shape of site-packages and of the .app.

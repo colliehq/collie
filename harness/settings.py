@@ -8,6 +8,7 @@ GUI reads SCHEMA to render the panel and GET/POSTs the values; make_harness/_pro
 import json
 import os
 import time
+import unicodedata
 
 _PATH = os.environ.get("COLLIE_SETTINGS_PATH") or os.path.expanduser("~/.collie/settings.json")
 _cache = {"mtime": -1.0, "data": {}}
@@ -35,6 +36,14 @@ _HARD_ENV = {k for k in os.environ if k.startswith("COLLIE_")} - _inherited - {_
 # suggestions), number (optional min/max/step), bool (rendered as a toggle; stored "on"/"off").
 # `hint` is the one-line help shown under the control — every knob gets one so nothing is a mystery.
 SCHEMA = [
+    {"group": "Identity", "key": "COMPANION_NAME", "label": "Companion name",
+     "label_zh": "伙伴名字", "type": "text", "default": "", "max": "32",
+     "placeholder": "Rowan", "placeholder_zh": "Rowan",
+     "hint": "The personal name shown for this Collie across Home, phone and ambient desktop. "
+             "This does not rename Slack apps, @handles or mail addresses. An explicit web "
+             "--name selects a kennel dog and stays authoritative for that server.",
+     "hint_zh": "这只 Collie 在主页、手机和动态桌面上显示的名字。不会改动 Slack 应用、@用户名或邮件地址；"
+                "显式的 web --name 用来选择犬舍成员，并始终以该名字为准。"},
     # UI language: the web GUI chrome + this panel render in it. auto = follow the browser.
     # label_zh / hint_zh on any entry (and label_zh inside options) localize the panel — the GUI
     # picks them when the resolved language is zh; missing translations fall back to English.
@@ -196,7 +205,7 @@ _ZH = {
     "SKILL_DIRS": {"label": "额外 skill 目录", "hint": "冒号分隔的自定义 skill 目录,在内置之外加载(如 /home/me/skills:/team/skills)。"},
 }
 # group headers, for the panel
-GROUPS_ZH = {"General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程",
+GROUPS_ZH = {"Identity": "身份", "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程",
              "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
 for _s in SCHEMA:
     _t = _ZH.get(_s["key"])
@@ -211,6 +220,31 @@ for _s in SCHEMA:
                 _o.setdefault("label_zh", _t["options"][_o["value"]])
 
 _KEYS = {s["key"] for s in SCHEMA}
+
+
+def normalize_companion_name(value, allow_empty=True) -> str:
+    """Return one safe, human display name or raise ``ValueError``.
+
+    Names are data, never markup.  NFC makes the same visible Unicode spelling stable for avatar
+    hashing; whitespace is collapsed so a rename cannot create a visually different identity with
+    invisible padding.  Formatting/control characters (including bidi overrides) and angle
+    brackets are rejected instead of silently rewritten: accepting them would make audit rows and
+    device switchers ambiguous even when every HTML call site escapes correctly.
+    """
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValueError("companion name must be text")
+    name = " ".join(unicodedata.normalize("NFC", value).split())
+    if not name:
+        if allow_empty:
+            return ""
+        raise ValueError("companion name is required")
+    if len(name) > 32:
+        raise ValueError("companion name must be 32 characters or fewer")
+    if "<" in name or ">" in name or any(unicodedata.category(ch).startswith("C") for ch in name):
+        raise ValueError("companion name contains unsupported characters")
+    return name
 
 
 def _load():
@@ -245,9 +279,19 @@ def get(key, default=None):
     """env COLLIE_<KEY>  >  settings.json[key]  >  default. Returns str or default."""
     env = os.environ.get("COLLIE_" + key)
     if env is not None and env != "":
+        if key == "COMPANION_NAME":
+            try:
+                return normalize_companion_name(env, allow_empty=False)
+            except ValueError:
+                return default
         return env
     v = _load().get(key)
     if v is not None and v != "":
+        if key == "COMPANION_NAME":
+            try:
+                return normalize_companion_name(v, allow_empty=False)
+            except ValueError:
+                return default
         return str(v)
     return default
 
@@ -297,6 +341,8 @@ def apply():
 def save(values: dict) -> dict:
     """Persist only known keys (ignore junk); empty string clears a key back to its default."""
     clean = {k: v for k, v in (values or {}).items() if k in _KEYS and v not in (None, "")}
+    if "COMPANION_NAME" in clean:
+        clean["COMPANION_NAME"] = normalize_companion_name(clean["COMPANION_NAME"], allow_empty=False)
     os.makedirs(os.path.dirname(_PATH), exist_ok=True)
     tmp = "%s.%d.%s.tmp" % (_PATH, os.getpid(), os.urandom(4).hex())   # unique per writer: a fixed
     with open(tmp, "w", encoding="utf-8") as f:                        # .tmp let concurrent panel saves

@@ -11,6 +11,7 @@ is needed; and returns a receipt with scoped evidence.
 - :material-brain: **[Providers](providers.md)** — connect Claude, Codex, Gemini, a local model, or an API key
 - :material-console: **[CLI reference](cli.md)** — every `collie` command
 - :material-monitor: **[The desktop app](desktop.md)** — Home, Missions, Pack, Library, Activity, and Needs You
+- :material-puzzle: **[Extensions](extensions.md)** — build and install digest-pinned Library packages
 
 </div>
 

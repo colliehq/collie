@@ -26,19 +26,25 @@ def check(ok, what):
 
 
 def main():
-    from harness import webapp, slackbot
+    from harness import webapp, slackbot, settings
 
     real_kennel, real_name = slackbot.load_kennel, webapp.DOG_NAME
+    real_get, real_pinned = settings.get, settings.pinned
     try:
         # --name wins, always: it is the only thing that can be right when a machine has several.
         webapp.DOG_NAME = "BigMac"
+        settings.get = lambda key, default=None: "Saved name" if key == "COMPANION_NAME" else real_get(key, default)
+        settings.pinned = lambda key: False
         slackbot.load_kennel = lambda: {"BigMac": {}, "Juno": {}}
         me = webapp.whoami()
         check(me["name"] == "BigMac", "--name names the dog this server speaks for")
+        check(me["name_source"] == "explicit" and me["name_editable"] is False,
+              "--name is visibly authoritative rather than silently renameable in Settings")
         check(me["machine"] and me["os"] and me["fingerprint"],
               "with the machine, its OS and the fingerprint that survives a rename")
         check(me["repo"] == os.getcwd(), "and the repository it is standing in")
-        check(me["avatar"] == "/api/avatar.png", "pointing at a face served from here")
+        check(me["avatar"].startswith("/api/avatar.png?v=") and len(me["avatar"].split("=", 1)[1]) == 12,
+              "pointing at a name-versioned face served from here")
         check("autonomy" not in me,
               "and NO autonomy: this server does not enforce one, and a limit it only states is "
               "the defect that was just taken out of the Slack side")
@@ -48,15 +54,27 @@ def main():
         # One dog in the kennel is an obvious default. Several is not, and guessing there is
         # indistinguishable from guessing wrong.
         webapp.DOG_NAME = ""
+        check(webapp.whoami()["name"] == "Saved name",
+              "the editable display setting wins over a single kennel fallback")
+        settings.pinned = lambda key: key == "COMPANION_NAME"
+        pinned = webapp.whoami()
+        check(pinned["name_source"] == "environment" and pinned["name_editable"] is False,
+              "a pinned COLLIE_COMPANION_NAME is reported as authoritative too")
+        settings.pinned = lambda key: False
+        settings.get = lambda key, default=None: "" if key == "COMPANION_NAME" else real_get(key, default)
         slackbot.load_kennel = lambda: {"BigMac": {}}
-        check(webapp.whoami()["name"] == "BigMac", "one dog in the kennel needs no flag")
+        kennel = webapp.whoami()
+        check(kennel["name"] == "BigMac" and kennel["name_source"] == "kennel" and kennel["name_editable"],
+              "one dog in the kennel needs no flag and may gain a separate display name")
         slackbot.load_kennel = lambda: {"BigMac": {}, "Juno": {}}
-        check(webapp.whoami()["name"] == "", "several, and it declines to pick — the phone falls "
+        unnamed = webapp.whoami()
+        check(unnamed["name"] == "" and unnamed["name_source"] == "default", "several, and it declines to pick — the phone falls "
               "back to the machine label rather than being told the wrong name")
         slackbot.load_kennel = lambda: (_ for _ in ()).throw(OSError("no kennel"))
         check(webapp.whoami()["name"] == "", "an unreadable kennel is unnamed, not an exception")
     finally:
         slackbot.load_kennel, webapp.DOG_NAME = real_kennel, real_name
+        settings.get, settings.pinned = real_get, real_pinned
 
     # The face: same generator as Slack's, so one dog is one colour everywhere.
     from harness import avatar

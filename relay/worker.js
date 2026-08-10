@@ -30,6 +30,23 @@ const REVOKE_ACK_MS = 8 * 1000;
 const REVOKE_ACKED_TTL_MS = 24 * 60 * 60 * 1000;
 const PAIR_ENVELOPE_MAX = 16 * 1024;
 const SEALED_ENVELOPE_MAX = 256 * 1024;
+const PUSH_BODY_MAX = 8 * 1024;
+const DEVICE_STORE_ACK_MS = 8 * 1000;
+const RESPONSE_HEAD_MS = 30 * 1000;
+const MAX_INFLIGHT = 64;
+const MAX_DEVICES = 64;
+const ROOM_RE = /^[A-Za-z0-9_-]{16,64}$/;
+const AGENT_KEY_RE = /^[A-Za-z0-9_-]{32,128}$/;
+const DEVICE_HASH_RE = /^[0-9a-f]{64}$/;
+
+function pushConfigReady(env) {
+  const value = env || {};
+  return typeof value.APNS_KEY === "string" &&
+    /-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----/.test(value.APNS_KEY) &&
+    /^[A-Z0-9]{10}$/.test(String(value.APNS_KEY_ID || "")) &&
+    /^[A-Z0-9]{10}$/.test(String(value.APNS_TEAM_ID || "")) &&
+    /^(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+$/.test(String(value.APNS_TOPIC || ""));
+}
 
 export default {
   async fetch(request, env) {
@@ -38,7 +55,15 @@ export default {
     let room = null;
     if (p === "/relay/agent") room = url.searchParams.get("room");
     else if (p.startsWith("/r/")) room = p.split("/")[2] || null;
-    if (!room) return new Response("collie relay", { status: 200 });
+    // Wrangler cannot declare encrypted secrets as required bindings. Make an incomplete production
+    // deployment visibly unavailable instead of silently accepting Remote sessions whose push path
+    // can never notify a phone. The response deliberately does not identify which binding is absent.
+    if (!room)
+      return pushConfigReady(env)
+        ? new Response("collie relay", { status: 200 })
+        : json({ error: "relay configuration unavailable" }, 503);
+    if (!ROOM_RE.test(room)) return json({ error: "invalid room" }, 400);
+    if (!pushConfigReady(env)) return json({ error: "relay configuration unavailable" }, 503);
     return env.RELAY.get(env.RELAY.idFromName(room)).fetch(request);
   },
 };
@@ -54,6 +79,10 @@ export class RelayRoom {
     // tiny unit-test stores that do not implement transactions.
     this.revokeWaiters = new Map(); // revoke message id -> bounded HTTP waiter for desktop ACK
     this.revokeAckMs = REVOKE_ACK_MS;
+    this.deviceStoreWaiters = new Map(); // device_added id -> durable desktop-store ACK waiter
+    this.deviceStoreAckMs = DEVICE_STORE_ACK_MS;
+    this.responseHeadMs = RESPONSE_HEAD_MS;
+    this.maxInflight = MAX_INFLIGHT;
     // Pending pair approvals live in DO STORAGE ("pend:<ticket>"), not here — see pair(). A request
     // that is waiting for a human is precisely the state most likely to outlive an eviction.
     this.claimingTickets = new Set(); // fallback single-instance guard; storage transaction is authoritative
@@ -63,7 +92,11 @@ export class RelayRoom {
   // open at the edge. So the agent socket + its pairing state must survive eviction: find the socket via
   // getWebSockets("agent"), and stash protocol/device hashes on it with serializeAttachment (persisted),
   // instead of in-memory fields the constructor would wipe on wake.
-  _agent() { const ws = this.state.getWebSockets("agent"); return ws.length ? ws[0] : null; }
+  _agent() {
+    const sockets = this.state.getWebSockets("agent")
+      .filter((ws) => ws.readyState === undefined || ws.readyState === 1);
+    return sockets.length ? sockets[sockets.length - 1] : null;
+  }
   _astate(ws) { try { return ws.deserializeAttachment() || {}; } catch (e) { return {}; } }
   _setAstate(ws, s) { try { ws.serializeAttachment(s); } catch (e) {} }
 
@@ -96,10 +129,20 @@ export class RelayRoom {
     if (request.headers.get("Upgrade") !== "websocket")
       return new Response("expected websocket", { status: 426 });
     const key = new URL(request.url).searchParams.get("key") || "";
+    if (!AGENT_KEY_RE.test(key)) return new Response("bad agent key", { status: 403 });
     const keyHash = await sha256hex(key);
-    const stored = await this.state.storage.get("agentKeyHash");
-    if (!stored) await this.state.storage.put("agentKeyHash", keyHash);   // first claim wins
-    else if (stored !== keyHash) return new Response("bad agent key", { status: 403 });
+    if (!(await this.claimAgentKeyHash(keyHash)))
+      return new Response("bad agent key", { status: 403 });
+
+    // Exactly one authenticated desktop owns a room at a time. A reconnect replaces its stale
+    // socket and fails any work tied to that socket, rather than letting two agents race replies.
+    const oldAgents = this.state.getWebSockets("agent");
+    if (oldAgents.length) {
+      this._dropPending("agent replaced");
+      for (const old of oldAgents) {
+        try { old.close(1012, "agent replaced"); } catch (e) {}
+      }
+    }
 
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
@@ -108,19 +151,46 @@ export class RelayRoom {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  async claimAgentKeyHash(keyHash) {
+    const storage = this.state.storage;
+    if (storage.transaction) {
+      return storage.transaction(async (txn) => {
+        const stored = await txn.get("agentKeyHash");
+        if (stored && stored !== keyHash) return false;
+        if (!stored) await txn.put("agentKeyHash", keyHash);
+        return true;
+      });
+    }
+    // Minimal unit-test stores do not expose transactions. Production Durable Object storage does.
+    const stored = await storage.get("agentKeyHash");
+    if (stored && stored !== keyHash) return false;
+    if (!stored) await storage.put("agentKeyHash", keyHash);
+    return true;
+  }
+
   // ---- hibernation handlers (called by the runtime, survive DO eviction) ----
-  webSocketClose(ws) { this._dropPending("agent disconnected"); }
-  webSocketError(ws) { this._dropPending("agent error"); }
+  webSocketClose(ws) {
+    const current = this._agent();
+    if (!current || current === ws) this._dropPending("agent disconnected");
+  }
+  webSocketError(ws) {
+    const current = this._agent();
+    if (!current || current === ws) this._dropPending("agent error");
+  }
   _dropPending(why) {
     for (const [, slot] of this.pending) {
+      clearTimeout(slot.headTimer);
       try { slot.opened ? slot.controller.error(new Error(why)) : slot.headReject(new Error(why)); } catch (e) {}
     }
     this.pending.clear();
     for (const [, waiter] of this.revokeWaiters) waiter.resolve(false);
     this.revokeWaiters.clear();
+    for (const [, waiter] of this.deviceStoreWaiters) waiter.resolve(false);
+    this.deviceStoreWaiters.clear();
   }
 
   async webSocketMessage(ws, message) {
+    if (this._agent() !== ws) return; // frames from a replaced desktop socket are never authoritative
     let msg;
     try { msg = JSON.parse(typeof message === "string" ? message : ""); } catch (e) { return; }
     // pairing state lives on the socket attachment (survives hibernation), not in memory
@@ -130,7 +200,7 @@ export class RelayRoom {
       const tombstones = await this.revokeTombstones();
       const blocked = new Set(tombstones.keys());
       this._setAstate(ws, { protocol: Number(msg.v || 0),
-                            devices: (msg.devices || []).filter((hash) => !blocked.has(hash)),
+                            devices: cleanDeviceHashes(msg.devices, blocked),
                             approve: !!msg.approve, e2eRequired: msg.e2eRequired === true });
       // A pending durable tombstone outlives a dropped socket/HTTP response. Re-send it whenever the
       // authenticated desktop reconnects; deletion is idempotent and only its ACK completes revoke.
@@ -155,6 +225,12 @@ export class RelayRoom {
         }
       }
       if (waiter && waiter.hash === hash) waiter.resolve(acknowledged);
+      return;
+    }
+    if (msg.t === "device_stored") {
+      const waiter = this.deviceStoreWaiters.get(String(msg.id || ""));
+      if (waiter && waiter.agent === ws && waiter.hash === String(msg.hash || ""))
+        waiter.resolve(msg.ok === true);
       return;
     }
     if (msg.t === "pair_ready" || msg.t === "pair_invalid") {
@@ -203,7 +279,7 @@ export class RelayRoom {
       const tombstones = await this.revokeTombstones();
       const blocked = new Set(tombstones.keys());
       const s = this._astate(ws);
-      s.devices = (msg.devices || []).filter((hash) => !blocked.has(hash));
+      s.devices = cleanDeviceHashes(msg.devices, blocked);
       this._setAstate(ws, s);
       return;
     }
@@ -215,6 +291,7 @@ export class RelayRoom {
       }
       slot.status = msg.status; slot.headers = msg.headers || {}; slot.opened = true;
       slot.expectedSeq = 1;
+      clearTimeout(slot.headTimer);
       try { slot.controller.enqueue(new TextEncoder().encode(
         JSON.stringify({ enc: msg.enc, seq: 0 }) + "\n")); } catch (e) {}
       slot.headResolve();
@@ -229,9 +306,11 @@ export class RelayRoom {
       } catch (e) {}
     } else if (msg.t === "end") {
       if (!slot.opened) return this._failSlot(msg.id, slot, "response ended before its head");
+      clearTimeout(slot.headTimer);
       try { slot.controller.close(); } catch (e) {}
       this.pending.delete(msg.id);
     } else if (msg.t === "err") {
+      clearTimeout(slot.headTimer);
       if (!slot.opened) slot.headReject(new Error(msg.msg || "agent error"));
       else { try { slot.controller.error(new Error(msg.msg || "agent error")); } catch (e) {} }
       this.pending.delete(msg.id);
@@ -239,6 +318,7 @@ export class RelayRoom {
   }
 
   _failSlot(id, slot, why) {
+    clearTimeout(slot.headTimer);
     if (!slot.opened) slot.headReject(new Error(why));
     else { try { slot.controller.error(new Error(why)); } catch (e) {} }
     this.pending.delete(id);
@@ -359,7 +439,8 @@ export class RelayRoom {
     const claimed = await this.claimApprovedTicket(key, p.rid);
     if (!claimed) return json({ ok: false, error: "pairing ticket already consumed" }, 409);
     try {
-      const response = await this.issueToken(agent, this._astate(agent), p.body, p.e2e, request);
+      const response = await this.issueToken(
+        agent, p.body, p.e2e, request, p.rid);
       await this.state.storage.delete([key, "rq:" + p.rid]);
       await this.resetPairAttempts();
       return response;
@@ -389,31 +470,31 @@ export class RelayRoom {
     return true;
   }
 
-  async issueToken(agent, st, body, e2e, request) {
+  async issueToken(agent, body, e2e, request, pairId) {
+    if (!e2e || !e2e.pub || !e2e.confirm) throw new Error("missing authenticated E2E result");
     const token = randToken();
     const hash = await sha256hex(token);
-    st.devices = [...(st.devices || []), hash];          // optimistic; the desktop's refresh confirms it
-    this._setAstate(agent, st);
     const name = String(body.name || shortUA(request.headers.get("User-Agent") || "")).slice(0, 60);
     // device_id: a client-supplied STABLE id (localStorage / Keychain) so re-pairing the same client
     // updates its device row instead of duplicating. device_added carries it + the token hash + name.
-    if (!this.sendAgent(agent, {
-      t: "device_added", device_id: String(body.device_id || ""), hash, name,
-    })) {
-      // The phone has not received the token yet. Roll the optimistic edge allowlist back and fail
-      // this one-shot ticket instead of issuing a credential the desktop never learned about.
-      st.devices = (st.devices || []).filter((candidate) => candidate !== hash);
-      this._setAstate(agent, st);
+    if (!(await this.waitForDeviceStored(
+      agent, String(body.device_id || ""), hash, name, String(pairId || "")))) {
+      // The phone has not received the token yet. Fail the one-shot ticket unless the desktop has
+      // explicitly confirmed that both the token hash and K_dev are durably stored.
       throw new Error("desktop disconnected before storing device");
     }
+    const current = this._astate(agent);
+    current.devices = cleanDeviceHashes([...(current.devices || []), hash]);
+    this._setAstate(agent, current);
     // token in the body too → a NATIVE app (no cookie jar) stores it in the Keychain and sends it as
     // `Authorization: Bearer <token>`. A browser/WKWebView just uses the Secure cookie below.
-    if (!e2e || !e2e.pub || !e2e.confirm) throw new Error("missing authenticated E2E result");
     const payload = { ok: true, token, pub: e2e.pub, confirm: e2e.confirm };
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: {
         "content-type": "application/json",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
         // 1-year cookie → durable; real lifetime is bounded by the desktop still trusting this hash.
         "set-cookie": `collie_sess=${token}; HttpOnly; Secure; SameSite=Lax; Path=/r/; Max-Age=31536000`,
       },
@@ -427,10 +508,15 @@ export class RelayRoom {
     if (st.protocol !== 2 || st.e2eRequired !== true)
       return json({ error: "desktop must upgrade to hosted protocol v2" }, 426);
     if (!(await this.checkSession(request, agent))) return json({ error: "not paired" }, 401);
+    if (this.pending.size >= this.maxInflight)
+      return json({ error: "room request capacity reached; retry later" }, 429);
+    const contentType = (request.headers.get("Content-Type") || "").toLowerCase();
+    if (contentType !== "application/octet-stream")
+      return json({ error: "sealed requests require application/octet-stream" }, 415);
     const enc = await readBodyLimited(request, SEALED_ENVELOPE_MAX);
     const cid = request.headers.get("X-Collie-Rid") || "";
-    const session = request.headers.get("X-Collie-Session") || "s1";
-    if (!enc || !cid || cid.length > 128 || session.length > 256)
+    const session = request.headers.get("X-Collie-Session") || "";
+    if (!enc || !cid || cid.length > 128 || !session || session.length > 256)
       return json({ error: "a valid sealed envelope is required" }, 400);
     try {
       const parsed = JSON.parse(enc);
@@ -438,6 +524,9 @@ export class RelayRoom {
     } catch (e) {
       return json({ error: "malformed sealed envelope" }, 400);
     }
+    // Recheck after the asynchronous body read. Durable Objects can interleave requests at awaits.
+    if (this.pending.size >= this.maxInflight)
+      return json({ error: "room request capacity reached; retry later" }, 429);
     const id = ++this.seq;
     let slot;
     const stream = new ReadableStream({
@@ -449,6 +538,8 @@ export class RelayRoom {
         // return the intended 502 instead of terminating the worker/test process.
         slot.headPromise.catch(() => {});
         this.pending.set(id, slot);
+        slot.headTimer = setTimeout(
+          () => this._failSlot(id, slot, "desktop response head timed out"), this.responseHeadMs);
         // Only opaque routing fields cross the relay/desktop boundary.  No URL, query, method,
         // application headers or body is available here to log or inspect.
         if (!this.sendAgent(agent, { t: "req", id, cid, session, enc, seq: 0 })) {
@@ -456,8 +547,15 @@ export class RelayRoom {
           // Resolve that local hand-off with an explicit error marker; rejecting here would briefly
           // create an unhandled promise and strict runtimes terminate before the 502 is returned.
           slot.dispatchError = "agent disconnected before request dispatch";
+          clearTimeout(slot.headTimer);
           try { controller.close(); } catch (e) {}
           slot.headResolve();
+        }
+      },
+      cancel: () => {
+        if (this.pending.get(id) === slot) {
+          clearTimeout(slot.headTimer);
+          this.pending.delete(id);
         }
       },
     });
@@ -465,6 +563,7 @@ export class RelayRoom {
     try { await slot.headPromise; }
     catch (e) { return json({ error: String((e && e.message) || e) }, 502); }
     if (slot.dispatchError) {
+      clearTimeout(slot.headTimer);
       this.pending.delete(id);
       return json({ error: slot.dispatchError }, 502);
     }
@@ -538,6 +637,25 @@ export class RelayRoom {
     });
   }
 
+  waitForDeviceStored(agent, deviceId, hash, name, pairId) {
+    const id = randToken();
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.deviceStoreWaiters.delete(id);
+        resolve(!!ok);
+      };
+      const timer = setTimeout(() => done(false), this.deviceStoreAckMs);
+      this.deviceStoreWaiters.set(id, { agent, hash, resolve: done });
+      if (!this.sendAgent(agent, {
+        t: "device_added", id, pair_id: pairId, device_id: deviceId, hash, name,
+      })) done(false);
+    });
+  }
+
   async checkSession(request, agent) {
     const tok = tokenOf(request);
     if (!tok) return false;
@@ -559,7 +677,11 @@ export class RelayRoom {
     const agent = this._agent();
     if (!agent) return json({ ok: false, error: "desktop offline" }, 503);
     if (!(await this.checkSession(request, agent))) return json({ ok: false, error: "not paired" }, 401);
-    const body = await request.json().catch(() => null);
+    const rawBody = await readBodyLimited(request, PUSH_BODY_MAX);
+    let body = null;
+    try { body = rawBody === null ? null : JSON.parse(rawBody); } catch (e) {}
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ ok: false, error: "invalid push registration" }, 400);
     const token = String((body && body.token) || "");
     if (!/^[0-9a-fA-F]{64,200}$/.test(token)) return json({ ok: false, error: "bad device token" }, 400);
     const auth = (request.headers.get("Authorization") || "").match(/^Bearer\s+([A-Za-z0-9_\-]+)$/);
@@ -580,8 +702,14 @@ export class RelayRoom {
   async pushAll(note) {
     const rows = await this.state.storage.list({ prefix: "push:" });
     if (!rows.size) return;
+    const agent = this._agent();
+    // A disconnected desktop is absence of evidence, not evidence that every paired phone was
+    // revoked. Keep registrations until an attached agent can authoritatively supply its devices.
+    if (!agent) return;
+    const allowed = new Set(this._astate(agent).devices || []);
     const stale = [];
     for (const [key, row] of rows) {
+      if (!allowed.has(key.slice("push:".length))) { stale.push(key); continue; }
       const status = await this.apns(row, note);
       // 410 Gone is APNs telling us this install is finished with — deleting it is the documented
       // obligation, and keeping it would mean signing a request per notification forever.
@@ -716,8 +844,24 @@ function tokenOf(request) {
   return cookie ? cookie[1] : null;
 }
 
+function cleanDeviceHashes(values, blocked = new Set()) {
+  const clean = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const hash = String(value || "");
+    if (!DEVICE_HASH_RE.test(hash) || blocked.has(hash) || seen.has(hash)) continue;
+    clean.push(hash);
+    seen.add(hash);
+    if (clean.length >= MAX_DEVICES) break;
+  }
+  return clean;
+}
+
 function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(obj), { status, headers: {
+    "content-type": "application/json", "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  } });
 }
 function offlinePage() {
   return new Response(
@@ -725,7 +869,11 @@ function offlinePage() {
     "<title>Collie offline</title><body style='font:16px system-ui;padding:2rem;background:#0f1220;color:#c9d1e6'>" +
     "<h2>桌面 Collie 未在线</h2><p>请在电脑上运行 <code>collie web --remote</code>，然后刷新本页。" +
     "已配对的设备会自动恢复，无需重新配对。</p>",
-    { status: 503, headers: { "content-type": "text/html; charset=utf-8" } });
+    { status: 503, headers: {
+      "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+      "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    } });
 }
 /* wrangler.toml:
  *   name = "collie-relay"

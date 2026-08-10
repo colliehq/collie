@@ -82,6 +82,25 @@ def _inside(path: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
+def _replay_safe_request(request: dict) -> bool:
+    """Whether an unknown prior attempt is provably read-only and safe to repeat.
+
+    ``external_writes`` is only one form of mutation. Filesystem write roots, a current
+    workspace, continued-session persistence, wildcard/custom tools, and durable-memory tools all
+    create state that a crashed attempt may already have changed. Recovery must park those rather
+    than interpreting a missing terminal receipt as proof that nothing happened.
+    """
+    permissions = request.get("permissions") or {}
+    if permissions.get("external_writes") or permissions.get("current_workspace"):
+        return False
+    if permissions.get("write_roots"):
+        return False
+    if (request.get("context") or {}).get("policy", "fresh") != "fresh":
+        return False
+    tools = set(permissions.get("tools") or ())
+    return tools <= {"read_file", "grep", "glob"}
+
+
 @dataclass(frozen=True)
 class PermissionPolicy:
     read_roots: tuple[str, ...] = ()
@@ -401,7 +420,8 @@ class AutomationStore:
           CREATE TABLE IF NOT EXISTS executions(
             execution_id TEXT PRIMARY KEY, automation_id TEXT NOT NULL, event_id TEXT NOT NULL,
             request_json TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-            lease_until REAL NOT NULL DEFAULT 0, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            lease_until REAL NOT NULL DEFAULT 0, lease_token TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL, updated_at REAL NOT NULL,
             started_at REAL NOT NULL DEFAULT 0, finished_at REAL NOT NULL DEFAULT 0,
             result_json TEXT NOT NULL DEFAULT '{}', last_error TEXT NOT NULL DEFAULT '',
             UNIQUE(automation_id,event_id));
@@ -415,6 +435,16 @@ class AutomationStore:
             automation_id TEXT NOT NULL, execution_id TEXT NOT NULL DEFAULT '',
             event TEXT NOT NULL, decision TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
         """)
+        execution_cols = {row[1] for row in self.db.execute("PRAGMA table_info(executions)")}
+        if "lease_token" not in execution_cols:
+            try:
+                self.db.execute(
+                    "ALTER TABLE executions ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                # Another daemon/CLI opener may have won the same idempotent migration.
+                if "lease_token" not in {
+                        row[1] for row in self.db.execute("PRAGMA table_info(executions)")}:
+                    raise
         self.db.commit()
 
     def close(self):
@@ -551,16 +581,20 @@ class AutomationStore:
                     self.db.commit()
                     return None
                 row = rows[0]
+                lease_token = uuid.uuid4().hex
                 self.db.execute(
-                    "UPDATE executions SET state=?,attempts=attempts+1,lease_until=?,started_at=?,"
-                    "updated_at=? WHERE execution_id=? AND state=?",
-                    (RUNNING, now + max(1.0, lease_s), now, now,
+                    "UPDATE executions SET state=?,attempts=attempts+1,lease_until=?,"
+                    "lease_token=?,started_at=?,updated_at=? "
+                    "WHERE execution_id=? AND state=?",
+                    (RUNNING, now + max(1.0, lease_s), lease_token, now, now,
                      row["execution_id"], PENDING))
                 self.audit(row["automation_id"], "execution", "claimed", {},
                            execution_id=row["execution_id"], now=now)
                 self.db.commit()
                 out = dict(row)
                 out["attempts"] = int(out["attempts"]) + 1
+                out["lease_token"] = lease_token
+                out["lease_until"] = now + max(1.0, lease_s)
                 out["request"] = json.loads(out.pop("request_json"))
                 return out
             except Exception:
@@ -571,59 +605,86 @@ class AutomationStore:
         now = float(time.time() if now is None else now)
         changed = 0
         with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
             rows = list(self.db.execute(
                 "SELECT execution_id,automation_id,request_json,attempts FROM executions "
                 "WHERE state=? AND lease_until<=?", (RUNNING, now)))
             for row in rows:
                 request = json.loads(row["request_json"])
-                perms = request.get("permissions") or {}
                 retries = int((request.get("budget") or {}).get("max_retries", 1))
                 # Unknown side effects are never guessed safe. Read-only runs may be retried within
                 # their explicit retry budget; externally mutating ones wait for a human verdict.
-                state = (PENDING if not perms.get("external_writes")
+                state = (PENDING if _replay_safe_request(request)
                          and int(row["attempts"]) <= retries else NEEDS_YOU)
-                self.db.execute(
-                    "UPDATE executions SET state=?,lease_until=0,updated_at=?,last_error=? "
+                cur = self.db.execute(
+                    "UPDATE executions SET state=?,lease_until=0,lease_token='',"
+                    "updated_at=?,last_error=? "
                     "WHERE execution_id=? AND state=?",
                     (state, now, "execution lease expired; prior outcome unknown",
                      row["execution_id"], RUNNING))
-                self.audit(row["automation_id"], "recovery", state, {
-                    "reason": "lease_expired"}, execution_id=row["execution_id"], now=now)
-                changed += 1
+                if cur.rowcount:
+                    self.audit(row["automation_id"], "recovery", state, {
+                        "reason": "lease_expired",
+                        "replay_safe": _replay_safe_request(request),
+                    }, execution_id=row["execution_id"], now=now)
+                    changed += 1
             self.db.commit()
         return changed
 
+    def renew(self, execution_id: str, lease_token: str, *, lease_s: float = 300,
+              now: float | None = None) -> bool:
+        """Extend only the current attempt's lease; an expired owner cannot revive another."""
+        if not lease_token:
+            return False
+        now = float(time.time() if now is None else now)
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE executions SET lease_until=?,updated_at=? WHERE execution_id=? "
+                "AND state=? AND lease_token=? AND lease_until>?",
+                (now + max(1.0, float(lease_s)), now, execution_id,
+                 RUNNING, lease_token, now))
+            self.db.commit()
+        return cur.rowcount == 1
+
     def finish(self, execution_id: str, state: str, result: dict | None = None,
-               error: str = "", *, now: float | None = None) -> bool:
+               error: str = "", *, lease_token: str, now: float | None = None) -> bool:
         if state not in (SUCCEEDED, FAILED, NEEDS_YOU, DEAD, PENDING):
             raise ValueError("invalid execution terminal state")
-        now = float(time.time() if now is None else now)
-        row = self.db.execute(
-            "SELECT automation_id FROM executions WHERE execution_id=?", (execution_id,)).fetchone()
-        if not row:
+        if not lease_token:
             return False
-        finished = now if state in (SUCCEEDED, FAILED, NEEDS_YOU, DEAD) else 0
-        changed = self.db.execute(
-            "UPDATE executions SET state=?,result_json=?,last_error=?,lease_until=0,"
-            "finished_at=?,updated_at=? WHERE execution_id=? AND state=?",
-            (state, _json(result or {}), str(error)[:2000], finished, now,
-             execution_id, RUNNING))
-        if changed.rowcount:
-            self.audit(row["automation_id"], "execution", state,
-                       {"error": str(error)[:500]}, execution_id=execution_id, now=now)
-        self.db.commit()
+        now = float(time.time() if now is None else now)
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT automation_id FROM executions WHERE execution_id=?",
+                (execution_id,)).fetchone()
+            if not row:
+                self.db.commit()
+                return False
+            finished = now if state in (SUCCEEDED, FAILED, NEEDS_YOU, DEAD) else 0
+            changed = self.db.execute(
+                "UPDATE executions SET state=?,result_json=?,last_error=?,lease_until=0,"
+                "lease_token='',finished_at=?,updated_at=? WHERE execution_id=? "
+                "AND state=? AND lease_token=?",
+                (state, _json(result or {}), str(error)[:2000], finished, now,
+                 execution_id, RUNNING, lease_token))
+            if changed.rowcount:
+                self.audit(row["automation_id"], "execution", state,
+                           {"error": str(error)[:500]}, execution_id=execution_id, now=now)
+            self.db.commit()
         return changed.rowcount == 1
 
     def add_usage(self, execution_id: str, *, model_tokens: int = 0,
                   cost_usd: float = 0, actions: int = 0, wall_s: float = 0,
                   now: float | None = None) -> dict:
         now = float(time.time() if now is None else now)
-        self.db.execute(
-            "UPDATE usage SET model_tokens=model_tokens+?,cost_usd=cost_usd+?,"
-            "actions=actions+?,wall_s=wall_s+?,updated_at=? WHERE execution_id=?",
-            (max(0, int(model_tokens)), max(0.0, float(cost_usd)), max(0, int(actions)),
-             max(0.0, float(wall_s)), now, execution_id))
-        self.db.commit()
+        with self._lock:
+            self.db.execute(
+                "UPDATE usage SET model_tokens=model_tokens+?,cost_usd=cost_usd+?,"
+                "actions=actions+?,wall_s=wall_s+?,updated_at=? WHERE execution_id=?",
+                (max(0, int(model_tokens)), max(0.0, float(cost_usd)), max(0, int(actions)),
+                 max(0.0, float(wall_s)), now, execution_id))
+            self.db.commit()
         return self.usage(execution_id)
 
     def usage(self, execution_id: str) -> dict:
@@ -856,7 +917,30 @@ class AutomationExecutor:
         if cancel:
             cancel()
 
+    def _start_lease_heartbeat(self, row: dict, request: dict):
+        """Keep a live attempt leased, bounded by its wall budget and fenced by its token."""
+        stop = threading.Event()
+        wall_s = max(.2, float((request.get("budget") or {}).get("max_wall_s", 1800)))
+        deadline = time.monotonic() + wall_s
+
+        def beat():
+            while not stop.wait(min(20.0, max(.2, wall_s / 3.0))):
+                if time.monotonic() >= deadline:
+                    return
+                try:
+                    if not self.store.renew(
+                            request["execution_id"], row["lease_token"], lease_s=300):
+                        return
+                except (sqlite3.Error, RuntimeError):
+                    return
+
+        thread = threading.Thread(
+            target=beat, name="automation-lease-heartbeat", daemon=True)
+        thread.start()
+        return stop, thread
+
     def step(self, *, now: float | None = None) -> str:
+        fixed_now = now is not None
         now = float(time.time() if now is None else now)
         row = self.store.claim(now=now)
         if not row:
@@ -864,6 +948,7 @@ class AutomationExecutor:
         request = row["request"]
         guard = BudgetGuard(self.store, request["execution_id"], request.get("budget") or {},
                             request=request)
+        heartbeat = self._start_lease_heartbeat(row, request)
         try:
             request["resolved_workspace"] = self.workspaces.prepare(request)
             self._notify(request, "start", "Automation %s started" % request["automation_id"])
@@ -877,12 +962,26 @@ class AutomationExecutor:
             status, result, error = NEEDS_YOU, {}, "%s: %s" % (type(exc).__name__, exc)
         except Exception as exc:
             error = "%s: %s" % (type(exc).__name__, exc)
-            perms = PermissionPolicy.from_dict(request.get("permissions"))
             max_retries = int((request.get("budget") or {}).get("max_retries", 1))
-            status = (PENDING if not perms.external_writes and row["attempts"] <= max_retries
-                      else FAILED)
+            replay_safe = _replay_safe_request(request)
+            status = (PENDING if replay_safe and row["attempts"] <= max_retries else
+                      FAILED if replay_safe else NEEDS_YOU)
             result = {}
-        self.store.finish(request["execution_id"], status, result, error, now=now)
+        finally:
+            heartbeat[0].set()
+            heartbeat[1].join(timeout=2)
+        finished_now = now if fixed_now else time.time()
+        committed = self.store.finish(
+            request["execution_id"], status, result, error,
+            lease_token=row["lease_token"], now=finished_now)
+        if not committed:
+            # Recovery or another attempt won the lease fence. The stale result is neither a
+            # terminal state nor notification-worthy evidence.
+            self.store.audit(request["automation_id"], "execution", "stale_completion_ignored", {
+                "attempt": row["attempts"], "reported_state": status,
+            }, execution_id=request["execution_id"], now=finished_now)
+            self.store.db.commit()
+            return "ownership_lost"
         if status != PENDING:
             notice = "success" if status == SUCCEEDED else (
                 "needs_you" if status == NEEDS_YOU else "failure")
@@ -1103,11 +1202,13 @@ class DefaultCollieRunner:
             env["COLLIE_MAX_COST"] = str(float(budget["max_cost_usd"]))
             env["COLLIE_MAX_TURNS"] = str(int(budget["max_turns"]))
             env["COLLIE_HTTP_TIMEOUT"] = str(max(.2, float(budget["max_wall_s"])))
+            from . import plat
             proc = subprocess.Popen(
                 [sys.executable, "-m", "harness.automations", "_execute",
                  "--request", request_path, "--result", result_path],
                 cwd=request["resolved_workspace"], env=env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                **plat.no_window_kwargs())
             with self._lock:
                 self._proc = proc
             try:
@@ -1163,6 +1264,10 @@ class AutomationDaemon:
     def step(self, now: float | None = None) -> dict:
         now = float(time.time() if now is None else now)
         created = self.engine.tick(now)
+        # Recovery cannot live only inside ``claim``: after a daemon restart the queue may contain
+        # one expired RUNNING row and zero PENDING rows, in which case no executor thread would ever
+        # be started to call claim. Evaluate leases on every daemon tick before counting work.
+        recovered = self.engine.store.recover_expired(now=now)
         pending = int(self.engine.store.db.execute(
             "SELECT count(*) FROM executions WHERE state=?", (PENDING,)).fetchone()[0])
         thread = self._executor_thread
@@ -1171,7 +1276,7 @@ class AutomationDaemon:
                                       daemon=True)
             self._executor_thread = thread
             thread.start()
-        detail = {"created": len(created), "pending": pending,
+        detail = {"created": len(created), "recovered": recovered, "pending": pending,
                   "executor": self._last_execution_state,
                   "executor_alive": bool(self._executor_thread and
                                          self._executor_thread.is_alive())}

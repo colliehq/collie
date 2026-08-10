@@ -111,12 +111,22 @@ async function main() {
 
     const junk = await r.registerPush(registerRequest("not-hex", sess));
     check(junk.status === 400, "a device token that is not a device token is refused");
+
+    const oversized = await r.registerPush(new Request("https://relay/r/room/push/register", {
+      method: "POST",
+      headers: { authorization: "Bearer " + sess, "content-type": "application/json" },
+      body: JSON.stringify({ token: HEX, padding: "x".repeat(9 * 1024) }),
+    }));
+    check(oversized.status === 400, "an oversized push-registration body is bounded before parsing");
   }
 
   // ---- what gets sent to Apple ------------------------------------------------------------------
   {
     const { r, sess, storage } = await room(env);
     await r.registerPush(registerRequest(HEX, sess, { name: "iPhone" }));
+    await storage.put("push:" + "f".repeat(64), {
+      token: "b".repeat(64), sandbox: false, name: "stale", at: Date.now(),
+    });
     check([...storage.m.keys()].some((k) => k.startsWith("push:")), "the token is stored");
 
     const seen = [];
@@ -126,6 +136,8 @@ async function main() {
     globalThis.fetch = realFetch;
 
     check(seen.length === 1, "one registered phone gets one request");
+    check(!storage.m.has("push:" + "f".repeat(64)),
+          "push registrations whose bearer is no longer paired are garbage-collected");
     const req = seen[0];
     check(req.url === "https://api.push.apple.com/3/device/" + HEX,
           "production gateway and the device token in the path");
@@ -155,6 +167,21 @@ async function main() {
     globalThis.fetch = realFetch;
     check(seen[1].init.headers.authorization === req.init.headers.authorization,
           "the bearer token is reused across pushes rather than re-signed each time");
+  }
+
+  // ---- a transient desktop disconnect must not erase durable registrations ----------------------
+  {
+    const { r, sess, storage } = await room(env);
+    await r.registerPush(registerRequest(HEX, sess));
+    const key = "push:" + await sha256hex(sess);
+    r.state.getWebSockets = () => [];
+    let called = false;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => { called = true; return { status: 200 }; };
+    await r.pushAll({ title: "while offline", body: "keep registration" });
+    globalThis.fetch = realFetch;
+    check(storage.m.has(key) && !called,
+          "a transient desktop disconnect keeps push registrations for the next reconnect");
   }
 
   // ---- revocation is a durable, acknowledged operation ------------------------------------------

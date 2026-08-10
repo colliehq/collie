@@ -566,7 +566,7 @@ class Harness:
             if scope.startswith(("web:", "session:")):
                 sid = scope.split(":", 1)[1]
         if not sid:
-            return
+            return True
         try:
             from . import sessions as _sessions
             _sessions.checkpoint(
@@ -575,12 +575,14 @@ class Harness:
                 terminal=terminal)
             self._emit("session_checkpoint", session=sid, state=state,
                        turn=turn, terminal=terminal)
+            return True
         except Exception as exc:
-            # Bookkeeping must not kill active work, but durability failures must
-            # be visible rather than silently voiding the recovery promise.
+            # Model-only work can still report this failure. A caller about to execute a tool uses
+            # the False return to fail closed rather than voiding the crash-recovery promise.
             self._emit("session_checkpoint", session=sid, state=state,
                        turn=turn, ok=False,
                        error="%s: %s" % (type(exc).__name__, exc))
+            return False
 
     def _authorize(self, tc, tool):
         """Decide whether this call may run. Returns None to allow, or the reason it was
@@ -609,8 +611,11 @@ class Harness:
             # be able to answer "why was I not asked about that?". Reads are not recorded —
             # they have no side effect to account for, and drowning the log in them is how
             # an audit trail stops being read.
-            if d.risk != "read":
-                self._audit(tc, d, stage="auto", outcome="allowed")
+            if d.risk != "read" and not self._audit(
+                    tc, d, stage="auto", outcome="allowed"):
+                reason = "the audit ledger is unavailable; consequential action was not executed"
+                self._emit("gate", name=tc.name, decision="denied", reason=reason, risk=d.risk)
+                return reason
             return None
 
         if not d.needs_user:
@@ -643,21 +648,35 @@ class Harness:
             outcome = Outcome(str(outcome))
         except ValueError:
             outcome = Outcome.REJECT_ONCE     # an unparseable answer is not consent
-        self.gate.apply_outcome(outcome, tc.name, d.target)
         allowed = outcome in ALLOWING
+        audit_ok = self._audit(tc, d, stage="approved" if allowed else "denied",
+                               outcome=outcome.value, reason="answered by the user")
+        if allowed and not audit_ok:
+            reason = "the audit ledger is unavailable; approved action was not executed"
+            self._emit("gate", name=tc.name, decision="denied", reason=reason,
+                       risk=d.risk, target=d.target)
+            return reason
+        try:
+            self.gate.apply_outcome(outcome, tc.name, d.target)
+        except Exception as exc:
+            reason = "the permission decision could not be persisted (%s: %s)" % (
+                type(exc).__name__, exc)
+            self._emit("gate", name=tc.name, decision="denied", reason=reason,
+                       risk=d.risk, target=d.target)
+            return reason
         self._emit("gate", name=tc.name, decision="approved" if allowed else "denied",
                    outcome=outcome.value, risk=d.risk, target=d.target)
-        self._audit(tc, d, stage="approved" if allowed else "denied",
-                    outcome=outcome.value, reason="answered by the user")
         return None if allowed else "the user declined this action"
 
     def _audit(self, tc, decision, *, stage, outcome, reason=None):
-        """Record one gate decision. Best-effort and lazily opened, so a run with no audit
-        db (a test, a read-only home) is unaffected — and note the args passed are
-        `tc.args`, the pre-restore ones, for the same reason the approval prompt gets them.
+        """Record one gate decision and report whether a configured ledger accepted it.
+
+        A run with no audit db (a test, a read-only embedder) is unaffected. Once a surface attaches
+        an audit ledger, however, its failure is load-bearing for consequential actions: permission
+        without a durable receipt is not auditable authority. Args remain pre-secret-restore.
         """
         if self.audit is None:
-            return
+            return True
         try:
             self.audit.record(
                 session=getattr(self, "_audit_session", "") or self.project,
@@ -665,8 +684,9 @@ class Harness:
                 target=decision.target or "", stage=stage, outcome=outcome,
                 reason=reason if reason is not None else decision.reason,
                 rule=decision.rule, args=tc.args)
+            return True
         except Exception:
-            pass                       # never fail a run over its own bookkeeping
+            return False
 
     def _drain_steering(self):
         """Pull any queued mid-run user messages (point 13). Same exception discipline as _emit —
@@ -1186,11 +1206,15 @@ class Harness:
                                 _run_args = (_redact.restore(tc.args, self._secret_vault)
                                              if (_redact_on and not _skip_restore) else tc.args)
                                 journal_state = "executing_tool"
-                                self._session_checkpoint(
+                                checkpointed = self._session_checkpoint(
                                     session["messages"], rid, turn, journal_state,
                                     {"tool_name": tc.name, "tool_call_id": tc.id})
-                                out = (tool.run(_run_args, ctx) if tool
-                                       else "ERROR: no such tool %s" % tc.name)
+                                if checkpointed is False:
+                                    out = ("ERROR: durability checkpoint failed; tool was not "
+                                           "executed because crash recovery could not be fenced")
+                                else:
+                                    out = (tool.run(_run_args, ctx) if tool
+                                           else "ERROR: no such tool %s" % tc.name)
                             except Exception as e:
                                 out = "ERROR: tool %s failed: %s" % (tc.name, e)
                         if _redact_on and isinstance(out, str):

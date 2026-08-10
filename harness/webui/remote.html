@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Devices &amp; Remote — Collie</title>
+<title>Pack — Collie</title>
 <style>
   :root { --bg:#0E0F14; --card:#14161D; --line:#252833; --ink:#E7E9F0; --dim:#969CAD;
           --brand:#8AA0E8; --brand2:#3D4E8F; --good:#3fbf7f; --bad:#e0576b; --warn:#e3a94b; }
   * { box-sizing:border-box; }
   body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
-  .wrap { max-width:760px; margin:0 auto; padding:28px 20px 60px; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 20px 60px; }
   .back { display:inline-flex; align-items:center; gap:6px; margin-bottom:18px; color:var(--dim); text-decoration:none; font-size:13px; font-weight:650; }
   .back:hover { color:var(--ink); }
   h1 { font-size:20px; margin:0 0 2px; display:flex; align-items:center; gap:10px; }
@@ -20,7 +20,7 @@
   .pill.off { background:rgba(224,87,107,.16); color:var(--bad); }
   .pill.idle { background:rgba(227,169,75,.16); color:var(--warn); }
   .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin-bottom:18px; }
-  .card h2 { font-size:14px; margin:0 0 14px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
+  .card h2 { font-size:14px; margin:0 0 14px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; gap:9px; }
   .pairgrid { display:flex; gap:22px; flex-wrap:wrap; align-items:center; }
   .qr { background:transparent; width:180px; height:180px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; }
   .qr img { width:100%; height:100%; }
@@ -62,31 +62,71 @@
   .pno{background:transparent;color:inherit;opacity:.8}
   :where(button,a):focus-visible{outline:3px solid #aab6ff;outline-offset:3px}
   .neterr{color:var(--bad);font-size:13px;min-height:1.5em;margin-bottom:12px}
-  @media(max-width:520px){.wrap{padding:18px 12px 40px}.card{padding:15px}.pairinfo{min-width:0}.qr{width:min(180px,100%);height:auto;aspect-ratio:1}.card{overflow-x:auto}th,td{white-space:normal}}
+  .packerr{color:var(--bad);font-size:12px;min-height:1.5em;margin:-5px 0 10px}
+  .packidentity{display:flex;align-items:center;gap:13px;margin-bottom:15px}.packidentity img{width:46px;height:46px;object-fit:contain;filter:drop-shadow(0 4px 7px rgba(0,0,0,.28))}.packwho{font-weight:700;font-size:16px}.packmeta{color:var(--dim);font-size:12px;overflow-wrap:anywhere}
+  .packstats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:15px}.packstat{background:#0B0C11;border:1px solid var(--line);border-radius:10px;padding:9px}.packstat b{display:block;font:700 18px ui-monospace,monospace}.packstat span{color:var(--dim);font-size:10.5px}
+  .packgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.packlane{border:1px solid var(--line);border-radius:10px;overflow:hidden}.packlane h3{margin:0;padding:8px 10px;color:var(--dim);background:#0B0C11;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.packrows{padding:4px 9px}.packrow{display:flex;align-items:flex-start;gap:8px;padding:7px 1px;border-bottom:1px solid var(--line);font-size:12px}.packrow:last-child{border:0}.packrowmain{flex:1;min-width:0}.packrowname{color:var(--ink);overflow-wrap:anywhere}.packrowmeta{color:var(--dim);font-size:10.5px}.packrowstate{flex:none;color:var(--good);font:10.5px ui-monospace,monospace}.packrowstate.bad{color:var(--bad)}.packempty{color:var(--dim);font-size:12px;padding:10px 1px}.truthnote{margin-top:12px;color:var(--dim);font-size:11.5px}
+  .reach{color:var(--dim);font-size:11.5px;max-width:210px}.pendingerr{color:var(--bad);font-size:12px;min-height:1.4em;margin-top:8px}
+  .activity-title-action{margin-left:auto;padding:5px 9px;font-size:11px;text-transform:none;letter-spacing:0}.activitynotice{min-height:1.45em;margin:-5px 0 10px;color:var(--dim);font-size:12px}.activitynotice.bad{color:var(--bad)}
+  .activitygrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.activitylane{min-width:0;border:1px solid var(--line);border-radius:10px;overflow:hidden}.activitylane.full{grid-column:1/-1}.activitylane h3{margin:0;padding:8px 10px;color:var(--dim);background:#0B0C11;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.activityhelp{padding:8px 10px 0;color:var(--dim);font-size:10.5px}.activityrows{padding:3px 9px}.activityempty{padding:11px 1px;color:var(--dim);font-size:12px}
+  .activityrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;padding:8px 1px;border-bottom:1px solid var(--line);font-size:12px}.activityrow:last-child{border:0}.activitymain{min-width:0}.activityname{font-weight:650;overflow-wrap:anywhere}.activitymeta{margin-top:2px;color:var(--dim);font-size:10.5px;overflow-wrap:anywhere}.activitystate{align-self:start;color:var(--good);font:10.5px ui-monospace,monospace}.activitystate.warn{color:var(--warn)}.activitystate.bad{color:var(--bad)}.activityactions{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap}.activityactions button{padding:5px 9px;font-size:11px}.activitytree{position:relative;margin-left:var(--tree-indent,0)}.activitytree::before{content:"";position:absolute;left:-8px;top:0;bottom:0;width:1px;background:var(--line)}.activitytree.root::before{display:none}.activitylane-label{padding:8px 1px 3px;color:var(--dim);font-size:10px;font-weight:750;letter-spacing:.04em;text-transform:uppercase}
+  @media(max-width:700px){.packgrid,.activitygrid{grid-template-columns:1fr}.packstats{grid-template-columns:repeat(2,minmax(0,1fr))}.activitylane.full{grid-column:auto}}
+  @media(max-width:520px){.wrap{padding:18px 12px 40px}.card{padding:15px}.pairinfo{min-width:0}.qr{width:min(180px,100%);height:auto;aspect-ratio:1}.card{overflow-x:auto}th,td{white-space:normal}.packidentity{align-items:flex-start}.packstats{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <a class="back" href="/">← <span data-i="Back to Collie">Back to Collie</span></a>
-  <h1><img src="logo.svg" alt="Collie"> <span data-i="Devices &amp; Remote">Devices &amp; Remote</span> <span id="statuspill" class="pill idle" role="status" aria-live="polite">…</span></h1>
-  <div class="sub" data-i="Connect and manage the phones that can supervise this Collie.">Connect and manage the phones that can supervise this Collie.</div>
+  <h1><img src="logo.svg" alt="Collie"> <span data-i="Pack">Pack</span></h1>
+  <div class="sub" data-i="See which Collies and workers are available, what they are carrying, and which phones can supervise this device.">See which Collies and workers are available, what they are carrying, and which phones can supervise this device.</div>
+
+  <div class="card" id="packcard">
+    <h2><span data-i="Pack now">Pack now</span> <span id="packhealth" class="pill idle" role="status" aria-live="polite">Loading…</span></h2>
+    <div class="packerr" id="packerr" role="alert" aria-live="assertive"></div>
+    <div class="packidentity"><img id="packavatar" src="/api/avatar.png" alt="">
+      <div><div class="packwho" id="packwho">Collie</div><div class="packmeta" id="packdevice">Checking this device…</div>
+        <div class="packmeta" id="packmodel">Checking provider and model…</div></div></div>
+    <div class="packstats">
+      <div class="packstat"><b id="statInteractive">—</b><span data-i="Interactive">Interactive</span></div>
+      <div class="packstat"><b id="statMissions">—</b><span data-i="Missions">Missions</span></div>
+      <div class="packstat"><b id="statSpecialists">—</b><span data-i="Specialists">Specialists</span></div>
+      <div class="packstat"><b id="statAutomations">—</b><span data-i="Automations">Automations</span></div>
+      <div class="packstat"><b id="statNeeds">—</b><span data-i="Needs You">Needs You</span></div>
+    </div>
+    <div class="packgrid">
+      <section class="packlane"><h3 data-i="Available here">Available here</h3><div class="packrows" id="packmembers"><div class="packempty">Loading availability…</div></div></section>
+      <section class="packlane"><h3 data-i="Active assignments">Active assignments</h3><div class="packrows" id="packassignments"><div class="packempty">Loading assignments…</div></div></section>
+    </div>
+    <div class="truthnote" data-i="Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.">Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.</div>
+  </div>
+
+  <div class="card" id="activitycard">
+    <h2><span data-i="Activity & recovery">Activity &amp; recovery</span><span id="activityhealth" class="pill idle" role="status" aria-live="polite">Loading…</span><button type="button" class="activity-title-action" id="activityRefresh" data-i="Refresh">Refresh</button></h2>
+    <div class="activitynotice" id="activitynotice" role="status" aria-live="polite"></div>
+    <div class="activitygrid">
+      <section class="activitylane"><h3 data-i="Session recovery">Session recovery</h3><p class="activityhelp" data-i="Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.">Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.</p><div class="activityrows" id="remoteRecovery"><div class="activityempty" data-i="Loading…">Loading…</div></div></section>
+      <section class="activitylane"><h3 data-i="Operational activity">Operational activity</h3><div class="activityrows" id="remoteOtherActivity"><div class="activityempty" data-i="Loading…">Loading…</div></div></section>
+      <section class="activitylane full"><h3 data-i="Specialist run tree">Specialist run tree</h3><p class="activityhelp" data-i="Only lifecycle metadata is shown; task content and tool arguments stay private.">Only lifecycle metadata is shown; task content and tool arguments stay private.</p><div class="activityrows" id="remoteRunTree"><div class="activityempty" data-i="Loading…">Loading…</div></div></section>
+    </div>
+  </div>
+
   <div class="neterr" id="neterr" role="alert" aria-live="assertive"></div>
 
   <div class="card" id="offcard" style="display:none">
     <span data-i="Remote is off. Start with collie web --remote, or turn it on below.">Remote is off. Start with collie web --remote, or turn it on below.</span>
-    <div class="row"><button class="primary" id="enableRemote" data-i="Turn on remote">Turn on remote</button></div>
+    <div class="row"><button class="primary" id="enableRemote" type="button" data-i="Turn on remote">Turn on remote</button></div>
   </div>
 
   <div class="card" id="paircard">
-    <h2 data-i="Pairing">Pairing</h2>
+    <h2><span data-i="Remote supervision">Remote supervision</span> <span id="statuspill" class="pill idle" role="status" aria-live="polite">…</span></h2>
     <div class="pairgrid">
-      <div class="pendcard" id="pendingbox" role="region" aria-label="Pending pairing request" aria-live="assertive" hidden>
+      <div class="pendcard" id="pendingbox" role="region" aria-label="Pending pairing request" data-i-aria="Pending pairing request" aria-live="assertive" hidden>
         <div class="pwho" id="pwho"></div>
         <div class="pnum" id="pnum"></div>
-        <div class="phint">Check this matches the number on the phone.</div>
+        <div class="phint" data-i="Check this matches the number on the phone.">Check this matches the number on the phone.</div>
         <div class="prow">
-          <button class="pno" id="denyPair">Not me</button>
-          <button class="pyes" id="allowPair">Allow</button>
+          <button class="pno" id="denyPair" type="button" data-i="Not me">Not me</button>
+          <button class="pyes" id="allowPair" type="button" data-i="Allow">Allow</button>
         </div>
       </div>
       <div class="qr" id="qrbox"><span class="none">—</span></div>
@@ -97,18 +137,19 @@
         <p class="lbl" style="margin-top:14px" data-i="QR fingerprint (display only — not a login code)">QR fingerprint (display only — not a login code)</p>
         <div class="code" id="code">—</div>
         <div class="row">
-          <button id="copyPairLink" data-i="Copy link">Copy link</button>
-          <button id="rotatePair" data-i="New pairing QR">New pairing QR</button>
+          <button id="copyPairLink" type="button" data-i="Copy link">Copy link</button>
+          <button id="rotatePair" type="button" data-i="New pairing QR">New pairing QR</button>
         </div>
       </div>
     </div>
+    <div class="pendingerr" id="pendingerr" role="alert" aria-live="assertive"></div>
   </div>
 
   <div class="card">
     <h2 data-i="Paired devices">Paired devices</h2>
     <table>
-      <thead><tr><th data-i="Device">Device</th><th data-i="Paired">Paired</th><th></th></tr></thead>
-      <tbody id="devs"><tr><td class="empty" data-i="Loading…" colspan="3">Loading…</td></tr></tbody>
+      <thead><tr><th data-i="Device">Device</th><th data-i="Paired">Paired</th><th data-i="Reachability">Reachability</th><th></th></tr></thead>
+      <tbody id="devs"><tr><td class="empty" data-i="Loading…" colspan="4">Loading…</td></tr></tbody>
     </table>
   </div>
 
@@ -132,7 +173,8 @@ var SUPPORTED = ["en","zh-tw","zh"];
 function resolveLang(v){ if(v&&v!=="auto"&&SUPPORTED.indexOf(v)>=0) return v;
   var b=(navigator.language||"").toLowerCase(); for(var i=1;i<SUPPORTED.length;i++) if(b.indexOf(SUPPORTED[i])===0) return SUPPORTED[i]; return "en"; }
 var ZH = {
-  "Back to Collie":"返回 Collie","Devices & Remote":"设备与远程","Connect and manage the phones that can supervise this Collie.":"连接并管理可以监督这台 Collie 的手机。","Connection details":"连接详情",
+  "Back to Collie":"返回 Collie","Pack":"伙伴群","Pack now":"当前伙伴群","See which Collies and workers are available, what they are carrying, and which phones can supervise this device.":"查看当前可用的 Collie 与工作进程、它们承担的任务，以及可以监督本设备的手机。","Connection details":"连接详情",
+  "Interactive":"对话","Missions":"任务","Specialists":"专员","Automations":"自动化","Needs You":"需要你","Available here":"本机可用","Active assignments":"进行中的分工","Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.":"工作进程的新鲜度来自本机心跳。已配对手机是监督界面，并不是另一个工作进程。","Remote supervision":"远程监督","Reachability":"可达状态","Paired · live reachability not reported":"已配对 · 未报告实时可达状态",
   "Control this computer's Collie from your phone. This panel is visible only on this machine; pairing can't be managed from a phone.":"从手机控制这台电脑上的 Collie。此面板只在本机可见，配对无法从手机管理。",
   "Remote is off. Start with collie web --remote, or turn it on below.":"远程未启用。用 collie web --remote 启动，或点下面的按钮开启。",
   "Turn on remote":"开启远程","Pairing":"配对","Scan on your phone, or open this link:":"手机扫码，或打开此链接：",
@@ -146,18 +188,153 @@ var ZH = {
   "Turned on":"已开启","Turned off":"已关闭","Pairing QR updated":"配对二维码已更新","Kicked":"已踢除","Renamed":"已改备注",
   "Link copied":"链接已复制","Action failed":"操作失败","QR unavailable — use the link below":"二维码暂不可用，用下方链接配对",
   "Kick this device? It will need to scan again to pair.":"踢除该设备？它需要重新扫码配对。","Device label:":"设备备注：",
-  "relay":"relay","room":"房间","turn":"轮","turns":"轮","Pairing QR code":"配对二维码","Unavailable":"不可用",
+  "relay":"relay","room":"房间","turn":"轮","turns":"轮","Pairing QR code":"配对二维码","Unavailable":"不可用","Available":"可用","Degraded":"部分不可用","Responding":"有响应","Fresh":"新鲜","Stale":"过期","No active assignments.":"没有进行中的分工。",
   "Could not check pending pairings":"无法检查待处理配对","Could not reach the remote service":"无法连接远程服务",
-  "No pairing link is available yet.":"配对链接尚未可用。","Copy is unavailable; select the link above.":"无法自动复制，请选中上方链接。","Copy failed; select the link above.":"复制失败，请选中上方链接。"
+  "No pairing link is available yet.":"配对链接尚未可用。","Copy is unavailable; select the link above.":"无法自动复制，请选中上方链接。","Copy failed; select the link above.":"复制失败，请选中上方链接。",
+  "Activity & recovery":"活动与恢复","Refresh":"刷新","Session recovery":"会话恢复","Operational activity":"运行活动","Specialist run tree":"专员运行树",
+  "Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.":"先检查外部系统，再处理不确定操作。Collie 不会自动重放该操作。",
+  "Only lifecycle metadata is shown; task content and tool arguments stay private.":"这里只显示生命周期元数据；任务内容和工具参数保持私密。",
+  "No recovery decisions.":"没有待处理的恢复决定。","No specialist runs.":"没有专员运行。","No other activity.":"没有其他活动。",
+  "Completed":"已完成","Not fired":"未发生","Cancel run":"取消运行","Steer":"补充要求","Cancel":"取消",
+  "Confirm only after inspecting the external system: the action completed.":"请仅在检查外部系统并确认操作已完成后继续。",
+  "Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"请仅在检查外部系统并确认操作未发生后继续。Collie 之后可以安全重试。",
+  "Cancel this recovery without replaying the uncertain action?":"要取消此次恢复且不重放不确定操作吗？","Steer this specialist at its next safe boundary:":"在下一个安全边界向该专员补充要求：","Request specialist cancellation?":"要请求取消该专员吗？",
+  "Resolution recorded":"已记录恢复决定","Steer queued":"补充要求已排队","Cancellation requested":"已请求取消","Some operational lanes are unavailable":"部分运行通道暂不可用","Activity is unavailable":"活动暂不可用",
+  "Services":"服务","Service":"服务","Mission":"任务","Automation":"自动化","Queued":"排队中","Running":"运行中","Blocked":"已阻塞","Waiting":"等待中","Paused":"已暂停","Completed status":"已完成","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿"
 };
-var ZHTW = {}; // falls back to zh where missing (see t())
+var ZHTW = {
+  "Activity & recovery":"活動與復原","Refresh":"重新整理","Session recovery":"工作階段復原","Operational activity":"執行活動","Specialist run tree":"專員執行樹",
+  "Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.":"先檢查外部系統，再處理不確定操作。Collie 不會自動重播該操作。",
+  "Only lifecycle metadata is shown; task content and tool arguments stay private.":"這裡只顯示生命週期中繼資料；任務內容和工具參數維持私密。",
+  "No recovery decisions.":"沒有待處理的復原決定。","No specialist runs.":"沒有專員執行。","No other activity.":"沒有其他活動。",
+  "Completed":"已完成","Not fired":"未發生","Cancel run":"取消執行","Steer":"補充要求","Cancel":"取消",
+  "Confirm only after inspecting the external system: the action completed.":"請只在檢查外部系統並確認操作已完成後繼續。",
+  "Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"請只在檢查外部系統並確認操作未發生後繼續。Collie 之後可以安全重試。",
+  "Cancel this recovery without replaying the uncertain action?":"要取消此次復原且不重播不確定操作嗎？","Steer this specialist at its next safe boundary:":"在下一個安全邊界向該專員補充要求：","Request specialist cancellation?":"要請求取消該專員嗎？",
+  "Resolution recorded":"已記錄復原決定","Steer queued":"補充要求已排入佇列","Cancellation requested":"已請求取消","Some operational lanes are unavailable":"部分執行通道暫時無法使用","Activity is unavailable":"活動暫時無法使用",
+  "Services":"服務","Service":"服務","Mission":"任務","Automation":"自動化","Queued":"排隊中","Running":"執行中","Blocked":"已封鎖","Waiting":"等待中","Paused":"已暫停","Completed status":"已完成","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿"
+}; // falls back to zh where older strings are missing (see t())
+Object.assign(ZH,{
+  "Pending pairing request":"待处理的配对请求","Check this matches the number on the phone.":"请确认此号码与手机上显示的一致。","Not me":"不是我","Allow":"允许",
+  "Unknown OS":"未知操作系统","Repository not reported":"未报告代码库","Device identity unavailable":"设备身份信息不可用","Provider default":"提供方默认设置","Provider and model unavailable":"提供方和模型信息不可用",
+  "Operational lanes":"运行通道","Some Pack state is unavailable":"部分伙伴群状态不可用","This Collie":"当前 Collie","Health endpoint did not respond":"健康检查端点无响应","This device":"本设备","Unknown":"未知",
+  "heartbeat {n}s ago":"心跳 · {n} 秒前","Supervisor":"监督服务","Local coordination service":"本地协调服务","Stopped":"已停止","Not running":"未运行","Assignments unavailable.":"分工信息不可用。","{n} more active assignments":"还有 {n} 条进行中的分工"
+});
+Object.assign(ZHTW,{
+  "Pending pairing request":"待處理的配對請求","Check this matches the number on the phone.":"請確認此號碼與手機上顯示的一致。","Not me":"不是我","Allow":"允許",
+  "Unknown OS":"未知作業系統","Repository not reported":"未回報程式碼庫","Device identity unavailable":"裝置識別資訊無法使用","Provider default":"提供者預設值","Provider and model unavailable":"提供者與模型資訊無法使用",
+  "Operational lanes":"執行通道","Some Pack state is unavailable":"部分夥伴群狀態無法使用","This Collie":"此 Collie","Health endpoint did not respond":"健康檢查端點未回應","This device":"此裝置","Unknown":"未知",
+  "heartbeat {n}s ago":"心跳 · {n} 秒前","Supervisor":"監督服務","Local coordination service":"本機協調服務","Stopped":"已停止","Not running":"未執行","Assignments unavailable.":"分工資訊無法使用。","{n} more active assignments":"還有 {n} 個進行中的分工"
+});
 function t(en){ if(UI_LANG==="zh") return ZH[en]||en; if(UI_LANG==="zh-tw") return ZHTW[en]||ZH[en]||en; return en; }
-function applyStatic(){ document.querySelectorAll("[data-i]").forEach(function(el){ el.textContent=t(el.getAttribute("data-i")); }); document.documentElement.lang=UI_LANG; }
+function applyStatic(){ document.querySelectorAll("[data-i]").forEach(function(el){ el.textContent=t(el.getAttribute("data-i")); }); document.querySelectorAll("[data-i-aria]").forEach(function(el){el.setAttribute("aria-label",t(el.getAttribute("data-i-aria")));}); document.documentElement.lang=UI_LANG; }
 
 function toast(m){ var el=document.getElementById('toast'); el.textContent=m; el.classList.add('show'); setTimeout(function(){el.classList.remove('show');},1600); }
 function fmt(ts){ if(!ts) return '—'; try{ return new Date(ts*1000).toLocaleString(); }catch(e){ return '—'; } }
 function netError(m){ document.getElementById('neterr').textContent=m||''; }
+function pendingError(m){ document.getElementById('pendingerr').textContent=m||''; }
 function getJson(path,options){return fetch(q(path),options).then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(d.error||d.message||('HTTP '+r.status));return d;});});}
+
+function packRow(parent,name,meta,state,bad){
+  var row=document.createElement('div');row.className='packrow';
+  var main=document.createElement('div');main.className='packrowmain';
+  var title=document.createElement('div');title.className='packrowname';title.textContent=name||'—';main.appendChild(title);
+  if(meta){var sub=document.createElement('div');sub.className='packrowmeta';sub.textContent=meta;main.appendChild(sub);}
+  var status=document.createElement('span');status.className='packrowstate'+(bad?' bad':'');status.textContent=state||t('Unknown');
+  row.appendChild(main);row.appendChild(status);parent.appendChild(row);
+}
+function activeMission(state){return ['done_verified','done_accepted','failed','cancelled'].indexOf(state)<0;}
+function activeTask(state){return ['completed','succeeded','failed','cancelled','dead'].indexOf(state)<0;}
+function activityStateLabel(state){var labels={queued:'Queued',running:'Running',blocked:'Blocked',waiting:'Waiting',needs_you:'Needs You',paused:'Paused',completed:'Completed',succeeded:'Completed',failed:'Failed',dead:'Failed',stopped:'Stopped',missing:'Not running',cancel_requested:'Cancel requested',cancelled:'Cancelled',recovery_required:'Recovery required',workspace_required:'Workspace required',done_verified:'Verified against contract',done_accepted:'Completed without independent verification',review_required:'Review required',draft:'Draft'};return t(labels[state]||String(state||t('Unknown')).replace(/_/g,' '));}
+function activityTone(state){state=String(state||'');if(/failed|dead|cancelled/.test(state))return'bad';if(/needs_you|blocked|waiting|paused|cancel_requested|recovery|required/.test(state))return'warn';return'';}
+function activityNotice(message,bad){var node=document.getElementById('activitynotice');node.textContent=message||'';node.classList.toggle('bad',!!bad);}
+function activityEmpty(parent,message){var empty=document.createElement('div');empty.className='activityempty';empty.textContent=t(message);parent.appendChild(empty);}
+function activityLaneLabel(parent,label){var head=document.createElement('div');head.className='activitylane-label';head.textContent=t(label);parent.appendChild(head);}
+function activityRow(parent,title,meta,state,depth){var row=document.createElement('div');row.className='activityrow'+(depth!=null?' activitytree':'');
+  if(depth!=null){var d=Math.min(Math.max(Number(depth)||0,0),6);row.style.setProperty('--tree-indent',(d*13)+'px');row.classList.toggle('root',d===0);}
+  var main=document.createElement('div');main.className='activitymain';var name=document.createElement('div');name.className='activityname';name.textContent=title||'—';main.appendChild(name);
+  if(meta){var detail=document.createElement('div');detail.className='activitymeta';detail.textContent=meta;main.appendChild(detail);}
+  var status=document.createElement('div');status.className='activitystate '+activityTone(state);status.textContent=activityStateLabel(state);row.appendChild(main);row.appendChild(status);parent.appendChild(row);return row;}
+function activityAction(row,label,className,run){var actions=row.querySelector('.activityactions');if(!actions){actions=document.createElement('div');actions.className='activityactions';row.appendChild(actions);}
+  var button=document.createElement('button');button.type='button';button.textContent=t(label);if(className)button.className=className;button.onclick=function(){var result;
+    try{result=run();}catch(error){activityNotice(t('Action failed')+': '+(error.message||error),true);return;}if(result===false||result==null)return;button.disabled=true;activityNotice('');
+    Promise.resolve(result).then(function(message){toast(t(message));return loadPack();}).catch(function(error){activityNotice(t('Action failed')+': '+(error.message||error),true);}).finally(function(){button.disabled=false;});};actions.appendChild(button);return button;}
+function activityTreeRows(rows){rows=(rows||[]).filter(function(row){return row&&row.run_id;});var all={},keep={};rows.forEach(function(row){all[row.run_id]=row;if(activeTask(row.status))keep[row.run_id]=true;});rows.slice(-24).forEach(function(row){keep[row.run_id]=true;});
+  var changed=true;while(changed){changed=false;Object.keys(keep).forEach(function(id){var row=all[id],parent=row&&row.parent_run_id;if(parent&&all[parent]&&!keep[parent]){keep[parent]=true;changed=true;}});}return rows.filter(function(row){return keep[row.run_id];});}
+function walkActivityTree(rows,visit){var byId={},children={},roots=[],seen={};rows.forEach(function(row){byId[row.run_id]=row;children[row.run_id]=[];});rows.forEach(function(row){var parent=row.parent_run_id;if(parent&&parent!==row.run_id&&byId[parent])children[parent].push(row);else roots.push(row);});
+  function walk(row,depth){if(seen[row.run_id])return;seen[row.run_id]=true;visit(row,depth);(children[row.run_id]||[]).forEach(function(child){walk(child,depth+1);});}roots.forEach(function(row){walk(row,0);});rows.forEach(function(row){walk(row,0);});}
+function renderRemoteRecovery(activity){var box=document.getElementById('remoteRecovery');box.textContent='';var rows=(activity.sessions||[]).filter(function(row){return row.recovery_required;});if(!rows.length){activityEmpty(box,'No recovery decisions.');return;}
+  rows.forEach(function(data){var row=activityRow(box,data.session_id,data.reason||'',data.state);activityAction(row,'Completed','primary',function(){if(!confirm(t('Confirm only after inspecting the external system: the action completed.')))return false;
+      return getJson('/api/recovery/reconcile',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:data.session_id,resolution:'completed',confirmed:true})}).then(function(){return'Resolution recorded';});});
+    activityAction(row,'Not fired','',function(){if(!confirm(t('Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.')))return false;
+      return getJson('/api/recovery/reconcile',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:data.session_id,resolution:'not_fired',confirmed:true})}).then(function(){return'Resolution recorded';});});
+    activityAction(row,'Cancel run','danger',function(){if(!confirm(t('Cancel this recovery without replaying the uncertain action?')))return false;
+      return getJson('/api/recovery/reconcile',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:data.session_id,resolution:'cancel',confirmed:true})}).then(function(){return'Resolution recorded';});});});}
+function renderRemoteRunTree(activity){var box=document.getElementById('remoteRunTree'),rows=activityTreeRows(activity.task_runs||[]);box.textContent='';if(!rows.length){activityEmpty(box,'No specialist runs.');return;}
+  walkActivityTree(rows,function(data,depth){var meta=data.mission_id?t('Mission')+' · '+data.mission_id:'';var row=activityRow(box,(data.role||'specialist')+' · '+data.run_id,meta,data.status,depth);if(activeTask(data.status)){
+      activityAction(row,'Steer','primary',function(){var text=prompt(t('Steer this specialist at its next safe boundary:'),'');if(text==null||!text.trim())return false;return getJson('/api/mission/specialist/steer',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({run_id:data.run_id,text:text.trim()})}).then(function(){return'Steer queued';});});
+      activityAction(row,'Cancel','danger',function(){if(!confirm(t('Request specialist cancellation?')))return false;return getJson('/api/mission/specialist/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({run_id:data.run_id})}).then(function(){return'Cancellation requested';});});}});}
+function activityRecent(rows,active,max){var out=(rows||[]).filter(active);(rows||[]).slice(-max).forEach(function(row){if(out.indexOf(row)<0)out.push(row);});return out.slice(-max);}
+function renderRemoteOther(activity,health){var box=document.getElementById('remoteOtherActivity');box.textContent='';var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};
+  if(Object.keys(workers).length||Object.keys(services).length){activityLaneLabel(box,'Services');Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};activityRow(box,name,worker.age_s==null?'':Math.round(worker.age_s)+'s',worker.fresh?'running':'recovery_required');count++;});Object.keys(services).sort().forEach(function(name){activityRow(box,name,t('Service'),services[name].ok?'running':'failed');count++;});}
+  var missions=activityRecent(activity.missions||[],function(row){return activeMission(row.state);},7);if(missions.length){activityLaneLabel(box,'Missions');missions.forEach(function(data){activityRow(box,data.mission_id,data.lane||t('Mission'),data.state);count++;});}
+  var automations=activityRecent(activity.automations||[],function(row){return activeTask(row.state);},7);if(automations.length){activityLaneLabel(box,'Automations');automations.forEach(function(data){activityRow(box,(data.automation_id||t('Automation'))+' · '+(data.execution_id||'—'),t('Automation'),data.state);count++;});}
+  if(!count)activityEmpty(box,'No other activity.');}
+function renderRemoteActivity(activity,health,failures){var pill=document.getElementById('activityhealth');if(!activity){pill.className='pill off';pill.textContent=t('Unavailable');activityNotice(t('Activity is unavailable'),true);['remoteRecovery','remoteRunTree','remoteOtherActivity'].forEach(function(id){var box=document.getElementById(id);box.textContent='';activityEmpty(box,'Activity is unavailable');});return;}
+  pill.className=health&&health.status==='needs_you'?'pill idle':(health&&health.ok?'pill on':'pill idle');pill.textContent=health?(health.status==='needs_you'?t('Needs You'):(health.ok?t('Available'):t('Degraded'))):t('Available');renderRemoteRecovery(activity);renderRemoteRunTree(activity);renderRemoteOther(activity,health);
+  var issues=(failures||[]).filter(function(name){return name==='activity'||name==='health';}),lanes=Object.keys(activity.errors||{}).concat(Object.keys((health&&health.activity_errors)||{}));if(lanes.length)issues.push(t('Some operational lanes are unavailable')+': '+lanes.join(', '));activityNotice(issues.join(' · '),issues.length>0);}
+function renderPack(parts,failures){
+  var identity=parts.identity||{},caps=parts.capabilities||{},health=parts.health,activity=parts.activity,
+      approvals=parts.approvals, pill=document.getElementById('packhealth');
+  if(!health){pill.className='pill off';pill.textContent=t('Unavailable');}
+  else if(health.status==='needs_you'){pill.className='pill idle';pill.textContent=t('Needs You');}
+  else if(health.ok){pill.className='pill on';pill.textContent=t('Available');}
+  else{pill.className='pill idle';pill.textContent=t('Degraded');}
+  document.getElementById('packwho').textContent=identity.name||'Collie';
+  var packavatar=document.getElementById('packavatar'),avatar=identity.avatar||'/api/avatar.png';
+  if(packavatar.getAttribute('src')!==avatar)packavatar.src=avatar;
+  packavatar.onerror=function(){this.onerror=null;this.src='/logo.svg';};
+  document.getElementById('packdevice').textContent=identity.machine?
+    identity.machine+' · '+(identity.os||t('Unknown OS'))+' · '+(identity.repo||t('Repository not reported')):
+    t('Device identity unavailable');
+  document.getElementById('packmodel').textContent=caps.provider?
+    caps.provider+' · '+(caps.model||t('Provider default')):t('Provider and model unavailable');
+  var work=(health&&health.work)||{};
+  [['statInteractive','interactive_active'],['statMissions','missions_active'],['statSpecialists','task_runs_active'],['statAutomations','automations_active']].forEach(function(pair){
+    document.getElementById(pair[0]).textContent=health?Number(work[pair[1]]||0):'—';
+  });
+  document.getElementById('statNeeds').textContent=approvals?Number((approvals.approvals||[]).length):'—';
+  var messages=(failures||[]).slice();
+  var laneErrors=Object.keys((activity&&activity.errors)||{}).concat(Object.keys((health&&health.activity_errors)||{}));
+  if(laneErrors.length)messages.push(t('Operational lanes')+': '+laneErrors.join(', '));
+  document.getElementById('packerr').textContent=messages.length?t('Some Pack state is unavailable')+': '+messages.join('; ')+'.':'';
+
+  var members=document.getElementById('packmembers');members.textContent='';
+  if(!health){packRow(members,t('This Collie'),t('Health endpoint did not respond'),t('Unavailable'),true);}
+  else{
+    packRow(members,identity.name||t('This Collie'),(identity.machine||t('This device'))+' · v'+(identity.version||t('Unknown')),t('Responding'),false);
+    Object.keys(health.workers||{}).forEach(function(name){var worker=health.workers[name]||{},fresh=worker.fresh===true;
+      packRow(members,name,activityStateLabel(worker.state)+(worker.age_s==null?'':' · '+t('heartbeat {n}s ago').replace('{n}',Math.round(worker.age_s))),t(fresh?'Fresh':'Stale'),!fresh);});
+    var supervisor=health.supervisor||{};
+    if(supervisor.installed)packRow(members,t('Supervisor'),t('Local coordination service'),supervisor.running?t('Responding'):activityStateLabel(supervisor.status||'stopped'),!supervisor.running);
+  }
+
+  var assignments=document.getElementById('packassignments');assignments.textContent='';var rows=[];
+  (activity&&activity.sessions||[]).forEach(function(row){if(activeTask(row.state))rows.push({name:row.session_id,meta:t('Interactive'),state:row.state});});
+  (activity&&activity.missions||[]).forEach(function(row){if(activeMission(row.state))rows.push({name:row.mission_id,meta:t('Mission'),state:row.state});});
+  (activity&&activity.task_runs||[]).forEach(function(row){if(activeTask(row.status))rows.push({name:row.run_id,meta:row.role||'specialist',state:row.status});});
+  (activity&&activity.automations||[]).forEach(function(row){if(activeTask(row.state))rows.push({name:row.automation_id+' · '+row.execution_id,meta:t('Automation'),state:row.state});});
+  rows.slice(0,12).forEach(function(row){packRow(assignments,row.name,row.meta,activityStateLabel(row.state),/failed|stale|recovery/.test(row.state||''));});
+  if(!rows.length){var empty=document.createElement('div');empty.className='packempty';empty.textContent=activity?t('No active assignments.'):t('Assignments unavailable.');assignments.appendChild(empty);}
+  else if(rows.length>12){var more=document.createElement('div');more.className='packempty';more.textContent=t('{n} more active assignments').replace('{n}',rows.length-12);assignments.appendChild(more);}
+  renderRemoteActivity(activity,health,failures);
+}
+function loadPack(){
+  var specs=[['identity','/api/whoami'],['capabilities','/api/run-capabilities'],['health','/api/healthz'],['activity','/api/activity'],['approvals','/api/approvals']];
+  return Promise.all(specs.map(function(spec){return getJson(spec[1]).then(function(value){return {key:spec[0],value:value};})
+    .catch(function(){return {key:spec[0],error:true};});})).then(function(results){var parts={},failures=[];
+      results.forEach(function(result){if(result.error)failures.push(result.key);else parts[result.key]=result.value;});renderPack(parts,failures);});
+}
 
 var LINK = "";
 function render(s){
@@ -173,10 +350,10 @@ function render(s){
     img.onerror=function(){box.textContent='';var none=document.createElement('span');none.className='none';none.textContent=t('QR unavailable — use the link below');box.appendChild(none);};
     box.appendChild(img); } else {var dash=document.createElement('span');dash.className='none';dash.textContent='—';box.appendChild(dash);}
   var tb=document.getElementById('devs'); tb.textContent=''; var ds=s.devices||[];
-  if(!ds.length){var er=document.createElement('tr'),ec=document.createElement('td');ec.className='empty';ec.colSpan=3;ec.textContent=t('No paired devices yet. Scan the code on your phone to add one.');er.appendChild(ec);tb.appendChild(er);return; }
+  if(!ds.length){var er=document.createElement('tr'),ec=document.createElement('td');ec.className='empty';ec.colSpan=4;ec.textContent=t('No paired devices yet. Scan the code on your phone to add one.');er.appendChild(ec);tb.appendChild(er);return; }
   ds.forEach(function(d){
-    var tr=document.createElement('tr'),name=document.createElement('td'),paired=document.createElement('td'),acts=document.createElement('td'),ren=document.createElement('button'),del=document.createElement('button');
-    name.textContent=String(d.name||'device');paired.textContent=fmt(d.paired_at);acts.className='act';ren.className='ren';ren.textContent=t('Rename');del.className='danger';del.textContent=t('Kick');acts.appendChild(ren);acts.appendChild(document.createTextNode(' '));acts.appendChild(del);tr.appendChild(name);tr.appendChild(paired);tr.appendChild(acts);
+    var tr=document.createElement('tr'),name=document.createElement('td'),paired=document.createElement('td'),reach=document.createElement('td'),acts=document.createElement('td'),ren=document.createElement('button'),del=document.createElement('button');
+    name.textContent=String(d.name||'device');paired.textContent=fmt(d.paired_at);reach.className='reach';reach.textContent=t('Paired · live reachability not reported');acts.className='act';ren.className='ren';ren.textContent=t('Rename');del.className='danger';del.textContent=t('Kick');acts.appendChild(ren);acts.appendChild(document.createTextNode(' '));acts.appendChild(del);tr.appendChild(name);tr.appendChild(paired);tr.appendChild(reach);tr.appendChild(acts);
     ren.onclick=function(){ renameDev(d.device_id, d.name||''); };
     del.onclick=function(){ kick(d.device_id); };
     tb.appendChild(tr);
@@ -192,11 +369,12 @@ function pollPending(){
       document.getElementById('pnum').textContent=j.pending.num||'';
       document.getElementById('pwho').textContent=(j.pending.name||t('A device'));
     } else { box.hidden=true; }
-  }).catch(function(e){netError(t('Could not check pending pairings')+': '+e.message);});
+    pendingError('');
+  }).catch(function(e){pendingError(t('Could not check pending pairings')+': '+e.message);});
 }
 function decide(yes){
   getJson('/api/remote/'+(yes?'approve':'deny'),{method:'POST'})
-    .then(function(){ document.getElementById('pendingbox').hidden=true;netError('');load(); }).catch(function(e){netError(t('Action failed')+': '+e.message);});
+    .then(function(){ document.getElementById('pendingbox').hidden=true;pendingError('');load(); }).catch(function(e){pendingError(t('Action failed')+': '+e.message);});
 }
 function load(){ getJson('/api/remote/status').then(function(d){netError('');render(d);}).catch(function(e){var p=document.getElementById('statuspill');p.className='pill off';p.textContent=t('Unavailable');netError(t('Could not reach the remote service')+': '+e.message);}); }
 function act(a){ getJson('/api/remote/'+a,{method:'POST'}).then(function(){ toast(t({enable:'Turned on',disable:'Turned off',rotate:'Pairing QR updated'}[a]||'OK'));netError('');load(); }).catch(function(e){toast(t('Action failed'));netError(t('Action failed')+': '+e.message);}); }
@@ -207,6 +385,7 @@ function renameDev(id,cur){ var n=prompt(t('Device label:'),cur||''); if(n==null
 function copyLink(){ if(!LINK){netError(t('No pairing link is available yet.'));return;} if(!navigator.clipboard){netError(t('Copy is unavailable; select the link above.'));return;} navigator.clipboard.writeText(LINK).then(function(){ toast(t('Link copied'));netError(''); }).catch(function(){netError(t('Copy failed; select the link above.'));}); }
 
 document.getElementById('enableRemote').addEventListener('click',function(){act('enable');});
+document.getElementById('activityRefresh').addEventListener('click',loadPack);
 document.getElementById('denyPair').addEventListener('click',function(){decide(false);});
 document.getElementById('allowPair').addEventListener('click',function(){decide(true);});
 document.getElementById('copyPairLink').addEventListener('click',copyLink);
@@ -216,7 +395,7 @@ document.getElementById('disableRemote').addEventListener('click',function(e){e.
 // resolve the desktop's UI language, then translate + start polling
 fetch(q('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
   .catch(function(){ UI_LANG=resolveLang(null); })
-  .finally(function(){ applyStatic(); load(); setInterval(load,4000);
+  .finally(function(){ applyStatic(); loadPack(); setInterval(loadPack,4000);load(); setInterval(load,4000);
                        pollPending(); setInterval(pollPending,1500); });
 </script>
 </body>

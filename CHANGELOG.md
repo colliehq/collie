@@ -1,6 +1,45 @@
 # Changelog
 
-## v0.20.32 — Auto that really routes, and durable work that really comes back
+## v0.21.0 — A personal AI operations system, from one calm entrance
+
+- **The companion is named, renameable, and no longer trapped on a coloured tile.** First run now
+  offers an adoption-style name step with a calm default and Skip; **My Collie** keeps the durable
+  rename control. The validated Unicode display name updates Home, Mobile, Remote, and Ambient live,
+  with a name-versioned, non-cacheable transparent avatar. Explicit `web --name` kennel selection
+  and pinned environment names remain visibly authoritative. Slack app names, `@` handles, and mail
+  addresses are deliberately not relabelled. Plated avatar generation remains the compatible
+  default for tiny external/Slack icons where the background still carries recognition.
+
+- **The desktop is now an operations home, not a harness dashboard.** Home, Missions, Pack,
+  Library, Activity, Needs You, Settings, Mobile, Remote and Ambient share one identity and one
+  truthful state model. The default composer stays calm while intent, depth, effort, speed,
+  verification, workspace and Pack remain independently controllable. Responsive and reconnect
+  paths preserve the user's latest navigation and never turn a failed request into a green state.
+
+- **Library adds a reviewable extension lifecycle.** Data-only packages can contribute Skills,
+  exact-hash hooks, connection descriptors, templates and assets, but install inert and cannot add
+  arbitrary tools or workers. Exact inventory, digest, publisher identity, component mapping,
+  declared authority, compatibility and data policy are validated before approval; enable,
+  disable, rollback, revocation, integrity failure and uninstall all fail closed and are audited.
+
+- **24x7 work now has fencing all the way down.** Automation leases carry owner tokens and recover
+  orphaned executions without replaying unsafe effects. Task trees enforce ancestor budgets,
+  mailbox delivery and resource locks; cancelling a parent propagates through specialist children.
+  Mission completion requires structured independent evidence, and verification turns stale if the
+  workspace changes while a check runs. Audit/checkpoint failures stop consequential tool calls.
+
+- **Every entrance shares the same supervised runtime.** The VS Code panel starts only a verified
+  Collie process on a free port and uses a per-process authenticated embed. Mobile, Ambient and
+  Remote restore cross-session approvals; Pack reports real worker freshness and active assignments.
+  The relay persists device delivery before acknowledgement, bounds replay/in-flight state and uses
+  encrypted WSS outside exact loopback.
+
+- **The release chain is recoverable and bootstrap-pinned.** Windows upgrades back up and restore the
+  complete owned runtime, pin bootstrap downloads, verify signed bootstrap publishers and preserve
+  user state. The landing build generates its exact CSP hashes, rate limits before model use without
+  storing raw client addresses, and the full Python/Node/GUI suites are part of the release runner.
+
+## v0.20.32 (unreleased; folded into v0.21.0) — Auto that really routes, and durable work that really comes back
 
 - **Auto now means a per-task decision, not a disguised model pin.** Within the configured provider,
   Codex routes small, clear work to GPT-5.6 Luna at low effort, everyday engineering to Terra at

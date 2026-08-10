@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,12 +7,19 @@ name = "collie-harness"
 # single source of truth: harness/__init__.py __version__ (read via [tool.setuptools.dynamic] below).
 # the installer reads the same value at build time (iscc /DAppVer=...), so a version lives in one place.
 dynamic = ["version"]
-description = "A memory-first, context-lean coding-agent harness with a built-in benchmark lab."
+description = "A personal AI operations system for durable missions across models, tools, apps, and devices."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Daming Wu" }]
 dependencies = []                       # core is stdlib-only
+
+[project.urls]
+Homepage = "https://collie.run"
+Documentation = "https://colliehq.github.io/collie/"
+Repository = "https://github.com/colliehq/collie"
+Issues = "https://github.com/colliehq/collie/issues"
 
 [project.optional-dependencies]
 # semantic memory: granite / bge-m3 / e5 + the bge reranker, all run via onnxruntime (no torch).
@@ -34,7 +41,9 @@ docs = ["mkdocs-material"]               # the user docs site (mkdocs serve / bu
 collie = "harness.cli:main"             # `collie -p "task"` one-liner
 
 [tool.setuptools]
-packages = ["harness"]
+# These four data-only directories are explicit packages so setuptools never has to guess whether
+# their shipped HTML/JS/native assets are accidental namespace packages.
+packages = ["harness", "harness.browser_ext", "harness.oauth_ext", "harness.wallpaper", "harness.webui"]
 
 [tool.setuptools.dynamic]
 version = { attr = "harness.__version__" }

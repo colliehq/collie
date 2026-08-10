@@ -2,6 +2,7 @@
 import base64
 import json
 import secrets
+import time
 
 from harness import e2e
 from harness.remote import RelayClient, RemoteState
@@ -70,10 +71,54 @@ def test_pairing_secret_never_enters_relay_frames_and_is_one_shot():
     # acknowledges device_added.
     c._reply_pair(ws, "request-1", True)
     assert "phone-1" not in c._e2e_devices
-    c._dispatch(ws, {"t": "device_added", "device_id": "phone-1", "hash": "hash-1", "name": "iPhone"})
+    token_hash = "a" * 64
+    c._dispatch(ws, {"t": "device_added", "id": "store-1", "pair_id": "request-1",
+                     "device_id": "phone-1", "hash": token_hash, "name": "iPhone"})
     assert "phone-1" in c._e2e_devices
+    assert ws.messages[-1] == {"t": "device_stored", "id": "store-1",
+                               "hash": token_hash, "ok": True}
     shared = e2e.shared_secret(phone_private, desktop_public)
     assert c._e2e_devices["phone-1"] == e2e.device_key(shared, c.room)
+
+
+def test_unbound_device_registration_is_rejected_without_mutating_identity():
+    identity = Identity()
+    c = client(identity=identity)
+    ws = WS()
+
+    c._dispatch(ws, {"t": "device_added", "id": "forged", "pair_id": "not-approved",
+                     "device_id": "attacker", "hash": "b" * 64, "name": "attacker"})
+
+    assert identity._d["devices"] == {}
+    assert c._e2e_devices == {}
+    assert ws.messages == [{"t": "device_stored", "id": "forged",
+                            "hash": "b" * 64, "ok": False}]
+
+
+def test_device_registration_persistence_failure_restores_previous_device_row():
+    class FailingIdentity(Identity):
+        def _save(self):
+            raise OSError("disk full")
+
+    identity = FailingIdentity()
+    old_key = base64.b64encode(b"o" * 32).decode()
+    identity._d["devices"]["phone"] = {
+        "token_sha": "c" * 64, "name": "old phone", "k_dev": old_key,
+    }
+    c = client(identity=identity)
+    c._approved_pair_keys["phone"] = {
+        "key": b"k" * 32, "pair_id": "approved-pair", "approved_at": time.time(),
+    }
+    ws = WS()
+
+    c._dispatch(ws, {"t": "device_added", "id": "store-fail", "pair_id": "approved-pair",
+                     "device_id": "phone", "hash": "d" * 64, "name": "new phone"})
+
+    assert identity._d["devices"]["phone"] == {
+        "token_sha": "c" * 64, "name": "old phone", "k_dev": old_key,
+    }
+    assert c._e2e_devices["phone"] == b"o" * 32
+    assert ws.messages[-1]["t"] == "device_stored" and ws.messages[-1]["ok"] is False
 
 
 def test_qr_secret_is_high_entropy_and_fragment_only():
@@ -186,6 +231,38 @@ def test_non_idempotent_request_ids_are_persistently_one_shot():
     assert restarted._claim_request("phone", "stream-rid", "GET", "/api/stream?q=fix")
     assert not restarted._claim_request("phone", "stream-rid", "GET", "/api/stream?q=fix")
     assert identity.saved >= 1
+
+
+def test_replay_ledger_refuses_capacity_instead_of_evicting_live_claims():
+    identity = Identity()
+    c = client(identity=identity)
+    c.REPLAY_MAX = 2
+    assert c._claim_request("phone", "first", "POST")
+    assert c._claim_request("phone", "second", "POST")
+    assert not c._claim_request("phone", "third", "POST")
+    assert not c._claim_request("phone", "first", "POST")
+    assert [row["c"] for row in identity._d["remote_v2_seen"]] == ["first", "second"]
+
+
+def test_relay_url_requires_tls_except_for_exact_loopback_origins():
+    identity = Identity()
+    for unsafe in (
+        "ws://relay.example", "wss://user:pass@relay.example",
+        "wss://relay.example/path", "wss://relay.example?debug=1",
+        "wss://relay.example#fragment",
+    ):
+        try:
+            RelayClient(unsafe, identity, secrets.token_urlsafe(32),
+                        "127.0.0.1", 8787, "local-token")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsafe relay URL was accepted: %s" % unsafe)
+
+    assert client(identity=identity).relay_url == "wss://relay.test"
+    local = RelayClient("ws://127.0.0.1:8788/", identity, secrets.token_urlsafe(32),
+                        "127.0.0.1", 8787, "local-token")
+    assert local.relay_url == "ws://127.0.0.1:8788"
 
 
 def test_device_revoke_is_idempotently_acknowledged_only_after_durable_delete():

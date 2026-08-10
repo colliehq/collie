@@ -42,8 +42,12 @@ def main():
     mcppath = os.path.join(tempfile.gettempdir(), "collie_gui_test_mcp.json")
     with open(mcppath, "w", encoding="utf-8") as fh:
         json.dump({"servers": {"probe": {"url": "https://mcp.example.invalid/mcp"}}}, fh)
+    slackpath = os.path.join(tempfile.gettempdir(), "collie_gui_test_empty_slack.json")
+    try: os.remove(slackpath)
+    except OSError: pass
     env = dict(os.environ, PYTHONUNBUFFERED="1", COLLIE_MCP_CONFIG=mcppath,
-               COLLIE_SETTINGS_PATH=setpath, COLLIE_SESSIONS_DIR=sessdir)
+               COLLIE_SETTINGS_PATH=setpath, COLLIE_SESSIONS_DIR=sessdir,
+               COLLIE_SLACK_STORE=slackpath)
     env.pop("COLLIE_PROVIDER", None)
     env.pop("COLLIE_MODEL", None)
     srv = subprocess.Popen([sys.executable if os.path.exists(sys.executable) else "python3",
@@ -66,6 +70,25 @@ def main():
 
             # --- welcome empty state ---
             check("welcome state shown", pg.query_selector("#welcome") is not None)
+
+            # --- first-run companion naming: adoption is a real step, not a hidden config key ---
+            try:
+                pg.wait_for_selector("#nameOverlay.open", timeout=8000)
+                name_appeared = True
+            except Exception:
+                name_appeared = False
+            check("first run offers a companion name", name_appeared)
+            if name_appeared:
+                check("naming starts from a calm editable default",
+                      pg.input_value("#nameInput") == "Rowan")
+                pg.fill("#nameInput", "Mochi")
+                pg.click("#nameContinue")
+                pg.wait_for_selector("#nameOverlay.open", state="detached", timeout=15000)
+                pg.wait_for_function("document.querySelector('[data-collie-name]').textContent === 'Mochi'")
+                check("chosen name updates the desktop identity live",
+                      pg.text_content("[data-collie-name]") == "Mochi")
+                check("renamed avatar uses a versioned transparent endpoint",
+                      "/api/avatar.png?v=" in (pg.get_attribute("[data-collie-avatar]", "src") or ""))
 
             # --- first run shows the onboarding, and it must be dismissable ---
             # This is why the suite broke: CI runs with COLLIE_PROVIDER=mock, so there is no working
@@ -258,6 +281,18 @@ def main():
             pg.wait_for_selector(".set-row", timeout=15000)   # rows render async after /api/settings resolves
             nrows = len(pg.query_selector_all(".set-row"))
             check("settings modal opens w/ rows", nrows >= 6, "rows=%d" % nrows)
+            check("My Collie keeps a permanent rename control",
+                  pg.is_visible("#set_COMPANION_NAME") and pg.input_value("#set_COMPANION_NAME") == "Mochi")
+            old_avatar = pg.get_attribute("[data-collie-avatar]", "src") or ""
+            pg.fill("#set_COMPANION_NAME", "Nori")
+            pg.press("#set_COMPANION_NAME", "Tab")
+            for _ in range(60):
+                if pg.text_content("[data-collie-name]") == "Nori": break
+                pg.wait_for_timeout(250)
+            check("Settings rename propagates without a reload",
+                  pg.text_content("[data-collie-name]") == "Nori")
+            check("Settings rename busts the previous avatar URL",
+                  (pg.get_attribute("[data-collie-avatar]", "src") or "") != old_avatar)
             # The modal grew a rail of categories, one visible .set-pane at a time — so a field is in
             # the DOM long before it is reachable, and Playwright's fill() waited 30s for an <input>
             # it could see in the tree and never in the viewport. Click the owning category first.
@@ -296,7 +331,7 @@ def main():
                 if saved.get("MAX_TURNS") == "9":
                     break
                 pg.wait_for_timeout(250)
-            check("settings persisted to disk", saved.get("MODEL") == "claude-sonnet-5" and saved.get("MAX_TURNS") == "9",
+            check("settings persisted to disk", saved.get("MODEL") == "claude-sonnet-5" and saved.get("MAX_TURNS") == "9" and saved.get("COMPANION_NAME") == "Nori",
                   "file=%r" % saved)
             # re-GET reflects the saved values
             got_model = pg.evaluate("async () => (await (await fetch('/api/settings')).json()).values.MODEL")

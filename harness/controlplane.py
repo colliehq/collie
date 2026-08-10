@@ -83,9 +83,11 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
     from .ops import OpsStore, aggregate_health
     from .supervisor import config_path, default_config, load_config, query_windows
 
+    config_error = ""
     try:
         config = load_config(config_path(root))
-    except Exception:
+    except Exception as exc:
+        config_error = "%s: %s" % (type(exc).__name__, exc)
         config = default_config(root)
     desired = [row["name"] for row in config.get("workers", []) if row.get("enabled", True)]
     with OpsStore(os.path.join(root, "ops.db")) as store:
@@ -102,7 +104,13 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
         "kind": "specialist", "run_id": row.get("run_id"),
         "parent_run_id": row.get("parent_run_id"), "status": row.get("status"),
         "role": row.get("role"),
-    } for row in work["task_runs"] if row.get("status") == "recovery_required"]
+    } for row in work["task_runs"] if row.get("status") in (
+        "recovery_required", "needs_you")]
+    mission_recovery = [{
+        "kind": "mission", "run_id": row.get("mission_id"),
+        "state": row.get("state"), "lane": row.get("lane"),
+    } for row in work["missions"] if row.get("state") in (
+        "recovery_required", "needs_you")]
     automation_recovery = [{
         "kind": "automation", "execution_id": row.get("execution_id"),
         "automation_id": row.get("automation_id"), "state": row.get("state"),
@@ -119,9 +127,15 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
                                   for row in work["automations"]),
         # Health is safe to show on an operations surface: identifiers and failure metadata only,
         # never prompts, automation request JSON, model output, or conversation content.
-        "recovery_required": session_recovery + task_recovery + automation_recovery,
+        "recovery_required": (session_recovery + mission_recovery + task_recovery +
+                              automation_recovery),
     }
     report["activity_errors"] = work["errors"]
+    if config_error:
+        report["activity_errors"]["supervisor_config"] = config_error
+        report["ok"] = False
+        if report.get("status") == "ok":
+            report["status"] = "degraded"
     if report["work"]["recovery_required"]:
         report["ok"], report["status"] = False, "needs_you"
     return report

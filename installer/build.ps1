@@ -49,8 +49,13 @@ if (-not $iscc) { throw "Inno Setup 6 (ISCC.exe) not found — winget install JR
 
 # 5) compile with the version injected
 Step "compile installer"
-& $iscc "/DAppVer=$ver" (Join-Path $here "collie.iss")
+$compilerOutput = & $iscc "/DAppVer=$ver" (Join-Path $here "collie.iss") 2>&1
+$compilerOutput | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+$compilerWarnings = @($compilerOutput | Where-Object { "$_" -match '^\s*Warning:' })
+if ($compilerWarnings.Count -gt 0) {
+  throw "iscc emitted $($compilerWarnings.Count) warning(s); update gen_langs.py compatibility handling before release"
+}
 
 $exe = Join-Path $here "Output\Collie-Setup.exe"
 $mb = "{0:N1} MB" -f ((Get-Item $exe).Length / 1MB)

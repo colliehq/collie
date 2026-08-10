@@ -44,7 +44,9 @@ from .slackguard import INTERRUPTED_EXIT as GUARD_INTERRUPTED_EXIT
 SLACK_API = "https://slack.com/api/"
 IDENTITY = os.path.expanduser("~/.collie/identity.json")
 QUEUE_DIR = os.path.expanduser("~/.collie/")
-STORE = os.path.expanduser("~/.collie/slack.json")     # this dog's app id and its two tokens
+STORE = os.environ.get("COLLIE_SLACK_STORE") or os.path.expanduser("~/.collie/slack.json")
+# This dog's app id and its two tokens. The override keeps isolated/test runtimes from inheriting
+# a real kennel; ordinary installs keep the exact historical path.
 
 # Herding names, because a collie answers to one. Kept short and sayable — this
 # is a name a human types twenty times a day, so nothing that needs spelling out.

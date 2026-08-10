@@ -128,8 +128,8 @@
   .brand { padding: 18px 18px 12px; }
   .brand .logo { display: flex; align-items: center; gap: 10px; }
   .glyph {
-    width: 34px; height: 34px; flex: none; border-radius: 9px; object-fit: contain;
-    background: #fff; padding: 2px; box-shadow: var(--shadow);
+    width: 34px; height: 34px; flex: none; object-fit: contain;
+    filter: drop-shadow(0 3px 5px color-mix(in srgb, var(--ink) 16%, transparent));
   }
   .brand .word { display:block; font-family: var(--sans); font-size: 16px; font-weight: 700; line-height: 1.15; letter-spacing: -.015em; }
   .brand .tag { color: var(--muted); font-size: 11.5px; margin-top: 3px; letter-spacing: .01em;
@@ -218,12 +218,15 @@
     .topbar .model-trigger { max-width: 112px; height: 32px; padding: 0 7px; }
     .topbar .tbtn { width: 32px; height: 32px; }
   }
+  @media (max-width: 480px) {
+    .topbar h1 { display: none; }
+  }
   /* 320 CSS px is the WCAG reflow baseline and still represents older iPhones and
      400%-zoom desktop windows.  Keep every action reachable without making the
      header wider than the viewport; the model button already exposes its name via
      aria-label/title, so its text can collapse at this last breakpoint. */
   @media (max-width: 340px) {
-    .topbar h1, .topbar #npPill { display: none; }
+    .topbar #npPill { display: none; }
     .topbar .model-trigger { width: 32px; min-width: 32px; padding: 0; justify-content: center; }
     .topbar .model-trigger-label, .topbar .model-trigger-chev { display: none; }
   }
@@ -397,8 +400,8 @@
   .set-overview { padding:18px 0 8px; }
   .set-overview-hero { display:flex; align-items:center; gap:13px; padding:16px; border:1px solid var(--line);
                        background:var(--surface-2); border-radius:14px; }
-  .set-overview-hero img { width:46px; height:46px; padding:3px; object-fit:contain; background:#fff;
-                           border-radius:12px; box-shadow:var(--shadow); }
+  .set-overview-hero img { width:46px; height:46px; object-fit:contain;
+                           filter:drop-shadow(0 4px 7px color-mix(in srgb,var(--ink) 15%,transparent)); }
   .set-overview-hero h3 { margin:0; font-size:17px; }
   .set-overview-hero p { margin:2px 0 0; color:var(--muted); font-size:12.5px; }
   .set-overview-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:12px; }
@@ -707,8 +710,8 @@
   /* ---------------------------------------- run drawer (collapsible) + empty state */
   .welcome { max-width:700px; margin:clamp(54px,10vh,104px) auto 0; text-align:left; padding:0 24px 36px; }
   .wc-identity { display:flex; align-items:center; gap:10px; margin-bottom:22px; }
-  .welcome .wc-logo { width:38px; height:38px; border-radius:11px; background:#fff;
-    padding:3px; box-shadow:var(--shadow); margin:0; object-fit:contain; }
+  .welcome .wc-logo { width:38px; height:38px; margin:0; object-fit:contain;
+    filter:drop-shadow(0 4px 7px color-mix(in srgb,var(--ink) 15%,transparent)); }
   .wc-kicker { color:var(--muted); font:600 10.5px var(--mono); letter-spacing:.08em; text-transform:uppercase; }
   .wc-presence { color:var(--faint); font-size:11.5px; margin-top:2px; }
   .wc-presence::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
@@ -739,6 +742,10 @@
   .activity-health { font: 11px var(--mono); border-radius: 999px; padding: 3px 8px;
     color: var(--meadow); background: var(--meadow-bg); }
   .activity-health.bad { color: var(--coral); background: var(--coral-bg); }
+  .activity-notice { margin: -2px 0 10px; padding: 7px 9px; border: 1px solid var(--line);
+    border-radius: 8px; color: var(--muted); background: var(--surface-2); font-size: 11.5px; }
+  .activity-notice.bad { color: var(--coral); border-color:color-mix(in srgb,var(--coral) 35%,var(--line)); background:var(--coral-bg); }
+  .activity-notice:empty { display:none; }
   .activity-head .spacer { flex: 1; }
   .activity-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
   .activity-lane { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); overflow: hidden; }
@@ -755,6 +762,69 @@
     background: var(--surface); color: var(--muted); padding: 4px 7px; cursor: pointer; font: 10.5px var(--sans); }
   .activity-empty { color: var(--faint); padding: 8px 2px; font-size: 11.5px; }
   @media (max-width: 700px) { .activity-grid { grid-template-columns: 1fr; } }
+  .library-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 22px 32px;
+    background: color-mix(in srgb,var(--surface-2) 58%,var(--surface)); }
+  .library-panel[hidden] { display: none; }
+  .library-inner { width: min(980px,100%); margin: 0 auto; }
+  .library-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 16px; }
+  .library-head-copy { flex: 1; min-width: 0; }
+  .library-head h2 { margin: 0; color: var(--ink); font-size: 21px; letter-spacing: -.02em; }
+  .library-head p { margin: 5px 0 0; max-width: 690px; color: var(--muted); font-size: 12.5px;
+    line-height: 1.55; }
+  .library-head-actions { display: flex; gap: 7px; }
+  .library-head button, .library-actions button { border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); color: var(--muted); padding: 6px 9px; cursor: pointer; font: 11.5px var(--sans); }
+  .library-head button:hover, .library-actions button:hover { border-color: var(--pine); color: var(--ink); }
+  .library-head button:disabled, .library-actions button:disabled { cursor: wait; opacity: .55; }
+  .library-notice { min-height: 18px; margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+  .library-notice.bad { color: var(--coral); }
+  .library-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+  .library-card { min-width: 0; border: 1px solid var(--line); border-radius: 13px; background: var(--surface);
+    padding: 15px; box-shadow: 0 1px 2px color-mix(in srgb,#000 5%,transparent); }
+  .library-card.is-revoked, .library-card.is-broken { border-color: color-mix(in srgb,var(--coral) 42%,var(--line)); }
+  .library-card-head { display: flex; align-items: flex-start; gap: 10px; }
+  .library-card-title { min-width: 0; flex: 1; }
+  .library-name { color: var(--ink); font-weight: 650; font-size: 14px; }
+  .library-publisher { margin-top: 2px; color: var(--faint); font: 10.5px var(--mono); }
+  .library-badge { flex: none; border-radius: 999px; padding: 3px 7px; color: var(--muted);
+    background: var(--surface-2); font: 10px var(--mono); }
+  .library-badge.on { color: var(--meadow); background: var(--meadow-bg); }
+  .library-description { min-height: 36px; margin: 10px 0 12px; color: var(--muted); font-size: 12px;
+    line-height: 1.5; }
+  .library-version-line { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .library-version-line label { color: var(--faint); font: 10.5px var(--mono); }
+  .library-version-line select { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--surface-2); color: var(--ink); padding: 5px 7px; font: 11px var(--mono); }
+  .library-review { border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
+    padding: 9px 10px; }
+  .library-review-row { display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 8px;
+    color: var(--muted); font-size: 11px; line-height: 1.45; }
+  .library-review-row + .library-review-row { margin-top: 5px; }
+  .library-review-key { color: var(--faint); font: 10px var(--mono); text-transform: uppercase; }
+  .library-digest { overflow-wrap: anywhere; color: var(--ink); font: 10px var(--mono); }
+  .library-warning { margin-top: 8px; border-radius: 7px; padding: 7px 8px; color: #9a651a;
+    background: color-mix(in srgb,var(--amber) 14%,var(--surface)); font-size: 11px; line-height: 1.4; }
+  .library-warning.bad { color: var(--coral); background: var(--coral-bg); }
+  .library-scope { margin-top: 10px; }
+  .library-scope h4 { margin: 0 0 5px; color: var(--faint); font: 700 10px var(--mono);
+    letter-spacing: .06em; text-transform: uppercase; }
+  .library-scope-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .library-scope-none { color: var(--faint); font-size: 11px; }
+  .library-components { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+  .library-component { border-radius: 999px; padding: 3px 7px; color: var(--muted);
+    background: var(--surface-2); font: 10px var(--mono); }
+  .library-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+  .library-actions button.primary { color: #fff; border-color: var(--pine); background: var(--pine); }
+  .library-actions button.danger { color: var(--coral); }
+  .library-empty { grid-column: 1 / -1; border: 1px dashed var(--line); border-radius: 13px;
+    padding: 34px 20px; text-align: center; color: var(--muted); background: var(--surface); }
+  .library-empty strong { display: block; margin-bottom: 5px; color: var(--ink); font-size: 14px; }
+  .library-empty code { font: 11px var(--mono); }
+  @media (max-width: 760px) {
+    .library-panel { padding: 18px 12px 24px; }
+    .library-grid { grid-template-columns: 1fr; }
+    .library-head { align-items: stretch; flex-direction: column; }
+  }
   .model-trigger {
     appearance: none; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
     border-radius: 9px; min-width: 0; max-width: 260px; height: 34px; padding: 0 10px;
@@ -1057,8 +1127,12 @@
   .mchip.state-pausing { background: color-mix(in srgb, #d5a441 30%, transparent); }
   .mchip.state-recovery_required { background: color-mix(in srgb, #d85a5a 34%, transparent); }
   .mchip.state-reconciling { background: color-mix(in srgb, #d85a5a 24%, transparent); }
-  .mchip.state-done_verified, .mchip.state-done_accepted { background: color-mix(in srgb, var(--pine) 34%, transparent); }
+  .mchip.state-done_verified { background: color-mix(in srgb, var(--pine) 34%, transparent); }
+  .mchip.state-done_accepted { background: color-mix(in srgb, #d5a441 24%, transparent); color:var(--muted); }
   .mchip.state-failed, .mchip.state-cancelled { background: color-mix(in srgb, #d95c5c 30%, transparent); }
+  .mission-error { color:var(--coral); font-size:12.5px; line-height:1.45; padding:8px 10px;
+                   border:1px solid color-mix(in srgb,var(--coral) 36%,var(--line));
+                   border-radius:8px; background:var(--coral-bg); }
   .mcase { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--faint);
            border-left: 2px solid var(--line); padding-left: 10px; }
   .msteps { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1088,6 +1162,15 @@
   .ob-hero h1 { font-family: var(--serif); font-size: 27px; line-height: 1.15; margin: 14px 0 6px;
     color: var(--ink); letter-spacing: -.01em; }
   .ob-sub { color: var(--muted); font-size: 14.5px; max-width: 44ch; margin: 0 auto; line-height: 1.55; }
+  .name-preview { width:76px; height:76px; object-fit:contain; position:relative;
+    filter:drop-shadow(0 9px 17px color-mix(in srgb,var(--ink) 18%,transparent)); }
+  .name-field { max-width:360px; margin:4px auto 0; }
+  .name-field label { display:block; margin-bottom:7px; color:var(--muted); font-size:12px; font-weight:650; }
+  .name-field input { width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:11px;
+    background:var(--surface); color:var(--ink); padding:11px 13px; font:600 16px var(--sans); text-align:center; }
+  .name-field input[aria-invalid="true"] { border-color:var(--coral); }
+  .name-error { min-height:18px; margin-top:7px; color:var(--coral); font-size:12px; text-align:center; }
+  .name-note { max-width:48ch; margin:12px auto 0; color:var(--faint); font-size:11.5px; line-height:1.5; text-align:center; }
   .ob-label { font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
     color: var(--faint); margin: 12px 2px 10px; }
   .ob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
@@ -1239,7 +1322,7 @@
     </nav>
     <div class="side-section-rule"></div>
     <div class="lbl" data-i18n="Recent work">Recent work</div>
-    <div class="threads" id="threads"><div class="empty">No sessions yet.</div></div>
+    <div class="threads" id="threads"><div class="empty" data-i18n="No sessions yet.">No sessions yet.</div></div>
 
     <!-- verification gate: compact, pinned bottom-left. Same ids/state machine as
          before the move — setGate() drives it unchanged. -->
@@ -1270,7 +1353,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
       </button>
       <h1 id="pageTitle" data-i18n="Home">Home</h1>
-      <span class="pill" id="statePill"><span class="dot"></span><span id="stateText">idle</span></span>
+      <span class="pill" id="statePill"><span class="dot"></span><span id="stateText" data-i18n="idle">idle</span></span>
       <!-- What collie itself is playing, with the off switch. Shown only while something is playing.
            Anything the agent starts and leaves running has to be stoppable without asking the agent
            again, and on a machine with no menu bar this is the only place that can be. -->
@@ -1283,7 +1366,7 @@
       <div class="spacer"></div>
       <button type="button" class="model-trigger" id="modelTrigger" title="Switch model (Ctrl/⌘ K)" aria-haspopup="dialog" aria-controls="modelOverlay" aria-expanded="false">
         <span class="model-trigger-dot"></span>
-        <span class="model-trigger-label" id="modelTriggerLabel">Loading model…</span>
+        <span class="model-trigger-label" id="modelTriggerLabel" data-i18n="Loading model…">Loading model…</span>
         <svg class="model-trigger-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
       <!-- Rewind. Hidden unless a snapshot actually exists: an undo button that cannot undo is
@@ -1333,6 +1416,21 @@
         </div>
       </div>
     </div>
+
+    <section class="library-panel" id="libraryPanel" role="region" aria-label="Library" hidden>
+      <div class="library-inner">
+        <div class="library-head">
+          <div class="library-head-copy">
+            <h2 data-i18n="Library">Library</h2>
+            <p data-i18n="Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.">Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.</p>
+          </div>
+          <div class="library-head-actions"><button type="button" id="libraryRefresh" data-i18n="Refresh">Refresh</button>
+            <button type="button" id="libraryClose" data-i18n-aria-label="Close Library" aria-label="Close Library">×</button></div>
+        </div>
+        <div class="library-notice" id="libraryNotice" role="status" aria-live="polite"></div>
+        <div class="library-grid" id="libraryGrid"><div class="library-empty" data-i18n="Loading installed extensions…">Loading installed extensions…</div></div>
+      </div>
+    </section>
 
     <section class="workpanel" id="workpanel" role="region" aria-label="run details" hidden>
       <div class="wpbody">
@@ -1384,6 +1482,7 @@
         <div class="activity-head"><strong>Activity</strong><span class="activity-health" id="activityHealth">loading</span>
           <span class="spacer"></span><button type="button" id="activityRefresh">Refresh</button>
           <button type="button" id="activityClose" aria-label="Close activity">×</button></div>
+        <div class="activity-notice" id="activityNotice" role="status" aria-live="polite"></div>
         <div class="activity-grid" id="activityGrid"><div class="activity-empty">Loading operational state…</div></div>
       </div>
     </section>
@@ -1393,7 +1492,7 @@
     </button>
 
     <!-- composer -->
-    <div class="composer">
+    <div class="composer" id="composer">
       <div class="attach-strip" id="attachStrip" hidden></div>
       <div class="inner">
         <div class="modepick" id="modePick">
@@ -1551,6 +1650,27 @@
   </section>
 </div>
 
+<!-- ============================================ onboarding (first-run: adopt/name the companion) -->
+<div class="ob-overlay" id="nameOverlay" role="dialog" aria-modal="true" aria-labelledby="nameTitle" aria-hidden="true">
+  <div class="ob-card">
+    <div class="ob-hero">
+      <img class="name-preview" id="namePreview" src="/api/avatar.png" alt="" width="76" height="76">
+      <h1 id="nameTitle" data-i18n="Meet your Collie">Meet your Collie</h1>
+      <p class="ob-sub" data-i18n="Give your companion a name. This is the identity you will see wherever you work together.">Give your companion a name. This is the identity you will see wherever you work together.</p>
+    </div>
+    <div class="name-field">
+      <label for="nameInput" data-i18n="Companion name">Companion name</label>
+      <input id="nameInput" type="text" value="Rowan" maxlength="32" autocomplete="off" spellcheck="false" aria-describedby="nameError nameNote">
+      <div class="name-error" id="nameError" role="alert"></div>
+    </div>
+    <p class="name-note" id="nameNote" data-i18n="Renaming changes this Collie's display name on desktop, mobile, Remote and ambient desktop. Slack apps, @handles and mail addresses keep their existing identities and require their own rename workflow.">Renaming changes this Collie's display name on desktop, mobile, Remote and ambient desktop. Slack apps, @handles and mail addresses keep their existing identities and require their own rename workflow.</p>
+    <div class="ob-foot">
+      <button class="ob-ghost" id="nameSkip" data-i18n="Skip for now">Skip for now</button>
+      <button class="ob-brain is-rec" id="nameContinue" data-i18n="Continue">Continue</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============================================ onboarding (first-run: pick a brain) -->
 <div class="ob-overlay" id="obOverlay" role="dialog" aria-modal="true" aria-labelledby="obTitle" aria-hidden="true">
   <div class="ob-card">
@@ -1679,7 +1799,7 @@
   // place prevents the onboarding/settings/recording/model dialogs from drifting apart again.
   var dialogReturnFocus = new WeakMap();
   function visibleDialogOverlay() {
-    var candidates = [$("obOverlay"), $("brOverlay"), $("amOverlay"), $("setOverlay"),
+    var candidates = [$("nameOverlay"), $("obOverlay"), $("brOverlay"), $("amOverlay"), $("setOverlay"),
                       $("modelOverlay"), $("recOverlay")].filter(Boolean);
     var visible = candidates.filter(function (el) {
       return !el.hidden && (el.classList.contains("open") || el.id === "recOverlay");
@@ -1778,6 +1898,34 @@
   var ZH = {
     "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Library": "能力库", "Activity": "活动",
     "Needs You": "需要你", "New task": "新任务", "Recent work": "最近工作",
+    "No sessions yet.": "还没有对话。", "Loading model…": "正在加载模型…", "Model unavailable": "模型不可用",
+    "idle": "空闲", "running": "运行中", "stopping": "正在停止",
+    "Auto — Collie chooses per task": "自动 — Collie 按任务选择", "task-aware routing": "按任务智能路由",
+    "Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.": "已安装的技能、连接、钩子、模板与资源。启用某个版本，即明确批准该版本的精确摘要与声明权限。",
+    "Refresh": "刷新", "Close Library": "关闭能力库", "Loading installed extensions…": "正在加载已安装扩展…",
+    "Refreshing installed extensions…": "正在刷新已安装扩展…", "Library unavailable": "能力库不可用",
+    "The installed extension registry could not be read.": "无法读取已安装扩展注册表。",
+    "No extensions installed": "尚未安装扩展", "Validate and install a local package with": "请先用",
+    "then review its exact digest here before enabling it.": "验证并安装本地包，然后在此核对精确摘要后再启用。",
+    "Digest": "摘要", "Trust": "信任", "Scope change": "权限变化", "Data": "数据", "Declared authority": "声明权限",
+    "Initial authority:": "初始权限：", "Initial version declares no host authority.": "初始版本未声明任何主机权限。",
+    "No permission change from active version.": "与当前启用版本相比，权限没有变化。", "Added:": "新增：", "Removed:": "移除：",
+    "not reported": "未报告", "unreviewed": "未审查", "digest_pinned": "摘要已固定", "locally_reviewed": "本机已审查",
+    "approved": "已批准", "approval required": "需要批准", "retention": "保留", "uninstall": "卸载", "export supported": "支持导出",
+    "none": "无", "package": "随扩展包", "user_state": "用户状态", "remove": "移除", "retain_user_state": "保留用户状态",
+    "This digest is revoked and cannot be enabled.": "该摘要已撤销，不能启用。",
+    "Installed bytes no longer match this digest. Reinstall before enabling.": "已安装内容与该摘要不再匹配，请重新安装后再启用。",
+    "This exact digest and its declared authority have not been approved yet.": "该精确摘要及其声明权限尚未获批。",
+    "No filesystem, network, credential, browser, desktop, external-action, or host-hook authority declared.": "未声明文件系统、网络、凭据、浏览器、桌面、外部操作或主机钩子权限。",
+    "filesystem": "文件系统", "network": "网络", "credentials": "凭据", "browser": "浏览器", "desktop": "桌面",
+    "external actions": "外部操作", "host hooks": "主机钩子", "skills": "技能", "hooks": "钩子", "connections": "连接", "templates": "模板", "assets": "资源",
+    "Enable": "启用", "Switch to": "切换到", "Disable": "停用", "Rollback to": "回滚到", "Uninstall": "卸载",
+    "SHA-256 digest:": "SHA-256 摘要：", "Declared authority:": "声明权限：", "Scope change:": "权限变化：",
+    "No host authority declared.": "未声明主机权限。", "This approval applies only to this exact version and digest.": "此批准仅适用于该精确版本与摘要。",
+    "Its contributed capabilities will no longer be available to new work.": "它提供的能力将不再用于新的任务。",
+    "This removes the installed package bytes. Disable an active version first.": "这会移除已安装的扩展包内容。请先停用当前启用版本。",
+    "enabled": "已启用", "disabled": "已停用", "unknown": "未知", "unknown publisher": "未知发布者", "active": "当前", "Version": "版本",
+    "Review installed version": "审查已安装版本", "No description supplied.": "未提供说明。", "Library action failed:": "能力库操作失败：", "Library could not refresh:": "能力库刷新失败：",
     "Ready to work": "随时可以开始", "What should we get done?": "我们要把什么事情做完？",
     "Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.":
       "告诉我你要的结果。Collie 会选择模型、工具、技能和执行者，持续推进任务，并交回证据。",
@@ -1797,8 +1945,13 @@
     "✓ Check passed": "✓ 检查通过", "The named check passed. Open Run details to inspect its scope and evidence.": "具名检查已通过。打开运行详情可查看它的范围与证据。",
     "No executed check": "没有已执行的检查", "This run made no code edit or no relevant executable check was selected.": "本次运行没有修改代码，或没有选择相关的可执行检查。",
     "Changes save automatically.": "修改会自动保存。", "Close": "关闭",
+    "Meet your Collie": "认识你的 Collie", "Companion name": "伙伴名字", "Continue": "继续",
+    "Skip for now": "暂时跳过",
+    "Give your companion a name. This is the identity you will see wherever you work together.": "给你的伙伴取个名字。无论在哪里一起工作，你都会看到这个身份。",
+    "Renaming changes this Collie's display name on desktop, mobile, Remote and ambient desktop. Slack apps, @handles and mail addresses keep their existing identities and require their own rename workflow.": "改名会同步更新这只 Collie 在桌面、手机、远程控制和动态桌面上的显示名。Slack 应用、@用户名和邮件地址会保留原身份，需要分别通过对应流程改名。",
+    "This runtime was started with an authoritative name. Restart it without --name or COLLIE_COMPANION_NAME to rename the first-party display identity here.": "当前运行由显式名字锁定。请在不带 --name 或 COLLIE_COMPANION_NAME 的情况下重启，之后才能在这里修改第一方界面的显示名。",
     "this computer": "这台电脑", "Your Collie on": "你的 Collie，运行于", "Runtime": "运行状态",
-    "Checking…": "检查中…", "Ready · supervisor connected": "就绪 · 监督进程已连接", "Needs attention": "需要处理",
+    "Checking…": "检查中…", "Ready · runtime responding": "就绪 · 运行时有响应", "Needs attention": "需要处理",
     "Unavailable": "不可用", "Default brain": "默认模型", "Automatic routing": "自动路由",
     "Sensitive actions": "敏感操作", "Ask before acting": "操作前询问", "Recorded by check and scope": "按检查与范围记录",
     "Choose a brain": "选择模型", "Review capabilities": "查看能力", "Manage connections": "管理连接",
@@ -1913,6 +2066,34 @@
   var ZHTW = {
     "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Library": "能力庫", "Activity": "活動",
     "Needs You": "需要你", "New task": "新任務", "Recent work": "最近工作",
+    "No sessions yet.": "還沒有對話。", "Loading model…": "正在載入模型…", "Model unavailable": "模型無法使用",
+    "idle": "閒置", "running": "執行中", "stopping": "正在停止",
+    "Auto — Collie chooses per task": "自動 — Collie 依任務選擇", "task-aware routing": "依任務智慧路由",
+    "Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.": "已安裝的技能、連線、鉤子、範本與資源。啟用某個版本，即明確批准該版本的精確摘要與聲明權限。",
+    "Refresh": "重新整理", "Close Library": "關閉能力庫", "Loading installed extensions…": "正在載入已安裝擴充套件…",
+    "Refreshing installed extensions…": "正在重新整理已安裝擴充套件…", "Library unavailable": "能力庫無法使用",
+    "The installed extension registry could not be read.": "無法讀取已安裝擴充套件註冊表。",
+    "No extensions installed": "尚未安裝擴充套件", "Validate and install a local package with": "請先用",
+    "then review its exact digest here before enabling it.": "驗證並安裝本機套件，再於此核對精確摘要後啟用。",
+    "Digest": "摘要", "Trust": "信任", "Scope change": "權限變更", "Data": "資料", "Declared authority": "聲明權限",
+    "Initial authority:": "初始權限：", "Initial version declares no host authority.": "初始版本未聲明任何主機權限。",
+    "No permission change from active version.": "與目前啟用版本相比，權限沒有變更。", "Added:": "新增：", "Removed:": "移除：",
+    "not reported": "未回報", "unreviewed": "未審查", "digest_pinned": "摘要已固定", "locally_reviewed": "本機已審查",
+    "approved": "已批准", "approval required": "需要批准", "retention": "保留", "uninstall": "解除安裝", "export supported": "支援匯出",
+    "none": "無", "package": "隨擴充套件", "user_state": "使用者狀態", "remove": "移除", "retain_user_state": "保留使用者狀態",
+    "This digest is revoked and cannot be enabled.": "此摘要已撤銷，無法啟用。",
+    "Installed bytes no longer match this digest. Reinstall before enabling.": "已安裝內容與此摘要不再相符，請重新安裝後再啟用。",
+    "This exact digest and its declared authority have not been approved yet.": "此精確摘要及其聲明權限尚未獲批。",
+    "No filesystem, network, credential, browser, desktop, external-action, or host-hook authority declared.": "未聲明檔案系統、網路、憑證、瀏覽器、桌面、外部操作或主機鉤子權限。",
+    "filesystem": "檔案系統", "network": "網路", "credentials": "憑證", "browser": "瀏覽器", "desktop": "桌面",
+    "external actions": "外部操作", "host hooks": "主機鉤子", "skills": "技能", "hooks": "鉤子", "connections": "連線", "templates": "範本", "assets": "資源",
+    "Enable": "啟用", "Switch to": "切換到", "Disable": "停用", "Rollback to": "回復到", "Uninstall": "解除安裝",
+    "SHA-256 digest:": "SHA-256 摘要：", "Declared authority:": "聲明權限：", "Scope change:": "權限變更：",
+    "No host authority declared.": "未聲明主機權限。", "This approval applies only to this exact version and digest.": "此批准僅適用於該精確版本與摘要。",
+    "Its contributed capabilities will no longer be available to new work.": "它提供的能力將不再用於新的任務。",
+    "This removes the installed package bytes. Disable an active version first.": "這會移除已安裝的擴充套件內容。請先停用目前啟用版本。",
+    "enabled": "已啟用", "disabled": "已停用", "unknown": "未知", "unknown publisher": "未知發佈者", "active": "目前", "Version": "版本",
+    "Review installed version": "審查已安裝版本", "No description supplied.": "未提供說明。", "Library action failed:": "能力庫操作失敗：", "Library could not refresh:": "能力庫重新整理失敗：",
     "Ready to work": "隨時可以開始", "What should we get done?": "我們要把什麼事情做完？",
     "Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.":
       "告訴我你要的結果。Collie 會選擇模型、工具、技能和執行者，持續推進任務，並交回證據。",
@@ -1932,8 +2113,13 @@
     "✓ Check passed": "✓ 檢查通過", "The named check passed. Open Run details to inspect its scope and evidence.": "具名檢查已通過。開啟執行詳情可查看它的範圍與證據。",
     "No executed check": "沒有已執行的檢查", "This run made no code edit or no relevant executable check was selected.": "本次執行沒有修改程式碼，或沒有選擇相關的可執行檢查。",
     "Changes save automatically.": "變更會自動儲存。", "Close": "關閉",
+    "Meet your Collie": "認識你的 Collie", "Companion name": "夥伴名字", "Continue": "繼續",
+    "Skip for now": "暫時略過",
+    "Give your companion a name. This is the identity you will see wherever you work together.": "替你的夥伴取個名字。無論在哪裡一起工作，你都會看到這個身分。",
+    "Renaming changes this Collie's display name on desktop, mobile, Remote and ambient desktop. Slack apps, @handles and mail addresses keep their existing identities and require their own rename workflow.": "改名會同步更新這隻 Collie 在桌面、手機、遠端控制和動態桌面上的顯示名稱。Slack 應用程式、@使用者名稱與郵件地址會保留原身分，需要分別透過對應流程改名。",
+    "This runtime was started with an authoritative name. Restart it without --name or COLLIE_COMPANION_NAME to rename the first-party display identity here.": "目前執行由明確名稱鎖定。請在不帶 --name 或 COLLIE_COMPANION_NAME 的情況下重新啟動，之後才能在這裡修改第一方介面的顯示名稱。",
     "this computer": "這台電腦", "Your Collie on": "你的 Collie，執行於", "Runtime": "執行狀態",
-    "Checking…": "檢查中…", "Ready · supervisor connected": "就緒 · 監督程序已連線", "Needs attention": "需要處理",
+    "Checking…": "檢查中…", "Ready · runtime responding": "就緒 · 執行階段有回應", "Needs attention": "需要處理",
     "Unavailable": "無法使用", "Default brain": "預設模型", "Automatic routing": "自動路由",
     "Sensitive actions": "敏感操作", "Ask before acting": "操作前詢問", "Recorded by check and scope": "按檢查與範圍記錄",
     "Choose a brain": "選擇模型", "Review capabilities": "查看能力", "Manage connections": "管理連線",
@@ -2236,7 +2422,7 @@
     }
   };
   var GROUPS_I18N = {
-    zh: { "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程", "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能" },
+    zh: { "Identity": "身份", "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程", "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能" },
     ja: { "General": "一般", "Model": "モデル", "Tools": "ツール", "Desktop": "デスクトップ", "Remote": "リモート", "Retrieval": "検索", "Limits": "制限", "Privacy": "プライバシー", "Reliability": "信頼性", "Skills": "スキル" },
     ko: { "General": "일반", "Model": "모델", "Tools": "도구", "Desktop": "데스크톱", "Remote": "원격", "Retrieval": "검색", "Limits": "제한", "Privacy": "개인정보", "Reliability": "안정성", "Skills": "스킬" },
     es: { "General": "General", "Model": "Modelo", "Tools": "Herramientas", "Desktop": "Escritorio", "Remote": "Remoto", "Retrieval": "Recuperación", "Limits": "Límites", "Privacy": "Privacidad", "Reliability": "Fiabilidad", "Skills": "Habilidades" },
@@ -2248,8 +2434,7 @@
   function t(en) { var d = I18N[UI_LANG]; return (d && d[en]) || en; }
   var COLLIE_IDENTITY = {};
   function collieName() {
-    var raw = String(COLLIE_IDENTITY.name || "Collie");
-    return raw.charAt(0).toUpperCase() + raw.slice(1);
+    return String(COLLIE_IDENTITY.name || "Collie");
   }
   function renderCollieIdentity() {
     var name = collieName(), machine = COLLIE_IDENTITY.machine || t("this computer");
@@ -2260,16 +2445,26 @@
     });
     var loc = $("collieLocation");
     if (loc) loc.textContent = [machine, COLLIE_IDENTITY.os].filter(Boolean).join(" · ") || t("this computer");
+    var avatarUrl = COLLIE_IDENTITY.avatar || "/api/avatar.png";
     document.querySelectorAll("[data-collie-avatar]").forEach(function (img) {
-      img.src = COLLIE_IDENTITY.avatarFailed ? "/logo.svg" : "/api/avatar.png";
-      img.onerror = function () { this.onerror = null; COLLIE_IDENTITY.avatarFailed = true; this.src = "/logo.svg"; };
+      img.src = COLLIE_IDENTITY.avatarFailedFor === avatarUrl ? "/logo.svg" : avatarUrl;
+      img.alt = name;
+      img.onerror = function () { this.onerror = null; COLLIE_IDENTITY.avatarFailedFor = avatarUrl; this.src = "/logo.svg"; };
     });
     document.title = name === "Collie" ? "Collie · Home" : name + " · Collie";
   }
-  fetch("/api/whoami").then(function (r) { return r.json(); }).then(function (d) {
-    COLLIE_IDENTITY = d || {}; renderCollieIdentity();
-  }).catch(function () { renderCollieIdentity(); });
+  function refreshCollieIdentity() {
+    return fetch("/api/whoami", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (d) {
+      var failed = COLLIE_IDENTITY.avatarFailedFor;
+      COLLIE_IDENTITY = d || {};
+      if (failed && failed === COLLIE_IDENTITY.avatar) COLLIE_IDENTITY.avatarFailedFor = failed;
+      renderCollieIdentity(); return COLLIE_IDENTITY;
+    }).catch(function () { renderCollieIdentity(); return COLLIE_IDENTITY; });
+  }
+  var COLLIE_IDENTITY_READY = refreshCollieIdentity();
+  window.setInterval(refreshCollieIdentity, 15000);
   function applyLang() {
+    document.documentElement.lang = UI_LANG;
     // static chrome (live nodes + templates); dynamic strings route through t() at their call sites
     document.querySelectorAll("[data-i18n]").forEach(function (el) {
       el.textContent = t(el.getAttribute("data-i18n"));
@@ -2306,8 +2501,8 @@
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
     UI_LANG = resolveLang(((d || {}).values || {}).LANG);
-    if (UI_LANG !== "en") applyLang();
-  }).catch(function () {});
+    applyLang();
+  }).catch(function () { document.documentElement.lang = UI_LANG; });
 
   // the model-picker shortcut chip is hardcoded ⌘ (macOS) — show Ctrl on Windows/Linux so it's not
   // a wrong-platform glyph. (The tooltips already say "Ctrl/⌘".)
@@ -2326,7 +2521,7 @@
   // schema's implementation groups. Every key is still rendered from the server schema, so types,
   // bounds and provider-owned defaults remain authoritative.
   var SET_CATS = [
-    { id: "overview", label: "My Collie", zh: "我的 Collie", kind: "overview", keys: [] },
+    { id: "overview", label: "My Collie", zh: "我的 Collie", kind: "overview", keys: ["COMPANION_NAME"] },
     { id: "brains", label: "Brains & routing", zh: "模型与路由",
       keys: ["PROVIDER", "MODEL", "REASONING_EFFORT"] },
     { id: "caps", label: "Capabilities", zh: "能力",
@@ -2391,6 +2586,7 @@
   function renderSettings(schema, values) {
     var byKey = {}, schemaKeys = [];
     schema.forEach(function (s) { byKey[s.key] = s; schemaKeys.push(s.key); });
+    var identity = (typeof COLLIE_IDENTITY !== "undefined" && COLLIE_IDENTITY) || {};
     // the schema (settings.py) only carries label_zh, so a Traditional user borrows the Simplified
     // panel labels — the chrome above is already proper Traditional via ZHTW; this is the secondary
     // surface, and 简体 labels beat English ones for a zh-tw reader.
@@ -2400,6 +2596,8 @@
       var html = '<div class="set-group"><h4>' + setEsc(loc && GROUPS_I18N[L] && GROUPS_I18N[L][g] || g) + "</h4>";
       (items || []).forEach(function (s) {
         var v = values[s.key], id = "set_" + s.key, ctl;
+        var lockedName = s.key === "COMPANION_NAME" && identity.name_editable === false;
+        if (s.key === "COMPANION_NAME" && (!v || lockedName) && identity.name) v = identity.name;
         if (s.type === "select") {
           ctl = '<select id="' + id + '" data-key="' + s.key + '">' + (s.options || []).map(function (o) {
             var ov = (o && o.value != null) ? o.value : o, ol = (o && o.label != null) ? o.label : o;
@@ -2411,21 +2609,25 @@
           ctl = '<label class="set-toggle"><input id="' + id + '" data-key="' + s.key + '" data-bool="1" type="checkbox"'
               + (on ? " checked" : "") + '><span class="tk"></span></label>';
         } else {
-          var t = s.type === "number" ? "number" : "text", extra = "", dl = "";
+          var inputType = s.type === "number" ? "number" : "text", extra = "", dl = "";
           if (s.min != null) extra += ' min="' + setEsc(s.min) + '"';
-          if (s.max != null) extra += ' max="' + setEsc(s.max) + '"';
+          if (s.max != null) extra += (inputType === "number" ? ' max="' : ' maxlength="') + setEsc(s.max) + '"';
           if (s.step != null) extra += ' step="' + setEsc(s.step) + '"';
+          var placeholder = loc && s["placeholder_" + L] || s.placeholder;
+          if (placeholder) extra += ' placeholder="' + setEsc(placeholder) + '"';
+          if (lockedName) extra += ' disabled aria-disabled="true"';
           if (s.list && s.list.length) {
             extra += ' list="' + id + '_dl" autocomplete="off"';
             dl = '<datalist id="' + id + '_dl">' + s.list.map(function (o) {
               return '<option value="' + setEsc(o) + '"></option>'; }).join("") + "</datalist>";
           }
-          ctl = '<input id="' + id + '" data-key="' + s.key + '" type="' + t + '" value="' + setEsc(v) + '"' + extra + ">" + dl;
+          ctl = '<input id="' + id + '" data-key="' + s.key + '" type="' + inputType + '" value="' + setEsc(v) + '"' + extra + ">" + dl;
         }
         html += '<div class="set-row" data-key="' + setEsc(s.key) + '"><label for="' + id + '">'
               + setEsc(loc && s["label_" + L] || s.label) + "</label>" + ctl + "</div>";
         var hn = loc && s["hint_" + L] || s.hint;
         if (hn) html += '<div class="set-hint">' + setEsc(hn) + "</div>";
+        if (lockedName) html += '<div class="set-hint">' + setEsc(t("This runtime was started with an authoritative name. Restart it without --name or COLLIE_COMPANION_NAME to rename the first-party display identity here.")) + "</div>";
       });
       return html + "</div>";
     }
@@ -2474,7 +2676,7 @@
       rail += '<button class="set-nav' + on + '" data-cat="' + c.id + '">'
             + setEsc(loc && c.zh ? c.zh : c.label)
             + (count ? '<span class="n">' + count + "</span>" : "") + "</button>";
-      var body = c.kind === "overview" ? overviewHtml() : keysHtml(c.keys);
+      var body = c.kind === "overview" ? overviewHtml() + keysHtml(c.keys) : keysHtml(c.keys);
       if (c.mcp) body += '<div class="set-group"><h4>' + setEsc(t("App connections")) + '</h4>'
           + '<p class="set-hint" style="margin:0 0 10px">'
           + setEsc(t("Connections give Collie scoped tools from outside this device. Review their status and access here."))
@@ -2499,8 +2701,11 @@
   function loadSettingsOverview() {
     var node = document.getElementById("settingsRuntimeStatus");
     if (!node) return;
-    fetch("/api/healthz").then(function (r) { return r.json(); }).then(function (d) {
-      node.textContent = d && (d.ok === true || d.status === "ok") ? t("Ready · supervisor connected") : t("Needs attention");
+    fetch("/api/healthz?token=" + encodeURIComponent(CT)).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (d) {
+      node.textContent = d && d.ok === true ? t("Ready · runtime responding") : t("Needs attention");
     }).catch(function () { node.textContent = t("Unavailable"); });
   }
 
@@ -2678,6 +2883,12 @@
     setStatus.textContent = t("loading…"); setStatus.className = "set-status";
     setOverlay.classList.add("open");
     dialogOpened(setOverlay, "#setClose");
+    // Never leave the previous render interactive while the fresh settings request is in flight.
+    // A fast click on that stale rail could select a pane which was then replaced underneath the
+    // pointer, producing a visible flash (and, for live panes such as MCP, a transient empty list).
+    // Clearing it also makes a failed refresh honest: the modal cannot masquerade as current data.
+    setBody.setAttribute("aria-busy", "true");
+    setBody.innerHTML = '<div class="set-empty" role="status">' + setEsc(t("loading…")) + "</div>";
     // One catch covered the fetch, the JSON parse, renderSettings AND mcpLoad, and reported all
     // four as "failed to load" — so a render bug read as a dead server. The fetch is separated
     // from what happens to its result, and the message now carries the actual reason: a panel
@@ -2689,16 +2900,20 @@
         return r.json();
       })
       .catch(function (e) {
+        setBody.removeAttribute("aria-busy");
         setStatus.textContent = t("failed to load") + " — " + (e && e.message ? e.message : e);
         setStatus.className = "set-status err";
         throw e;                       // don't run the render on a failed load
       })
       .then(function (d) {
         try {
+          if (d.identity) { COLLIE_IDENTITY = d.identity; renderCollieIdentity(); }
           renderSettings(d.schema || [], d.values || {});
+          setBody.removeAttribute("aria-busy");
           mcpLoad();      // renderSettings has laid out the MCP category and its #mcpBox
           setStatus.textContent = "";
         } catch (e) {
+          setBody.removeAttribute("aria-busy");
           setStatus.textContent = "settings loaded but could not render — " +
                                   (e && e.message ? e.message : e);
           setStatus.className = "set-status err";
@@ -2763,7 +2978,58 @@
   };
   refreshCheckpoints();
 
-  // ---- onboarding: first-run "pick a brain" ----------------------------
+  // ---- onboarding: adopt/name this companion, then pick a brain ------------------------------
+  var nameOverlay = $("nameOverlay"), namePreviewTimer = 0;
+  function nameOnboardSkipped() {
+    try { sessionStorage.setItem("collie-name-onboard-skip", "1"); } catch (e) {}
+    nameOverlay.classList.remove("open"); dialogClosed(nameOverlay, $("input"));
+    maybeOpenBrainOnboarding();
+  }
+  function nameOnboardClose() {
+    nameOverlay.classList.remove("open"); dialogClosed(nameOverlay, $("input"));
+  }
+  function previewCompanionName() {
+    clearTimeout(namePreviewTimer);
+    namePreviewTimer = setTimeout(function () {
+      var name = String($("nameInput").value || "").trim();
+      if (!name || name.length > 32 || /[<>\u0000-\u001f\u007f]/.test(name)) return;
+      $("namePreview").src = "/api/avatar.png?preview=" + encodeURIComponent(name)
+        + "&token=" + encodeURIComponent(CT) + "&v=" + Date.now();
+    }, 120);
+  }
+  function continueWithCompanionName() {
+    var input = $("nameInput"), button = $("nameContinue"), error = $("nameError");
+    var name = String(input.value || "").trim().replace(/\s+/g, " ");
+    input.setAttribute("aria-invalid", "false"); error.textContent = "";
+    if (!name || name.length > 32 || /[<>\u0000-\u001f\u007f]/.test(name)) {
+      input.setAttribute("aria-invalid", "true");
+      error.textContent = name ? "Use 32 characters or fewer, without markup or control characters." : "Choose a name, or skip for now.";
+      input.focus(); return;
+    }
+    button.disabled = true; button.textContent = t("saving…");
+    fetch("/api/settings?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ COMPANION_NAME: name })
+    }).then(function (r) { return r.json().then(function (d) { return { ok:r.ok, d:d }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.d.ok) throw new Error((res.d && res.d.error) || "Could not save the name");
+        return refreshCollieIdentity();
+      }).then(function () { nameOnboardClose(); maybeOpenBrainOnboarding(); })
+      .catch(function (e) { input.setAttribute("aria-invalid", "true"); error.textContent = e.message || String(e); input.focus(); })
+      .finally(function () { button.disabled = false; button.textContent = t("Continue"); });
+  }
+  function nameOnboardOpen() {
+    $("nameInput").value = "Rowan"; $("nameError").textContent = "";
+    $("namePreview").src = "/api/avatar.png?preview=Rowan&token=" + encodeURIComponent(CT);
+    nameOverlay.classList.add("open"); dialogOpened(nameOverlay, "#nameInput");
+  }
+  $("nameInput").addEventListener("input", previewCompanionName);
+  $("nameInput").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); continueWithCompanionName(); } });
+  $("nameContinue").addEventListener("click", continueWithCompanionName);
+  $("nameSkip").addEventListener("click", nameOnboardSkipped);
+  nameOverlay.addEventListener("click", function (e) { if (e.target === nameOverlay) nameOnboardSkipped(); });
+
+  // First-run model/account selection follows naming, so two modal dialogs never race each other.
   var obOverlay = $("obOverlay");
   function obClose() { obOverlay.classList.remove("open"); dialogClosed(obOverlay, $("input")); }
   // Skip is remembered for THIS SESSION only. Connecting a brain needs no flag at all — the
@@ -2854,7 +3120,7 @@
   $("obBrowse").addEventListener("click", function () { obClose(); openModelPicker(); });
   $("obSkip").addEventListener("click", obSkipped);
   obOverlay.addEventListener("click", function (ev) { if (ev.target === obOverlay) obSkipped(); });
-  (function () {
+  function maybeOpenBrainOnboarding() {
     // Trigger on the REAL question — "is there a working brain?" — not on the configured name.
     // settings defaults PROVIDER to "anthropic" even when nothing is saved, while the runtime falls
     // back to mock, so `current` alone cannot tell you there is no brain. Ask instead whether the
@@ -2862,7 +3128,7 @@
     function wasSkipped() {
       try { return !!sessionStorage.getItem("collie-onboard-skip"); } catch (e) { return false; }
     }
-    if (wasSkipped()) return;
+    if (wasSkipped() || nameOverlay.classList.contains("open")) return;
     fetch("/api/models?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
       .then(function (d) {
         // Ask AGAIN on the way in. /api/models probes every provider, so this answer can arrive
@@ -2876,7 +3142,13 @@
         });
         if (!working) { obRender(entries); obOverlay.classList.add("open"); dialogOpened(obOverlay, ".ob-brain, #obKeyBtn"); }
       }).catch(function () {});
-  })();
+  }
+  COLLIE_IDENTITY_READY.then(function () {
+    var skipped = false;
+    try { skipped = !!sessionStorage.getItem("collie-name-onboard-skip"); } catch (e) {}
+    if (!skipped && COLLIE_IDENTITY.name_source === "default" && COLLIE_IDENTITY.name_editable !== false) nameOnboardOpen();
+    else maybeOpenBrainOnboarding();
+  });
 
   // ---- connect your browser (optional; offered after picking a brain, and from Settings) --------
   var brOverlay = $("brOverlay"), brTimer = null, brExtPath = "";
@@ -2955,7 +3227,8 @@
   amOverlay.addEventListener("click", function (ev) { if (ev.target === amOverlay) amNext(); });
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (amOverlay.classList.contains("open")) { e.preventDefault(); amNext(); }
+    if (nameOverlay.classList.contains("open")) { e.preventDefault(); nameOnboardSkipped(); }
+    else if (amOverlay.classList.contains("open")) { e.preventDefault(); amNext(); }
     else if (brOverlay.classList.contains("open")) { e.preventDefault(); brFinish(); }
     else if (obOverlay.classList.contains("open")) { e.preventDefault(); obSkipped(); }
   });
@@ -2983,6 +3256,14 @@
             setStatus.className = "set-status err"; return false;
           }
           var saved = res.d.values || {};
+          if (key === "COMPANION_NAME") {
+            if (saved[key] !== undefined) el.value = saved[key];
+            return refreshCollieIdentity().then(function () {
+              setStatus.textContent = t("applied"); setStatus.className = "set-status ok";
+              setTimeout(function () { if (setStatus.textContent === t("applied")) setStatus.textContent = ""; }, 1400);
+              return true;
+            });
+          }
           if (saved[key] !== undefined && String(saved[key]) !== String(value)) {
             setStatus.textContent = t("this setting is held by an environment variable — ") + key + " = " + saved[key];
             setStatus.className = "set-status err"; return false;
@@ -3082,7 +3363,7 @@
 
   // ---- pills ------------------------------------------------------------
   function setRunState(text, live) {
-    $("stateText").textContent = text;
+    $("stateText").textContent = t(text);
     $("statePill").classList.toggle("live", !!live);
   }
 
@@ -3170,7 +3451,7 @@
   // through addEvent, because this one is not a record of something that happened — it is
   // a question, and the run stays suspended until it is answered from here, from a phone,
   // or from the desktop. Whoever answers first wins; the rest see the row settle.
-  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {};
+  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, PERMISSION_EPOCH = 0;
   function updateNeedsYou() {
     var n = Object.keys(GLOBAL_PERMS || {}).length, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
@@ -3227,6 +3508,7 @@
     updateNeedsYou();
 
     function settle(text) {
+      PERMISSION_EPOCH++;
       settlePermission(d.id, text);
     }
     row.addEventListener("click", function (ev) {
@@ -3260,27 +3542,66 @@
     });
   }
 
+  function refreshPendingPermissions() {
+    var before = Object.keys(GLOBAL_PERMS || {}), requestEpoch = PERMISSION_EPOCH;
+    return fetch("/api/approvals?token=" + encodeURIComponent(CT))
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status));
+          return d;
+        });
+      })
+      .then(function (d) {
+        // A permission may have arrived or settled while this request was in flight.  That live
+        // event is newer than the snapshot; ignoring this response prevents a resolved card from
+        // being resurrected by an older server read.
+        if (requestEpoch !== PERMISSION_EPOCH) {
+          window.setTimeout(refreshPendingPermissions, 0); return;
+        }
+        var live = {};
+        (d.approvals || []).forEach(function (item) {
+          if (!item || !item.id) return;
+          live[item.id] = true; trackPermission(item, item.session || "");
+          if (item.session && item.session === currentSession && !PERM_ROWS[item.id]) {
+            addPermission(item, item.session);
+          }
+        });
+        // Only prune entries that existed before this request.  A new live event can arrive while
+        // the snapshot is in flight; it must not be erased by an older response.
+        before.forEach(function (id) {
+          if (!live[id] && GLOBAL_PERMS[id]) settlePermission(id, "no longer pending");
+        });
+        updateNeedsYou();
+      })
+      .catch(function () {
+        // Keep the last known queue on a transient failure.  Emptying it would turn an unknown
+        // state into a false claim that no decision is waiting.
+      });
+  }
+
   // Resolutions can come from this desktop, another Collie window, a phone, or the terminal.
   // The initiating SSE only carries the original question, so the machine-wide live bus is the
   // authoritative way to settle it everywhere and keep the global Needs You inbox truthful.
   try {
     var permissionLive = new EventSource("/api/live");
+    permissionLive.addEventListener("live_hello", refreshPendingPermissions);
     permissionLive.addEventListener("permission", function (e) {
       try {
-        var d = JSON.parse(e.data || "{}"); trackPermission(d, d.session || "");
+        var d = JSON.parse(e.data || "{}"); PERMISSION_EPOCH++; trackPermission(d, d.session || "");
         if (d.session && d.session === currentSession && !PERM_ROWS[d.id]) addPermission(d, d.session);
       } catch (_) {}
     });
     permissionLive.addEventListener("permission_resolved", function (e) {
       try {
-        var d = JSON.parse(e.data || "{}");
+        var d = JSON.parse(e.data || "{}"); PERMISSION_EPOCH++;
         settlePermission(d.id, d.answer === "deny" ? "declined elsewhere" : "answered elsewhere");
         if (d.session && d.session === currentSession && running) pstat("thinking…");
       } catch (_) {}
     });
     permissionLive.addEventListener("done", function (e) {
-      try { var d = JSON.parse(e.data || "{}"); clearPermissionsForSession(d.session || ""); } catch (_) {}
+      try { var d = JSON.parse(e.data || "{}"); PERMISSION_EPOCH++; clearPermissionsForSession(d.session || ""); } catch (_) {}
     });
+    refreshPendingPermissions();
   } catch (_) {}
 
   function shortArgs(name, args) {
@@ -3510,14 +3831,25 @@
     var status = document.createElement("span"); status.className = "activity-state"; status.textContent = state || "unknown";
     row.appendChild(name); row.appendChild(status);
   }
+  function activityNotice(message, bad) {
+    var node = $("activityNotice"); if (!node) return;
+    node.textContent = message || ""; node.classList.toggle("bad", !!bad);
+  }
   function activityAction(row, label, fn) {
     var button = document.createElement("button"); button.type = "button"; button.textContent = label;
-    button.onclick = function () { button.disabled = true; Promise.resolve(fn()).finally(function () { button.disabled = false; }); };
+    button.onclick = function () {
+      button.disabled = true; activityNotice("");
+      Promise.resolve(fn()).catch(function (error) {
+        activityNotice("Action failed: " + ((error && error.message) || error || "unknown error"), true);
+      }).finally(function () { button.disabled = false; });
+    };
     row.appendChild(button); return button;
   }
   function renderActivity(activity, health, hooks) {
     var badge = $("activityHealth"); badge.textContent = health.status || "unknown";
     badge.classList.toggle("bad", !health.ok);
+    var unavailable = Object.keys(activity.errors || {}).concat(Object.keys(health.activity_errors || {}));
+    activityNotice(unavailable.length ? ("Some operational lanes are unavailable: " + unavailable.join(", ")) : "", unavailable.length > 0);
     var grid = $("activityGrid"); grid.textContent = "";
     var serviceRows = Object.keys(health.workers || {}).map(function (name) {
       return { id: name, state: (health.workers[name].state || "unknown") + (health.workers[name].fresh ? " · fresh" : " · stale") };
@@ -3532,7 +3864,7 @@
     grid.appendChild(activityLane("Services", serviceRows,
       function (row, data) { activityText(row, data.id, data.state); }));
     grid.appendChild(activityLane("Missions", activity.missions || [], function (row, data) {
-      activityText(row, data.mission_id, data.state);
+      activityText(row, data.mission_id, missionStateLabel(data.state));
     }));
     grid.appendChild(activityLane("Automations", activity.automations || [], function (row, data) {
       activityText(row, data.automation_id + " · " + data.execution_id, data.state);
@@ -3575,10 +3907,12 @@
     return Promise.all([activityGet("/api/activity"), activityGet("/api/healthz"), activityGet("/api/hooks")])
       .then(function (values) { renderActivity(values[0], values[1], values[2]); })
       .catch(function (error) { $("activityHealth").textContent = error.message || "unavailable";
-        $("activityHealth").classList.add("bad"); });
+        $("activityHealth").classList.add("bad");
+        activityNotice("Activity could not refresh: " + (error.message || error || "unavailable"), true); });
   }
   function setActivityOpen(open) {
     if (!activityPanel) return; activityPanel.hidden = !open;
+    if (open && typeof setLibraryOpen === "function") setLibraryOpen(false);
     activityButton.setAttribute("aria-expanded", open ? "true" : "false"); if (open) loadActivity();
   }
   if (activityButton) activityButton.onclick = function () {
@@ -3591,16 +3925,254 @@
   if ($("activityRefresh")) $("activityRefresh").onclick = loadActivity;
   window.setInterval(function () { if (activityPanel && !activityPanel.hidden) loadActivity(); }, 10000);
 
-  // ---- delegate missions: NL goal -> a durable, gated, verified campaign -----
+  // ---- Library: exact installed bytes + authority, with explicit lifecycle actions ----
+  var libraryPanel = $("libraryPanel");
+  function libraryRequest(path, body) {
+    var options = body == null ? {} : { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) };
+    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT), options)
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
+      }); });
+  }
+  function libraryNotice(message, bad) {
+    var node = $("libraryNotice"); if (!node) return;
+    node.textContent = message || ""; node.classList.toggle("bad", !!bad);
+  }
+  function libraryPermissionTokens(permissions) {
+    var out = [];
+    Object.keys(permissions || {}).sort().forEach(function (kind) {
+      var value = permissions[kind];
+      var label = t(kind.replace(/_/g, " "));
+      if (Array.isArray(value)) value.forEach(function (item) { out.push(label + ": " + item); });
+      else if (value === true) out.push(label);
+    });
+    return out;
+  }
+  function libraryScopeChange(extension, version) {
+    var active = (extension.versions || []).filter(function (row) {
+      return row.version === extension.active_version;
+    })[0];
+    var next = libraryPermissionTokens(version.permissions), before = libraryPermissionTokens(active && active.permissions);
+    if (!active) return next.length ? t("Initial authority:") + " " + next.join("; ") : t("Initial version declares no host authority.");
+    var added = next.filter(function (item) { return before.indexOf(item) < 0; });
+    var removed = before.filter(function (item) { return next.indexOf(item) < 0; });
+    if (!added.length && !removed.length) return t("No permission change from active version.");
+    return (added.length ? t("Added:") + " " + added.join("; ") + ". " : "") +
+      (removed.length ? t("Removed:") + " " + removed.join("; ") + "." : "");
+  }
+  function libraryReviewRow(parent, key, value, digest) {
+    var row = document.createElement("div"); row.className = "library-review-row";
+    var label = document.createElement("span"); label.className = "library-review-key"; label.textContent = key;
+    var textNode = document.createElement("span"); textNode.textContent = value || "—";
+    if (digest) textNode.className = "library-digest";
+    row.appendChild(label); row.appendChild(textNode); parent.appendChild(row);
+  }
+  function libraryActionButton(parent, label, className, fn) {
+    var button = document.createElement("button"); button.type = "button"; button.textContent = label;
+    if (className) button.className = className;
+    button.onclick = function () {
+      button.disabled = true; libraryNotice("");
+      Promise.resolve().then(fn).then(function () { return loadLibrary(); }).catch(function (error) {
+        libraryNotice(t("Library action failed:") + " " + ((error && error.message) || error || t("unknown")), true);
+      }).finally(function () { button.disabled = false; });
+    };
+    parent.appendChild(button); return button;
+  }
+  function libraryApprovalText(action, extension, version) {
+    var scopes = libraryPermissionTokens(version.permissions);
+    return t(action) + " " + (extension.name || extension.id) + " " + version.version + "?\n\n" +
+      t("SHA-256 digest:") + "\n" + (version.digest || t("not reported")) + "\n\n" +
+      t("Declared authority:") + "\n" + (scopes.length ? scopes.join("\n") : t("No host authority declared.")) + "\n\n" +
+      t("Scope change:") + "\n" + libraryScopeChange(extension, version) +
+      "\n\n" + t("This approval applies only to this exact version and digest.");
+  }
+  function renderLibraryVersion(card, extension, version) {
+    var review = card.querySelector(".library-review"), scope = card.querySelector(".library-scope"),
+      components = card.querySelector(".library-components"), actions = card.querySelector(".library-actions");
+    review.textContent = ""; scope.textContent = ""; components.textContent = ""; actions.textContent = "";
+    card.classList.toggle("is-revoked", !!version.revoked);
+    card.classList.toggle("is-broken", version.integrity_ok === false);
+    libraryReviewRow(review, t("Digest"), version.digest || t("not reported"), true);
+    libraryReviewRow(review, t("Trust"), t(version.trust_state || "unreviewed") +
+      (version.approved ? " · " + t("approved") : " · " + t("approval required")));
+    libraryReviewRow(review, t("Scope change"), libraryScopeChange(extension, version));
+    var dataPolicy = version.data || {};
+    if (Object.keys(dataPolicy).length) libraryReviewRow(review, t("Data"), t("retention") + " " +
+      t(dataPolicy.retention || "unknown") + " · " + t("uninstall") + " " + t(dataPolicy.uninstall || "unknown") +
+      (dataPolicy.export ? " · " + t("export supported") : ""));
+    if (version.revoked || version.integrity_ok === false || !version.approved) {
+      var warning = document.createElement("div"); warning.className = "library-warning";
+      if (version.revoked) { warning.classList.add("bad"); warning.textContent = t("This digest is revoked and cannot be enabled."); }
+      else if (version.integrity_ok === false) { warning.classList.add("bad"); warning.textContent = t("Installed bytes no longer match this digest. Reinstall before enabling."); }
+      else warning.textContent = t("This exact digest and its declared authority have not been approved yet.");
+      review.appendChild(warning);
+    }
+    var scopeHead = document.createElement("h4"); scopeHead.textContent = t("Declared authority"); scope.appendChild(scopeHead);
+    var permissionLines = libraryPermissionTokens(version.permissions);
+    if (permissionLines.length) {
+      var list = document.createElement("ul"); list.className = "library-scope-list";
+      permissionLines.forEach(function (line) { var item = document.createElement("li"); item.textContent = line; list.appendChild(item); });
+      scope.appendChild(list);
+    } else {
+      var none = document.createElement("div"); none.className = "library-scope-none";
+      none.textContent = t("No filesystem, network, credential, browser, desktop, external-action, or host-hook authority declared.");
+      scope.appendChild(none);
+    }
+    Object.keys(version.components || {}).sort().forEach(function (kind) {
+      var count = Number(version.components[kind] || 0); if (!count) return;
+      var chip = document.createElement("span"); chip.className = "library-component";
+      chip.textContent = count + " " + t(kind); components.appendChild(chip);
+    });
+    var unsafe = !!version.revoked || version.integrity_ok === false;
+    if (!extension.enabled || version.version !== extension.active_version) {
+      var enableLabel = extension.enabled ? t("Switch to") + " " + version.version : t("Enable") + " " + version.version;
+      var enable = libraryActionButton(actions, enableLabel, "primary", function () {
+        if (!window.confirm(libraryApprovalText(extension.enabled ? "Switch to" : "Enable", extension, version))) return;
+        return libraryRequest("/api/library/action", { action: "enable", id: extension.id,
+          version: version.version, approve: !version.approved });
+      });
+      enable.disabled = unsafe;
+    }
+    if (extension.enabled) {
+      libraryActionButton(actions, t("Disable"), "", function () {
+        if (!window.confirm(t("Disable") + " " + (extension.name || extension.id) + "? " + t("Its contributed capabilities will no longer be available to new work."))) return;
+        return libraryRequest("/api/library/action", { action: "disable", id: extension.id });
+      });
+      if (extension.rollback_version) {
+        var rollback = (extension.versions || []).filter(function (row) {
+          return row.version === extension.rollback_version;
+        })[0];
+        if (rollback) {
+          var rollbackButton = libraryActionButton(actions, t("Rollback to") + " " + rollback.version, "", function () {
+            if (!window.confirm(libraryApprovalText("Rollback to", extension, rollback))) return;
+            return libraryRequest("/api/library/action", { action: "rollback", id: extension.id,
+              approve: !rollback.approved });
+          });
+          rollbackButton.disabled = !!rollback.revoked || rollback.integrity_ok === false;
+        }
+      }
+    }
+    if (!extension.enabled || version.version !== extension.active_version) {
+      libraryActionButton(actions, t("Uninstall") + " " + version.version, "danger", function () {
+        if (!window.confirm(t("Uninstall") + " " + (extension.name || extension.id) + " " + version.version +
+          "?\n\n" + t("Digest") + ":\n" + (version.digest || t("not reported")) +
+          "\n\n" + t("This removes the installed package bytes. Disable an active version first."))) return;
+        return libraryRequest("/api/library/action", { action: "uninstall", id: extension.id,
+          version: version.version });
+      });
+    }
+  }
+  function renderLibrary(extensions) {
+    var grid = $("libraryGrid"); grid.textContent = "";
+    if (!(extensions || []).length) {
+      var empty = document.createElement("div"); empty.className = "library-empty";
+      empty.innerHTML = "<strong>" + esc(t("No extensions installed")) + "</strong>" +
+        esc(t("Validate and install a local package with")) + " <code>collie library install</code>, " +
+        esc(t("then review its exact digest here before enabling it."));
+      grid.appendChild(empty); return;
+    }
+    extensions.forEach(function (extension) {
+      var versions = extension.versions || [], card = document.createElement("article"); card.className = "library-card";
+      var head = document.createElement("div"); head.className = "library-card-head";
+      var title = document.createElement("div"); title.className = "library-card-title";
+      var name = document.createElement("div"); name.className = "library-name"; name.textContent = extension.name || extension.id;
+      var publisher = document.createElement("div"); publisher.className = "library-publisher";
+      publisher.textContent = (extension.publisher || t("unknown publisher")) + " · " + extension.id;
+      title.appendChild(name); title.appendChild(publisher); head.appendChild(title);
+      var badge = document.createElement("span"); badge.className = "library-badge" + (extension.enabled ? " on" : "");
+      badge.textContent = extension.enabled ? t("enabled") + " · " + (extension.active_version || t("unknown")) : t("disabled");
+      head.appendChild(badge); card.appendChild(head);
+      var description = document.createElement("div"); description.className = "library-description";
+      description.textContent = extension.description || t("No description supplied."); card.appendChild(description);
+      var versionLine = document.createElement("div"); versionLine.className = "library-version-line";
+      var versionLabel = document.createElement("label"); versionLabel.textContent = t("Version");
+      var select = document.createElement("select"); select.setAttribute("aria-label", t("Review installed version"));
+      versions.forEach(function (version) { var option = document.createElement("option"); option.value = version.version;
+        option.textContent = version.version + (version.version === extension.active_version ? " · " + t("active") : ""); select.appendChild(option); });
+      select.value = extension.active_version || (versions[0] && versions[0].version) || "";
+      versionLine.appendChild(versionLabel); versionLine.appendChild(select); card.appendChild(versionLine);
+      var review = document.createElement("div"); review.className = "library-review"; card.appendChild(review);
+      var scope = document.createElement("div"); scope.className = "library-scope"; card.appendChild(scope);
+      var components = document.createElement("div"); components.className = "library-components"; card.appendChild(components);
+      var actions = document.createElement("div"); actions.className = "library-actions"; card.appendChild(actions);
+      select.onchange = function () { var selected = versions.filter(function (row) { return row.version === select.value; })[0];
+        if (selected) renderLibraryVersion(card, extension, selected); };
+      grid.appendChild(card);
+      if (versions.length) renderLibraryVersion(card, extension,
+        versions.filter(function (row) { return row.version === select.value; })[0] || versions[0]);
+    });
+  }
+  function loadLibrary() {
+    if (!libraryPanel || libraryPanel.hidden) return Promise.resolve();
+    libraryNotice(t("Refreshing installed extensions…"));
+    return libraryRequest("/api/library").then(function (payload) {
+      renderLibrary(payload.extensions || []); libraryNotice("");
+    }).catch(function (error) {
+      libraryNotice(t("Library could not refresh:") + " " + ((error && error.message) || error || t("Unavailable")), true);
+      var grid = $("libraryGrid"); if (grid && !grid.querySelector(".library-card"))
+        grid.innerHTML = '<div class="library-empty"><strong>' + esc(t("Library unavailable")) + '</strong>' +
+          esc(t("The installed extension registry could not be read.")) + '</div>';
+      throw error;
+    });
+  }
+  function setLibraryOpen(open) {
+    if (!libraryPanel) return;
+    libraryPanel.hidden = !open; $("scroll").hidden = !!open; $("composer").hidden = !!open;
+    $("scrollDownBtn").hidden = !!open;
+    if (open) { setActivityOpen(false); setRunDetailsOpen(false); loadLibrary().catch(function () {}); }
+  }
+  if ($("libraryRefresh")) $("libraryRefresh").onclick = function () { loadLibrary().catch(function () {}); };
+  if ($("libraryClose")) $("libraryClose").onclick = function () {
+    setLibraryOpen(false); if (typeof setProductNav === "function") setProductNav("home");
+  };
+
+  // ---- delegate missions: NL goal -> a durable, supervised campaign ---------
+  function missionResponse(r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (!r.ok) throw new Error((d && (d.error || d.message)) || ("HTTP " + r.status));
+      return d;
+    });
+  }
   function missionPost(path, body) {
     return fetch(path + "?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {})
-    }).then(function (r) { return r.json(); });
+    }).then(missionResponse);
   }
   function missionGet(path) {
     return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT))
-      .then(function (r) { return r.json(); });
+      .then(missionResponse);
+  }
+  function missionStateLabel(state) {
+    return t({
+      draft:"Draft", queued:"Queued", running:"Running", waiting:"Waiting",
+      needs_you:"Needs You", paused:"Paused", review_required:"Review required",
+      done_verified:"Verified against contract",
+      done_accepted:"Completed without independent verification",
+      failed:"Failed", recovery_required:"Recovery required", reconciling:"Reconciling",
+      cancelled:"Cancelled", pausing:"Pausing"
+    }[state] || state || "Unknown");
+  }
+  function missionError(card, error, prefix) {
+    if (!card) return;
+    var body = card.querySelector(".mbody"), node = body && body.querySelector(".mission-error");
+    if (!body) return;
+    if (!node) { node = document.createElement("div"); node.className = "mission-error"; body.appendChild(node); }
+    node.textContent = (prefix || "Could not update this mission") + ": " +
+      ((error && error.message) || error || "unknown error");
+    scrollDown();
+  }
+  function missionAction(card, button, promise, onValue) {
+    if (button) button.disabled = true;
+    return promise.then(function (value) {
+      if (button) button.disabled = false;
+      (onValue || function (x) { renderMission(card, x); })(value);
+      return value;
+    }).catch(function (error) {
+      if (button) button.disabled = false;
+      missionError(card, error);
+    });
   }
   function mchip(txt, cls) {
     var s = document.createElement("span"); s.className = "mchip " + (cls || "");
@@ -3625,13 +4197,14 @@
     card._missionTimer = setTimeout(function () {
       missionGet("/api/mission?id=" + encodeURIComponent(st.mission_id)).then(function (fresh) {
         renderMission(card, fresh);
-      }).catch(function () {});
+      }).catch(function (error) {
+        missionError(card, error, "Mission refresh failed");
+        scheduleMissionPoll(card, st);
+      });
     }, delay);
   }
-  function runMissionCard(card, mid) {
-    missionPost("/api/mission/run", { id: mid }).then(function (st) {
-      renderMission(card, st);
-    }).catch(function () {});
+  function runMissionCard(card, mid, button) {
+    return missionAction(card, button, missionPost("/api/mission/run", { id: mid }));
   }
   function _startMissionCard(goal, autonomous, bounds) {
     var card = newMissionCard();
@@ -3640,14 +4213,14 @@
     missionPost("/api/mission", payload).then(function (st) {
       renderMission(card, st);                    // id is visible before any long step starts
       if (st && st.mission_id && !st.error) runMissionCard(card, st.mission_id);
-    }).catch(function (e) { card.querySelector(".mbody").textContent = "error: " + e; });
+    }).catch(function (e) { missionError(card, e, "Could not create the mission"); });
   }
   function showMission(mid) {
     var card = newMissionCard();
     card.querySelector(".mbody").textContent = t("loading mission…");
     missionGet("/api/mission?id=" + encodeURIComponent(mid)).then(function (st) {
       renderMission(card, st);
-    });
+    }).catch(function (e) { missionError(card, e, "Could not load the mission"); });
   }
   function showMissions() {
     var card = newMissionCard(), b = card.querySelector(".mbody");
@@ -3658,7 +4231,7 @@
       if (!rows.length) { b.textContent = t("No missions yet. Try /mission <goal>."); return; }
       rows.forEach(function (m) {
         var btn = document.createElement("button"); btn.className = "mbtn";
-        btn.textContent = m.state + " · " + m.mission_id + " · " + m.goal;
+        btn.textContent = missionStateLabel(m.state) + " · " + m.mission_id + " · " + m.goal;
         btn.onclick = function () { showMission(m.mission_id); };
         b.appendChild(btn);
       });
@@ -3733,12 +4306,17 @@
     var b = card.querySelector(".mbody"); b.textContent = "";
     if (st.error && !st.state) { b.textContent = "error: " + st.error; return; }
     var head = document.createElement("div"); head.className = "mhead";
-    head.appendChild(mchip(st.state, "state-" + st.state));
+    head.appendChild(mchip(missionStateLabel(st.state), "state-" + st.state));
     if (st.error) head.appendChild(mchip(st.error, "state-failed"));
     b.appendChild(head);
     var goal = document.createElement("div"); goal.className = "mgoal"; goal.textContent = st.goal;
     b.appendChild(goal);
     if (st.result) { var r = document.createElement("div"); r.className = "mnote"; r.textContent = st.result; b.appendChild(r); }
+    if (st.state === "done_accepted") {
+      var accepted = document.createElement("div"); accepted.className = "mnote";
+      accepted.textContent = "Completed by user acceptance; no independent verification was recorded.";
+      b.appendChild(accepted);
+    }
     if (st.action_in_flight) {
       var inflight = document.createElement("div"); inflight.className = "mnote";
       inflight.textContent = t("An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.");
@@ -3759,14 +4337,28 @@
       st.steps.forEach(function (s) { sl.appendChild(mchip(s.name + " · " + s.verdict, "step")); });
       b.appendChild(sl);
     }
+    if ((st.receipts || []).length) {
+      var receipts = document.createElement("div"); receipts.className = "mcase";
+      var receiptTitle = document.createElement("strong"); receiptTitle.textContent = "Recorded receipts";
+      receipts.appendChild(receiptTitle);
+      st.receipts.forEach(function (receipt) {
+        var line = document.createElement("div");
+        line.textContent = (receipt.capability || "action") + " · " +
+          (receipt.verdict || "no verdict") + " · " +
+          (receipt.fired ? "action fired" : "action not fired");
+        receipts.appendChild(line);
+      });
+      b.appendChild(receipts);
+    }
     var acts = document.createElement("div"); acts.className = "macts";
     var reload = function (x) { renderMission(card, x); };
     if (st.inbox) {                         // a gated irreversible action awaits your OK
       var cbtn = document.createElement("button"); cbtn.className = "mbtn confirm";
       cbtn.textContent = t("Confirm & run") + ": " + st.inbox.capability;
       cbtn.onclick = function () {
-        cbtn.disabled = true;
-        missionPost("/api/mission/confirm", { id: st.mission_id, nonce: st.inbox.nonce }).then(reload);
+        missionAction(card, cbtn, missionPost("/api/mission/confirm", {
+          id: st.mission_id, nonce: st.inbox.nonce
+        }));
       };
       acts.appendChild(cbtn);
       var ap = document.createElement("div"); ap.className = "margs";
@@ -3780,34 +4372,34 @@
     } else if (st.needs_human) {            // hand-off: your call
       var hbtn = document.createElement("button"); hbtn.className = "mbtn confirm";
       hbtn.textContent = t("I handled it — continue");
-      hbtn.onclick = function () { hbtn.disabled = true; missionPost("/api/mission/continue", { id: st.mission_id }).then(function (x) {
+      hbtn.onclick = function () { missionAction(card, hbtn, missionPost("/api/mission/continue", { id: st.mission_id }), function (x) {
         reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
       }); };
       acts.appendChild(hbtn);
       var abtn = document.createElement("button"); abtn.className = "mbtn accept";
       abtn.textContent = t("Accept & take over");
-      abtn.onclick = function () { abtn.disabled = true; missionPost("/api/mission/accept", { id: st.mission_id }).then(reload); };
+      abtn.onclick = function () { missionAction(card, abtn, missionPost("/api/mission/accept", { id: st.mission_id })); };
       acts.appendChild(abtn);
     }
     if ((st.controls || []).indexOf("check") >= 0) {
       var kbtn = document.createElement("button"); kbtn.className = "mbtn check";
       kbtn.textContent = t("Check now");
-      kbtn.onclick = function () { kbtn.disabled = true; missionPost("/api/mission/check", { id: st.mission_id }).then(reload); };
+      kbtn.onclick = function () { missionAction(card, kbtn, missionPost("/api/mission/check", { id: st.mission_id })); };
       acts.appendChild(kbtn);
     }
     if ((st.controls || []).indexOf("run") >= 0) {
       var rbtn = document.createElement("button"); rbtn.className = "mbtn"; rbtn.textContent = t("Run");
-      rbtn.onclick = function () { rbtn.disabled = true; runMissionCard(card, st.mission_id); };
+      rbtn.onclick = function () { runMissionCard(card, st.mission_id, rbtn); };
       acts.appendChild(rbtn);
     }
     if ((st.controls || []).indexOf("pause") >= 0) {
       var pbtn = document.createElement("button"); pbtn.className = "mbtn"; pbtn.textContent = t("Pause");
-      pbtn.onclick = function () { pbtn.disabled = true; missionPost("/api/mission/pause", { id: st.mission_id }).then(reload); };
+      pbtn.onclick = function () { missionAction(card, pbtn, missionPost("/api/mission/pause", { id: st.mission_id })); };
       acts.appendChild(pbtn);
     }
     if ((st.controls || []).indexOf("resume") >= 0) {
       var ubtn = document.createElement("button"); ubtn.className = "mbtn"; ubtn.textContent = t("Resume");
-      ubtn.onclick = function () { ubtn.disabled = true; missionPost("/api/mission/resume", { id: st.mission_id }).then(function (x) {
+      ubtn.onclick = function () { missionAction(card, ubtn, missionPost("/api/mission/resume", { id: st.mission_id }), function (x) {
         reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
       }); };
       acts.appendChild(ubtn);
@@ -3817,10 +4409,9 @@
       qbtn.textContent = t("Reconcile uncertain run");
       qbtn.onclick = function () {
         if (!window.confirm(t("The prior external action may already have fired. Inspect the target site and receipts before continuing."))) return;
-        qbtn.disabled = true;
-        missionPost("/api/mission/reconcile", {
+        missionAction(card, qbtn, missionPost("/api/mission/reconcile", {
           id: st.mission_id, note: "user inspected uncertain external state"
-        }).then(function (x) {
+        }), function (x) {
           reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
         });
       };
@@ -3830,7 +4421,7 @@
       var xbtn = document.createElement("button"); xbtn.className = "mbtn"; xbtn.textContent = t("Cancel");
       xbtn.onclick = function () {
         if (!window.confirm(t("Cancel this mission? Its audit history will be kept."))) return;
-        xbtn.disabled = true; missionPost("/api/mission/cancel", { id: st.mission_id }).then(reload);
+        missionAction(card, xbtn, missionPost("/api/mission/cancel", { id: st.mission_id }));
       };
       acts.appendChild(xbtn);
     }
@@ -4298,7 +4889,7 @@
         if (r.state !== "running" && r.state !== "canceling") return; // finished-and-unsaved is a crash, not a thread
         list.unshift({ id: id, title: r.ask || "(untitled)", last: r.ask || "", turns: r.turns || 0 });
       });
-      if (!list.length) { box.innerHTML = '<div class="empty">No sessions yet.</div>'; return; }
+      if (!list.length) { box.innerHTML = '<div class="empty">' + esc(t("No sessions yet.")) + '</div>'; return; }
       list.forEach(function (s) {
         var el = document.createElement("div");
         el.className = "thread" + (s.id === currentSession ? " active" : "");
@@ -4312,7 +4903,7 @@
           // window happens to be the one watching it. Without it, a run started here and left, or
           // started from the phone, is invisible — and invisible work is work you start twice.
           (rs ? '<div class="t-state ' + rs.state + '">' + esc(runLabel(rs)) + '</div>' : '') +
-          '<div class="t-turns">' + (s.turns || 0) + ' turn' + (s.turns === 1 ? "" : "s") + '</div>' +
+          '<div class="t-turns">' + (s.turns || 0) + ' ' + esc(t(s.turns === 1 ? "turn" : "turns")) + '</div>' +
           '<div class="t-acts">' +
           '<button class="t-act" data-a="rename" title="Rename" aria-label="Rename thread">✎</button>' +
           '<button class="t-act" data-a="delete" title="Delete" aria-label="Delete thread">✕</button></div>';
@@ -4362,6 +4953,7 @@
     currentSession = id;
     if (typeof setProductNav === "function") setProductNav("home");
     if (typeof setActivityOpen === "function") setActivityOpen(false);
+    if (typeof setLibraryOpen === "function") setLibraryOpen(false);
     clearTimeline(); setGate("idle"); NOW.reset();
     setReceipt({}); loadSessions();
     $("log").innerHTML = "";
@@ -4429,7 +5021,7 @@
           NOW.act(toolIcon(d.name), lab.verb, lab.target, ev);
         } catch (e) {}
       });
-    });
+    }).catch(function (e) { b.textContent = ""; missionError(card, e, "Could not load missions"); });
     src.addEventListener("permission", function (m) {
       if (currentSession !== sid) { stop(); return; }
       try { addPermission(JSON.parse(m.data || "{}"), sid); pstat("waiting for you…"); } catch (e) {}
@@ -4468,15 +5060,16 @@
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null;
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
-    setProductNav("home"); setActivityOpen(false);
+    setProductNav("home"); setActivityOpen(false); setLibraryOpen(false);
     loadSessions(); $("input").focus();
   }
   $("newChat").onclick = newThread;
   $("navHome").onclick = newThread;
   $("navMissions").onclick = function () { newThread(); setProductNav("missions"); showMissions(); };
-  $("navLibrary").onclick = function () { setProductNav("library"); openSettings("caps"); };
-  $("navActivity").onclick = function () { setProductNav("activity"); setActivityOpen(true); };
+  $("navLibrary").onclick = function () { setProductNav("library"); setLibraryOpen(true); };
+  $("navActivity").onclick = function () { setLibraryOpen(false); setProductNav("activity"); setActivityOpen(true); };
   $("needsYouNav").onclick = function () {
+    setLibraryOpen(false);
     var ids = typeof GLOBAL_PERMS === "undefined" ? [] : Object.keys(GLOBAL_PERMS);
     var id = ids.length ? ids[0] : "", rec = id ? GLOBAL_PERMS[id] : null;
     if (!rec) return;
@@ -4906,7 +5499,7 @@
       // The run is suspended on this until somebody answers it — here, on a phone, or at
       // the machine. Nothing proceeds meanwhile, so it is not a notification to scroll past.
       var d = JSON.parse(e.data);
-      addPermission(d, sid);
+      addPermission(d, d.session || currentSession || runSession || "");
       pstat("waiting for you…");
     });
 
@@ -5343,7 +5936,7 @@
       if (autoProvider) {
         var providerEntry = modelEntries.find(function (entry) { return entry.provider === autoProvider; });
         modelEntries.unshift({ id: autoProvider + ":", provider: autoProvider, model: "auto",
-          label: "Auto — Collie chooses per task", via: "task-aware routing",
+          label: t("Auto — Collie chooses per task"), via: t("task-aware routing"),
           tags: ["recommended", "adaptive effort"], source: "synthetic", auto: true,
           auth: providerEntry ? providerEntry.auth : "ok",
           kind: providerEntry ? providerEntry.kind : "subscription", price_in: 0, price_out: 0 });
@@ -5354,7 +5947,7 @@
     }).catch(function () {
       modelStatus.textContent = "Could not load the model catalog.";
       modelStatus.className = "model-status err";
-      if (!modelCatalogLoaded) modelTriggerLabel.textContent = "Model unavailable";
+      if (!modelCatalogLoaded) modelTriggerLabel.textContent = t("Model unavailable");
     });
   }
 

@@ -10,7 +10,7 @@
 ; the in-box csc, so no .NET SDK is needed), the browser extension, and the WebView2 bootstrapper.
 ;
 ; The wizard opens on a branded star-map welcome page, then a custom card-style language picker
-; (77 languages, Simplified Chinese up front — see gen_langs.py for why a custom page replaced
+; (33 languages, Simplified Chinese up front — see gen_langs.py for why a custom page replaced
 ; Inno's alphabetical native dialog). Whatever you pick becomes Collie's own UI language on the very
 ; first launch, so nothing needs configuring afterward.
 ;
@@ -26,7 +26,7 @@
   #define AppVer   "0.0.0-dev"
 #endif
 #define Publisher  "Collie"
-#define AppUrl     "https://github.com/wudaming/collie"
+#define AppUrl     "https://github.com/colliehq/collie"
 #define PyW        "{app}\python\pythonw.exe"
 #define IcoFile    "{app}\python\Lib\site-packages\harness\wallpaper\collie.ico"
 
@@ -304,6 +304,9 @@ var
   OrigFormColor: TColor; HaveOrigColor: Boolean;   { restore the light form bg off the welcome page }
   TimerCb: LongWord;     { WinAPI-timer callback that re-hides Inno's buttons after it re-shows them }
   CurPage: Integer;      { the page currently shown (the timer callback reads it) }
+  UpgradeBackupDir: String;
+  UpgradeBackupActive: Boolean;
+  InstallCommitted: Boolean;
 
 procedure Repaint;
 var i: Integer;
@@ -385,7 +388,7 @@ end;
   /SUPPRESSMSGBOXES turns into exit code 5. We kill only processes whose path is under the install
   dir, so an unrelated Python elsewhere is never touched. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var rc: Integer; app: String;
+var rc: Integer; app, pythonDir: String;
 begin
   Result := '';
   app := ExpandConstant('{app}');
@@ -403,12 +406,78 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, rc);
     Sleep(700);
   end;
+
+  { [InstallDelete] deliberately removes stale owned packages before [Files] overlays the payload.
+    Inno can undo newly installed files when Setup aborts, but it cannot reconstruct those deleted
+    old files. Rename the complete runtime first so a cancelled/failed upgrade remains bootable. }
+  pythonDir := app + '\python';
+  UpgradeBackupDir := app + '\.collie-upgrade-backup-python';
+  if FileExists(UpgradeBackupDir) then begin
+    Result := 'Cannot prepare a safe Collie upgrade: the rollback path is a file.';
+    Exit;
+  end;
+  if DirExists(UpgradeBackupDir) then begin
+    { A hard-killed prior Setup can leave both its old backup and a partial new runtime. The old
+      backup is the only known-good side, so retain it and remove only the installer-owned partial. }
+    UpgradeBackupActive := True;
+    if DirExists(pythonDir) and (not DelTree(pythonDir, True, True, True)) then begin
+      Result := 'Cannot remove the incomplete Collie runtime to restore the previous version.';
+      Exit;
+    end;
+  end else if DirExists(pythonDir) then begin
+    if not RenameFile(pythonDir, UpgradeBackupDir) then begin
+      Result := 'Cannot create the Collie upgrade rollback backup. Close Collie and try again.';
+      Exit;
+    end;
+    UpgradeBackupActive := True;
+  end;
+end;
+
+procedure RestoreUpgradeBackup;
+var pythonDir: String; rc: Integer;
+begin
+  if (not UpgradeBackupActive) or InstallCommitted then Exit;
+  pythonDir := ExpandConstant('{app}\python');
+  if DirExists(pythonDir) and (not DelTree(pythonDir, True, True, True)) then begin
+    Log('Rollback could not remove the partial Collie runtime: ' + pythonDir);
+    Exit;
+  end;
+  if DirExists(UpgradeBackupDir) then begin
+    if RenameFile(UpgradeBackupDir, pythonDir) then begin
+      Log('Restored the previous Collie runtime after an incomplete upgrade.');
+      UpgradeBackupActive := False;
+      { PrepareToInstall stopped the old 24/7 owner. Put that known-good runtime back in service;
+        the registered logon task remains the owner of future restarts. }
+      try Exec(pythonDir + '\pythonw.exe', '-m harness.supervisor run', pythonDir,
+               SW_HIDE, ewNoWait, rc); except end;
+    end else
+      Log('Rollback could not restore the previous Collie runtime: ' + UpgradeBackupDir);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then begin
+    { ssDone is emitted only for a successful install, after the non-postinstall [Run] entries. }
+    InstallCommitted := True;
+    if UpgradeBackupActive and DirExists(UpgradeBackupDir) then begin
+      if not DelTree(UpgradeBackupDir, True, True, True) then
+        Log('Could not remove completed-upgrade backup: ' + UpgradeBackupDir);
+    end;
+    UpgradeBackupActive := False;
+  end;
+end;
+
+procedure DeinitializeSetup;
+begin
+  { Also runs on Cancel and fatal extraction/copy errors. First installs have no active backup. }
+  RestoreUpgradeBackup;
 end;
 
 procedure InitializeWizard;
 var y: Integer; lbl: TNewStaticText; divider: TPanel;
 begin
-  { In silent mode there is no wizard to build (the smart shell drives us with /VERYSILENT). All the
+  { In silent mode there is no wizard to build (updates may invoke us with /VERYSILENT). All the
     UI setup below touches WizardForm, which errors when there is no visible wizard — so skip it, or
     the whole silent install aborts with exit code 1. The language Run step derives the UI language
     from the active wizard language via CollieLang, so it needs nothing from here. }
@@ -613,7 +682,7 @@ end;
 
 { Expands the language Run line. Derive Collie's UI language from the ACTIVE wizard language (the
   language constant, which /LANG= sets) rather than the card page's AppLang var — so it works in
-  silent mode too (the smart-shell drives the backend with /VERYSILENT /LANG=xx, and the card page
+  silent mode too (automation may invoke Setup with /VERYSILENT /LANG=xx, and the card page
   never runs). "auto" => follow the browser, so run a harmless version query instead of writing. }
 function AppLangParam(Param: String): String;
 var c: String;

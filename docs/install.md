@@ -8,8 +8,8 @@ Linux user or developer can use **pip**.
 The friendliest path: no Python, no terminal, no configuration.
 
 1. Download **`Collie-Setup.exe`** from the [latest release](https://github.com/colliehq/collie/releases/latest).
-   Windows installers are code-signed through the [SignPath Foundation](https://signpath.org/)'s free
-   code-signing program for open-source projects.
+   Release installers are signed with Azure Artifact Signing; the release workflow verifies the
+   Windows trust chain before publishing the file.
 2. Double-click it. The installer itself is localized in Simplified/Traditional Chinese, English,
    Spanish, and many other languages. Collie's workbench currently offers English, Simplified
    Chinese, and Traditional Chinese.
@@ -19,7 +19,9 @@ The friendliest path: no Python, no terminal, no configuration.
 
 Everything Collie needs ships inside the installer — an embeddable Python, the semantic-memory
 engine, the desktop window (WebView2), and the browser extension. It installs per-user (no admin
-prompt) and cleanly uninstalls from *Add or remove programs*.
+prompt) and cleanly uninstalls from *Add or remove programs*. During an upgrade, Setup keeps the
+previous bundled runtime until the new install succeeds and restores it if copying is cancelled or
+fails; your `~/.collie` settings, memory, and missions are outside that replacement boundary.
 
 !!! tip "Optional extras during setup"
     Two checkboxes let you turn on the **live star-map wallpaper** and the **real-browser bridge**
@@ -61,7 +63,8 @@ collie           # opens the terminal chat
 | `fastembed` | Opt-in jina-v3 and other fastembed models. |
 
 ```bash
-pip install "collie-harness[local,tui,search]"
+# run from the cloned checkout above
+pip install -e ".[local,tui,search]"
 ```
 
 !!! note "Semantic memory is optional"

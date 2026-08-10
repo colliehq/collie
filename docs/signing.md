@@ -1,64 +1,64 @@
-# Code signing policy
+# Code signing and release integrity
 
-This page documents how Collie's release binaries are built, reviewed, approved, and signed. It is
-the policy referenced in Collie's application to the
-[SignPath Foundation](https://signpath.org/) free code-signing program for open-source projects.
+This page describes the release path implemented by
+`.github/workflows/release.yml`. A downloadable release is built from its public tagged commit on
+GitHub-hosted runners after the complete Python, Node, and browser quality gate passes.
 
-## What is signed
+## Published artifacts
 
-The Windows installer **`Collie-Setup.exe`** published on the
-[GitHub Releases page](https://github.com/colliehq/collie/releases). The Python wheel/sdist are
-published to the same release; the macOS `.dmg` is separately signed and notarised with an Apple
-Developer ID.
+A tagged release contains:
 
-## How releases are built
+- **`Collie-Setup.exe`** for Windows, signed with Azure Artifact Signing;
+- **`Collie-arm64.dmg`** for Apple-silicon Macs, Developer ID signed, notarised, and stapled;
+- **`Collie-VSCode.vsix`** for VS Code;
+- the Python wheel and source distribution.
 
-Every release is built **from public source by GitHub Actions** — never on a maintainer's machine —
-so the build is transparent and auditable:
+The canonical download location is the
+[GitHub Releases page](https://github.com/colliehq/collie/releases). A manual workflow run may build
+unsigned macOS output for diagnostics, but it does not publish a release. A tag fails instead of
+publishing an unsigned or un-notarised DMG.
 
-1. A maintainer pushes a `v*` git tag to `github.com/colliehq/collie`.
-2. `.github/workflows/release.yml` runs on GitHub-hosted runners. It builds the installer from the
-   tagged commit (`installer/build.ps1` → the Inno backend + shell), the Python wheel (`python -m
-   build`), and the macOS bundle, then creates the GitHub Release and uploads the artifacts.
-3. The workflow's logs are public: anyone can see exactly which commit produced which artifact.
-4. The SHA-256 of each artifact is published by GitHub on the release, and Collie's own updater
-   (`collie update`) refuses to install a download whose digest does not match.
+## Windows signing
 
-There are no manual, off-CI build steps for released artifacts.
+The release job builds the plain Inno Setup installer, then signs it through **Azure Artifact
+Signing** using SHA-256 and an RFC 3161 timestamp. GitHub exchanges a short-lived OIDC token for the
+signing authority; no long-lived Azure client secret or signing private key is stored in the
+repository. The expected publisher is **Daming Wu** and the certificate chains to Microsoft's public
+trust infrastructure.
 
-## Roles and approval
+After signing, CI runs `signtool verify /pa /v` and fails if Windows does not accept the signature.
+Collie's Windows updater separately requires both the release asset's SHA-256 digest and a valid
+Authenticode signature from that publisher before it launches an installer.
 
-Collie is a small open-source project. Release approval is exercised by the project **maintainer(s)**,
-who are the only accounts with push access to the `colliehq/collie` repository and therefore the only
-ones who can create the `v*` tag that triggers a signed build:
+## macOS signing
 
-| Role | Who | Responsibility |
-|---|---|---|
-| Committer | Project maintainer(s) | write code, open/merge changes |
-| Reviewer | Project maintainer(s) | review changes before a release tag |
-| Release approver | Project maintainer(s) | decide a release is ready and push the `v*` tag |
+The macOS job imports a Developer ID Application certificate into a temporary keychain and stores
+App Store Connect credentials only for the life of the hosted runner. `build_mac.sh` signs nested
+Mach-O files and the app, signs the DMG, submits it for notarisation, staples the ticket, and asks
+Gatekeeper (`spctl`) for the final verdict. See the
+[Developer ID setup guide](https://github.com/colliehq/collie/blob/main/installer/DEVELOPER_ID.md)
+for the maintainer setup.
 
-All maintainer accounts have **multi-factor authentication** enabled on GitHub (and on SignPath).
-Only a tag on the canonical `colliehq/collie` repository can trigger a signable build — a fork or a
-pull request cannot.
+## Release authority
 
-## Signing integration
+Only a `v*` tag on the canonical `colliehq/collie` repository can trigger publication. The workflow
+first checks that the tag matches `harness.__version__`; every artifact job then depends on the full
+quality gate. Pull requests and forks cannot enter the release environment or use its signing
+authority.
 
-Signing is performed by **SignPath.io** as a CI step in the release workflow: the unsigned
-`Collie-Setup.exe` produced by the GitHub Actions build is submitted to SignPath, signed with the
-SignPath Foundation certificate (issued by Sectigo), and the signed artifact is what is uploaded to
-the GitHub Release. The signing certificate's private key never leaves SignPath's HSM and is never
-present in the repository or CI environment.
+## Verify a download
 
-## How to verify a download
+- Download from [GitHub Releases](https://github.com/colliehq/collie/releases) or a link on
+  [collie.run](https://collie.run) that points there.
+- Compare the file's SHA-256 with the digest shown for that release asset.
+- On Windows, open **Properties → Digital Signatures** and confirm a valid signature from
+  **Daming Wu**. PowerShell users can also run `Get-AuthenticodeSignature .\Collie-Setup.exe`.
+- On macOS, `spctl -a -vv -t open Collie-arm64.dmg` should report an accepted notarised Developer ID
+  artifact.
 
-- Check the file's **SHA-256** against the value shown on the
-  [release](https://github.com/colliehq/collie/releases) it came from.
-- On Windows, right-click the `.exe` → **Properties → Digital Signatures** to see the signer.
-- Prefer downloading from the **GitHub Releases page** or from **[collie.run](https://collie.run)**.
+## Report a problem
 
-## Reporting a problem
-
-Security issues or a suspected tampered binary: open an issue at
-[github.com/colliehq/collie/issues](https://github.com/colliehq/collie/issues) (or the contact on the
-repository's `SECURITY.md`). Please do not post exploit details publicly before we can respond.
+For a suspected tampered binary or security issue, open a minimal report on
+[GitHub Issues](https://github.com/colliehq/collie/issues) with the affected release, filename, and
+observed digest. Do not include exploit details, credentials, or private data in a public issue; ask
+the maintainer to establish a private reporting channel first.
