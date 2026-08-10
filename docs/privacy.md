@@ -3,12 +3,12 @@
 Collie is a local, open-source developer tool. It runs on your own computer, under your control, and
 is built to keep your data with you.
 
-## What Collie collects
+## App telemetry
 
-**Nothing.** Collie has **no account, no sign-up, no analytics, no telemetry, and no crash
-reporting.** It does not phone home, does not track usage, and does not send your files, prompts, or
-code anywhere except where *you* explicitly direct it (below). There is no Collie-operated server that
-receives your data.
+The Collie app has **no Collie account, sign-up, advertising, usage analytics, telemetry, or crash
+reporting.** It does not send usage events home. Data leaves your machine only when a feature you
+choose inherently needs a network destination, as described below. The collie.run website and the
+optional hosted phone relay are separate services with limited data flows described here.
 
 ## Where your data goes when you use a feature
 
@@ -21,13 +21,17 @@ feature inherently requires:
   machine at all). This is the same data flow as any AI coding tool, to a provider you pick.
 - **Web search / fetch (opt-in).** If you enable it, Collie fetches public web pages you or the task
   reference (a keyless DuckDuckGo/SearXNG query, or pages via your own browser). No account.
-- **Phone remote (opt-in).** If you enable `collie web --remote`, your phone reaches your desktop
-  through the collie.run relay. The relay is **end-to-end encrypted and zero-knowledge**: it only
-  routes ciphertext between your paired devices and cannot read your commands or data. Pairing
-  requires a code shown on your own screen plus your approval on the desktop.
-- **"Ask Collie" chat on collie.run (optional).** The chat box on the website sends only the question
-  you type to a Cloudflare Workers-AI model to answer questions about Collie. It is unrelated to the
-  app on your machine.
+- **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
+  through the collie.run relay. Hosted remote request and response contents are **end-to-end
+  encrypted**; the relay handles necessary routing metadata such as room or device identifiers,
+  request timing, and approximate message sizes. Pairing requires a code shown on your own screen
+  plus your approval on the desktop.
+- **"Ask Collie" chat on collie.run (optional).** Nothing is sent until you submit the website form.
+  Your question and up to six recent messages from that demo go to Cloudflare Workers AI. For abuse
+  prevention, the service derives a daily counter key from your network address; only the counter and
+  expiry are stored, not the address itself, and they are deleted within 48 hours. This is unrelated
+  to the app and does not attach your product files or local sessions. The static site loads no
+  analytics or tracking beacon.
 
 Local features — driving your logged-in browser, arranging your desktop, controlling other apps,
 recording your screen — run **entirely on your own computer**. Their output stays local unless you

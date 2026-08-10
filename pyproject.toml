@@ -45,5 +45,15 @@ version = { attr = "harness.__version__" }
 # ship the web GUI, the browser extension, AND the desktop wallpaper engine (C# source + WebView2
 # DLLs + build/stop scripts) so `pip install collie-harness` gives `collie wallpaper` everything it
 # needs — it builds the .exe on first use via the in-box csc (no .NET SDK). Windows-only feature.
-harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png", "browser_ext/*",
+harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png",
+           # Keep this list explicit: browser_ext/token.txt is per-device authentication state and
+           # must never enter a wheel/installer merely because a maintainer built from a live tree.
+           "browser_ext/*.html", "browser_ext/*.js", "browser_ext/*.json", "browser_ext/*.png",
+           # Runtime adapters resolve these files relative to harness.__file__.
+           "oauth_ext/*.js", "oauth_ext/*.jsonc",
            "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico"]
+
+[tool.setuptools.exclude-package-data]
+# Defence in depth if a future package-data pattern is broadened again. auth.js is the legacy
+# generated credential shim seen in older live installs; it is not a source asset either.
+harness = ["browser_ext/token.txt", "browser_ext/auth.js", "browser_ext/*.txt"]

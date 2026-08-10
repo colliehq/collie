@@ -1,183 +1,238 @@
 /**
- * relay/worker.js — the two-phase pairing handshake, driven directly.
- *
- * The relay had no runtime test at all: it was only ever exercised by deploying it and pointing a
- * phone at it. The bug that prompted this file survived exactly that, because it needs *history* to
- * show up — a fresh room pairs fine, and only a room that already holds abandoned requests
- * mis-routes the approval. So the cases below are about state that accumulates.
- *
- * The Durable Object is stubbed at its real seams: storage is a Map (list/get/put/delete, including
- * delete(array)), the "agent" is a fake WebSocket that records what the relay sent it and whose
- * attachment carries the pairing code. Nothing about pair()/pairWait()/webSocketMessage() is
- * reimplemented here.
+ * Hosted protocol v2 pairing contract. Run with:
  *
  *   node tests/relay_pairing_test.js
  */
+import { webcrypto } from "node:crypto";
 import { RelayRoom } from "../relay/worker.js";
 
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+
 const fails = [];
-function check(cond, msg) {
-  console.log((cond ? "  PASS " : "  FAIL ") + msg);
-  if (!cond) fails.push(msg);
+function check(condition, message) {
+  console.log((condition ? "  PASS " : "  FAIL ") + message);
+  if (!condition) fails.push(message);
 }
 
-/** Storage with the semantics pairing relies on: prefix list, and delete of a key OR a key array. */
 function fakeStorage() {
   const m = new Map();
-  return {
+  let transactions = Promise.resolve();
+  const api = {
     m,
-    async get(k) { return m.get(k); },
-    async put(k, v) { m.set(k, v); },
-    async delete(k) { for (const key of Array.isArray(k) ? k : [k]) m.delete(key); },
-    async list({ prefix }) {
-      return new Map([...m].filter(([k]) => k.startsWith(prefix)));
-    },
+    async get(key) { return m.get(key); },
+    async put(key, value) { m.set(key, value); },
+    async delete(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) m.delete(key); },
+    async list({ prefix }) { return new Map([...m].filter(([key]) => key.startsWith(prefix))); },
   };
+  api.transaction = (fn) => {
+    const run = transactions.then(() => fn(api));
+    transactions = run.catch(() => {});
+    return run;
+  };
+  return api;
 }
 
-function fakeRoom(paircode) {
+function fakeRoom(storage = fakeStorage()) {
   const sent = [];
-  let att = { paircode, devices: [], approve: true };
+  let attachment = { protocol: 2, e2eRequired: true, approve: true, devices: [], e2ePub: "desktop" };
   const agent = {
     sent,
-    send: (s) => sent.push(JSON.parse(s)),
-    serializeAttachment: (s) => { att = s; },
-    deserializeAttachment: () => att,
+    send: (value) => sent.push(JSON.parse(value)),
+    serializeAttachment: (value) => { attachment = value; },
+    deserializeAttachment: () => attachment,
   };
-  const storage = fakeStorage();
-  const room = new RelayRoom({
-    storage,
-    getWebSockets: () => [agent],
-    acceptWebSocket: () => {},
-  }, {});
+  const room = new RelayRoom({ storage, getWebSockets: () => [agent], acceptWebSocket: () => {} }, {});
   return { room, agent, storage };
 }
 
-const req = (body) => new Request("https://r/r/room/pair", {
+const pairRequest = (body) => new Request("https://relay/r/room/pair", {
   method: "POST",
   headers: { "content-type": "application/json", "User-Agent": "iPhone" },
   body: JSON.stringify(body),
 });
+const waitRequest = () => new Request("https://relay/r/room/pair/wait?ticket=x");
+const proof = (id = "phone-1") => ({
+  device_id: id,
+  name: "iPhone",
+  pub: "A".repeat(44),
+  confirm: "B".repeat(44),
+});
 
-async function pairReq(room, code, id) {
-  const r = await room.pair(req({ paircode: code, device_id: id, name: id }));
-  return { status: r.status, body: await r.json() };
+async function begin(room, body = proof()) {
+  const response = await room.pair(pairRequest(body));
+  return { response, body: await response.json() };
 }
 
-/** The code is one-shot at the relay, so each attempt needs the room's code set afresh. */
-function setCode(agent, code) {
-  const s = agent.deserializeAttachment();
-  s.paircode = code;
-  agent.serializeAttachment(s);
+async function ready(room, agent, pending, num = "0427") {
+  const forwarded = agent.sent.at(-1);
+  await room.webSocketMessage(agent, JSON.stringify({
+    t: "pair_ready", id: forwarded.id, num, pub: "desktop-public", confirm: "desktop-confirm",
+  }));
+  return forwarded;
 }
 
 async function main() {
-  // ---- the request id must not repeat across requests -------------------------------------------
+  // The socket attachment is an allowlist. Even a buggy/old desktop cannot make the relay persist
+  // a pairing secret by placing it in hello.
   {
-    const { room, agent } = fakeRoom("AAAA1111");
-    const ids = [];
-    for (let i = 0; i < 4; i++) {
-      setCode(agent, "CODE" + i + "000");
-      await pairReq(room, "CODE" + i + "000", "dev" + i);
-      ids.push(agent.sent[agent.sent.length - 1].id);
-    }
-    check(new Set(ids).size === 4, "four pairing requests get four distinct ids");
-    check(ids.every((i) => typeof i === "string" && i.length > 16),
-          "the id is a random token, not a per-instance counter that restarts at zero on eviction");
+    const { room, agent } = fakeRoom();
+    await room.webSocketMessage(agent, JSON.stringify({
+      t: "hello", v: 2, e2eRequired: true, approve: true, devices: [], e2ePub: "pub",
+      paircode: "THIS-MUST-NOT-BE-STORED",
+    }));
+    const stored = agent.deserializeAttachment();
+    check(!Object.prototype.hasOwnProperty.call(stored, "paircode"),
+          "the relay never stores a QR/pairing secret from hello");
   }
 
-  // ---- the real bug: an eviction between the abandoned requests and the live one -----------------
-  // This is the case that reached production. Inside ONE instance the ids never repeat, so the whole
-  // thing looks fine; the collision needs the room to be evicted and woken — storage survives, the
-  // instance does not — which is precisely what an idle room does while nobody is pairing.
+  // Old clients fail visibly rather than sending their credential into a downgraded flow.
   {
-    const { room, agent, storage } = fakeRoom("X");
-    for (let i = 0; i < 3; i++) {                    // three phones that scanned and walked away
-      setCode(agent, "ABAND" + i + "00");
-      await pairReq(room, "ABAND" + i + "00", "gone" + i);
-    }
-
-    const woken = new RelayRoom({                    // same storage, fresh instance: counters reset
-      storage,
-      getWebSockets: () => [agent],
-      acceptWebSocket: () => {},
-    }, {});
-
-    setCode(agent, "REALCODE");
-    const live = await pairReq(woken, "REALCODE", "real-phone");
-    check(live.status === 202 && live.body.pending && !!live.body.ticket,
-          "a pairing attempt is held, not answered with a token");
-
-    const rid = agent.sent[agent.sent.length - 1].id;
-    await woken.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: rid, ok: true }));
-    const r = await woken.pairWait(live.body.ticket, req({}));
-    const body = await r.json();
-    check(r.status === 200 && body.ok && !!body.token,
-          "after an eviction, approving still pairs THIS phone and not an abandoned request");
-
-    // The approval must have landed on the live request and on nothing else.
-    const decided = [...(await storage.list({ prefix: "pend:" }))]
-      .filter(([, v]) => v.state && v.state !== "pending");
-    check(decided.length === 0, "no abandoned request was marked approved in its place");
+    const { room, agent } = fakeRoom();
+    const result = await begin(room, { ...proof(), paircode: "secret" });
+    check(result.response.status === 400, "a v1 body containing a pairing code is rejected");
+    check(agent.sent.length === 0, "the rejected credential is never forwarded or persisted");
   }
 
-  // ---- a decision the phone never collects must not leak storage forever -------------------------
+  // Pairing is unauthenticated input. Bound it before JSON parsing so a few rate-limited requests
+  // cannot each force the Durable Object to buffer an arbitrarily large body.
   {
-    const { room, agent } = fakeRoom("X");
-    setCode(agent, "OLDCODE1");
-    const old = await pairReq(room, "OLDCODE1", "slow-phone");
-    for (const [k, v] of room.state.storage.m) {        // age it past the approval window
-      if (k.startsWith("pend:")) v.at = Date.now() - 10 * 60 * 1000;
-    }
-    setCode(agent, "NEWCODE1");
-    await pairReq(room, "NEWCODE1", "next-phone");      // sweeps on the way in
-    const left = [...room.state.storage.m.keys()].filter((k) => k.startsWith("pend:"));
-    check(left.length === 1, "an expired request is swept, and only the live one remains");
-    const gone = [...room.state.storage.m.keys()].filter((k) => k.startsWith("rq:"));
-    check(gone.length === 1, "its decision index is swept with it, not orphaned");
-    const r = await room.pairWait(old.body.ticket, req({}));
-    check(r.status === 404 || r.status === 408, "the swept ticket is no longer usable");
+    const { room, agent } = fakeRoom();
+    const oversized = await room.pair(new Request("https://relay/r/room/pair", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...proof("oversized"), padding: "x".repeat(20 * 1024) }),
+    }));
+    check(oversized.status === 400 && agent.sent.length === 0,
+          "an oversized pairing body is rejected before desktop forwarding");
   }
 
-  // ---- denial ----------------------------------------------------------------------------------
+  // Full validating -> approval -> one-shot issue contract.
   {
-    const { room, agent } = fakeRoom("X");
-    setCode(agent, "DENYCODE");
-    const p = await pairReq(room, "DENYCODE", "stranger");
-    const rid = agent.sent[agent.sent.length - 1].id;
-    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: rid, ok: false }));
-    const r = await room.pairWait(p.body.ticket, req({}));
-    const body = await r.json();
-    check(r.status === 403 && !body.token, "a refused device gets no token");
-    const again = await room.pairWait(p.body.ticket, req({}));
-    check(again.status === 404, "and cannot retry the same ticket");
+    const { room, agent } = fakeRoom();
+    const pending = await begin(room);
+    check(pending.response.status === 202 && pending.body.phase === "validating" && pending.body.ticket,
+          "POST /pair immediately returns a durable validating ticket");
+    check(pending.body.num === undefined, "no comparison number is trusted before desktop validation");
+
+    const forwarded = agent.sent.at(-1);
+    check(forwarded.t === "pair_request" && forwarded.pub && forwarded.confirm,
+          "the relay forwards only the public key and transcript proof");
+    check(!("paircode" in forwarded) && !JSON.stringify(forwarded).includes("secret"),
+          "the desktop pairing message contains no QR secret");
+
+    let poll = await room.pairWait(pending.body.ticket, waitRequest());
+    let body = await poll.json();
+    check(poll.status === 202 && body.phase === "validating" && !body.num,
+          "polling before proof validation stays in validating phase");
+
+    await ready(room, agent, pending);
+    poll = await room.pairWait(pending.body.ticket, waitRequest());
+    body = await poll.json();
+    check(poll.status === 202 && body.phase === "approval" && body.num === "0427" &&
+          body.pub === "desktop-public" && body.confirm === "desktop-confirm",
+          "after validation the phone receives the authenticated approval transcript");
+
+    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: true }));
+    const issued = await room.pairWait(pending.body.ticket, waitRequest());
+    const issuedBody = await issued.json();
+    check(issued.status === 200 && issuedBody.token && issuedBody.pub === "desktop-public",
+          "approval issues one bearer token with the authenticated desktop proof");
+    check(agent.sent.some((message) => message.t === "device_added"),
+          "the desktop is told the new token hash for durable authorization");
+    const again = await room.pairWait(pending.body.ticket, waitRequest());
+    check(again.status === 404, "a collected ticket cannot issue a second token");
   }
 
-  // ---- the phone must not be able to walk in while the human has not answered -------------------
+  // Proof refusal and human refusal are both terminal and never mint a token.
   {
-    const { room, agent } = fakeRoom("X");
-    setCode(agent, "WAITCODE");
-    const p = await pairReq(room, "WAITCODE", "patient");
-    for (let i = 0; i < 3; i++) {
-      const r = await room.pairWait(p.body.ticket, req({}));
-      const b = await r.json();
-      if (r.status !== 202 || b.token) { check(false, "polling before a decision issued a token"); break; }
-      if (i === 2) check(true, "polling before a decision only ever returns pending");
-    }
+    const { room, agent } = fakeRoom();
+    const pending = await begin(room, proof("bad-proof"));
+    const rid = agent.sent.at(-1).id;
+    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_invalid", id: rid }));
+    const refused = await room.pairWait(pending.body.ticket, waitRequest());
+    check(refused.status === 403 && !(await refused.json()).token,
+          "a desktop-rejected proof is terminal and tokenless");
+  }
+  {
+    const { room, agent } = fakeRoom();
+    const pending = await begin(room, proof("human-denied"));
+    const forwarded = await ready(room, agent, pending, "9981");
+    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: false }));
+    const refused = await room.pairWait(pending.body.ticket, waitRequest());
+    check(refused.status === 403 && !(await refused.json()).token,
+          "human denial is terminal and tokenless");
   }
 
-  // ---- the number is the whole point: both ends must be told the same one ------------------------
+  // Ticket state survives a Durable Object eviction because both directions are indexed in storage.
   {
-    const { room, agent } = fakeRoom("X");
-    setCode(agent, "NUMCODE1");
-    const p = await pairReq(room, "NUMCODE1", "phone");
-    const toDesktop = agent.sent[agent.sent.length - 1];
-    check(/^\d{4}$/.test(p.body.num) && toDesktop.num === p.body.num,
-          "the phone and the desktop are given the same four-digit number");
+    const first = fakeRoom();
+    const pending = await begin(first.room, proof("eviction"));
+    const rid = first.agent.sent.at(-1).id;
+    const woken = fakeRoom(first.storage);
+    await woken.room.webSocketMessage(woken.agent, JSON.stringify({
+      t: "pair_ready", id: rid, num: "1203", pub: "desktop-public", confirm: "desktop-confirm",
+    }));
+    const poll = await woken.room.pairWait(pending.body.ticket, waitRequest());
+    check(poll.status === 202 && (await poll.json()).num === "1203",
+          "a validating ticket survives hibernation and receives the correct desktop reply");
   }
 
-  console.log(fails.length ? "\n  " + fails.length + " FAILED" : "\n  relay pairing: all green");
+  // Atomic claim: simultaneous polls cannot each mint a bearer token.
+  {
+    const { room, agent } = fakeRoom();
+    const pending = await begin(room, proof("racing-polls"));
+    const forwarded = await ready(room, agent, pending);
+    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: true }));
+    const responses = await Promise.all([
+      room.pairWait(pending.body.ticket, waitRequest()),
+      room.pairWait(pending.body.ticket, waitRequest()),
+    ]);
+    check(responses.filter((r) => r.status === 200).length === 1,
+          "concurrent approval polls mint exactly one token");
+  }
+
+  // If the socket dies between approval and device_added, do not hand the phone a credential that
+  // only exists in an optimistic edge attachment and will disappear on reconnect.
+  {
+    const { room, agent } = fakeRoom();
+    const pending = await begin(room, proof("disconnect-at-issue"));
+    const forwarded = await ready(room, agent, pending);
+    await room.webSocketMessage(agent, JSON.stringify({ t: "pair_decision", id: forwarded.id, ok: true }));
+    agent.send = (value) => {
+      const message = JSON.parse(value);
+      if (message.t === "device_added") throw new Error("socket closed");
+      agent.sent.push(message);
+    };
+    const issued = await room.pairWait(pending.body.ticket, waitRequest());
+    check(issued.status === 500 && !(await issued.json()).token &&
+          agent.deserializeAttachment().devices.length === 0,
+          "token issuance fails closed when device_added cannot reach the desktop");
+  }
+
+  // The admission limit is charged atomically when POST /pair is accepted, not later when a denied
+  // ticket happens to be polled. A burst of valid-shaped proofs therefore cannot all reach desktop.
+  {
+    const { room, agent } = fakeRoom();
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, (_, index) => room.pair(pairRequest(proof("burst-" + index)))));
+    check(responses.filter((response) => response.status === 202).length === 5 &&
+          responses.filter((response) => response.status === 429).length === 1,
+          "concurrent valid-shaped pairing POSTs share one atomic five-attempt budget");
+    check(agent.sent.filter((message) => message.t === "pair_request").length === 5,
+          "the over-limit proof is never forwarded to the desktop");
+  }
+
+  // Expiry is fail closed.
+  {
+    const { room, storage } = fakeRoom();
+    const pending = await begin(room, proof("expired"));
+    const row = storage.m.get("pend:" + pending.body.ticket);
+    row.at = Date.now() - 10 * 60 * 1000;
+    const response = await room.pairWait(pending.body.ticket, waitRequest());
+    check(response.status === 408, "an expired ticket cannot be approved or redeemed");
+  }
+
+  console.log(fails.length ? `\n  ${fails.length} FAILED` : "\n  relay pairing: all green");
   process.exit(fails.length ? 1 : 0);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((error) => { console.error(error); process.exit(1); });

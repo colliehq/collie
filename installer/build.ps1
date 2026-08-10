@@ -7,8 +7,8 @@
 # art + the language data -> ensure the payload runtime exists -> compile the .iss with that version
 # passed as /DAppVer. Output: installer\Output\Collie-Setup.exe.
 #
-# Requires (maintainer/CI machine): Inno Setup 6 (iscc), and a system Python with Pillow + opencc for
-# the generators. Windows only.
+# Requires (maintainer/CI machine): Inno Setup 6 (iscc), and a system Python with Pillow for the
+# branding generator. Windows only.
 [CmdletBinding()]
 param([switch]$CleanPayload)
 $ErrorActionPreference = "Stop"
@@ -22,11 +22,13 @@ $ver = & python -c "import sys; sys.path.insert(0, r'$repo'); import harness; pr
 if ($LASTEXITCODE -ne 0 -or -not $ver) { throw "could not read harness.__version__" }
 Step "building Collie $ver"
 
-# 2) generators (system Python: they need Pillow / opencc, which the embeddable runtime lacks)
+# 2) generators (system Python: make_art needs Pillow, which the embeddable runtime lacks)
 Step "branding art"
 & python (Join-Path $here "make_art.py")
+if ($LASTEXITCODE -ne 0) { throw "branding-art generation failed (exit $LASTEXITCODE)" }
 Step "language data (77 discovered -> curated set)"
 & python (Join-Path $here "gen_langs.py")
+if ($LASTEXITCODE -ne 0) { throw "language-data generation failed (exit $LASTEXITCODE)" }
 
 # 3) payload runtime
 Step "payload runtime"

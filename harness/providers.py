@@ -462,12 +462,17 @@ class AnthropicProvider(ModelProvider):
     API = "https://api.anthropic.com/v1/messages"
 
     def __init__(self, model: str = "claude-haiku-4-5-20251001", api_key: str | None = None,
-                 max_tokens: int = 0):
+                 max_tokens: int = 0, effort: str | None = None, speed: str = "standard"):
         self.model = model
         # 1024 was the old default and made any edit whose new_string exceeds ~1024 output tokens
         # systematically impossible (infinite retry churn). Default to the shared COLLIE_MAX_TOKENS
         # knob (same env OpenAICompat reads) so big edits fit; explicit arg still wins.
         self.max_tokens = max_tokens or int(os.environ.get("COLLIE_MAX_TOKENS", "8192"))
+        requested_effort = effort if effort is not None else (
+            os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
+        self.effort, _ = resolve_reasoning_effort(self.name, self.model, requested_effort)
+        self.speed, _ = resolve_speed_tier(self.name, self.model, speed)
+        self.actual_speed = self.speed
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not self.api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set (needed for --provider anthropic)")
@@ -523,6 +528,11 @@ class AnthropicProvider(ModelProvider):
                         "cache_control": {"type": "ephemeral"}}],
             "messages": anthropic_msgs,
         }
+        effort = getattr(self, "effort", "default")
+        if effort != "default":
+            body["output_config"] = {"effort": effort}
+        if getattr(self, "speed", "standard") == "fast":
+            body["speed"] = "fast"
         if tool_schemas:
             body["tools"] = tool_schemas
         if on_text:
@@ -672,12 +682,18 @@ def claude_oauth_expired(skew_s: int = 60) -> bool:
 class AnthropicOAuthProvider(AnthropicProvider):
     name = "anthropic-oauth"
 
-    def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 0):
+    def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 0,
+                 effort: str | None = None, speed: str = "standard"):
         self.model = model
         # honour the shared COLLIE_MAX_TOKENS knob (Settings "Max output tokens/turn"), like the parent
         # and every sibling provider — pinning 4096 here made big write_file edits truncate on the
         # subscription path (the user's default), then churn on retries.
         self.max_tokens = max_tokens or int(os.environ.get("COLLIE_MAX_TOKENS", "8192"))
+        requested_effort = effort if effort is not None else (
+            os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
+        self.effort, _ = resolve_reasoning_effort(self.name, self.model, requested_effort)
+        self.speed, _ = resolve_speed_tier(self.name, self.model, speed)
+        self.actual_speed = self.speed
         self.api_key = ""                       # not used; OAuth token read per-call (stays fresh)
         if not _read_oauth_token():
             raise RuntimeError("no Claude OAuth token (run `claude` login or set "
@@ -700,9 +716,6 @@ class AnthropicOAuthProvider(AnthropicProvider):
         # real Claude Code does, instead of collie's default no-thinking path. Gap-closer hypothesis
         # (cc/hermes think, collie doesn't). budget MUST be < max_tokens, and max_tokens must leave
         # room for the visible answer on top of the thinking budget -> bump max_tokens accordingly.
-        # Effort (output_config.effort — GA on Opus 4.8; API default is "high", Claude Code uses
-        # "xhigh" for coding/agentic). COLLIE_EFFORT=low|medium|high|xhigh|max; unset -> API default.
-        _effort = (os.environ.get("COLLIE_EFFORT", "") or "").strip().lower()
         # Adaptive thinking (Opus 4.8's only on-mode): COLLIE_THINKING truthy -> {"type":"adaptive"}.
         # The old {"type":"enabled","budget_tokens":N} form is REMOVED on 4.8 (400). Off by default
         # (collie's lean no-thinking path). Adaptive auto-enables interleaved thinking — no beta.
@@ -719,8 +732,11 @@ class AnthropicOAuthProvider(AnthropicProvider):
                         "cache_control": {"type": "ephemeral"}}],
             "messages": anthropic_msgs,
         }
-        if _effort:
-            body["output_config"] = {"effort": _effort}
+        effort = getattr(self, "effort", "default")
+        if effort != "default":
+            body["output_config"] = {"effort": effort}
+        if getattr(self, "speed", "standard") == "fast":
+            body["speed"] = "fast"
         if _think:
             body["thinking"] = {"type": "adaptive"}
         if tool_schemas:
@@ -794,10 +810,14 @@ class ClaudeCliProvider(ModelProvider):
     _OFF = ["Bash", "Read", "Edit", "Write", "Grep", "Glob", "WebFetch",
             "WebSearch", "Task", "TodoWrite", "NotebookEdit"]
 
-    def __init__(self, model: str = "sonnet", timeout: int = 180):
+    def __init__(self, model: str = "sonnet", timeout: int = 180,
+                 effort: str | None = None):
         self.model = "claude-cli:" + model
         self._model = model
         self.timeout = timeout
+        requested_effort = effort if effort is not None else (
+            os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
+        self.effort, _ = resolve_reasoning_effort(self.name, model, requested_effort)
 
     def _prompt(self, messages, tool_schemas):
         # NB: collie's system prompt is passed via --system-prompt, NOT embedded here.
@@ -840,6 +860,9 @@ class ClaudeCliProvider(ModelProvider):
         cmd = ["claude", "-p", prompt, "--output-format", "json",
                "--max-turns", "1", "--model", self._model, "--tools", "",
                "--system-prompt", system]
+        effort = getattr(self, "effort", "default")
+        if effort != "default":
+            cmd += ["--effort", effort]
         # AUTH (the one non-obvious footgun, per the subscription research): claude's auth
         # priority is ANTHROPIC_API_KEY (3rd) > CLAUDE_CODE_OAUTH_TOKEN (5th). So if BOTH are
         # set, the API key silently wins and bills per-token instead of using the Max/Pro
@@ -1093,11 +1116,16 @@ OPENAI_COMPAT_PRESETS = {
 
 
 class OpenAICompatProvider(ModelProvider):
-    def __init__(self, base_url, api_key_env, model, name="openai-compat"):
+    def __init__(self, base_url, api_key_env, model, name="openai-compat",
+                 effort: str | None = None, speed: str = "standard"):
         self.base = base_url.rstrip("/") + "/chat/completions"
         self.model = "%s:%s" % (name, model)
         self._model = model
         self.name = name
+        requested_effort = effort if effort is not None else os.environ.get("COLLIE_REASONING_EFFORT")
+        self.effort, _ = resolve_reasoning_effort(self.name, self._model, requested_effort)
+        self.speed, _ = resolve_speed_tier(self.name, self._model, speed)
+        self.actual_speed = self.speed
         self.api_key = os.environ.get(api_key_env, "")
         # Coding wants deterministic, focused edits, not creative variance. DeepSeek's
         # default temperature is 1.0 — the source of collie's run-to-run patch variance
@@ -1144,6 +1172,11 @@ class OpenAICompatProvider(ModelProvider):
             # other than the default — rename the one, drop the other.
             body["max_completion_tokens"] = body.pop("max_tokens")
             body.pop("temperature", None)
+            effort = getattr(self, "effort", "default")
+            if effort != "default":
+                body["reasoning_effort"] = effort
+        if getattr(self, "speed", "standard") == "fast":
+            body["service_tier"] = "fast"
         if tools:                      # some endpoints 400 on an empty tools array
             body["tools"] = tools
             body["tool_choice"] = "auto"
@@ -1160,6 +1193,9 @@ class OpenAICompatProvider(ModelProvider):
                 data = json.loads(r.read())
         except Exception as e:
             return _error_completion(self.name, e)
+        tier = str(data.get("service_tier") or "").lower()
+        if tier:
+            self.actual_speed = "fast" if tier in ("fast", "priority") else "standard"
         choice = (data.get("choices") or [{}])[0]
         ch = choice.get("message", {})
         usage = _openai_usage(data.get("usage", {}))   # normalize: input UNCACHED, no double count
@@ -1226,23 +1262,134 @@ def _plugin_providers() -> tuple:
     return found, errors
 
 
-def make_provider(name: str, model: str | None = None) -> ModelProvider:
+def provider_default_model(name: str) -> str:
+    """One source of truth for built-in defaults used by factories and Auto routing."""
+    name = (name or "").strip().lower()
+    if name == "mock":
+        return "mock-planner-v1"
+    if name == "anthropic":
+        return "claude-haiku-4-5-20251001"
+    if name in ("anthropic-oauth", "claude-sub"):
+        return "claude-opus-4-8"
+    if name in ("codex-oauth", "codex-sub", "codex"):
+        return "gpt-5.6-terra"
+    if name in ("claude-cli", "cli"):
+        return "sonnet"
+    if name == "ollama":
+        return "qwen2.5-coder:7b"
+    if name in OPENAI_COMPAT_PRESETS:
+        return OPENAI_COMPAT_PRESETS[name][2]
+    return ""
+
+
+def provider_capabilities(name: str, model: str | None = None) -> dict:
+    """Provider/model feature contract used before a run is constructed.
+
+    Unknown/plugin providers get the conservative contract.  In particular,
+    Fast is opt-in only where the wire field, eligible model family, and billing
+    premium are all known; it is never emulated with a weaker model.
+    """
+    name = (name or "").strip().lower()
+    model = (model or provider_default_model(name) or "").strip()
+    reasoning = []
+    speed_tiers = ["standard"]
+    fast_multiplier = None
+    fast_unit = "token-price"
+    fast_note = "Fast is not reported by this provider/model"
+
+    if name in ("codex-oauth", "codex-sub", "codex"):
+        reasoning = ["low", "medium", "high", "xhigh"]
+        codex_fast = (model.startswith("gpt-5.6-") or model.startswith("gpt-5.5-")
+                      or model in ("gpt-5.5", "gpt-5.4"))
+        if codex_fast:
+            speed_tiers.append("fast")
+            fast_unit = "subscription-credits"
+            if model.startswith("gpt-5.6-") or model.startswith("gpt-5.5"):
+                fast_multiplier = 2.5
+                fast_note = ("same model at about 1.5x generation speed; "
+                             "2.5x Codex credits when the account supports Fast")
+            else:
+                fast_note = ("same GPT-5.4 model through Codex Fast; the current credit "
+                             "premium is account/version dependent")
+    elif name == "openai":
+        if model.startswith(("gpt-5", "o1", "o3", "o4")):
+            reasoning = ["low", "medium", "high", "xhigh"]
+        if model.startswith("gpt-5.6-"):
+            speed_tiers.append("fast")
+            fast_multiplier = 2.0
+            fast_note = "same model via service_tier=fast; 2x current API token price"
+    elif name in ("anthropic", "anthropic-oauth", "claude-sub"):
+        # Current Anthropic effort-capable model families.  Older Haiku/Sonnet
+        # models must not receive output_config.effort and fail a whole run with 400.
+        if any(tag in model for tag in ("opus-4-8", "opus-5", "sonnet-5", "fable-5")):
+            reasoning = ["low", "medium", "high", "max"]
+        if any(tag in model for tag in ("opus-4-6", "opus-4-7")):
+            speed_tiers.append("fast")
+            fast_multiplier = 6.0
+            fast_note = "same eligible Opus model via speed=fast; extra-usage billing may be required"
+    elif name in ("claude-cli", "cli"):
+        reasoning = ["low", "medium", "high", "max"]
+
+    return {
+        "provider": name,
+        "model": model,
+        "reasoning_efforts": reasoning,
+        "speed_tiers": speed_tiers,
+        "fast_billing_multiplier": fast_multiplier,
+        "fast_billing_unit": fast_unit if fast_multiplier is not None else None,
+        "fast_note": fast_note,
+        # Static capability is known; account/region/admin enablement is checked
+        # by the actual request and surfaced, never guessed as available.
+        "availability": "account-dependent" if "fast" in speed_tiers else "standard-only",
+    }
+
+
+def resolve_reasoning_effort(name: str, model: str | None, requested: str | None) -> tuple[str, str]:
+    requested = (requested or "").strip().lower()
+    if requested in ("", "auto", "default", "provider-default"):
+        return "default", "provider default"
+    known = ("low", "medium", "high", "xhigh", "max")
+    if requested not in known:
+        raise ValueError("reasoning effort must be auto, low, medium, high, xhigh, or max")
+    supported = provider_capabilities(name, model)["reasoning_efforts"]
+    if requested not in supported:
+        return "default", "%s is unsupported; used provider default" % requested
+    return requested, ""
+
+
+def resolve_speed_tier(name: str, model: str | None, requested: str | None) -> tuple[str, dict]:
+    requested = (requested or "standard").strip().lower()
+    if requested not in ("standard", "fast"):
+        raise ValueError("speed must be standard or fast")
+    caps = provider_capabilities(name, model)
+    if requested not in caps["speed_tiers"]:
+        # Fast carries a real billing/availability consequence.  Never silently
+        # turn a user-visible Fast choice into Standard.
+        raise ValueError("Fast is not supported for %s:%s" % (name, model or caps["model"]))
+    return requested, caps
+
+
+def make_provider(name: str, model: str | None = None, effort: str | None = None,
+                  speed: str = "standard") -> ModelProvider:
+    chosen_model = model or provider_default_model(name)
+    resolved_speed, _caps = resolve_speed_tier(name, chosen_model, speed)
     if name == "mock":
         return MockProvider()
     if name == "anthropic":
-        return AnthropicProvider(model=model or "claude-haiku-4-5-20251001")
+        return AnthropicProvider(model=chosen_model, effort=effort, speed=resolved_speed)
     if name in ("anthropic-oauth", "claude-sub"):
-        return AnthropicOAuthProvider(model=model or "claude-opus-4-8")
+        return AnthropicOAuthProvider(model=chosen_model, effort=effort, speed=resolved_speed)
     if name in ("codex-oauth", "codex-sub", "codex"):     # ChatGPT Codex subscription (gpt-5.6-terra)
         from .codex_oauth import CodexOAuthProvider
-        return CodexOAuthProvider(model=model or "gpt-5.6-terra")
+        return CodexOAuthProvider(model=chosen_model, effort=effort, speed=resolved_speed)
     if name in ("claude-cli", "cli"):
-        return ClaudeCliProvider(model=model or "sonnet")
+        return ClaudeCliProvider(model=chosen_model, effort=effort)
     if name == "ollama":
-        return OllamaProvider(model=model or "qwen2.5-coder:7b")
+        return OllamaProvider(model=chosen_model)
     if name in OPENAI_COMPAT_PRESETS:
         base, env, default = OPENAI_COMPAT_PRESETS[name]
-        return OpenAICompatProvider(base, env, model or default, name=name)
+        return OpenAICompatProvider(base, env, chosen_model or default, name=name,
+                                    effort=effort, speed=resolved_speed)
     # Plugins are consulted LAST so a third party cannot shadow a built-in name: someone who asks
     # for `anthropic` must always get this file's Anthropic path, whatever happens to be installed.
     plugins, errors = _plugin_providers()

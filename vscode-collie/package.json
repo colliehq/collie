@@ -1,7 +1,7 @@
 {
   "name": "collie",
   "displayName": "Collie",
-  "description": "Collie coding agent, docked in a VS Code sidebar — chat, the verification gate, live diffs, and the code map. Runs on your workspace.",
+  "description": "Collie's IDE entrance — start or supervise Missions, inspect scoped evidence and diffs, and share one runtime with desktop, terminal, and phone.",
   "version": "0.1.0",
   "publisher": "collie",
   "license": "MIT",

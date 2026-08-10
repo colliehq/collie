@@ -158,7 +158,10 @@ class ActionStore:
         self._key = _load_or_create_key(path + ".key")
         self.db = sqlite3.connect(path, timeout=30, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self._lock = threading.Lock()
+        # Mission workers may execute independent campaigns concurrently through
+        # one ActionStore.  RLock also lets execute() call get() while holding the
+        # transaction guard without deadlocking.
+        self._lock = threading.RLock()
         try:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA busy_timeout=30000")
@@ -214,7 +217,8 @@ class ActionStore:
         return cur.fetchone()
 
     def get(self, nonce) -> ActionRecord:
-        r = self._row(nonce)
+        with self._lock:
+            r = self._row(nonce)
         if not r:
             return None
         return ActionRecord(
@@ -405,20 +409,27 @@ class ActionStore:
         if nonce:
             q += " WHERE nonce=?"
             args = (nonce,)
-        return [dict(r) for r in self.db.execute(q + " ORDER BY receipt_id", args)]
+        with self._lock:
+            rows = self.db.execute(q + " ORDER BY receipt_id", args).fetchall()
+        return [dict(r) for r in rows]
 
     def pending(self):
         """Actions awaiting a HUMAN confirm — the inbox. Excludes auto (daemon-
         driven) actions like a scheduled reminder, which must never be human-fired."""
-        return [dict(r) for r in self.db.execute(
-            "SELECT * FROM pending_actions WHERE state=? AND COALESCE(auto,0)=0 "
-            "ORDER BY created_at", (PENDING,))]
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM pending_actions WHERE state=? AND COALESCE(auto,0)=0 "
+                "ORDER BY created_at", (PENDING,)).fetchall()
+        return [dict(r) for r in rows]
 
     def list(self, state=None):
         q, a = "SELECT * FROM pending_actions", ()
         if state:
             q, a = q + " WHERE state=?", (state,)
-        return [dict(r) for r in self.db.execute(q + " ORDER BY created_at", a)]
+        with self._lock:
+            rows = self.db.execute(q + " ORDER BY created_at", a).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self):
-        self.db.close()
+        with self._lock:
+            self.db.close()

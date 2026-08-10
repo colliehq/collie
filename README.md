@@ -5,9 +5,9 @@
 <h1 align="center">Collie</h1>
 
 <p align="center">
-  <b>A coding agent that lives on your computer — and can actually run it.</b><br>
-  <sub>Local and private. It reaches your real environment — your logged-in browser, your desktop,
-  your screen, your files — and proves its work by running it.</sub>
+  <b>Your personal AI operations system, running across your devices.</b><br>
+  <sub>Give Collie an outcome. It chooses the brain, tools, skills, workers, and device; keeps the
+  mission moving; asks when authority is needed; and returns a scoped evidence receipt.</sub>
 </p>
 
 <p align="center">
@@ -18,51 +18,67 @@
 
 ---
 
-Most coding agents live in a cloud tab or an editor pane and can only touch the files you hand
-them. **Collie runs on your machine** — so it works the way you already do: it drives your *real*
-logged-in browser, arranges your desktop, records your screen, takes tasks from your phone, and
-edits your code. Nothing leaves your computer unless you send it there; there's no account and no
-telemetry.
+Collie gives you one persistent AI at the front door and a **Pack** underneath: models, specialist
+agents, skills, app connections, and devices. Desktop, terminal, IDE, phone, browser, and messaging
+surfaces all enter the same mission runtime instead of creating disconnected chats.
 
-And it doesn't just *claim* to be done. When Collie fixes something it writes a reproduction that
-must fail on the broken code, makes the smallest edit that flips it, and re-runs the assertion — a
-run isn't "done," it's **verified ✓**.
+It runs close to your real environment, so it can work in your signed-in browser, desktop, screen,
+files, and code. There is no Collie account or product telemetry. Task context goes only to the
+model provider and external services you explicitly connect.
+
+Completion is accountable, not magical. Collie records the checks it actually ran, the scope those
+checks cover, the permissions used, and what remains unverified. A passing check is evidence for a
+named contract—not a claim that every property of the result is proven.
 
 ## Why it's different
 
-**It's local, and it reaches your real world.** A cloud agent can read a repo. Collie can open the
-site in the browser you're already logged into, click through the actual flow, watch what happens on
-your screen, and change the code — all on one machine, all under your control. That's a different
-class of task: not "edit these files," but "get this working, end to end."
+**Mission-first, not chat-first.** A Mission survives waits, retries, restarts, and handoffs. `Needs
+You` is a global inbox for decisions that require authority, rather than a question buried in an old
+conversation.
 
-**The range is the proof.** Collie isn't a coding agent with a pile of unrelated features bolted on.
-The breadth below — the desktop console, the browser control, the screen recorder, the phone remote —
-is there because **Collie's coding agent built all of it.** The features *are* the benchmark: a
-harness strong enough to ship its own desktop app and iOS companion is strong enough for your bug.
+**Local reach with an explicit leash.** Collie can open the site in the browser you are already
+logged into, operate the real flow, inspect the screen, and change the code. Sensitive actions are
+bounded by permissions, budgets, and user-visible receipts.
 
-## The range
+**One Collie, many brains.** Models are replaceable execution resources. The user asks for an
+outcome; Auto chooses an appropriate run plan, while Advanced controls remain available when a task
+needs a specific boundary.
+
+## The ecosystem
 
 | | Capability | What it means |
 |---|---|---|
-| 🧠 | **Coding agent** | Semantic code navigation, syntax-gated edits, and a self-verifying repair loop — the core, covered below. |
+| 🎯 | **Missions** | Durable outcomes with plans, retries, waits, handoffs, evidence, and receipts. |
+| 🧠 | **Brains & Pack** | Route work across models and isolated specialist workers while keeping one front-door identity. |
 | 🌐 | **Your real browser** | A Chrome extension lets Collie act *in your logged-in browser* — the real session, real cookies — so it can operate sites, not just scrape them. Every action is a fenced, CSRF-checked localhost call. |
-| 🖥️ | **Living desktop** | `collie web` powers an interactive ambient wallpaper: clock, weather, an app dock, projects, a music player (real audio + synced karaoke lyrics), and a command bar — all agent-manageable via one JSON config. When Collie is working, the wallpaper becomes a live star-map of your code. |
+| 🖥️ | **Desktop home** | Home, Missions, Pack, Library, Activity, and Needs You form the control plane; optional Ambient mode keeps status and handoff one gesture away. |
 | 🎬 | **Screen recorder** | `collie record` captures screen + camera + mic (Windows and macOS) — a built-in way to demo or document a run. |
-| 📱 | **Phone remote** | Pair once by scanning a code; then tail runs and start new ones from your phone — on the same Wi-Fi (`--lan`) or anywhere through a relay (`--remote`), with the companion iOS app. |
-| 🔌 | **Everywhere else** | Terminal, browser GUI, VS Code, and any ACP editor (Zed/JetBrains/neovim) — one harness, every surface. |
+| 📱 | **Phone supervision** | Pair once, then follow runs, answer approvals, steer, stop, or start work from the phone. |
+| 🔌 | **Library & connections** | Skills, MCP servers, browser access, and future extensions are capability-scoped parts of the same system. |
 
 ## Where it runs
 
-Collie is **terminal-first** and reaches editors through an open protocol, not a bespoke extension:
+The desktop is Collie's **home and control plane**. The supervisor and durable stores are the
+runtime, so work can continue when a window closes. Every surface below reaches that same runtime:
 
 | Surface | Command | Reaches |
 |---|---|---|
 | **Terminal** | `collie` (TUI) · `collie -p "task"` | anywhere — SSH, CI, tmux |
-| **Browser GUI** | `collie web` | chat, the live verification gate, diffs, the star-map, the ambient desktop, settings |
-| **iPhone** | `collie web --lan` (same Wi-Fi) or `--remote` (anywhere, via the relay) + the companion app | scan the pair code once, then run from the phone |
+| **Desktop / Browser Home** | `collie web` | Home, Missions, Pack, Library, Activity, approvals, evidence, diffs, and settings |
+| **iPhone** | `collie web --lan` (same Wi-Fi) or `--remote` (anywhere, via the relay) + the companion app | supervise runs, answer approvals, steer, stop, or start work |
 | **VS Code** | the bundled `vscode-collie` extension | Collie docked in a sidebar panel (manages its own server) |
 | **Editors (ACP)** | `collie acp` | Zed · JetBrains · neovim · VS Code — one adapter, every [ACP](https://agentclientprotocol.com) editor |
 | **Streaming / CI** | `collie run "task" --stream-json` | NDJSON events (tool · edit · repro-gate · receipt) |
+
+The composer defaults to an automatically generated Run Plan. Advanced controls keep the underlying
+intent, depth, verification policy, effort, service tier, workspace, and Single/Pack strategy
+independent. Plan and Review are tool-enforced read-only; Required blocks edited work until its
+named post-edit assertion executes and passes. Pack requires a check command so “best” has an
+observable meaning.
+
+On Windows, `collie supervisor install` registers a least-privilege per-user supervisor for Web,
+Jobs/Missions, automations, and the browser bridge. It restarts crashed workers and catches durable
+triggers up after sleep/sign-in; a sleeping or powered-off computer cannot execute work.
 
 ## Install
 
@@ -70,9 +86,14 @@ Collie is **terminal-first** and reaches editors through an open protocol, not a
 [latest release](https://github.com/colliehq/collie/releases/latest) and double-click it. A small
 app-style installer lays down a self-contained runtime (Python + Collie + semantic memory, nothing to
 preinstall) and opens Collie in a native desktop window. On first launch you **pick a brain** — an
-existing Claude, Codex, or Grok login is detected and connects in one click; or paste an API key.
+existing Claude, Codex, or Grok login is detected and connects in one click; API-key providers are
+configured in the environment that starts Collie, so secrets are not stored in the browser.
 
-**macOS / Linux — pip.** The core is stdlib-only, so the base install is tiny:
+**macOS — drag and open.** Apple-silicon Macs can download the signed and notarised
+**`Collie-arm64.dmg`** from the [latest release](https://github.com/colliehq/collie/releases/latest),
+drag Collie to Applications, and open it normally.
+
+**Linux and developers — pip.** The core is stdlib-only, so the base install is tiny:
 
 ```bash
 pip install -e ".[local,dev]"      # from a clone (PyPI publish is planned)
@@ -94,7 +115,7 @@ setup — especially the real-browser bridge (`collie browser-bridge` + `harness
 
 ```bash
 collie                     # terminal chat (TUI); first run picks a provider
-collie web                 # browser GUI — chat, live gate, diffs, star-map, ambient desktop
+collie web                 # desktop Home — missions, approvals, evidence, Pack, Library, Activity
 collie selftest            # $0 deterministic end-to-end (mock model, real tools + memory)
 
 # a real cheap model (provider key in env)
@@ -249,7 +270,7 @@ isolated in `harness/plat.py`, so the same wheel runs everywhere.
 | OS | Status | Notes |
 |---|---|---|
 | **Linux** | ✅ native | the primary target |
-| **macOS** | ✅ native | POSIX; the browser bridge is *simplest* here (Chrome + Collie on one OS) |
+| **macOS** | ✅ packaged app | signed, notarised Apple-silicon DMG; POSIX underneath |
 | **Windows** | ✅ one-click | the packaged installer; the agent prefers the file/search tools over `bash` |
 | **WSL2** | ✅ | a Windows-Chrome ↔ WSL bridge uses the LAN IP + `wslpath` (handled for you) |
 

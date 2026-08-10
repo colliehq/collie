@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0c11">
+  <meta name="description" content="How the collie.run website and Collie app handle data.">
+  <title>Privacy — Collie</title>
+  <link rel="icon" href="/collie-logo.svg" type="image/svg+xml">
+  <style>
+    :root{color-scheme:dark;--bg:#0b0c11;--panel:#13151d;--ink:#f0f2f8;--muted:#a2a8ba;--line:#2e323e;--accent:#aab4f0}*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 Inter,"Segoe UI",system-ui,sans-serif}header,main,footer{width:min(760px,calc(100% - 32px));margin:auto}header{padding:26px 0;border-bottom:1px solid var(--line)}header a{display:inline-flex;align-items:center;gap:10px;color:var(--ink);font-weight:700;text-decoration:none}header img{width:30px;height:30px}main{padding:48px 0}h1{font-size:clamp(36px,8vw,56px);line-height:1.05;margin:0 0 12px}h2{font-size:22px;margin:36px 0 8px}p,li{color:var(--muted)}strong{color:var(--ink)}a{color:var(--accent);text-underline-offset:3px}li+li{margin-top:8px}.date{margin-bottom:34px}footer{padding:24px 0 36px;border-top:1px solid var(--line);color:var(--muted)}:where(a,button):focus-visible{outline:3px solid var(--accent);outline-offset:4px}@media(max-width:380px){header,main,footer{width:min(100% - 24px,760px)}main{padding:34px 0}ul{padding-left:22px}}
+  </style>
+</head>
+<body>
+  <header><a href="/"><img src="/collie-logo.svg" alt="">Collie</a></header>
+  <main>
+    <h1>Privacy</h1>
+    <p class="date">Effective August 9, 2026</p>
+    <p>Collie is open-source software designed to run on your computer. The product has no Collie account, advertising, usage analytics, or telemetry.</p>
+
+    <h2>This website</h2>
+    <p>The static collie.run pages load no analytics or tracking scripts. Your hosting provider may process ordinary request data, such as your network address, to deliver and secure the site.</p>
+
+    <h2>“Ask Collie” website demo</h2>
+    <p>Nothing is sent until you submit the form. The question and up to six recent messages from that demo are sent through a Cloudflare Pages Function to Cloudflare Workers AI. Product files and local Collie sessions are not attached.</p>
+    <p>To limit abuse, the service derives a per-day counter key from your network address. The counter stores only a number and expiry, not the address itself, and is deleted within 48 hours. The limit is applied before an AI request is made.</p>
+    <p>The site code does not write questions or answers to R2, KV, or Durable Object content storage; its Durable Object stores only the abuse counter. Cloudflare publishes separate <a href="https://developers.cloudflare.com/workers-ai/platform/data-usage/">Workers AI data-usage information</a>.</p>
+
+    <h2>The app</h2>
+    <ul>
+      <li><strong>Your chosen model provider:</strong> prompts and the context required for a task go to the provider you configure. With a local Ollama model, model traffic stays on your machine.</li>
+      <li><strong>Optional web features:</strong> searches, page requests, and browser automation contact the sites you ask Collie to use.</li>
+      <li><strong>Optional phone remote:</strong> hosted remote request and response contents are end-to-end encrypted. The relay handles necessary routing metadata such as room or device identifiers, request timing, and approximate message sizes.</li>
+      <li><strong>Local data:</strong> settings, sessions, memory, pairing state, and recordings remain on your machine unless you choose to send or sync them elsewhere.</li>
+    </ul>
+
+    <h2>Your choices</h2>
+    <p>You can avoid the website demo, choose a local model, leave optional network features off, and delete Collie’s local state under <code>~/.collie</code>. See the <a href="https://colliehq.github.io/collie/privacy/">full product privacy notes</a> and <a href="https://github.com/colliehq/collie">source code</a>.</p>
+
+    <h2>Questions</h2>
+    <p>Open an issue at <a href="https://github.com/colliehq/collie/issues">github.com/colliehq/collie/issues</a>.</p>
+  </main>
+  <footer>Collie · free and open-source (MIT)</footer>
+</body>
+</html>

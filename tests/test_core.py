@@ -199,15 +199,17 @@ def test_update_inventory_and_restart_include_live_slack_listener():
     assert up._restart_script("slack:../bad.pyw", root) == "", \
         "restart inventory cannot inject an arbitrary path into PowerShell"
 
-def test_new_windows_installer_migrates_pre_slack_updaters():
+def test_new_windows_installer_migrates_slack_to_single_supervisor_owner():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     iss = open(os.path.join(root, "installer", "collie.iss"), encoding="utf-8").read()
     prepare = iss.split("function PrepareToInstall", 1)[1].split("procedure InitializeWizard", 1)[0]
     run = iss.split("[Run]", 1)[1].split("[UninstallRun]", 1)[0]
     assert "taskkill.exe /PID $_.Id /T /F" in prepare, \
         "the first upgrade must quiesce each legacy listener's external child tree"
-    assert "slack-*.pyw" in run and "subprocess.Popen([sys.executable,p]" in run, \
-        "the new installer itself must restart Slack when the old updater did not inventory it"
+    assert "-m harness.supervisor install" in run and "-m harness.supervisor run" in run, \
+        "the new installer must hand opted-in Slack recovery to the supervisor"
+    assert "slack-*.pyw" not in run and "subprocess.Popen([sys.executable,p]" not in run, \
+        "the installer must not race the supervisor by starting each legacy launcher again"
 
 def test_macos_update_kickstarts_loaded_slack_agents():
     from harness import update as up

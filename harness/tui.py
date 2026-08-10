@@ -257,6 +257,13 @@ class RichTUI:
                     d.get("delay_s"), _esc(str(d.get("error", ""))[:60]))))
             elif kind == "overflow_recovery":              # context-overflow shrink+retry (point 9)
                 rows.append(Text.from_markup("[dim]⤵ context overflow — shrinking history, retrying[/dim]"))
+            elif kind == "decision":
+                rows.append(Text.from_markup(
+                    "[cyan]◇ %s[/cyan] [dim]· %s · %s/%s/%s[/dim]" % (
+                        _esc(str(d.get("model", ""))), _esc(str(d.get("effort", "default"))),
+                        _esc(str(d.get("intent", "build"))),
+                        _esc(str(d.get("quality", "balanced"))),
+                        _esc(str(d.get("verification", "auto"))))))
         if running:
             st.spinner_i = (st.spinner_i + 1) % len(_SPIN)
             rows.append(Text.from_markup(
@@ -303,6 +310,8 @@ class RichTUI:
     def run_turn(self, h, task_id, line, history):
         """Run one agent turn with a Live panel wired to h.emit. Returns RunResult."""
         st = _RunState()
+        if isinstance(getattr(h, "run_decision", None), dict):
+            st.on_event("decision", h.run_decision)
         prev_emit = h.emit
         h.emit = st.on_event
         result = {}
@@ -402,7 +411,12 @@ class PlainTUI:
         prev_emit = h.emit
 
         def emit(kind, d):
-            if kind == "tool":
+            if kind == "decision":
+                self._p("  ◇ %s · %s · %s/%s/%s" % (
+                    d.get("model", ""), d.get("effort", "default"),
+                    d.get("intent", "build"), d.get("quality", "balanced"),
+                    d.get("verification", "auto")))
+            elif kind == "tool":
                 self._p("  · %s %s%s" % (d.get("name"), "" if d.get("ok", True) else "[ERR] ",
                                          _short_args(d.get("args"))))
             elif kind == "edit":
@@ -419,6 +433,8 @@ class PlainTUI:
                     d.get("tool_calls") or 0, (d.get("wall_ms") or 0) / 1000.0))
         h.emit = emit
         try:
+            if isinstance(getattr(h, "run_decision", None), dict):
+                emit("decision", h.run_decision)
             res = h.run(task_id, line, consolidate=True, history=history)
         finally:
             h.emit = prev_emit
@@ -443,7 +459,8 @@ def _read_line(console, have_rich):
 
 def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=None):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
-    from .cli import make_harness
+    from .cli import (apply_turn_decision, make_harness, resolve_turn_decision,
+                      turn_decision_receipt)
     from . import sessions as sess
 
     have_rich = _HAVE_RICH
@@ -457,8 +474,10 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                      gate=_gate)
 
     sid = resume or (sess.latest() if cont else None) or sess.new_id()
+    h.checkpoint_scope = "session:" + sid
     loaded = sess.load(sid) if (resume or cont) else None
     history = (loaded or {}).get("messages") or []
+    receipts = list((loaded or {}).get("run_receipts") or [])
     if goal:
         h.memory.set_block("project:" + project, "goal", goal[:390], char_limit=400)
 
@@ -490,7 +509,8 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
             if line == "/sessions":
                 ui.sessions(sess.recent(10)); continue
             if line == "/new":
-                history, sid = [], sess.new_id()
+                history, receipts, sid = [], [], sess.new_id()
+                h.checkpoint_scope = "session:" + sid
                 if have_rich:
                     console.print("[dim]new session[/dim] [yellow]%s[/yellow]" % sid)
                 else:
@@ -501,7 +521,9 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 rid = parts[1].strip() if len(parts) > 1 else sess.latest()
                 s = sess.load(rid) if rid else None
                 if s:
-                    history, sid = s.get("messages") or [], rid
+                    history, receipts, sid = (s.get("messages") or [],
+                                              list(s.get("run_receipts") or []), rid)
+                    h.checkpoint_scope = "session:" + sid
                     msg = "resumed %s (%d prior turns)" % (
                         sid, sum(1 for m in history if m.get("role") == "user"))
                 else:
@@ -521,7 +543,10 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 ents = catalog.list_entries(discover_live=False)
                 cur = "%s:%s" % (h.provider.name, h.provider.model)
                 if not arg:
-                    rows = ["current: %s" % cur]
+                    rows = ["current: %s%s" % (
+                        "Auto inside %s (resolved " % provider if model is None else "",
+                        cur + ")" if model is None else cur)]
+                    rows.append("    %-32s %s" % (provider + ":", "Auto by task"))
                     for e in ents:
                         mark = "*" if e["id"] == cur else " "
                         badge = e["via"] if e["auth"] == "ok" else ("[%s]" % e["auth"])
@@ -530,7 +555,9 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     console.print("[dim]%s[/dim]" % body) if have_rich else print(body)
                     continue
                 match = None
-                if ":" in arg:
+                if arg.lower() == "auto":
+                    match = {"id": provider + ":", "provider": provider, "model": None}
+                elif ":" in arg:
                     p, m = catalog.resolve(arg)
                     match = {"id": arg, "provider": p, "model": m}
                 else:
@@ -544,15 +571,27 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     continue
                 try:
                     h.provider = make_provider(match["provider"], match.get("model"))
-                    provider, model = h.provider.name, h.provider.model
+                    provider, model = h.provider.name, match.get("model") or None
+                    if hasattr(h, "_turn_provider_signature"):
+                        delattr(h, "_turn_provider_signature")
                     _st.update({"PROVIDER": match["provider"], "MODEL": match.get("model") or ""})
-                    msg = "switched to %s · %s" % (provider, model)
+                    msg = ("switched to Auto inside %s" % provider if model is None else
+                           "switched to %s · %s" % (provider, model))
                     console.print("[green]%s[/green]" % msg) if have_rich else print(msg)
                 except Exception as ex:
                     msg = "cannot switch to %s: %s" % (match["id"], ex)
                     console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
                 continue
 
+            try:
+                decision = resolve_turn_decision(
+                    line, provider, configured_model=model,
+                    history=history, receipts=receipts)
+                apply_turn_decision(h, decision, _gate)
+            except Exception as ex:
+                msg = "collie could not route this turn: %s: %s" % (type(ex).__name__, ex)
+                console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
+                continue
             try:
                 if feed is not None and feed.tty:
                     h.steering = feed.drain     # let mid-run keystrokes steer the agent
@@ -576,7 +615,15 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 h.steering = None               # steering only during a run
                 h.approve = None                # and nobody is at the prompt between turns
             history = res.messages
-            sess.save(sid, history, project=project, cwd=cwd, answer=res.answer or "")
+            receipt = turn_decision_receipt(decision, res, getattr(h, "provider", None))
+            saved_sid = sess.save(
+                sid, history, project=project, cwd=cwd, answer=res.answer or "")
+            if saved_sid:
+                try:
+                    sess.append_run_receipt(sid, receipt)
+                except Exception:
+                    pass
+            receipts.append(receipt)
             saved = True
     finally:
         try:
@@ -608,8 +655,13 @@ def main(argv=None):
                    help="continue the latest session's thread")
     p.add_argument("--resume", default=None, metavar="ID", help="resume a session by id")
     args = p.parse_args(list(sys.argv[1:] if argv is None else argv))
+    from . import settings
+    settings.apply()
+    from .cli import configured_model_for
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-    return run_tui(args.cwd or os.getcwd(), provider, args.model, project=args.project,
+    model = configured_model_for(
+        provider, args.model, provider_was_explicit=bool(args.provider))
+    return run_tui(args.cwd or os.getcwd(), provider, model, project=args.project,
                    resume=args.resume, cont=args.cont, goal=args.goal)
 
 

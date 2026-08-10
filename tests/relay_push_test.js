@@ -84,6 +84,10 @@ const registerRequest = (token, auth, extra = {}) =>
                   : { "content-type": "application/json" },
     body: JSON.stringify({ token, ...extra }),
   });
+const revokeRequest = (auth) => new Request("https://relay/r/room/device/revoke", {
+  method: "POST", headers: { authorization: "Bearer " + auth },
+});
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const HEX = "a".repeat(64);
 
@@ -153,6 +157,56 @@ async function main() {
           "the bearer token is reused across pushes rather than re-signed each time");
   }
 
+  // ---- revocation is a durable, acknowledged operation ------------------------------------------
+  {
+    const { r, agent, storage, sess } = await room(env);
+    const pending = r.revokeDevice(revokeRequest(sess));
+    for (let n = 0; n < 50 && !agent.sent.some((msg) => msg.t === "device_revoke"); n++) await tick();
+    const command = agent.sent.find((msg) => msg.t === "device_revoke");
+    await r.webSocketMessage(agent, JSON.stringify({
+      t: "device_revoked", id: command.id, hash: command.hash, ok: true,
+    }));
+    const response = await pending;
+    check(response.status === 200, "the phone sees revoke success only after the desktop ACK");
+    check(storage.m.get("revoke:" + command.hash).state === "acked",
+          "the ACK is retained so a lost HTTP response can be retried idempotently");
+    check(!(await r.checkSession(revokeRequest(sess), agent)),
+          "the bearer is blocked at the edge as soon as revocation starts");
+  }
+
+  {
+    const first = await room(env);
+    first.agent.send = () => { throw new Error("socket dropped"); };
+    const failed = await first.r.revokeDevice(revokeRequest(first.sess));
+    const sessionHash = await sha256hex(first.sess);
+    check(failed.status === 503 && first.storage.m.get("revoke:" + sessionHash).state === "pending",
+          "a send/ACK failure returns 503 and leaves a durable pending tombstone");
+
+    // Simulate a reconnect whose hello still contains the old desktop hash. The pending tombstone
+    // filters it and is re-sent until an idempotent desktop deletion is acknowledged.
+    let attachment = { protocol: 0, e2eRequired: false, devices: [sessionHash] };
+    const sent = [];
+    const agent = {
+      send: (value) => sent.push(JSON.parse(value)),
+      serializeAttachment: (value) => { attachment = value; },
+      deserializeAttachment: () => attachment,
+    };
+    const woken = new RelayRoom({ storage: first.storage, getWebSockets: () => [agent],
+                                  acceptWebSocket: () => {} }, env);
+    await woken.webSocketMessage(agent, JSON.stringify({
+      t: "hello", v: 2, e2eRequired: true, approve: true, devices: [sessionHash],
+    }));
+    const retry = sent.find((msg) => msg.t === "device_revoke");
+    check(!agent.deserializeAttachment().devices.includes(sessionHash) && !!retry,
+          "a reconnect cannot resurrect a tombstoned bearer and receives a retry command");
+    await woken.webSocketMessage(agent, JSON.stringify({
+      t: "device_revoked", id: retry.id, hash: retry.hash, ok: true,
+    }));
+    const idempotent = await woken.revokeDevice(revokeRequest(first.sess));
+    check(idempotent.status === 200,
+          "after reconciliation, the phone can retry and safely clear its local credential");
+  }
+
   // ---- a device Apple says is gone --------------------------------------------------------------
   {
     const { r, sess, storage } = await room(env);
@@ -200,8 +254,9 @@ async function main() {
     await r.webSocketMessage(agent, JSON.stringify({ t: "notify", title: "Run failed", body: "boom" }));
     await new Promise((r2) => setTimeout(r2, 20));         // fire-and-forget by design
     globalThis.fetch = realFetch;
-    check(seen.length === 1 && seen[0].aps.alert.title === "Run failed",
-          "a `notify` from the desktop reaches the phone");
+    check(seen.length === 1 && seen[0].aps.alert.title === "Collie" &&
+          seen[0].aps.alert.body === "A run has an update on your desktop.",
+          "desktop notify contents are replaced by a generic alert the relay can safely see");
   }
 
   console.log(fails.length ? "\n  " + fails.length + " FAILED" : "\n  relay push: all green");

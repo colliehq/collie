@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import re
 import subprocess     # module-level: cmd_uninstall (tccutil) and _collie_procs (ps) call it bare,
@@ -184,7 +185,7 @@ def apply_persona(h, gate, name, cwd):
     return p
 
 
-def default_gate(cwd, mode=None):
+def default_gate(cwd, mode=None, commands=None):
     """The gate a user-facing surface runs behind. Mode from COLLIE_MODE, else `project`
     (writes and commands inside cwd are covered by the fact that you launched collie
     here; anything reaching off this machine is asked).
@@ -200,6 +201,7 @@ def default_gate(cwd, mode=None):
     raw = (os.environ.get("COLLIE_ALLOW_COMMANDS") or _sget("ALLOW_COMMANDS", "") or "").strip()
     if raw:
         allowed = [c.strip() for c in raw.split(",") if c.strip()]
+    allowed += [str(c).strip() for c in (commands or []) if str(c).strip()]
     # …plus whatever this repo asks for — but only once the user has trusted this exact
     # directory (`collie trust`). Cloning a repository is not the same act as believing it.
     allowed += repo_allowed_commands(cwd)
@@ -221,7 +223,7 @@ def default_gate(cwd, mode=None):
 def make_harness(cwd, provider="mock", model=None, project="demo",
                  embed="auto", prefix_ceiling=6000, code_search=False,
                  rerank=None, distill=None, web_search=None, exec_code=False, delegate=False,
-                 gate=None):
+                 gate=None, effort=None, speed="standard"):
     from .embeddings import make_reranker
     from .distill import make_distiller
     mem_db, runs_db, _, _ = _paths()
@@ -241,8 +243,12 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     composer = ContextComposer(memory, registry, TokenBudgeter(prefix_ceiling),
                                identity=os.environ.get("COLLIE_IDENTITY", ""))
     recorder = Recorder(runs_db)
-    prov = make_provider(provider, model)
+    prov = make_provider(provider, model, effort=effort, speed=speed)
     h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project)
+    # Run presets may choose a lower everyday/deep-work target, but this value is a user-owned
+    # HARD ceiling.  Keep it separately from ``max_turns`` so selecting Thorough can never turn a
+    # five-turn safety limit into a forty-eight-turn run.
+    h._max_turns_hard_cap = None
     h.gate = gate                             # None = ungated (benchmarks, delegate child, embedded)
     if gate is not None:                      # record decisions only where there is a gate making them
         try:
@@ -254,9 +260,192 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
         mt = os.environ.get("COLLIE_MAX_TURNS")
         if mt:
             h.max_turns = max(1, min(120, int(mt)))
+            h._max_turns_hard_cap = h.max_turns
     except (TypeError, ValueError):
         pass
     return h
+
+
+def normalize_run_options(intent="build", quality="balanced", verification="auto"):
+    """Validate and canonicalize the three harness-local run axes."""
+    intent = str(intent or "build").strip().lower()
+    quality = str(quality or "balanced").strip().lower()
+    verification = str(verification or "auto").strip().lower()
+    if intent not in ("build", "plan", "test", "review"):
+        raise ValueError("intent must be build, plan, test, or review")
+    if quality not in ("quick", "balanced", "thorough"):
+        raise ValueError("quality must be quick, balanced, or thorough")
+    if verification not in ("auto", "required"):
+        raise ValueError("verification must be auto or required")
+    return {"intent": intent, "quality": quality, "verification": verification}
+
+
+def configure_run_options(h, intent="build", quality="balanced", verification="auto"):
+    """Apply the web/product run axes to a harness without conflating their meanings.
+
+    ``intent`` controls tool authority and prompt role (the caller still owns the Gate),
+    ``quality`` controls how much room the loop gets, and ``verification`` controls whether an
+    executed post-edit assertion is a hard finish condition.  Workspace isolation and Pack are
+    deliberately absent: they decide *where/how many* harnesses run, not how this one reasons.
+
+    The strict validation is intentional.  A misspelled URL option must not silently weaken a
+    requested verification gate or turn a read-only plan into a writable build.
+    """
+    options = normalize_run_options(intent, quality, verification)
+    intent = options["intent"]
+    quality = options["quality"]
+    verification = options["verification"]
+
+    # ContextComposer tells the model the same boundary that Gate enforces.  The prompt is useful
+    # guidance; Gate is the authority, so a Plan remains read-only even if the model ignores it.
+    h.mode = "act" if intent == "build" else intent
+    if intent in ("plan", "test", "review"):
+        h.force_edit = False
+        # These intents never repair by writing. Test evidence is executed by its
+        # restricted gate/post-check; Plan and Review are inspection artifacts.
+        h.self_verify = False
+
+    # These are preset TARGETS, never permission to widen the Settings-panel hard cap. Applying the
+    # Balanced target here too is important: Pack builds harnesses directly and used to leave both
+    # Balanced and Thorough at Harness's 50-turn default, making its quality selector a no-op.
+    target_turns = {"quick": 24, "balanced": 40, "thorough": 50}[quality]
+    hard_cap = getattr(h, "_max_turns_hard_cap", None)
+    h.max_turns = min(target_turns, int(hard_cap)) if hard_cap is not None else target_turns
+
+    # Thorough is the honest successor to the old "Extreme Herding" depth preset.  It also buys
+    # additional repair room. It does not itself claim that a check passed; that is the independent
+    # verification axis below.
+    if quality == "thorough":
+        h.verify_max = max(int(getattr(h, "verify_max", 2) or 2), 4)
+
+    if verification == "required":
+        # Required is a product contract, not a hint. A reused/custom Harness may have disabled the
+        # ordinary advisory self-check; turn it back on so the hard gate below cannot be bypassed.
+        h.self_verify = True
+        h.verify_gate = True
+        h.require_assert = True
+        h.verify_max = max(int(getattr(h, "verify_max", 2) or 2), 4)
+
+    return options
+
+
+_TURN_OPTION_FIELDS = (
+    "mode", "force_edit", "self_verify", "max_turns", "verify_max",
+    "verify_gate", "require_assert",
+)
+
+
+def configured_model_for(provider, requested_model=None, provider_was_explicit=False):
+    """Return the model pin that applies to an interactive surface.
+
+    A saved model belongs to its saved provider.  Passing ``--provider`` for a
+    different account must not carry an unrelated model across that credential
+    boundary.  ``None`` deliberately means Auto; the per-turn router will then
+    choose a model *inside* ``provider``.
+    """
+    if requested_model is not None:
+        return str(requested_model).strip() or None
+    from . import settings
+    saved_provider = settings.get("PROVIDER", provider) or provider
+    if provider_was_explicit and provider != saved_provider:
+        return None
+    return settings.get("MODEL", "") or None
+
+
+def resolve_turn_decision(text, provider, configured_model=None, history=None, receipts=None,
+                          route_kind=None):
+    """Resolve the shared per-turn policy used by terminal/editor conversations.
+
+    ``receipts`` supplies structured failure truth.  Model error text is not
+    guaranteed to appear in the assistant transcript, so relying on messages
+    alone made the advertised failure escalation mostly synthetic.
+    """
+    from . import settings
+    from .router import resolve_run_decision
+
+    routing_history = list(history or [])
+    for row in list(receipts or [])[-4:]:
+        if not isinstance(row, dict):
+            continue
+        evidence = row.get("verification_evidence")
+        failed_check = isinstance(evidence, dict) and evidence.get("passed") is False
+        if row.get("error") or failed_check:
+            # A fixed token is enough for router._FAILURE and avoids copying
+            # tool output, prompts, or other private receipt details.
+            routing_history.append({"role": "assistant", "content": "error: verification failed"})
+
+    return resolve_run_decision(
+        text, provider=provider, model=configured_model,
+        effort=settings.get("REASONING_EFFORT", "auto") or "auto",
+        speed="standard", route_kind=route_kind,
+        intent="build", quality="balanced", verification="auto",
+        explicit_axes=(), history=routing_history,
+    )
+
+
+def apply_turn_decision(h, decision, gate=None):
+    """Apply a RunDecision to a reused Harness without recreating its stores.
+
+    Provider/model/effort may change between turns, but memory, recorder,
+    composer, registry, checkpoint scope, and conversation history remain on the
+    same Harness.  Run-option fields are reset to their original values first so
+    a read-only Plan or Required-verification turn cannot leak into the next one.
+    """
+    if not hasattr(h, "_turn_option_baseline"):
+        defaults = {
+            "mode": "act", "force_edit": False, "self_verify": True,
+            "max_turns": 50, "verify_max": 2, "verify_gate": False,
+            "require_assert": False,
+        }
+        h._turn_option_baseline = {
+            key: getattr(h, key, defaults[key]) for key in _TURN_OPTION_FIELDS
+        }
+    for key, value in h._turn_option_baseline.items():
+        setattr(h, key, value)
+
+    configure_run_options(
+        h, intent=decision.intent, quality=decision.quality,
+        verification=decision.verification,
+    )
+
+    gate = gate if gate is not None else getattr(h, "gate", None)
+    if gate is not None:
+        from .gate import Mode
+        if not hasattr(h, "_turn_gate_baseline"):
+            h._turn_gate_baseline = gate.mode
+        narrowed = {
+            "plan": Mode.PLAN, "review": Mode.REVIEW, "test": Mode.TEST,
+        }.get(decision.intent)
+        gate.mode = narrowed or h._turn_gate_baseline
+
+    signature = (decision.provider, decision.model, decision.effort, decision.speed)
+    current = getattr(h, "provider", None)
+    current_signature = (
+        getattr(current, "name", ""), getattr(current, "model", ""),
+        getattr(current, "effort", "default"), getattr(current, "speed", "standard"),
+    )
+    if getattr(h, "_turn_provider_signature", None) != signature:
+        if current_signature != signature:
+            h.provider = make_provider(
+                decision.provider, decision.model,
+                effort=decision.effort, speed=decision.speed,
+            )
+        h._turn_provider_signature = signature
+    h.run_decision = decision.to_dict()
+    return decision
+
+
+def turn_decision_receipt(decision, res, provider=None):
+    """Compact structured outcome used both for UI receipts and next-turn routing."""
+    active = provider
+    return {
+        "decision": decision.to_dict(),
+        "model": getattr(res, "model", "") or decision.model,
+        "actual_speed": getattr(active, "actual_speed", decision.speed),
+        "verified": bool(getattr(res, "verified", False)),
+        "verification_evidence": getattr(res, "verification_evidence", None),
+        "error": getattr(res, "error", "") or "",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -310,11 +499,14 @@ def cmd_loop(args):
         h.memory.set_block("project:" + args.project, "goal", goal[:390], char_limit=400)
     task = args.task or ("Make progress toward the goal above. Do one concrete step this turn.")
     stopped = False
+    run_failed = False
     try:
         for i in range(args.max):
             print("\n── collie loop · iteration %d/%d ──" % (i + 1, args.max), flush=True)
             res = h.run("loop", task, consolidate=True)   # consolidate -> memory carries forward
             print(res.answer or res.error or "(no output)", flush=True)
+            # A later successful iteration must not erase an earlier model/provider failure.
+            run_failed = run_failed or bool(res.error)
             if args.until:
                 from . import plat
                 _uargs, _ush = plat.shell_argv(args.until)   # POSIX --until predicate on every OS
@@ -326,7 +518,9 @@ def cmd_loop(args):
             print("✗ reached --max %d without the goal condition passing." % args.max)
     finally:
         h.memory.close(); h.recorder.close()
-    return 0
+    # An executed predicate is a contract, not an advisory progress meter. Reaching --max without
+    # it (and JSON/automation invoking this command) must be able to fail a build reliably.
+    return 0 if (stopped or (not args.until and not run_failed)) else 1
 
 
 def cmd_repl(args):
@@ -336,15 +530,19 @@ def cmd_repl(args):
     from . import sessions as sess
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
+    configured_model = configured_model_for(
+        provider, args.model, provider_was_explicit=bool(args.provider))
     _gate = default_gate(cwd, getattr(args, "mode", None))
-    h = make_harness(cwd, provider=provider, model=args.model, project=args.project,
+    h = make_harness(cwd, provider=provider, model=configured_model, project=args.project,
                      code_search=True, web_search=True, exec_code=True, delegate=True,
                      gate=_gate)
     from .approve import tty_approver
     h.approve = tty_approver(gate=_gate)
     sid = args.resume or (sess.latest() if getattr(args, "cont", False) else None) or sess.new_id()
+    h.checkpoint_scope = "session:" + sid
     loaded = sess.load(sid) if (args.resume or getattr(args, "cont", False)) else None
     history = (loaded or {}).get("messages") or []
+    receipts = list((loaded or {}).get("run_receipts") or [])
     if getattr(args, "goal", None):
         h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
     print("collie repl · session %s · %s · %d prior turns · /exit to quit, /new for a fresh thread"
@@ -360,13 +558,33 @@ def cmd_repl(args):
             if line in ("/exit", "/quit"):
                 break
             if line == "/new":
-                history, sid = [], sess.new_id()
+                history, receipts, sid = [], [], sess.new_id()
+                h.checkpoint_scope = "session:" + sid
                 print("  [new session %s]" % sid)
                 continue
+            try:
+                decision = resolve_turn_decision(
+                    line, provider, configured_model=configured_model,
+                    history=history, receipts=receipts)
+                apply_turn_decision(h, decision, _gate)
+            except Exception as e:
+                print("\ncollie could not route this turn: %s: %s" % (type(e).__name__, e))
+                continue
+            print("  [decision] %s · %s · %s/%s/%s" % (
+                decision.model, decision.effort, decision.intent,
+                decision.quality, decision.verification))
             res = h.run("repl", line, consolidate=True, history=history)
             print("\n" + (res.answer or res.error or "(no output)"))
             history = res.messages
-            sess.save(sid, history, project=args.project, cwd=cwd, answer=res.answer or "")
+            receipt = turn_decision_receipt(decision, res, getattr(h, "provider", None))
+            saved_sid = sess.save(
+                sid, history, project=args.project, cwd=cwd, answer=res.answer or "")
+            if saved_sid:
+                try:
+                    sess.append_run_receipt(sid, receipt)
+                except Exception:
+                    pass
+            receipts.append(receipt)
     finally:
         h.memory.close(); h.recorder.close()
         print("\nsession saved: %s  ·  resume: collie repl --resume %s" % (sid, sid))
@@ -377,7 +595,9 @@ def cmd_tui(args):
     """Rich terminal TUI — friendly interactive chat with a live tool/gate/diff timeline."""
     from .tui import run_tui
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-    return run_tui(args.cwd or os.getcwd(), provider, args.model, project=args.project,
+    configured_model = configured_model_for(
+        provider, args.model, provider_was_explicit=bool(args.provider))
+    return run_tui(args.cwd or os.getcwd(), provider, configured_model, project=args.project,
                    resume=args.resume, cont=getattr(args, "cont", False), goal=args.goal)
 
 
@@ -740,16 +960,16 @@ def cmd_uninstall(args):
         print("\n  re-run with --yes to do it:  collie uninstall --yes")
         return 0
 
+    failures = []
     for pid, _what in procs:
-        try:
-            os.kill(int(pid), 15)
-        except Exception:
-            pass
+        ok, why = _stop_collie_proc(pid)
+        if not ok:
+            failures.append("could not stop pid %s: %s" % (pid, why))
     for path, _sz in targets:
         try:
             _sh.rmtree(path) if os.path.isdir(path) else os.remove(path)
         except Exception as e:
-            print("  could not remove %s: %s" % (path, e), file=sys.stderr)
+            failures.append("could not remove %s: %s" % (path, e))
     if plat.is_macos():
         for svc in ("ScreenCapture", "Camera", "Microphone", "AppleEvents"):
             try:
@@ -762,6 +982,15 @@ def cmd_uninstall(args):
             os.rmdir(cdir)
         except OSError:
             pass
+    # Never claim removal when an OS denial or still-running process left material behind.
+    for path, _sz in targets:
+        if os.path.lexists(path) and not any(path in f for f in failures):
+            failures.append("still exists after removal: %s" % path)
+    if failures:
+        print("\ncollie uninstall incomplete:", file=sys.stderr)
+        for failure in failures:
+            print("  - " + failure, file=sys.stderr)
+        return 1
     print("\ncollie removed. `pip uninstall collie-harness` if you installed it that way.")
     return 0
 
@@ -792,16 +1021,105 @@ def _human(n):
 def _collie_procs():
     """collie processes started from anywhere — the wallpaper, a web server, the browser bridge."""
     out = []
+    from . import plat
+
+    def _ours(cmd):
+        # Match argv/module boundaries, not arbitrary substrings: the old predicate could kill an
+        # unrelated `python -c "print('harness.webapp docs')"` process during uninstall.
+        import shlex
+        try:
+            words = shlex.split(cmd or "", posix=not plat.is_windows())
+        except ValueError:
+            return False
+        words = [w.strip('"\'') for w in words]
+        if not words:
+            return False
+        base = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if base in ("collie", "collie.exe", "collie-harness", "collie-harness.exe",
+                    "collie-wallpaper.exe"):
+            return True
+        python_base = base.removesuffix(".exe")
+        if not re.fullmatch(r"(?:pythonw?|py)(?:\d+(?:\.\d+)*)?", python_base):
+            return False
+        modules = {"harness.cli", "harness.webapp", "harness.browserbridge",
+                   "harness.wallpaper"}
+        i = 1
+        while i < len(words):
+            word = words[i]
+            if word == "-m":
+                return i + 1 < len(words) and words[i + 1].lower() in modules
+            if word == "-c":
+                if i + 1 >= len(words):
+                    return False
+                code = words[i + 1]
+                return any(("from %s import " % module) in code for module in modules)
+            # Python options before a script are not the program identity. -W/-X consume the next
+            # argv too; after the first non-option everything else is only an argument to that
+            # script and must not be searched for Collie-looking text.
+            if word in ("-W", "-X", "--check-hash-based-pycs"):
+                i += 2
+                continue
+            if word == "--":
+                i += 1
+                break
+            if word.startswith("-"):
+                i += 1
+                continue
+            break
+        if i >= len(words):
+            return False
+        script = words[i].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        return script in ("collie", "collie.py", "collie-harness", "bridge-boot.pyw")
+
     try:
+        if plat.is_windows():
+            # ps is absent in ordinary Windows installs (and a WSL ps cannot see native pythonw
+            # processes). CIM is the native source of command lines, including windowless apps.
+            script = ("Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | "
+                      "ConvertTo-Json -Compress")
+            r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=15,
+                               **plat.no_window_kwargs())
+            if r.returncode != 0:
+                return []
+            rows = json.loads(r.stdout or "[]")
+            if isinstance(rows, dict):
+                rows = [rows]
+            for row in rows:
+                pid, cmd = str(row.get("ProcessId") or ""), str(row.get("CommandLine") or "")
+                if pid.isdigit() and int(pid) != os.getpid() and "uninstall" not in cmd.lower() \
+                        and _ours(cmd):
+                    out.append((pid, cmd.strip()))
+            return out
         r = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=10)
         for line in (r.stdout or "").splitlines()[1:]:
             pid, _, cmd = line.strip().partition(" ")
-            if ("harness.cli" in cmd or "/collie " in cmd or cmd.endswith("/collie")) \
-               and "uninstall" not in cmd and pid.isdigit() and int(pid) != os.getpid():
+            if _ours(cmd) and "uninstall" not in cmd.lower() \
+               and pid.isdigit() and int(pid) != os.getpid():
                 out.append((pid, cmd.strip()))
     except Exception:
         pass
     return out
+
+
+def _stop_collie_proc(pid):
+    from . import plat
+    try:
+        pid = int(pid)
+        if plat.is_windows():
+            r = subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True, text=True, timeout=20,
+                               **plat.no_window_kwargs())
+            if r.returncode != 0:
+                detail = (r.stderr or r.stdout or "taskkill failed").strip()
+                return False, detail
+            return True, ""
+        os.kill(pid, 15)
+        return True, ""
+    except ProcessLookupError:
+        return True, ""                         # it exited after the dry-run inventory
+    except Exception as e:
+        return False, "%s: %s" % (type(e).__name__, e)
 
 
 def cmd_app(args):
@@ -1100,10 +1418,94 @@ def cmd_run(args):
     _, runs_db, out_html, _ = _paths()
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-    _gate = default_gate(cwd, getattr(args, "mode", None))
-    h = make_harness(cwd, provider=provider, model=args.model, project=args.project,
+
+    # Resolve continuity before routing: a recent failed turn is a legitimate
+    # escalation signal, and therefore belongs in the same decision on CLI and Web.
+    from . import sessions as sess
+    history, sid = None, None
+    def _recovery_refusal(candidate):
+        state = sess.recovery_state(candidate) if candidate else None
+        if not (state and state.get("recovery_required")):
+            return False
+        payload = {"answer": "", "error": state.get("reason") or "recovery required",
+                   "session": candidate, "recovery_required": True, "recovery": state}
+        if getattr(args, "json", False) or getattr(args, "stream_json", False):
+            print(_json.dumps(payload, ensure_ascii=False))
+        else:
+            print("recovery required: %s" % payload["error"], file=sys.stderr)
+        return True
+    if getattr(args, "resume", None):
+        if _recovery_refusal(args.resume):
+            return 2
+        s = sess.load(args.resume)
+        if s:
+            history, sid = (s.get("messages") or []), args.resume
+        else:
+            print("  [session] no such session %r — starting fresh" % args.resume,
+                  file=sys.stderr if getattr(args, "json", False) else sys.stdout)
+    elif getattr(args, "cont", False):
+        sid = sess.latest()
+        if sid:
+            if _recovery_refusal(sid):
+                return 2
+            history = (sess.load(sid) or {}).get("messages")
+    sid = sid or sess.new_id()
+
+    from . import settings
+    from .router import resolve_run_decision
+    explicit = []
+    for axis in ("intent", "quality", "verification", "effort", "speed"):
+        if getattr(args, axis, None) is not None:
+            explicit.append(axis)
+    requested_intent = getattr(args, "intent", None) or "build"
+    if getattr(args, "mode", None) == "plan":
+        if getattr(args, "intent", None) not in (None, "plan"):
+            print("--mode plan conflicts with --intent %s" % args.intent, file=sys.stderr)
+            return 2
+        requested_intent = "plan"
+        explicit.append("intent")
+    configured_model = args.model
+    if configured_model is None and (not args.provider or
+                                      args.provider == settings.get("PROVIDER", provider)):
+        configured_model = settings.get("MODEL", "") or None
+    decision = resolve_run_decision(
+        args.task, provider=provider,
+        model=configured_model,
+        effort=(getattr(args, "effort", None) or
+                settings.get("REASONING_EFFORT", "auto") or "auto"),
+        speed=getattr(args, "speed", None) or "standard",
+        intent=requested_intent,
+        quality=getattr(args, "quality", None) or "balanced",
+        verification=getattr(args, "verification", None) or "auto",
+        explicit_axes=explicit, history=history)
+    decision_payload = decision.to_dict()
+
+    verify_command = (getattr(args, "verify_command", None) or "").strip()
+    verify_source = "user" if verify_command else ""
+    if not verify_command:
+        from .verification import detect_verification_commands
+        proposals = detect_verification_commands(cwd)
+        if proposals:
+            verify_command = proposals[0]["command"]
+            verify_source = proposals[0]["source"]
+    if verify_command:
+        decision_payload["verification_proposal"] = {
+            "command": verify_command, "source": verify_source,
+        }
+    if decision.intent == "test" and not verify_command:
+        print("Test needs a detected or explicit --verify-command", file=sys.stderr)
+        return 2
+
+    gate_mode = (decision.intent if decision.intent in ("plan", "review", "test")
+                 else getattr(args, "mode", None))
+    _gate = default_gate(cwd, gate_mode,
+                         commands=[verify_command] if decision.intent == "test" else None)
+    h = make_harness(cwd, provider=provider, model=decision.model,
+                     effort=decision.effort, speed=decision.speed, project=args.project,
                      web_search=True if getattr(args, "web_search", False) else None,
                      exec_code=True, delegate=True, gate=_gate)
+    configure_run_options(h, intent=decision.intent, quality=decision.quality,
+                          verification=decision.verification)
     # An approver only when there is genuinely someone there. Piped or in CI, stdin is not a
     # person: leaving it unset means off-machine calls are refused with a reason the model can
     # work around, rather than run because nobody objected. `--mode auto` is the explicit
@@ -1119,21 +1521,7 @@ def cmd_run(args):
             return 2
     if getattr(args, "goal", None):              # pin a standing goal into CORE memory (every turn)
         h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
-    # --continue / --resume: load a prior conversation THREAD so this run keeps full context
-    # (not just memory). Fresh runs mint a new session; continued runs append to the same one.
-    from . import sessions as sess
-    history, sid = None, None
-    if getattr(args, "resume", None):
-        s = sess.load(args.resume)
-        if s:
-            history, sid = (s.get("messages") or []), args.resume
-        else:
-            print("  [session] no such session %r — starting fresh" % args.resume)
-    elif getattr(args, "cont", False):
-        sid = sess.latest()
-        if sid:
-            history = (sess.load(sid) or {}).get("messages")
-    sid = sid or sess.new_id()
+    h.checkpoint_scope = "session:" + sid
     # --stream-json: emit one NDJSON event per action (tool/edit/repro/receipt) as it happens,
     # so a terminal, an editor extension, or the ACP adapter can render the run LIVE (the
     # verification gate flipping fail->pass) instead of waiting for one final blob. Progress to
@@ -1142,11 +1530,37 @@ def cmd_run(args):
         import sys as _sys
         h.emit = lambda kind, d: print(_json.dumps({"type": kind, **d}, ensure_ascii=False),
                                        file=_sys.stderr, flush=True)
+        h.emit("decision", decision_payload)
     res = h.run("adhoc", args.task, history=history)
+    verification_evidence = None
+    if (decision.intent == "test" or decision.verification == "required") and verify_command:
+        from .verification import run_verification_command
+        verification_evidence = run_verification_command(
+            verify_command, cwd, source=verify_source or "detected", after_last_edit=True)
+        if callable(getattr(h, "emit", None)):
+            h.emit("verification_evidence", {"evidence": verification_evidence})
+        if decision.intent == "test":
+            res.verified = bool(verification_evidence["passed"])
+        elif not verification_evidence["passed"]:
+            res.verified = False
+            check_error = "required check failed: %s (exit %s)" % (
+                verify_command, verification_evidence.get("exit_code"))
+            res.error = ((res.error + "; ") if res.error else "") + check_error
     sess.save(sid, res.messages, project=args.project, cwd=cwd, answer=res.answer or "")
+    actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
+    try:
+        sess.append_run_receipt(sid, {
+            "decision": decision_payload, "model": res.model,
+            "actual_speed": actual_speed, "verified": bool(getattr(res, "verified", False)),
+            "verification_evidence": verification_evidence, "error": res.error or "",
+        })
+    except Exception:
+        pass
     if getattr(args, "json", False) or getattr(args, "stream_json", False):
         print(_json.dumps({
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
+            "decision": decision_payload, "actual_speed": actual_speed,
+            "verification_evidence": verification_evidence,
             "prefix_tokens": res.prefix_tokens, "prefix_measured": res.prefix_measured,
             "input_tokens": res.input_tokens,
             "output_tokens": res.output_tokens, "cache_read": res.cache_read,
@@ -1157,6 +1571,9 @@ def cmd_run(args):
     elif getattr(args, "print", False):
         print(res.answer or res.error)          # headless: answer only (like claude -p)
     else:
+        print("decision=%s · effort=%s · speed=%s · %s/%s/%s" % (
+            res.model or decision.model, decision.effort, actual_speed,
+            decision.intent, decision.quality, decision.verification))
         print("prefix=%d in=%d out=%d turns=%d tools=%d recall=%d %dms" % (
             res.prefix_tokens, res.input_tokens, res.output_tokens, res.turns,
             res.tool_calls, res.mem_recalls, res.wall_ms))
@@ -1164,7 +1581,7 @@ def cmd_run(args):
         print("\n  session %s · continue: collie run \"…\" --continue  (or --resume %s)" % (sid, sid))
         dash.build(runs_db, out_html)
     h.memory.close(); h.recorder.close()
-    return 0
+    return 1 if res.error else 0
 
 
 def cmd_prefix(args):
@@ -1210,6 +1627,30 @@ def cmd_pack(args):
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
 
     roster = [x.strip() for x in (getattr(args, "roster", None) or "").split(",") if x.strip()]
+    from . import settings
+    from .router import resolve_run_decision
+    explicit = ["strategy"]
+    for axis in ("quality", "verification", "effort", "speed"):
+        if getattr(args, axis, None) is not None:
+            explicit.append(axis)
+    configured_model = args.model
+    if configured_model is None and (not args.provider or
+                                      args.provider == settings.get("PROVIDER", provider)):
+        configured_model = settings.get("MODEL", "") or None
+    decision = resolve_run_decision(
+        args.task, provider=provider,
+        model=configured_model,
+        effort=(getattr(args, "effort", None) or
+                settings.get("REASONING_EFFORT", "auto") or "auto"),
+        speed=getattr(args, "speed", None) or "standard",
+        intent="build", quality=getattr(args, "quality", None) or "balanced",
+        verification=getattr(args, "verification", None) or "auto",
+        strategy="pack", explicit_axes=explicit)
+    decision_payload = decision.to_dict()
+    if roster:
+        decision_payload["sources"]["roster"] = "user"
+        decision_payload["reasons"].append(
+            "roster: explicit provider list; automatic routing did not add a provider")
 
     def _emit(i, rec):
         tag = ("check=%s " % ("pass" if rec.get("check_pass") else "fail")) if args.check else ""
@@ -1219,13 +1660,24 @@ def cmd_pack(args):
             (" ERROR " + rec["error"]) if rec.get("error") else ""), flush=True)
 
     res = _pack.run_pack(args.task, cwd, n=args.n, check=args.check, provider=provider,
-                         model=args.model, apply=args.apply, emit=_emit,
+                         model=decision.model, effort=decision.effort, speed=decision.speed,
+                         apply=args.apply, emit=_emit, quality=decision.quality,
+                         verification=decision.verification,
                          roster=roster or None, parallel=getattr(args, "parallel", 1))
+    res["decision"] = decision_payload
     if getattr(args, "json", False):
         print(_json.dumps(res, ensure_ascii=False))
-        return 0
+        return 0 if (res.get("winner") is not None
+                     and (not args.apply or res.get("applied"))) else 1
+    print("decision=%s · effort=%s · speed=%s · %s/%s" % (
+        decision.model, decision.effort, decision.speed,
+        decision.quality, decision.verification))
     if res["winner"] is None:
         print("\nno winner: %s (nothing applied)" % res["reason"])
+        return 1
+    if args.apply and not res.get("applied"):
+        print("\nwinner selected, but apply failed: %s" %
+              (res.get("apply_error") or res.get("reason")), file=sys.stderr)
         return 1
     won_on = ""
     if res.get("winner_provider") and len(set(res.get("roster") or [])) > 1:
@@ -1308,6 +1760,144 @@ def cmd_audit(args):
         return 0
     finally:
         log.close()
+
+
+def cmd_activity(args):
+    """One durable Activity view across foreground runs and every unattended lane."""
+    from .controlplane import activity, health
+    value = health(args.state_dir, probe_services=not args.no_probe) if args.health \
+        else activity(args.state_dir, limit=args.limit)
+    print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+    return 0 if (not args.health or value.get("ok")) else 1
+
+
+def cmd_recovery(args):
+    """Inspect or explicitly reconcile crash-uncertain interactive tool boundaries."""
+    from . import sessions
+    sessions_dir = os.path.join(os.path.abspath(os.path.expanduser(args.state_dir)), "sessions") \
+        if args.state_dir else None
+    if args.action == "ls":
+        value = {"runs": sessions.active_runs(limit=args.limit, directory=sessions_dir)}
+    elif not args.session:
+        print("recovery %s requires a session id" % args.action, file=sys.stderr)
+        return 2
+    elif args.action == "show":
+        state = sessions.recovery_state(args.session, directory=sessions_dir)
+        if state is None:
+            print("no active recovery state for %s" % args.session, file=sys.stderr)
+            return 1
+        value = {"session": args.session, "recovery": state}
+    else:
+        if not args.yes:
+            print("reconciliation changes the durable replay fence; inspect the outside system, "
+                  "then repeat with --yes", file=sys.stderr)
+            return 2
+        try:
+            state = sessions.reconcile_recovery(
+                args.session, args.resolution, note=args.note, confirmed=True,
+                directory=sessions_dir)
+        except (KeyError, ValueError) as exc:
+            print("reconcile refused: %s" % exc, file=sys.stderr)
+            return 1
+        value = {"session": args.session, "resolution": args.resolution,
+                 "recovery": state}
+    print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def cmd_hooks(args):
+    """Review hook definitions by exact hash before Collie is allowed to execute them."""
+    from . import hooks
+    cwd = os.path.abspath(args.cwd or os.getcwd())
+    manager = hooks.HookManager(cwd)
+    paths = [os.path.abspath(os.path.join(cwd, args.path))] if args.path \
+        and not os.path.isabs(args.path) else \
+        ([os.path.abspath(args.path)] if args.path else hooks._config_paths(cwd))
+    if args.action == "status":
+        rows = []
+        trust = hooks.HookTrustStore()
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            digest = hooks._digest(path)
+            rows.append({"path": path, "sha256": digest,
+                         "trusted": trust.is_trusted(path, digest),
+                         "errors": hooks.validate_config(path)})
+        print(json.dumps({"cwd": cwd, "active_events": manager.events(),
+                          "pending": manager.pending, "configs": rows},
+                         ensure_ascii=False, indent=2))
+        return 0
+    if args.action == "check":
+        found, bad = [], False
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            errors = hooks.validate_config(path)
+            found.append({"path": path, "sha256": hooks._digest(path), "errors": errors})
+            bad = bad or bool(errors)
+        if not found:
+            print("no hook configuration found", file=sys.stderr)
+            return 1
+        print(json.dumps({"configs": found}, ensure_ascii=False, indent=2))
+        return 1 if bad else 0
+    if not args.path:
+        if len(manager.pending) != 1:
+            print("supply the exact hook JSON path to trust/untrust", file=sys.stderr)
+            return 2
+        path = manager.pending[0]["path"]
+    else:
+        path = os.path.abspath(os.path.join(cwd, args.path)) \
+            if not os.path.isabs(args.path) else os.path.abspath(args.path)
+    if args.action == "trust":
+        errors = hooks.validate_config(path)
+        if errors:
+            print(json.dumps({"path": path, "trusted": False, "errors": errors},
+                             ensure_ascii=False, indent=2))
+            return 1
+        digest = hooks.HookTrustStore().set(path, True)
+        value = {"path": path, "trusted": True, "sha256": digest}
+    else:
+        digest = hooks.HookTrustStore().set(path, False)
+        value = {"path": path, "trusted": False, "sha256": digest}
+    print(json.dumps(value, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_supervisor(args):
+    from . import supervisor
+    argv = [args.action]
+    if args.state_dir and args.action != "run":
+        argv += ["--state-dir", args.state_dir]
+    if args.action == "install":
+        if args.no_boot:
+            argv.append("--no-boot")
+        for worker in args.disable_worker:
+            argv += ["--disable-worker", worker]
+    if args.action == "run" and args.config:
+        argv += ["--config", args.config]
+    return supervisor.main(argv)
+
+
+def cmd_automations(args):
+    from . import automations
+    argv = [args.action]
+    if args.action == "upsert":
+        argv.append(args.value)
+    elif args.action == "status" and args.value:
+        argv.append(args.value)
+    if args.state_dir:
+        argv += ["--state-dir", args.state_dir]
+    if args.db:
+        argv += ["--db", args.db]
+    if args.ops_db:
+        argv += ["--ops-db", args.ops_db]
+    if args.workspace_root:
+        argv += ["--workspace-root", args.workspace_root]
+    if args.action == "daemon":
+        argv += ["--interval", str(args.interval)]
+    if args.action == "tick" and args.execute:
+        argv.append("--execute")
+    return automations.main(argv)
 
 
 def cmd_trust(args):
@@ -2174,7 +2764,8 @@ def cmd_mcp(args):
 
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
-        "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit"}
+        "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit",
+        "activity", "recovery", "hooks", "supervisor", "automations"}
 
 
 def _setup_wizard(force=False):
@@ -2297,7 +2888,20 @@ def main(argv=None):
     pr.add_argument("task")
     pr.add_argument("--provider", default=None,
                     help="mock|ollama|anthropic|deepseek|qwen|... (env COLLIE_PROVIDER)")
-    pr.add_argument("--model", default=None)
+    pr.add_argument("--model", default=None,
+                    help="pin this exact model; omitted lets saved config/task routing choose")
+    pr.add_argument("--intent", choices=["build", "plan", "test", "review"], default=None,
+                    help="execution intent (default: Auto from the task)")
+    pr.add_argument("--quality", choices=["quick", "balanced", "thorough"], default=None,
+                    help="run depth (default: Auto from task complexity)")
+    pr.add_argument("--verification", choices=["auto", "required"], default=None,
+                    help="whether an executed check is a hard finish condition")
+    pr.add_argument("--effort", choices=["auto", "low", "medium", "high", "xhigh", "max"],
+                    default=None, help="model reasoning effort (default: Auto by task)")
+    pr.add_argument("--speed", choices=["standard", "fast"], default=None,
+                    help="provider service tier; Fast keeps the same model and may cost more")
+    pr.add_argument("--verify-command", default=None,
+                    help="editable objective check for Test/Required (otherwise detect from repo)")
     pr.add_argument("--cwd", default=None); pr.add_argument("--project", default="demo")
     pr.add_argument("-p", "--print", action="store_true", help="print only the answer")
     pr.add_argument("--json", action="store_true", help="print a JSON result")
@@ -2344,6 +2948,14 @@ def main(argv=None):
     pk.add_argument("--apply", action="store_true",
                     help="copy the winning attempt's files back over the working dir")
     pk.add_argument("--provider", default=None); pk.add_argument("--model", default=None)
+    pk.add_argument("--quality", choices=["quick", "balanced", "thorough"], default=None,
+                    help="candidate run depth (default: Auto)")
+    pk.add_argument("--verification", choices=["auto", "required"], default=None,
+                    help="candidate harness verification contract")
+    pk.add_argument("--effort", choices=["auto", "low", "medium", "high", "xhigh", "max"],
+                    default=None, help="model reasoning effort (default: Auto by task)")
+    pk.add_argument("--speed", choices=["standard", "fast"], default=None,
+                    help="same-model provider speed tier; may consume more credits")
     pk.add_argument("--roster", default=None,
                     help="comma-separated backends to spread the attempts over, e.g. "
                          "'anthropic-oauth,codex-oauth,deepseek:deepseek-reasoner'. Assigned "
@@ -2534,6 +3146,66 @@ def main(argv=None):
                      help="calls that ran without a prompt and cannot cite a rule "
                           "(should always be empty)")
     pau.set_defaults(fn=cmd_audit)
+
+    pact = sub.add_parser(
+        "activity", help="durable work and service health across interactive and unattended lanes")
+    pact.add_argument("--state-dir", default=None)
+    pact.add_argument("--limit", type=int, default=100)
+    pact.add_argument("--health", action="store_true",
+                      help="show supervisor/worker health plus work needing recovery")
+    pact.add_argument("--no-probe", action="store_true",
+                      help="skip live HTTP probes when using --health")
+    pact.set_defaults(fn=cmd_activity)
+
+    prec = sub.add_parser(
+        "recovery", help="inspect or explicitly reconcile crash-uncertain tool boundaries")
+    prec.add_argument("action", nargs="?", default="ls",
+                      choices=["ls", "show", "reconcile"])
+    prec.add_argument("session", nargs="?", default="")
+    prec.add_argument("--resolution", default="cancel",
+                      choices=["completed", "not_fired", "cancel"],
+                      help="what inspection proved happened at the uncertain boundary")
+    prec.add_argument("--note", default="")
+    prec.add_argument("--yes", action="store_true",
+                      help="confirm an explicit reconcile after checking the outside system")
+    prec.add_argument("--limit", type=int, default=100)
+    prec.add_argument("--state-dir", default=None)
+    prec.set_defaults(fn=cmd_recovery)
+
+    phk = sub.add_parser(
+        "hooks", help="validate and trust project hooks by their exact configuration hash")
+    phk.add_argument("action", nargs="?", default="status",
+                     choices=["status", "check", "trust", "untrust"])
+    phk.add_argument("path", nargs="?", default="")
+    phk.add_argument("--cwd", default="")
+    phk.set_defaults(fn=cmd_hooks)
+
+    psup = sub.add_parser(
+        "supervisor", help="install and inspect Collie's per-user 24x7 worker supervisor")
+    psup.add_argument("action", nargs="?", default="status",
+                      choices=["install", "uninstall", "status", "run"])
+    psup.add_argument("--state-dir", default="")
+    psup.add_argument("--config", default="")
+    psup.add_argument("--no-boot", action="store_true",
+                      help="install only the logon trigger, without the optional boot trigger")
+    psup.add_argument("--disable-worker", action="append", default=[],
+                      choices=["web", "jobd", "automations", "bridge"])
+    psup.set_defaults(fn=cmd_supervisor)
+
+    paut = sub.add_parser(
+        "automations", help="durable timer/file/page/webhook triggers and unattended execution")
+    paut.add_argument("action", nargs="?", default="list",
+                      choices=["daemon", "tick", "list", "status", "upsert"])
+    paut.add_argument("value", nargs="?", default="",
+                      help="automation id for status, or JSON file/- for upsert")
+    paut.add_argument("--state-dir", default="")
+    paut.add_argument("--db", default="")
+    paut.add_argument("--ops-db", default="")
+    paut.add_argument("--workspace-root", default="")
+    paut.add_argument("--interval", type=float, default=5)
+    paut.add_argument("--execute", action="store_true",
+                      help="after polling triggers, execute one durable request")
+    paut.set_defaults(fn=cmd_automations)
 
     ptr = sub.add_parser("trust", help="trust this directory's .collie/allow.toml "
                                        "(ls | revoke to undo)")

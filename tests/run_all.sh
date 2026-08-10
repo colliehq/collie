@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # One command to run every collie regression suite. Exit 0 = all green.
+# Kept LF by .gitattributes: this entrypoint runs under Git Bash on Windows CI too.
 #   bash tests/run_all.sh
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
@@ -79,6 +80,7 @@ echo "$live_out" | grep -E "SKIP|FAIL|passed ==" | sed 's/^/  /'
 echo "── relay pairing handshake (JS) ─────────────────────────"
 if command -v node >/dev/null 2>&1; then
   node tests/relay_pairing_test.js || rc=1
+  node tests/relay_sealed_test.js || rc=1
 else
   echo "  (node not found — skipping relay suite)"
 fi
@@ -99,6 +101,7 @@ if app_out=$($PY tests/test_app_port.py 2>&1); then echo "  app_port OK"; else e
 if $PY tests/test_output_encoding.py >/dev/null 2>&1; then echo "  output_encoding OK"; else echo "  output_encoding FAIL"; rc=1; fi
 if $PY tests/test_data_dir.py >/dev/null 2>&1; then echo "  data_dir OK"; else echo "  data_dir FAIL"; rc=1; fi
 if $PY tests/test_relay_keepalive.py >/dev/null 2>&1; then echo "  relay_keepalive OK"; else echo "  relay_keepalive FAIL"; rc=1; fi
+if $PY -m pytest -q tests/test_remote_protocol_v2.py >/dev/null 2>&1; then echo "  remote_protocol_v2 OK"; else echo "  remote_protocol_v2 FAIL"; rc=1; fi
 if $PY tests/test_repos_deadline.py >/dev/null 2>&1; then echo "  repos_deadline OK"; else echo "  repos_deadline FAIL"; rc=1; fi
 if $PY tests/test_runs_registry.py >/dev/null 2>&1; then echo "  runs_registry OK"; else echo "  runs_registry FAIL"; rc=1; fi
 if $PY tests/test_mirror_backlog.py >/dev/null 2>&1; then echo "  mirror_backlog OK"; else echo "  mirror_backlog FAIL"; rc=1; fi
@@ -162,6 +165,7 @@ if $PY -c "import pytest" >/dev/null 2>&1; then
   if $PY -m pytest -q tests/test_gate.py tests/test_loop_gate.py tests/test_risk.py \
       tests/test_inbox.py tests/test_trust.py tests/test_audit.py tests/test_overrides.py \
       tests/test_personas.py tests/test_cli_mission.py tests/test_web_mission_api.py \
+      tests/test_core_fixes.py tests/test_run_options.py tests/test_ui_site_fixes.py \
       >/dev/null 2>&1; then echo "  gate/risk/inbox/trust/audit + mission CLI/HTTP OK"
   else echo "  gate/risk/inbox/trust/audit FAIL"; rc=1; fi
 else
@@ -169,7 +173,7 @@ else
   echo "  gate suite NOT RUN — pytest is not installed (pip install pytest)"; rc=1
 fi
 
-echo "── what `collie slack` does with an ask ─────────────────"
+echo "── what collie slack does with an ask ───────────────────"
 if $PY tests/test_slack_worker.py >/dev/null 2>&1; then echo "  slack worker OK"; else echo "  slack worker FAIL"; rc=1; fi
 if $PY tests/test_whoami.py >/dev/null 2>&1; then echo "  whoami (which dog is this) OK"; else echo "  whoami FAIL"; rc=1; fi
 if $PY tests/test_slack_answer.py >/dev/null 2>&1; then echo "  slack answer (executed) OK"; else echo "  slack answer FAIL"; rc=1; fi

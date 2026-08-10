@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.20.32 — Auto that really routes, and durable work that really comes back
+
+- **Auto now means a per-task decision, not a disguised model pin.** Within the configured provider,
+  Codex routes small, clear work to GPT-5.6 Luna at low effort, everyday engineering to Terra at
+  medium effort, and risky/architectural work or recent failures to Sol at high effort. English and
+  Chinese task cues are covered; an explicit model/effort still wins. The same resolver and compact
+  receipt now serve headless Run, Web, REPL, TUI and ACP. Changing an unrelated Setting can no longer
+  persist a synthetic Claude default, and the model picker has an explicit Auto/unpin action.
+
+- **Speed, depth and correctness are separate controls.** Quick/Balanced/Thorough changes loop room;
+  Standard/Fast changes the same model's provider service tier and records the credit/price multiplier;
+  reasoning effort, Build/Plan/Test/Review, verification, worktree isolation and Pack remain independent.
+  Required completion needs executed post-edit evidence, while Plan/Review are gate-enforced read-only.
+
+- **Long work has a crash-safe spine.** Continuous session checkpoints fence uncertain tool calls from
+  replay; explicit recovery reconciliation is available in CLI and Web. Mission adds hard per-step
+  watchdogs, cumulative token/cost/time/retry/storage budgets, compact context checkpoints, independent
+  goal verification, resource locks, escalation deadlines and an executable durable specialist run tree
+  with progress, steer, cancellation, mailbox acknowledgement and ancestor accounting.
+
+- **Windows gets an actual per-user supervisor and durable automations.** Task Scheduler (with Startup
+  fallback) owns Web, Jobs/Missions, automation execution, the browser bridge and opted-in Slack workers;
+  health probes, crash backoff/circuit breaking, sleep catch-up, rotating logs, OAuth refresh ownership and
+  retry/DLQ notifications are observable through `collie activity --health` and the authenticated Web
+  Activity panel. Timer/file/page/webhook automations separate trigger ingestion from bounded execution,
+  use isolated Git worktrees and fail closed on ambient shell/browser/MCP authority.
+  Existing Slack listeners are adopted by their fresh per-dog heartbeat, so upgrades have one recovery
+  owner instead of racing the legacy launcher into a false circuit-open alarm.
+
+- **Hooks and handoffs are first-class artifacts.** Exact-hash-reviewed lifecycle hooks can gate tool and
+  completion boundaries. Editable versioned Plans require explicit user approval before Build; Review
+  findings are structured, selectable and handed to a real follow-up Build. The Web control plane exposes
+  allowlisted Health, Activity, Recovery, Hooks and specialist controls without task, prompt, result or
+  tool-argument content.
+
+- **Windows upgrades stop accumulating mixed runtimes.** The payload build now fails on native/pip errors,
+  asserts code/metadata versions and required assets, excludes the live browser-bridge token, includes the
+  OAuth adapter assets, and the installer removes only stale Collie/pip package directories before overlay.
+  User state under `~/.collie` remains untouched.
+
 ## v0.20.31 — @-able, an address of its own, and a gate on the part that leaves your machine
 
 - **A dog has a face, derived from its name.** A name, an address and an @handle wanted a picture to

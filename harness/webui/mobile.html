@@ -2,21 +2,30 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f1220">
 <title>Collie</title>
 <style>
   :root { --bg:#0f1220; --bar:#141827; --card:#1a1f33; --line:#272c44; --ink:#e7ecf7; --dim:#8791ad;
-          --brand:#6f7fd6; --brand2:#3D4E8F; --user:#2b3566; --good:#3fbf7f; --bad:#e0576b;
+          --brand:#6f7fd6; --brand2:#3D4E8F; --user:#2b3566; --good:#3fbf7f; --bad:#e0576b; --warn:#e0ad54;
           --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px); }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html, body { height:100%; margin:0; }
   body { background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
          display:flex; flex-direction:column; overflow:hidden; }
-  .top { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:calc(8px + var(--safe-t)) 10px 8px;
+  .top { flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:calc(8px + var(--safe-t)) 10px 8px;
          background:var(--bar); border-bottom:1px solid var(--line); }
-  .top .title { flex:1; text-align:center; font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; justify-content:center; gap:7px; }
+  .identity { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; }
+  .top .title { min-width:0; text-align:left; font-size:14.5px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; justify-content:flex-start; gap:7px; }
   .top .title img { width:18px; height:18px; }
+  .device { margin:1px 0 0 25px; color:var(--dim); font-size:10.5px; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .topstate { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid var(--line); border-radius:999px; color:var(--dim); background:rgba(255,255,255,.025); font-size:11px; font-weight:650; white-space:nowrap; }
+  .topstate i { width:7px; height:7px; border-radius:50%; background:var(--good); box-shadow:0 0 0 3px rgba(63,191,127,.12); }
+  .topstate[data-state="running"] { color:var(--brand); }
+  .topstate[data-state="running"] i { background:var(--brand); box-shadow:0 0 0 3px rgba(111,127,214,.14); animation:statepulse 1.4s ease-in-out infinite; }
+  .topstate[data-state="needs"] { color:var(--warn); border-color:rgba(224,173,84,.38); background:rgba(224,173,84,.08); }
+  .topstate[data-state="needs"] i { background:var(--warn); box-shadow:0 0 0 3px rgba(224,173,84,.14); }
+  @keyframes statepulse { 50% { opacity:.35; } }
   .iconbtn { width:40px; height:40px; border:none; background:transparent; color:var(--ink); font-size:20px; border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .iconbtn:active { background:var(--card); }
   .log { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:14px 12px 8px; -webkit-overflow-scrolling:touch; }
@@ -36,12 +45,68 @@
   .md pre code { background:none; padding:0; }
   .cursor { display:inline-block; width:7px; height:16px; background:var(--brand); border-radius:1px; vertical-align:-2px; animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
-  .empty { color:var(--dim); text-align:center; margin-top:22vh; font-size:15px; }
+  .empty { color:var(--dim); text-align:center; max-width:320px; margin:20vh auto 0; font-size:14px; }
   .empty img { width:52px; height:52px; opacity:.95; display:block; margin:0 auto 12px; }
+  .empty .lead { color:var(--ink); font-size:18px; line-height:1.3; font-weight:680; letter-spacing:-.01em; }
+  .empty .sub { margin-top:7px; line-height:1.55; }
   .banner { margin:0 auto 12px; max-width:86%; background:rgba(111,127,214,.14); color:var(--brand); border:1px solid var(--line); border-radius:12px; padding:8px 12px; font-size:13px; text-align:center; }
+  .permission-turn { margin:0 0 16px; }
+  .permission-card { border:1px solid rgba(224,173,84,.46); border-radius:15px; background:linear-gradient(145deg,rgba(224,173,84,.12),rgba(26,31,51,.96)); padding:13px; box-shadow:0 12px 28px rgba(0,0,0,.16); }
+  .permission-eyebrow { display:flex; align-items:center; gap:7px; color:var(--warn); font-size:11px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+  .permission-eyebrow::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--warn); box-shadow:0 0 0 3px rgba(224,173,84,.14); }
+  .permission-title { margin-top:8px; color:var(--ink); font-size:15px; font-weight:680; line-height:1.35; }
+  .permission-body { margin-top:4px; color:var(--dim); font-size:12.5px; overflow-wrap:anywhere; }
+  .permission-target { margin-top:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:rgba(11,14,26,.52); color:var(--ink); font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+  .permission-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; margin-top:12px; }
+  .permission-actions.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .permission-actions button { min-height:39px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.035); color:var(--ink); font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+  .permission-actions button.allow { background:var(--brand2); border-color:var(--brand2); color:#fff; }
+  .permission-actions button.always { color:var(--brand); border-color:rgba(111,127,214,.5); }
+  .permission-actions button.deny { color:#f28b98; }
+  .permission-actions button:disabled { opacity:.5; cursor:default; }
+  .permission-status { margin-top:11px; color:var(--dim); font-size:12px; }
+  .permission-status.ok { color:var(--good); }
+  .permission-status.bad { color:var(--bad); }
   .composer { flex:0 0 auto; padding:8px 10px calc(8px + var(--safe-b)); background:var(--bar); border-top:1px solid var(--line); }
+  .runsetup { margin:0 0 7px; border:1px solid var(--line); border-radius:13px; background:var(--card); overflow:hidden; }
+  .runsetup summary { min-height:40px; padding:8px 12px; display:flex; align-items:center; gap:8px; cursor:pointer;
+                      list-style:none; font-size:13px; color:var(--dim); }
+  .runsetup summary::-webkit-details-marker { display:none; }
+  .runsetup summary::before { content:"›"; color:var(--brand); font-size:18px; line-height:1; transform:rotate(0); transition:transform .15s; }
+  .runsetup[open] summary::before { transform:rotate(90deg); }
+  .runsetup summary .rsl { font-weight:650; color:var(--ink); }
+  .runsetup summary .rsv { margin-left:auto; max-width:65%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right; }
+  .runpanel { max-height:min(46vh,390px); overflow-y:auto; padding:3px 10px 11px; border-top:1px solid var(--line); }
+  .rungrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; padding-top:9px; }
+  .runfield { min-width:0; display:flex; flex-direction:column; gap:4px; color:var(--dim); font-size:11.5px; }
+  .runfield select, .runfield input[type="text"], .runfield input[type="number"] {
+    width:100%; min-width:0; min-height:38px; border:1px solid var(--line); border-radius:9px;
+    background:var(--bg); color:var(--ink); font:inherit; font-size:14px; line-height:1.2; padding:7px 8px;
+  }
+  .runfield select:disabled { opacity:.55; }
+  .runpack { grid-column:1/-1; display:grid; grid-template-columns:72px minmax(0,1fr); gap:8px; padding-top:2px; }
+  .runpack[hidden] { display:none; }
+  .runpack .check { grid-column:1/-1; }
+  .runcheck { grid-column:1/-1; }
+  .runcheck[hidden] { display:none; }
+  .runapply { align-self:end; min-height:38px; display:flex; align-items:center; gap:7px; color:var(--ink); font-size:13px; }
+  .runapply input { width:18px; height:18px; accent-color:var(--brand); }
+  .runhint { grid-column:1/-1; margin:0; color:var(--dim); font-size:11px; line-height:1.4; }
+  .mobile-pack { margin:0 0 10px; border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:8px; }
+  .mobile-pack .mph { color:var(--dim); font-size:11.5px; margin-bottom:5px; }
+  .mobile-pack .mpr { display:grid; grid-template-columns:28px 9px minmax(0,1fr) auto; align-items:center; gap:6px; padding:3px 2px; font-size:12px; }
+  .mobile-pack .mpr.winner { border-radius:7px; background:rgba(63,191,127,.13); }
+  .mobile-pack .mpdot { width:8px; height:8px; border-radius:50%; background:var(--dim); opacity:.55; }
+  .mobile-pack .mpdot.ok { background:var(--good); opacity:1; }
+  .mobile-pack .mpdot.fail { background:var(--bad); opacity:1; }
+  .mobile-pack .mpdot.ran { background:var(--brand); opacity:1; }
+  .mobile-pack .mpdot.stop { background:var(--warn); opacity:1; }
+  .mobile-pack .mpmeta { color:var(--dim); font-size:10.5px; }
+  .mobile-pack .mpsum { margin-top:7px; padding-top:7px; border-top:1px solid var(--line); font-size:12px; }
+  .mobile-pack .mpsum.fail { color:var(--bad); }
+  .mobile-pack .mpsum.warn { color:var(--warn); }
   .inrow { display:flex; align-items:flex-end; gap:8px; background:var(--card); border:1px solid var(--line); border-radius:22px; padding:6px 6px 6px 14px; }
-  textarea { flex:1; border:none; background:transparent; color:var(--ink); font:16px/1.4 inherit; resize:none; max-height:140px; outline:none; padding:7px 0; }
+  textarea { flex:1; border:none; background:transparent; color:var(--ink); font:inherit; font-size:16px; line-height:1.4; resize:none; max-height:140px; outline:none; padding:7px 0; }
   textarea::placeholder { color:var(--dim); }
   .send { flex:0 0 auto; width:38px; height:38px; border:none; border-radius:50%; background:var(--brand2); color:#fff; font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .send:disabled { opacity:.4; }
@@ -54,27 +119,69 @@
   .drawer h3 { margin:0; padding:16px 16px 10px; font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
   .newbtn { margin:0 12px 8px; padding:11px; border:1px dashed var(--line); background:transparent; color:var(--ink); border-radius:11px; font-size:15px; font-weight:600; cursor:pointer; }
   .threads { flex:1; overflow-y:auto; padding:4px 8px calc(12px + var(--safe-b)); }
-  .thread { padding:11px 12px; border-radius:11px; cursor:pointer; }
+  .thread { width:100%; padding:11px 12px; border:0; border-radius:11px; cursor:pointer; background:transparent; color:inherit; text-align:left; font:inherit; }
   .thread.active { background:var(--card); }
   .thread .tt { font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .thread .tn { font-size:12px; color:var(--dim); margin-top:2px; }
+  :where(button,textarea,select,input,summary,[tabindex]):focus-visible { outline:3px solid #aab6ff; outline-offset:2px; }
+  @media (max-width:350px) { .rungrid { grid-template-columns:1fr; } .runpack { grid-column:auto; grid-template-columns:64px minmax(0,1fr); } .runpack .check,.runhint { grid-column:1/-1; } .topstate { width:30px; padding:0; justify-content:center; } .topstate span { display:none; } .device { margin-left:0; } }
 </style>
 </head>
 <body>
   <div class="top">
-    <button class="iconbtn" id="menuBtn" aria-label="menu">☰</button>
-    <div class="title" id="title"><img src="logo.svg" alt="">Collie</div>
-    <button class="iconbtn" id="newBtn" aria-label="new">✎</button>
+    <button class="iconbtn" id="menuBtn" aria-label="Open chats" data-t-aria-label="Open chats">☰</button>
+    <div class="identity">
+      <div class="title" id="title"><img id="identityAvatar" src="logo.svg" alt=""><span id="titleText">Collie</span></div>
+      <div class="device" id="deviceLabel" data-t="Personal AI execution system">Personal AI execution system</div>
+    </div>
+    <div class="topstate" id="topState" data-state="ready" role="status" aria-live="polite"><i></i><span id="topStateText" data-t="Ready">Ready</span></div>
+    <button class="iconbtn" id="newBtn" aria-label="New chat" data-t-aria-label="New chat">✎</button>
   </div>
   <div class="log" id="log"></div>
   <div class="composer">
+    <details class="runsetup" id="runSetup">
+      <summary><span class="rsl" data-t="Advanced">Advanced</span><span class="rsv" id="runSummary">Auto</span></summary>
+      <div class="runpanel">
+        <div class="rungrid">
+          <label class="runfield"><span data-t="Intent">Intent</span><select id="mIntent">
+            <option value="build" data-t="Build">Build</option><option value="plan" data-t="Plan · read-only">Plan · read-only</option>
+            <option value="test" data-t="Test · read-only">Test · read-only</option><option value="review" data-t="Review · read-only">Review · read-only</option>
+          </select></label>
+          <label class="runfield"><span data-t="Run depth">Run depth</span><select id="mQuality">
+            <option value="quick" data-t="Quick">Quick</option><option value="balanced" data-t="Balanced" selected>Balanced</option><option value="thorough" data-t="Thorough">Thorough</option>
+          </select></label>
+          <label class="runfield"><span data-t="Reasoning effort">Reasoning effort</span><select id="mEffort">
+            <option value="auto" data-t="Auto by task">Auto by task</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+          </select></label>
+          <label class="runfield"><span data-t="Generation speed">Generation speed</span><select id="mSpeed">
+            <option value="standard">Standard</option><option value="fast" id="mFastOption" hidden>Fast</option>
+          </select></label>
+          <label class="runfield"><span data-t="Verification">Verification</span><select id="mVerification">
+            <option value="auto" data-t="Auto">Auto</option><option value="required" data-t="Required">Required</option>
+          </select></label>
+          <label class="runfield"><span data-t="Workspace">Workspace</span><select id="mWorkspace">
+            <option value="current" data-t="Current files">Current files</option><option value="isolated" data-t="Isolated worktree">Isolated worktree</option>
+          </select></label>
+          <label class="runfield"><span data-t="Strategy">Strategy</span><select id="mStrategy">
+            <option value="single" data-t="Single run">Single run</option><option value="pack" data-t="Pack · best-of-N">Pack · best-of-N</option>
+          </select></label>
+          <label class="runfield runcheck" id="mVerifyWrap" hidden><span data-t="Proposed check">Proposed check</span><input id="mVerifyCommand" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="detecting a repository check…"></label>
+          <div class="runpack" id="mPackOpts" hidden>
+            <label class="runfield"><span data-t="Attempts">Attempts</span><input id="mPackN" type="number" min="2" max="6" step="1" value="3" required inputmode="numeric"></label>
+            <label class="runapply"><input id="mPackApply" type="checkbox"><span data-t="Apply winner">Apply winner</span></label>
+            <label class="runfield check"><span data-t="Required check command">Required check command</span><input id="mPackCheck" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" data-t-placeholder="e.g. pytest -q" placeholder="e.g. pytest -q"></label>
+            <p class="runhint" data-t="Pack runs isolated candidates and keeps only one that passes this command.">Pack runs isolated candidates and keeps only one that passes this command.</p>
+          </div>
+        </div>
+      </div>
+    </details>
     <div class="inrow">
-      <textarea id="input" rows="1" autocomplete="off"></textarea>
-      <button class="send" id="send" aria-label="send">↑</button>
+      <textarea id="input" rows="1" autocomplete="off" aria-label="Message Collie" data-t-aria-label="Message Collie…"></textarea>
+      <button class="send" id="send" aria-label="Send">↑</button>
     </div>
   </div>
-  <div class="scrim" id="scrim"></div>
-  <nav class="drawer" id="drawer">
+  <div class="scrim" id="scrim" aria-hidden="true"></div>
+  <nav class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" inert>
     <h3 id="drawerTitle">Chats</h3>
     <button class="newbtn" id="newBtn2">＋ New chat</button>
     <div class="threads" id="threads"></div>
@@ -88,21 +195,171 @@ function $(id){ return document.getElementById(id); }
 function esc(s){ return (s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // ---- i18n: English source, translated to the DESKTOP's UI language (settings LANG) ----
-var UI_LANG="en", SUPPORTED=["en","zh-tw","zh","ja","ko","es","fr","de","pt","ru"];
+var UI_LANG="en", SUPPORTED=["en","zh-tw","zh"];
 function resolveLang(v){ if(v&&v!=="auto"&&SUPPORTED.indexOf(v)>=0) return v;
   var b=(navigator.language||"").toLowerCase(); for(var i=1;i<SUPPORTED.length;i++) if(b.indexOf(SUPPORTED[i])===0) return SUPPORTED[i]; return "en"; }
 var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New chat":"＋ 新对话",
+  "Open chats":"打开对话列表","New chat":"新对话",
   "Ask Collie to fix code, run commands, or investigate":"让 Collie 帮你改代码、跑命令、查问题",
+  "Personal AI execution system":"个人 AI 执行系统","Your personal AI execution system":"你的个人 AI 执行系统",
+  "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨文件、浏览器、桌面和长期任务持续工作。",
+  "Ready":"就绪","Running":"运行中","Needs you":"等你决定","Advanced":"高级设置",
+  "Approval required":"需要你的批准","Allow once":"仅允许一次","Always":"始终允许","Deny":"拒绝",
+  "Sending…":"正在发送…","Allowed":"已允许","Denied":"已拒绝","Already answered elsewhere":"已在其他设备处理",
+  "Could not send":"发送失败，请重试","Continued elsewhere":"任务已从其他设备继续","Run ended":"任务已结束",
   "No chats yet":"还没有对话","turn":"轮","turns":"轮","Desktop is running…":"桌面正在运行…",
-  "Edit":"编辑","Read":"读取","Run":"运行","Search":"搜索","Steer":"插话","Error":"错误","[image]":"[图片]" };
-function t(en){ return UI_LANG.indexOf("zh")===0 ? (ZH[en]||en) : en; }
+  "Edit":"编辑","Read":"读取","Run":"运行","Search":"搜索","Steer":"插话","Error":"错误","[image]":"[图片]",
+  "Send":"发送","Stop run":"停止任务","Steer while Collie works…":"Collie 工作时可继续补充要求…",
+  "Connection interrupted — retrying…":"连接中断，正在重试…","The run is still starting; try again in a moment.":"任务仍在启动，请稍后再试。",
+  "The run is still starting; wait for its session id before stopping.":"任务仍在启动，请拿到会话编号后再停止。",
+  "Steer not delivered":"补充要求未送达","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任务已停止。",
+  "Could not stop the run":"无法停止任务","Open chat":"打开对话",
+  "Run setup":"运行设置","Intent":"任务意图","Build":"构建","Plan · read-only":"计划 · 只读",
+  "Test · read-only":"测试 · 只读","Review · read-only":"审查 · 只读","Run depth":"运行深度","Quick":"快速",
+  "Reasoning effort":"推理强度","Auto by task":"按任务自动","Generation speed":"生成速度","Proposed check":"建议检查",
+  "Review":"审查","Test":"测试",
+  "Effort":"执行深度","Balanced":"均衡","Thorough":"深入","Verification":"验证","Auto":"自动","Required":"必须",
+  "Workspace":"工作区","Current files":"当前文件","Isolated worktree":"隔离 worktree","Strategy":"执行策略",
+  "Single run":"单次运行","Pack · best-of-N":"Pack · N 选一","Attempts":"尝试次数","Apply winner":"应用胜出结果",
+  "Required check command":"必填检查命令","e.g. pytest -q":"例如 pytest -q",
+  "Pack runs isolated candidates and keeps only one that passes this command.":"Pack 会运行多个隔离候选，并只保留通过这条命令的结果。",
+  "Plan":"计划","Verify":"验证","Isolated":"隔离","Pack":"Pack",
+  "Pack needs an executed check command to select a winner.":"Pack 需要一条实际执行的检查命令来选出胜出结果。",
+  "Attempts must be a whole number from 2 to 6.":"尝试次数必须是 2 到 6 之间的整数。",
+  "working…":"运行中…","stopping…":"正在停止…",
+  "Attempt":"尝试","queued":"等待中","error":"错误","check failed":"检查失败","verified":"已验证",
+  "check passed":"检查通过","ran":"已运行","winner":"胜出","No winner":"没有胜出结果","Pack stopped":"Pack 已停止",
+  "applied to files":"已应用到文件","apply failed — winner was not written":"应用失败——胜出结果未写入",
+  "not applied (preview only)":"未应用（仅预览）","stopped":"已停止" };
+var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ New chat":"＋ 新對話",
+  "Open chats":"開啟對話列表","New chat":"新對話",
+  "Ask Collie to fix code, run commands, or investigate":"讓 Collie 幫你修改程式碼、執行命令或調查問題",
+  "Personal AI execution system":"個人 AI 執行系統","Your personal AI execution system":"你的個人 AI 執行系統",
+  "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨檔案、瀏覽器、桌面和長期任務持續工作。",
+  "Ready":"就緒","Running":"執行中","Needs you":"等你決定","Advanced":"進階設定",
+  "Approval required":"需要你的核准","Allow once":"僅允許一次","Always":"永遠允許","Deny":"拒絕",
+  "Sending…":"正在傳送…","Allowed":"已允許","Denied":"已拒絕","Already answered elsewhere":"已在其他裝置處理",
+  "Could not send":"傳送失敗，請重試","Continued elsewhere":"任務已從其他裝置繼續","Run ended":"任務已結束",
+  "No chats yet":"尚無對話","turn":"輪","turns":"輪","Desktop is running…":"桌面正在執行…",
+  "Edit":"編輯","Read":"讀取","Run":"執行","Search":"搜尋","Steer":"補充要求","Error":"錯誤","[image]":"[圖片]",
+  "Send":"傳送","Stop run":"停止任務","Steer while Collie works…":"Collie 執行時可繼續補充要求…",
+  "Connection interrupted — retrying…":"連線中斷，正在重試…","The run is still starting; try again in a moment.":"任務仍在啟動，請稍後再試。",
+  "The run is still starting; wait for its session id before stopping.":"任務仍在啟動，請取得工作階段編號後再停止。",
+  "Steer not delivered":"補充要求未送達","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任務已停止。",
+  "Could not stop the run":"無法停止任務","Open chat":"開啟對話",
+  "Run setup":"執行設定","Intent":"任務意圖","Build":"構建","Plan · read-only":"計畫 · 唯讀",
+  "Test · read-only":"測試 · 唯讀","Review · read-only":"審查 · 唯讀","Run depth":"執行深度","Quick":"快速",
+  "Reasoning effort":"推理強度","Auto by task":"按任務自動","Generation speed":"生成速度","Proposed check":"建議檢查",
+  "Review":"審查","Test":"測試",
+  "Effort":"執行深度","Balanced":"均衡","Thorough":"深入","Verification":"驗證","Auto":"自動","Required":"必須",
+  "Workspace":"工作區","Current files":"目前檔案","Isolated worktree":"隔離 worktree","Strategy":"執行策略",
+  "Single run":"單次執行","Pack · best-of-N":"Pack · N 選一","Attempts":"嘗試次數","Apply winner":"套用勝出結果",
+  "Required check command":"必填檢查命令","e.g. pytest -q":"例如 pytest -q",
+  "Pack runs isolated candidates and keeps only one that passes this command.":"Pack 會執行多個隔離候選，並只保留通過這條命令的結果。",
+  "Plan":"計畫","Verify":"驗證","Isolated":"隔離","Pack":"Pack",
+  "Pack needs an executed check command to select a winner.":"Pack 需要一條實際執行的檢查命令來選出勝出結果。",
+  "Attempts must be a whole number from 2 to 6.":"嘗試次數必須是 2 到 6 之間的整數。",
+  "working…":"執行中…","stopping…":"正在停止…",
+  "Attempt":"嘗試","queued":"等待中","error":"錯誤","check failed":"檢查失敗","verified":"已驗證",
+  "check passed":"檢查通過","ran":"已執行","winner":"勝出","No winner":"沒有勝出結果","Pack stopped":"Pack 已停止",
+  "applied to files":"已套用到檔案","apply failed — winner was not written":"套用失敗——勝出結果未寫入",
+  "not applied (preview only)":"未套用（僅預覽）","stopped":"已停止" };
+function t(en){ var d=UI_LANG==="zh-tw"?ZHTW:(UI_LANG==="zh"?ZH:null); return d?(d[en]||en):en; }
 
-var currentSession=null, running=false, externalRunning=false;
-var runES=null, mirrorES=null, curTurn=null, curText="";
+// Independent run controls. They deliberately mirror the desktop query contract instead of
+// reviving the old mixed `mode=normal|herding|isolated|pack` switch.
+var setupLocked=false,runExplicitAxes={},runCapabilities=null;
+function runOptions(){ return {
+  intent:$("mIntent").value, quality:$("mQuality").value,
+  verification:$("mVerification").value, workspace:$("mWorkspace").value,
+  strategy:$("mStrategy").value, effort:$("mEffort").value,
+  speed:$("mSpeed").value,
+  explicit_axes:Object.keys(runExplicitAxes).filter(function(k){return runExplicitAxes[k];}).join(",")||"none",
+  verify_command:$("mVerifyCommand").value.trim(),
+  verify_source:$("mVerifyCommand").dataset.source||""
+}; }
+function paintRunSetup(){
+  var intent=$("mIntent").value, nonBuild=intent!=="build", test=intent==="test";
+  if(nonBuild){ $("mVerification").value="auto"; $("mWorkspace").value="current"; $("mStrategy").value="single";
+    delete runExplicitAxes.verification;delete runExplicitAxes.workspace;delete runExplicitAxes.strategy; }
+  var pack=!nonBuild&&$("mStrategy").value==="pack";
+  if(pack){ $("mWorkspace").value="current";delete runExplicitAxes.workspace; }
+  $("mIntent").disabled=setupLocked; $("mQuality").disabled=setupLocked;
+  $("mEffort").disabled=setupLocked; $("mSpeed").disabled=setupLocked;
+  $("mVerification").disabled=setupLocked||nonBuild; $("mWorkspace").disabled=setupLocked||nonBuild||pack;
+  $("mStrategy").disabled=setupLocked||nonBuild;
+  ["mPackN","mPackCheck","mPackApply","mVerifyCommand"].forEach(function(id){$(id).disabled=setupLocked;});
+  $("mPackOpts").hidden=!pack; $("mPackCheck").required=pack;
+  $("mVerifyWrap").hidden=!(test||(!nonBuild&&$("mVerification").value==="required"));
+  $("mVerifyCommand").required=test||(!nonBuild&&$("mVerification").value==="required");
+  var depth=$("mQuality").value==="thorough"?t("Thorough"):($("mQuality").value==="quick"?t("Quick"):t("Balanced"));
+  var parts=[intent==="plan"?t("Plan"):intent==="review"?t("Review"):test?t("Test"):depth];
+  if(!nonBuild&&$("mVerification").value==="required")parts.push(t("Verify"));
+  if(!nonBuild&&$("mWorkspace").value==="isolated")parts.push(t("Isolated"));
+  if(pack)parts.push(t("Pack"));
+  if($("mSpeed").value==="fast")parts.push("Fast");
+  if(!Object.keys(runExplicitAxes).some(function(k){return runExplicitAxes[k];}))parts=[t("Auto")];
+  $("runSummary").textContent=parts.join(" · ");
+}
+function setRunSetupDisabled(value){ setupLocked=!!value; paintRunSetup(); }
+function validateRunSetup(){
+  var count=$("mPackN"),check=$("mPackCheck"),verify=$("mVerifyCommand"),
+      pack=$("mStrategy").value==="pack", intent=$("mIntent").value;
+  count.setCustomValidity("");check.setCustomValidity("");verify.setCustomValidity("");
+  if((intent==="test"||$("mVerification").value==="required")&&!verify.value.trim()){
+    verify.setCustomValidity(t("Test or Required verification needs a proposed check command."));
+    $("runSetup").open=true;verify.reportValidity();verify.focus();return false;
+  }
+  var n=Number(count.value);
+  if(pack&&(!Number.isInteger(n)||n<2||n>6)){
+    count.setCustomValidity(t("Attempts must be a whole number from 2 to 6."));
+    $("runSetup").open=true;count.reportValidity();count.focus();return false;
+  }
+  if(pack&&!check.value.trim()){
+    check.setCustomValidity(t("Pack needs an executed check command to select a winner."));
+    $("runSetup").open=true; check.reportValidity(); check.focus(); return false;
+  }
+  return true;
+}
+["mIntent","mQuality","mVerification","mWorkspace","mStrategy","mEffort","mSpeed"].forEach(function(id){
+  $(id).addEventListener("change",function(){runExplicitAxes[id.replace(/^m/,"").toLowerCase()]=true;paintRunSetup();});
+});
+$("mPackCheck").addEventListener("input",function(){this.setCustomValidity("");});
+$("mPackN").addEventListener("input",function(){this.setCustomValidity("");});
+$("mVerifyCommand").addEventListener("input",function(){this.setCustomValidity("");this.dataset.source="user";});
+function refreshRunCapabilities(){fetch(api('/api/run-capabilities')).then(function(r){return r.json();}).then(function(c){
+  runCapabilities=c||{};var fast=(c.speed_tiers||[]).indexOf('fast')>=0,opt=$("mFastOption");opt.hidden=!fast;opt.disabled=!fast;
+  if(!fast&&$("mSpeed").value==='fast'){$("mSpeed").value='standard';delete runExplicitAxes.speed;}
+  Array.prototype.forEach.call($("mEffort").options,function(o){if(o.value==='auto')return;o.disabled=(c.reasoning_efforts||[]).indexOf(o.value)<0;});
+  paintRunSetup();
+}).catch(function(){var o=$("mFastOption");o.hidden=true;o.disabled=true;});}
+function refreshVerification(){fetch(api('/api/verification')).then(function(r){return r.json();}).then(function(d){
+  var first=(d.candidates||[])[0];if(!first)return;
+  if(!$("mVerifyCommand").value){$("mVerifyCommand").value=first.command;$("mVerifyCommand").dataset.source=first.source||'detected';}
+  if(!$("mPackCheck").value)$("mPackCheck").value=first.command;
+}).catch(function(){});}
+
+var IDENTITY={name:"Collie",machine:"",os:"",avatar:LOGO},currentHeaderTitle="";
+var currentSession=null,currentRun=null,running=false,externalRunning=false;
+var runES=null,mirrorES=null,curTurn=null,curText="",cancelTimer=0,packRows=[];
+var lastTerminalRun=null,navigationToken=0,pendingPermissions={};
+function setHeaderTitle(value){currentHeaderTitle=value||"";$("titleText").textContent=currentHeaderTitle||IDENTITY.name||"Collie";}
+function refreshIdentity(){fetch(api('/api/whoami')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+  var raw=String(d.name||"Collie");IDENTITY.name=raw.charAt(0).toUpperCase()+raw.slice(1);IDENTITY.machine=d.machine||"";IDENTITY.os=d.os||"";IDENTITY.avatar=d.avatar||LOGO;
+  if(!currentHeaderTitle)setHeaderTitle("");
+  var bits=[];if(IDENTITY.machine)bits.push(IDENTITY.machine);if(IDENTITY.os)bits.push(IDENTITY.os);
+  $("deviceLabel").textContent=bits.join(" · ")||t("Personal AI execution system");
+  var avatar=$("identityAvatar");avatar.src=IDENTITY.avatar===LOGO?LOGO:api(IDENTITY.avatar);avatar.onerror=function(){this.onerror=null;this.src=LOGO;};
+}).catch(function(){});}
+function paintOperationalState(){
+  var needs=Object.keys(pendingPermissions).length>0,state=needs?"needs":((running||externalRunning||cancelling)?"running":"ready");
+  var label=state==="needs"?t("Needs you"):(state==="running"?t("Running"):t("Ready"));
+  $("topState").setAttribute("data-state",state);$("topStateText").textContent=label;
+}
 function scrollDown(){ var l=$("log"); l.scrollTop=l.scrollHeight; }
 function addUser(text){ var d=document.createElement('div'); d.className='turn user'; d.innerHTML='<div class="bubble">'+esc(text)+'</div>'; $("log").appendChild(d); scrollDown(); }
 function addAsst(){ var d=document.createElement('div'); d.className='turn asst';
-  d.innerHTML='<div class="steps"></div><div class="who"><img src="'+LOGO+'" alt="">Collie</div><div class="bubble"><span class="md"></span><span class="cursor"></span></div>';
+  d.innerHTML='<div class="steps"></div><div class="who"><img src="'+LOGO+'" alt="">'+esc(IDENTITY.name||'Collie')+'</div><div class="bubble"><span class="md"></span><span class="cursor"></span></div>';
   $("log").appendChild(d); scrollDown(); return d; }
 function setMd(turn,text){ turn.querySelector('.md').innerHTML=md(text); scrollDown(); }
 function addStep(turn,verb,target,bad){ var s=document.createElement('div'); s.className='step'+(bad?' bad':'');
@@ -118,63 +375,215 @@ function toolLine(turn,d){ var nm=String(d.name||'').toLowerCase(),a=d.args||{};
   var tgt=a.path||a.file_path||a.file||a.command||a.query||a.pattern||""; if(typeof tgt!=="string") tgt=JSON.stringify(tgt);
   addStep(turn,verb,String(tgt).slice(0,120),d.ok===false); }
 
-function onEvent(kind,data){
-  if(kind==="start"){ curTurn=addAsst(); curText=""; }
+function settlePermission(id,message,tone){
+  var p=pendingPermissions[id];if(!p)return;
+  if(p.actions)p.actions.remove();p.status.textContent=message;p.status.className='permission-status'+(tone?' '+tone:'');
+  p.card.setAttribute('data-state','settled');delete pendingPermissions[id];paintOperationalState();
+}
+function continuePermissions(sessionId,message){Object.keys(pendingPermissions).forEach(function(id){
+  var p=pendingPermissions[id];if(!sessionId||!p.session||p.session===sessionId)settlePermission(id,message||t('Continued elsewhere'));
+});}
+function answerPermission(id,answer){
+  var p=pendingPermissions[id];if(!p)return;
+  Array.prototype.forEach.call(p.actions.querySelectorAll('button'),function(b){b.disabled=true;});p.status.textContent=t('Sending…');p.status.className='permission-status';
+  fetch(api('/api/approve'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:p.session||currentSession,id:id,answer:answer})})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+    .then(function(x){if(!x.ok)throw new Error((x.d&&(x.d.error||x.d.message))||('HTTP request failed'));
+      if(x.d&&x.d.resolved)settlePermission(id,answer==='deny'?t('Denied'):t('Allowed'),answer==='deny'?'bad':'ok');
+      else settlePermission(id,t('Already answered elsewhere'));
+    }).catch(function(){var live=pendingPermissions[id];if(!live)return;live.status.textContent=t('Could not send');live.status.className='permission-status bad';Array.prototype.forEach.call(live.actions.querySelectorAll('button'),function(b){b.disabled=false;});paintOperationalState();});
+}
+function addPermission(data,sessionId){
+  if(!data||!data.id||pendingPermissions[data.id])return;
+  var empty=$("log").querySelector('.empty');if(empty)empty.remove();if(curTurn)endCursor(curTurn);
+  var turn=document.createElement('div');turn.className='turn permission-turn';turn.setAttribute('role','region');turn.setAttribute('aria-label',t('Approval required'));
+  var card=document.createElement('div');card.className='permission-card';card.setAttribute('data-state','pending');
+  var eyebrow=document.createElement('div');eyebrow.className='permission-eyebrow';eyebrow.textContent=t('Approval required');
+  var title=document.createElement('div');title.className='permission-title';title.textContent=data.title||((data.tool||'Collie')+'?');
+  card.append(eyebrow,title);
+  if(data.body){var body=document.createElement('div');body.className='permission-body';body.textContent=data.body;card.appendChild(body);}
+  if(data.target){var target=document.createElement('div');target.className='permission-target';target.textContent=data.target;card.appendChild(target);}
+  var actions=document.createElement('div');actions.className='permission-actions'+(data.rule_offer?'':' two');
+  [{answer:'allow',label:t('Allow once'),cls:'allow'},{answer:'always',label:t('Always'),cls:'always',optional:true},{answer:'deny',label:t('Deny'),cls:'deny'}].forEach(function(spec){
+    if(spec.optional&&!data.rule_offer)return;var b=document.createElement('button');b.type='button';b.className=spec.cls;b.textContent=spec.label;
+    if(spec.answer==='always'&&data.rule_offer)b.title=String(data.rule_offer);b.onclick=function(){answerPermission(data.id,spec.answer);};actions.appendChild(b);
+  });
+  var status=document.createElement('div');status.className='permission-status';status.setAttribute('aria-live','polite');
+  card.append(actions,status);turn.appendChild(card);$("log").appendChild(turn);
+  pendingPermissions[data.id]={card:card,actions:actions,status:status,session:sessionId||currentSession||data.session||''};paintOperationalState();scrollDown();
+}
+
+function packStart(data){
+  if(!curTurn)curTurn=addAsst(); packRows=[];
+  var old=curTurn.querySelector('.mobile-pack'); if(old)old.remove();
+  var n=Math.max(1,Math.min(8,Number(data.n)||1)),card=document.createElement('div');card.className='mobile-pack';
+  var head=document.createElement('div');head.className='mph';head.textContent=t('Pack')+' · '+n+' '+t('Attempts');card.appendChild(head);
+  for(var i=0;i<n;i++){
+    var row=document.createElement('div');row.className='mpr';
+    var num=document.createElement('span');num.textContent='#'+(i+1);
+    var dot=document.createElement('span');dot.className='mpdot';
+    var status=document.createElement('span');status.textContent=t('queued');
+    var meta=document.createElement('span');meta.className='mpmeta';
+    row.append(num,dot,status,meta);card.appendChild(row);packRows.push(row);
+  }
+  var bubble=curTurn.querySelector('.bubble'),mdEl=curTurn.querySelector('.md');bubble.insertBefore(card,mdEl);scrollDown();
+}
+function packAttempt(data){
+  var row=packRows[Number(data.idx)];if(!row)return;
+  var dot=row.querySelector('.mpdot'),status=row.children[2],meta=row.querySelector('.mpmeta'),word,cls;
+  if(data.error&&/cancel/i.test(data.error)){word=t('stopped');cls='stop';}
+  else if(data.error){word=t('error');cls='fail';}
+  else if(data.check_pass===false){word=t('check failed');cls='fail';}
+  else if(data.verified){word=t('verified')+(data.check_pass===true?' · '+t('check passed'):'');cls='ok';}
+  else if(data.check_pass===true){word=t('check passed');cls='ok';}
+  else{word=t('ran');cls='ran';}
+  dot.className='mpdot '+cls;status.textContent=word;
+  var turns=Number(data.turns)||0;
+  meta.textContent=turns+' '+t(turns===1?'turn':'turns')+(data.cost_usd?' · $'+Number(data.cost_usd).toFixed(4):'');
+}
+function packDone(data){
+  var attempts=Array.isArray(data.attempts)?data.attempts:[];
+  if(!packRows.length)packStart({n:data.n||attempts.length||1});
+  attempts.forEach(packAttempt);
+  if(data.winner!=null&&packRows[data.winner])packRows[data.winner].classList.add('winner');
+  if(data.canceled||data.error)packRows.forEach(function(row){
+    var dot=row.querySelector('.mpdot');if(!dot||/\b(ok|fail|ran)\b/.test(dot.className))return;
+    dot.className='mpdot '+(data.canceled?'stop':'fail');row.children[2].textContent=t('stopped');
+  });
+  var card=curTurn&&curTurn.querySelector('.mobile-pack');if(!card)return;
+  var sum=document.createElement('div');sum.className='mpsum';var applyFailed=!!(data.error&&/^apply failed\b/i.test(data.error));
+  var why=data.reason||(applyFailed?'':(data.error||''));
+  if(data.canceled){sum.classList.add('warn');sum.textContent=t('Pack stopped')+(why?' — '+why:'');}
+  else if(data.winner==null){sum.classList.add('fail');sum.textContent=t('No winner')+(why?' — '+why:'');}
+  else{
+    if(applyFailed)sum.classList.add('fail');
+    var delivery=data.applied?t('applied to files'):
+      (applyFailed?t('apply failed — winner was not written'):t('not applied (preview only)'));
+    sum.textContent=t('Attempt')+' #'+(Number(data.winner)+1)+' '+t('winner')+(why?' · '+why:'')+' · '+delivery;
+  }
+  card.appendChild(sum);scrollDown();
+}
+
+function onEvent(kind,data,sourceSession){
+  if(kind==="permission"){addPermission(data,sourceSession||currentSession);return;}
+  if(kind==="permission_resolved"){
+    settlePermission(data.id,data.answer==='deny'?t('Denied'):t('Already answered elsewhere'),data.answer==='deny'?'bad':'ok');return;
+  }
+  if(["start","token","tool","pack_start","pack_attempt","verification_evidence","done"].indexOf(kind)>=0)continuePermissions(sourceSession||currentSession,kind==="done"?t('Run ended'):t('Continued elsewhere'));
+  if(kind==="start"){ curTurn=addAsst(); curText=""; var d=data.decision||data;
+    addStep(curTurn,"Decision",[d.model||data.provider,d.effort||"default",d.speed||"standard",
+      (d.intent||"build")+"/"+(d.quality||"balanced")].join(" · ")); }
   else if(kind==="token"){ if(!curTurn) curTurn=addAsst(); curText+=(data.t||""); setMd(curTurn,curText); }
   else if(kind==="tool"){ if(!curTurn) curTurn=addAsst(); toolLine(curTurn,data); }
   else if(kind==="steer"){ if(curTurn) addStep(curTurn,t('Steer'),(data.text||"").slice(0,80)); }
-  else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.error) addStep(curTurn,t('Error'),data.error,true); endCursor(curTurn); curTurn=null; }
+  else if(kind==="pack_start")packStart(data);
+  else if(kind==="pack_attempt")packAttempt(data);
+  else if(kind==="verification_evidence"){ if(!curTurn)curTurn=addAsst();var ev=data.evidence||data;
+    addStep(curTurn,ev.passed?t('check passed'):t('check failed'),ev.command||'',!ev.passed); }
+  else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.pack)packDone(data);if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.canceled)addStep(curTurn,t('Stop run'),t('Run stopped.'),false);else if(data.error)addStep(curTurn,t('Error'),data.error,true);endCursor(curTurn);curTurn=null;packRows=[]; }
+}
+function terminalWasHandled(data){
+  if(!data||!data.run)return false;
+  if(lastTerminalRun===data.run)return true;
+  lastTerminalRun=data.run;return false;
 }
 function runStream(q){ addUser(q); running=true; curTurn=null; setSendMode();
-  var url=api('/api/stream?q='+encodeURIComponent(q)+'&mode=normal'+(currentSession?'&session='+encodeURIComponent(currentSession):''));
+  var o=runOptions();
+  var url='/api/stream?q='+encodeURIComponent(q)+
+    '&intent='+encodeURIComponent(o.intent)+'&quality='+encodeURIComponent(o.quality)+
+    '&verification='+encodeURIComponent(o.verification)+'&workspace='+encodeURIComponent(o.workspace)+
+    '&strategy='+encodeURIComponent(o.strategy)+'&effort='+encodeURIComponent(o.effort)+
+    '&speed='+encodeURIComponent(o.speed)+'&explicit_axes='+encodeURIComponent(o.explicit_axes)+
+    (o.verify_command?'&verify_command='+encodeURIComponent(o.verify_command):'')+
+    (o.verify_source?'&verify_source='+encodeURIComponent(o.verify_source):'');
+  if(o.strategy==='pack'){
+    url+='&n='+encodeURIComponent($('mPackN').value)+'&check='+encodeURIComponent($('mPackCheck').value.trim());
+    if($('mPackApply').checked)url+='&apply=1';
+  }
+  url=api(url+(currentSession?'&session='+encodeURIComponent(currentSession):''));
   runES=new EventSource(url);
-  ["start","token","tool","steer","done"].forEach(function(ev){ runES.addEventListener(ev,function(e){ var d={}; try{d=JSON.parse(e.data);}catch(_){} if(ev==="start"&&d.session){currentSession=d.session; loadSessions();} onEvent(ev,d); if(ev==="done") endRun(); }); });
-  runES.onerror=function(){ if(running) endCursor(curTurn); };
+  ["start","token","tool","steer","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ runES.addEventListener(ev,function(e){ var d={}; try{d=JSON.parse(e.data);}catch(_){} if(ev==="start"&&d.session){currentSession=d.session;currentRun=d.run||null;loadSessions();}if(ev==="done"&&currentRun&&d.run&&d.run!==currentRun)return;if(ev==="done"&&terminalWasHandled(d))return;onEvent(ev,d,currentSession||d.session);if(ev==="done")endRun(d);}); });
+  runES.onopen=function(){ if(running) hideBanner(); };
+  runES.onerror=function(){if(running){showBanner(t('Connection interrupted — retrying…'));if(cancelling){try{runES.close();}catch(_){}runES=null;watchCancel();}}};
 }
-function endRun(){ running=false; if(runES){runES.close(); runES=null;} setSendMode(); loadSessions(); }
+function endRun(data){if(data&&data.run)lastTerminalRun=data.run;clearTimeout(cancelTimer);cancelTimer=0;running=false;externalRunning=false;cancelling=false;currentRun=null;if(runES){runES.close();runES=null;}setSendMode();if(data&&data.canceled)showBanner(t('Run stopped.'));else hideBanner();loadSessions();}
 function subscribeMirror(sid){ if(mirrorES){ mirrorES.close(); mirrorES=null; } if(!sid) return;
   mirrorES=new EventSource(api('/api/mirror?session='+encodeURIComponent(sid)));
-  ["start","token","tool","steer","done"].forEach(function(ev){ mirrorES.addEventListener(ev,function(e){ if(running) return; var d={}; try{d=JSON.parse(e.data);}catch(_){}
-    if(ev==="start"){ externalRunning=true; setSendMode(); showBanner(t('Desktop is running…')); }
-    onEvent(ev,d); if(ev==="done"){ externalRunning=false; setSendMode(); hideBanner(); loadSessions(); } }); });
+  ["start","token","tool","steer","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ mirrorES.addEventListener(ev,function(e){ if(running) return; var d={}; try{d=JSON.parse(e.data);}catch(_){}
+    if(ev==="start"){externalRunning=true;currentRun=d.run||null;setSendMode();showBanner(t('Desktop is running…'));}
+    if(ev==="done"&&currentRun&&d.run&&d.run!==currentRun)return;if(ev==="done"&&terminalWasHandled(d))return;onEvent(ev,d,sid);if(ev==="done")endRun(d);}); });
+  mirrorES.onopen=function(){ if(!externalRunning) hideBanner(); };
+  mirrorES.onerror=function(){ if(externalRunning) showBanner(t('Connection interrupted — retrying…')); };
 }
 var bannerEl=null;
 function showBanner(x){ hideBanner(); bannerEl=document.createElement('div'); bannerEl.className='banner'; bannerEl.textContent=x; $("log").appendChild(bannerEl); scrollDown(); }
 function hideBanner(){ if(bannerEl){bannerEl.remove(); bannerEl=null;} }
-function setSendMode(){ var b=$("send"); if(running){ b.classList.add('stop'); b.textContent='■'; b.disabled=false; }
-  else if(externalRunning){ b.classList.remove('stop'); b.textContent='↑'; b.disabled=true; } else { b.classList.remove('stop'); b.textContent='↑'; b.disabled=false; } }
+function setSendMode(){ var b=$("send"), active=running||externalRunning;
+  b.classList.toggle('stop',active);b.textContent=cancelling?'…':(active?'■':'↑');b.disabled=!!cancelling;
+  b.setAttribute('aria-label',active?t('Stop run'):t('Send')); b.title=active?t('Stop run'):t('Send');
+  $("input").placeholder=active?t('Steer while Collie works…'):t('Message Collie…'); setRunSetupDisabled(active);paintOperationalState(); }
 function doSend(){ var inp=$("input"); var qv=inp.value.trim(); if(!qv) return;
-  if(running){ fetch(api('/api/steer'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,text:qv})}); if(curTurn) addStep(curTurn,t('Steer'),qv.slice(0,80)); }
-  else { runStream(qv); } inp.value=''; autosize(); }
-function stopRun(){ if(runES){runES.close(); runES=null;} running=false; endCursor(curTurn); setSendMode(); }
+  if(running||externalRunning){
+    if(!currentSession){ showBanner(t('The run is still starting; try again in a moment.')); return; }
+    inp.value=''; autosize();
+    fetch(api('/api/steer'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,q:qv})})
+      .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+      .then(function(x){ if(!x.ok||!x.d||!x.d.queued) throw new Error((x.d&&(x.d.error||x.d.message))||'not delivered');
+        if(curTurn) addStep(curTurn,t('Steer'),qv.slice(0,80)); hideBanner(); })
+      .catch(function(e){ if(curTurn) addStep(curTurn,t('Error'),t('Steer not delivered')+': '+e.message,true); showBanner(t('Steer not delivered')); });
+  } else { if(!validateRunSetup())return; inp.value=''; autosize(); runStream(qv); } }
+var cancelling=false;
+function watchCancel(){var watchSession=currentSession,watchRun=currentRun;clearTimeout(cancelTimer);cancelTimer=setTimeout(function poll(){fetch(api('/api/runs')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){var row=(d.runs||[]).find(function(x){return x.session===watchSession&&x.run===watchRun;});if(row&&['canceled','done','failed'].indexOf(row.state)>=0){var terminal={session:row.session,run:row.run,canceled:row.state==='canceled',error:row.state==='failed'?row.error:''};if(!terminalWasHandled(terminal))onEvent('done',terminal,watchSession);endRun(terminal);if(row.state!=='canceled')showBanner(row.state==='failed'?(row.error||'Run failed'):'The run finished before it could be stopped.');return;}cancelTimer=setTimeout(poll,700);}).catch(function(){cancelTimer=setTimeout(poll,1200);});},700);}
+function stopRun(){ var active=running||externalRunning; if(!active||cancelling) return;
+  if(!currentSession||!currentRun){ showBanner(t('The run is still starting; wait for its session id before stopping.')); return; }
+  cancelling=true; var b=$("send"); b.disabled=true; b.textContent='…'; showBanner(t('Stopping on the desktop…'));
+  fetch(api('/api/run/cancel'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,run:currentRun})})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+    .then(function(x){if(!x.ok||!x.d||x.d.ok===false)throw new Error((x.d&&(x.d.error||x.d.message))||'cancel unsupported');
+      showBanner(t('Stopping on the desktop…'));if(x.d.status==='already_canceled'){var terminal={session:currentSession,run:currentRun,canceled:true};if(!terminalWasHandled(terminal))onEvent('done',terminal,currentSession);endRun(terminal);}else watchCancel();})
+    .catch(function(e){cancelling=false;showBanner(t('Could not stop the run')+': '+e.message);setSendMode();}); }
 function autosize(){ var i=$("input"); i.style.height='auto'; i.style.height=Math.min(i.scrollHeight,140)+'px'; }
-function newChat(){ if(running) return; currentSession=null; $("log").innerHTML=''; $("title").innerHTML='<img src="'+LOGO+'" alt="">Collie'; welcome(); subscribeMirror(null); closeDrawer(); loadSessions(); }
-function welcome(){ $("log").innerHTML='<div class="empty"><img src="'+LOGO+'" alt="">'+t('Ask Collie to fix code, run commands, or investigate')+'</div>'; }
-function titleText(msgs){ for(var i=0;i<msgs.length;i++){ if(msgs[i].role==='user'&&typeof msgs[i].content==='string') return msgs[i].content.replace(/\s+/g,' ').slice(0,40); } return ''; }
-function openSession(id){ if(running) return; currentSession=id; $("log").innerHTML=''; closeDrawer(); running=false; curTurn=null;
-  fetch(api('/api/session/'+encodeURIComponent(id))).then(function(r){return r.json();}).then(function(s){
-    var msgs=(s&&s.messages)||[]; var tt=titleText(msgs); $("title").innerHTML='<img src="'+LOGO+'" alt="">'+esc(tt||'Collie');
+function detachActive(){navigationToken++;clearTimeout(cancelTimer);cancelTimer=0;if(runES){try{runES.close();}catch(_){}runES=null;}if(mirrorES){try{mirrorES.close();}catch(_){}mirrorES=null;}running=false;externalRunning=false;cancelling=false;currentRun=null;curTurn=null;packRows=[];pendingPermissions={};hideBanner();setSendMode();}
+function newChat(){ detachActive(); currentSession=null;$("log").innerHTML='';setHeaderTitle('');welcome(); closeDrawer(false); loadSessions(); $("input").focus(); }
+function welcome(){ $("log").innerHTML='<div class="empty"><img src="'+LOGO+'" alt=""><div class="lead">'+t('Your personal AI execution system')+'</div><div class="sub">'+t('Ask once. Collie can work across your files, browser, desktop, and long-running missions.')+'</div></div>'; }
+function sessionTitle(msgs){ for(var i=0;i<msgs.length;i++){ if(msgs[i].role==='user'&&typeof msgs[i].content==='string') return msgs[i].content.replace(/\s+/g,' ').slice(0,40); } return ''; }
+function openSession(id){detachActive();var request=++navigationToken;currentSession=id;$("log").innerHTML='';closeDrawer(false);$("input").focus();
+  function render(s){if(request!==navigationToken||currentSession!==id)return;
+    var msgs=(s&&s.messages)||[]; var tt=sessionTitle(msgs);setHeaderTitle(tt);
     msgs.forEach(function(m){ if(m.role==='user'){ addUser(typeof m.content==='string'?m.content:t('[image]')); }
       else if(m.role==='assistant'&&m.content){ var tu=addAsst(); endCursor(tu); setMd(tu, typeof m.content==='string'?m.content:''); } });
-    scrollDown(); subscribeMirror(id); loadSessions(); }).catch(function(){}); }
-function loadSessions(){ fetch(api('/api/sessions')).then(function(r){return r.json();}).then(function(d){
-    var box=$("threads"); box.innerHTML=''; var list=(d&&d.sessions)||[];
+    scrollDown();subscribeMirror(id);loadSessions();}
+  fetch(api('/api/session/'+encodeURIComponent(id))).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(render).catch(function(){render({messages:[]});}); }
+function loadSessions(){ fetch(api('/api/sessions')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+  return fetch(api('/api/runs')).then(function(r){return r.ok?r.json():{runs:[]};}).catch(function(){return{runs:[]};}).then(function(rd){return{sessions:(d&&d.sessions)||[],runs:(rd&&rd.runs)||[]};});}).then(function(data){
+    var box=$("threads");box.innerHTML='';var list=data.sessions.slice(),active={};
+    data.runs.forEach(function(r){if(r&&r.session&&(r.state==='running'||r.state==='canceling'))active[r.session]=r;});
+    var known={};list.forEach(function(s){known[s.id]=true;});Object.keys(active).forEach(function(id){if(!known[id]){var r=active[id];list.unshift({id:id,title:r.ask||'(…)',last:r.ask||'',turns:r.turns||0});}});
     if(!list.length){ box.innerHTML='<div class="thread tn">'+t('No chats yet')+'</div>'; return; }
-    list.forEach(function(s){ var el=document.createElement('div'); el.className='thread'+(s.id===currentSession?' active':'');
-      var n=s.turns||0; el.innerHTML='<div class="tt">'+esc(s.title||s.last||'(…)')+'</div><div class="tn">'+n+' '+t(n===1?'turn':'turns')+'</div>';
+    list.forEach(function(s){ var el=document.createElement('button'); el.type='button'; el.className='thread'+(s.id===currentSession?' active':'');
+      el.setAttribute('aria-label',t('Open chat')+' '+(s.title||s.last||'')); if(s.id===currentSession)el.setAttribute('aria-current','true');
+      var n=s.turns||0,r=active[s.id],status=r?t(r.state==='canceling'?'stopping…':'working…'):(n+' '+t(n===1?'turn':'turns'));
+      el.innerHTML='<div class="tt">'+esc(s.title||s.last||'(…)')+'</div><div class="tn">'+esc(status)+'</div>';
       el.onclick=function(){ openSession(s.id); }; box.appendChild(el); }); }).catch(function(){}); }
-function openDrawer(){ $("drawer").classList.add('on'); $("scrim").classList.add('on'); }
-function closeDrawer(){ $("drawer").classList.remove('on'); $("scrim").classList.remove('on'); }
+function openDrawer(){var d=$("drawer");d.removeAttribute('inert');d.classList.add('on');d.setAttribute('aria-hidden','false');$("scrim").classList.add('on');$("menuBtn").setAttribute('aria-expanded','true');$("newBtn2").focus();}
+function closeDrawer(restore){var d=$("drawer");d.classList.remove('on');d.setAttribute('aria-hidden','true');d.setAttribute('inert','');$("scrim").classList.remove('on');$("menuBtn").setAttribute('aria-expanded','false');if(restore)$("menuBtn").focus();}
 
-$("menuBtn").onclick=openDrawer; $("scrim").onclick=closeDrawer; $("newBtn").onclick=newChat; $("newBtn2").onclick=newChat;
-$("send").onclick=function(){ if(running) stopRun(); else doSend(); };
+$("menuBtn").onclick=openDrawer; $("scrim").onclick=function(){closeDrawer(true);}; $("newBtn").onclick=newChat; $("newBtn2").onclick=newChat;
+$("send").onclick=function(){ if(running||externalRunning) stopRun(); else doSend(); };
 $("input").addEventListener('input',autosize);
 $("input").addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); doSend(); } });
+$("drawer").addEventListener('keydown',function(e){if(e.key!=='Tab')return;var items=Array.prototype.slice.call(this.querySelectorAll('button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])'));if(!items.length)return;var first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&$("drawer").classList.contains('on'))closeDrawer(true);});
 
-function applyStatic(){ document.documentElement.lang=UI_LANG; $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); }
+function applyStatic(){ document.documentElement.lang=UI_LANG; $("menuBtn").setAttribute('aria-expanded','false'); $("menuBtn").setAttribute('aria-controls','drawer');
+  document.querySelectorAll('[data-t]').forEach(function(el){el.textContent=t(el.getAttribute('data-t'));});
+  document.querySelectorAll('[data-t-placeholder]').forEach(function(el){el.placeholder=t(el.getAttribute('data-t-placeholder'));});
+  document.querySelectorAll('[data-t-aria-label]').forEach(function(el){el.setAttribute('aria-label',t(el.getAttribute('data-t-aria-label')));});
+  $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); paintRunSetup(); setSendMode(); }
+refreshRunCapabilities();refreshVerification();
 fetch(api('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
   .catch(function(){ UI_LANG=resolveLang(null); })
-  .finally(function(){ applyStatic(); welcome(); loadSessions(); });
+  .finally(function(){ applyStatic();setHeaderTitle('');refreshIdentity();welcome();loadSessions();setInterval(loadSessions,2500); });
 </script>
 </body>
 </html>

@@ -130,9 +130,10 @@ sealed = e2e.seal_request(key, room=ROOM, frame_id=1, session=SESSION, seq=0,
 blob = json.dumps(sealed)
 check("api/sessions" not in blob, "the sealed request does not contain the path")
 
-req = urllib.request.Request(BASE + "api/sessions", headers={
+req = urllib.request.Request(BASE + "sealed", data=blob.encode("utf-8"), method="POST", headers={
     "Authorization": "Bearer " + token, "User-Agent": UA,
-    "X-Collie-Enc": blob, "X-Collie-Session": SESSION, "X-Collie-Rid": "1",
+    "Content-Type": "application/octet-stream",
+    "X-Collie-Session": SESSION, "X-Collie-Rid": "1",
 })
 try:
     with urllib.request.urlopen(req, timeout=60) as r:

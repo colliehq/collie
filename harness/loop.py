@@ -7,9 +7,11 @@
     consolidate(task, answer) -> memory.remember     # self-cleaning write path
 """
 from __future__ import annotations
+import ast
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 
@@ -17,6 +19,7 @@ from . import __version__
 from . import redact as _redact
 from . import settings as _settings
 from .context import ContextComposer
+from .hooks import HookManager
 from .providers import (ModelProvider, Usage, ToolCall, classify_error, is_overflow,
                         is_known_terminal, _error_completion)
 from .recorder import Recorder, RunResult
@@ -32,9 +35,10 @@ TRUNC_MSG = ("ERROR: not executed — the response hit the output-token limit, s
 TRUNC_CONTINUE = ("Your reply was cut off at the output-token limit — continue from where it "
                   "stopped, or use tool calls.")
 
-VERIFY_NUDGE = ("Before finalizing: run the project's tests with `python -m pytest -q` "
-                "(use the bash tool). If anything fails, read the error, fix it, and "
-                "re-run. Only give your final answer once the relevant tests pass.")
+VERIFY_NUDGE = ("Before finalizing, use the bash tool to run the project's relevant tests "
+                "(`python -m pytest -q`, `npm test`, `go test ./...`, `cargo test`, or this "
+                "repository's equivalent). If anything fails, read the error, fix it, and re-run. "
+                "Only give your final answer once an actually executed test run passes.")
 
 # Evidence-gated verify (SWE): after an edit, don't accept "done" until a reproduction has
 # actually been RUN on the fixed code and didn't error. This is the loop lever the audit +
@@ -72,15 +76,222 @@ _REPRO_OTHER_RE = re.compile(
     r'|(mvn|\./gradlew)\s+[^\n;|]*\b(compile|test-compile)\b'
     r')')
 
+# A real test runner is stronger evidence than a hand-written one-off reproduction.  The original
+# gate deliberately excluded whole suites, while its own default nudge told the model to run pytest;
+# ordinary Web Required therefore had no command that could satisfy it.  Keep this anchored to shell
+# command boundaries so prose such as ``echo pytest`` is not mistaken for execution.
+_TEST_RUNNER_RE = re.compile(
+    r'(^|[;&|]\s*)\s*('
+    r'(python3?|py)\s+-m\s+(pytest|unittest|nose)\b'
+    r'|(uv|poetry)\s+run\s+(pytest|python\s+-m\s+pytest)\b'
+    r'|pytest\b|tox\b|nox\b'
+    r'|(npm|pnpm|yarn|bun)\s+(run\s+)?test(?=[:\s]|$)'
+    r'|(npx|npm\s+exec|pnpm\s+exec|yarn\s+exec)\s+(jest|vitest|mocha|ava)\b'
+    r'|go\s+test\b|cargo\s+(test|nextest\s+run)\b'
+    r'|(mvn|\./mvnw)\s+[^\n;|]*\b(test|verify)\b'
+    r'|\./gradlew(?:\.bat)?\s+[^\n;|]*\btest\b'
+    r'|dotnet\s+test\b|swift\s+test\b|mix\s+test\b'
+    r'|(?:bundle\s+exec\s+)?rspec\b|(?:vendor/bin/)?phpunit\b|make\s+test\b'
+    r')', re.IGNORECASE)
+
+
+def _shell_unquoted_at(text: str, index: int) -> bool:
+    """Whether ``index`` is outside shell string literals/backticks.
+
+    Regex command boundaries alone are insufficient: ``python -c \"print('&& pytest')\"`` contains
+    exactly the same bytes as a chained runner but executes only a print.  A tiny lexer is enough
+    to reject that evidence without interpreting the shell command itself.
+    """
+    single = double = backtick = escaped = False
+    for ch in text[:index]:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and not single:
+            escaped = True
+        elif ch == "'" and not double and not backtick:
+            single = not single
+        elif ch == '"' and not single and not backtick:
+            double = not double
+        elif ch == "`" and not single:
+            backtick = not backtick
+    return not (single or double or backtick)
+
+
+_HEREDOC_TOKEN_RE = re.compile(
+    r"<<(?P<tabs>-)?\s*(?:'(?P<sq>[^'\r\n]+)'|\"(?P<dq>[^\"\r\n]+)\"|"
+    r"(?P<bare>[A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _split_first_heredoc(command: str):
+    """Return ``(intro, body, suffix)`` for the first complete, unquoted here-document."""
+    for match in _HEREDOC_TOKEN_RE.finditer(command):
+        if not _shell_unquoted_at(command, match.start()):
+            continue
+        line_end = command.find("\n", match.end())
+        if line_end < 0:
+            return None
+        delimiter = match.group("sq") or match.group("dq") or match.group("bare")
+        body_start = line_end + 1
+        pos = body_start
+        while pos <= len(command):
+            next_end = command.find("\n", pos)
+            record_end = len(command) if next_end < 0 else next_end
+            record = command[pos:record_end].rstrip("\r")
+            compared = record.lstrip("\t") if match.group("tabs") else record
+            if compared == delimiter:
+                suffix_at = len(command) if next_end < 0 else next_end + 1
+                return command[:line_end], command[body_start:pos], command[suffix_at:]
+            if next_end < 0:
+                break
+            pos = next_end + 1
+        return None
+    return None
+
+
+def _shell_control_surface(command: str) -> str:
+    """Remove here-document payloads, whose punctuation is data rather than shell syntax."""
+    surface = ""
+    remaining = command
+    while True:
+        parts = _split_first_heredoc(remaining)
+        if parts is None:
+            return surface + remaining
+        intro, _body, suffix = parts
+        surface += intro
+        if not suffix.strip():
+            return surface
+        # A real command after the delimiter is a new shell command and must remain visible to the
+        # unsafe-control check below. Multiple here-documents are handled one suffix at a time.
+        surface += "\n"
+        remaining = suffix
+
+
+def _has_unsafe_test_shell_control(command: str) -> bool:
+    """Reject shell composition that can hide a failing test runner.
+
+    Required verification trusts the tool's process exit code.  A pipeline normally reports the
+    last process and ``||``/``;``/background execution can similarly turn a failed test into a
+    successful shell command.  ``&&`` is safe because a failing runner still makes the whole chain
+    fail.  Redirection forms such as ``2>&1`` and ``&>log`` do not change the exit status.
+
+    This is intentionally conservative: an unfamiliar compound command should not count as proof
+    even if it might be safe under one particular shell configuration.
+    """
+    command = _shell_control_surface(command)
+    single = double = backtick = escaped = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\" and not single:
+            escaped = True
+            i += 1
+            continue
+        if ch == "'" and not double and not backtick:
+            single = not single
+            i += 1
+            continue
+        if ch == '"' and not single and not backtick:
+            double = not double
+            i += 1
+            continue
+        if ch == "`" and not single:
+            backtick = not backtick
+            i += 1
+            continue
+        if single or double or backtick:
+            i += 1
+            continue
+        if ch in ("\n", "\r", ";", "|"):
+            return True
+        if ch == "$" and i + 1 < len(command) and command[i + 1] == "(":
+            return True
+        if ch == "&":
+            previous = command[i - 1] if i else ""
+            following = command[i + 1] if i + 1 < len(command) else ""
+            if following == "&":
+                i += 2
+                continue
+            if previous == "&":  # already consumed by the paired branch above
+                i += 1
+                continue
+            if previous == ">" or following == ">":  # 2>&1 / &>file redirection
+                i += 1
+                continue
+            return True
+        i += 1
+    return False
+
+
+def _is_test_runner_cmd(command: str) -> bool:
+    """True only for a runner that will execute tests, not collect/build/list them."""
+    c = str(command or "")
+    if _has_unsafe_test_shell_control(c):
+        return False
+    if not any(_shell_unquoted_at(c, match.start(2))
+               for match in _TEST_RUNNER_RE.finditer(c)):
+        return False
+    low = c.lower()
+    return not any(flag in low for flag in (
+        "--collect-only", "--co ", "--no-run", "--listtests", "--list-tests"))
+
+
 # Does the command actually CHECK a result, as opposed to merely proving the code builds?
 # `\bassert\b` alone is a Python idiom; a Go agent asserts with t.Fatal/t.Error, a JS one with
-# expect(). Running a TARGETED existing test counts too — it is an executable correctness check.
+# expect(). Running an actual test runner counts too — it is executable correctness evidence.
 # `go build` deliberately does NOT count: compiling is necessary, never sufficient, and letting it
 # satisfy require_assert would reopen the print-only hole in a new language.
 _ASSERTED_RE = re.compile(
     r'\bassert\b|\bt\.(Fatal|Error)f?\b|\bexpect\(|\brequire\.\w|\bshould\b\.'
     r'|go\s+test\b[^\n;|]*\s-run\b|cargo\s+test\b[^\n;|]*\S'
-    r'|npx\s+(jest|vitest|mocha|ava)\b[^\n;|]*\S')
+    r'|npx\s+(jest|vitest|mocha|ava)\b[^\n;|]*\S|'
+    + _TEST_RUNNER_RE.pattern, re.IGNORECASE)
+
+
+def _is_asserting_cmd(command: str) -> bool:
+    """Whether a recognized reproduction contains an assertion or executes a real test runner.
+
+    Parse Python ``-c`` payloads so ``python -c \"print('assert')\"`` cannot satisfy Required merely
+    because an assertion-shaped word appeared inside a string literal.
+    """
+    c = str(command or "")
+    # An assertion only proves anything if its own failure controls the tool's exit status. This
+    # also covers hand-written ``python -c 'assert ...'`` reproductions, not just test runners.
+    if _has_unsafe_test_shell_control(c):
+        return False
+    # A recognized runner in discovery/build-only mode is explicitly non-evidence. Check this
+    # before the broader regex below, whose runner alternative intentionally shares the syntax.
+    if _TEST_RUNNER_RE.search(c):
+        return _is_test_runner_cmd(c)
+    heredoc = _split_first_heredoc(c)
+    if heredoc is not None and _REPRO_STDIN_RE.search(heredoc[0]):
+        try:
+            tree = ast.parse(heredoc[1])
+        except (SyntaxError, ValueError):
+            return False
+        return any(isinstance(node, ast.Assert) for node in ast.walk(tree))
+    try:
+        words = shlex.split(c, posix=True)
+    except ValueError:
+        words = []
+    for i, word in enumerate(words):
+        exe = os.path.basename(word).lower().removesuffix(".exe")
+        if not (exe == "py" or re.fullmatch(r"python\d*(?:\.\d+)?", exe)):
+            continue
+        for j in range(i + 1, min(len(words), i + 5)):
+            if words[j] in ("&&", "||", ";", "|"):
+                break
+            if words[j] == "-c" and j + 1 < len(words):
+                try:
+                    tree = ast.parse(words[j + 1])
+                except (SyntaxError, ValueError):
+                    return False
+                return any(isinstance(node, ast.Assert) for node in ast.walk(tree))
+    return bool(_ASSERTED_RE.search(c))
 
 
 def _budget_exceeded(model, total):
@@ -108,17 +319,19 @@ def _budget_exceeded(model, total):
 
 
 def _is_repro_cmd(name, args):
-    """A post-edit `python -c`/`python repro.py` we can gate finish on — never the suite, and
-    NOT a command that merely MENTIONS python (e.g. `ln -sf "$(command -v python3)"` or
-    `command -v python3` — those used to be mis-flagged as reproductions and fail the gate)."""
+    """A post-edit focused repro, compile check, or real test execution we can gate finish on.
+
+    A command that merely mentions a runner/interpreter (``echo pytest``, ``command -v python``)
+    remains non-evidence.
+    """
     if name != "bash":
         return False
     c = args.get("command") or ""
-    # exclude test-suite / build runners too: a green `python -m unittest` / `python setup.py test`
-    # is NOT the targeted reproduction the finish-gate is meant to key on (the whole point is a
-    # focused repro of THIS bug, never "the suite passes").
-    if any(b in c.lower() for b in ("pytest", "pip ", "pip3 ", "python -m venv", "tox", "nox",
-                                    "unittest", "nose", "setup.py")):
+    if _has_unsafe_test_shell_control(c):
+        return False
+    if _is_test_runner_cmd(c):
+        return True
+    if any(b in c.lower() for b in ("pip ", "pip3 ", "python -m venv", "setup.py")):
         return False
     return (bool(_REPRO_RE.search(c)) or bool(_REPRO_STDIN_RE.search(c))
             or bool(_REPRO_OTHER_RE.search(c)))
@@ -279,6 +492,19 @@ class Harness:
         # in flight (point 13). Interactive surfaces (TUI) set it; None = zero cost, benchmark path
         # byte-identical. Drained only at safe points (turn start / voluntary finish).
         self.steering = None
+        # Cooperative cancellation owned by an embedding surface. It is deliberately a callback,
+        # not a transport type: the web server uses an Event, while CLI/editor callers can use any
+        # durable flag. Checked before every model turn and every individual tool execution.
+        self.cancelled = None
+        # Pack may attach one aggregate budget shared by all candidate harnesses.  It receives every
+        # provider usage record exactly once and can stop later candidates/turns when the ONE user
+        # run reaches its cap. None preserves the standalone/legacy path.
+        self.shared_budget = None
+        self.checkpoint_scope = ""       # surfaces may narrow undo below the shared memory project
+        # When a surface supplies its durable conversation id, persist the full
+        # transcript at every model/tool boundary. This makes a killed process
+        # resumable without pretending an interrupted external tool never fired.
+        self.durable_session_id = ""
         # The authority half. `gate` decides allow/deny/ask for each proposed call; `approve` is
         # the surface that answers an "ask" — a TUI prompt, a web card, ACP's native permission
         # request, a phone. They are separate on purpose: the loop must not know which surface it
@@ -293,6 +519,10 @@ class Harness:
         # Durable record of what the gate decided. None = not recording (benchmarks, tests,
         # embedded uses); a user-facing surface attaches an AuditLog.
         self.audit = None
+        # Deterministic lifecycle policy. Project hooks are discovered only for a
+        # workspace explicitly trusted with ``collie trust``; user hooks remain
+        # available everywhere. Embedders/tests may replace this manager.
+        self.hooks = HookManager(cwd)
 
     def _emit(self, kind, **data):
         if self.emit:
@@ -300,6 +530,57 @@ class Harness:
                 self.emit(kind, data)
             except Exception:
                 pass
+
+    def _hook(self, event, payload=None, subject=""):
+        """Dispatch one lifecycle event and mirror bounded receipts to surfaces."""
+        manager = getattr(self, "hooks", None)
+        if manager is None:
+            return None
+        if event == "SessionStart":
+            for pending in getattr(manager, "pending", ()):
+                self._emit("hook_pending", path=pending.get("path", ""),
+                           sha256=pending.get("sha256", ""))
+        try:
+            result = manager.dispatch(event, payload or {}, subject=subject)
+        except Exception as exc:
+            # A policy dispatcher itself failing at an authority boundary must
+            # fail closed. HookResult is imported lazily to keep this helper tiny.
+            from .hooks import HookResult
+            result = HookResult(allowed=event not in (
+                "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop", "TaskCompleted"),
+                reason="hook dispatcher failed: %s: %s" % (type(exc).__name__, exc))
+        for receipt in result.receipts:
+            self._emit("hook", hook_event=event,
+                       source=receipt.get("source", ""),
+                       allowed=bool(receipt.get("allowed", True)),
+                       reason=receipt.get("reason", ""),
+                       wall_ms=receipt.get("wall_ms", 0),
+                       timed_out=bool(receipt.get("timed_out", False)))
+        return result
+
+    def _session_checkpoint(self, messages, run_id, turn, state, detail=None,
+                            terminal=False):
+        sid = getattr(self, "durable_session_id", "")
+        if not sid:
+            scope = getattr(self, "checkpoint_scope", "") or ""
+            if scope.startswith(("web:", "session:")):
+                sid = scope.split(":", 1)[1]
+        if not sid:
+            return
+        try:
+            from . import sessions as _sessions
+            _sessions.checkpoint(
+                sid, messages, project=self.project, cwd=self.cwd,
+                run_id=run_id, turn=turn, state=state, detail=detail,
+                terminal=terminal)
+            self._emit("session_checkpoint", session=sid, state=state,
+                       turn=turn, terminal=terminal)
+        except Exception as exc:
+            # Bookkeeping must not kill active work, but durability failures must
+            # be visible rather than silently voiding the recovery promise.
+            self._emit("session_checkpoint", session=sid, state=state,
+                       turn=turn, ok=False,
+                       error="%s: %s" % (type(exc).__name__, exc))
 
     def _authorize(self, tc, tool):
         """Decide whether this call may run. Returns None to allow, or the reason it was
@@ -397,6 +678,18 @@ class Harness:
         except Exception:
             return []
 
+    def _cancel_requested(self):
+        try:
+            return bool(self.cancelled and self.cancelled())
+        except Exception:
+            return False
+
+    def _account_usage(self, total, usage, model=None):
+        """Add one provider usage record to local totals and an optional Pack-wide budget."""
+        total.add(usage)
+        if self.shared_budget is not None:
+            self.shared_budget.account(model or self.provider.model, usage)
+
     def _run_critic(self, issue, diff):
         """Independent adversarial review — a FRESH provider call seeing ONLY the issue + the diff
         (not the main model's reasoning or its self-written test), so it does not inherit the main
@@ -411,10 +704,15 @@ class Harness:
                 "concern in 1-2 sentences, naming the exact case or behavior.")
         msg = "ISSUE:\n%s\n\nCANDIDATE DIFF:\n%s" % (str(issue)[:6000], str(diff)[:9000])
         self._critic_usage = None
+        self._critic_model = None
         try:
             reviewer = self.critic_provider or self.provider
             comp = reviewer.complete(sysp, [{"role": "user", "content": msg}], [])
             self._critic_usage = comp.usage   # the caller folds this into the run's token/$ total —
+            # Lightweight/custom providers used by embedders are only required to implement
+            # ``complete``.  Accounting metadata must not turn a successfully returned objection
+            # into an exception and silently approve the candidate.
+            self._critic_model = getattr(reviewer, "model", None)
             text = (comp.text or "").strip()   # a critic call spends real tokens; the receipt must show them
         except Exception:
             return True, ""            # a critic failure must never block a finish
@@ -447,7 +745,31 @@ class Harness:
         res = RunResult(run_id=rid, task_id=task_id, harness="collie",
                         model=self.provider.model, provider=self.provider.name)
         ctx = ToolCtx(cwd=self.cwd, project=self.project, memory=self.memory,
-                      recorder=self.recorder, registry=self.registry)
+                      recorder=self.recorder, registry=self.registry,
+                      checkpoint_scope=self.checkpoint_scope)
+        self._hook("SessionStart", {
+            "run_id": rid, "task_id": task_id, "project": self.project,
+            "provider": self.provider.name, "model": self.provider.model,
+        }, subject=self.project)
+        submitted = self._hook("UserPromptSubmit", {
+            "run_id": rid, "task_id": task_id, "prompt": user_msg,
+            "project": self.project,
+        }, subject=self.project)
+        if submitted is not None and not submitted.allowed:
+            res.error = "prompt blocked by lifecycle hook: %s" % (
+                submitted.reason or "policy rejected the prompt")
+            res.wall_ms = int((time.time() - t0) * 1000)
+            res.messages = [{"role": "user", "content": user_msg}]
+            self.recorder.finish_run(res)
+            self._emit("receipt", verified=False, prefix_tokens=0,
+                       input_tokens=0, output_tokens=0, total_tokens=0,
+                       turns=0, tool_calls=0, wall_ms=res.wall_ms,
+                       cost_usd=0.0, cache_waste_usd=0.0, cache_misses=0,
+                       error=res.error, canceled=False)
+            self._hook("SessionEnd", {"run_id": rid, "task_id": task_id,
+                                      "error": res.error, "success": False},
+                       subject=self.project)
+            return res
         # Snapshot the tree BEFORE anything is edited, so a run can be undone wholesale. Taken
         # here rather than at the first edit: by the time an edit lands a command may already have
         # written files, and the point the user wants back is "before I asked for this".
@@ -470,8 +792,15 @@ class Harness:
         # history (prior thread) lets a session CONTINUE across CLI calls / repl turns; the
         # composer's own elision keeps a long continued thread from bloating the prefix.
         msgs0 = list(history) if history else []
-        msgs0.append({"role": "user", "content": user_msg})
+        submitted_context = (submitted.additional_context
+                             if submitted is not None else [])
+        prompt_content = user_msg
+        if submitted_context:
+            prompt_content += "\n\n[Trusted lifecycle context]\n" + "\n".join(submitted_context)
+        msgs0.append({"role": "user", "content": prompt_content})
         session = {"messages": msgs0}
+        journal_state = "turn_boundary"
+        self._session_checkpoint(session["messages"], rid, 0, journal_state)
         # privacy: secrets found in tool output are swapped for {{SECRET:…}} placeholders before
         # they can reach ANY cloud provider; the vault (in-memory only, never persisted) lets the
         # execution boundary substitute real values back. Off only if the user disables the knob.
@@ -501,6 +830,7 @@ class Harness:
         last_repro_asserted = False   # did the last post-edit repro actually run an `assert`?
         coverage_rounds = 0
         critic_rounds = 0
+        hook_stop_rounds = 0
         best_diff, rollback_rounds = "", 0   # white-flag guard (see ROLLBACK_NUDGE)
         # Convergence thresholds scale WITH max_turns, so they must stay above the solve-turn
         # distribution (rebench: resolved median 23, so a 0.55 ratio -> force_at 27 sits just above
@@ -510,6 +840,7 @@ class Harness:
         force_at = max(3, int(self.max_turns * _fr))    # soft nudge to converge
         hard_at = max(force_at + 2, int(self.max_turns * _hr))  # then remove explore tools
         budget_hit = False
+        canceled = False
         # Ran out of turns, as opposed to deciding it was finished. Every voluntary ending leaves the
         # loop through a `break`, so `for … else` marks exactly the case where the range simply ran
         # out — mid-task, by definition. Without this the two endings were indistinguishable
@@ -517,7 +848,15 @@ class Harness:
         turns_exhausted = False
         try:
             for turn in range(self.max_turns):
-                if turn > 0 and _budget_exceeded(self.provider.model, total):
+                if self._cancel_requested():
+                    canceled = True
+                    res.error = "canceled by user"
+                    res.turns = turn
+                    self._emit("canceled", at="turn_boundary")
+                    break
+                shared_budget_hit = bool(self.shared_budget is not None
+                                         and self.shared_budget.exceeded())
+                if shared_budget_hit or (turn > 0 and _budget_exceeded(self.provider.model, total)):
                     budget_hit = True         # spent past the $/token ceiling — stop before another turn
                     res.turns = turn
                     break
@@ -566,11 +905,26 @@ class Harness:
                 attempts = 0
                 overflow_now = False
                 while True:
+                    if self._cancel_requested():
+                        canceled = True
+                        res.error = "canceled by user"
+                        break
                     try:
+                        journal_state = "calling_model"
+                        self._session_checkpoint(
+                            session["messages"], rid, turn, journal_state,
+                            {"attempt": attempts + 1})
                         comp = self.provider.complete(system, msgs, schemas, on_text=self.stream_cb)
                     except Exception as e:
                         comp = _error_completion(getattr(self.provider, "name", "?"), e)
-                    total.add(comp.usage)   # a failed streaming attempt burned real tokens — count them
+                    journal_state = "model_complete"
+                    self._session_checkpoint(
+                        session["messages"], rid, turn, journal_state,
+                        {"stop_reason": comp.stop_reason,
+                         "tool_calls": [c.name for c in comp.tool_calls]})
+                    # A failed streaming attempt burned real tokens too. Pack's aggregate observer
+                    # sees the same record exactly once, so N candidates share one budget.
+                    self._account_usage(total, comp.usage)
                     if comp.stop_reason != "error":
                         break
                     cls = classify_error(comp.error_detail or comp.text or "", comp.error_status)
@@ -584,7 +938,10 @@ class Harness:
                                                meta.prefix_tokens, 0)
                         self._emit("overflow_recovery", detail=(comp.error_detail or comp.text or "")[:200])
                         break
+                    shared_exhausted = bool(self.shared_budget is not None
+                                            and self.shared_budget.exceeded())
                     if (cls == "retryable" and attempts < self.max_retries
+                            and not shared_exhausted
                             and not _budget_exceeded(self.provider.model, total)):
                         delay = self.retry_base * (2 ** attempts)
                         attempts += 1
@@ -593,7 +950,18 @@ class Harness:
                             comp.usage.input_tokens, comp.usage.output_tokens, meta.prefix_tokens, 0)
                         self._emit("retry", attempt=attempts, max=self.max_retries, delay_s=delay,
                                    error=(comp.error_detail or comp.text or "")[:200])
-                        time.sleep(delay)
+                        if not self.cancelled:
+                            time.sleep(delay)          # preserve the zero-overhead/default contract
+                        else:
+                            deadline = time.time() + delay
+                            while time.time() < deadline:
+                                if self._cancel_requested():
+                                    canceled = True
+                                    res.error = "canceled by user"
+                                    break
+                                time.sleep(min(.1, max(0, deadline - time.time())))
+                            if canceled:
+                                break
                         continue
                     # terminal / retries exhausted / overflow-already-tried: class-prefix res.error
                     # The HTTP status goes in too. Without it a recorded failure cannot be told
@@ -617,6 +985,9 @@ class Harness:
                     comp.text = "%s: [%s] %s%s" % (
                         cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
                         comp.error_detail or comp.text or "provider error")
+                    break
+                if canceled:
+                    self._emit("canceled", at="model_boundary")
                     break
                 if overflow_now:
                     continue   # rebuild context with shrunk history, then re-run this turn
@@ -721,11 +1092,26 @@ class Harness:
                          # preserve signed thinking so the NEXT request can replay it (required by
                          # the API when extended thinking + tool use are both on). Empty when off.
                          "thinking_blocks": comp.thinking_blocks})
+                    if self._cancel_requested():
+                        canceled = True
+                        res.error = "canceled by user"
+                        for tc in comp.tool_calls:
+                            session["messages"].append(
+                                {"role": "tool", "tool_call_id": tc.id, "name": tc.name,
+                                 "content": "CANCELED: run stopped before execution"})
+                            res.tool_calls += 1
+                            self._emit("tool", name=tc.name, args=tc.args, ok=False,
+                                       canceled=True, result="run stopped before execution")
+                        self._emit("canceled", at="tool_boundary",
+                                   next_tool=comp.tool_calls[0].name)
+                        res.turns = turn + 1
+                        break
                     # ── pass 1: repair + AUTHORIZE every call in this turn, before running any ──
                     # Authorizing up front is the point: when the model proposes five calls, the
                     # human sees all five and decides, instead of discovering the third one only
                     # after the first two already happened irreversibly.
                     _prepared = []
+                    hook_contexts = []
                     for tc in comp.tool_calls:
                         tool = self.registry.get(tc.name)
                         repairs = []
@@ -741,10 +1127,37 @@ class Harness:
                                 tc = ToolCall(tc.id, tc.name, rargs)
                                 res.arg_repairs += 1
                                 self._emit("repair", name=tc.name, kinds=repairs)
-                        _prepared.append((tc, tool, repairs, self._authorize(tc, tool)))
+                        pre = self._hook("PreToolUse", {
+                            "run_id": rid, "task_id": task_id, "turn": turn,
+                            "tool_name": tc.name, "tool_input": tc.args,
+                        }, subject=tc.name)
+                        if pre is not None and pre.additional_context:
+                            hook_contexts.extend(pre.additional_context)
+                        denied = ("run canceled" if self._cancel_requested() else
+                                  ("lifecycle hook denied this tool: %s" %
+                                   (pre.reason or "policy rejection")
+                                   if pre is not None and not pre.allowed else
+                                   self._authorize(tc, tool)))
+                        _prepared.append((tc, tool, repairs, denied))
 
                     # ── pass 2: execute what cleared ──
-                    for tc, tool, repairs, _denied in _prepared:
+                    for tool_idx, (tc, tool, repairs, _denied) in enumerate(_prepared):
+                        if self._cancel_requested():
+                            canceled = True
+                            res.error = "canceled by user"
+                            self._emit("canceled", at="tool_boundary", next_tool=tc.name)
+                            # Preserve provider protocol: every tool_use in the assistant message
+                            # still receives a result, even though it was deliberately not executed.
+                            for pending_tc, _tool, _repairs, _deny in _prepared[tool_idx:]:
+                                session["messages"].append(
+                                    {"role": "tool", "tool_call_id": pending_tc.id,
+                                     "name": pending_tc.name,
+                                     "content": "CANCELED: run stopped before execution"})
+                                res.tool_calls += 1
+                                self._emit("tool", name=pending_tc.name, args=pending_tc.args,
+                                           ok=False, canceled=True,
+                                           result="run stopped before execution")
+                            break
                         # malformed/truncated JSON args (provider sentinel, point 7): report the REAL
                         # fault, not a misleading "missing required arg".
                         if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
@@ -772,6 +1185,10 @@ class Harness:
                                 _skip_restore = tc.name == "remember"
                                 _run_args = (_redact.restore(tc.args, self._secret_vault)
                                              if (_redact_on and not _skip_restore) else tc.args)
+                                journal_state = "executing_tool"
+                                self._session_checkpoint(
+                                    session["messages"], rid, turn, journal_state,
+                                    {"tool_name": tc.name, "tool_call_id": tc.id})
                                 out = (tool.run(_run_args, ctx) if tool
                                        else "ERROR: no such tool %s" % tc.name)
                             except Exception as e:
@@ -780,6 +1197,16 @@ class Harness:
                             # privacy: credentials in tool OUTPUT (env files, key greps, tracebacks)
                             # never enter the conversation — any cloud provider sees placeholders.
                             out = _redact.redact(out, self._secret_vault)
+                        failed_tool = isinstance(out, str) and (
+                            out.startswith("ERROR") or out.startswith("DENIED"))
+                        post = self._hook(
+                            "PostToolUseFailure" if failed_tool else "PostToolUse", {
+                                "run_id": rid, "task_id": task_id, "turn": turn,
+                                "tool_name": tc.name, "tool_input": tc.args,
+                                "tool_response": out,
+                            }, subject=tc.name)
+                        if post is not None and post.additional_context:
+                            hook_contexts.extend(post.additional_context)
                         res.tool_calls += 1
                         # Append the tool RESULT immediately, so every tool_use is ALWAYS paired even
                         # if the bookkeeping below throws on a malformed arg — an orphaned tool_use
@@ -789,6 +1216,11 @@ class Harness:
                         if repairs:
                             _tmsg["repairs"] = repairs   # zero-token; rides session JSON for post-hoc grep
                         session["messages"].append(_tmsg)
+                        journal_state = "tool_complete"
+                        self._session_checkpoint(
+                            session["messages"], rid, turn, journal_state,
+                            {"tool_name": tc.name, "tool_call_id": tc.id,
+                             "ok": not failed_tool})
                         # Images a tool produced (screenshot) ride ctx, and become a real image block
                         # on the conversation HERE rather than inside the tool_result. Two reasons:
                         # OpenAI's tool-role messages cannot carry images at all, and every provider
@@ -859,14 +1291,22 @@ class Harness:
                                 last_repro_failed = _repro_failed(o)
                                 # \bassert\b (not a bare substring) so "reassert"/print("assert")
                                 # don't satisfy the assert-mode gate without a real assertion.
-                                last_repro_asserted = bool(
-                                    _ASSERTED_RE.search(tc.args.get("command") or ""))
+                                last_repro_asserted = _is_asserting_cmd(
+                                    tc.args.get("command") or "")
                                 self._emit("repro", passed=not last_repro_failed,
                                            asserted=last_repro_asserted,
                                            cmd=(tc.args.get("command") or "")[:200])
                         except Exception as _acc_e:
                             if os.environ.get("COLLIE_DEBUG"):
                                 print("  [accounting error, continuing] %s" % _acc_e, flush=True)
+                    if hook_contexts and not canceled:
+                        session["messages"].append({
+                            "role": "user",
+                            "content": "[Trusted lifecycle context]\n" + "\n".join(hook_contexts),
+                        })
+                    if canceled:
+                        res.turns = turn + 1
+                        break
                     res.turns = turn + 1
                     # converge: still exploring past the deadline with no edit -> nudge ONCE
                     # (then hard tool-restriction at hard_at does the structural forcing;
@@ -1009,15 +1449,21 @@ class Harness:
                 # Self-attack shares the model's blind spot (a misread attacks from the same misread);
                 # a separate read that sees ONLY issue+diff catches under-coverage and misreads a
                 # self-nudge cannot. Bounded critic->repair rounds.
+                shared_exhausted = bool(self.shared_budget is not None
+                                        and self.shared_budget.exceeded())
+                local_exhausted = _budget_exceeded(self.provider.model, total)
                 if (self.critic and did_edit and turn < self.max_turns - 1
-                        and critic_rounds < self.critic_max):
+                        and critic_rounds < self.critic_max
+                        and not shared_exhausted and not local_exhausted):
                     _cdiff = _tree_diff(self.cwd)
                     if _cdiff:
                         _ok, _obj = (self.critic_fn(self.critic_issue, _cdiff, self.cwd)
                                      if self.critic_fn else
                                      self._run_critic(self.critic_issue, _cdiff))
                         if getattr(self, "_critic_usage", None):   # count the critic's own tokens/$
-                            total.add(self._critic_usage); self._critic_usage = None
+                            self._account_usage(total, self._critic_usage,
+                                                getattr(self, "_critic_model", None))
+                            self._critic_usage = None; self._critic_model = None
                         if not _ok:
                             session["messages"].append({"role": "assistant", "content": comp.text})
                             session["messages"].append({"role": "user", "content":
@@ -1056,6 +1502,26 @@ class Harness:
                     res.turns = turn + 1
                     continue
 
+                stop_hook = self._hook("Stop", {
+                    "run_id": rid, "task_id": task_id, "turn": turn,
+                    "answer": comp.text or "", "did_edit": did_edit,
+                    "edited_files": sorted(edited_files),
+                    "verification_passed": self._repro_verified(
+                        did_edit, last_edit_turn, last_repro_turn,
+                        last_repro_failed, last_repro_asserted),
+                }, subject=self.project)
+                if stop_hook is not None and not stop_hook.allowed:
+                    reason = stop_hook.reason or "completion policy says work remains"
+                    if turn < self.max_turns - 1 and hook_stop_rounds < 3:
+                        session["messages"].append({"role": "assistant", "content": comp.text})
+                        session["messages"].append({"role": "user", "content":
+                            "A trusted completion hook blocked stopping: %s\n"
+                            "Address it with evidence, then try to finish again." % reason})
+                        hook_stop_rounds += 1
+                        res.turns = turn + 1
+                        continue
+                    res.error = "completion blocked by lifecycle hook: %s" % reason
+
                 answer = comp.text
                 res.turns = turn + 1
                 break
@@ -1065,15 +1531,23 @@ class Harness:
             # mechanical white-flag restore (the belt to ROLLBACK_NUDGE's braces): every rescue
             # is spent and the tree is STILL empty — put the last non-empty edit state back.
             # A wrong patch can score at eval; an empty one is a guaranteed zero.
-            if self.force_edit and did_edit and best_diff and _tree_empty(self.cwd):
+            if (not canceled and self.force_edit and did_edit and best_diff
+                    and _tree_empty(self.cwd)):
                 ok = _apply_diff(self.cwd, best_diff)
                 self.recorder.log_turn(rid, res.turns, "rollback",
                                        "empty tree at finish — restored last non-empty diff "
                                        "(%d B): %s" % (len(best_diff), "ok" if ok else "FAILED"),
                                        0, 0, 0, 0)
                 self._emit("rollback", ok=ok, size=len(best_diff))
+                if ok:
+                    # Restoring a prior patch is itself a new mutation. Evidence collected before
+                    # the restore cannot certify the bytes we just put back.
+                    last_edit_turn = max(last_edit_turn, res.turns)
+                    last_repro_turn, last_repro_failed, last_repro_asserted = -100, False, False
 
-            if not answer:
+            if canceled:
+                answer = "_[stopped by user]_"
+            elif not answer:
                 # The loop ended WITHOUT the voluntary no-tool finish (spin-break, range exhaustion,
                 # or a tool call on the FINAL available turn — a common case). Never return an empty
                 # answer while a valid edit may have landed: prefer the last completion's text, else
@@ -1086,7 +1560,11 @@ class Harness:
                     pass                          # keep answer empty -> `res.answer or res.error` shows the error
                 elif last_text:
                     answer = comp.text
-                elif budget_hit:                  # don't spend MORE past the ceiling on a synthesis
+                elif (budget_hit or _budget_exceeded(self.provider.model, total)
+                      or (self.shared_budget is not None and self.shared_budget.exceeded())):
+                    # Don't spend MORE past either the local ceiling or Pack's aggregate ceiling on
+                    # a cosmetic synthesis call after useful work has already happened.
+                    budget_hit = True
                     answer = "(stopped at budget — see the edits/tools above)"
                 else:
                     # A run cut off mid-task must not fall back on the word "done". Measured: with a
@@ -1102,7 +1580,7 @@ class Harness:
                         _sys2, msgs2, _m2 = self.composer.build(
                             session, user_msg, self.cwd, self.project, self.mode)
                         fin = self.provider.complete(_sys2, msgs2, [], on_text=self.stream_cb)
-                        total.add(fin.usage)
+                        self._account_usage(total, fin.usage)
                         if fin.stop_reason == "error":   # don't let a failed synthesis become the answer
                             res.error = res.error or (fin.text or "provider error")[:300]
                             answer = _placeholder
@@ -1120,11 +1598,28 @@ class Harness:
             if last_stop == "length" and answer and "truncated" not in answer:
                 answer += "\n\n_[answer truncated at output-token limit]_"   # visible half of point 1
 
+            # Compute the verdict before persistence. Required gets a bounded number of repair
+            # turns, but exhausting that retry allowance must be a hard FAILED result rather than
+            # silently accepting the model's next "done". Keep the partial answer for diagnosis and
+            # mark it explicitly so a resumed/saved thread cannot remember it as a success.
+            res.verified = self._repro_verified(
+                did_edit, last_edit_turn, last_repro_turn,
+                last_repro_failed, last_repro_asserted)
+            if (self.verify_gate and did_edit and not res.verified
+                    and not canceled and not res.error):
+                evidence = "executed post-edit assertion" if self.require_assert else \
+                           "executed post-edit check"
+                res.error = "verification required but no %s passed" % evidence
+                marker = "_[run failed: %s]_" % res.error
+                if marker not in answer:
+                    answer = (answer.rstrip() + "\n\n" + marker).lstrip()
+
             res.answer = answer
             # never consolidate MOCK runs — their canned "Based on the tool output: …" answers are
             # test plumbing, not durable facts, and were polluting memory.db on every selftest.
             # Also skip a length-stopped answer: an incomplete "fact" shouldn't enter durable memory.
-            if (consolidate and answer and getattr(self.provider, "name", "") != "mock"
+            if (not canceled and not res.error and consolidate and answer
+                    and getattr(self.provider, "name", "") != "mock"
                     and last_stop != "length"):
                 # self-cleaning write: distill task+answer into a durable fact
                 self.memory.remember(
@@ -1145,6 +1640,15 @@ class Harness:
         res.cost_usd = cost_usd(self.provider.model, res.input_tokens,
                                 res.output_tokens, res.cache_read, res.cache_creation)
         res.wall_ms = int((time.time() - t0) * 1000)
+        res.canceled = canceled
+        # Keep this assignment before finish_run: recorder implementations/adapters are allowed to
+        # inspect the complete result synchronously, and previously always observed the dataclass's
+        # default False even on a verified run.
+        res.verified = self._repro_verified(
+            did_edit, last_edit_turn, last_repro_turn,
+            last_repro_failed, last_repro_asserted)
+        if res.error:
+            res.success = False
         # ensure the thread ENDS with the final answer (the no-tool-call path breaks without
         # appending it) so a --continue'd next turn sees what this turn concluded.
         m = session["messages"]
@@ -1152,22 +1656,34 @@ class Harness:
             m.append({"role": "assistant", "content": answer})
         res.messages = m                      # expose the thread so a session can be saved/continued
         self.recorder.finish_run(res)
+        if journal_state == "executing_tool":
+            # The tool may have committed its effect before the process/host code
+            # failed. Preserve the fence for explicit reconciliation.
+            self._session_checkpoint(m, rid, res.turns, "external_action",
+                                     {"error": res.error}, terminal=False)
+        else:
+            self._session_checkpoint(m, rid, res.turns, "terminal",
+                                     {"error": res.error, "verified": res.verified},
+                                     terminal=True)
         # final receipt — the honest token/time/$ tally + the verification verdict, for the
         # streaming UX / editor / ACP surfaces (the "$" the brand promises, now on the wire).
         # verified = edited + a repro ran on the FIXED code + it didn't fail + (in assert-mode) it
         # actually executed an assertion — matching the gate's own definition, so the receipt can't
         # claim "verified" for a print-only repro under require_assert. Same verifier.py decision
         # as the finish gate, so the receipt can never disagree with why the run was allowed to stop.
-        res.verified = self._repro_verified(
-            did_edit, last_edit_turn, last_repro_turn,
-            last_repro_failed, last_repro_asserted)
         self._emit("receipt", verified=res.verified,
                    prefix_tokens=res.prefix_tokens, prefix_measured=res.prefix_measured,
                    input_tokens=res.input_tokens,
                    output_tokens=res.output_tokens, total_tokens=res.total_tokens,
                    turns=res.turns, tool_calls=res.tool_calls,
                    wall_ms=res.wall_ms, cost_usd=res.cost_usd,
-                   cache_waste_usd=res.cache_waste_usd, cache_misses=miss_n, error=res.error)
+                   cache_waste_usd=res.cache_waste_usd, cache_misses=miss_n, error=res.error,
+                   canceled=canceled)
+        self._hook("SessionEnd", {
+            "run_id": rid, "task_id": task_id, "success": bool(res.success and not res.error),
+            "verified": bool(res.verified), "error": res.error,
+            "turns": res.turns, "wall_ms": res.wall_ms, "cost_usd": res.cost_usd,
+        }, subject=self.project)
         # Debug: dump the FULL transcript (messages + tool outputs) for offline diagnosis of
         # loop behavior (e.g. why the assert-verify loop doesn't converge on a hard instance).
         # COLLIE_DUMP_TRANSCRIPT=<dir> writes <dir>/<task>_<runid>.json. Opt-in, no prod cost.

@@ -3,19 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Collie — a coding agent that lives on your computer</title>
-<meta name="description" content="Collie is a coding agent that runs on your own machine — it reaches your real environment (your logged-in browser, desktop, screen, files) and proves its work by running it. Local, private, no telemetry. One-click on Windows; free.">
+<title>Collie — your personal AI operations system</title>
+<meta name="description" content="Give Collie an outcome. It chooses the brain, tools, skills, workers, and device; keeps the mission moving; asks when authority is needed; and returns scoped evidence. Runs across your devices, with no Collie account or telemetry.">
 <link rel="icon" href="collie-logo.svg" type="image/svg+xml">
 <link rel="canonical" href="https://collie.run/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Collie">
 <meta property="og:url" content="https://collie.run/">
-<meta property="og:title" content="Collie — a coding agent that lives on your computer">
-<meta property="og:description" content="Local and private. It reaches your real environment and proves its work by running it. One click to install.">
+<meta property="og:title" content="Collie — your personal AI operations system">
+<meta property="og:description" content="One Collie at the front door, a Pack underneath. Give it an outcome; it keeps the mission moving and returns scoped evidence.">
 <meta property="og:image" content="https://collie.run/collie-logo.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Collie — a coding agent that lives on your computer">
-<meta name="twitter:description" content="Local and private. It reaches your real environment and proves its work by running it.">
+<meta name="twitter:title" content="Collie — your personal AI operations system">
+<meta name="twitter:description" content="Give it an outcome. Collie chooses the brain, keeps the mission moving, and returns scoped evidence.">
 <meta name="twitter:image" content="https://collie.run/collie-logo.png">
 <meta name="theme-color" content="#0B0C11">
 <script type="application/ld+json">
@@ -24,7 +24,7 @@
   "@type": "SoftwareApplication",
   "name": "Collie",
   "alternateName": "Collie Harness",
-  "applicationCategory": "DeveloperApplication",
+  "applicationCategory": "ProductivityApplication",
   "operatingSystem": "Windows, macOS, Linux",
   "url": "https://collie.run/",
   "downloadUrl": "https://github.com/colliehq/collie/releases/latest",
@@ -32,14 +32,14 @@
   "license": "https://opensource.org/licenses/MIT",
   "isAccessibleForFree": true,
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "description": "An open-source coding agent that runs on your own computer and can automate your real environment — your browser, desktop, and files. Local, private, no telemetry.",
+  "description": "An open-source personal AI operations system that coordinates models, agents, skills, app connections, and devices around durable missions, explicit authority, and scoped evidence.",
   "sameAs": ["https://github.com/colliehq/collie"]
 }
 </script>
 <style>
   :root{
     --bg:#0B0C11; --panel:#13151D; --panel-2:#181B24; --raise:#1D202B;
-    --ink:#F0F2F8; --muted:#A2A8BA; --faint:#666C7E; --line:#23262F; --line-2:#2E323E;
+    --ink:#F0F2F8; --muted:#A2A8BA; --faint:#7B8395; --line:#23262F; --line-2:#2E323E;
     --accent:#8E9BE8; --accent-2:#AAB4F0; --accent-deep:#5766B8;
     --warm:#E8B06A; --ok:#63C495;
     --font:"Inter","Segoe UI",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
@@ -48,14 +48,14 @@
   }
   :root[data-theme="light"]{
     --bg:#F5F6F9; --panel:#FFFFFF; --panel-2:#FAFBFD; --raise:#FFFFFF;
-    --ink:#14161F; --muted:#545A69; --faint:#8990A0; --line:#E4E6ED; --line-2:#D5D8E1;
+    --ink:#14161F; --muted:#545A69; --faint:#636B7A; --line:#E4E6ED; --line-2:#D5D8E1;
     --accent:#45569E; --accent-2:#33427A; --accent-deep:#45569E;
     --warm:#B9822F; --ok:#2F8560;
   }
   @media (prefers-color-scheme: light){
     :root:not([data-theme]){
       --bg:#F5F6F9; --panel:#FFFFFF; --panel-2:#FAFBFD; --raise:#FFFFFF;
-      --ink:#14161F; --muted:#545A69; --faint:#8990A0; --line:#E4E6ED; --line-2:#D5D8E1;
+      --ink:#14161F; --muted:#545A69; --faint:#636B7A; --line:#E4E6ED; --line-2:#D5D8E1;
       --accent:#45569E; --accent-2:#33427A; --accent-deep:#45569E; --warm:#B9822F; --ok:#2F8560;
     }
   }
@@ -64,6 +64,7 @@
   body{background:var(--bg); color:var(--ink); font-family:var(--font); line-height:1.55;
     letter-spacing:-0.012em; -webkit-font-smoothing:antialiased; overflow-x:hidden}
   a{color:inherit; text-decoration:none}
+  :where(a,button,input,[tabindex]):focus-visible{outline:3px solid var(--accent);outline-offset:3px}
   .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
   .mono{font-family:var(--mono)}
 
@@ -145,7 +146,10 @@
   .typing i:nth-child(2){animation-delay:.15s} .typing i:nth-child(3){animation-delay:.3s}
   @keyframes bob{0%,60%,100%{opacity:.35;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
   #askInput:disabled{cursor:default}
+  .app-input .send:disabled{opacity:.55;cursor:wait}
   .app-input.capped .send{opacity:.4; pointer-events:none}
+  .ask-disclosure{padding:9px 14px 12px;border-top:1px solid var(--line);background:var(--panel-2);color:var(--faint);font-size:11.5px;line-height:1.45}
+  .ask-disclosure a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}.ask-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 
   /* ---------- marquee of asks ---------- */
   .band{padding:52px 0}
@@ -194,7 +198,7 @@
   .pane.on{display:block}
   .pane .lead{color:var(--muted); font-size:15px; margin-bottom:18px; max-width:60ch}
   .pane .btn{width:100%; font-size:17px; padding:17px}
-  .cmd{display:flex; align-items:center; gap:11px; font-family:var(--mono); font-size:14px; background:var(--panel); border:1px solid var(--line-2); border-radius:12px; padding:15px 16px; cursor:pointer; color:var(--ink)}
+  .cmd{display:flex; align-items:center; gap:11px; width:100%; text-align:left; font-family:var(--mono); font-size:14px; background:var(--panel); border:1px solid var(--line-2); border-radius:12px; padding:15px 16px; cursor:pointer; color:var(--ink)}
   .cmd .pr{color:var(--accent)} .cmd .cp{margin-left:auto; font-size:12px; color:var(--faint)}
   .incl{margin-top:20px; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:13.5px; color:var(--muted)}
   .incl div{display:flex; gap:9px; align-items:center} .incl .k{color:var(--accent)}
@@ -217,27 +221,26 @@
     .how .in{grid-template-columns:1fr; gap:34px}
     .trust{grid-template-columns:1fr 1fr; gap:26px}
   }
-  @media (prefers-reduced-motion:reduce){ .track{animation:none} .ask .cur{animation:none} }
+  @media (max-width:520px){
+    header .in{height:56px;padding:0 12px;gap:8px}.brand{font-size:16px;flex:none}.brand img{width:25px;height:25px}
+    nav{gap:2px;min-width:0}nav .wide{display:none}nav a,nav button{padding:8px 9px}nav .dl{white-space:nowrap}
+    .wrap{padding-left:15px;padding-right:15px}.hero{padding:38px 0 42px}.hero h1{font-size:clamp(34px,11vw,46px)}.hero .sub{font-size:16px}
+    .cta{align-items:stretch}.cta .btn{width:100%}.app-bar .ctx{display:none}.app-body{padding:14px 12px}.app-input{gap:8px;padding:12px 10px}.app-input .ii{display:none}
+    .band{padding:40px 0}.trust{grid-template-columns:1fr}.get .in{padding:44px 12px}.dlcard .top{padding:16px}.tabs button{padding:13px 5px;font-size:13px;gap:5px}.pane{padding:22px 14px}.pane .btn{font-size:15px;padding:14px;flex-direction:column;gap:2px}.incl{grid-template-columns:1fr}.cmd{font-size:11.5px;padding:13px 10px;overflow-wrap:anywhere}.cmd .cp{flex:none}
+    footer .r{flex-wrap:wrap}
+  }
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 </style>
-<!-- Google Analytics 4 (property "Collie", stream collie.run). Cloudflare Web Analytics stays
-     alongside it: it is the one that keeps working when an ad blocker eats gtag.js, which on a page
-     whose visitors are developers is most of them. -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-4SZK6MYMY7"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-  gtag('config', 'G-4SZK6MYMY7');
-</script>
 </head>
 <body>
 
 <header><div class="in">
   <div class="brand"><img src="collie-logo.svg" alt=""><span>Collie</span></div>
   <nav>
-    <a href="https://github.com/colliehq/collie#readme">How it works</a>
-    <a href="https://github.com/colliehq/collie">GitHub</a>
-    <button id="theme" title="light / dark">◐</button>
+    <a class="wide" href="#see">Ecosystem</a>
+    <a class="wide" href="#how">How it works</a>
+    <a class="wide" href="https://github.com/colliehq/collie">GitHub</a>
+    <button id="theme" type="button" title="Use light theme" aria-label="Use light theme" aria-pressed="false">◐</button>
     <a href="#get" class="dl">Download</a>
   </nav>
 </div></header>
@@ -246,13 +249,13 @@
   <!-- HERO -->
   <section class="hero"><div class="halo"></div><div class="wrap hero-grid">
     <div class="hero-l">
-      <span class="pill"><b>New</b> a coding agent that lives on your computer</span>
-      <h1>A coding agent that lives on your computer — and can <span class="g">actually run it</span>.</h1>
-      <p class="sub">Local and private. Collie reaches your <b>real environment</b> — your logged-in browser, your desktop, your screen, your files — and <b>proves its work by running it.</b></p>
+      <span class="pill"><b>New</b> one Collie at the front door · a Pack underneath</span>
+      <h1>Your AI home for <span class="g">getting things done</span>.</h1>
+      <p class="sub">Describe the outcome. Collie chooses the <b>brain, tools, skills, workers, and device</b>, keeps the mission moving, asks when it needs your authority, and returns <b>scoped evidence</b>.</p>
       <div class="cta">
         <a class="btn" href="#get">↓ Get Collie — it's free</a>
         <a class="btn ghost" href="#see">See what it can do</a>
-        <span class="note">One click on Windows · also on macOS &amp; Linux · runs on your own machine</span>
+        <span class="note">Desktop-first · model-agnostic · packaged for Windows &amp; Apple silicon · Linux via pip</span>
       </div>
     </div>
 
@@ -260,30 +263,32 @@
       <div class="app">
         <div class="app-bar">
           <span class="dots"><i></i><i></i><i></i></span>
-          <span class="ttl"><img src="collie-logo.svg" alt="">Collie</span>
-          <span class="ctx">~/staging</span>
+          <span class="ttl"><img src="collie-logo.svg" alt="">Rowan · Collie</span>
+          <span class="ctx">MISSION · RUNNING</span>
         </div>
-        <div class="app-body">
-          <div class="msg you"><span class="who">You</span><div class="bub">Fix the timeout bug in checkout — and prove it's fixed</div></div>
+        <div class="app-body" role="log" aria-live="polite" aria-relevant="additions">
+          <div class="msg you"><span class="who">You</span><div class="bub">Compare the best CRM options for our team and give me a decision brief</div></div>
           <div class="msg col">
             <span class="who">Collie</span>
             <div class="acts">
-              <div class="act"><i class="i">✓</i> Found it → <b>checkout/pay.py:42</b></div>
-              <div class="act"><i class="i">✓</i> Wrote a failing reproduction <span class="dim">· red before the fix</span></div>
-              <div class="act"><i class="i">✓</i> Made the fix <span class="dim">· +1 −1</span></div>
-              <div class="act"><i class="i">✓</i> Re-ran it — <b>verified passing ✓</b></div>
+              <div class="act"><i class="i">✓</i> Built a run plan <span class="dim">· research + browser</span></div>
+              <div class="act"><i class="i">✓</i> Compared 6 options <span class="dim">· pricing, workflow, security</span></div>
+              <div class="act"><i class="i">✓</i> Checked primary sources <span class="dim">· 9 links recorded</span></div>
+              <div class="act"><i class="i">✓</i> Saved the brief <span class="dim">· decision + tradeoffs</span></div>
             </div>
-            <div class="done"><img src="collie-logo.svg" alt="">Fixed and verified. Anything else?</div>
+            <div class="done"><img src="collie-logo.svg" alt="">Mission complete · receipt ready</div>
           </div>
         </div>
         <form class="app-input" id="askForm" autocomplete="off">
           <img class="ii" src="collie-logo.svg" alt="">
           <div class="ifield">
-            <input id="askInput" type="text" aria-label="Ask Collie to do something">
+            <input id="askInput" type="text" maxlength="1000" aria-label="Ask Collie a question" aria-describedby="askDisclosure">
             <span class="pho" id="pho"><span id="typed"></span><span class="ph">Ask Collie to…</span><span class="cur"></span></span>
           </div>
           <button class="send" type="submit" aria-label="Ask Collie"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
         </form>
+        <p class="ask-disclosure" id="askDisclosure">Website demo only: your question and up to six recent demo messages go to Cloudflare Workers AI. Your network address is used to derive an abuse-limit counter retained for up to two days; the counter does not store the address itself. No product files are sent. <a href="/privacy.html">Privacy details</a>.</p>
+        <div class="ask-status" id="askStatus" role="status" aria-live="polite"></div>
       </div>
     </div>
   </div></section>
@@ -291,19 +296,19 @@
   <!-- WHAT YOU CAN ASK -->
   <section class="band" id="see">
     <div class="wrap lead-h">
-      <div class="eye">CODING IS THE CORE · YOUR MACHINE IS THE REACH</div>
-      <h2>If you can describe it, Collie can do it.</h2>
-      <p>Its coding agent built the desktop console, the real-browser control, the recorder, the phone remote — the range is the proof. You ask; it does the whole thing, on your own machine.</p>
+      <div class="eye">ONE COLLIE · MANY BRAINS, SKILLS, APPS, AND DEVICES</div>
+      <h2>Code, browser, apps, and devices. One mission.</h2>
+      <p>Desktop is Collie's home. The runtime underneath keeps durable work, permissions, handoffs, and evidence together no matter where you enter.</p>
     </div>
     <div class="marq">
       <div class="track">
-        <span class="chip"><span class="q">›</span>Fix the checkout bug — and prove it's fixed<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Fix the checkout bug — and show me the checks<span class="tag">code</span></span>
         <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
         <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
         <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
         <span class="chip"><span class="q">›</span>Clean up and organize my Downloads folder<span class="tag">files</span></span>
         <!-- duplicate for seamless loop -->
-        <span class="chip"><span class="q">›</span>Fix the checkout bug — and prove it's fixed<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Fix the checkout bug — and show me the checks<span class="tag">code</span></span>
         <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
         <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
         <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
@@ -325,19 +330,19 @@
   </section>
 
   <!-- HOW SIMPLE -->
-  <section class="how"><div class="in">
-    <div class="stp"><div class="big">1</div><h3>Say it in plain words</h3><p>No commands, no setup. Talk to Collie the way you'd ask a person for help.</p></div>
-    <div class="stp"><div class="big">2</div><h3>It does the whole thing</h3><p>It opens your browser, runs the steps, edits the files — the actual work, not just advice.</p></div>
-    <div class="stp"><div class="big">3</div><h3>It proves it worked</h3><p>It runs the change to check it's actually done, shows you exactly what it did, and hands back the result.</p></div>
+  <section class="how" id="how"><div class="in">
+    <div class="stp"><div class="big">1</div><h3>Describe the outcome</h3><p>Start from desktop, terminal, IDE, phone, or browser. They all enter the same mission history.</p></div>
+    <div class="stp"><div class="big">2</div><h3>Collie assembles the Pack</h3><p>It chooses a run plan across models, tools, skills, apps, and devices—then asks before crossing a sensitive boundary.</p></div>
+    <div class="stp"><div class="big">3</div><h3>Receive a scoped receipt</h3><p>See the result, the checks that actually ran, the scope they cover, and anything that remains unverified.</p></div>
   </div></section>
 
   <!-- TRUST -->
   <section class="band"><div class="wrap">
     <div class="trust">
       <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div><h4>Uses your real browser</h4><p>Signed into your accounts — it does what you'd do, in your own session.</p></div>
-      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></div><h4>Proves its work</h4><p>Writes a check, runs it, and only calls a task done when it actually passes.</p></div>
-      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg></div><h4>Runs on your machine</h4><p>Local and private, on your own AI subscription. Your files stay with you.</p></div>
-      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M3 8h18M8 21h8"/></svg></div><h4>Windows, Mac &amp; Linux</h4><p>One click to install on Windows; a single line on macOS and Linux.</p></div>
+    <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></div><h4>Verification you control</h4><p>Auto asks for a relevant check after edits. Required makes an executed passing assertion a hard finish gate.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg></div><h4>Runs on your machine</h4><p>Stored locally. Task context goes only to the model provider you choose — or stays local with Ollama.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M3 8h18M8 21h8"/></svg></div><h4>Windows, Mac &amp; Linux</h4><p>Packaged installers for Windows and Apple-silicon Macs; a single pip command on Linux.</p></div>
     </div>
   </div></section>
 
@@ -349,41 +354,41 @@
       <p>Pick your system — we already guessed it below.</p>
     </div>
     <div class="dlcard">
-      <div class="top"><img src="collie-logo.svg" alt=""><div><div class="t">Collie</div><div class="s" data-version>v0.20.24 · free · MIT · open-source</div></div></div>
-      <div class="tabs" role="tablist">
+      <div class="top"><img src="collie-logo.svg" alt=""><div><div class="t">Collie</div><div class="s" data-version>Latest release · free · MIT · open-source</div></div></div>
+      <div class="tabs" role="tablist" aria-label="Choose your operating system">
         <!-- Windows 11's four squares, inset. The old tilted mark spanned the whole 24×24 box while
              the Apple and Linux glyphs sit well inside theirs, so at 17px on a dark background it
              stopped reading as a logo and became a solid white block with two hairlines through it.
              Equal panes with a real gap read as four shapes instead of a lined square. -->
-        <button role="tab" data-os="win" aria-selected="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h6.1v6.1H5V5Zm7.9 0H19v6.1h-6.1V5ZM5 12.9h6.1V19H5v-6.1Zm7.9 0H19V19h-6.1v-6.1Z"/></svg>Windows</button>
-        <button role="tab" data-os="mac" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.9c0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.7-.8-2.8-.8-1.4 0-2.8.8-3.5 2.1-1.5 2.6-.4 6.5 1.1 8.6.7 1 1.5 2.2 2.6 2.1 1-.04 1.4-.7 2.7-.7 1.2 0 1.6.7 2.7.66 1.1-.02 1.8-1 2.5-2 .8-1.2 1.1-2.3 1.1-2.3-.02-.02-2.1-.8-2.1-3.2ZM14.3 6.3c.6-.7 1-1.7.9-2.7-.9.04-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .07 1.9-.5 2.5-1.2Z"/></svg>macOS</button>
-        <button role="tab" data-os="linux" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c2.2 0 3.3 1.9 3.3 4.2 0 1.3-.4 2.2-.4 3.2 0 .9.7 1.5 1.4 2.8.8 1.5 1.7 3.1 1.7 4.7 0 1.6-1.1 2.5-1.9 2.6.2.6-.1 1.4-.9 1.7-.8.3-2.1.3-3.4.3s-2.6 0-3.4-.3c-.8-.3-1.1-1.1-.9-1.7-.8-.1-1.9-1-1.9-2.6 0-1.6.9-3.2 1.7-4.7.7-1.3 1.4-1.9 1.4-2.8 0-1-.4-1.9-.4-3.2C8.7 3.9 9.8 2 12 2Z"/></svg>Linux</button>
+        <button id="tab-win" role="tab" data-os="win" aria-selected="true" aria-controls="pane-win" tabindex="0"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5h6.1v6.1H5V5Zm7.9 0H19v6.1h-6.1V5ZM5 12.9h6.1V19H5v-6.1Zm7.9 0H19V19h-6.1v-6.1Z"/></svg>Windows</button>
+        <button id="tab-mac" role="tab" data-os="mac" aria-selected="false" aria-controls="pane-mac" tabindex="-1"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.9c0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.7-.8-2.8-.8-1.4 0-2.8.8-3.5 2.1-1.5 2.6-.4 6.5 1.1 8.6.7 1 1.5 2.2 2.6 2.1 1-.04 1.4-.7 2.7-.7 1.2 0 1.6.7 2.7.66 1.1-.02 1.8-1 2.5-2 .8-1.2 1.1-2.3 1.1-2.3-.02-.02-2.1-.8-2.1-3.2ZM14.3 6.3c.6-.7 1-1.7.9-2.7-.9.04-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .07 1.9-.5 2.5-1.2Z"/></svg>macOS</button>
+        <button id="tab-linux" role="tab" data-os="linux" aria-selected="false" aria-controls="pane-linux" tabindex="-1"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c2.2 0 3.3 1.9 3.3 4.2 0 1.3-.4 2.2-.4 3.2 0 .9.7 1.5 1.4 2.8.8 1.5 1.7 3.1 1.7 4.7 0 1.6-1.1 2.5-1.9 2.6.2.6-.1 1.4-.9 1.7-.8.3-2.1.3-3.4.3s-2.6 0-3.4-.3c-.8-.3-1.1-1.1-.9-1.7-.8-.1-1.9-1-1.9-2.6 0-1.6.9-3.2 1.7-4.7.7-1.3 1.4-1.9 1.4-2.8 0-1-.4-1.9-.4-3.2C8.7 3.9 9.8 2 12 2Z"/></svg>Linux</button>
       </div>
-      <div class="pane on" data-os="win">
+      <div class="pane on" id="pane-win" data-os="win" role="tabpanel" aria-labelledby="tab-win">
         <p class="lead">The easy way: no Python, no terminal. Download, double-click, pick your language — done. Everything's bundled inside.</p>
-        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-Setup.exe">↓ Download for Windows <span class="sz">Collie-Setup.exe · 48 MB</span></a>
+        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-Setup.exe">↓ Download for Windows <span class="sz">Collie-Setup.exe · latest release</span></a>
         <div class="incl">
           <div><span class="k">✓</span> No setup or configuring</div>
-          <div><span class="k">✓</span> Desktop app + live wallpaper</div>
+          <div><span class="k">✓</span> Desktop Home + optional Ambient mode</div>
           <div><span class="k">✓</span> Installs for you only, no admin</div>
           <div><span class="k">✓</span> Uninstalls cleanly anytime</div>
         </div>
         <div class="fine"><span>Windows 10 / 11</span><a href="https://github.com/colliehq/collie/releases/latest">all downloads →</a></div>
       </div>
-      <div class="pane" data-os="mac">
+      <div class="pane" id="pane-mac" data-os="mac" role="tabpanel" aria-labelledby="tab-mac" hidden>
         <p class="lead">The easy way: no Python, no terminal. Download, drag it to Applications, open it — signed and notarised by Apple, so it opens without a warning.</p>
-        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-arm64.dmg">↓ Download for macOS <span class="sz">Collie-arm64.dmg · 137 MB</span></a>
+        <a class="btn" href="https://github.com/colliehq/collie/releases/latest/download/Collie-arm64.dmg">↓ Download for macOS <span class="sz">Collie-arm64.dmg · latest release</span></a>
         <div class="incl">
           <div><span class="k">✓</span> No setup or configuring</div>
-          <div><span class="k">✓</span> Desktop app + menu-bar controls</div>
+          <div><span class="k">✓</span> Desktop Home + menu-bar controls</div>
           <div><span class="k">✓</span> Installs for you only, no admin</div>
           <div><span class="k">✓</span> Drag to the Bin to uninstall</div>
         </div>
         <div class="fine"><span>Apple silicon · macOS 12+</span><a href="https://github.com/colliehq/collie/releases/latest">all downloads →</a></div>
       </div>
-      <div class="pane" data-os="linux">
+      <div class="pane" id="pane-linux" data-os="linux" role="tabpanel" aria-labelledby="tab-linux" hidden>
         <p class="lead">One package, one line. Everything works on plain localhost.</p>
-        <div class="cmd" data-copy='pip install "git+https://github.com/colliehq/collie"'><span class="pr">$</span><span>pip install "git+https://github.com/colliehq/collie"</span><span class="cp">copy</span></div>
+        <button type="button" class="cmd" data-copy='pip install "git+https://github.com/colliehq/collie"' aria-label="Copy Linux install command"><span class="pr">$</span><span>pip install "git+https://github.com/colliehq/collie"</span><span class="cp">copy</span></button>
         <div class="fine"><span>needs Python 3.12+</span><a href="https://github.com/colliehq/collie#readme">step-by-step guide →</a></div>
       </div>
     </div>
@@ -392,17 +397,32 @@
 
 <footer><div class="in">
   <span>Collie · <a href="https://collie.run">collie.run</a> · free &amp; open-source (MIT) · runs locally</span>
-  <span class="r"><a href="https://github.com/colliehq/collie">GitHub</a><a href="https://github.com/colliehq/collie/releases">Downloads</a><a href="https://github.com/colliehq/collie#readme">Docs</a></span>
+  <span class="r"><a href="https://github.com/colliehq/collie">GitHub</a><a href="https://github.com/colliehq/collie/releases">Downloads</a><a href="https://colliehq.github.io/collie/">Docs</a><a href="/privacy.html">Privacy</a></span>
 </div></footer>
 
 <script>
 (function(){
   "use strict";
-  var root=document.documentElement;
-  document.getElementById("theme").addEventListener("click",function(){
-    var c=root.getAttribute("data-theme");
-    if(!c) c=matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light";
-    root.setAttribute("data-theme", c==="dark"?"light":"dark");
+  var root=document.documentElement, themeButton=document.getElementById("theme"),
+      themeMeta=document.querySelector('meta[name="theme-color"]'), themeQuery=matchMedia("(prefers-color-scheme:dark)");
+  var storedTheme=null;
+  try{ storedTheme=localStorage.getItem("collie-theme"); }catch(_){}
+  if(storedTheme!=="dark"&&storedTheme!=="light") storedTheme=null;
+  function applyTheme(value,persist){
+    root.setAttribute("data-theme",value);
+    var next=value==="dark"?"light":"dark";
+    themeButton.title="Use "+next+" theme";
+    themeButton.setAttribute("aria-label","Use "+next+" theme");
+    themeButton.setAttribute("aria-pressed",value==="light"?"true":"false");
+    if(themeMeta) themeMeta.content=value==="dark"?"#0B0C11":"#F5F6F9";
+    if(persist){ storedTheme=value; try{localStorage.setItem("collie-theme",value);}catch(_){} }
+  }
+  applyTheme(storedTheme||(themeQuery.matches?"dark":"light"),false);
+  themeButton.addEventListener("click",function(){
+    applyTheme(root.getAttribute("data-theme")==="dark"?"light":"dark",true);
+  });
+  if(themeQuery.addEventListener) themeQuery.addEventListener("change",function(e){
+    if(!storedTheme) applyTheme(e.matches?"dark":"light",false);
   });
   // OS tabs
   function os(){
@@ -413,18 +433,43 @@
     return"win";
   }
   var tabs=[].slice.call(document.querySelectorAll('.tabs button')), panes=[].slice.call(document.querySelectorAll('.pane'));
-  function sel(o){tabs.forEach(function(t){t.setAttribute("aria-selected",t.dataset.os===o);});panes.forEach(function(p){p.classList.toggle("on",p.dataset.os===o);});}
-  tabs.forEach(function(t){t.addEventListener("click",function(){sel(t.dataset.os);});}); sel(os());
+  function sel(o,moveFocus){
+    tabs.forEach(function(t){var active=t.dataset.os===o;t.setAttribute("aria-selected",String(active));t.tabIndex=active?0:-1;if(active&&moveFocus)t.focus();});
+    panes.forEach(function(p){var active=p.dataset.os===o;p.classList.toggle("on",active);p.hidden=!active;});
+  }
+  tabs.forEach(function(t){
+    t.addEventListener("click",function(){sel(t.dataset.os,false);});
+    t.addEventListener("keydown",function(e){
+      var i=tabs.indexOf(t), next=null;
+      if(e.key==="ArrowRight") next=(i+1)%tabs.length;
+      else if(e.key==="ArrowLeft") next=(i-1+tabs.length)%tabs.length;
+      else if(e.key==="Home") next=0;
+      else if(e.key==="End") next=tabs.length-1;
+      if(next!==null){e.preventDefault();sel(tabs[next].dataset.os,true);}
+    });
+  });
+  sel(os(),false);
   // copy
+  var askStatus=document.getElementById("askStatus");
+  function announce(message){askStatus.textContent="";setTimeout(function(){askStatus.textContent=message;},10);}
+  function copyText(value){
+    if(navigator.clipboard&&window.isSecureContext) return navigator.clipboard.writeText(value);
+    return new Promise(function(resolve,reject){
+      var area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.position="fixed";area.style.opacity="0";
+      document.body.appendChild(area);area.select();
+      try{document.execCommand("copy")?resolve():reject(new Error("copy failed"));}catch(err){reject(err);}
+      area.remove();
+    });
+  }
   document.querySelectorAll('.cmd[data-copy]').forEach(function(el){
-    el.addEventListener("click",function(){var cp=el.querySelector('.cp');
-      (navigator.clipboard?navigator.clipboard.writeText(el.dataset.copy):Promise.reject())
-      .then(function(){if(cp){var o=cp.textContent;cp.textContent="copied ✓";setTimeout(function(){cp.textContent=o;},1400);}}).catch(function(){});});
+    el.addEventListener("click",function(){var cp=el.querySelector('.cp'), original=cp&&cp.textContent;
+      copyText(el.dataset.copy).then(function(){if(cp){cp.textContent="copied ✓";setTimeout(function(){cp.textContent=original;},1400);}announce("Install command copied.");})
+      .catch(function(){if(cp)cp.textContent="select to copy";announce("Copy failed. Select the command and copy it manually.");});});
   });
   // ---- interactive ask panel ----
   var input=document.getElementById("askInput"), pho=document.getElementById("pho"),
       typed=document.getElementById("typed"), form=document.getElementById("askForm"),
-      body=document.querySelector(".app-body"), reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
+      body=document.querySelector(".app-body"), sendButton=form.querySelector(".send"), reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
 
   // typewriter placeholder — runs only while the field is empty & unfocused
   var lines=["fix the login bug and prove it's fixed","renew the cert and open the dashboard",
@@ -447,19 +492,7 @@
   if(reduce){ typed.textContent=""; }
   else{ if(phStatic) phStatic.style.display="none"; setTimeout(startTw,700); }
 
-  // guided, honest reply -> download
-  function cat(t){ t=t.toLowerCase();
-    if(/(browser|chrome|edge|website|\bsite\b|login|log in|sign in|dashboard|portal|order|form|invoice|book|email|gmail|scrape|\bweb\b|\bpage\b|account)/.test(t)) return "browser";
-    if(/(bug|\bcode\b|coding|repo|function|refactor|deploy|\btest|build|project|rename|\bgit\b|\bapi\b|compile|\bfix\b|feature|typescript|python|javascript)/.test(t)) return "code";
-    if(/(file|folder|pdf|organi|photo|document|spreadsheet|csv|summari|downloads|clean\s?up|\bsort\b)/.test(t)) return "files";
-    return "generic";
-  }
-  var REPLY={
-    browser:"On it — that’s a <b>browser</b> job. I’d open your own logged-in Chrome or Edge and handle it, click by click.",
-    code:"Nice, a <b>coding</b> task — my favourite. I’d dig into your project, make the change, and prove it actually works.",
-    files:"Easy — I’d go through your <b>files</b> and sort the whole thing out for you.",
-    generic:"Love it — that’s exactly my kind of job."
-  };
+  // The website answers questions only; it never pretends that work ran on the visitor's machine.
   function osDl(){
     var p=(((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||"")+" "+(navigator.userAgent||"")).toLowerCase();
     if(p.indexOf("win")>-1) return {href:"https://github.com/colliehq/collie/releases/latest/download/Collie-Setup.exe", label:"↓ Install Collie for Windows — free", note:"WINDOWS 10 / 11 · ALSO MACOS · LINUX"};
@@ -469,9 +502,9 @@
       if(p.indexOf("mac")>-1) return {href:"https://github.com/colliehq/collie/releases/latest/download/Collie-arm64.dmg", label:"↓ Install Collie for macOS — free", note:"APPLE SILICON · ALSO ON WINDOWS &amp; LINUX"};
     return {href:"#get", label:"↓ Get Collie — it’s free", note:"MACOS · LINUX · WINDOWS · RUNS ON YOUR MACHINE"};
   }
-  function esc(s){ return s.replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
 
-  var history=[], msgCount=0, MAX_MSGS=6, busy=false;
+  var history=[], successfulQuestions=0, MAX_MSGS=6, busy=false;
   function down(){ body.scrollTop=body.scrollHeight; }
   function addYou(v){
     var e=document.createElement("div"); e.className="msg you";
@@ -483,18 +516,15 @@
     e.innerHTML='<span class="who">Collie</span><div class="typing"><i></i><i></i><i></i></div>';
     body.appendChild(e); down(); return e;
   }
-  function addReply(text){
+  function addReply(text,showInstall){
     var dl=osDl();
     var e=document.createElement("div"); e.className="msg col";
     e.innerHTML='<span class="who">Collie</span><div class="rbub"><p>'+esc(text)+'</p>'+
-      '<a class="rbtn" href="'+dl.href+'">'+dl.label+'</a><span class="rnote">'+dl.note+'</span></div>';
+      (showInstall===false?'':'<a class="rbtn" href="'+dl.href+'">'+dl.label+'</a><span class="rnote">'+dl.note+'</span>')+'</div>';
     body.appendChild(e); down();
   }
-  function fallback(v){
-    return REPLY[cat(v)]+' But I do the real thing on your own computer — so I can’t run it from this web page. Install me and I’ll actually do it.';
-  }
   function capNotice(){
-    input.disabled=true; form.classList.add("capped"); pho.classList.add("hide"); typed.textContent="";
+    input.disabled=true; sendButton.disabled=true; form.classList.add("capped"); pho.classList.add("hide"); typed.textContent="";
     var dl=osDl();
     var e=document.createElement("div"); e.className="msg col";
     e.innerHTML='<span class="who">Collie</span><div class="rbub"><p>That’s the tour! 🐾 To actually get any of this done, bring me onto your own computer — it’s free.</p><a class="rbtn" href="'+dl.href+'">'+dl.label+'</a><span class="rnote">'+dl.note+'</span></div>';
@@ -506,41 +536,32 @@
     var v=input.value.trim(); if(!v) return;
     stopTw(); pho.classList.add("hide");
     addYou(v); history.push({role:"user",content:v});
-    input.value=""; msgCount++; busy=true;
+    input.value=""; busy=true; form.setAttribute("aria-busy","true"); sendButton.disabled=true; announce("Asking Collie…");
     var t=addTyping();
-    var reply=null, limited=false;
+    var reply=null, errorMessage=null, controller=typeof AbortController!=="undefined"?new AbortController():null;
+    var timeout=setTimeout(function(){if(controller)controller.abort();},20000);
     try{
       var res=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},
-        body:JSON.stringify({message:v, history:history.slice(0,-1)})});
-      if(res.status===429){ limited=true; }
-      else if(res.ok){ var d=await res.json(); if(d&&d.reply) reply=d.reply; }
-    }catch(_){}
+        body:JSON.stringify({message:v, history:history.slice(0,-1)}),signal:controller?controller.signal:undefined});
+      var d=null;try{d=await res.json();}catch(_){}
+      if(res.ok&&d&&typeof d.reply==="string"&&d.reply.trim()) reply=d.reply.trim();
+      else errorMessage=d&&typeof d.error==="string"&&d.error.trim()?d.error.trim().slice(0,500):"The website demo is unavailable right now. Please try again.";
+    }catch(err){errorMessage=err&&err.name==="AbortError"?"The website demo timed out. Please try again.":"The website demo could not connect. Check your connection and try again.";}
+    clearTimeout(timeout);
     t.remove();
-    if(limited) reply="I’ve chatted plenty today! To keep going — and to actually get things done — install me on your computer. It’s free.";
-    else if(!reply) reply=fallback(v);
-    history.push({role:"assistant",content:reply});
-    if(history.length>8) history=history.slice(-8);
-    addReply(reply); busy=false;
-    if(msgCount>=MAX_MSGS) capNotice();
+    if(reply){
+      successfulQuestions++;
+      history.push({role:"assistant",content:reply});
+      if(history.length>6) history=history.slice(-6);
+      addReply(reply,true);announce("Collie answered.");
+    }else{
+      history.pop();input.value=v;addReply(errorMessage||"The website demo is unavailable right now.",false);announce(errorMessage||"The website demo is unavailable.");
+    }
+    busy=false;form.removeAttribute("aria-busy");sendButton.disabled=false;
+    if(successfulQuestions>=MAX_MSGS) capNotice();
     else setTimeout(function(){ if(!input.disabled) input.focus(); },40);
   });
 })();
-</script>
-<!-- Cloudflare Web Analytics: no cookies, no cross-site identifiers, nothing to consent to. -->
-<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "dbb5ee67fbbd4995a2cae84e3f0af217"}'></script>
-<script>
-// The version was typed into the page by hand and stopped being true: the card still read v0.20.0
-// with four releases shipped since. Ask GitHub instead, and leave the typed one as the fallback so a
-// rate-limited or offline visitor sees a number rather than a gap.
-fetch("https://api.github.com/repos/colliehq/collie/releases/latest")
-  .then(function (r) { return r.ok ? r.json() : null; })
-  .then(function (j) {
-    if (!j || !j.tag_name) return;
-    document.querySelectorAll("[data-version]").forEach(function (el) {
-      el.textContent = j.tag_name + " · free · MIT · open-source";
-    });
-  })
-  .catch(function () {});
 </script>
 </body>
 </html>

@@ -38,7 +38,7 @@ AppPublisher={#Publisher}
 AppPublisherURL={#AppUrl}
 AppSupportURL={#AppUrl}
 AppUpdatesURL={#AppUrl}
-AppComments=A memory-first coding agent that verifies its own work.
+AppComments=A personal AI operations system for your devices.
 ; per-user install: no admin prompt, and it matches the per-user logon autostart collie registers
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\Collie
@@ -84,6 +84,7 @@ StatusWebView2=Installing the WebView2 runtime...
 StatusLang=Applying your language...
 StatusWallpaper=Setting up the desktop wallpaper...
 StatusBridge=Setting up the browser bridge...
+StatusSupervisor=Setting up 24/7 recovery...
 TaskWallpaper=Live star-map wallpaper on my desktop
 TaskBridge=Let collie use my real browser (already logged in)
 RunApp=Start Collie now
@@ -135,11 +136,11 @@ de.RunApp=Collie jetzt starten
 SetupWindowTitle=%1
 ; The stock welcome/finish text says nothing about what you just downloaded. Overridden for the
 ; two primary audiences; every other language keeps Inno's translated default.
-en.WelcomeLabel2=Collie is a coding agent that remembers your project and verifies its own work before it calls anything done.%n%nEverything it needs ships inside this installer — no Python, no terminal, no configuration. Just click Next.
+en.WelcomeLabel2=Collie is your personal AI operations system. Give it an outcome; it coordinates models, tools, skills, and devices, asks before sensitive actions, and returns scoped evidence.%n%nEverything it needs ships inside this installer — no Python or terminal required. Just click Next.
 en.FinishedLabel=Collie is installed. Open it from the Start menu (or the desktop icon) and pick a brain on first launch — an existing Claude, Codex, or Grok subscription connects in one click.
-zh.WelcomeLabel2=Collie 是一个会记住你项目的编程 agent——它会先自己跑起来验证,通过了才说「做完了」。%n%n运行所需的一切都已经打包在这个安装程序里:不需要 Python、不需要命令行、不需要任何配置,点「下一步」就行。
+zh.WelcomeLabel2=Collie 是你的个人 AI 执行系统。告诉它你想要的结果;它会协调模型、工具、技能和设备,在敏感操作前询问你,并交回有明确范围的证据。%n%n运行所需的一切都已经打包在这个安装程序里:不需要 Python 或命令行,点「下一步」就行。
 zh.FinishedLabel=Collie 已安装完成。从开始菜单(或桌面图标)打开它,首次启动时选一个「大脑」——已有的 Claude、Codex 或 Grok 订阅可以一键接入。
-zhtw.WelcomeLabel2=Collie 是一個會記住你專案的編程 agent——它會先自己跑起來驗證,通過了才說「做完了」。%n%n執行所需的一切都已經打包在這個安裝程式裡:不需要 Python、不需要命令列、不需要任何設定,按「下一步」就行。
+zhtw.WelcomeLabel2=Collie 是你的個人 AI 執行系統。告訴它你想要的結果;它會協調模型、工具、技能和裝置,在敏感操作前詢問你,並交回有明確範圍的證據。%n%n執行所需的一切都已經打包在這個安裝程式裡:不需要 Python 或命令列,按「下一步」就行。
 zhtw.FinishedLabel=Collie 已安裝完成。從開始功能表(或桌面圖示)開啟它,首次啟動時選一個「大腦」——已有的 Claude、Codex 或 Grok 訂閱可以一鍵接入。
 
 [Tasks]
@@ -154,6 +155,17 @@ Source: "payload\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs creat
 Source: "payload\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; the full-bleed welcome splash — extracted to {tmp} and painted over the whole welcome page ([Code])
 Source: "art\welcome-hero-900x570.bmp"; Flags: dontcopy
+
+[InstallDelete]
+; Inno overlays directory trees; it does not remove files that disappeared from a newer payload.
+; Repeated upgrades therefore accumulated several collie_harness/pip metadata directories and, in
+; one real install, mixed two pip versions until `python -m pip` no longer imported. Normalise only
+; the two staged packages that this installer owns before [Files] copies their clean replacements.
+; ~/.collie is outside {app} and is deliberately untouched (settings, OAuth, memory and missions).
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\harness"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\collie_harness-*.dist-info"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\pip"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\pip-*.dist-info"
 
 [Icons]
 Name: "{group}\{#AppName}";        Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"; IconFilename: "{#IcoFile}"
@@ -171,26 +183,31 @@ Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"
 Filename: "{#PyW}"; Parameters: "{code:AppLangParam}"; WorkingDir: "{app}\python"; \
   StatusMsg: "{cm:StatusLang}"; Flags: runhidden waituntilterminated
 
-; 3) optional: the live-wallpaper desktop, and the real-browser bridge, at logon
+; 3) optional wallpaper. Browser bridge logon/recovery is owned by the supervisor below.
 Filename: "{#PyW}"; Parameters: "-m harness.cli wallpaper --install"; WorkingDir: "{app}\python"; \
   StatusMsg: "{cm:StatusWallpaper}"; Flags: runhidden waituntilterminated; Tasks: wallpaper
-Filename: "{#PyW}"; Parameters: "-m harness.cli browser-bridge --install"; WorkingDir: "{app}\python"; \
-  StatusMsg: "{cm:StatusBridge}"; Flags: runhidden waituntilterminated; Tasks: bridge
 
-; 4) launch it
-;    A previous release's updater does not know Slack listeners exist. The NEW
-;    installer therefore owns this migration: after replacing the runtime,
-;    restart every per-dog launcher the user opted into. A duplicate loses the
-;    per-dog OS lock and exits harmlessly.
-Filename: "{#PyW}"; \
-  Parameters: "-c ""import glob,os,subprocess,sys; [subprocess.Popen([sys.executable,p], creationflags=0x08000000) for p in glob.glob(os.path.expanduser('~/.collie/slack-*.pyw'))]"""; \
-  StatusMsg: "Restarting Slack agents..."; Flags: runhidden waituntilterminated
+; Per-user Scheduled Task, no elevation. The optional bridge choice is persisted in the generated
+; desired-state file on first install; updates preserve the user's existing supervisor config.
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor install --no-boot"; WorkingDir: "{app}\python"; \
+  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: bridge
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor install --no-boot --disable-worker bridge"; WorkingDir: "{app}\python"; \
+  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: not bridge
+; Start recovery in this login now; Task Scheduler owns subsequent logons. InstanceLock makes a
+; duplicate updater launch harmless.
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor run"; WorkingDir: "{app}\python"; \
+  Flags: runhidden nowait
 
-; 5) launch the app
+; 4) launch the app. Slack listeners are discovered and adopted by the supervisor above; starting
+; their legacy launchers here as well races the per-dog lock and creates a false circuit-open alarm.
 Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"; \
   Description: "{cm:RunApp}"; Flags: runhidden postinstall nowait skipifsilent
 
 [UninstallRun]
+; Cooperatively stop supervised children, then remove the per-user Scheduled Task/Startup fallback
+; while the bundled interpreter still exists. The force-stop below remains a bounded last resort.
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor uninstall"; WorkingDir: "{app}\python"; \
+  RunOnceId: "UninstallSupervisor"; Flags: runhidden waituntilterminated
 ; Stop what's running from the install dir BEFORE the files disappear — FAST (taskkill + one short
 ; powershell), NOT by cold-starting the embeddable python three times to run harness commands: each
 ; of those loads collie's heavy deps (onnx/providers), so the old approach made uninstall look hung

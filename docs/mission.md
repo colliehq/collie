@@ -69,9 +69,9 @@ postcondition is required for `verified`; otherwise the Mission stops as uncerta
 Mission waits are durable. Claiming a due wait and its run slot is one transaction;
 a paused Mission retains its pending wake, and cancellation retires it. The
 Web/Desktop process ticks while open. A manually running `collie jobs daemon`
-provides the standalone loop and catch-up after sleep. This change does not install
-an OS startup service: after reboot the daemon must be started again, and no
-software runs while the computer is powered off.
+provides the standalone loop and catch-up after sleep. For automatic restart after
+sign-in/reboot, explicitly install the per-user worker supervisor with
+`collie supervisor install`; no software runs while the computer is powered off.
 
 ## Authority, history, and pacing
 
@@ -127,3 +127,100 @@ preserving executing/executed keys and receipts. A cleanup owner has its own lea
 token; an expired owner cannot touch a new run after takeover. If the process crashes
 halfway, re-running Reconcile resumes cleanup; another daemon cannot enter the gap.
 This prevents a possibly-fired external action from being blindly repeated.
+
+## Watchdog, checkpoints, and cumulative budgets
+
+Mission progress has its own durable clock; lease heartbeats cannot advance it. Every model,
+preparation, action, fold, and goal-verification boundary writes a bounded SQLite checkpoint.
+`max_step_seconds` puts model and tool calls behind a daemon-thread boundary. A timed-out model
+read is safe to retry after backoff. A timed-out action is different: its run token is fenced and
+the Mission enters `recovery_required`, because the late worker may still finish externally. A
+late worker may write its Action receipt, but it cannot fold stale case state or start another
+action.
+
+The leash also enforces cumulative model tokens, estimated model dollars, active wall time,
+elapsed time, retries, and durable storage. These totals survive waits and restarts. Long cases
+retain a compact rolling summary, recent results, recent events, human updates, and recovery
+metadata; old bulk results remain auditable in the event/receipt/checkpoint ledgers rather than
+crowding out the newest facts in the model prompt.
+
+`needs_you` has two durable deadlines. The first emits an escalation record for notification
+wiring. The hard deadline fail-closes to `paused` while preserving the exact confirmation inbox;
+Resume restores `needs_you` and starts a fresh response window.
+
+## Isolated durable work and scoped specialists
+
+`MissionService.start()` defaults durable jobs to `workspace_mode="isolated"`. Code cannot run
+until a provisioner binds an existing isolated directory with `bind_workspace()`. Current-workspace
+code remains available only when explicitly requested and is serialized across processes by the
+canonical workspace resource lease.
+
+`harness.tasktree.TaskTreeStore` is the durable orchestration backend. It stores a parent/child run
+tree, explicit resource ownership, progress/history, background state, a steer/cancel mailbox with
+delivery acknowledgement, notification outbox, crash leases, and cumulative budgets. Child leash
+and resource declarations are checked as deterministic subsets of the parent. Child usage is
+charged to every ancestor, so fan-out cannot escape the root budget. Write scopes cannot overlap
+between live siblings, and `can_access()` tells a parent when a file has been delegated. Worktree
+provisioning is the default; missing provisioning is `workspace_required`, not a silently shared
+checkout.
+
+This is an executable path, not only a task record. A production `MissionService()` now creates a
+`TaskTreeStore` at `<state_dir>/tasktree.db` automatically and loads a `HookManager` for the current
+working directory. Unreviewed or changed hook definitions remain visible as `hooks.pending` in
+status and are not executed. Injected stores/hooks are still supported for embeddings and tests;
+the service closes only resources it created itself.
+
+Root creation remains explicit: choosing the resources and isolated worktree is an authority
+decision that should not be guessed by `start()`. Before a root is attached, `status.tasktree`
+reports the available durable backend and `inspect_run_tree()` returns an empty tree. After
+`create_run_tree()`, `MissionService.spawn_specialist()` creates a child Mission in the
+`specialist` scheduler lane.
+`MissionService.tick()` claims and runs those child Missions through the normal model, leash,
+ActionStore, watchdog, and verifier gates, then durably completes/blocks/fails the run-tree node.
+Ordinary Mission scans exclude the specialist lane, so a child cannot bypass its run-tree owner.
+Steers are consumed between model/action boundaries; cancellation is acknowledged at a safe
+boundary. Missing provider, worktree, goal evidence, or enforceable code-resource scope becomes
+`needs_you` instead of leaving a child queued forever.
+
+The explicit backend control methods are `create_run_tree()`, `spawn_specialist()`,
+`inspect_run_tree()` / `inspect_specialist()`, `steer_specialist()`, and `cancel_specialist()`.
+Steer and cancel requests use the durable mailbox rather than reaching into a running thread.
+
+Production wiring example:
+
+```python
+from harness.missionweb import MissionService
+service = MissionService(goal_verifier=my_goal_verifier)  # owns state_dir/tasktree.db
+root = service.create_run_tree(mission_id, resources, workspace=worktree_path)
+child = service.spawn_specialist(mission_id, "test-specialist", prompt,
+                                 leash=narrower_leash,
+                                 resources=narrower_resources,
+                                 workspace=child_worktree)
+service.steer_specialist(child["run_id"], "also inspect the retry path")
+snapshot = service.inspect_specialist(child["run_id"])
+service.tick()  # daemon catch-up drives both ordinary Missions and specialists
+```
+
+Trusted lifecycle hooks receive `TaskCreated`, `TaskCompleted`, `Notification`, and Mission `Stop`
+events. A denying `TaskCompleted`/`Stop` hook prevents an automated success transition and routes
+the work to human review. Explicit user cancellation remains authoritative and is still dispatched
+for audit.
+
+## What “24×7” means here
+
+- Process crash: claims/checkpoints survive; safe model-only boundaries requeue, while uncertain
+  action boundaries require reconciliation.
+- Sleep: durable timers catch up when the daemon resumes.
+- Reboot: the supervisor configuration includes the job daemon, but it runs after reboot only when
+  the user has explicitly installed/enabled that supervisor startup integration.
+- Hung provider/tool: the watchdog releases the dispatch lane; an uncertain action never silently
+  retries.
+- Powered-off computer or unavailable third-party service: Collie cannot execute. It resumes or
+  escalates from durable state when compute/service returns.
+
+Focused verification commands:
+
+```text
+python -m pytest -q tests/test_mission_autonomy.py tests/test_tasktree.py
+python -m pytest -q tests/test_mission.py tests/test_missionweb.py tests/test_scheduler.py tests/test_actions.py tests/test_verifier.py
+```

@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .actions import (APPROVED, EXECUTED, EXECUTING, EXPIRED, PENDING, REFUSED,
                       ActionStore, RefusedError)
@@ -30,6 +32,13 @@ from .jobs import (CANCELLED, DONE_ACCEPTED, DONE_VERIFIED, FAILED_S, NEEDS_YOU,
 from .mission import (MissionDriver, MissionStore, ModelDecider, create_mission,
                       world_leash)
 from .primitives import register_primitives
+
+
+def _hook_manager(cwd: str, state_dir: str):
+    """Construct HookManager against this service's state without mutating process env."""
+    from .hooks import HookManager
+    wanted = os.path.abspath(os.path.expanduser(state_dir))
+    return HookManager(cwd, state_dir=wanted)
 
 
 def _provider_name() -> str:
@@ -45,11 +54,18 @@ def _clean(d: dict) -> dict:
 
 class MissionService:
     def __init__(self, base: str = None, decider=None, provider: str = None,
-                 model: str = None, stub=None, state_dir: str = None):
+                 model: str = None, stub=None, state_dir: str = None,
+                 goal_verifier=None, mission_workers: int = None, run_tree=None,
+                 hooks=None, specialist_workers: int = None):
         # base isolates tests; production uses the shared ~/.collie stores (so a
         # mission is visible to `collie jobs` / jobsweb too).
+        # A custom ``base`` is primarily the deterministic test/embedding seam;
+        # keep every implicit store beside it unless the caller explicitly names
+        # a shared state directory.  Production does not pass ``base`` and all
+        # three durable databases therefore live under the same state directory.
         state_dir = state_dir or os.environ.get("COLLIE_STATE_DIR") or \
-            os.path.expanduser("~/.collie")
+            (os.path.dirname(os.path.abspath(base)) if base else
+             os.path.expanduser("~/.collie"))
         mission_path = (base + ".missions") if base else os.path.join(state_dir, "jobs.db")
         action_path = (base + ".actions") if base else os.path.join(state_dir, "actions.db")
         self.store = MissionStore(mission_path)
@@ -58,9 +74,28 @@ class MissionService:
         self._provider = provider or _provider_name()
         self._model = model or os.environ.get("COLLIE_MODEL") or None
         self._stub = stub
+        self._goal_verifier = goal_verifier
+        self._mission_workers = mission_workers
+        self._owns_run_tree = run_tree is None
+        self._owns_hooks = hooks is None
+        if hooks is None:
+            # HookManager treats unreviewed/changed hook files as pending data;
+            # constructing a MissionService must never execute or choke on them.
+            hooks = _hook_manager(os.getcwd(), state_dir)
+        if run_tree is None:
+            from .tasktree import TaskTreeStore
+            run_tree = TaskTreeStore(os.path.join(state_dir, "tasktree.db"),
+                                     hooks=hooks)
+        self._run_tree = run_tree
+        self._hooks = hooks
+        self._specialist_workers = specialist_workers
+        if self._run_tree is not None and self._hooks is not None and \
+                getattr(self._run_tree, "hooks", None) is None:
+            self._run_tree.hooks = self._hooks
         self._prov = None
         self._runtime_ready = False
         self._capabilities = None
+        self._closed = False
 
     def _ensure_runtime(self):
         """Initialize model and primitives lazily; status/list never need a provider."""
@@ -85,24 +120,187 @@ class MissionService:
                 stub=False, actuator=get_actuator(), provider=self._prov)
         self._runtime_ready = True
 
-    def _driver(self) -> MissionDriver:
+    def _driver(self, *, lane="mission", control=None) -> MissionDriver:
         self._ensure_runtime()
         dec = self._decider or ModelDecider(self._prov)
         return MissionDriver(self.store, self.actions, dec,
-                             capabilities=self._capabilities)
+                             capabilities=self._capabilities,
+                             goal_verifier=self._goal_verifier, lane=lane,
+                             control=control, hooks=self._hooks)
+
+    def _specialist_run(self, mid):
+        runtime = self.store.runtime(mid)
+        run_id = runtime.get("external_run_id") if runtime.get("lane") == "specialist" else ""
+        return self._run_tree.get(run_id) if self._run_tree is not None and run_id else None
 
     # ── commands ──
     def start(self, goal: str, autonomous: bool = False, case: dict = None, **bounds) -> dict:
         """Persist first and return the id immediately; /run or the daemon claims it."""
         mid = "msn_" + secrets.token_hex(6)
+        # Durable jobs get their own worktree by default.  The Web/CLI provisioner
+        # binds its canonical path later through bind_workspace(); ordinary world
+        # Missions pay no cost for this until they actually choose ``code``.
+        bounds.setdefault("workspace_mode", "isolated")
         create_mission(self.store, mid, goal, case=case or {},
                        leash=world_leash(autonomous=autonomous, **bounds))
         return self.status(mid)
+
+    def bind_workspace(self, mid: str, path: str) -> dict:
+        """Bind an already-provisioned isolated worktree; never creates or deletes it."""
+        m = self.store.get(mid)
+        if not m:
+            return {"error": "unknown mission", "mission_id": mid}
+        if m.leash.get("workspace_mode") != "isolated":
+            return {**self.status(mid), "error": "mission is not in isolated workspace mode"}
+        if m.state in (RUNNING, PAUSING, RECONCILING):
+            return {**self.status(mid), "error": "cannot rebind an active mission workspace"}
+        canonical = os.path.realpath(os.path.abspath(str(path or "")))
+        if not path or not os.path.isdir(canonical):
+            return {**self.status(mid), "error": "isolated workspace does not exist"}
+        case = dict(m.case)
+        case["_isolated_workspace"] = canonical
+        self.store.set_case(mid, case)
+        self.store.record_checkpoint(
+            mid, "", "workspace_bound", {"workspace": canonical},
+            case=case, allow_unowned=True)
+        if self._run_tree and case.get("_run_id"):
+            self._run_tree.bind_workspace(case["_run_id"], canonical,
+                                          owns_workspace=False)
+        return self.status(mid)
+
+    def create_run_tree(self, mid: str, resources, workspace: str = "") -> dict:
+        """Attach the durable specialist backend; provisioning remains an explicit seam."""
+        m = self.store.get(mid)
+        if not m:
+            return {"error": "unknown mission", "mission_id": mid}
+        if self._run_tree is None:
+            return {**self.status(mid), "error": "no durable run-tree store configured"}
+        if m.case.get("_run_id"):
+            return self._run_tree.tree(m.case["_run_id"])
+        run = self._run_tree.create_root(
+            m.goal, m.leash, resources, mission_id=mid, workspace=workspace,
+            workspace_mode="worktree")
+        case = dict(m.case)
+        case["_run_id"] = run["run_id"]
+        if workspace:
+            case["_isolated_workspace"] = os.path.realpath(os.path.abspath(workspace))
+        self.store.set_case(mid, case)
+        self.store.record_checkpoint(
+            mid, "", "run_tree_created", {"run_id": run["run_id"]},
+            case=case, allow_unowned=True)
+        return self._run_tree.tree(run["run_id"])
+
+    def spawn_specialist(self, mid: str, role: str, task: str, *, leash=None,
+                         resources=None, workspace: str = "") -> dict:
+        m = self.store.get(mid)
+        run_id = m.case.get("_run_id") if m else ""
+        if not m:
+            return {"error": "unknown mission", "mission_id": mid}
+        if self._run_tree is None or not run_id:
+            return {**self.status(mid), "error": "mission has no durable run tree"}
+        try:
+            child = self._run_tree.spawn_specialist(
+                run_id, role, task, leash=leash, resources=resources,
+                workspace=workspace, workspace_mode="worktree")
+            if workspace:
+                child = self._create_specialist_mission(mid, child)
+            return child
+        except ValueError as exc:
+            return {**self.status(mid), "error": str(exc)}
+
+    def _create_specialist_mission(self, parent_mid, run):
+        """Materialize a scoped specialist as a real Mission lane, not a TODO row."""
+        if run.get("mission_id"):
+            return run
+        workspace = run.get("workspace") or ""
+        if not workspace:
+            return run
+        child_mid = "spc_" + run["run_id"].replace("run_", "")
+        if not self.store.get(child_mid):
+            case = {
+                "_isolated_workspace": workspace,
+                "_specialist_run_id": run["run_id"],
+                "_parent_mission_id": parent_mid,
+                "_resource_scope": run.get("resources") or [],
+                "role": run.get("role") or "specialist",
+            }
+            create_mission(
+                self.store, child_mid, run["task"], case=case, leash=run["leash"],
+                lane="specialist", external_run_id=run["run_id"])
+        if not self._run_tree.bind_mission(run["run_id"], child_mid):
+            raise ValueError("specialist Mission binding raced with another owner")
+        return self._run_tree.get(run["run_id"])
+
+    def bind_specialist_workspace(self, run_id: str, path: str) -> dict:
+        if self._run_tree is None:
+            return {"error": "no durable run-tree store configured", "run_id": run_id}
+        try:
+            run = self._run_tree.bind_workspace(run_id, path, owns_workspace=False)
+            if not run or not run.get("parent_run_id"):
+                return {"error": "unknown specialist or workspace cannot be rebound",
+                        "run_id": run_id}
+            parent = self._run_tree.get(run["parent_run_id"])
+            return self._create_specialist_mission(parent.get("mission_id") or "", run)
+        except ValueError as exc:
+            return {"error": str(exc), "run_id": run_id}
+
+    def inspect_run_tree(self, mid: str) -> dict:
+        """Return the durable tree for a Mission without initializing a model.
+
+        An unattached Mission reports a usable backend and an empty tree instead
+        of pretending the specialist feature is unavailable.  Root creation is
+        still explicit because resources and a worktree are authority decisions.
+        """
+        m = self.store.get(mid)
+        if not m:
+            return {"error": "unknown mission", "mission_id": mid}
+        run_id = m.case.get("_run_id")
+        return {
+            "mission_id": mid,
+            "available": self._run_tree is not None,
+            "attached": bool(run_id),
+            "path": getattr(self._run_tree, "path", None),
+            "tree": self._run_tree.tree(run_id) if self._run_tree and run_id
+                    else {"root": None, "flat": []},
+        }
+
+    def inspect_specialist(self, run_id: str, event_limit: int = 100) -> dict:
+        """Inspect one run, its descendant tree and recent durable events."""
+        if self._run_tree is None:
+            return {"error": "no durable run-tree store configured", "run_id": run_id}
+        run = self._run_tree.get(run_id)
+        if not run:
+            return {"error": "unknown specialist run", "run_id": run_id}
+        return {"run": run, "tree": self._run_tree.tree(run_id),
+                "events": self._run_tree.events(run_id, event_limit)}
+
+    def steer_specialist(self, run_id: str, text: str, sender_run_id: str = "") -> dict:
+        """Queue a durable steer which is consumed at the next safe boundary."""
+        if self._run_tree is None:
+            return {"error": "no durable run-tree store configured", "run_id": run_id}
+        try:
+            message_id = self._run_tree.steer(run_id, text, sender_run_id)
+        except ValueError as exc:
+            return {"error": str(exc), "run_id": run_id}
+        if message_id is None:
+            return {"error": "unknown or terminal specialist run", "run_id": run_id}
+        return {"run_id": run_id, "message_id": message_id, "queued": True}
+
+    def cancel_specialist(self, run_id: str, sender_run_id: str = "") -> dict:
+        """Request cancellation; a running worker acknowledges at a safe boundary."""
+        if self._run_tree is None:
+            return {"error": "no durable run-tree store configured", "run_id": run_id}
+        if not self._run_tree.request_cancel(run_id, sender_run_id):
+            return {"error": "unknown or terminal specialist run", "run_id": run_id}
+        return self.inspect_specialist(run_id)
 
     def run(self, mid: str) -> dict:
         m = self.store.get(mid)
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
+        if self._specialist_run(mid):
+            return {**self.status(mid),
+                    "error": "specialist Missions run only through their scoped dispatcher"}
         if m.state != QUEUED:
             # Idempotent for the common Web-vs-daemon claim race: if somebody else
             # already advanced it, return the live state instead of a false failure.
@@ -122,8 +320,17 @@ class MissionService:
         if (m.state != NEEDS_YOU or not nonce or parked != nonce or not rec or
                 rec.job_id != mid or rec.leash_id != mid):
             return {**self.status(mid), "error": "confirm refused: action does not belong to this mission"}
+        specialist = self._specialist_run(mid)
         try:
-            self._driver().confirm_and_resume(mid, nonce)
+            if specialist:
+                if rec.state == PENDING:
+                    self.actions.confirm(nonce)
+                elif rec.state != APPROVED:
+                    raise RefusedError("specialist action is not confirmable")
+                self._run_tree.resume(specialist["run_id"])
+                self._tick_specialists(int(time.time()))
+            else:
+                self._driver().confirm_and_resume(mid, nonce)
         except (RefusedError, RuntimeError) as e:
             return {**self.status(mid), "error": f"confirm refused: {e}"}
         return self.status(mid)
@@ -134,6 +341,9 @@ class MissionService:
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
         target = self.store.resume_paused(mid)
+        specialist = self._specialist_run(mid)
+        if target and specialist:
+            self._run_tree.resume(specialist["run_id"])
         return self.status(mid) if target else {
             **self.status(mid), "error": f"cannot resume from {m.state}"}
 
@@ -207,7 +417,18 @@ class MissionService:
             return {**self.status(mid), "error": f"cannot cancel terminal mission ({m.state})"}
         reason = "cancelled; an in-flight action may still finish" if m.state in (RUNNING, PAUSING) \
             else "cancelled by user"
+        if self._hooks is not None:
+            try:
+                self._hooks.dispatch(
+                    "Stop", {"mission_id": mid, "state": CANCELLED,
+                             "result": reason, "user_requested": True},
+                    subject=CANCELLED)
+            except Exception:
+                pass  # explicit user cancellation cannot be vetoed by an audit hook
         self.store.cancel(mid, reason)
+        specialist = self._specialist_run(mid)
+        if specialist:
+            self._run_tree.request_cancel(specialist["run_id"])
         self.actions.refuse_for_job(mid, "mission cancelled")
         _name, nonce = self.store.last_parked(mid)
         if nonce:
@@ -221,6 +442,18 @@ class MissionService:
         _name, nonce = self.store.last_parked(mid)
         if m.state != NEEDS_YOU or nonce or not self.store.accept_handoff(mid):
             return {**self.status(mid), "error": f"cannot accept from {m.state}"}
+        specialist = self._specialist_run(mid)
+        if specialist:
+            self._run_tree.resume(specialist["run_id"])
+            self._tick_specialists(int(time.time()))
+        if self._hooks is not None:
+            try:
+                self._hooks.dispatch(
+                    "Stop", {"mission_id": mid, "state": DONE_ACCEPTED,
+                             "result": "accepted by user", "user_requested": True},
+                    subject=DONE_ACCEPTED)
+            except Exception:
+                pass
         return self.status(mid)
 
     def continue_after_human(self, mid: str, note: str = "") -> dict:
@@ -230,6 +463,10 @@ class MissionService:
         _name, nonce = self.store.last_parked(mid)
         if m.state != NEEDS_YOU or nonce or not self.store.continue_handoff(mid, note):
             return {**self.status(mid), "error": f"cannot continue from {m.state}"}
+        specialist = self._specialist_run(mid)
+        if specialist:
+            self._run_tree.resume(specialist["run_id"])
+            self._tick_specialists(int(time.time()))
         return self.status(mid)
 
     def check(self, mid: str) -> dict:
@@ -239,7 +476,12 @@ class MissionService:
         if m.state != WAITING:
             return {**self.status(mid), "error": f"cannot check from {m.state}"}
         try:
-            self._driver().wake(mid, force=True)
+            specialist = self._specialist_run(mid)
+            if specialist:
+                self._run_tree.requeue_waiting(specialist["run_id"])
+                self._tick_specialists(int(time.time()))
+            else:
+                self._driver().wake(mid, force=True)
         except Exception as e:
             return {**self.status(mid), "error": f"check unavailable: {e}"}
         return self.status(mid)
@@ -250,10 +492,165 @@ class MissionService:
         import time
         at = int(now if now is not None else time.time())
         recovered = self.store.recover_stale_runs(at)
+        escalations = self.store.escalate_human_waits(at)
+        specialists = self._tick_specialists(at)
         if not self.store.list(state=QUEUED) and not self.store.due_waits(at):
-            return self.status(mid) if mid else {"advanced": 0, "recovered": recovered}
-        n = self._driver().tick_missions(at)
-        return self.status(mid) if mid else {"advanced": n, "recovered": recovered}
+            if mid:
+                return {**self.status(mid), "escalations": [e for e in escalations
+                                                             if e["mission_id"] == mid]}
+            return {"advanced": 0, "specialists_advanced": specialists,
+                    "recovered": recovered,
+                    "escalations": escalations}
+        n = self._driver().tick_missions(at, max_workers=self._mission_workers)
+        if mid:
+            return {**self.status(mid), "escalations": [e for e in escalations
+                                                         if e["mission_id"] == mid]}
+        return {"advanced": n, "specialists_advanced": specialists,
+                "recovered": recovered, "escalations": escalations}
+
+    def _specialist_control(self, run_id, token):
+        run = self._run_tree.get(run_id)
+        messages = self._run_tree.claim_messages(run_id, token)
+        steers = []
+        for message in messages:
+            if message["kind"] == "steer":
+                text = (message.get("payload") or {}).get("text")
+                if text:
+                    steers.append(text)
+                self._run_tree.ack_message(run_id, token, message["message_id"])
+        return {"cancel": bool(run and run.get("cancel_requested")), "steers": steers}
+
+    def _run_specialist(self, run, token):
+        run_id, child_mid = run["run_id"], run.get("mission_id") or ""
+        stop = threading.Event()
+
+        def heartbeat():
+            while not stop.wait(20):
+                if not self._run_tree.renew(run_id, token):
+                    return
+
+        beat = threading.Thread(target=heartbeat, name="specialist-heartbeat", daemon=True)
+        beat.start()
+        before = self.store.runtime(child_mid) if child_mid else {}
+        try:
+            if not child_mid or not self.store.get(child_mid):
+                self._run_tree.block(
+                    run_id, token,
+                    "specialist runner has no bound Mission/worktree", needs_you=True)
+                return
+            budget = self._run_tree.budget_reason(run_id)
+            if budget:
+                self._run_tree.block(run_id, token, budget, needs_you=True)
+                return
+            driver = self._driver(
+                lane="specialist",
+                control=lambda _mid: self._specialist_control(run_id, token))
+            child = self.store.get(child_mid)
+            if child.state == QUEUED:
+                state = driver.advance(child_mid)
+            elif child.state == WAITING:
+                state = driver.wake(child_mid, force=False)
+            elif child.state == NEEDS_YOU:
+                _name, nonce = self.store.last_parked(child_mid)
+                record = self.actions.get(nonce) if nonce else None
+                state = driver.resume(child_mid) if record and record.state == APPROVED \
+                    else child.state
+            else:
+                state = child.state
+            after = self.store.runtime(child_mid)
+            exhausted = self._run_tree.account_usage(
+                run_id, token,
+                input_tokens=max(0, int(after.get("input_tokens", 0)) -
+                                 int(before.get("input_tokens", 0))),
+                output_tokens=max(0, int(after.get("output_tokens", 0)) -
+                                  int(before.get("output_tokens", 0))),
+                cost_usd=max(0.0, float(after.get("model_cost_usd", 0.0)) -
+                             float(before.get("model_cost_usd", 0.0))),
+                wall_ms=max(0, int(after.get("active_wall_ms", 0)) -
+                            int(before.get("active_wall_ms", 0))),
+                retries=max(0, int(after.get("retry_count", 0)) -
+                            int(before.get("retry_count", 0))))
+            if exhausted and state not in (DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+                self._run_tree.block(
+                    run_id, token,
+                    "; ".join("%s: %s" % item for item in exhausted), needs_you=True)
+            elif state in (DONE_VERIFIED, DONE_ACCEPTED):
+                if not self._run_tree.complete(
+                        run_id, token, self.store.get(child_mid).result):
+                    self._run_tree.block(
+                        run_id, token, "TaskCompleted hook blocked specialist completion",
+                        needs_you=True)
+            elif state == FAILED_S:
+                self._run_tree.fail(run_id, token, self.store.get(child_mid).result)
+            elif state == CANCELLED:
+                self._run_tree.cancel_owned(run_id, token, self.store.get(child_mid).result)
+            elif state == WAITING:
+                self._run_tree.park_waiting(run_id, token, self.store.get(child_mid).result)
+            elif state == NEEDS_YOU:
+                self._run_tree.block(
+                    run_id, token, self.store.get(child_mid).result, needs_you=True)
+            elif state == PAUSED:
+                self._run_tree.block(run_id, token, self.store.get(child_mid).result)
+            elif state in (RECOVERY_REQUIRED, RECONCILING, RUNNING, PAUSING):
+                self._run_tree.mark_recovery(
+                    run_id, token,
+                    self.store.get(child_mid).result or
+                    "specialist stopped at an uncertain execution boundary")
+            else:
+                self._run_tree.block(
+                    run_id, token, "specialist stopped in %s" % state, needs_you=True)
+        except Exception as exc:
+            self._run_tree.mark_recovery(
+                run_id, token, "specialist dispatcher failed: %s: %s" %
+                (type(exc).__name__, exc))
+        finally:
+            stop.set()
+            beat.join(timeout=2)
+
+    def _tick_specialists(self, now):
+        """Claim and actually execute scoped child Missions; never strand queued rows."""
+        if self._run_tree is None:
+            return 0
+        from .tasktree import (BLOCKED as T_BLOCKED, NEEDS_YOU as T_NEEDS_YOU,
+                               PAUSED as T_PAUSED, QUEUED as T_QUEUED,
+                               RECOVERY_REQUIRED as T_RECOVERY, WAITING as T_WAITING)
+        # Mirror explicit child-Mission recovery/continue commands back into the
+        # run tree, and wake only when the child's durable timer is due.
+        for run in self._run_tree.list_runs(
+                (T_WAITING, T_BLOCKED, T_NEEDS_YOU, T_PAUSED, T_RECOVERY),
+                specialists_only=True):
+            child = self.store.get(run.get("mission_id") or "")
+            if not child:
+                continue
+            if run["status"] == T_WAITING:
+                wake = self.store.next_wait(child.mission_id)
+                if child.state == WAITING and wake and int(wake["fire_at"]) <= int(now):
+                    self._run_tree.requeue_waiting(run["run_id"])
+            elif child.state == QUEUED:
+                if run["status"] == T_RECOVERY:
+                    self._run_tree.reconcile(run["run_id"], "child Mission reconciled")
+                else:
+                    self._run_tree.resume(run["run_id"])
+        queued = self._run_tree.list_runs(T_QUEUED, specialists_only=True)
+        workers = self._specialist_workers if self._specialist_workers is not None else \
+            int(os.environ.get("COLLIE_SPECIALIST_WORKERS", "4"))
+        workers = max(1, min(8, int(workers)))
+        claimed = []
+        for run in queued[:workers]:
+            lease = max(300, int(float(run["leash"].get("max_step_seconds", 600))) + 60)
+            token = self._run_tree.claim(run["run_id"], lease_s=lease)
+            if token:
+                claimed.append((self._run_tree.get(run["run_id"]), token))
+        if len(claimed) == 1:
+            self._run_specialist(*claimed[0])
+        elif claimed:
+            with ThreadPoolExecutor(max_workers=len(claimed),
+                                    thread_name_prefix="specialist") as pool:
+                futures = [pool.submit(self._run_specialist, run, token)
+                           for run, token in claimed]
+                for future in as_completed(futures):
+                    future.result()
+        return len(claimed)
 
     # ── read ──
     def status(self, mid: str) -> dict:
@@ -295,6 +692,12 @@ class MissionService:
                     if rec and rec.state == EXECUTED:
                         self.store.complete_action_key(mid, nonce, EXECUTED)
         next_wait = self.store.next_wait(mid)
+        runtime = self.store.runtime(mid)
+        checkpoint = self.store.latest_checkpoint(mid)
+        run_tree = None
+        if self._run_tree and m.case.get("_run_id"):
+            run_tree = self._run_tree.tree(m.case["_run_id"])
+        pending_hooks = list(getattr(self._hooks, "pending", ()) or ())
         controls = []
         if m.state == QUEUED:
             controls = ["run", "pause", "cancel"]
@@ -335,6 +738,24 @@ class MissionService:
                             not action_in_flight),  # -> Accept hand-off
             "action_in_flight": action_in_flight,
             "next_wake_at": next_wait["fire_at"] if next_wait else None,
+            "runtime": runtime,
+            "budget_exhausted": self.store.budget_reason(mid) or None,
+            "latest_checkpoint": ({k: checkpoint[k] for k in
+                                   ("seq", "phase", "payload", "at")}
+                                  if checkpoint else None),
+            "workspace_request": (m.leash.get("workspace_mode") == "isolated" and
+                                  "code" in (m.leash.get("may") or []) and
+                                  not m.case.get("_isolated_workspace")),
+            "run_tree": run_tree,
+            "tasktree": {
+                "available": self._run_tree is not None,
+                "attached": bool(m.case.get("_run_id")),
+                "path": getattr(self._run_tree, "path", None),
+            },
+            "hooks": {
+                "active": bool(getattr(self._hooks, "active", False)),
+                "pending": pending_hooks,
+            },
             "controls": controls,
             "recovery_actions": recovery_actions,
             "receipts": [{"capability": r["capability"], "verdict": r["verdict"],
@@ -346,8 +767,18 @@ class MissionService:
         return [{"mission_id": m.mission_id, "goal": m.goal, "state": m.state,
                  "result": m.result, "updated_at": m.updated_at,
                  "controls": self.status(m.mission_id).get("controls", [])}
-                for m in reversed(self.store.list())]
+                for m in reversed(self.store.list())
+                if self.store.runtime(m.mission_id).get("lane") != "specialist"]
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         self.store.close()
         self.actions.close()
+        # Injected stores belong to their caller and may be shared by the Web,
+        # daemon, and tests.  Only close the durable backend we constructed.
+        if self._owns_run_tree and self._run_tree is not None:
+            self._run_tree.close()
+        if self._owns_hooks and hasattr(self._hooks, "close"):
+            self._hooks.close()

@@ -20,9 +20,11 @@ def test_is_repro_cmd():
            # heredoc / stdin repros — the common self-contained form; unrecognized before, a passing
            # one couldn't reset a stale failure flag so the gate nagged about a phantom failure
            "python 2>&1 <<'EOF'\nimport traceback\nprint('ok')\nEOF", "python3 - <<EOF\nprint(1)\nEOF",
-           "cd /x && python <<'PY'\nassert 1==1\nPY"]
-    no = ["python -m pytest", "python -m unittest", "python setup.py test", "python -m nose",
-          'ln -sf "$(command -v python3)" /usr/bin/py', "echo python is great"]
+           "cd /x && python <<'PY'\nassert 1==1\nPY",
+           "python -m pytest -q", "python -m unittest", "python -m nose",
+           "npm test", "go test ./...", "cargo test"]
+    no = ["python setup.py test", "pytest --collect-only",
+           'ln -sf "$(command -v python3)" /usr/bin/py', "echo python is great"]
     for c in yes: assert R("bash", {"command": c}), "should be repro: %r" % c
     for c in no: assert not R("bash", {"command": c}), "should NOT be repro: %r" % c
 
@@ -558,20 +560,27 @@ def test_verify_gate_is_not_python_only():
     even COMPILE. Necessary but not sufficient: a build must count as evidence, and must NOT count
     as a correctness assertion.
     """
-    from harness.loop import _is_repro_cmd, _ASSERTED_RE
+    from harness.loop import _is_repro_cmd, _is_asserting_cmd
     for cmd in ("go build ./...", "go vet ./...", "cargo check",
                 "npx tsc --noEmit", "node --check src/a.js",
                 "go test -run '^TestXxVerify$' ./internal/config"):
         assert _is_repro_cmd("bash", {"command": cmd}), "not counted as evidence: %s" % cmd
-    # a whole-suite run is still not the focused evidence the gate keys on
-    for cmd in ("go test ./...", "npm test", "pytest -q"):
-        assert not _is_repro_cmd("bash", {"command": cmd}), "suite run counted: %s" % cmd
+    # A real suite run is stronger executable evidence and is exactly what the default nudge asks
+    # for. Discovery-only modes must not claim a pass.
+    for cmd in ("go test ./...", "npm test", "pytest -q", "cargo test"):
+        assert _is_repro_cmd("bash", {"command": cmd}), "suite run missed: %s" % cmd
+        assert _is_asserting_cmd(cmd), "suite not counted as asserting: %s" % cmd
+    assert not _is_repro_cmd("bash", {"command": "pytest --collect-only"})
     # building proves it compiles, never that it is correct
-    assert not _ASSERTED_RE.search("go build ./...")
-    assert not _ASSERTED_RE.search("npx tsc --noEmit")
+    assert not _is_asserting_cmd("go build ./...")
+    assert not _is_asserting_cmd("npx tsc --noEmit")
+    assert not _is_asserting_cmd("python -c \"print('assert')\"")
+    assert not _is_asserting_cmd("python -c \"print('&& pytest')\"")
+    assert _is_repro_cmd("bash", {"command": "python -c \"print('&& pytest')\""})
+    assert not _is_asserting_cmd("echo pytest")
     for cmd in ("go test -run '^TestX$' ./p", "python3 -c 'assert a == b'",
-                "npx jest test/foo.test.ts"):
-        assert _ASSERTED_RE.search(cmd), "assertion not recognised: %s" % cmd
+                 "npx jest test/foo.test.ts"):
+        assert _is_asserting_cmd(cmd), "assertion not recognised: %s" % cmd
 
 def test_verify_nudge_names_the_repos_own_toolchain():
     """A Go agent told to run `python3 -c` is being told to verify nothing."""

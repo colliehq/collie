@@ -48,12 +48,15 @@ The version comes from `harness/__init__.py` (single source of truth) and is pas
 - Silently ensures the WebView2 runtime (needed by the desktop window).
 - Applies the language you picked to Collie itself (`collie config LANG <code>`), so the first launch
   is already in your language.
-- Optional tasks: the live star-map wallpaper and the real-browser bridge, each auto-starting at
-  logon.
+- Registers a per-user supervisor at logon. It crash-restarts the Web app, job daemon, automation
+  daemon, optional browser bridge, and discovered Slack launchers.
+- Optional tasks: the live star-map wallpaper and the real-browser bridge. The bridge is enabled or
+  disabled in the supervisor config; the wallpaper retains its own logon entry.
 - Start-menu + desktop shortcuts to `collie app` (the native window), plus a *Collie Settings*
   shortcut.
 
-On uninstall it stops the wallpaper, removes both logon autostarts, and deletes `{app}`.
+On uninstall it requests a graceful supervisor stop, ends/removes its Scheduled Task (or Startup
+fallback), stops the wallpaper, removes its logon entry, and deletes `{app}`.
 
 ## macOS — `build_mac.sh`
 
@@ -130,7 +133,8 @@ made public, point `url` at its tag tarball and drop the indirection.
 
 ## Notes
 
-- **Per-user, no admin.** `PrivilegesRequired=lowest`; autostarts are per-user Startup entries.
+- **Per-user, no admin.** `PrivilegesRequired=lowest`; the supervisor uses a least-privilege
+  Task Scheduler logon trigger and degrades to a per-user Startup entry if registration is refused.
 - **The desktop engine `.exe`** is compiled once on first run from the shipped C# source via the
   in-box .NET Framework `csc` (no .NET SDK needed).
 - **Code signing** is out of scope of the `.iss`. For distribution outside your own machines, sign

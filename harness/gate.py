@@ -62,12 +62,14 @@ def _has_shell_operators(command: str) -> bool:
 
 class Mode(str, Enum):
     PLAN = "plan"                # read-only: explore and propose, change nothing
+    REVIEW = "review"            # read-only findings tied to existing artifacts
+    TEST = "test"                # read + allowlisted verification commands; never write
     PROJECT = "project"          # default — see the module docstring
     INTERACTIVE = "interactive"  # ask before every consequential call
     AUTO = "auto"                # allow everything (CI, benchmarks, sandboxes)
 
 
-READ_ONLY_MODES = frozenset({Mode.PLAN})
+READ_ONLY_MODES = frozenset({Mode.PLAN, Mode.REVIEW})
 
 
 class Outcome(str, Enum):
@@ -127,6 +129,16 @@ class Gate:
 
         if self.mode in READ_ONLY_MODES:
             return d(False, "%s mode is read-only" % self.mode.value)
+
+        if self.mode is Mode.TEST:
+            if risk is RiskClass.EXEC:
+                command = str(args.get("command") or args.get("cmd") or "")
+                if self._command_allowed(command):
+                    return d(True, "test mode: detected verification command")
+                return d(False, "test mode only runs the proposed verification command")
+            # Reads returned above. Everything else is a write or an external
+            # side effect, neither of which Test is authorized to perform.
+            return d(False, "test mode is read-only except for verification")
 
         if tool_name in self.session_denied:
             return d(False, "denied for this run")
@@ -233,7 +245,7 @@ class Gate:
 
 
 def mode_from_env(default: Mode = Mode.PROJECT) -> Mode:
-    """COLLIE_MODE=plan|project|interactive|auto. An unrecognised value falls back to
+    """COLLIE_MODE=plan|review|test|project|interactive|auto. An unrecognised value falls back to
     the default rather than failing the run — but never silently to something laxer."""
     raw = (os.environ.get("COLLIE_MODE") or "").strip().lower()
     try:

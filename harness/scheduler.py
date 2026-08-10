@@ -24,11 +24,13 @@ import sqlite3
 import threading
 import time
 
-from .actions import RefusedError
-from .jobs import Executor, WAITING, FAILED_S
+from .actions import EXECUTING, RefusedError
+from .jobs import Executor, WAITING, FAILED_S, NEEDS_YOU
 
 PENDING_W = "pending"
+CLAIMED_W = "claimed"
 FIRED_W = "fired"
+_LEASE_SECONDS = 300
 
 
 class Scheduler:
@@ -51,7 +53,23 @@ class Scheduler:
         self.db.execute("""CREATE TABLE IF NOT EXISTS waits(
             wait_id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, nonce TEXT,
             kind TEXT, fire_at INTEGER, state TEXT, created_at INTEGER,
-            fired_at INTEGER)""")
+            fired_at INTEGER, claimed_at INTEGER DEFAULT 0,
+            lease_until INTEGER DEFAULT 0, attempts INTEGER DEFAULT 0,
+            last_error TEXT DEFAULT '')""")
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(waits)")}
+        for name, decl in (("claimed_at", "INTEGER DEFAULT 0"),
+                           ("lease_until", "INTEGER DEFAULT 0"),
+                           ("attempts", "INTEGER DEFAULT 0"),
+                           ("last_error", "TEXT DEFAULT ''")):
+            if name not in cols:
+                self.db.execute("ALTER TABLE waits ADD COLUMN %s %s" % (name, decl))
+        # Startup reconciliation: a process may have died after claiming but before recording the
+        # verdict. Expired claims go back to pending and are safely retried through the action
+        # store's nonce/idempotency boundary.
+        now = int(time.time())
+        self.db.execute(
+            "UPDATE waits SET state=?,claimed_at=0,lease_until=0 "
+            "WHERE state=? AND lease_until<=?", (PENDING_W, CLAIMED_W, now))
         self.db.commit()
 
     def schedule(self, job_id: str, nonce: str, fire_at: int, kind: str = "timer",
@@ -71,8 +89,9 @@ class Scheduler:
 
     def due(self, now: int):
         return [dict(r) for r in self.db.execute(
-            "SELECT * FROM waits WHERE state=? AND fire_at<=? ORDER BY fire_at",
-            (PENDING_W, int(now)))]
+            "SELECT * FROM waits WHERE fire_at<=? AND "
+            "(state=? OR (state=? AND lease_until<=?)) ORDER BY fire_at",
+            (int(now), PENDING_W, CLAIMED_W, int(now)))]
 
     def tick(self, now: int = None) -> int:
         """Fire every due wait by driving its action. Returns how many fired.
@@ -82,13 +101,15 @@ class Scheduler:
         now = int(now if now is not None else time.time())
         fired = 0
         for w in self.due(now):
-            # ATOMIC claim: only ONE ticker (a concurrent daemon + `wake`) may drive
-            # a given wait. Claim pending->fired BEFORE driving; if we lost the race
-            # (rowcount 0), skip — the winner drives it. Prevents double-fire.
+            # ATOMIC lease: only ONE ticker (a concurrent daemon + `wake`) may drive a wait.  It is
+            # not marked fired until drive returns. A crash leaves a recoverable expired claim,
+            # instead of the old terminal "fired" row that silently lost the action.
             with self._lock:
                 claimed = self.db.execute(
-                    "UPDATE waits SET state=?,fired_at=? WHERE wait_id=? AND state=?",
-                    (FIRED_W, now, w["wait_id"], PENDING_W))
+                    "UPDATE waits SET state=?,claimed_at=?,lease_until=?,attempts=attempts+1 "
+                    "WHERE wait_id=? AND (state=? OR (state=? AND lease_until<=?))",
+                    (CLAIMED_W, now, now + _LEASE_SECONDS, w["wait_id"],
+                     PENDING_W, CLAIMED_W, now))
                 self.db.commit()
             if claimed.rowcount != 1:
                 continue
@@ -99,8 +120,40 @@ class Scheduler:
                 # silently orphaned in WAITING (that would look like a reminder
                 # that just vanished). Anti-fabrication defense-in-depth.
                 if w.get("job_id"):
-                    self.jobs.set_state(w["job_id"], FAILED_S, f"wait dropped: {e}")
-            fired += 1                                 # already claimed FIRED above
+                    current = self.actions.get(w["nonce"])
+                    if current and current.state == EXECUTING:
+                        # It may have died after the side effect started but before its receipt.
+                        # Never call that "dropped" or retry it automatically.
+                        self.jobs.set_state(
+                            w["job_id"], NEEDS_YOU,
+                            "wait outcome unknown after interrupted execution; inspect before retrying")
+                    else:
+                        self.jobs.set_state(w["job_id"], FAILED_S, f"wait dropped: {e}")
+                with self._lock:
+                    self.db.execute(
+                        "UPDATE waits SET state=?,fired_at=?,lease_until=0,last_error=? "
+                        "WHERE wait_id=? AND state=?", (FIRED_W, now, str(e)[:500],
+                                                       w["wait_id"], CLAIMED_W))
+                    self.db.commit()
+                fired += 1
+            except Exception as e:
+                # Release for the next tick. Executor/action nonces provide the idempotency fence if
+                # a process died after the side effect but before this bookkeeping step.
+                with self._lock:
+                    self.db.execute(
+                        "UPDATE waits SET state=?,claimed_at=0,lease_until=0,last_error=? "
+                        "WHERE wait_id=? AND state=?", (PENDING_W,
+                                                       "%s: %s" % (type(e).__name__, e),
+                                                       w["wait_id"], CLAIMED_W))
+                    self.db.commit()
+                continue
+            else:
+                with self._lock:
+                    self.db.execute(
+                        "UPDATE waits SET state=?,fired_at=?,lease_until=0,last_error='' "
+                        "WHERE wait_id=? AND state=?", (FIRED_W, now, w["wait_id"], CLAIMED_W))
+                    self.db.commit()
+                fired += 1
         return fired
 
     def pending_waits(self):

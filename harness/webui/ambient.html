@@ -34,6 +34,8 @@
   html,body{height:100%; overflow:hidden;}
   body{font-family:var(--sans); color:var(--ink); background:linear-gradient(160deg,var(--bg1),var(--bg2));
     -webkit-user-select:none; user-select:none;}
+  :where(button,textarea,[tabindex]):focus-visible{outline:3px solid rgb(var(--accent));outline-offset:3px}
+  @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 
   /* drifting colour blooms */
   .blooms{position:fixed; inset:-20%; z-index:0; filter:blur(10px);}
@@ -52,6 +54,25 @@
     background:radial-gradient(130% 120% at 50% 40%, transparent 38%, var(--vig) 100%);}
   .grain{position:fixed; inset:0; z-index:2; pointer-events:none; opacity:var(--grain-op); mix-blend-mode:overlay;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+
+  /* One quiet operational strip: identity, state, and the doorway into the full workspace. */
+  .opsbar{position:fixed; top:16px; right:18px; z-index:10; display:flex; align-items:center; gap:9px;
+    max-width:calc(100vw - 36px); padding:6px 7px 6px 10px; border:1px solid var(--panel-line); border-radius:999px;
+    background:var(--panel); color:var(--panel-ink); box-shadow:0 10px 32px rgba(0,0,0,.16);
+    backdrop-filter:blur(18px) saturate(1.25); -webkit-backdrop-filter:blur(18px) saturate(1.25); pointer-events:auto;}
+  .opsidentity{min-width:0; display:flex; align-items:center; gap:7px; color:var(--mut); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .opsidentity img{width:17px; height:17px; flex:none;}
+  .opsstate{display:inline-flex; align-items:center; gap:6px; color:var(--mut); font-size:11px; font-weight:650; white-space:nowrap;}
+  .opsstate i{width:7px; height:7px; border-radius:50%; background:rgb(var(--accent)); box-shadow:0 0 0 3px rgba(var(--accent),.12);}
+  .opsstate[data-state="running"]{color:var(--panel-ink)}
+  .opsstate[data-state="running"] i{animation:opspulse 1.4s ease-in-out infinite}
+  .opsstate[data-state="needs"]{color:#e6b65f}
+  .opsstate[data-state="needs"] i{background:#e6b65f; box-shadow:0 0 0 3px rgba(230,182,95,.14); animation:none}
+  @keyframes opspulse{50%{opacity:.35}}
+  .open-collie{display:inline-flex; align-items:center; min-height:28px; padding:0 10px; border-radius:999px; text-decoration:none;
+    background:rgba(var(--accent),.92); color:var(--send-ink); font-size:11px; font-weight:750; white-space:nowrap; transition:transform .15s,background .15s;}
+  .open-collie:hover{transform:translateY(-1px); background:rgb(var(--accent));}
+  @media(max-width:520px){.opsidentity{display:none}.opsbar{right:10px;top:10px}}
 
   /* ── slots ──────────────────────────────────────────────────────────────────────────────── */
   .slot{position:fixed; z-index:4; display:flex; flex-direction:column; gap:16px; pointer-events:none; transition:opacity .5s;}
@@ -110,7 +131,7 @@
   /* launcher */
   .apps{display:flex; gap:10px; flex-wrap:wrap; padding:10px;}
   .slot.tr .apps, .slot.br .apps{justify-content:flex-end;}
-  .app{width:50px; height:50px; border-radius:13px; border:1px solid transparent; background:var(--hover);
+  .app{width:50px; height:50px; padding:0; border-radius:13px; border:1px solid transparent; background:var(--hover); color:inherit; font:inherit;
     display:grid; place-items:center; cursor:pointer; transition:transform .12s, background .15s; position:relative;}
   .app:hover{transform:translateY(-3px); background:rgba(var(--accent),.16);}
   .app img{width:30px; height:30px; pointer-events:none;}
@@ -142,7 +163,7 @@
   /* projects */
   .projs{padding:8px; display:flex; flex-direction:column; gap:2px; min-width:150px;}
   .projs .h{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); padding:4px 8px 6px;}
-  .proj{padding:6px 9px; border-radius:9px; cursor:pointer; font-size:13.5px; color:var(--panel-ink);
+  .proj{width:100%; padding:6px 9px; border:0; background:transparent; text-align:left; border-radius:9px; cursor:pointer; font:inherit; font-size:13.5px; color:var(--panel-ink);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; transition:background .12s;}
   .proj:hover{background:var(--hover);}
   .slot.tr .projs, .slot.br .projs{text-align:right;}
@@ -253,6 +274,11 @@
   <div class="blooms"><div class="bloom b1"></div><div class="bloom b2"></div><div class="bloom b3"></div><div class="bloom b4"></div></div>
   <div class="vignette"></div>
   <div class="grain"></div>
+  <div class="opsbar" aria-label="Collie operational status">
+    <div class="opsidentity"><img src="/logo.svg" alt=""><span id="opsIdentity">Collie</span></div>
+    <div class="opsstate" id="opsState" data-state="ready" role="status" aria-live="polite"><i></i><span id="opsStateText">Ready</span></div>
+    <a class="open-collie" href="/" target="_blank" rel="noopener">Open Collie</a>
+  </div>
 
   <div class="dropzones">
     <div class="dz dtl" data-slot="tl">top-left</div>
@@ -278,18 +304,18 @@
   <audio id="au" preload="none"></audio>
 
   <div class="edithint">Drag any widget to a corner · click ✓ when done</div>
-  <button class="editbtn" id="editbtn" title="Edit layout">
+  <button class="editbtn" id="editbtn" title="Edit layout" aria-label="Edit desktop layout">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
   </button>
 
   <div class="dock">
-    <div class="reply" id="reply"><button class="x" id="replyX" title="Dismiss">×</button><div id="replyBody"></div></div>
+    <div class="reply" id="reply" role="status" aria-live="polite"><button class="x" id="replyX" title="Dismiss" aria-label="Dismiss reply">×</button><div id="replyBody"></div></div>
     <div class="composer" id="composer">
-      <textarea id="input" rows="1" placeholder="Ask Collie to fix, build, or explain something…"></textarea>
-      <button class="iconbtn mic" id="mic" title="Voice input" style="display:none">
+      <textarea id="input" rows="1" aria-label="Message Collie" placeholder="Describe the outcome you want…"></textarea>
+      <button class="iconbtn mic" id="mic" title="Voice input" aria-label="Voice input" style="display:none">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
       </button>
-      <button class="iconbtn send" id="send" title="Send">
+      <button class="iconbtn send" id="send" title="Send" aria-label="Send">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>
       </button>
     </div>
@@ -299,8 +325,28 @@
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
+  var opsLocalNeeds = false, opsGlobalNeeds = false, opsLocalRunning = false, opsGlobalPending = {}, OPS_IDENTITY = {};
+  function ambientName(){var raw=String(OPS_IDENTITY.name||"Collie");return raw.charAt(0).toUpperCase()+raw.slice(1);}
+  function paintIdentity(){
+    var name=ambientName(),parts=[name];if(OPS_IDENTITY.machine)parts.push(OPS_IDENTITY.machine);$("opsIdentity").textContent=parts.join(" · ");
+    var opsAvatar=document.querySelector(".opsidentity img");if(opsAvatar){opsAvatar.src="/api/avatar.png";opsAvatar.onerror=function(){this.onerror=null;this.src="/logo.svg";};}
+    document.querySelectorAll(".brand .word b").forEach(function(el){el.textContent=name;});
+    document.querySelectorAll(".brand .tag").forEach(function(el){el.textContent="your AI execution system"+(OPS_IDENTITY.machine?" · "+OPS_IDENTITY.machine:"");});
+    document.querySelectorAll(".brand img.logo").forEach(function(img){img.src="/api/avatar.png";img.onerror=function(){this.onerror=null;this.src="/logo.svg";};});
+  }
+  function authUrl(path){ return path + (path.indexOf("?") < 0 ? "?" : "&") + "token=" + encodeURIComponent(CT); }
+  function paintOps(){
+    var state=(opsLocalNeeds||opsGlobalNeeds)?"needs":((opsLocalRunning||(typeof activeRuns!=="undefined"&&activeRuns>0))?"running":"ready");
+    var label=state==="needs"?"Needs you":(state==="running"?"Running":"Ready");
+    $("opsState").setAttribute("data-state",state);$("opsStateText").textContent=label;
+  }
+  fetch(authUrl("/api/whoami")).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}).then(function(d){
+    OPS_IDENTITY=d||{};paintIdentity();
+  }).catch(function(){});
   function esc(s){ return String(s == null ? "" : s).replace(/[&<>]/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; }); }
-  function api(path, body){ return fetch(path + "?token=" + encodeURIComponent(CT), {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body||{})}).then(function(r){return r.json();}).catch(function(){return {};}); }
+  function api(path, body){ return fetch(path + "?token=" + encodeURIComponent(CT), {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body||{})})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(d.error||d.message||("HTTP "+r.status));return d;});})
+    .catch(function(e){ try{showReply("err","⚠ "+esc(e&&e.message?e.message:"Request failed"));}catch(_){} return {ok:false,error:(e&&e.message)||"Request failed"}; }); }
 
   // ── in-page music: <audio> fed a same-origin proxied yt-dlp stream + a REAL Web Audio analyser ──
   var au = $("au"), musicPlaying = false, curTrack = null;
@@ -427,8 +473,12 @@
   // ── widget renderers ────────────────────────────────────────────────────────────────────
   function renderBrand(w, el){
     var d = document.createElement("div"); d.className = "brand";
-    d.innerHTML = '<img class="logo" src="/logo.svg" alt="" onerror="this.style.display=\'none\'">' +
-      '<div class="word"><b>Collie</b></div><div class="tag">humans\' best AI friend</div>';
+    d.innerHTML = '<img class="logo" src="/api/avatar.png" alt="">' +
+      '<div class="word"><b></b></div><div class="tag"></div>';
+    d.querySelector(".word b").textContent=ambientName();
+    d.querySelector(".tag").textContent="your AI execution system"+(OPS_IDENTITY.machine?" · "+OPS_IDENTITY.machine:"");
+    var logo = d.querySelector("img.logo");
+    if (logo) logo.addEventListener("error", function(){ logo.src="/logo.svg"; }, {once:true});
     el.appendChild(d);
   }
   function renderClock(w, el){
@@ -439,7 +489,7 @@
   function renderLauncher(w, el){
     var box = document.createElement("div"); box.className = "apps card";
     (w.apps || []).forEach(function(app){
-      var b = document.createElement("div"); b.className = "app"; b.title = app.label || "";
+      var b = document.createElement("button"); b.type = "button"; b.className = "app"; b.title = app.label || ""; b.setAttribute("aria-label", "Open " + (app.label || "app"));
       // letter placeholder shown immediately; the real icon (extracted on first request, ~1-2s) swaps in
       var fb = document.createElement("span"); fb.className = "fallback"; fb.textContent = (app.label||"?").slice(0,1).toUpperCase();
       var lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = app.label || "";
@@ -458,9 +508,9 @@
       '<div class="np" id="wNp"></div>' +
       '<div class="eq" id="wEq">' + Array(15).join("<span></span>") + '</div>' +
       '<div class="mbtns">' +
-        '<button class="mbtn" data-cmd="prev" title="Previous">' + SVG.prev + '</button>' +
-        '<button class="mbtn pp" data-cmd="playpause" title="Play / Pause">' + SVG.play + '</button>' +
-        '<button class="mbtn" data-cmd="next" title="Next">' + SVG.next + '</button>' +
+        '<button type="button" class="mbtn" data-cmd="prev" title="Previous" aria-label="Previous track">' + SVG.prev + '</button>' +
+        '<button type="button" class="mbtn pp" data-cmd="playpause" title="Play / Pause" aria-label="Play or pause">' + SVG.play + '</button>' +
+        '<button type="button" class="mbtn" data-cmd="next" title="Next" aria-label="Next track">' + SVG.next + '</button>' +
       '</div>';
     d.querySelectorAll(".mbtn").forEach(function(b){
       b.onclick = function(){ musicControl(b.getAttribute("data-cmd")); };
@@ -479,7 +529,7 @@
     fetch("/api/desktop/projects").then(function(r){return r.json();}).then(function(j){
       var box = $("wProjs"); if (!box) return;
       (j.projects || []).forEach(function(p){
-        var row = document.createElement("div"); row.className = "proj"; row.textContent = p.name; row.title = p.root;
+        var row = document.createElement("button"); row.type = "button"; row.className = "proj"; row.textContent = p.name; row.title = p.root;
         row.onclick = function(){ api("/api/desktop/open", {root: p.root}); };
         box.appendChild(row);
       });
@@ -613,7 +663,7 @@
       fetch("https://api.open-meteo.com/v1/forecast?latitude="+g.latitude+"&longitude="+g.longitude+"&current=temperature_2m,weather_code&temperature_unit=celsius")
         .then(function(r){return r.json();}).then(function(dd){
           var c = dd && dd.current, e = $("wWx"); if (!c || !e) return; var w = WX[c.weather_code] || ["",""];
-          e.innerHTML = '<span class="ic">'+wxIcon(c.weather_code)+'</span><span class="t">'+Math.round(c.temperature_2m)+"°</span><span>"+w[1]+(g.city?" · "+g.city:"")+"</span>";
+          e.innerHTML = '<span class="ic">'+wxIcon(c.weather_code)+'</span><span class="t">'+Math.round(c.temperature_2m)+"°</span><span>"+esc(w[1]+(g.city?" · "+g.city:""))+"</span>";
         }).catch(function(){});
     }).catch(function(){});
   }
@@ -675,10 +725,21 @@
     // coding view in order to say 576, and `tool` did the same for a web search. Counting
     // still begins at `start` so the grace timer stays right; only the visual now waits for
     // an edit or a reproduction — actual code work.
-    live.addEventListener("start", function(){ activeRuns++; bumpHard(); clearTimeout(codeGrace); });
-    live.addEventListener("edit", activity);
-    live.addEventListener("repro", activity);
-    live.addEventListener("done",  function(){ activeRuns = Math.max(0, activeRuns - 1); bumpHard(); if (activeRuns <= 0) armGrace(); });
+    live.addEventListener("start", function(){ activeRuns++; paintOps(); bumpHard(); clearTimeout(codeGrace); });
+    live.addEventListener("permission", function(e){
+      try{var d=JSON.parse(e.data||"{}");if(d.id)opsGlobalPending[d.id]=d.session||"";}catch(_){}
+      opsGlobalNeeds=Object.keys(opsGlobalPending).length>0;paintOps();
+    });
+    live.addEventListener("permission_resolved", function(e){
+      try{var d=JSON.parse(e.data||"{}");if(d.id)delete opsGlobalPending[d.id];}catch(_){}
+      opsGlobalNeeds=Object.keys(opsGlobalPending).length>0;paintOps();
+    });
+    live.addEventListener("edit", function(){ paintOps();activity(); });
+    live.addEventListener("repro", function(){ paintOps();activity(); });
+    live.addEventListener("done",  function(e){ activeRuns = Math.max(0, activeRuns - 1);
+      try{var d=JSON.parse(e.data||"{}");Object.keys(opsGlobalPending).forEach(function(id){if(!d.session||opsGlobalPending[id]===d.session)delete opsGlobalPending[id];});}catch(_){}
+      if(activeRuns<=0)opsGlobalPending={};
+      opsGlobalNeeds=Object.keys(opsGlobalPending).length>0;paintOps();bumpHard(); if (activeRuns <= 0) armGrace(); });
     live.onerror = function(){};
   } catch(_){}
   // while you're browsing the star-map (runs already done), your interaction keeps it up
@@ -688,17 +749,46 @@
 
   // ── chat (composer + streaming reply) ───────────────────────────────────────────────────────
   var input = $("input"), send = $("send"), reply = $("reply"), replyBody = $("replyBody"),
-      composer = $("composer"), sid = "", running = null, curQ = "";
+      composer = $("composer"), sid = "", runId = "", running = null, curQ = "";
   function md(t){ t = esc(t); t = t.replace(/```([\s\S]*?)```/g, function(_,c){ return "<pre><code>"+c.replace(/^\n/,"")+"</code></pre>"; }); t = t.replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>"); return t.replace(/\n/g,"<br>"); }
   function showReply(cls, html){ reply.className = "reply show" + (cls?(" "+cls):""); replyBody.innerHTML = (curQ?'<div class="q">'+esc(curQ)+"</div>":"") + html; document.body.classList.add("chatting"); reply.scrollTop = reply.scrollHeight; }
   function hideReply(){ reply.className = "reply"; document.body.classList.remove("chatting"); }
   function autosize(){ input.style.height = "auto"; input.style.height = Math.min(120, input.scrollHeight) + "px"; }
-  function setRunning(on){ if (!on) running = null; composer.classList.toggle("running", !!on); }
+  function setRunning(on){ opsLocalRunning=!!on;if(!on){running=null;runId="";opsLocalNeeds=false;}paintOps();composer.classList.toggle("running",!!on);
+    send.title=on?"Stop run":"Send";send.setAttribute("aria-label",on?"Stop run":"Send"); }
   input.addEventListener("input", autosize);
-  input.addEventListener("keydown", function(e){ if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); doSend(); } else if (e.key === "Escape"){ if (running) stopRun(); hideReply(); } });
+  input.addEventListener("keydown", function(e){ if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); doSend(); } else if (e.key === "Escape"){ hideReply(); } });
   send.onclick = function(){ if (running) stopRun(); else doSend(); };
-  $("replyX").onclick = function(){ if (running) stopRun(); hideReply(); };
-  function stopRun(){ if (running){ try{ running.close(); }catch(_){} } setRunning(false); }
+  $("replyX").onclick = function(){ hideReply(); };
+  var cancelling = false, cancelWatch = 0;
+  function cancelSettled(state){
+    clearTimeout(cancelWatch); cancelWatch=0;
+    if(running){try{running.close();}catch(_){}}
+    cancelling=false;send.disabled=false;setRunning(false);
+    if(state&&state.state==="canceled")showReply("","Run stopped.");
+    else showReply(state&&state.state==="failed"?"err":"", state&&state.state==="failed"
+      ? "⚠ "+esc(state.error||"Run failed while cancellation was pending.")
+      : "The run finished before it could be stopped.");
+  }
+  function watchCancel(){
+    var watchSid=sid, watchRun=runId;
+    clearTimeout(cancelWatch);cancelWatch=setTimeout(function poll(){
+      fetch("/api/runs?token="+encodeURIComponent(CT)).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}).then(function(d){
+        var row=(d.runs||[]).find(function(x){return x.session===watchSid&&x.run===watchRun;});
+        if(row&&["canceled","done","failed"].indexOf(row.state)>=0){cancelSettled(row);return;}
+        cancelWatch=setTimeout(poll,700);
+      }).catch(function(){cancelWatch=setTimeout(poll,1200);});
+    },700);
+  }
+  function stopRun(){ if(!running||cancelling)return;
+    if(!sid||!runId){showReply("err","⚠ The run is still starting; wait for its run id before stopping.");return;}
+    cancelling=true;send.disabled=true;send.title="Stopping…";send.setAttribute("aria-label","Stopping run");
+    fetch("/api/run/cancel?token="+encodeURIComponent(CT),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({session:sid,run:runId})})
+      .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+      .then(function(x){if(!x.ok||!x.d||x.d.ok===false)throw new Error((x.d&&(x.d.error||x.d.message))||"Cancel unsupported");
+        showReply("",'<span class="status">Cancellation requested — waiting for the run to stop…</span>');
+        if(x.d.status==="already_canceled")cancelSettled({state:"canceled"});else watchCancel();})
+      .catch(function(e){cancelling=false;send.disabled=false;showReply("err","⚠ Could not stop the run: "+esc(e.message||e));if(running){send.title="Stop run";send.setAttribute("aria-label","Stop run");}}); }
   document.addEventListener("wheel", function(e){ if (reply.classList.contains("show")){ reply.scrollTop += (e.deltaY||0); e.preventDefault(); } }, {passive:false});
   // route the message: a FAST model decides music-vs-chat (open-set intents regex can't cover),
   // then we either play it in-page or hand it to the agent. Mirrors collie's front-door router.
@@ -751,11 +841,13 @@
   function streamAgent(q){
     curQ = q; var acc = "", answering = false; showReply("", '<span class="status">Collie is thinking…</span>');
     var url = "/api/stream?token="+encodeURIComponent(CT)+(sid?("&session="+encodeURIComponent(sid)):"")+"&q="+encodeURIComponent(q);
-    var es = new EventSource(url); running = es; composer.classList.add("running");
-    es.addEventListener("tool", function(e){ try{ var d=JSON.parse(e.data); if(!answering) showReply("", '<span class="status">'+esc(d.name||"working")+"…</span>"); }catch(_){} });
-    es.addEventListener("token", function(e){ try{ var d=JSON.parse(e.data); answering=true; acc+=d.t||""; showReply("", md(acc)); }catch(_){} });
-    es.addEventListener("done", function(e){ try{ var d=JSON.parse(e.data); if(d.session)sid=d.session; if(d.error) showReply("err","⚠ "+esc(d.error)); else showReply("", md(acc||d.answer||"(done)")); }catch(_){} es.close(); setRunning(false); });
-    es.onerror = function(){ if(!answering) showReply("err","(stream interrupted)"); es.close(); setRunning(false); };
+    var es = new EventSource(url); running = es;setRunning(true);
+    es.addEventListener("start", function(e){ opsLocalNeeds=false;paintOps();try{var d=JSON.parse(e.data);if(d.session)sid=d.session;if(d.run)runId=d.run;}catch(_){} });
+    es.addEventListener("permission", function(){opsLocalNeeds=true;paintOps();});
+    es.addEventListener("tool", function(e){ opsLocalNeeds=false;paintOps();try{ var d=JSON.parse(e.data); if(!answering) showReply("", '<span class="status">'+esc(d.name||"working")+"…</span>"); }catch(_){} });
+    es.addEventListener("token", function(e){ opsLocalNeeds=false;paintOps();try{ var d=JSON.parse(e.data); answering=true; acc+=d.t||""; showReply("", md(acc)); }catch(_){} });
+    es.addEventListener("done", function(e){ opsLocalNeeds=false;try{ var d=JSON.parse(e.data);if(runId&&d.run&&d.run!==runId)return;if(d.session)sid=d.session;clearTimeout(cancelWatch);cancelWatch=0;cancelling=false;send.disabled=false;if(d.canceled)showReply("","Run stopped.");else if(d.error)showReply("err","⚠ "+esc(d.error));else showReply("",md(acc||d.answer||"(done)")); }catch(_){} es.close(); setRunning(false); });
+    es.onerror = function(){ if(running===es){showReply("err",cancelling?"(cancellation pending — checking the run…)":"(connection interrupted — retrying…)");if(cancelling){try{es.close();}catch(_){}watchCancel();}} };
   }
 
   // ── voice input (Web Speech API — Chromium/WebView2 built-in) ────────────────────────────────

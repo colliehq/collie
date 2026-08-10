@@ -5,9 +5,15 @@ This is the continuity every interactive harness has; collie's version is plain 
 keeps a long thread from bloating the prefix, so sessions can grow safely.
 """
 import ast
+import contextlib
 import json
 import os
+import threading
 import time
+
+
+_LOCKS = {}
+_LOCKS_GUARD = threading.Lock()
 
 
 def _parse_legacy_toolcall(s, ToolCall):
@@ -23,10 +29,10 @@ def _parse_legacy_toolcall(s, ToolCall):
     return ToolCall(*pos, **kw)
 
 
-def _dir():
+def _dir(directory=None):
     # COLLIE_SESSIONS_DIR lets tests (and throwaway runs) write to a temp store instead of the
     # user's real data/sessions/ — so a mock-provider test suite never floods the Map's run list.
-    d = os.environ.get("COLLIE_SESSIONS_DIR")
+    d = directory or os.environ.get("COLLIE_SESSIONS_DIR")
     if not d:
         from .cli import DATA
         d = os.path.join(DATA, "sessions")
@@ -34,21 +40,63 @@ def _dir():
     return d
 
 
-def _path(sid):
+def _path(sid, directory=None):
     """Map a session id to its JSON file, SAFELY. The web routes (/api/delete, /api/rename,
     /api/session, /api/stream?session=) feed `sid` straight from the URL, so an id like
     "../../etc/foo" or an absolute "/etc/cron.d/x" must not escape data/sessions/ — a CSRF GET
     from any web page the user has open could otherwise read/write/delete arbitrary *.json files.
-    os.path.basename() collapses both traversal and absolute paths to a bare name; the realpath
-    check is belt-and-suspenders. Returns None for anything that isn't a plain id."""
-    name = os.path.basename(str(sid))
-    if not name or name in (".", "..") or "/" in name or "\\" in name or "\x00" in name:
+    Reject traversal rather than normalising it: collapsing ``../../victim`` to ``victim`` stays
+    inside the directory, but gives the hostile id authority over a different, valid session.
+    Returns None for anything that isn't a short, plain id."""
+    if not isinstance(sid, str):
         return None
-    d = _dir()
+    name = sid
+    if (not name or len(name) > 128 or name in (".", "..")
+            or any(c in "/\\\x00:" for c in name)
+            or not all(c.isalnum() or c in "-_." for c in name)):
+        return None
+    d = _dir(directory)
     p = os.path.join(d, name + ".json")
     if os.path.dirname(os.path.realpath(p)) != os.path.realpath(d):
         return None
     return p
+
+
+@contextlib.contextmanager
+def _locked(p):
+    """Serialize a session's complete read/modify/write transaction across threads and processes."""
+    with _LOCKS_GUARD:
+        local = _LOCKS.setdefault(os.path.realpath(p), threading.RLock())
+    with local:
+        lock_path = p + ".lock"
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        fh = open(lock_path, "a+b")
+        acquired = False
+        try:
+            fh.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                if os.path.getsize(lock_path) == 0:
+                    fh.write(b"\0"); fh.flush()
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            acquired = True
+            yield
+        finally:
+            try:
+                if acquired:
+                    fh.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
 
 
 def new_id():
@@ -98,13 +146,181 @@ def _msgs_in(messages):
     return out
 
 
+def _load_raw(p):
+    try:
+        with open(p, encoding="utf-8") as f:
+            s = json.load(f)
+        return s if isinstance(s, dict) else None
+    except Exception:
+        return None
+
+
+def _merge_messages(old, new):
+    """Merge two histories that grew from a common prefix, preserving both completed exchanges."""
+    old, new = list(old or []), list(new or [])
+    common = 0
+    while common < min(len(old), len(new)) and old[common] == new[common]:
+        common += 1
+    if common == len(old):
+        return new
+    if common == len(new):
+        return old
+    merged = old + new[common:]
+    # A retry may submit the identical suffix after another writer already committed it.
+    if new[common:] and len(old) >= len(new) - common and old[-(len(new) - common):] == new[common:]:
+        return old
+    return merged
+
+
 def save(sid, messages, project="demo", cwd="", answer=""):
     p = _path(sid)
     if not p:
         return sid
-    _atomic_dump({"id": sid, "project": project, "cwd": cwd, "updated": time.time(),
-                  "messages": _msgs_out(messages), "last_answer": answer}, p)
+    incoming = _msgs_out(messages)
+    with _locked(p):
+        old = _load_raw(p) or {}
+        obj = {"id": sid, "project": old.get("project") or project,
+               "cwd": old.get("cwd") or cwd, "updated": time.time(),
+               "messages": _merge_messages(old.get("messages"), incoming),
+               "last_answer": answer or old.get("last_answer", "")}
+        if old.get("title"):
+            obj["title"] = old["title"]
+        # Run receipts are orthogonal to the conversational transcript.  Preserve
+        # them across the final transcript save without retaining an in-flight
+        # ``active_run`` checkpoint, which save() intentionally closes.
+        if old.get("run_receipts"):
+            obj["run_receipts"] = old["run_receipts"]
+        _atomic_dump(obj, p)
     return sid
+
+
+def append_run_receipt(sid, receipt, limit=40):
+    """Persist a compact, structured execution/verification receipt on a thread."""
+    p = _path(sid)
+    if not p or not isinstance(receipt, dict):
+        return False
+    with _locked(p):
+        obj = _load_raw(p) or {"id": sid, "messages": []}
+        rows = list(obj.get("run_receipts") or [])
+        rows.append(dict(receipt))
+        obj["run_receipts"] = rows[-max(1, int(limit or 40)):]
+        obj["updated"] = time.time()
+        _atomic_dump(obj, p)
+    return True
+
+
+def checkpoint(sid, messages, project="demo", cwd="", run_id="", turn=0,
+               state="turn_boundary", detail=None, terminal=False):
+    """Continuously persist an in-flight run at replay-safe boundaries.
+
+    ``save`` remains the public conversation operation.  This variant also
+    records where execution was when the process disappeared.  A model call is
+    safe to retry; an interrupted tool may have changed the outside world and is
+    therefore marked ``recovery_required`` on the next read instead of replayed.
+    """
+    p = _path(sid)
+    if not p:
+        return sid
+    incoming = _msgs_out(messages)
+    with _locked(p):
+        old = _load_raw(p) or {}
+        obj = dict(old)
+        obj.update({"id": sid, "project": old.get("project") or project,
+                    "cwd": old.get("cwd") or cwd, "updated": time.time(),
+                    "messages": _merge_messages(old.get("messages"), incoming)})
+        if terminal:
+            obj.pop("active_run", None)
+        else:
+            obj["active_run"] = {
+                "run_id": str(run_id or ""), "turn": max(0, int(turn or 0)),
+                "state": str(state or "turn_boundary"),
+                "detail": detail if isinstance(detail, dict) else {},
+                "updated": time.time(),
+            }
+        _atomic_dump(obj, p)
+    return sid
+
+
+def recovery_state(sid, directory=None):
+    """Describe whether an interrupted session may be resumed automatically."""
+    p = _path(sid, directory)
+    if not p or not os.path.exists(p):
+        return None
+    with _locked(p):
+        raw = _load_raw(p) or {}
+    active = raw.get("active_run")
+    if not isinstance(active, dict):
+        return None
+    out = dict(active)
+    state = out.get("state") or "unknown"
+    uncertain = state in ("executing_tool", "external_action")
+    out["recovery_required"] = uncertain
+    out["auto_resumable"] = not uncertain and state not in ("terminal", "canceled")
+    if uncertain:
+        out["reason"] = ("the process stopped while a tool was executing; inspect the outside "
+                         "world before retrying so an irreversible effect is not duplicated")
+    return out
+
+
+def active_runs(limit=100, directory=None):
+    """List durable in-flight/recovery sessions for Activity and health views."""
+    d = _dir(directory)
+    rows = []
+    for name in os.listdir(d):
+        if not name.endswith(".json"):
+            continue
+        sid = name[:-5]
+        state = recovery_state(sid, directory)
+        if state:
+            state = dict(state); state["session_id"] = sid
+            rows.append(state)
+    rows.sort(key=lambda x: float(x.get("updated") or 0), reverse=True)
+    return rows[:max(0, int(limit))]
+
+
+def reconcile_recovery(sid, resolution, note="", confirmed=False, directory=None):
+    """Resolve an uncertain in-flight tool boundary after explicit inspection.
+
+    ``completed`` records a synthetic tool result saying the effect was observed;
+    ``not_fired`` records that no effect was found and lets the model choose a
+    retry; ``cancel`` closes the active run.  No branch silently replays a tool.
+    """
+    if not confirmed:
+        raise ValueError("recovery reconciliation requires confirmed=True")
+    if resolution not in ("completed", "not_fired", "cancel"):
+        raise ValueError("resolution must be completed, not_fired, or cancel")
+    p = _path(sid, directory)
+    if not p or not os.path.exists(p):
+        raise KeyError("no such session")
+    with _locked(p):
+        raw = _load_raw(p) or {}
+        active = raw.get("active_run")
+        if not isinstance(active, dict) or active.get("state") not in (
+                "executing_tool", "external_action"):
+            raise ValueError("session is not awaiting recovery reconciliation")
+        if resolution == "cancel":
+            raw.pop("active_run", None)
+        else:
+            detail = active.get("detail") if isinstance(active.get("detail"), dict) else {}
+            call_id = detail.get("tool_call_id")
+            name = detail.get("tool_name") or "tool"
+            messages = list(raw.get("messages") or [])
+            if call_id:
+                outcome = ("the user inspected the external system and confirmed the action completed"
+                           if resolution == "completed" else
+                           "the user inspected the external system and confirmed the action did not fire")
+                if note:
+                    outcome += ": " + str(note)[:1000]
+                messages.append({"role": "tool", "tool_call_id": call_id,
+                                 "name": name, "content": "RECOVERY: " + outcome})
+                raw["messages"] = messages
+            active = dict(active)
+            active.update(state="turn_boundary", updated=time.time(),
+                          detail={"reconciled": resolution, "note": str(note)[:1000]})
+            raw["active_run"] = active
+        raw["updated"] = time.time()
+        _atomic_dump(raw, p)
+    return recovery_state(sid, directory)
 
 
 def append_exchange(sid, user_text, answer, project="web", cwd=""):
@@ -120,12 +336,20 @@ def append_exchange(sid, user_text, answer, project="web", cwd=""):
     """
     if not sid:
         return sid
-    existing = load(sid) or {}
-    messages = list(existing.get("messages") or [])
-    messages.append({"role": "user", "content": user_text})
-    messages.append({"role": "assistant", "content": answer})
-    return save(sid, messages, project=existing.get("project") or project,
-                cwd=existing.get("cwd") or cwd, answer=answer)
+    p = _path(sid)
+    if not p:
+        return sid
+    with _locked(p):
+        existing = _load_raw(p) or {}
+        messages = list(existing.get("messages") or [])
+        messages.append({"role": "user", "content": user_text})
+        messages.append({"role": "assistant", "content": answer})
+        obj = dict(existing)
+        obj.update({"id": sid, "project": existing.get("project") or project,
+                    "cwd": existing.get("cwd") or cwd, "updated": time.time(),
+                    "messages": messages, "last_answer": answer})
+        _atomic_dump(obj, p)
+    return sid
 
 
 def _atomic_dump(obj, p):
@@ -134,48 +358,70 @@ def _atomic_dump(obj, p):
     # name MUST be unique per writer: under ThreadingHTTPServer two threads saving the same session id
     # share a pid, so a pid-only name collided and corrupted the file the comment claims to protect.
     tmp = "%s.%d.%s.tmp" % (p, os.getpid(), os.urandom(6).hex())
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, default=str)
-    os.replace(tmp, p)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)       # conversations/tool output are private user data
+        except OSError:
+            pass
+        # Antivirus/indexers and another Python process can briefly hold the
+        # destination without delete sharing on Windows. The inter-process lock
+        # serializes our writers but cannot control those readers; bounded retry
+        # keeps a transient WinError 5 from killing a durable checkpoint.
+        for attempt in range(7):
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:
+                if attempt >= 6:
+                    raise
+                time.sleep(.01 * (2 ** attempt))
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def load(sid):
     p = _path(sid)
     if not p or not os.path.exists(p):
         return None
-    try:
-        with open(p, encoding="utf-8") as f:
-            s = json.load(f)
+    with _locked(p):
+        s = _load_raw(p)
+    if s is not None:
         s["messages"] = _msgs_in(s.get("messages"))
-        return s
-    except Exception:
-        return None
+    return s
 
 
 def delete(sid):
     p = _path(sid)
     if not p:
         return False
-    try:
-        os.remove(p)
-        return True
-    except OSError:
-        return False
+    with _locked(p):
+        try:
+            os.remove(p)
+            return True
+        except OSError:
+            return False
 
 
 def set_title(sid, title):
     """Pin a human title override (shown in the sidebar instead of the first message)."""
-    s = load(sid)
-    if not s:
-        return False
-    s["title"] = (title or "").strip()[:80]
     p = _path(sid)
     if not p:
         return False
-    # load() rebuilt tool_calls into ToolCall objects; re-serialize them (default=str would turn
-    # them back into repr strings and reintroduce the 'str has no attribute id' crash).
-    s["messages"] = _msgs_out(s.get("messages"))
-    _atomic_dump(s, p)
+    with _locked(p):
+        s = _load_raw(p)
+        if not s:
+            return False
+        s["title"] = (title or "").strip()[:80]
+        s["updated"] = time.time()
+        _atomic_dump(s, p)
     return True
 
 

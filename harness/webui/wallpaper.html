@@ -1,4 +1,4 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collie · Live Desktop</title>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collie · Visual Run View</title>
 <style>
   :root{ --mono:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
@@ -43,21 +43,23 @@
   #labels{position:fixed;inset:0;z-index:4;pointer-events:none;overflow:hidden}
   .nlabel{position:absolute;transform:translate(-50%,-50%);font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;text-shadow:0 0 10px #000,0 1px 3px #000;will-change:left,top,opacity}
   .bgmode #top,.bgmode #chat,.bgmode #brand{display:none!important}   /* ?bg=1 → pure galaxy for the behind-icons wallpaper layer (chat lives in a separate floating window) */
+  :where(button,textarea):focus-visible{outline:3px solid var(--pine2);outline-offset:3px}
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 </style></head><body>
 <script>(function(){try{var m=new URLSearchParams(location.search);if(m.get('bg')==='1'){document.documentElement.className+=' bgmode';document.title='collie-bg';}}catch(e){}})();</script>
-<canvas id="cv"></canvas>
+<canvas id="cv" aria-hidden="true"></canvas>
 <div id="top">
-  <div id="banner" class="glass"><span class="bdot" id="bdot"></span><span id="btitle">collie</span><span id="bsub">idle</span></div>
+  <div id="banner" class="glass" role="status" aria-live="polite"><span class="bdot" id="bdot"></span><span id="btitle">Collie</span><span id="bsub">ready</span></div>
 </div>
 <div id="chat" class="glass">
-  <div id="log"></div>
+  <div id="log" role="log" aria-live="polite"></div>
   <div class="composer">
-    <button class="newc" id="newc" title="new chat — clears this thread"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
-    <textarea id="input" rows="1" placeholder="Ask collie to fix, build, or explain something…"></textarea>
-    <button class="send" id="send" title="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg></button>
+    <button class="newc" id="newc" title="new chat — clears this thread" aria-label="New chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+    <textarea id="input" rows="1" aria-label="Message Collie" placeholder="Describe the outcome you want…"></textarea>
+    <button class="send" id="send" title="send" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg></button>
   </div>
 </div>
-<div id="brand"><b>collie</b> · live desktop</div>
+<div id="brand"><b>Collie</b> · visual run view</div>
 <div id="hlab"></div>
 <div id="labels"></div>
 
@@ -67,8 +69,15 @@
   "use strict";
   const $=(id)=>document.getElementById(id);
   const CT=(document.querySelector('meta[name="collie-token"]')||{}).content||"";
+  let COLLIE_NAME="Collie";
+  function displayName(raw){return String(raw||"Collie").trim().replace(/\b\w/g,c=>c.toUpperCase())||"Collie";}
+  fetch("/api/whoami?token="+encodeURIComponent(CT)).then(r=>r.json()).then(d=>{
+    COLLIE_NAME=displayName(d.collie_name||d.name);
+    const brand=document.querySelector("#brand b"); if(brand)brand.textContent=COLLIE_NAME;
+    if(!$("banner").classList.contains("busy"))$("btitle").textContent=COLLIE_NAME+(curRepoName?" · "+curRepoName:"");
+  }).catch(()=>{});
   const GA=2.399963; function rnd(s){const x=Math.sin(s*127.1)*43758.5453;return x-Math.floor(x);}
-  if(typeof THREE==="undefined"){ $("act").textContent="3D engine failed to load."; return; }
+  if(typeof THREE==="undefined"){ $("btitle").textContent="3D map unavailable"; $("bsub").textContent="Open the main Collie workbench and reload this view"; return; }
 
   const cv=$("cv"); const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true});
   renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
@@ -153,7 +162,7 @@
 
   // ---- galaxy AUTO-FOLLOWS the active task's repo (no manual switch) ----
   let curRepo="", curRepoName="collie";
-  function loadTree(repo){ const q=repo?("?repo="+encodeURIComponent(repo)):""; fetch("/api/tree"+q).then(r=>r.json()).then(t=>{ CWD=t.cwd||""; curRepo=t.cwd||repo||""; curRepoName=(t.repo||(CWD.split("/").pop()))||"collie"; showGalaxy(t.files||[]); if(!$("banner").classList.contains("busy")){ $("btitle").textContent="collie · "+curRepoName; $("bsub").textContent="idle"; } }).catch(()=>{}); }
+  function loadTree(repo){ const q=repo?("?repo="+encodeURIComponent(repo)):""; fetch("/api/tree"+q).then(r=>r.json()).then(t=>{ CWD=t.cwd||""; curRepo=t.cwd||repo||""; curRepoName=(t.repo||(CWD.split("/").pop()))||"collie"; showGalaxy(t.files||[]); if(!$("banner").classList.contains("busy")){ $("btitle").textContent=COLLIE_NAME+" · "+curRepoName; $("bsub").textContent="ready"; } }).catch(()=>{}); }
   loadTree("");   // start with the repo collie web runs in; live events switch it per task
   // task-driven repo switch: when collie touches a file, detect which repo it's in and switch the galaxy there
   let REPOS=[];
@@ -171,7 +180,7 @@
   function hit(path,act){ if(!galaxy)return; const s=galaxy.byPath[rel(path)]; if(!s)return; const c=actCol(act); s.sp.material.color.copy(c); s.lvl=(act&&act.indexOf("edit")>=0)?3:2; s.hot=TT.v; agentPing(s.pos,act,c); }
   let bannerT=null;
   function setBanner(title,sub){ $("banner").classList.add("busy"); $("btitle").textContent=title; $("bsub").textContent=sub||""; clearTimeout(bannerT);
-    bannerT=setTimeout(()=>{ $("banner").classList.remove("busy"); $("btitle").textContent="collie · "+curRepoName; $("bsub").textContent="idle"; },5000); }
+    bannerT=setTimeout(()=>{ $("banner").classList.remove("busy"); $("btitle").textContent=COLLIE_NAME+" · "+curRepoName; $("bsub").textContent="ready"; },5000); }
   try{ const es=new EventSource("/api/live");
     es.addEventListener("live_hello",e=>{try{const d=JSON.parse(e.data); if(d.cwd&&d.cwd!==CWD)loadTree(d.cwd);}catch(_){}});
     es.addEventListener("start",e=>{try{const d=JSON.parse(e.data); if(d.cwd&&d.cwd!==CWD)loadTree(d.cwd);}catch(_){} setBanner("collie is working",""); agentPing();});
@@ -182,19 +191,19 @@
       if(nm.indexOf("search")>=0||nm.indexOf("web")>=0||nm.indexOf("fetch")>=0||nm.indexOf("browser")>=0){ setBanner("Searching the web", a.query||a.q||a.url||""); }
       else if(f){ const act=nm.indexOf("edit")>=0||nm.indexOf("write")>=0?"edit":nm.indexOf("read")>=0?"read":"seen"; maybeSwitch(f); hit(f,act); setBanner(act==="edit"?"Editing "+curRepoName:"Reading code", rel(f).split("/").pop()); }
       else if(nm){ setBanner(nm.replace(/_/g," "),""); }}catch(_){}});
-    es.addEventListener("repro",e=>{try{const d=JSON.parse(e.data);setBanner(d.passed?"✓ Verified":"Running check…","");}catch(_){}});
+    es.addEventListener("repro",e=>{try{const d=JSON.parse(e.data);setBanner(d.passed?"Check passed":"Check failed",d.cmd||"executed check");}catch(_){}});
     es.addEventListener("done",()=>setBanner("Done","")); es.onerror=()=>{};
   }catch(_){}
 
   // ---- chat: talk to collie, stream the answer, watch the galaxy light up ----
-  let sid="", running=null;
+  let sid="",runId="",running=null;
   const input=$("input"),send=$("send"),log=$("log");
   function addMsg(cls,txt){ const d=document.createElement("div"); d.className="msg "+cls; d.textContent=txt||""; log.appendChild(d); log.scrollTop=log.scrollHeight; return d; }
   function autninput(){ input.style.height="auto"; input.style.height=Math.min(120,input.scrollHeight)+"px"; }
   input.addEventListener("input",autninput);
   input.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); doSend(); } });
   send.onclick=()=>{ if(running) stopRun(); else doSend(); };
-  newc.onclick=()=>{ if(running) stopRun(); sid=""; log.innerHTML=""; input.value=""; autninput(); input.focus(); };
+  newc.onclick=async()=>{ if(running&&!(await stopRun()))return; sid=""; log.innerHTML=""; input.value=""; autninput(); input.focus(); };
   // The desktop shell often eats the FIRST click on a behind-icons wallpaper (the double-click the user
   // found = one activate + one real click). So once the window is activated, grab the input without a
   // precise second click — then Enter sends (no send-button click needed).
@@ -208,12 +217,23 @@
   // NOTE: auto-reload on server restart is DISABLED for the pinned desktop engine — a location.reload()
   // rebuilds the WebView2's Chromium child and invalidates the native input hook + z-order pin (which
   // made icons vanish / input break). Updates are pushed by relaunching collie-wallpaper.exe instead.
-  function setRunning(on){ send.classList.toggle("stop",on); send.innerHTML=on?'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>'; }
-  function stopRun(){ if(running){ running.close(); running=null; } setRunning(false); }
+  function setRunning(on){ send.classList.toggle("stop",on); send.innerHTML=on?'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>'; send.title=on?"Stop run":"Send";send.setAttribute("aria-label",on?"Stop run":"Send"); }
+  let cancelPending=false,cancelWatch=0;
+  function settleCanceled(row){clearTimeout(cancelWatch);cancelWatch=0;if(running){try{running.close();}catch(_){}}running=null;cancelPending=false;send.disabled=false;setRunning(false);runId="";
+    if(row&&row.state==="canceled")setBanner("Run stopped","");
+    else{setBanner("Run finished","");addMsg(row&&row.state==="failed"?"err":"status",row&&row.state==="failed"?(row.error||"Run failed while cancellation was pending."):"The run finished before it could be stopped.");}}
+  function watchCancel(){const watchSid=sid,watchRun=runId;clearTimeout(cancelWatch);cancelWatch=setTimeout(function poll(){fetch("/api/runs?token="+encodeURIComponent(CT)).then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}).then(d=>{const row=(d.runs||[]).find(x=>x.session===watchSid&&x.run===watchRun);if(row&&["canceled","done","failed"].includes(row.state)){settleCanceled(row);return;}cancelWatch=setTimeout(poll,700);}).catch(()=>{cancelWatch=setTimeout(poll,1200);});},700);}
+  async function stopRun(){ if(!running||cancelPending)return !running;if(!sid||!runId){addMsg("err","The run is still starting; wait for its run id before stopping.");return false;}
+    cancelPending=true;send.disabled=true;setBanner("Stopping collie…","");
+    try{const r=await fetch("/api/run/cancel?token="+encodeURIComponent(CT),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({session:sid,run:runId})});
+      const d=await r.json().catch(()=>({}));if(!r.ok||d.ok===false)throw new Error(d.error||d.message||"Cancel unsupported");
+      setBanner("Cancellation requested","Waiting for the run to stop…");if(d.status==="already_canceled"){settleCanceled({state:"canceled"});return true;}watchCancel();return false;
+    }catch(e){cancelPending=false;send.disabled=false;addMsg("err","Could not stop the run: "+(e.message||e));setBanner("collie is still working","");return false;}}
   // map a tool name to a human "collie is …" status (Chinese)
   const TOOLZH={bash:"正在执行命令",execute_code:"正在运行代码",read_file:"正在阅读代码",grep:"正在查找",glob:"正在查找",code_search:"正在检索代码",write_file:"正在修改文件",edit_file:"正在修改代码",browser_open:"正在打开网页",browser_navigate:"正在浏览网页",browser_read:"正在读取网页",browser_click:"正在操作浏览器",browser_type:"正在操作浏览器",browser_screenshot:"正在截图",browser_eval:"正在分析网页",browser_links:"正在浏览网页",browser_console:"正在分析网页",web_search:"正在搜索",web_fetch:"正在抓取网页",memory_search:"正在回忆",remember:"正在记忆",delegate:"正在分派子任务",plan:"正在规划",undo:"正在撤销"};
   function toolZh(nm){ nm=(nm||"").toLowerCase(); if(TOOLZH[nm])return TOOLZH[nm]; for(const k in TOOLZH){ if(nm.indexOf(k)>=0)return TOOLZH[k]; } if(nm.indexOf("browser")>=0)return "正在浏览网页"; if(nm.indexOf("search")>=0||nm.indexOf("web")>=0||nm.indexOf("fetch")>=0)return "正在搜索"; return "正在思考"; }
-  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
+  function safeHttpUrl(encoded){const raw=encoded.replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#39;/g,"'");try{const u=new URL(raw);return (u.protocol==="https:"||u.protocol==="http:")?esc(u.href):"";}catch(_){return "";}}
   function md(s){ let h=esc(s);
     h=h.replace(/```([\s\S]*?)```/g,(m,c)=>"<pre>"+c.replace(/^\n/,"")+"</pre>");
     h=h.replace(/`([^`\n]+)`/g,"<code>$1</code>");
@@ -221,7 +241,7 @@
     h=h.replace(/^\s*[-*]\s+(.+)$/gm,'<span class="mdli">$1</span>');
     h=h.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
     h=h.replace(/(^|[^*])\*([^*\n]+)\*/g,"$1<em>$2</em>");
-    h=h.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2">$1</a>');
+    h=h.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,(m,label,url)=>{const safe=safeHttpUrl(url);return safe?'<a href="'+safe+'" target="_blank" rel="noopener noreferrer">'+label+'</a>':label;});
     return h; }
   function doSend(){ const q=input.value.trim(); if(!q||running)return; input.value=""; autninput();
     log.innerHTML="";                                   // only ever show the single latest reply
@@ -232,11 +252,12 @@
     const url="/api/stream?token="+encodeURIComponent(CT)+(sid?("&session="+encodeURIComponent(sid)):"")+"&q="+encodeURIComponent(q);
     setRunning(true); setBanner("collie is working",""); agentPing();
     const es=new EventSource(url); running=es;
+    es.addEventListener("start",e=>{try{const d=JSON.parse(e.data);if(d.session)sid=d.session;if(d.run)runId=d.run;}catch(_){}});
     es.addEventListener("tool",e=>{ try{const d=JSON.parse(e.data); status(toolZh(d.name)); }catch(_){} });
     es.addEventListener("edit",()=>status("正在修改代码"));
     es.addEventListener("token",e=>{ try{const d=JSON.parse(e.data); if(!answering){ answering=true; bubble.className="msg a"; } acc+=d.t||""; maybeSwitchByText(acc); bubble.innerHTML=md(acc); log.scrollTop=log.scrollHeight; }catch(_){} });
-    es.addEventListener("done",e=>{ try{const d=JSON.parse(e.data); if(d.session)sid=d.session; if(d.error){ bubble.remove(); addMsg("err","⚠ "+d.error); } else { const t=acc||d.answer||"(done — see the galaxy above)"; bubble.className="msg a"; bubble.innerHTML=md(t); log.scrollTop=log.scrollHeight; } }catch(_){} es.close(); running=null; setRunning(false); });
-    es.onerror=()=>{ if(!answering){ bubble.className="msg a"; bubble.textContent="(stream interrupted)"; } es.close(); running=null; setRunning(false); };
+    es.addEventListener("done",e=>{ try{const d=JSON.parse(e.data);if(runId&&d.run&&d.run!==runId)return;if(d.session)sid=d.session;clearTimeout(cancelWatch);cancelWatch=0;cancelPending=false;send.disabled=false;if(d.canceled){bubble.remove();setBanner("Run stopped","");}else if(d.error){bubble.remove();addMsg("err","⚠ "+d.error);}else{const t=acc||d.answer||"(done — see the galaxy above)";bubble.className="msg a";bubble.innerHTML=md(t);log.scrollTop=log.scrollHeight;}}catch(_){}es.close();running=null;runId="";setRunning(false);});
+    es.onerror=()=>{if(running===es&&!answering){bubble.className="msg err";bubble.textContent=cancelPending?"(cancellation pending — checking the run…)":"(connection interrupted — retrying…)";}if(running===es&&cancelPending){try{es.close();}catch(_){}watchCancel();}};
   }
 
   // ---- hover a star -> file label ----
@@ -275,7 +296,7 @@
     if(mx>=0&&galaxy){let best=1e9,curD=1e9;for(let i=0;i<galaxy.stars.length;i++){const s=galaxy.stars[i];v.copy(s.pos).project(camera);if(v.z>1)continue;const sx=(v.x*.5+.5)*innerWidth,sy=(-v.y*.5+.5)*innerHeight,dd=(sx-mx)*(sx-mx)+(sy-my)*(sy-my);if(dd<best){best=dd;hv=s;}if(s===hoverStar)curD=dd;}
       if(hoverStar&&curD<5200&&curD<best*3)hv=hoverStar;     // strong stickiness: hold the star until the cursor is ~72px away
       else if(best>2600)hv=null;                             // acquire only within ~51px
-      if(hv){uManual=TT.v;const vp=v.copy(hv.pos).project(camera);hlab.style.display="block";hlab.style.left=((vp.x*.5+.5)*innerWidth+12)+"px";hlab.style.top=((-vp.y*.5+.5)*innerHeight-8)+"px";hlab.innerHTML=hv.f.p+"  ·  <span style='color:var(--faint)'>"+hv.f.loc+" loc"+(hv.f.defs?" · "+hv.f.defs+" fn":"")+"</span>";}else hlab.style.display="none";}
+      if(hv){uManual=TT.v;const vp=v.copy(hv.pos).project(camera);hlab.style.display="block";hlab.style.left=((vp.x*.5+.5)*innerWidth+12)+"px";hlab.style.top=((-vp.y*.5+.5)*innerHeight-8)+"px";hlab.textContent=String(hv.f.p||"")+"  ·  "+Number(hv.f.loc||0)+" loc"+(hv.f.defs?" · "+Number(hv.f.defs)+" fn":"");}else hlab.style.display="none";}
     else hlab.style.display="none";
     // orbit rings: rebuild geometry ONLY when the star changes; fade opacity so a brief hover-loss never flashes/vanishes
     if(hv&&hv!==hoverStar){hoverStar=hv;buildRings(hv);}

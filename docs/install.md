@@ -1,7 +1,7 @@
 # Install
 
-Pick the path that matches you. A complete beginner on Windows wants the **installer**; a developer
-wants **pip**.
+Pick the path that matches you. Windows and Apple-silicon Mac users can install a packaged app; a
+Linux user or developer can use **pip**.
 
 ## Windows — one-click installer (for everyone)
 
@@ -10,8 +10,9 @@ The friendliest path: no Python, no terminal, no configuration.
 1. Download **`Collie-Setup.exe`** from the [latest release](https://github.com/colliehq/collie/releases/latest).
    Windows installers are code-signed through the [SignPath Foundation](https://signpath.org/)'s free
    code-signing program for open-source projects.
-2. Double-click it. Pick your language on the first screen (Simplified/Traditional Chinese, English,
-   Spanish, and ~30 more) — the language you choose becomes Collie's own interface language too.
+2. Double-click it. The installer itself is localized in Simplified/Traditional Chinese, English,
+   Spanish, and many other languages. Collie's workbench currently offers English, Simplified
+   Chinese, and Traditional Chinese.
 3. Click through. When it finishes, open **Collie** from the Start menu or the desktop icon.
 4. On first launch, **pick a brain**: an existing Claude, Codex, or Grok subscription connects in one
    click, or paste an API key. That's it.
@@ -24,7 +25,14 @@ prompt) and cleanly uninstalls from *Add or remove programs*.
     Two checkboxes let you turn on the **live star-map wallpaper** and the **real-browser bridge**
     at logon. Both are off by default and covered in [The desktop app](desktop.md).
 
-## Developers — pip / uv
+## macOS — signed app
+
+1. Download **`Collie-arm64.dmg`** from the [latest release](https://github.com/colliehq/collie/releases/latest).
+2. Open the disk image and drag **Collie** to Applications.
+3. Open Collie and choose a model provider. Release builds are signed with an Apple Developer ID and
+   notarised; the packaged app currently targets Apple silicon and macOS 12 or newer.
+
+## Linux and developers — pip / uv
 
 The core is stdlib-only, so the base install is tiny.
 

@@ -112,6 +112,9 @@ class ToolCtx:
     # in this session instead of asking for a restart — `mcpctl_add` registers the new server's tools
     # straight away, the same way enable_capability makes a gated capability usable immediately.
     registry: object = None
+    # Undo is more narrowly scoped than project memory. Web runs set this to their session id so
+    # two chats in the same repository cannot consume each other's journal.
+    checkpoint_scope: str = ""
 
 
 class Tool:
@@ -202,7 +205,8 @@ class WriteFileTool(Tool):
         if not isinstance(content, str):
             return "ERROR: arg 'content' must be a string, got %s" % type(content).__name__
         try:
-            _snapshot(ctx.project, p)          # checkpoint prior state so `undo` can restore it
+            _snapshot(getattr(ctx, "checkpoint_scope", "") or ctx.project,
+                      p, ctx.cwd) # checkpoint prior state so `undo` can restore it
             os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -233,11 +237,11 @@ def _touch_index(cwd):
         pass
 
 
-def _snapshot(project, abspath):
+def _snapshot(project, abspath, cwd=None):
     """Best-effort pre-mutation checkpoint so the `undo` tool can restore this file."""
     try:
         from .checkpoint import record
-        record(project, abspath)
+        record(project, abspath, cwd=cwd)
     except Exception:
         pass
 
@@ -376,7 +380,8 @@ class EditFileTool(Tool):
             except SyntaxError as e:
                 return ("ERROR: this edit would break Python syntax in %s — %s (line %s). The "
                         "file was NOT modified; fix new_string and retry." % (args["path"], e.msg, e.lineno))
-        _snapshot(ctx.project, p)  # checkpoint prior state so `undo` can restore it
+        _snapshot(getattr(ctx, "checkpoint_scope", "") or ctx.project,
+                  p, ctx.cwd)  # checkpoint prior state so `undo` can restore it
         # utf-8-sig re-emits the BOM the file started with (stdlib); newline=nl restores CRLF.
         with open(p, "w", encoding="utf-8-sig" if bom else "utf-8", newline=nl) as f:
             f.write(new_content)

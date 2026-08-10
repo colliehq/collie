@@ -184,7 +184,15 @@ class ContextComposer:
                     "Prefer edit_file for small changes. After editing code, run "
                     "the tests (python -m pytest -q) to verify before you answer.")
         # unknown/typo'd mode -> ACT (never silently drop the tool-usage + verify contract).
-        mode_role = {"act": act_role, "plan": "MODE: Plan — outline steps, do not edit."}.get(mode, act_role)
+        mode_role = {
+            "act": act_role,
+            "plan": ("MODE: Plan — inspect the project and produce an editable plan artifact with "
+                     "scope, files, risks, and proposed checks. Do not edit project files or run commands."),
+            "review": ("MODE: Review — inspect only. Report prioritized findings with concrete "
+                       "file paths and line numbers. Do not edit files or run commands."),
+            "test": ("MODE: Test — inspect files and run only the proposed verification command. "
+                     "Do not edit anything. Return the failing check as evidence for a separate Build run."),
+        }.get(mode, act_role)
         tool_names = "TOOLS (always-on): " + ", ".join(
             t.name for t in self.registry.always_on())
         deferred = self.registry.deferred_names()

@@ -184,7 +184,13 @@ def check_tests_never_open_a_browser():
             if '"web"' not in line or "--no-open" in line:
                 continue
             # the flag is often on the same call but a line or two down
-            window = "\n".join(src.splitlines()[i - 1:i + 2])
+            window = "\n".join(src.splitlines()[max(0, i - 4):i + 5])
+            # "project='web'" and checkpoint/session names are ordinary test data. Only inspect a
+            # window that actually launches a child process; the previous text search turned those
+            # harmless values into false browser-opening failures.
+            if not re.search(r"\bsubprocess\.(Popen|run|call|check_call|check_output)\s*\(",
+                             window):
+                continue
             if "--no-open" not in window:
                 bad.append("%s:%d" % (os.path.basename(path), i))
     check(not bad, "no test starts `collie web` without --no-open%s"

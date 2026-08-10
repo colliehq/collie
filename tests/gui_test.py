@@ -96,10 +96,91 @@ def main():
             tok = pg.eval_on_selector('meta[name="collie-token"]', "e => e.content")
             check("CSRF token injected", bool(tok) and len(tok) == 32, "token=%r" % tok)
 
-            # --- mode selector present w/ both modes (custom dropdown: .mode-item[data-val]) ---
-            modes = pg.eval_on_selector_all(".mode-item", "els => els.map(e => e.getAttribute('data-val'))")
-            check("mode selector (normal+herding+pack)",
-                  "normal" in modes and "herding" in modes and "pack" in modes, str(modes))
+            # --- run setup exposes independent axes; workspace/Pack are not quality modes ---
+            axes = pg.eval_on_selector_all(
+                ".mode-item", "els => els.map(e => [e.getAttribute('data-axis'),e.getAttribute('data-val')])")
+            check("run setup has intent/effort/verify/workspace/strategy axes",
+                  all(pair in axes for pair in [["intent", "plan"], ["quality", "thorough"],
+                                                ["verification", "required"], ["workspace", "isolated"],
+                                                ["strategy", "pack"]]), str(axes))
+            pg.click("#modeTrigger")
+            pg.wait_for_selector("#modeMenu", state="visible", timeout=15000)
+            pg.keyboard.press("ArrowDown")
+            arrow_state = pg.evaluate("""() => ({
+              value: document.querySelector('#runIntent').value,
+              planChecked: document.querySelector('[data-axis="intent"][data-val="plan"]').getAttribute('aria-checked'),
+              planTab: document.querySelector('[data-axis="intent"][data-val="plan"]').tabIndex,
+              buildTab: document.querySelector('[data-axis="intent"][data-val="build"]').tabIndex
+            })""")
+            check("radio arrow selects and moves the roving tab stop",
+                  arrow_state == {"value": "plan", "planChecked": "true", "planTab": 0, "buildTab": -1},
+                  str(arrow_state))
+            pg.keyboard.press("ArrowUp")       # restore Build before the rest of the suite
+            pg.focus('[data-axis="quality"][data-val="balanced"]')
+            pg.keyboard.press("End")
+            check("radio End key selects the last effort option",
+                  pg.eval_on_selector("#runQuality", "e => e.value") == "thorough")
+            pg.keyboard.press("Home")          # restore Balanced
+            pg.keyboard.press("Escape")
+            pg.wait_for_selector("#modeMenu", state="hidden", timeout=15000)
+
+            # A failed attachment must never silently downgrade into a text-only model run.
+            pg.route("**/api/upload*", lambda route: route.fulfill(
+                status=500, content_type="application/json", body='{"error":"upload unavailable"}'))
+            pg.evaluate("""() => {
+              window.__uploadFailureStreams = [];
+              window.EventSource = function(url) {
+                window.__uploadFailureStreams.push(url);
+                this.addEventListener = function() {};
+                this.close = function() {};
+              };
+            }""")
+            pg.set_input_files("#fileInput", {"name": "probe.png", "mimeType": "image/png", "buffer": b"image"})
+            pg.wait_for_selector("#attachStrip .thumb")
+            pg.fill("#input", "/code inspect this image")
+            pg.click("#send")
+            pg.wait_for_function("() => !![...document.querySelectorAll('.err')].find(e => e.textContent.includes('no run was started'))")
+            upload_failure = pg.evaluate("""() => ({
+              streams: window.__uploadFailureStreams.length,
+              prompt: document.getElementById('input').value,
+              thumbs: document.querySelectorAll('#attachStrip .thumb').length,
+              active: document.getElementById('send').classList.contains('stop') || document.getElementById('input').disabled
+            })""")
+            check("failed image upload restores the draft and starts no text-only run",
+                  upload_failure == {"streams": 0, "prompt": "inspect this image",
+                                     "thumbs": 1, "active": False}, str(upload_failure))
+            pg.click("#attachStrip .rm")
+            pg.fill("#input", "")
+            pg.unroute("**/api/upload*")
+
+            # Pack's number field is not inside a native <form>, so min/max only works if send()
+            # explicitly checks it. An invalid value must not open a run stream.
+            pg.evaluate("""() => {
+              window.__invalidDesktopStream = null;
+              window.EventSource = function(url) {
+                window.__invalidDesktopStream = url;
+                this.addEventListener = function() {};
+                this.close = function() {};
+              };
+            }""")
+            pg.click("#modeTrigger")
+            pg.click('[data-axis="strategy"][data-val="pack"]')
+            pg.fill("#packN", "7")
+            pg.fill("#packCheck", "pytest -q")
+            pg.fill("#input", "/code invalid pack should stay local")
+            pg.click("#send")
+            invalid_pack = pg.evaluate("""() => ({
+              stream: window.__invalidDesktopStream,
+              focused: document.activeElement && document.activeElement.id,
+              value: document.getElementById('input').value
+            })""")
+            check("desktop rejects out-of-range Pack attempts before launch",
+                  invalid_pack["stream"] is None and invalid_pack["focused"] == "packN" and
+                  "invalid pack" in invalid_pack["value"], str(invalid_pack))
+            pg.fill("#packN", "3")
+            pg.click("#modeTrigger")
+            pg.click('[data-axis="strategy"][data-val="single"]')
+            pg.keyboard.press("Escape")
 
             # --- model picker lives in the toolbar; run details stay available without a status rail ---
             check("status rail removed", pg.query_selector(".runbar") is None and pg.query_selector("#rbGate") is None)
@@ -247,11 +328,112 @@ def main():
             code403 = pg.evaluate("async () => (await fetch('/api/settings', {method:'POST', body:'{}'})).status")
             check("settings CSRF: unauth POST -> 403", code403 == 403, "got %s" % code403)
 
-            # --- mobile: no horizontal BODY overflow at 390px ---
+            # --- responsive desktop: popup and toolbar stay within 390/320 CSS px ---
             pg.set_viewport_size({"width": 390, "height": 780})
             pg.wait_for_timeout(400)
             overflow = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
             check("mobile: no horizontal overflow", overflow <= 2, "overflow=%spx" % overflow)
+            pg.click("#modeTrigger")
+            pg.wait_for_selector("#modeMenu", state="visible", timeout=15000)
+            menu_box = pg.eval_on_selector("#modeMenu", "e => {const r=e.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width}}")
+            check("390px: run setup popup stays inside viewport",
+                  menu_box["left"] >= -0.5 and menu_box["right"] <= 390.5, str(menu_box))
+            pg.keyboard.press("Escape")
+
+            pg.set_viewport_size({"width": 320, "height": 700})
+            pg.wait_for_timeout(300)
+            overflow320 = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            topbar_box = pg.eval_on_selector(".topbar", "e => {const r=e.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width}}")
+            check("320px: topbar and document do not overflow",
+                  overflow320 <= 2 and topbar_box["left"] >= -0.5 and topbar_box["right"] <= 320.5,
+                  "overflow=%spx topbar=%r" % (overflow320, topbar_box))
+            pg.click("#modeTrigger")
+            pg.wait_for_selector("#modeMenu", state="visible", timeout=15000)
+            menu320 = pg.eval_on_selector("#modeMenu", "e => {const r=e.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width}}")
+            check("320px: run setup popup stays inside viewport",
+                  menu320["left"] >= -0.5 and menu320["right"] <= 320.5, str(menu320))
+
+            # --- dedicated phone client exposes the same orthogonal contract ---
+            pg.set_viewport_size({"width": 390, "height": 844})
+            pg.goto("http://collie.localhost:%d/m" % PORT, wait_until="load")
+            pg.wait_for_timeout(300)
+            drawer_closed = pg.evaluate("""() => ({
+              inert: drawer.hasAttribute('inert'), hidden: drawer.getAttribute('aria-hidden'),
+              role: drawer.getAttribute('role'), modal: drawer.getAttribute('aria-modal')
+            })""")
+            check("phone closed drawer is inert and declared modal",
+                  drawer_closed == {"inert": True, "hidden": "true", "role": "dialog", "modal": "true"},
+                  str(drawer_closed))
+            pg.click("#menuBtn")
+            pg.keyboard.press("Shift+Tab")
+            check("phone drawer traps keyboard focus",
+                  pg.evaluate("() => !drawer.hasAttribute('inert') && drawer.contains(document.activeElement)"))
+            pg.keyboard.press("Escape")
+            check("phone drawer closes inert and returns focus",
+                  pg.evaluate("() => drawer.hasAttribute('inert') && document.activeElement === menuBtn"))
+            pg.click("#runSetup summary")
+            phone_overflow = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            visible_axes = pg.eval_on_selector_all(
+                "#mIntent,#mQuality,#mVerification,#mWorkspace,#mStrategy",
+                "els => els.filter(e => {const r=e.getBoundingClientRect(); return r.width>0 && r.height>0}).length")
+            check("phone run setup shows all five axes without overflow",
+                  phone_overflow <= 2 and visible_axes == 5,
+                  "overflow=%spx visible=%s" % (phone_overflow, visible_axes))
+            pg.select_option("#mIntent", "plan")
+            plan_contract = pg.evaluate("""() => ({
+              verification: mVerification.value, workspace: mWorkspace.value, strategy: mStrategy.value,
+              verificationDisabled: mVerification.disabled, workspaceDisabled: mWorkspace.disabled,
+              strategyDisabled: mStrategy.disabled
+            })""")
+            check("phone Plan resets and locks incompatible execution choices",
+                  plan_contract == {"verification": "auto", "workspace": "current", "strategy": "single",
+                                    "verificationDisabled": True, "workspaceDisabled": True,
+                                    "strategyDisabled": True}, str(plan_contract))
+            pg.select_option("#mIntent", "build")
+            pg.select_option("#mQuality", "thorough")
+            pg.select_option("#mVerification", "required")
+            pg.select_option("#mWorkspace", "isolated")
+            pg.select_option("#mStrategy", "pack")
+            check("phone Pack owns isolation and requires a check",
+                  pg.eval_on_selector("#mWorkspace", "e => e.value === 'current' && e.disabled") and
+                  pg.eval_on_selector("#mPackCheck", "e => e.required && !e.closest('#mPackOpts').hidden"))
+            pg.fill("#mPackCheck", "pytest -q")
+            pg.check("#mPackApply")
+            pg.evaluate("""() => {
+              window.__lastRunUrl = null;
+              window.EventSource = function(url) {
+                window.__lastRunUrl = url;
+                this.addEventListener = function() {};
+                this.close = function() {};
+              };
+            }""")
+            pg.fill("#mPackN", "7")
+            pg.fill("#input", "invalid phone pack")
+            pg.click("#send")
+            invalid_phone_pack = pg.evaluate("""() => ({
+              stream: window.__lastRunUrl, focused: document.activeElement && document.activeElement.id,
+              value: document.getElementById('input').value
+            })""")
+            check("phone rejects out-of-range Pack attempts before launch",
+                  invalid_phone_pack["stream"] is None and invalid_phone_pack["focused"] == "mPackN" and
+                  "invalid phone" in invalid_phone_pack["value"], str(invalid_phone_pack))
+            pg.fill("#mPackN", "4")
+            pg.fill("#input", "exercise mobile options")
+            pg.click("#send")
+            sent = pg.evaluate("""() => {
+              const u = new URL(window.__lastRunUrl, location.href);
+              return Object.fromEntries(u.searchParams.entries());
+            }""")
+            check("phone sends every selected axis and Pack check",
+                  all(sent.get(k) == v for k, v in {
+                      "intent": "build", "quality": "thorough", "verification": "required",
+                      "workspace": "current", "strategy": "pack", "n": "4", "check": "pytest -q",
+                      "apply": "1"}.items()), str(sent))
+            pg.set_viewport_size({"width": 320, "height": 700})
+            pg.wait_for_timeout(250)
+            phone_overflow320 = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            check("320px phone controls stay in viewport", phone_overflow320 <= 2,
+                  "overflow=%spx" % phone_overflow320)
 
             check("no uncaught page errors", not perrs, str(perrs[:3]))
             b.close()

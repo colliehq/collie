@@ -1,124 +1,128 @@
-# Collie Remote — end-to-end encryption design (hosted, zero-knowledge relay)
+# Collie Remote hosted protocol v2
 
-**Status:** design, not yet built. Target: the native-app + hosted-relay product path.
+**Status:** implemented by `harness/remote.py`, `relay/worker.js`, and `collie-ios`.
 
-## 1. Why / threat model
+## Security goal and threat model
 
-Self-hosters run their own Worker → their traffic only touches their own Cloudflare account, so no
-E2E is needed. But making every customer register Cloudflare + `wrangler deploy` is too much friction
-for a product. So we host **one** relay for everyone — and the moment the relay carries *other people's*
-dev sessions, "the relay operator can read plaintext" becomes unacceptable.
+The hosted relay is treated as untrusted. It may inspect, modify, drop, duplicate, reorder, delay, or
+replay anything it handles. A passive network observer is also in scope. Protocol v2 protects API
+content (methods, paths, queries, prompts, headers, request bodies, response bodies and SSE) and
+authenticates the desktop during pairing.
 
-**Goal:** the hosted relay is a **zero-knowledge pipe** — it routes and forwards, but cannot read the
-content (code, commands, output). A bug or breach in the Worker leaks only ciphertext.
+The relay still sees unavoidable metadata: room, opaque request/session ids, bearer-token hashes,
+APNs registration metadata, sizes, timing, connection IPs, and whether pairing was approved. It can
+deny service and perform traffic analysis. A compromised phone/desktop, malicious local Collie web
+process, endpoint screenshots, and endpoint key extraction are out of scope.
 
-**In scope (attacker = the relay / its operator / a passive network observer):** content confidentiality
-+ integrity, and MITM resistance during pairing.
-**Out of scope:** hiding *metadata* (room id, session id, request id, timing, byte counts) from the
-relay — it needs those to route. Also out of scope: a compromised endpoint (phone or desktop) — E2E
-can't help if a device is owned.
+Hosted v2 is native-app-only and fail closed. There is no hosted plaintext mode, injected browser UI,
+legacy short-code flow, or optional encryption branch.
 
-## 2. Deployment modes (keep both)
+## Relay-blind, desktop-authenticated pairing
 
-- **Self-host (plaintext):** current v0. Own Worker, `COLLIE_RELAY` → your worker. Relay may see
-  plaintext because it's *yours*. HTML-injection/shim path stays (web UI served through the relay).
-- **Hosted (E2E):** our worker, zero customer setup. **Relay never sees plaintext.** Client is the
-  **native app** (or a PWA served from a static origin — NOT injected by the relay), talking the API
-  over an encrypted envelope. The relay does **no** HTML injection in this mode (it can't read HTML).
-
-## 3. Keys & handshake (once per device, at pairing)
-
-Primitives: **X25519** (ECDH), **HKDF-SHA256**, **AES-256-GCM**, **HMAC-SHA256**. All native:
-iOS `CryptoKit`, desktop `cryptography` (the `[remote]` extra), web `crypto.subtle`.
-
-The pairing code (`~40-bit`, shown on the trusted desktop, scanned/typed into the trusted phone
-out-of-band) **authenticates** the public-key exchange so the relay can't MITM it:
+The desktop generates a fresh 256-bit `secret` and an ephemeral X25519 keypair. Its QR contains:
 
 ```
-Desktop D and Phone P each generate an X25519 keypair (privD/pubD, privP/pubP).
-Exchange pubkeys THROUGH the relay (relay could tamper — the code check below catches that):
-  transcript = "collie-e2e-v1" ‖ room ‖ pubD ‖ pubP
-  confirmD   = HMAC(paircode, transcript ‖ "D")
-  confirmP   = HMAC(paircode, transcript ‖ "P")
-Each side verifies the other's confirm tag. The relay doesn't know paircode → can't forge a tag →
-if it swapped a pubkey, the tags mismatch → ABORT.
-  S      = X25519(own priv, peer pub)          # shared secret
-  K_dev  = HKDF(S, salt=room, info="collie-remote-device")   # long-term per-device key
+https://<relay>/r/<room>#pair=<base64url({
+  "v": 2, "room": room, "secret": secret, "desktop_pub": base64(pubD)
+})>
 ```
 
-Store `K_dev`: phone → Keychain; desktop → `~/.collie/remote.json` device entry (ideally OS-encrypted
-at rest). `K_dev` never leaves the device; the relay never sees `S` or `K_dev`.
-
-**Security note:** this is *authenticated ECDH via a short shared code*, not a formal PAKE. It's sound
-here because the attack is **online, rate-limited (5/10 min), and the code is single-use + short-TTL**
-— an attacker gets a handful of guesses at a ~40-bit code, not an offline brute force. If we ever want
-offline-transcript resistance too, swap the HMAC step for **SPAKE2**; the rest is unchanged.
-
-## 4. Encryption boundary (what's ciphertext vs plaintext)
-
-Per session, derive `K_sess = HKDF(K_dev, info=session_id)`.
-
-- **Encrypted (AES-256-GCM, fresh 96-bit random nonce per frame):**
-  - request envelope = `{method, path, query, headers, body_b64}`
-  - every response/SSE payload (the raw `event:…\ndata:…` bytes, or each chunk)
-- **Plaintext (the relay needs it to route/forward):** `room`, request `id`, `session`, frame type
-  (`req`/`chunk`/`end`/…), nonce.
-- **AAD** on every seal = `room ‖ id ‖ session ‖ direction ‖ seq` — binds ciphertext to its context so
-  the relay can't replay/reorder frames across requests.
-
-The desktop's relay-client decrypts the request envelope → replays to `127.0.0.1` **with the local
-CSRF token injected** (unchanged); encrypts the response frames on the way back. The phone never holds
-the desktop's local token; the relay never holds `K_*`.
-
-## 5. Wire frames (extend the existing relay protocol)
+The fragment is never included in an HTTP request. The desktop WebSocket `hello` also never contains
+the secret. The phone creates `pubP` and sends `/pair` only:
 
 ```
-Phone → relay → desktop   {"t":"req","id":N,"session":S,"enc":{"n":<b64 nonce>,"ct":<b64>}}
-desktop → relay → phone    {"t":"res","id":N,"enc":{...}}         # encrypted {status,headers}
-desktop → relay → phone    {"t":"chunk","id":N,"enc":{...}}       # encrypted SSE bytes, frame-by-frame
-desktop → relay → phone    {"t":"end","id":N}                     # no payload
+{device_id, name, pub: base64(pubP), confirm: base64(confirmP)}
 ```
-Identical routing/multiplexing to today; only the payloads become `enc`. `read1()` streaming still
-applies (encrypt each flushed chunk). The relay's `checkSession` (Bearer/cookie) still gates room
-access — E2E is the *content* layer on top of the *auth* layer, not a replacement.
 
-## 6. Per-client implementation
+The existing cross-language crypto framing in `harness/e2e.py` and `CollieIOS/Pairing/E2E.swift` is:
 
-| | STT/handshake/crypto |
-|---|---|
-| **iOS (native, primary)** | `CryptoKit`: `Curve25519.KeyAgreement`, `HKDF<SHA256>`, `AES.GCM`, `HMAC<SHA256>`. Keychain for `K_dev`. |
-| **Desktop** | `cryptography` (`[remote]` extra): `x25519`, `hkdf`, `AESGCM`, `hmac`. Degrade: if the extra is missing AND the relay is hosted, refuse to connect (don't fall back to plaintext on a shared relay). |
-| **Web / PWA** | `crypto.subtle`: `deriveBits` (X25519 — or P-256 if a target lacks X25519), `HKDF`, `AES-GCM`, `HMAC`. Served from a static origin, not relay-injected. |
+```
+transcript = LP("collie-e2e-v1") || LP(room) || LP(pubD) || LP(pubP)
+confirmP   = HMAC-SHA256(secret, transcript || "P")
+confirmD   = HMAC-SHA256(secret, transcript || "D")
+S          = X25519(privD, pubP) = X25519(privP, pubD)
+K_dev      = HKDF-SHA256(S, salt=room, info="collie-remote-device")
+```
 
-## 7. Lifecycle
-- Pairing establishes `K_dev`; kick/forget a device → desktop drops `K_dev` + the session hash → its
-  frames fail to decrypt / auth. Rotating the pairing code does not affect already-paired `K_dev`.
-- Desktop restart: `K_dev` persists (in the device store) → returning device keeps working, no re-pair.
-- Nonces are per-frame random; never reused under a key (GCM requirement).
+The relay stores a durable ticket in `validating` state and forwards the proof. Only the desktop can
+verify it. A valid proof immediately consumes and rotates the secret, before approval or token issue.
+The desktop allows five failed proofs per ten minutes and burns the secret at the limit. It derives a
+four-digit comparison number from `confirmD`, returns `pair_ready`, and asks the human. Every pairing,
+including a known device id, requires approval.
 
-## 8. Hosted-relay ops (separate from E2E, but required for the product)
-- **Abuse gating:** tie room creation to a Collie auth/license token you control, so only legit installs
-  use your relay (else it's a free tunnel for anyone). Rate-limit per token.
-- **Cost:** Workers + Durable Objects, usage-based; dev-session traffic is small text — cheap per user,
-  but it's your bill. WebSocket hibernation keeps idle rooms cheap.
-- **Isolation (already true):** one DO per room, unguessable room id, AGENTKEY first-claim, pairing gate.
+The phone polls `/pair/wait?ticket=…`: `validating` → `approval` (with authenticated `pubD`,
+`confirmD`, and number) → approved/denied. It verifies `pubD`, `confirmD`, and the number before
+display. An approved ticket is claimed transactionally and can mint exactly one bearer token. `K_dev`
+is saved only after that token is issued. Pairing secrets and device keys never reach the relay.
 
-## 9. What changes vs today
-- New: handshake at `/pair` (carry `pubP`/`confirmP`; desktop returns `pubD`/`confirmD` via the agent WS).
-- New: encrypt/decrypt envelope + frames on desktop + client.
-- Removed in E2E mode: relay HTML injection / shim / pairing-bootstrap (relay can't read HTML) → the
-  mobile UI ships in the app bundle (or a static PWA) instead of being served through the relay.
-- Unchanged: routing, multiplexing, `read1()` streaming, Bearer/cookie auth, device_id dedup, durable
-  pairing, rate-limit, mirror.
+This is authenticated ECDH with a high-entropy out-of-band secret, not a short-password protocol; it
+does not need a PAKE's offline-dictionary protection. The QR remains sensitive until its 180-second
+expiry or one-shot consumption.
 
-## 10. Rollout
-1. Build the native app against the **plaintext** API first (fast, already works) to nail UX.
-2. Add the handshake + envelope encryption behind a flag; test desktop↔app zero-knowledge.
-3. Flip the hosted relay to **require** E2E; keep plaintext only for self-host mode.
-4. (Optional) SPAKE2 upgrade if offline-transcript resistance is ever wanted.
+## Fixed encrypted transport
 
-## 11. Non-goals / open
-- Metadata privacy (traffic analysis) — not addressed; acceptable.
-- Group/multi-desktop key management — current design is per (device, desktop-room) pair.
-- Forward secrecy across the device's lifetime — `K_dev` is long-term; add a periodic ECDH ratchet
-  later if wanted (not needed for v1).
+Every hosted API call is externally identical:
+
+```
+POST /r/<room>/sealed
+Authorization: Bearer <device token>
+X-Collie-Rid: <random UUID>
+X-Collie-Session: <opaque session id>
+Content-Type: application/octet-stream
+
+{n,ct}
+```
+
+The request body is the encrypted envelope and contains `{method,path,headers,body_b64}`. Keeping it
+out of request headers avoids the platform's much smaller header-size ceiling. `/api/...` outer paths,
+legacy `X-Collie-Enc` envelopes, and unsealed requests are never proxied. Missing E2E support aborts
+desktop hosted startup.
+
+Per session:
+
+```
+K_sess = HKDF-SHA256(K_dev, info="collie-remote-session" || LP(session))
+AAD    = LP(room)||LP(request_id)||LP(session)||LP(direction)||UInt64BE(seq)
+seal   = AES-256-GCM(K_sess, fresh random 96-bit nonce, plaintext, AAD)
+```
+
+Responses are newline-delimited opaque frames with exact contiguous `seq` values. Their decrypted
+records are:
+
+```
+seq 0: {"kind":"head","status":N,"headers":{...}}
+seq n: {"kind":"data","data_b64":"..."}
+last:  {"kind":"terminal","ok":true|false,"last_data_seq":N,"error":"..."?}
+```
+
+The Worker rejects a duplicate head, plaintext frame, duplicate sequence, or gap. The phone performs
+the same checks, authenticates every record, rejects malformed/decrypt-failed frames, rejects records
+after terminal, and treats EOF without a matching authenticated terminal as failure. Plaintext `end`
+only closes transport; it does not prove completion.
+
+## Replay and lifecycle
+
+Phone request ids are random UUIDs. The desktop persists a bounded 30-day ledger of accepted
+non-idempotent ids and answers a duplicate with authenticated `409 duplicate_request`; GET/HEAD remain
+retryable. The iOS run client never automatically replays a streamed question after disconnect,
+because it cannot know whether execution already began. It tells the user to reopen/reattach to the
+session or decide explicitly whether to create another run.
+
+Bearer tokens and `K_dev` live in iOS Keychain (`AfterFirstUnlockThisDeviceOnly`). Desktop `K_dev` and
+token hashes live in its private device store. Hosted “revoke” removes authorization at the relay
+edge immediately, persists a reconnect-safe tombstone, and returns success only after the desktop
+acknowledges durable deletion of the token hash and key. iOS retains its credential on failure so it
+can retry; “forget locally” only clears the phone. A `401` requires re-pairing; an authenticated `403`
+is authorization failure.
+
+`/pair`, `/pair/wait`, `/push/register`, and `/device/revoke` are explicit relay-control endpoints.
+They expose only pairing proof/ticket state, APNs metadata, or token hashes—not application content.
+Push alert text is fixed and generic; caller-supplied run titles/output never enter the relay.
+
+## Verification
+
+- `node tests/relay_pairing_test.js`
+- `node tests/relay_sealed_test.js`
+- `node tests/relay_push_test.js`
+- `pytest -q tests/test_remote_protocol_v2.py tests/test_e2e.py`
+- On macOS: generate the Xcode project and run the iOS E2E checker/build.

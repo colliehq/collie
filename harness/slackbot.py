@@ -487,6 +487,16 @@ class QueuePersistenceError(RuntimeError):
     """The queue could not durably record a state transition."""
 
 
+class QueueFullError(QueuePersistenceError):
+    """The live queue was full, but the rejected ask was durably dead-lettered."""
+
+    def __init__(self, task_id: int, capacity: int):
+        self.task_id = int(task_id)
+        self.capacity = int(capacity)
+        super().__init__("queue capacity %d reached; ask saved as dead letter #%d" %
+                         (self.capacity, self.task_id))
+
+
 def _pid_alive(pid: int) -> bool:
     """Whether a recorded guard process still exists, without signalling it."""
     try:
@@ -621,12 +631,26 @@ class TaskQueue:
     and there is nothing on screen to tell the difference.
     """
 
-    def __init__(self, name: str, recover_running: bool = False):
+    def __init__(self, name: str, recover_running: bool = False,
+                 capacity: int | None = None, dead_letter_capacity: int | None = None):
         self.path = os.path.join(QUEUE_DIR, "queue-%s.json" % name.lower())
         self._lock = threading.Lock()
         self.items: list[dict] = []
         self.next_id = 1
         self.receipts: list[str] = []
+        try:
+            default_capacity = int(os.environ.get("COLLIE_SLACK_QUEUE_CAP", "500"))
+        except ValueError:
+            default_capacity = 500
+        try:
+            default_dead_capacity = int(os.environ.get("COLLIE_SLACK_DLQ_CAP", "1000"))
+        except ValueError:
+            default_dead_capacity = 1000
+        self.capacity = max(1, int(default_capacity if capacity is None else capacity))
+        self.dead_letter_capacity = max(
+            1, int(default_dead_capacity if dead_letter_capacity is None
+                   else dead_letter_capacity))
+        self.dead_letters: list[dict] = []
         self._load(recover_running)
 
     def _load(self, recover_running: bool):
@@ -642,11 +666,13 @@ class TaskQueue:
                 "cannot read %s; it was left untouched" % self.path) from e
         if (not isinstance(d, dict) or not isinstance(d.get("items", []), list)
                 or not isinstance(d.get("next_id", 1), int)
-                or not isinstance(d.get("receipts", []), list)):
+                or not isinstance(d.get("receipts", []), list)
+                or not isinstance(d.get("dead_letters", []), list)):
             raise QueuePersistenceError("invalid queue data in %s" % self.path)
         self.items = [dict(item) for item in d.get("items", [])]
         self.next_id = d.get("next_id", 1)
         self.receipts = [str(key) for key in d.get("receipts", [])][-5000:]
+        self.dead_letters = [dict(item) for item in d.get("dead_letters", [])]
         migrated = False
         # Old queue files predate event_id receipts, but they do retain the
         # message ts. Tombstone that stable key before Slack can redeliver the
@@ -706,14 +732,17 @@ class TaskQueue:
         elif migrated:
             self._write(self.items, self.next_id, self.receipts)
 
-    def _write(self, items: list[dict], next_id: int, receipts: list[str] | None = None):
+    def _write(self, items: list[dict], next_id: int, receipts: list[str] | None = None,
+               dead_letters: list[dict] | None = None):
         """Atomically persist a proposed state before exposing or acting on it."""
         tmp = "%s.tmp-%d-%d" % (self.path, os.getpid(), threading.get_ident())
         try:
             os.makedirs(QUEUE_DIR, exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"items": items, "next_id": next_id,
-                           "receipts": self.receipts if receipts is None else receipts}, f, indent=2)
+                           "receipts": self.receipts if receipts is None else receipts,
+                           "dead_letters": (self.dead_letters if dead_letters is None
+                                            else dead_letters)}, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, self.path)
@@ -725,11 +754,19 @@ class TaskQueue:
             raise QueuePersistenceError("cannot persist %s" % self.path) from e
 
     def _commit(self, items: list[dict], next_id: int | None = None,
-                receipts: list[str] | None = None):
+                receipts: list[str] | None = None,
+                dead_letters: list[dict] | None = None):
         new_next = self.next_id if next_id is None else next_id
         new_receipts = self.receipts if receipts is None else receipts
-        self._write(items, new_next, new_receipts)
-        self.items, self.next_id, self.receipts = items, new_next, new_receipts
+        new_dead = self.dead_letters if dead_letters is None else dead_letters
+        # Keep the long-standing three-argument _write seam used by fault-injection tests and
+        # downstream wrappers. The fourth argument is only required when the DLQ itself changes.
+        if dead_letters is None:
+            self._write(items, new_next, new_receipts)
+        else:
+            self._write(items, new_next, new_receipts, new_dead)
+        self.items, self.next_id, self.receipts, self.dead_letters = (
+            items, new_next, new_receipts, new_dead)
 
     def _discard_guard_state(self, path: str):
         """Remove only an attempt file derived from this exact queue path."""
@@ -759,6 +796,18 @@ class TaskQueue:
             keys = [key for key in (source_id, message_id)
                     if key and key not in self.receipts]
             receipts = (self.receipts + keys)[-5000:]
+            if len(self.items) >= self.capacity:
+                if len(self.dead_letters) >= self.dead_letter_capacity:
+                    # Do not ACK: Socket Mode may redeliver after an operator creates room.
+                    raise QueuePersistenceError(
+                        "queue capacity %d and dead-letter capacity %d are both full" %
+                        (self.capacity, self.dead_letter_capacity))
+                dead = dict(item)
+                dead.update({"state": "dead", "dead_at": time.time(),
+                             "dead_reason": "queue capacity exceeded"})
+                self._commit([dict(i) for i in self.items], self.next_id + 1, receipts,
+                             self.dead_letters + [dead])
+                raise QueueFullError(dead["id"], self.capacity)
             self._commit(items, self.next_id + 1, receipts)
             return self.items[-1]
 
@@ -1019,14 +1068,22 @@ class TaskQueue:
     def listing(self) -> str:
         with self._lock:
             if not self.items:
-                return "queue is empty"
+                return ("queue is empty" if not self.dead_letters else
+                        "queue is empty; %d ask(s) are in the dead-letter queue" %
+                        len(self.dead_letters))
             out = []
             for it in self.items:
                 mark = ({"running": "▶", "orphaned": "▶", "delivering": "▶", "interrupted": "⚠",
                          "delivery_failed": "↥", "delivery_interrupted": "↥",
                          "delivery_ready": "↥"}.get(it["state"], "·"))
                 out.append("%s #%d  %s" % (mark, it["id"], it["text"][:70]))
+            if self.dead_letters:
+                out.append("⚠ %d ask(s) are in the dead-letter queue" % len(self.dead_letters))
             return "\n".join(out)
+
+    def dead_letter_count(self) -> int:
+        with self._lock:
+            return len(self.dead_letters)
 
     def waiting(self) -> int:
         with self._lock:
@@ -2295,6 +2352,21 @@ def main(argv=None) -> int:
     worker = Worker(q, ident, bot_token, args.cwd, args.provider)
     worker.start()
 
+    # A quiet Socket Mode connection may receive no application message for hours. A separate
+    # heartbeat therefore proves both the listener thread and its queue are still observable even
+    # when recv_message() is blocked waiting for Slack.
+    health_state = {"state": "starting", "error": ""}
+    def health_loop():
+        from .ops import heartbeat
+        while True:
+            heartbeat("slack:" + ident["name"], health_state["state"], {
+                "waiting": q.waiting(), "unresolved": q.unresolved(),
+                "dead_letters": q.dead_letter_count(), "worker_alive": worker.is_alive(),
+                "error": health_state["error"],
+            }, ttl=50)
+            time.sleep(20)
+    threading.Thread(target=health_loop, name="slack-health", daemon=True).start()
+
     # What every message is signed with. Name for who, machine for where — the
     # machine part is recomputed on each start, so moving the name to another
     # laptop changes what the channel sees rather than quietly lying. It appears in the greeting
@@ -2330,8 +2402,10 @@ def main(argv=None) -> int:
         try:
             url = _open_socket_url(app_token)
             ws = wsclient.WebSocketClient.connect(url)
+            health_state.update(state="connected", error="")
             print("[slack] connected as %s" % ident["name"])
         except Exception as e:
+            health_state.update(state="retrying", error="%s: %s" % (type(e).__name__, e))
             print("[slack] connect failed: %s — retrying in 10s" % e, file=sys.stderr)
             time.sleep(10)
             continue
@@ -2503,6 +2577,14 @@ def main(argv=None) -> int:
                     try:
                         item = q.add(text, ch, th, user, from_dog=bool(peer),
                                      ask_ts=event.get("ts", ""), source_id=source_id)
+                    except QueueFullError as e:
+                        # The source receipt and rejected payload were committed together, so this
+                        # event can be ACKed without either running it or losing evidence of it.
+                        acknowledge()
+                        say(bot_token, ch,
+                            "My queue is full. I did not run this ask; I saved it as dead letter "
+                            "#%d for review." % e.task_id, th)
+                        continue
                     except QueuePersistenceError as e:
                         print("[slack] could not queue ask: %s" % e, file=sys.stderr)
                         say(bot_token, ch,
@@ -2519,8 +2601,11 @@ def main(argv=None) -> int:
                     react(bot_token, ch, item["ask_ts"], SEEN)
                     worker.nudge()          # after the ts is stored, or the worker can beat it there
         except Exception as e:
+            health_state.update(state="retrying", error="%s: %s" % (type(e).__name__, e))
             print("[slack] connection lost (%s) — reconnecting" % e, file=sys.stderr)
         finally:
+            health_state.update(state="retrying", error=health_state.get("error") or
+                                "Socket Mode connection closed")
             try:
                 ws.close()
             except Exception:

@@ -1,4 +1,4 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collie · Codebase Galaxy</title>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collie · Projects · Visual Explorer</title>
 <style>
   :root{--mono:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
     --ink:#E6EAF8;--mut:#8791AE;--faint:#4E5878;--accent:#8FA6F2;--green:#54E6A6;--amber:#F2BC55;--panel:rgba(12,16,30,.6);--line:rgba(120,140,210,.16);--bg0:#03040A;}
@@ -6,6 +6,7 @@
   .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--faint)}
   .hud{position:fixed;z-index:5}.top{top:18px;left:20px;right:20px;display:flex;align-items:center;gap:13px}
   .brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;letter-spacing:-.01em}.brand .p{font-family:"Segoe UI Emoji"}
+  .area{font-size:12px;font-weight:650;color:var(--ink);padding-left:13px;border-left:1px solid var(--line);white-space:nowrap}
   .seg{font-family:var(--mono);font-size:11px;color:var(--mut)}.seg b{color:var(--ink)}.top .sp{flex:1}
   .gchip{font-family:var(--mono);font-size:11px;padding:4px 11px;border-radius:7px;border:1px solid var(--line);color:var(--faint);background:var(--panel);backdrop-filter:blur(8px)}
   .gchip.work{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}.gchip.pass{color:var(--green);border-color:color-mix(in srgb,var(--green) 50%,transparent)}
@@ -30,7 +31,7 @@
   .code.open{transform:none}
   .code .chd{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px;flex:none}
   .code .chd .fp{color:var(--ink);font-weight:600}.code .chd .meta{color:var(--faint);font-size:11px}
-  .code .chd .x{margin-left:auto;cursor:pointer;color:var(--mut);border:1px solid var(--line);border-radius:6px;width:26px;height:26px;display:grid;place-items:center}.code .chd .x:hover{color:var(--ink);border-color:var(--accent)}
+  .code .chd .x{margin-left:auto;cursor:pointer;color:var(--mut);background:transparent;border:1px solid var(--line);border-radius:6px;width:26px;height:26px;display:grid;place-items:center}.code .chd .x:hover{color:var(--ink);border-color:var(--accent)}
   .cbody{flex:1;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.55;padding:8px 0}
   .cbody .ln{display:flex}.cbody .ln:hover{background:color-mix(in srgb,var(--accent) 7%,transparent)}
   .cbody .n{width:46px;text-align:right;padding-right:12px;color:var(--faint);flex:none;user-select:none;opacity:.55}
@@ -58,9 +59,9 @@
   .cbody .dnote{padding:16px;color:var(--faint,#8791AE);font-size:12px;line-height:1.6}
   .chd .ebadge{font-size:10px;color:#E7B24B;border:1px solid rgba(231,178,75,.42);border-radius:6px;padding:1px 6px;letter-spacing:.04em}
   .chd .ctgl{display:inline-flex;border:1px solid var(--line,rgba(120,140,200,.24));border-radius:7px;overflow:hidden;vertical-align:middle}
-  .chd .ctgl span{font-size:10px;color:var(--mut,#9AA6C8);padding:2px 9px;cursor:pointer}
-  .chd .ctgl span.on{background:var(--pine,#8AA0E8);color:#0b1020}
-  .chd .ctgl span:hover:not(.on){color:var(--fg,#E6ECFF)}
+  .chd .ctgl button{font:inherit;font-size:10px;color:var(--mut,#9AA6C8);background:transparent;border:0;padding:2px 9px;cursor:pointer}
+  .chd .ctgl button.on{background:var(--pine,#8AA0E8);color:#0b1020}
+  .chd .ctgl button:hover:not(.on){color:var(--fg,#E6ECFF)}
   /* inline code editor */
   .chd .cbtn{font-family:var(--mono,monospace);font-size:11px;background:var(--panel,rgba(20,24,38,.8));color:var(--mut,#9AA6C8);border:1px solid var(--line,rgba(120,140,200,.24));border-radius:7px;padding:3px 9px;cursor:pointer}
   .chd .cbtn:hover{color:var(--fg,#E6ECFF);border-color:var(--pine,#8AA0E8)}
@@ -76,17 +77,27 @@
   .code .cresize:hover::after,.code .cresize:active::after{background:var(--pine,#8AA0E8)}
   .livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#4EC97C;box-shadow:0 0 8px #4EC97C;animation:lpulse 1.1s ease-in-out infinite;vertical-align:middle;margin-right:5px}
   @keyframes lpulse{0%,100%{opacity:1}50%{opacity:.35}}
+  :where(button,a,select,input,textarea,[tabindex]):focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+  .fileToggle{position:fixed;left:16px;top:94px;z-index:31;width:auto;padding:0 11px;font-family:var(--mono);font-size:11px}
+  .fileNav{position:fixed;left:16px;top:134px;bottom:76px;width:min(330px,calc(100vw - 32px));z-index:30;background:rgba(8,11,22,.94);border:1px solid var(--line);border-radius:11px;padding:10px;box-shadow:0 18px 50px rgba(0,0,0,.45);display:flex;flex-direction:column;gap:8px}
+  .fileNav[hidden]{display:none}.fileNav label{font-family:var(--mono);font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.08em}
+  .fileNav input{width:100%;border:1px solid var(--line);border-radius:8px;background:var(--bg0);color:var(--ink);padding:8px 10px;font:12px var(--mono)}
+  .fileList{overflow:auto;display:flex;flex-direction:column;gap:2px}.fileList button{border:0;background:transparent;color:var(--mut);text-align:left;padding:7px 8px;border-radius:6px;font:11px/1.35 var(--mono);overflow-wrap:anywhere;cursor:pointer}.fileList button:hover,.fileList button:focus-visible{background:rgba(143,166,242,.12);color:var(--ink)}
+  .mapMsg{position:fixed;left:50%;top:64px;transform:translateX(-50%);max-width:min(560px,calc(100vw - 32px));text-align:center;color:#9AA6C8;font-family:var(--mono);font-size:12.5px;line-height:1.6;background:rgba(20,24,38,.9);border:1px solid rgba(120,140,200,.2);border-radius:10px;padding:12px 16px;backdrop-filter:blur(8px);z-index:40}
+  @media(max-width:700px){
+    .tag,.rail,.ctrls{display:none}.top{top:10px;left:10px;right:10px}.top .seg,.top .gchip{display:none}.area{font-size:11px}.mapctl{left:10px;right:10px;top:52px;display:grid;grid-template-columns:1fr 1fr}.sessSel{min-width:0;max-width:none;width:100%}.fileToggle{left:10px;top:92px}.fileNav{left:10px;right:10px;top:132px;bottom:74px;width:auto}.transport{left:10px;right:10px;bottom:10px;padding:8px 10px;gap:8px}.clock{min-width:60px}.code{width:100%!important;max-width:100vw}.code .cresize{display:none}.code .chd{padding:10px;gap:6px;flex-wrap:wrap}.code .chd .fp{max-width:calc(100vw - 60px);overflow-wrap:anywhere}.code .chd .x{position:absolute;right:10px;top:9px}.cbody{padding-bottom:env(safe-area-inset-bottom,0)}}
+  @media(prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 </style></head><body>
-<canvas id="cv"></canvas>
-<div class="tag">STAR-MAP · modules = nebulae · files = star systems · functions = planets · PACK = parallel probes on one time axis</div>
-<div class="mapctl"><select id="repoSel" class="sessSel" title="explore a project"></select><select id="sessSel" class="sessSel" title="replay a past run"></select></div><div class="hud top"><a class="brand brandlink" href="/" title="← back to the Collie workbench"><span class="bk">←</span><img class="p" src="/logo.svg" alt="" style="width:19px;height:19px;display:block">Collie</a><span class="seg" id="seg2"></span><span class="sp"></span><span class="gchip idle" id="sGate">GATE · IDLE</span>
+<canvas id="cv" tabindex="0" role="img" aria-label="Interactive codebase galaxy. Use arrow keys to orbit, plus and minus to zoom, Escape to return, or open the Files list for a keyboard-accessible view."></canvas>
+<div class="tag">VISUAL EXPLORER · modules = nebulae · files = star systems · functions = planets · PACK = parallel probes on one time axis</div>
+<div class="mapctl"><select id="repoSel" class="sessSel" title="explore a project" aria-label="Explore a project"></select><select id="sessSel" class="sessSel" title="replay a past run" aria-label="Replay a past run"></select></div><button type="button" class="tbtn fileToggle" id="fileToggle" aria-controls="fileNav" aria-expanded="false">Files</button><aside class="fileNav" id="fileNav" aria-label="Project files" hidden><label for="fileSearch">Find a file</label><input id="fileSearch" type="search" autocomplete="off"><div class="fileList" id="fileList"></div></aside><div class="hud top"><a class="brand brandlink" href="/" title="Back to Collie"><span class="bk">←</span><img class="p" src="/logo.svg" alt="" style="width:19px;height:19px;display:block">Collie</a><span class="area">Projects · Visual Explorer</span><span class="seg" id="seg2"></span><span class="sp"></span><span class="gchip idle" id="sGate">CHECK · IDLE</span>
   </div>
 <div class="agents" id="agents"></div>
-<div class="rail"><div class="m"><span class="lbl">coverage</span><div class="v" id="mCov">0</div></div><div class="m rd"><span class="lbl">read</span><div class="v" id="mRead">0</div></div><div class="m ed"><span class="lbl">edited</span><div class="v" id="mEdit">0</div></div><div class="m vf"><span class="lbl">verified</span><div class="v" id="mVer">0</div></div></div>
+<div class="rail"><div class="m"><span class="lbl">coverage</span><div class="v" id="mCov">0</div></div><div class="m rd"><span class="lbl">read</span><div class="v" id="mRead">0</div></div><div class="m ed"><span class="lbl">edited</span><div class="v" id="mEdit">0</div></div><div class="m vf"><span class="lbl">check events</span><div class="v" id="mVer">0</div></div></div>
 <div class="ctrls">scroll = zoom · drag = orbit · <b>click a star = dive in + open its code</b> · click a nebula = enter module · click space = back</div>
-<div class="code" id="codePanel"><div class="cresize" id="cResize" title="drag to resize"></div><div class="chd"><span class="fp" id="codeFp"></span><span class="meta" id="codeMeta"></span><div class="x" id="codeX">✕</div></div><div class="cbody" id="codeBody"></div></div>
-<div class="transport"><button class="play" id="play"><svg id="pIco" viewBox="0 0 24 24" width="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
-  <div class="scrub"><div class="track"><div class="fill" id="fill"></div></div><div id="evmarks"></div><input id="scrub" type="range" min="0" max="1000" value="0"></div>
+<div class="code" id="codePanel" role="region" aria-label="Source viewer"><div class="cresize" id="cResize" title="drag to resize"></div><div class="chd"><span class="fp" id="codeFp"></span><span class="meta" id="codeMeta"></span><button type="button" class="x" id="codeX" aria-label="Close source viewer">✕</button></div><div class="cbody" id="codeBody"></div></div>
+<div class="transport"><button class="play" id="play" aria-label="Play run timeline"><svg id="pIco" viewBox="0 0 24 24" width="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+  <div class="scrub"><div class="track"><div class="fill" id="fill"></div></div><div id="evmarks"></div><input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Run timeline"></div>
   <div class="clock">T+<b id="clock">0.0</b>s</div></div>
 <script src="/map/three.min.js"></script>
 <script>
@@ -96,9 +107,20 @@
   // repo can contain a file literally named like <img src=x onerror=...>.py, which would otherwise run.
   function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
   var QS=new URLSearchParams(location.search), SESS=QS.get("session"), REPO=QS.get("repo");
-  function J(r){return r.json();}
-  function overlay(msg){document.body.insertAdjacentHTML("beforeend",'<div id="mapMsg" style="position:fixed;left:50%;top:64px;transform:translateX(-50%);max-width:560px;text-align:center;color:#9AA6C8;font-family:var(--mono,monospace);font-size:12.5px;line-height:1.6;background:rgba(20,24,38,.72);border:1px solid rgba(120,140,200,.2);border-radius:10px;padding:12px 16px;backdrop-filter:blur(8px);z-index:40">'+msg+'</div>');}
+  function J(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}
+  function overlay(msg){var old=$("mapMsg");if(old)old.remove();var d=document.createElement("div");d.id="mapMsg";d.className="mapMsg";d.setAttribute("role","status");d.textContent=String(msg||"");document.body.appendChild(d);}
   function showErr(e){overlay("Map failed to load: "+e);}
+  function setupFileList(files,onChoose){var nav=$("fileNav"),list=$("fileList"),search=$("fileSearch"),toggle=$("fileToggle");if(!nav||!list)return;
+    files=(files||[]).slice().sort(function(a,b){return String(a.p||"").localeCompare(String(b.p||""));});
+    function draw(){var q=(search.value||"").trim().toLowerCase();list.textContent="";var shown=0;
+      files.forEach(function(f){var path=String(f.p||"");if(q&&path.toLowerCase().indexOf(q)<0)return;var b=document.createElement("button");b.type="button";b.textContent=path||"(unnamed file)";b.addEventListener("click",function(){onChoose(f);nav.hidden=true;toggle.setAttribute("aria-expanded","false");});list.appendChild(b);shown++;});
+      if(!shown){var empty=document.createElement("div");empty.className="seg";empty.textContent="No matching files.";list.appendChild(empty);}}
+    search.oninput=draw;draw();toggle.onclick=function(){nav.hidden=!nav.hidden;toggle.setAttribute("aria-expanded",nav.hidden?"false":"true");if(!nav.hidden)search.focus();};
+    document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!nav.hidden){nav.hidden=true;toggle.setAttribute("aria-expanded","false");toggle.focus();}});}
+  function fallbackMap(files){$("cv").hidden=true;document.querySelector(".transport").hidden=true;overlay("The 3D engine could not load. The complete keyboard-accessible file list is still available.");
+    setupFileList(files,function(f){$("codePanel").classList.add("open");$("codeFp").textContent=f.p||"";$("codeMeta").textContent=(Number(f.loc)||0)+" loc";$("codeBody").textContent="Loading…";
+      var q=f.abs?("abs="+encodeURIComponent(f.abs)):("path="+encodeURIComponent(f.p||""));fetch("/api/file?"+q).then(J).then(function(d){var pre=document.createElement("pre");pre.textContent=d.source||"(source unavailable)";$("codeBody").textContent="";$("codeBody").appendChild(pre);}).catch(function(e){$("codeBody").textContent="Failed to load: "+e;});});
+    $("fileNav").hidden=false;$("fileToggle").setAttribute("aria-expanded","true");$("codeX").onclick=function(){$("codePanel").classList.remove("open");};}
   function go(){
     if(SESS){
       fetch("/api/session_map?id="+encodeURIComponent(SESS)).then(J).then(function(m){
@@ -107,7 +129,7 @@
           // Nothing to plot for this run — but an empty canvas reads as a broken page, so fall back
           // to the project galaxy and say why. Explaining a black screen is not the same as not
           // showing one.
-          overlay("This run has no source operations that map to specific files (mostly bash / network / memory tools).<br>Showing the project instead — pick another run above to see one.");
+          overlay("This run has no source operations that map to specific files (mostly bash, network, or memory tools). Showing the project instead; pick another run above to see one.");
           fetch("/api/tree").then(J).then(function(t){
             if(t.files&&t.files.length) boot(t.files, [], 1, [{name:t.repo}], t.cwd||"");
           }).catch(function(){});
@@ -132,11 +154,12 @@
     // is a handful of stars on a black field even when the run went well. That is the black screen
     // as reported. Runs stay one click away in the picker, and ?session= deep links are untouched.
     var ss=recent.slice();ss.sort(function(a,b){return (b.edits||0)-(a.edits||0)||(b.touches||0)-(a.touches||0);});   // runs that changed code first
-    sel.innerHTML='<option value="">— explore (no run) —</option>'+ss.map(function(s){var id=s.id||s;var tag=s.edits?("✎"+s.edits+" "):(s.touches?("·"+s.touches+" "):"");var ti=tag+(s.title||s.last_answer||id||"").toString().replace(/</g,"&lt;").slice(0,40);return '<option value="'+id+'"'+(id===cur?" selected":"")+'>'+ti+'</option>';}).join("");
+    sel.textContent="";var first=document.createElement("option");first.value="";first.textContent="— explore (no run) —";sel.appendChild(first);ss.forEach(function(s){var id=String(s.id||s||""),tag=s.edits?("✎"+Number(s.edits)+" "):(s.touches?("·"+Number(s.touches)+" "):"");var o=document.createElement("option");o.value=id;o.textContent=(tag+String(s.title||s.last_answer||id)).slice(0,40);o.selected=id===cur;sel.appendChild(o);});
     sel.onchange=function(){location.search=this.value?("?session="+encodeURIComponent(this.value)):"?explore=1";};}).catch(function(){});}
-  function populateRepos(cur){var sel=$("repoSel");if(!sel)return;fetch("/api/repos").then(J).then(function(d){var here=d.cwd||"";sel.innerHTML='<option value="">◎ '+(here.split(/[\/\\]/).pop()||"this repo")+'</option>'+((d.repos||[]).map(function(r){var s=(r.root===cur||r.name===cur)?" selected":"";return '<option value="'+r.root+'"'+s+'>'+r.name+'</option>';}).join(""));sel.onchange=function(){location.search=this.value?("?repo="+encodeURIComponent(this.value)):"";};}).catch(function(){});}
+  function populateRepos(cur){var sel=$("repoSel");if(!sel)return;fetch("/api/repos").then(J).then(function(d){var here=String(d.cwd||"");sel.textContent="";var first=document.createElement("option");first.value="";first.textContent="◎ "+(here.split(/[\/\\]/).pop()||"this repo");sel.appendChild(first);(d.repos||[]).forEach(function(r){var o=document.createElement("option");o.value=String(r.root||"");o.textContent=String(r.name||r.root||"repo");o.selected=r.root===cur||r.name===cur;sel.appendChild(o);});sel.onchange=function(){location.search=this.value?("?repo="+encodeURIComponent(this.value)):"";};}).catch(function(e){showErr(e);});}
   go();
   function boot(TREE,AGENTS,DUR,REPOS,CWD){
+  if(typeof THREE==="undefined"){fallbackMap(TREE);return;}
   function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
   function col(v){return new THREE.Color(css(v))}
   function rnd(s){var x=Math.sin(s*127.1)*43758.5453;return x-Math.floor(x)}
@@ -213,11 +236,12 @@
     ag.line=new THREE.Line(tg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.95,blending:THREE.AdditiveBlending,depthWrite:false}));ag.line.frustumCulled=false;scene.add(ag.line);});
   // agent legend
   var agEl=$("agents");AGENTS.forEach(function(ag,ai){var d=document.createElement("div");d.className="ag";d.id="ag"+ai;
-    d.innerHTML='<i style="color:'+ag.hue+'"></i><span class="nm">'+ag.id+'</span><span class="fn"></span>';agEl.appendChild(d);ag.el=d;ag.fnEl=d.querySelector(".fn");});
+    var dot=document.createElement("i");dot.style.color=(window.CSS&&CSS.supports("color",String(ag.hue||"")))?String(ag.hue):css("--accent");var nm=document.createElement("span");nm.className="nm";nm.textContent=String(ag.id||"agent");var fn=document.createElement("span");fn.className="fn";d.appendChild(dot);d.appendChild(nm);d.appendChild(fn);agEl.appendChild(d);ag.el=d;ag.fnEl=fn;});
   (function(){var nr=(REPOS&&REPOS.length)||0, rn=(REPOS&&REPOS[0]&&REPOS[0].name)||"";
-  if(AGENTS.length&&nr>1) $("seg2").innerHTML="<b>"+stars.length+"</b> files across <b>"+nr+"</b> repos · replaying run";
-  else if(AGENTS.length) $("seg2").innerHTML="<b>"+rn+"</b> · <b>"+stars.length+"</b> files touched · replaying run";
-  else $("seg2").innerHTML=(rn?"<b>"+rn+"</b> · ":"")+"<b>"+stars.length+"</b> files · <b>"+planetsMeta.length+"</b> functions";})();
+  if(AGENTS.length&&nr>1) $("seg2").textContent=stars.length+" files across "+nr+" repos · replaying run";
+  else if(AGENTS.length) $("seg2").textContent=String(rn)+" · "+stars.length+" files touched · replaying run";
+  else $("seg2").textContent=(rn?String(rn)+" · ":"")+stars.length+" files · "+planetsMeta.length+" functions";})();
+  setupFileList(TREE,function(f){var s=byPath[f.p];if(!s)return;focus=s;feFor=null;aim.copy(s.pos);aimDist=7;userDist=null;openCode(f);});
   // event marks on the scrubber (colored by agent)
   var em=$("evmarks");AGENTS.forEach(function(ag){ag.events.forEach(function(e){var s=document.createElement("div");s.className="ev";s.style.left=(e.t/DUR*100)+"%";s.style.background=ag.hue;em.appendChild(s);});});
 
@@ -233,6 +257,7 @@
   var hlab=document.createElement("div");hlab.style.cssText="position:fixed;z-index:7;pointer-events:none;font-family:var(--mono);font-size:11px;color:var(--ink);background:var(--panel);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:7px;padding:5px 9px;display:none;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.5)";document.body.appendChild(hlab);
   var nlabs=nebulae.map(function(nb){var d=document.createElement("div");d.textContent=nb.g.toUpperCase();d.style.cssText="position:fixed;z-index:4;pointer-events:none;font-family:var(--mono);font-size:10px;letter-spacing:.12em;transform:translate(-50%,-50%);text-shadow:0 1px 8px rgba(0,0,0,.85)";d.style.color="rgb("+(nb.col.r*255|0)+","+(nb.col.g*255|0)+","+(nb.col.b*255|0)+")";document.body.appendChild(d);return d;});
   cvEl.addEventListener("wheel",function(e){e.preventDefault();userDist=(userDist==null?rad:userDist)*(1+e.deltaY*0.0014);userDist=Math.max(4,Math.min(240,userDist));},{passive:false});
+  cvEl.addEventListener("keydown",function(e){var used=true;if(e.key==="ArrowLeft"){orbit-=.12;autoOrbit=false;}else if(e.key==="ArrowRight"){orbit+=.12;autoOrbit=false;}else if(e.key==="ArrowUp"){elev=Math.min(1.45,elev+.08);autoOrbit=false;}else if(e.key==="ArrowDown"){elev=Math.max(.05,elev-.08);autoOrbit=false;}else if(e.key==="+"||e.key==="="){userDist=Math.max(4,(userDist==null?rad:userDist)*.84);}else if(e.key==="-"||e.key==="_"){userDist=Math.min(240,(userDist==null?rad:userDist)*1.18);}else if(e.key==="Escape"){focus=null;aim.copy(CEN);aimDist=64;userDist=null;closeCode();}else used=false;if(used)e.preventDefault();});
   var downX=0,downY=0,moved=false;
   cvEl.addEventListener("pointerdown",function(e){drag=true;moved=false;downX=px=e.clientX;downY=py=e.clientY;});
   addEventListener("pointermove",function(e){if(drag){if(Math.abs(e.clientX-downX)+Math.abs(e.clientY-downY)>4)moved=true;if(moved){orbit-=(e.clientX-px)*0.006;elev=Math.max(0.05,Math.min(1.45,elev+(e.clientY-py)*0.006));autoOrbit=false;}px=e.clientX;py=e.clientY;}else{mx=e.clientX;my=e.clientY;}});
@@ -272,7 +297,7 @@
     var v=new THREE.Vector3(),best=1e9,hv=null;
     if(mx>=0&&!drag){for(var hi=0;hi<stars.length;hi++){v.copy(stars[hi].pos).project(camera);if(v.z>1)continue;var sxp=(v.x*.5+.5)*innerWidth,syp=(-v.y*.5+.5)*innerHeight,dd=(sxp-mx)*(sxp-mx)+(syp-my)*(syp-my);if(dd<best&&dd<900){best=dd;hv=stars[hi];}}}
     hoverStar=hv;
-    if(hv){var vp=v.copy(hv.pos).project(camera);hlab.style.display="block";hlab.style.left=((vp.x*.5+.5)*innerWidth+12)+"px";hlab.style.top=((-vp.y*.5+.5)*innerHeight-8)+"px";hlab.innerHTML=escapeHtml(hv.f.p)+" · <span style='color:var(--faint)'>"+hv.f.loc+" loc · "+(hv.f.defs||0)+" fn</span>";}else hlab.style.display="none";
+    if(hv){var vp=v.copy(hv.pos).project(camera);hlab.style.display="block";hlab.style.left=((vp.x*.5+.5)*innerWidth+12)+"px";hlab.style.top=((-vp.y*.5+.5)*innerHeight-8)+"px";hlab.textContent=String(hv.f.p||"")+" · "+Number(hv.f.loc||0)+" loc · "+Number(hv.f.defs||0)+" fn";}else hlab.style.display="none";
     nebulae.forEach(function(nb,ni){var vv=v.set(nb.x,nb.y,nb.z).project(camera);if(vv.z>1){nlabs[ni].style.opacity=0;return;}nlabs[ni].style.left=((vv.x*.5+.5)*innerWidth)+"px";nlabs[ni].style.top=((-vv.y*.5+.5)*innerHeight)+"px";nlabs[ni].style.opacity=Math.max(0,Math.min(.8,1-vv.z*0.35));});
     stars.forEach(function(s){var sc=s.base*(s.lvl>=2?1.35:1)+(s===focus?0.6+0.35*Math.sin(tt*3):0)+(s===hoverStar?0.55:0)+((s.liveHot&&tt-s.liveHot<1.6)?0.9*(1-(tt-s.liveHot)/1.6):0);s.sp.scale.setScalar(sc);});
     // orbit rings fade in only for the star under focus/hover
@@ -295,9 +320,9 @@
     // per-agent legend: current file + dim finished agents
     var anyVerify=false;AGENTS.forEach(function(ag,ai){var s=agentAt(ag,T);var cf=s.prev?s.prev.f:null;
       ag.fnEl.textContent=cf?(s.prev.act+" "+cf.split("/").pop()):(T<ag.events[0].t?"queued":"done");
-      if(s.prev&&s.prev.act==="verify"){anyVerify=true;ag.el.querySelector(".nm").innerHTML=ag.id+' <span class="crown">✓ won</span>';}
+      if(s.prev&&s.prev.act==="verify"){anyVerify=true;var nm=ag.el.querySelector(".nm");nm.textContent=String(ag.id||"agent")+" ";var crown=document.createElement("span");crown.className="crown";crown.textContent="✓ check recorded";nm.appendChild(crown);}
       var done=T>=ag.events[ag.events.length-1].t;ag.el.style.opacity=(done&&!ag.win)?0.4:1;});
-    var g=anyVerify?"pass":(T>0?"work":"idle");$("sGate").className="gchip "+g;$("sGate").textContent="GATE · "+(g==="pass"?"VERIFIED":g.toUpperCase());
+    var g=anyVerify?"pass":(T>0?"work":"idle");$("sGate").className="gchip "+g;$("sGate").textContent="CHECK · "+(g==="pass"?"RECORDED":g.toUpperCase());
     $("clock").textContent=T.toFixed(1);$("fill").style.width=(T/DUR*100)+"%";$("scrub").value=T/DUR*1000;}
 
   // transport (time axis)
@@ -332,11 +357,11 @@
         var g=r[0]==="del"?"−":r[0]==="add"?"+":"";h+='<div class="ln '+r[0]+'"><span class="dg">'+g+'</span><span class="c">'+(hlLine(r[1])||" ")+'</span></div>';});
       h+='</div>';});
     $("codeBody").innerHTML=h;$("codeBody").scrollTop=0;}
-  function setView(f,mode){var t=$("codeTgl");if(t){t.querySelector('[data-v="diff"]').classList.toggle("on",mode==="diff");t.querySelector('[data-v="src"]').classList.toggle("on",mode==="src");}
+  function setView(f,mode){var t=$("codeTgl");if(t){var db=t.querySelector('[data-v="diff"]'),sb=t.querySelector('[data-v="src"]');db.classList.toggle("on",mode==="diff");sb.classList.toggle("on",mode==="src");db.setAttribute("aria-pressed",mode==="diff"?"true":"false");sb.setAttribute("aria-pressed",mode==="src"?"true":"false");}
     if(mode==="diff")renderDiff(f);else if(_srcC[f.p])renderCode(f,_srcC[f.p]);else $("codeBody").innerHTML='<div class="dnote">loading…</div>';}
-  function codeHead(f){var edN=(f.edits||[]).length,ed=(f.edited||edN>0);$("codeFp").textContent=f.p;
-    var mt=(f.loc?f.loc+" loc":"")+(f.defs?" · "+f.defs+" fn":"");
-    var tgl=ed?' <span class="ebadge">EDITED'+(edN?" · "+edN:"")+'</span> <span class="ctgl" id="codeTgl"><span data-v="src" class="on">Source</span><span data-v="diff">Diff</span></span>':"";
+  function codeHead(f){var edN=(f.edits||[]).length,ed=(f.edited||edN>0);$("codeFp").textContent=String(f.p||"");
+    var loc=Number(f.loc)||0,defs=Number(f.defs)||0,mt=(loc?loc+" loc":"")+(defs?" · "+defs+" fn":"");
+    var tgl=ed?' <span class="ebadge">EDITED'+(edN?" · "+edN:"")+'</span> <span class="ctgl" id="codeTgl"><button type="button" data-v="src" class="on" aria-pressed="true">Source</button><button type="button" data-v="diff" aria-pressed="false">Diff</button></span>':"";
     $("codeMeta").innerHTML=mt+tgl+' <button class="cbtn cedit" id="cEditBtn" title="edit this file — Commit runs a syntax check + the file\'s tests before writing">✎ Edit</button>';
     if(ed){var t=$("codeTgl");t.querySelector('[data-v="diff"]').onclick=function(){setView(f,"diff");};t.querySelector('[data-v="src"]').onclick=function(){setView(f,"src");};}
     $("cEditBtn").onclick=function(){enterEdit(f);};}
@@ -361,12 +386,13 @@
           if(er){er.hidden=false;er.textContent=(d.error||"")+(d.tests&&d.tests.length?"\n\ntests run: "+d.tests.join(", "):"");} }
       }).catch(function(){ if(st){st.textContent="✗ request failed";st.className="cstatus bad";} }); }
   // default view = the FULL file (changed lines highlighted in-place); Diff is one click away
-  function openCode(f){$("codePanel").classList.add("open");codeHead(f);
+  var codeReturnFocus=null;
+  function openCode(f){if(!$("codePanel").classList.contains("open"))codeReturnFocus=document.activeElement;$("codePanel").classList.add("open");codeHead(f);setTimeout(function(){$("codeX").focus();},0);
     if(_srcC[f.p]){renderCode(f,_srcC[f.p]);return;}
     $("codeBody").innerHTML='<div class="dnote">loading…</div>';
     var q=f.abs?("abs="+encodeURIComponent(f.abs)):("path="+encodeURIComponent(f.p));
     fetch("/api/file?"+q).then(function(r){return r.json()}).then(function(d){_srcC[f.p]=d.source||"(source unavailable)";renderCode(f,_srcC[f.p]);}).catch(function(){$("codeBody").innerHTML='<div class="dnote">failed to load</div>';});}
-  function closeCode(){$("codePanel").classList.remove("open");}
+  function closeCode(){$("codePanel").classList.remove("open");var back=codeReturnFocus;codeReturnFocus=null;if(back&&back.isConnected)setTimeout(function(){back.focus();},0);}
   $("codeX").onclick=function(){closeCode();focus=null;aim.copy(CEN);aimDist=64;userDist=null;};
   if(!AGENTS.length){var tr=document.querySelector(".transport");if(tr)tr.style.display="none";var ctr=document.querySelector(".ctrls");if(ctr)ctr.innerHTML="explore mode · scroll = zoom · drag = orbit · click a star = code · pick a run above to replay it";}
   window.__map={openCode:openCode,stars:stars,files:TREE,edgeMat:edgeMat,feMat:feMat,   // deep-link / test hook
@@ -376,7 +402,7 @@
     addEventListener("pointermove",function(e){if(!rz)return;cp.style.width=Math.max(320,Math.min(innerWidth*0.82,innerWidth-e.clientX))+"px";});
     addEventListener("pointerup",function(){if(!rz)return;rz=false;document.body.style.userSelect="";localStorage.setItem("collieCodeW",String(parseInt(cp.style.width,10)||480));});}})();
   (function(){ if(AGENTS.length || typeof EventSource==="undefined") return;
-    var seg0=($("seg2")||{}).innerHTML||"", liveOn=false;
+    var seg0=($("seg2")||{}).textContent||"", liveOn=false;
     var lm=new THREE.SpriteMaterial({map:STAR,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,color:col("--amber")});
     var probe=new THREE.Sprite(lm); probe.scale.setScalar(2.4); probe.visible=false; scene.add(probe);
     function rel(p){p=String(p||""); if(CWD&&p.indexOf(CWD)===0)p=p.slice(CWD.length).replace(/^\/+/,""); return p.replace(/^\.\//,"");}
@@ -386,15 +412,15 @@
       probe.visible=true; probe.position.copy(s.pos); probe.material.color.copy(stcol(lv)); hud(); return true;}
     function hud(){var c=0,r=0,e=0; stars.forEach(function(s){if(s.lvl>=1)c++; if(s.lvl>=2)r++; if(s.lvl>=3)e++;});
       var S=function(id,v){var x=$(id); if(x)x.textContent=v;}; S("mCov",c); S("mRead",r); S("mEdit",e);}
-    function gate(st){var g=$("sGate"); if(g){g.className="gchip "+(st==="pass"?"ok":st==="fail"?"bad":"idle"); g.textContent="GATE · "+st.toUpperCase();}}
-    function badge(on,txt){liveOn=on; var b=$("seg2"); if(!b)return; b.innerHTML= on ? ('<span class="livedot"></span> LIVE'+(txt?' · '+txt:'')) : seg0;}
+    function gate(st,scope){var g=$("sGate"); if(g){g.className="gchip "+(st==="pass"?"ok":st==="fail"?"bad":"idle"); g.textContent="CHECK · "+(st==="pass"?"PASSED":st==="fail"?"FAILED":st.toUpperCase());g.title=scope||"Executed check";}}
+    function badge(on,txt){liveOn=on; var b=$("seg2"); if(!b)return;b.textContent="";if(on){var dot=document.createElement("span");dot.className="livedot";b.appendChild(dot);b.appendChild(document.createTextNode(" LIVE"+(txt?" · "+String(txt):"")));}else b.textContent=seg0;}
     var es=new EventSource("/api/live");
     es.addEventListener("start",function(){badge(true,"working");});
     es.addEventListener("edit",function(ev){var d;try{d=JSON.parse(ev.data);}catch(_){return;} if(hit(d.path,"edit"))badge(true,"editing "+rel(d.path).split("/").pop());});
     es.addEventListener("tool",function(ev){var d;try{d=JSON.parse(ev.data);}catch(_){return;} var a=d.args||{},nm=(d.name||"").toLowerCase(),f=a.path||a.file_path||a.file;
       if(f)hit(f, (nm.indexOf("edit")>=0||nm.indexOf("write")>=0)?"edit":nm.indexOf("read")>=0?"read":"seen");
       else if(a.command){var m,c=String(a.command),w=/(^|\s)(sed\s+-i|tee)\b|>>?/.test(c); TOK.lastIndex=0; while((m=TOK.exec(c)))hit(m[0], w?"edit":"seen");}});
-    es.addEventListener("repro",function(ev){var d;try{d=JSON.parse(ev.data);}catch(_){return;} gate(d.passed?"pass":"fail");});
+    es.addEventListener("repro",function(ev){var d;try{d=JSON.parse(ev.data);}catch(_){return;} gate(d.passed?"pass":"fail",d.cmd||"Executed check");});
     es.addEventListener("done",function(){badge(false); probe.visible=false;});
     es.onerror=function(){};
   })();

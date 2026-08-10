@@ -123,7 +123,8 @@ class CollieAgent(acp.Agent):
         loop = asyncio.get_running_loop()
         self._last_bash = None
 
-        from .cli import make_harness
+        from .cli import (apply_turn_decision, make_harness, resolve_turn_decision,
+                          turn_decision_receipt)
         from . import settings
         # env > settings.json > API default — the ACP entry never calls settings.apply(), so read
         # settings directly to keep the web Settings panel authoritative here too.
@@ -143,23 +144,35 @@ class CollieAgent(acp.Agent):
 
         h = None
         try:
+            history = sess.get("messages")   # ACP is a LONG session (many prompts) -> carry thread
+            decision = resolve_turn_decision(
+                task, provider, configured_model=model, history=history,
+                receipts=sess.get("run_receipts") or [])
             # build INSIDE the try — make_harness -> AnthropicOAuth raises on a missing token, and
             # that must reach the user as a chat message, not an escaped JSON-RPC error.
             from .cli import default_gate
             _gate = default_gate(cwd)
-            h = make_harness(cwd, provider=provider, model=model,
+            h = make_harness(cwd, provider=provider, model=decision.model,
+                             effort=decision.effort, speed=decision.speed,
                              project="acp", code_search=True, embed="hash",
                              exec_code=True, delegate=True, gate=_gate)
+            apply_turn_decision(h, decision, _gate)
             h.emit = _bridge
             # ACP has a permission request of its own, so the editor renders its NATIVE
             # approval UI and collie writes no interface at all. Until now this adapter
             # auto-approved everything it was asked to do, which in an editor that offers
             # to ask is the worst of both: the affordance exists and is never used.
             h.approve = self._acp_approver(session_id, loop, _gate)
-            history = sess.get("messages")   # ACP is a LONG session (many prompts) -> carry thread
+            await self._send(session_id, "decision", decision.to_dict())
             res = await loop.run_in_executor(
                 None, lambda: h.run("acp", task, consolidate=False, history=history))
             sess["messages"] = res.messages  # remember for the next prompt in this session
+            outcome = turn_decision_receipt(decision, res, getattr(h, "provider", None))
+            sess.setdefault("run_receipts", []).append(outcome)
+            sess["run_receipts"] = sess["run_receipts"][-40:]
+            receipt["decision"] = outcome["decision"]
+            receipt["model"] = outcome["model"]
+            receipt["actual_speed"] = outcome["actual_speed"]
             if res.answer:
                 await self.conn.session_update(session_id, s.AgentMessageChunk(
                     session_update="agent_message_chunk", content=_tb(res.answer)))
@@ -307,18 +320,31 @@ class CollieAgent(acp.Agent):
                 await self.conn.session_update(sid, s.UsageUpdate(
                     session_update="usage_update", used=tok, size=200000,
                     cost=s.Cost(amount=cost, currency="USD")))
+                decision = d.get("decision") if isinstance(d.get("decision"), dict) else {}
+                setup = "%s/%s" % (d.get("model") or decision.get("model") or "model",
+                                     decision.get("effort") or "default")
                 if d.get("error"):
-                    line = "collie · ⚠ %s · %s tok · $%.4f" % (
-                        _oneline(str(d["error"]), 80), "{:,}".format(tok), cost)
+                    line = "collie · %s · ⚠ %s · %s tok · $%.4f" % (
+                        setup, _oneline(str(d["error"]), 80), "{:,}".format(tok), cost)
                 else:
                     gate = "✓ verified" if d.get("verified") else "· unverified"
                     sec = (d.get("wall_ms", 0) or 0) / 1000.0
-                    line = ("collie · %s · %s tok · %d turns · "
+                    line = ("collie · %s · %s · %s tok · %d turns · "
                             "%d tools · %.1fs · $%.4f") % (
-                        gate, "{:,}".format(tok), d.get("turns", 0) or 0,
+                        setup, gate, "{:,}".format(tok), d.get("turns", 0) or 0,
                         d.get("tool_calls", 0) or 0, sec, cost)
                 await self.conn.session_update(sid, s.AgentMessageChunk(
                     session_update="agent_message_chunk", content=_tb(line)))
+
+            elif kind == "decision":
+                line = "Auto route · %s · %s · %s/%s/%s" % (
+                    d.get("model", ""), d.get("effort", "default"),
+                    d.get("intent", "build"), d.get("quality", "balanced"),
+                    d.get("verification", "auto"))
+                cls = s.AgentThoughtChunk if _HAS_THOUGHT else s.AgentMessageChunk
+                await self.conn.session_update(sid, cls(
+                    session_update=("agent_thought_chunk" if _HAS_THOUGHT else
+                                    "agent_message_chunk"), content=_tb(line)))
         except Exception as e:
             if os.environ.get("COLLIE_ACP_DEBUG"):
                 import sys as _sys

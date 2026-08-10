@@ -1,34 +1,37 @@
 # Collie
 
-**A coding agent that lives on your computer — and can actually run it.** Local and private, Collie
-reaches your real environment — your logged-in browser, your desktop, your screen, your files — and
-proves its work by running it.
+**Your personal AI operations system, running across your devices.** Give Collie an outcome. It
+chooses the brain, tools, skills, workers, and device; keeps the Mission moving; asks when authority
+is needed; and returns a receipt with scoped evidence.
 
 <div class="grid cards" markdown>
 
 - :material-rocket-launch: **[Install](install.md)** — one-click Windows installer, or `pip` from a release
-- :material-play: **[Quickstart](quickstart.md)** — your first verified fix in a minute
+- :material-play: **[Quickstart](quickstart.md)** — your first evidence-backed task in a minute
 - :material-brain: **[Providers](providers.md)** — connect Claude, Codex, Gemini, a local model, or an API key
 - :material-console: **[CLI reference](cli.md)** — every `collie` command
-- :material-monitor: **[The desktop app](desktop.md)** — native window, live star-map, real-browser bridge
+- :material-monitor: **[The desktop app](desktop.md)** — Home, Missions, Pack, Library, Activity, and Needs You
 
 </div>
 
 ## Why it's different
 
-Most coding agents live in a cloud tab or an editor pane and can only touch the files you hand them.
-Collie runs on **your** machine, so it works the way you do: it drives your *real* logged-in browser,
-arranges your desktop, records your screen, takes tasks from your phone, and edits your code — all
-locally, all under your control.
+**Mission-first, not chat-first.** Desktop, terminal, IDE, phone, and browser enter the same durable
+Mission history. Work can survive waits, retries, restarts, and handoffs; decisions that need your
+authority enter one global **Needs You** inbox.
 
-And the range is the proof. The desktop console, the browser control, the screen recorder, the phone
-remote — Collie's coding agent **built all of it.** A harness strong enough to ship its own desktop
-app and iOS companion is strong enough for your bug.
+**One Collie, a Pack underneath.** The user sees a stable Collie identity. Models, specialist workers,
+skills, app connections, and devices remain replaceable execution resources behind it.
 
-## It proves its work: the verification gate
+**Local reach with an explicit leash.** Collie can use your real logged-in browser, desktop, screen,
+files, and code. Sensitive actions are bounded by permissions and budgets; task context goes only to
+the model provider and services you connect.
 
-When Collie fixes something it writes a reproduction that **must fail on the broken code**, makes the
-smallest edit that flips it, and re-runs the assertion. A run isn't "done" — it's **verified ✓**.
+## Evidence you can inspect: the verification gate
+
+For code changes, Collie can record a failing reproduction, edit the implementation, and execute the
+named assertion again. Required verification blocks completion until the selected post-edit check
+passes. The result is evidence for that check's stated scope—not proof of every possible property.
 
 ```text
   repro    wrote repro.py · assert parse_duration("1h30m") == 5400
@@ -44,9 +47,8 @@ smallest edit that flips it, and re-runs the assertion. A run isn't "done" — i
   ✓ verified in 12.8s · Δ +1 −1 · 3,410 tok · $0.006
 ```
 
-Other agents check "did the test not error." Collie's gate is stronger: the reproduction carries an
-`assert actual == expected` derived from the issue, so a plausible-but-wrong edit fails *loudly* and
-drives another repair round.
+The receipt should say what ran, whether it passed, what it covers, and what remains unverified. A
+green gate without that scope is only a confidence symbol; it is not an accountable completion rule.
 
 ## What makes it lean
 

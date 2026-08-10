@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.request
 
 from . import plat
@@ -29,6 +31,115 @@ REPO = os.environ.get("COLLIE_UPDATE_REPO", "colliehq/collie")
 API = "https://api.github.com/repos/%s/releases/latest" % REPO
 TEAM_ID = "58Y98W3QQK"          # the Developer ID the macOS builds are signed with
 APP_PATH = "/Applications/Collie.app"
+UPDATE_JOURNAL_SCHEMA = 1
+
+
+def update_journal_path(path=None):
+    return os.path.abspath(path or os.environ.get("COLLIE_UPDATE_JOURNAL")
+                           or os.path.expanduser("~/.collie/update-journal.json"))
+
+
+def _read_update_journal(path=None):
+    try:
+        with open(update_journal_path(path), encoding="utf-8") as f:
+            value = json.load(f)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_update_journal(value, path=None):
+    """Atomically persist non-secret update/recovery metadata."""
+    path = update_journal_path(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.tmp-%d-%d" % (path, os.getpid(), threading.get_ident())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def begin_update_journal(*, artifact, mode, parts=None, target_version="",
+                         artifact_sha256="", rollback=None, path=None, now=None):
+    """Begin a startup-health transaction before replacing runnable code.
+
+    ``rollback`` is an optional *declarative* plan (for example a previously verified installer),
+    never executed here. Automatic rollback is only safe when the installer/host explicitly
+    supplies such a trusted plan; otherwise the journal surfaces ``rollback_required`` for an
+    operator instead of downloading or executing guessed bytes.
+    """
+    now = float(time.time() if now is None else now)
+    value = {
+        "schema": UPDATE_JOURNAL_SCHEMA, "state": "installing",
+        "previous_version": __version__, "target_version": str(target_version or ""),
+        "artifact": os.path.basename(str(artifact or "")),
+        "artifact_sha256": str(artifact_sha256 or ""), "mode": str(mode or ""),
+        "parts": [str(x) for x in (parts or ())], "started_at": now,
+        "updated_at": now, "startup_failures": 0, "last_error": "",
+        "rollback": dict(rollback or {}),
+    }
+    _write_update_journal(value, path)
+    return value
+
+
+def record_update_handoff(*, ok=True, detail="", path=None, now=None):
+    now = float(time.time() if now is None else now)
+    value = _read_update_journal(path)
+    if not value:
+        return {"state": "none"}
+    value.update(state="pending_startup" if ok else "install_failed",
+                 last_error="" if ok else str(detail)[:1000], updated_at=now)
+    _write_update_journal(value, path)
+    return value
+
+
+def record_startup_health(ok, detail="", path=None, now=None, failure_threshold=3):
+    """Supervisor startup hook: bless a new build or request a declared rollback.
+
+    Repeated failed starts are counted durably. A successful full self-check clears the pending
+    transaction. Failure never launches a rollback by itself; :func:`rollback_status` returns the
+    trusted declarative plan for the installer/supervisor boundary to confirm and execute.
+    """
+    now = float(time.time() if now is None else now)
+    value = _read_update_journal(path)
+    if not value or value.get("state") not in ("installing", "pending_startup",
+                                                "startup_failed", "rollback_required"):
+        return value or {"state": "none"}
+    if ok:
+        value.update(state="healthy", healthy_at=now, updated_at=now,
+                     startup_failures=0, last_error="")
+    else:
+        failures = int(value.get("startup_failures") or 0) + 1
+        rollback = value.get("rollback") or {}
+        state = ("rollback_required" if failures >= max(1, int(failure_threshold))
+                 else "startup_failed")
+        value.update(state=state, startup_failures=failures, updated_at=now,
+                     last_error=str(detail or "startup self-check failed")[:1000],
+                     rollback_available=bool(rollback))
+    _write_update_journal(value, path)
+    return value
+
+
+def rollback_status(path=None):
+    """Return a non-executing rollback hook for an authenticated operator/supervisor surface."""
+    value = _read_update_journal(path)
+    if not value:
+        return {"required": False, "available": False, "state": "none", "plan": {}}
+    plan = value.get("rollback") if isinstance(value.get("rollback"), dict) else {}
+    return {"required": value.get("state") == "rollback_required",
+            "available": bool(plan), "state": value.get("state", "unknown"),
+            "previous_version": value.get("previous_version", ""), "plan": plan,
+            "startup_failures": int(value.get("startup_failures") or 0),
+            "last_error": value.get("last_error", "")}
 
 
 def _ver(s):
@@ -324,6 +435,8 @@ def running_parts(root):
     kennel = os.path.join(os.path.expanduser("~"), ".collie")
     runtime = os.path.normcase(os.path.abspath(os.path.join(root, "python"))).replace("/", "\\")
     normalized = [os.path.normcase(line).replace("/", "\\") for line in lines]
+    if any("harness.supervisor" in line.lower() for line in lines):
+        parts.append("supervisor")
     try:
         launchers = sorted(name for name in os.listdir(kennel)
                            if re.fullmatch(r"slack-[A-Za-z0-9_-]+\.pyw", name))
@@ -369,6 +482,9 @@ Stop-Transcript | Out-Null
 '''
 
 _RESTART = {
+    "supervisor": '"[collie-update] restarting supervisor"\n'
+                  'Start-Process -FilePath "schtasks.exe" -ArgumentList "/Run","/TN","\\Collie\\Supervisor" '
+                  '-WindowStyle Hidden\nStart-Sleep -Seconds 2',
     "wallpaper": '"[collie-update] restarting wallpaper"\n'
                  'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\wallpaper-boot.pyw" '
                  '-WindowStyle Hidden\nStart-Sleep -Seconds 3',
@@ -433,15 +549,27 @@ def apply_windows(exe, digest, on_note=print):
     if not root:
         # Not inside the install tree (a pip-style layout): nothing will close us, so run it here
         # and report the real outcome.
+        try:
+            begin_update_journal(artifact=exe, mode="windows-direct",
+                                 artifact_sha256=sha256_of(exe))
+        except Exception as exc:
+            return False, "could not record the update recovery journal: %s" % exc
         r = subprocess.run([exe, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
                            capture_output=True, text=True, timeout=1800,
                            **plat.no_window_kwargs())
         if r.returncode != 0:
+            record_update_handoff(ok=False, detail="installer exited %d" % r.returncode)
             return False, "installer exited %d: %s" % (r.returncode,
                                                        (r.stdout or r.stderr or "").strip()[:160])
+        record_update_handoff(ok=True, detail="installer completed; awaiting startup self-check")
         return True, "reinstalled over the existing copy"
 
     parts = running_parts(root)
+    try:
+        begin_update_journal(artifact=exe, mode="windows-handoff", parts=parts,
+                             artifact_sha256=sha256_of(exe))
+    except Exception as exc:
+        return False, "could not record the update recovery journal: %s" % exc
     log = os.path.join(tempfile.gettempdir(), "collie-update.log")
     restarts = "\n".join(line for line in (_restart_script(p, root) for p in parts) if line) or \
         '"[collie-update] nothing was running; not starting anything"'
@@ -455,9 +583,15 @@ def apply_windows(exe, digest, on_note=print):
     # process object, so the handoff looks like it worked and nothing ever happens. Measured, both
     # ways round. A child is not killed by its parent exiting on Windows, so nothing more is needed
     # for the bootstrap to outlive us.
-    subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", sp],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     cwd=tempfile.gettempdir(), **plat.no_window_kwargs())
+    try:
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", sp],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=tempfile.gettempdir(), **plat.no_window_kwargs())
+    except Exception as exc:
+        record_update_handoff(ok=False, detail="bootstrap launch failed: %s" % exc)
+        return False, "could not launch the update bootstrap: %s" % exc
+    record_update_handoff(ok=True, detail="handed off; awaiting startup self-check")
     on_note("  the installer runs once Collie exits; it will bring back: %s"
             % (", ".join(parts) or "nothing (none of it was running)"))
     on_note("  log: %s" % log)

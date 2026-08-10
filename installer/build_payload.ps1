@@ -20,8 +20,47 @@ $repo    = Split-Path -Parent $here
 $payload = Join-Path $here "payload"
 $py      = Join-Path $payload "python"
 $tag     = ($PyVersion -split '\.')[0..1] -join ''      # "3.12.10" -> "312"
+$payloadRoot = [IO.Path]::GetFullPath($py)
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
+
+function Assert-NativeExit([string]$Label, [int]$Code) {
+  if ($Code -ne 0) { throw "$Label failed (exit $Code)" }
+}
+
+function Remove-PayloadItem([string]$Path) {
+  # This helper is intentionally unable to remove anything outside payload\python. It is used to
+  # normalise a reusable staging runtime without ever touching ~/.collie or the installed app.
+  $full = [IO.Path]::GetFullPath($Path)
+  $prefix = $script:payloadRoot.TrimEnd('\') + '\'
+  if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "refusing to remove a path outside the payload runtime: $full"
+  }
+  if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+}
+
+function Remove-RepoBuildArtifact([string]$Path) {
+  # setuptools reuses build/lib and will silently put a deleted source file into a later wheel.
+  # Only these two conventional generated paths are eligible; source and dist/ are never touched.
+  $full = [IO.Path]::GetFullPath($Path)
+  $repoPrefix = [IO.Path]::GetFullPath($script:repo).TrimEnd('\') + '\'
+  $leaf = [IO.Path]::GetFileName($full)
+  if (-not $full.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+      $leaf -notin @("build", "collie_harness.egg-info")) {
+    throw "refusing to remove a non-generated repository path: $full"
+  }
+  if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+}
+
+$expectedLines = @(& python -c "import sys; sys.path.insert(0, r'$repo'); import harness; print(harness.__version__)")
+Assert-NativeExit "read repository Collie version" $LASTEXITCODE
+if (-not $expectedLines) { throw "repository Collie version is empty" }
+$expectedVer = ([string]$expectedLines[-1]).Trim()
+if (-not $expectedVer) { throw "repository Collie version is empty" }
+
+Step "clean stale setuptools build state"
+Remove-RepoBuildArtifact (Join-Path $repo "build")
+Remove-RepoBuildArtifact (Join-Path $repo "collie_harness.egg-info")
 
 if ($Clean -and (Test-Path $py)) { Step "clean: removing $py"; Remove-Item -Recurse -Force $py }
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
@@ -57,20 +96,31 @@ if (Test-Path $pth) {
 # build on precisely that case — every FIRST payload build on a clean machine, which is the only
 # time this step has anything to do. Same shape as the empty-array abort in build_mac_payload.sh:
 # the branch written for the absent thing was the branch that could not run without it.
+$site = Join-Path $py "Lib\site-packages"
+New-Item -ItemType Directory -Force -Path $site | Out-Null
+$pipInfos = @(Get-ChildItem -LiteralPath $site -Directory -Filter "pip-*.dist-info" -ErrorAction SilentlyContinue)
 $hasPip = $false
 try {
   $ErrorActionPreference = "Continue"
-  & (Join-Path $py "python.exe") -c "import pip" 2>&1 | Out-Null
-  $hasPip = ($LASTEXITCODE -eq 0)
+  & (Join-Path $py "python.exe") -m pip --version 2>&1 | Out-Null
+  # A reusable/overlaid payload with several metadata directories is not healthy even when
+  # `import pip` happens to work. That exact state produced a mixed pip which failed in its CLI.
+  $hasPip = ($LASTEXITCODE -eq 0 -and $pipInfos.Count -eq 1)
 } finally {
   $ErrorActionPreference = "Stop"
 }
 if (-not $hasPip) {
   Step "bootstrap pip (get-pip.py)"
+  Remove-PayloadItem (Join-Path $site "pip")
+  foreach ($info in $pipInfos) { Remove-PayloadItem $info.FullName }
   $getpip = Join-Path $env:TEMP "get-pip.py"
   Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getpip -UseBasicParsing
-  & (Join-Path $py "python.exe") $getpip --no-warn-script-location
-  Remove-Item $getpip
+  try {
+    & (Join-Path $py "python.exe") $getpip --no-warn-script-location
+    Assert-NativeExit "bootstrap pip" $LASTEXITCODE
+  } finally {
+    if (Test-Path -LiteralPath $getpip) { Remove-Item -LiteralPath $getpip -Force }
+  }
 } else {
   Step "pip already present"
 }
@@ -79,11 +129,21 @@ if (-not $hasPip) {
 #    setuptools/wheel first (the [local] deps build from sdist on some platforms), then the repo.
 Step "pip install setuptools wheel"
 & (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location setuptools wheel
+Assert-NativeExit "install payload build dependencies" $LASTEXITCODE
+
+# An incremental payload build must be just as deterministic as -Clean. Remove only Collie's staged
+# package and its metadata; third-party wheels remain cached in the payload and user data lives
+# elsewhere. This also prevents importlib.metadata from selecting an old version after an overlay.
+Remove-PayloadItem (Join-Path $site "harness")
+foreach ($info in @(Get-ChildItem -LiteralPath $site -Directory -Filter "collie_harness-*.dist-info" -ErrorAction SilentlyContinue)) {
+  Remove-PayloadItem $info.FullName
+}
 Step "pip install collie-harness[local,remote] from the repo"
 # [remote] = cryptography, for the phone-remote E2E handshake. WITHOUT it the packaged app reports
 # e2e.available()=False and the desktop refuses every pairing — the whole Collie Remote feature is
 # dead in a release build. It's a compiled wheel, but pip pulls the matching cp/win_amd64 wheel here.
 & (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location "$repo[local,remote]"
+Assert-NativeExit "install Collie into payload" $LASTEXITCODE
 
 # 5) WebView2 Evergreen bootstrapper (tiny; installs the runtime only if the machine lacks it) ---
 $wv = Join-Path $payload "MicrosoftEdgeWebView2Setup.exe"
@@ -94,9 +154,48 @@ if (-not (Test-Path $wv)) {
   Step "WebView2 bootstrapper already present"
 }
 
-# 6) sanity: the bundled collie must import and know its version --------------------------------
+# 6) sanity: code, metadata, runtime modules and private assets must agree -----------------------
 Step "verify payload"
-$ver = & (Join-Path $py "python.exe") -c "import harness; print(harness.__version__)"
-if ($LASTEXITCODE -ne 0) { throw "bundled collie failed to import" }
+$verify = @'
+import importlib
+import importlib.metadata as metadata
+import pathlib
+import sys
+
+expected = sys.argv[1]
+import harness
+root = pathlib.Path(harness.__file__).resolve().parent
+code = harness.__version__
+dist = metadata.version("collie-harness")
+infos = list(root.parent.glob("collie_harness-*.dist-info"))
+if code != expected or dist != expected:
+    raise SystemExit("payload version mismatch: expected=%s code=%s metadata=%s" %
+                     (expected, code, dist))
+if len(infos) != 1:
+    raise SystemExit("payload needs exactly one Collie dist-info, found %d" % len(infos))
+for name in ("harness.supervisor", "harness.automations", "harness.ops"):
+    importlib.import_module(name)
+for rel in ("oauth_ext/pi-oauth-proxy.js", "oauth_ext/opencode.jsonc",
+            "browser_ext/manifest.json", "webui/index.html"):
+    if not (root / rel).is_file():
+        raise SystemExit("payload asset missing: " + rel)
+for private in ("browser_ext/token.txt", "browser_ext/auth.js"):
+    if (root / private).exists():
+        raise SystemExit("private browser credential leaked into the payload: " + private)
+print(code)
+'@
+$verifyPath = Join-Path $env:TEMP ("collie-payload-verify-{0}.py" -f $PID)
+try {
+  # Windows PowerShell's native-command marshalling strips quotes from a multiline
+  # `python -c $verify` value. Execute an exact temporary source file so assertions such as
+  # glob("collie_harness-*.dist-info") reach Python byte-for-byte.
+  Set-Content -LiteralPath $verifyPath -Value $verify -Encoding UTF8
+  $ver = & (Join-Path $py "python.exe") $verifyPath $expectedVer
+  Assert-NativeExit "verify bundled Collie" $LASTEXITCODE
+} finally {
+  if (Test-Path -LiteralPath $verifyPath) { Remove-Item -LiteralPath $verifyPath -Force }
+}
+& (Join-Path $py "python.exe") -m pip --version | Out-Null
+Assert-NativeExit "verify bundled pip" $LASTEXITCODE
 $size = "{0:N0} MB" -f ((Get-ChildItem -Recurse $py | Measure-Object Length -Sum).Sum / 1MB)
 Write-Host "payload ready: collie $ver, runtime $size" -ForegroundColor Green

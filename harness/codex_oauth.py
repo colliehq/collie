@@ -25,7 +25,9 @@ import urllib.request
 import uuid
 
 from .providers import (Completion, ModelProvider, ToolCall, Usage,
-                         _error_completion, _norm_stop, content_text, _tc_fields)
+                         _error_completion, _norm_stop, content_text, _tc_fields,
+                         resolve_reasoning_effort, resolve_speed_tier)
+from .oauth_owner import RefreshOwner
 
 # codex-rs OAuth app + endpoints (mirrors the upstream CLI so the token is interchangeable
 # with a `codex login` session — we refresh through the SAME client_id the CLI registered).
@@ -94,31 +96,56 @@ def _refresh(refresh_token: str) -> dict:
         return json.loads(r.read())
 
 
+def _token_and_account(doc: dict) -> tuple[str, str, dict]:
+    tokens = doc.get("tokens") or {}
+    access = (tokens.get("access_token") or "").strip()
+    claims = _jwt_claims(access)
+    account = (claims.get("https://api.openai.com/auth", {}) or {}).get(
+        "chatgpt_account_id") or tokens.get("account_id") or ""
+    return access, account, claims
+
+
+def _owned_refresh(*, force: bool = False, previous_access: str = "") -> tuple[str, str]:
+    """Refresh under the one cross-process writer lock and atomically persist it.
+
+    The credential is deliberately re-read *inside* the lock.  If a different
+    process already replaced the token that received a 401, a forced refresh
+    simply adopts that newer token instead of rotating the refresh token again.
+    """
+    with RefreshOwner(_auth_path()):
+        doc = _load_auth()
+        access, account, claims = _token_and_account(doc)
+        refresh = ((doc.get("tokens") or {}).get("refresh_token") or "").strip()
+        if force and previous_access and access != previous_access:
+            return access, account
+        exp = claims.get("exp", 0)
+        due = bool(force or (exp and time.time() > (exp - REFRESH_SKEW)))
+        if not refresh or not due:
+            return access, account
+        got = _refresh(refresh)
+        tokens = doc.setdefault("tokens", {})
+        tokens["access_token"] = (got.get("access_token") or access).strip()
+        if got.get("refresh_token"):
+            tokens["refresh_token"] = got["refresh_token"]
+        doc["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _save_auth(doc)
+        access, account, _ = _token_and_account(doc)
+        return access, account
+
+
 def _fresh_access_token() -> tuple[str, str]:
     """Return (access_token, account_id), refreshing + persisting if the JWT is near expiry.
     Refresh failure is non-fatal when the current token still has life — we fall through to
     it and let a 401 on the real call trigger a forced refresh."""
     doc = _load_auth()
-    tokens = doc.get("tokens") or {}
-    access = (tokens.get("access_token") or "").strip()
-    refresh = (tokens.get("refresh_token") or "").strip()
-    claims = _jwt_claims(access)
+    access, acct, claims = _token_and_account(doc)
+    refresh = ((doc.get("tokens") or {}).get("refresh_token") or "").strip()
     exp = claims.get("exp", 0)
     if refresh and exp and time.time() > (exp - REFRESH_SKEW):
         try:
-            got = _refresh(refresh)
-            access = (got.get("access_token") or access).strip()
-            tokens["access_token"] = access
-            if got.get("refresh_token"):
-                tokens["refresh_token"] = got["refresh_token"]
-            doc["tokens"] = tokens
-            doc["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            _save_auth(doc)
-            claims = _jwt_claims(access)
+            return _owned_refresh()
         except Exception:
             pass                          # keep the old token; the call path retries on 401
-    acct = (claims.get("https://api.openai.com/auth", {}) or {}).get("chatgpt_account_id") \
-        or tokens.get("account_id") or ""
     return access, acct
 
 
@@ -127,12 +154,15 @@ class CodexOAuthProvider(ModelProvider):
     reports_cache = True                  # Responses usage carries input_tokens_details.cached_tokens
     URL = BASE_URL.rstrip("/") + "/responses"
 
-    def __init__(self, model: str = "gpt-5.6-terra", max_tokens: int = 16384):
+    def __init__(self, model: str = "gpt-5.6-terra", max_tokens: int = 16384,
+                 effort: str | None = None, speed: str = "standard"):
         self.model = model
         self.max_tokens = int(os.environ.get("COLLIE_MAX_TOKENS", str(max_tokens)))
-        # Codex reasoning effort — low/medium/high. Higher = deeper (more output/reasoning
-        # tokens); collie's assert-verify loop wants at least medium.
-        self.effort = os.environ.get("COLLIE_REASONING_EFFORT", "medium")
+        requested_effort = effort if effort is not None else os.environ.get(
+            "COLLIE_REASONING_EFFORT", "medium")
+        self.effort, _ = resolve_reasoning_effort(self.name, self.model, requested_effort)
+        self.speed, _ = resolve_speed_tier(self.name, self.model, speed)
+        self.actual_speed = self.speed
         self.timeout = float(os.environ.get("COLLIE_HTTP_TIMEOUT", "600"))
         self._session_id = str(uuid.uuid4())
         if not os.path.exists(_auth_path()):
@@ -191,10 +221,14 @@ class CodexOAuthProvider(ModelProvider):
             "input": self._to_input(messages),
             "store": False,
             "stream": stream,
-            "reasoning": {"effort": self.effort},
             "tool_choice": "auto",
             "parallel_tool_calls": True,
         }
+        effort = getattr(self, "effort", "default")
+        if effort != "default":
+            body["reasoning"] = {"effort": effort}
+        if getattr(self, "speed", "standard") == "fast":
+            body["service_tier"] = "fast"
         if tool_schemas:
             # Responses function shape is FLAT (name/description/parameters at top level),
             # unlike chat/completions' nested {"function": {...}}.
@@ -219,13 +253,7 @@ class CodexOAuthProvider(ModelProvider):
             # call, or another client rotated it).
             if e.code == 401:
                 try:
-                    doc = _load_auth()
-                    got = _refresh((doc.get("tokens") or {}).get("refresh_token", ""))
-                    doc.setdefault("tokens", {})["access_token"] = got["access_token"]
-                    if got.get("refresh_token"):
-                        doc["tokens"]["refresh_token"] = got["refresh_token"]
-                    _save_auth(doc)
-                    access, acct = _fresh_access_token()
+                    access, acct = _owned_refresh(force=True, previous_access=access)
                     req = urllib.request.Request(self.URL, data=json.dumps(body).encode(),
                                                  headers=self._headers(access, acct), method="POST")
                     with urllib.request.urlopen(req, timeout=self.timeout) as r:
@@ -284,6 +312,9 @@ class CodexOAuthProvider(ModelProvider):
                             text_parts.append(blk.get("text", ""))
             elif etype in ("response.completed", "response.incomplete", "response.failed"):
                 resp = ev.get("response", {}) or {}
+                tier = str(resp.get("service_tier") or "").lower()
+                if tier:
+                    self.actual_speed = "fast" if tier in ("fast", "priority") else "standard"
                 usage_raw = resp.get("usage", {}) or {}
                 status = etype.split(".")[1]
                 if etype == "response.failed":

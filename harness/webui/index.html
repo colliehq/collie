@@ -125,14 +125,17 @@
     display: flex; flex-direction: column; min-height: 0;
     overflow: hidden; transition: opacity .16s ease;
   }
-  .brand { padding: 20px 20px 14px; }
+  .brand { padding: 18px 18px 12px; }
   .brand .logo { display: flex; align-items: center; gap: 10px; }
   .glyph {
     width: 34px; height: 34px; flex: none; border-radius: 9px; object-fit: contain;
     background: #fff; padding: 2px; box-shadow: var(--shadow);
   }
-  .brand .word { font-family: var(--sans); font-size: 22px; font-weight: 700; line-height: 1; letter-spacing: -.021em; }
-  .brand .tag { color: var(--muted); font-size: 12px; margin-top: 6px; letter-spacing: .01em; }
+  .brand .word { display:block; font-family: var(--sans); font-size: 16px; font-weight: 700; line-height: 1.15; letter-spacing: -.015em; }
+  .brand .tag { color: var(--muted); font-size: 11.5px; margin-top: 3px; letter-spacing: .01em;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
+  .brand .live-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px;
+                     background:var(--meadow); box-shadow:0 0 0 3px color-mix(in srgb,var(--meadow) 14%,transparent); }
 
   .newbtn {
     margin: 4px 16px 12px; padding: 9px 12px; border: 1px solid var(--line);
@@ -142,6 +145,21 @@
   }
   .newbtn:hover { border-color: var(--pine); color: var(--pine); background: var(--meadow-bg); }
   .newbtn svg { width: 15px; height: 15px; }
+
+  .side-nav { padding: 0 10px 12px; display:flex; flex-direction:column; gap:2px; }
+  .side-nav-item {
+    position:relative; width:100%; min-height:36px; display:flex; align-items:center; gap:10px; padding:7px 10px;
+    border:1px solid transparent; border-radius:9px; background:transparent; color:var(--muted);
+    font:inherit; font-size:13px; text-align:left; text-decoration:none; cursor:pointer;
+  }
+  .side-nav-item:hover { background:var(--surface-2); color:var(--ink); }
+  .side-nav-item.on { background:var(--surface-2); border-color:var(--line); color:var(--ink); font-weight:600; }
+  .side-nav-item svg { width:16px; height:16px; flex:none; }
+  .side-nav-item .side-badge { margin-left:auto; min-width:20px; height:20px; padding:0 6px; display:grid;
+                               place-items:center; border-radius:999px; font:700 10px var(--mono);
+                               color:var(--on-accent); background:var(--coral); }
+  .side-nav-item[hidden] { display:none; }
+  .side-section-rule { height:1px; background:var(--line-2); margin:0 16px 10px; }
 
   .side .lbl {
     font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
@@ -199,6 +217,15 @@
     #statePill, #mapBtn { display: none; }
     .topbar .model-trigger { max-width: 112px; height: 32px; padding: 0 7px; }
     .topbar .tbtn { width: 32px; height: 32px; }
+  }
+  /* 320 CSS px is the WCAG reflow baseline and still represents older iPhones and
+     400%-zoom desktop windows.  Keep every action reachable without making the
+     header wider than the viewport; the model button already exposes its name via
+     aria-label/title, so its text can collapse at this last breakpoint. */
+  @media (max-width: 340px) {
+    .topbar h1, .topbar #npPill { display: none; }
+    .topbar .model-trigger { width: 32px; min-width: 32px; padding: 0; justify-content: center; }
+    .topbar .model-trigger-label, .topbar .model-trigger-chev { display: none; }
   }
   .pill {
     font-family: var(--mono); font-size: 11.5px; color: var(--muted);
@@ -366,6 +393,23 @@
   .set-status { font-size: 12px; color: var(--muted); }
   .set-status.ok { color: var(--meadow); }
   .set-status.err { color: #d9544f; }
+  .set-autosave-note { color:var(--faint); font-size:11.5px; }
+  .set-overview { padding:18px 0 8px; }
+  .set-overview-hero { display:flex; align-items:center; gap:13px; padding:16px; border:1px solid var(--line);
+                       background:var(--surface-2); border-radius:14px; }
+  .set-overview-hero img { width:46px; height:46px; padding:3px; object-fit:contain; background:#fff;
+                           border-radius:12px; box-shadow:var(--shadow); }
+  .set-overview-hero h3 { margin:0; font-size:17px; }
+  .set-overview-hero p { margin:2px 0 0; color:var(--muted); font-size:12.5px; }
+  .set-overview-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:12px; }
+  .set-overview-card { padding:12px 13px; border:1px solid var(--line); border-radius:11px; background:var(--surface); }
+  .set-overview-card .k { color:var(--faint); font:600 10px var(--mono); letter-spacing:.06em; text-transform:uppercase; }
+  .set-overview-card .v { color:var(--ink); font-size:13px; margin-top:4px; overflow-wrap:anywhere; }
+  .set-quicklinks { display:flex; gap:7px; flex-wrap:wrap; margin-top:14px; }
+  .set-quicklinks button { border:1px solid var(--line); background:var(--surface); color:var(--ink);
+                           border-radius:8px; padding:6px 10px; font:inherit; font-size:12px; cursor:pointer; }
+  .set-quicklinks button:hover { border-color:var(--pine); color:var(--pine); }
+  @media (max-width:620px) { .set-overview-grid { grid-template-columns:1fr; } }
   /* one-line help under each knob — so nothing is a mystery (what's Temperature, etc.) */
   .set-hint { font-size: 11.5px; line-height: 1.5; color: var(--faint); margin: -2px 0 4px; max-width: 92%; }
   .set-group .set-row + .set-hint { padding-bottom: 2px; }
@@ -527,6 +571,7 @@
                              border-radius: 6px; border: 1px solid var(--line, #8883);
                              background: var(--surface-1, transparent); color: inherit; }
   .ev .perm-actions button:hover { background: var(--surface-2); }
+  .ev .perm-actions button:disabled { opacity: .55; cursor: wait; }
   .ev .perm-actions button[data-a="deny"] { color: var(--coral); }
   .ev .lead { min-width: 0; }
   .ev .name { font-size: 13.5px; font-weight: 550; }
@@ -660,23 +705,56 @@
               font-family: var(--mono); }
 
   /* ---------------------------------------- run drawer (collapsible) + empty state */
-  .welcome { max-width: 560px; margin: 12vh auto 0; text-align: center; padding: 0 20px; }
-  .welcome .wc-logo { width: 56px; height: 56px; border-radius: 14px; background: #fff;
-    padding: 4px; box-shadow: var(--shadow); margin-bottom: 16px; }
-  .welcome .wc-title { font-family: var(--sans); font-size: 25px; color: var(--ink);
-    margin-bottom: 10px; text-wrap: balance; }
-  .welcome .wc-sub { color: var(--muted); font-size: 14px; line-height: 1.6; text-wrap: pretty; }
-  .wc-examples { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 560px; margin: 24px auto 0; }
-  .wc-card { text-align: left; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  .welcome { max-width:700px; margin:clamp(54px,10vh,104px) auto 0; text-align:left; padding:0 24px 36px; }
+  .wc-identity { display:flex; align-items:center; gap:10px; margin-bottom:22px; }
+  .welcome .wc-logo { width:38px; height:38px; border-radius:11px; background:#fff;
+    padding:3px; box-shadow:var(--shadow); margin:0; object-fit:contain; }
+  .wc-kicker { color:var(--muted); font:600 10.5px var(--mono); letter-spacing:.08em; text-transform:uppercase; }
+  .wc-presence { color:var(--faint); font-size:11.5px; margin-top:2px; }
+  .wc-presence::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+                         background:var(--meadow); margin-right:6px; vertical-align:1px; }
+  .welcome .wc-title { font-family:var(--sans); font-size:clamp(29px,4vw,38px); font-weight:650;
+    letter-spacing:-.035em; line-height:1.12; color:var(--ink); margin-bottom:12px; text-wrap:balance; }
+  .welcome .wc-sub { max-width:620px; color:var(--muted); font-size:15px; line-height:1.65; text-wrap:pretty; }
+  .wc-examples { display:grid; grid-template-columns:1fr 1fr; gap:10px; max-width:700px; margin:26px auto 0; }
+  .wc-card { text-align:left; border:1px solid var(--line); border-radius:12px; padding:14px 15px;
              background: var(--surface); cursor: pointer; font: inherit;
              transition: transform .12s, box-shadow .12s, border-color .12s; }
   .wc-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: var(--pine); }
   .wc-card:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
-  .wc-card .wc-ct { font-size: 13.5px; font-weight: 600; color: var(--ink); }
-  .wc-card .wc-cd { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+  .wc-card .wc-ct { font-size:13.5px; font-weight:600; color:var(--ink); }
+  .wc-card .wc-cd { font-size:12px; color:var(--muted); margin-top:4px; line-height:1.45; }
+  .wc-trust { display:flex; flex-wrap:wrap; gap:7px 14px; margin-top:18px; color:var(--faint); font-size:11.5px; }
+  .wc-trust span { display:inline-flex; align-items:center; gap:6px; }
+  .wc-trust span::before { content:""; width:4px; height:4px; border-radius:50%; background:var(--pine); }
   @media (max-width: 620px) { .wc-examples { grid-template-columns: 1fr; } }
   .workpanel { border-top: 1px solid var(--line); background: var(--surface); }
   .workpanel[hidden] { display: none; }
+  .activity-panel { border-top: 1px solid var(--line); background: var(--surface); max-height: 44vh;
+    overflow: auto; padding: 12px 22px 16px; }
+  .activity-panel[hidden] { display: none; }
+  .activity-inner { max-width: 980px; margin: 0 auto; }
+  .activity-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .activity-head strong { color: var(--ink); }
+  .activity-health { font: 11px var(--mono); border-radius: 999px; padding: 3px 8px;
+    color: var(--meadow); background: var(--meadow-bg); }
+  .activity-health.bad { color: var(--coral); background: var(--coral-bg); }
+  .activity-head .spacer { flex: 1; }
+  .activity-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
+  .activity-lane { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); overflow: hidden; }
+  .activity-lane h4 { margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--line);
+    color: var(--muted); font: 700 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+  .activity-rows { padding: 4px 8px; }
+  .activity-row { min-height: 31px; display: flex; align-items: center; gap: 7px; padding: 5px 2px;
+    border-bottom: 1px solid color-mix(in srgb,var(--line) 65%,transparent); color: var(--muted); font-size: 11.5px; }
+  .activity-row:last-child { border: 0; }
+  .activity-id { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink); font-family: var(--mono); }
+  .activity-state { flex: none; color: var(--azure); font: 10px var(--mono); }
+  .activity-row button, .activity-head button { border: 1px solid var(--line); border-radius: 7px;
+    background: var(--surface); color: var(--muted); padding: 4px 7px; cursor: pointer; font: 10.5px var(--sans); }
+  .activity-empty { color: var(--faint); padding: 8px 2px; font-size: 11.5px; }
+  @media (max-width: 700px) { .activity-grid { grid-template-columns: 1fr; } }
   .model-trigger {
     appearance: none; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
     border-radius: 9px; min-width: 0; max-width: 260px; height: 34px; padding: 0 10px;
@@ -778,42 +856,62 @@
                      padding: 8px 8px 8px 14px; transition: border-color .15s, box-shadow .15s; }
   .composer .inner:focus-within { border-color: var(--pine); box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 20%,transparent); }
   .composer textarea { flex: 1; resize: none; border: 0; background: transparent; color: var(--ink);
-                       font: inherit; font-size: 15px; line-height: 1.5; max-height: 180px; padding: 6px 0; outline: none; }
+                       font: inherit; font-size: 15px; line-height: 1.5; max-height: 180px; padding: 6px 0; outline: none;
+                       overflow-y:hidden; }
   .composer textarea::placeholder { color: var(--faint); }
-  /* custom run-mode picker (replaces the OS-ugly native select) */
+  /* run setup: independent intent / quality / verification / workspace / strategy axes */
   .modepick { position: relative; align-self: stretch; display: flex; }
   .mode-trigger { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line);
     background: var(--surface); color: var(--ink); border-radius: 9px; padding: 0 9px;
     min-height: 34px; font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer;
     white-space: nowrap; transition: border-color .15s, background .15s; }
   .mode-trigger:hover { border-color: var(--pine); }
+  .mode-trigger:disabled { cursor: not-allowed; opacity: .5; border-color: var(--line); }
   .modepick.open .mode-trigger { border-color: var(--pine);
     box-shadow: 0 0 0 3px color-mix(in srgb,var(--pine) 16%,transparent); }
   .mt-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
-  .mt-dot[data-mode="herding"] { background: var(--amber); }
+  #modeLabel { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+  .mt-dot[data-mode="thorough"], .mt-dot[data-mode="verify"] { background: var(--amber); }
+  .mt-dot[data-mode="plan"] { background: var(--azure); }
   .mt-dot[data-mode="pack"] { background: var(--pine); }
   .mt-dot[data-mode="isolated"] { background: var(--azure); }
   .mt-chev { width: 13px; height: 13px; color: var(--faint); transition: transform .16s; }
   .modepick.open .mt-chev { transform: rotate(180deg); }
-  .mode-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; min-width: 236px;
+  .mode-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30;
+    width: min(390px, calc(100vw - 32px)); max-height: min(620px, 72vh); overflow-y: auto;
     background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
-    box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column; gap: 2px;
+    box-shadow: var(--shadow-lg); padding: 8px; display: flex; flex-direction: column; gap: 8px;
     animation: modemenu .13s ease; }
   .mode-menu[hidden] { display: none; }
+  .mode-auto-note { margin:0 9px 9px; padding:8px 9px; border-radius:8px; background:var(--surface-2);
+                    color:var(--muted); font-size:11px; line-height:1.4; }
+  .mode-auto-note strong { color:var(--ink); }
   @keyframes modemenu { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   .mode-item { display: flex; align-items: center; gap: 9px; border: 0; background: transparent;
     border-radius: 8px; padding: 7px 9px; cursor: pointer; text-align: left; font: inherit; color: var(--ink); }
   .mode-item:hover { background: var(--surface-2); }
+  .mode-item[hidden] { display: none; }
+  .mode-item:disabled { cursor: not-allowed; opacity: .48; }
+  .mode-item:disabled:hover { background: transparent; }
   .mode-item.is-active { background: color-mix(in srgb,var(--pine) 11%,transparent); }
   .mi-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
-  .mi-dot[data-mode="herding"] { background: var(--amber); }
+  .mi-dot[data-mode="thorough"], .mi-dot[data-mode="required"] { background: var(--amber); }
+  .mi-dot[data-mode="plan"] { background: var(--azure); }
   .mi-dot[data-mode="pack"] { background: var(--pine); }
   .mi-dot[data-mode="isolated"] { background: var(--azure); }
   .mi-txt { display: flex; flex-direction: column; flex: 1; line-height: 1.25; }
   .mi-name { font-size: 13px; font-weight: 600; }
-  .mi-desc { font-size: 11px; color: var(--faint); }
+  .mi-desc { font-size: 11px; color: var(--muted); }
   .mi-check { width: 15px; height: 15px; color: var(--pine); opacity: 0; flex: none; }
   .mode-item.is-active .mi-check { opacity: 1; }
+  .mode-group { border: 0; margin: 0; padding: 0; min-width: 0; }
+  .mode-group + .mode-group { border-top: 1px solid var(--line); padding-top: 8px; }
+  .mode-group-title { display: block; padding: 0 9px 3px; color: var(--muted); font-size: 10px;
+    font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .mode-group-help { margin: 2px 9px 0; color: var(--muted); font-size: 10.5px; line-height: 1.35; }
+  .mode-group.is-disabled .mode-group-help { color: var(--amber); }
+  .stat.decision { grid-column: 1 / -1; }
+  .stat.decision .v { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* attach-image button + preview strip */
   .attach { border: 1px solid var(--line); background: var(--surface); color: var(--faint);
             border-radius: 10px; width: 38px; height: 40px; flex: none; cursor: pointer;
@@ -853,6 +951,14 @@
     border-radius: 7px; padding: 5px 8px; font-size: 12px; font-family: inherit; }
   .pack-opts input:focus { outline: none; border-color: var(--pine); }
   .pack-opts .po-apply { cursor: pointer; }
+  .verify-opts { max-width: 980px; margin: 8px auto 0; display: flex; gap: 8px;
+                 align-items: center; }
+  .verify-opts[hidden] { display: none; }
+  .verify-opts label { flex: none; font-size: 12px; color: var(--muted); }
+  .verify-opts input { min-width: 0; flex: 1; border: 1px solid var(--line);
+    background: var(--surface-2); color: var(--ink); border-radius: 7px;
+    padding: 5px 8px; font-size: 12px; font-family: var(--mono); }
+  .verify-opts input:focus { outline: none; border-color: var(--pine); }
   .pack-note { flex-basis: 100%; margin: 4px 0 0; font-size: 11.5px; line-height: 1.55;
                color: var(--muted); }
   .pack-note b { font-weight: 700; }
@@ -864,32 +970,76 @@
   .pk-head { font-size: 12px; color: var(--muted); }
   .pk-head code { font-family: var(--mono); font-size: 11px; color: var(--accent, var(--pine)); }
   .pk-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; padding: 2px 0; }
-  .pk-i { font-family: var(--mono); font-size: 11px; color: var(--faint); width: 22px; }
+  .pk-i { font-family: var(--mono); font-size: 11px; color: var(--muted); width: 22px; }
   .pk-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
   .pk-dot.pending { background: var(--faint); opacity: .5; }
   .pk-dot.ran { background: var(--azure); }
   .pk-dot.ok  { background: var(--meadow); }
   .pk-dot.fail { background: var(--coral); }
+  .pk-dot.stop { background: var(--amber); }
   .pk-st { color: var(--ink); }
-  .pk-meta { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .pk-meta { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
   .pk-row.winner { background: var(--meadow-bg); border-radius: 7px; padding: 3px 6px; margin: 0 -6px; }
   .pk-row.winner .pk-st { color: var(--meadow); font-weight: 600; }
   .pack-summary { font-size: 13px; color: var(--ink); background: var(--meadow-bg);
                   border: 1px solid color-mix(in srgb,var(--meadow) 30%,transparent);
                   border-radius: 9px; padding: 8px 11px; }
   .pack-summary code { font-family: var(--mono); font-size: 12px; }
+  .pack-summary.fail { background: var(--coral-bg); border-color: color-mix(in srgb,var(--coral) 34%,transparent); }
+  .pack-summary.warn { background: color-mix(in srgb,var(--amber) 12%,var(--surface-2)); border-color: color-mix(in srgb,var(--amber) 34%,transparent); }
+  .handoff-card { margin: 12px 0 8px 48px; max-width: 760px; border: 1px solid var(--line);
+    border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+  .handoff-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex;
+    align-items: center; gap: 8px; color: var(--ink); font-weight: 650; }
+  .handoff-badge { border-radius: 999px; padding: 2px 7px; color: var(--azure);
+    background: color-mix(in srgb,var(--azure) 12%,var(--surface-2)); font: 10px var(--mono); }
+  .handoff-body { padding: 12px 14px; display: grid; gap: 10px; }
+  .handoff-field { display: grid; gap: 4px; color: var(--muted); font-size: 11px; font-weight: 650; }
+  .handoff-field input, .handoff-field textarea, .handoff-todo input, .handoff-todo select {
+    width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2);
+    color: var(--ink); padding: 7px 9px; font: 12.5px var(--sans); outline: none; }
+  .handoff-field textarea { min-height: 58px; resize: vertical; font-family: var(--mono); font-size: 11.5px; }
+  .handoff-field input:focus, .handoff-field textarea:focus, .handoff-todo input:focus,
+  .handoff-todo select:focus { border-color: var(--pine); }
+  .handoff-todos { display: grid; gap: 6px; }
+  .handoff-todo { display: grid; grid-template-columns: 104px 1fr auto; gap: 6px; align-items: center; }
+  .handoff-todo button, .handoff-add, .handoff-primary { border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface-2); color: var(--muted); padding: 7px 10px; cursor: pointer; font: 12px var(--sans); }
+  .handoff-primary { background: var(--pine); border-color: var(--pine); color: white; font-weight: 650; }
+  .handoff-primary:disabled { opacity: .55; cursor: not-allowed; }
+  .handoff-actions { display: flex; justify-content: flex-end; align-items: center; gap: 9px; }
+  .handoff-status { flex: 1; color: var(--muted); font-size: 11.5px; }
+  .review-finding { display: grid; grid-template-columns: auto 1fr; gap: 9px; padding: 8px;
+    border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+  .review-finding input { margin-top: 2px; accent-color: var(--pine); }
+  .review-loc { color: var(--ink); font: 11.5px var(--mono); }
+  .review-msg { margin-top: 3px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+  .review-severity { margin-left: 6px; text-transform: uppercase; color: var(--coral); font-size: 9.5px; }
+  @media (max-width: 620px) { .handoff-card { margin-left: 0; } .handoff-todo { grid-template-columns: 1fr; } }
   .pk-applied { color: var(--meadow); font-weight: 600; }
+  .pk-applyfail { color: var(--coral); font-weight: 600; }
   .pk-noapply { color: var(--muted); }
 
   /* ----------------------------------------------------- responsive */
   @media (max-width: 900px) {
     .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-    .side { border-right: 0; border-bottom: 1px solid var(--line); max-height: 34vh; }
-    .threads { display: flex; overflow-x: auto; overflow-y: hidden; gap: 8px; }
-    .thread { min-width: 210px; }
+    .side { border-right:0; border-bottom:1px solid var(--line); max-height:56px; flex-direction:row; align-items:center; }
+    .brand, .side-section-rule, .side .lbl, .threads { display:none; }
+    .newbtn { width:38px; height:38px; margin:8px 2px 8px 8px; padding:0; justify-content:center; flex:none; }
+    .newbtn span { display:none; }
+    .side-nav { flex:1; min-width:0; padding:8px 7px 8px 4px; flex-direction:row; overflow-x:auto; }
+    .side-nav-item { width:auto; min-width:38px; min-height:38px; flex:none; justify-content:center; padding:7px 10px; }
+    .side-nav-item span:not(.side-badge) { display:none; }
+    .side-nav-item .side-badge { position:absolute; margin:-24px 0 0 23px; }
     .panels { grid-template-columns: 1fr; }
     .receipt { grid-template-columns: repeat(3, 1fr); }
     .gate { display: none; }   /* sidebar is a shallow band on mobile — runbar mini-gate carries the state */
+  }
+  @media (max-width: 560px) {
+    /* .modepick starts 37px from the viewport edge (composer + inner padding).
+       Pull the absolute popup back to a true 16px gutter; width alone previously
+       put its right edge 5px past every 360–390px phone viewport. */
+    .mode-menu { left: -21px; width: calc(100vw - 32px); }
   }
   @media (max-width: 520px) { .receipt { grid-template-columns: repeat(2, 1fr); } }
   /* delegate mission card (the NL front door: "/mission <goal>") */
@@ -1039,6 +1189,9 @@
   .rec-item button{background:none; border:none; cursor:pointer; font-size:14px; color:var(--muted,#969cad); padding:2px 4px;}
   .rec-item button:hover{color:var(--ink,#e7e9f0);}
   .rec-empty{color:var(--faint,#666c7c); font-size:12px; padding:4px 2px;}
+  :where(button,a,input,select,textarea,[tabindex]):focus-visible{outline:3px solid color-mix(in srgb,var(--pine) 72%,white);outline-offset:2px}
+  .rec-switch{border:0;padding:0}
+  .thread[role="button"]:focus-visible{outline-offset:-2px}
 </style>
 
 <div class="app">
@@ -1046,22 +1199,53 @@
   <aside class="side">
     <div class="brand">
       <div class="logo">
-        <img class="glyph" src="/logo.svg" alt="Collie" />
-        <span class="word">Collie</span>
+        <img class="glyph" data-collie-avatar src="/api/avatar.png" alt="Collie" />
+        <div>
+          <span class="word" data-collie-name>Collie</span>
+          <div class="tag"><span class="live-dot"></span><span id="collieLocation">this computer</span></div>
+        </div>
       </div>
-      <div class="tag">executed-verification harness · lean prompt</div>
     </div>
     <button class="newbtn" id="newChat">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-      New thread
+      <span data-i18n="New task">New task</span>
     </button>
-    <div class="lbl">Recent threads</div>
+
+    <nav class="side-nav" aria-label="Collie">
+      <button type="button" class="side-nav-item on" id="navHome">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11.5 12 4l9 7.5V21h-6v-6H9v6H3z"/></svg>
+        <span data-i18n="Home">Home</span>
+      </button>
+      <button type="button" class="side-nav-item" id="navMissions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m18 6 3-3M18 3h3v3"/></svg>
+        <span data-i18n="Missions">Missions</span>
+      </button>
+      <a class="side-nav-item" id="navPack" href="/remote">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="12" height="9" rx="2"/><path d="M7 17h4M9 13v4M17 9h4v10h-7v-4"/></svg>
+        <span data-i18n="Pack">Pack</span>
+      </a>
+      <button type="button" class="side-nav-item" id="navLibrary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h5v16H5zM14 4h5v16h-5z"/><path d="M7 8h1M16 8h1"/></svg>
+        <span data-i18n="Library">Library</span>
+      </button>
+      <button type="button" class="side-nav-item" id="navActivity">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V9M10 18V5M16 18v-7M22 18V2"/></svg>
+        <span data-i18n="Activity">Activity</span>
+      </button>
+      <button type="button" class="side-nav-item" id="needsYouNav" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a7 7 0 0 0-7 7v4l-2 3h18l-2-3v-4a7 7 0 0 0-7-7Z"/><path d="M9 20h6"/></svg>
+        <span data-i18n="Needs You">Needs You</span><span class="side-badge" id="needsYouCount">0</span>
+      </button>
+    </nav>
+    <div class="side-section-rule"></div>
+    <div class="lbl" data-i18n="Recent work">Recent work</div>
     <div class="threads" id="threads"><div class="empty">No sessions yet.</div></div>
 
     <!-- verification gate: compact, pinned bottom-left. Same ids/state machine as
          before the move — setGate() drives it unchanged. -->
     <section class="gate" id="gate" data-state="idle"
-             title="Collie doesn't finish on the model's say-so. After an edit it re-runs a reproduction and won't accept done until it prints green.">
+             data-i18n-title="Shows the named checks Collie actually ran and the scope they cover."
+             title="Shows the named checks Collie actually ran and the scope they cover.">
       <div class="ring">
         <svg viewBox="0 0 96 96"><circle class="track" cx="48" cy="48" r="42"/><circle class="prog" cx="48" cy="48" r="42"/></svg>
         <span class="mark">
@@ -1072,9 +1256,9 @@
         </span>
       </div>
       <div class="g-copy">
-        <div class="g-eyebrow">Verification gate</div>
-        <div class="g-status" id="gateStatus">Awaiting a task</div>
-        <div class="g-sub" id="gateSub">Won't accept <code>done</code> until the reproduction prints green.</div>
+        <div class="g-eyebrow" data-i18n="Evidence">Evidence</div>
+        <div class="g-status" id="gateStatus" data-i18n="No evidence yet">No evidence yet</div>
+        <div class="g-sub" id="gateSub" data-i18n="Checks appear here when they are relevant to the task.">Checks appear here when they are relevant to the task.</div>
       </div>
     </section>
   </aside>
@@ -1085,7 +1269,7 @@
       <button class="tbtn" id="sideToggle" title="toggle sidebar" aria-label="toggle sidebar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
       </button>
-      <h1>Workbench</h1>
+      <h1 id="pageTitle" data-i18n="Home">Home</h1>
       <span class="pill" id="statePill"><span class="dot"></span><span id="stateText">idle</span></span>
       <!-- What collie itself is playing, with the off switch. Shown only while something is playing.
            Anything the agent starts and leaves running has to be stoppable without asking the agent
@@ -1110,6 +1294,9 @@
       <button class="tbtn" id="runDetailsBtn" title="run details" aria-label="run details" aria-controls="workpanel" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
       </button>
+      <button class="tbtn" id="activityBtn" title="Activity & health" aria-label="Activity & health" aria-controls="activityPanel" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V9M10 18V5M16 18v-7M22 18V2"/></svg>
+      </button>
       <a class="tbtn" id="mapBtn" href="/map" target="_blank" rel="noopener" title="Map — 3D code galaxy" aria-label="open code map">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
       </a>
@@ -1127,19 +1314,22 @@
     <div class="scroll" id="scroll">
       <div class="thread-log" id="log">
         <div class="welcome" id="welcome">
-          <img class="wc-logo" src="/logo.svg" alt="" />
-          <div class="wc-title">Ask Collie to fix, build, or explain</div>
-          <div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>
+          <div class="wc-identity"><img class="wc-logo" data-collie-avatar src="/api/avatar.png" alt="" />
+            <div><div class="wc-kicker" data-collie-kicker>COLLIE · THIS COMPUTER</div>
+            <div class="wc-presence" data-i18n="Ready to work">Ready to work</div></div></div>
+          <div class="wc-title" data-i18n="What should we get done?">What should we get done?</div>
+          <div class="wc-sub" data-i18n="Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.">Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.</div>
           <div class="wc-examples">
-            <button type="button" class="wc-card" data-fill="Run the tests, find the one that's failing, and fix it.">
-              <div class="wc-ct">🔧 Fix a failing test</div><div class="wc-cd">Reproduce, patch, and re-run until it's green.</div></button>
-            <button type="button" class="wc-card" data-fill="Give me a tour of this repo — what each part does and where to start.">
-              <div class="wc-ct">🧭 Tour this codebase</div><div class="wc-cd">Get oriented in an unfamiliar project fast.</div></button>
-            <button type="button" class="wc-card" data-fill="Add a small feature and prove it works with a new test.">
-              <div class="wc-ct">✨ Build a feature</div><div class="wc-cd">Ship it with a check that proves it works.</div></button>
-            <button type="button" class="wc-card" data-fill="Open my browser and summarize the page I have open.">
-              <div class="wc-ct">🖥️ Drive an app</div><div class="wc-cd">Collie lives on your computer, not just the repo.</div></button>
+            <button type="button" class="wc-card" data-fill="Build or change this project from end to end, then show me what you checked.">
+              <div class="wc-ct" data-i18n="Build or change something">Build or change something</div><div class="wc-cd" data-i18n="Create, edit and test across the project.">Create, edit and test across the project.</div></button>
+            <button type="button" class="wc-card" data-fill="Research this question, compare the strongest options, and recommend a decision with sources.">
+              <div class="wc-ct" data-i18n="Research and decide">Research and decide</div><div class="wc-cd" data-i18n="Investigate, compare and return a sourced recommendation.">Investigate, compare and return a sourced recommendation.</div></button>
+            <button type="button" class="wc-card" data-fill="Use the apps already open on this computer to complete this outcome: ">
+              <div class="wc-ct" data-i18n="Work across apps">Work across apps</div><div class="wc-cd" data-i18n="Use your signed-in browser and desktop tools.">Use your signed-in browser and desktop tools.</div></button>
+            <button type="button" class="wc-card" data-fill="/mission --auto ">
+              <div class="wc-ct" data-i18n="Start a durable mission">Start a durable mission</div><div class="wc-cd" data-i18n="Keep moving across waits, retries and handoffs.">Keep moving across waits, retries and handoffs.</div></button>
           </div>
+          <div class="wc-trust"><span data-i18n="Runs on this device">Runs on this device</span><span data-i18n="Asks before sensitive actions">Asks before sensitive actions</span><span data-i18n="Returns scoped evidence">Returns scoped evidence</span></div>
         </div>
       </div>
     </div>
@@ -1149,6 +1339,7 @@
         <!-- receipt : the honest token / $ / time tally (the gate itself lives in the
              sidebar's bottom-left corner; the runbar summary above mirrors its state) -->
         <div class="receipt" id="receipt">
+          <div class="stat decision"><div class="k">Run decision</div><div class="v" id="rDecision">Auto · waiting</div></div>
           <div class="stat prefix"><div class="k">Prefix</div><div class="v" id="rPrefix">—</div></div>
           <div class="stat"><div class="k">Total tok</div><div class="v" id="rTotal">—</div></div>
           <div class="stat"><div class="k">Turns</div><div class="v" id="rTurns">—</div></div>
@@ -1188,6 +1379,15 @@
       </div>
     </section>
 
+    <section class="activity-panel" id="activityPanel" role="region" aria-label="Activity and health" hidden>
+      <div class="activity-inner">
+        <div class="activity-head"><strong>Activity</strong><span class="activity-health" id="activityHealth">loading</span>
+          <span class="spacer"></span><button type="button" id="activityRefresh">Refresh</button>
+          <button type="button" id="activityClose" aria-label="Close activity">×</button></div>
+        <div class="activity-grid" id="activityGrid"><div class="activity-empty">Loading operational state…</div></div>
+      </div>
+    </section>
+
     <button class="scrolldown" id="scrollDownBtn" title="Scroll to latest" aria-label="Scroll to latest">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
     </button>
@@ -1197,53 +1397,123 @@
       <div class="attach-strip" id="attachStrip" hidden></div>
       <div class="inner">
         <div class="modepick" id="modePick">
-          <input type="hidden" id="mode" value="normal">
-          <button type="button" class="mode-trigger" id="modeTrigger" title="Run mode" aria-haspopup="listbox" aria-expanded="false">
-            <span class="mt-dot" data-mode="normal"></span><span id="modeLabel">Normal</span>
+          <input type="hidden" id="runIntent" value="build">
+          <input type="hidden" id="runQuality" value="balanced">
+          <input type="hidden" id="runVerification" value="auto">
+          <input type="hidden" id="runWorkspace" value="current">
+          <input type="hidden" id="runStrategy" value="single">
+          <input type="hidden" id="runEffort" value="auto">
+          <input type="hidden" id="runSpeed" value="standard">
+          <button type="button" class="mode-trigger" id="modeTrigger" title="Run setup" aria-haspopup="dialog" aria-controls="modeMenu" aria-expanded="false">
+            <span class="mt-dot" data-mode="balanced"></span><span id="modeLabel">Auto</span>
             <svg class="mt-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
           </button>
-          <div class="mode-menu" id="modeMenu" role="listbox" hidden>
-            <button type="button" class="mode-item" data-val="normal" role="option">
-              <span class="mi-dot" data-mode="normal"></span>
-              <span class="mi-txt"><span class="mi-name">Normal</span><span class="mi-desc">Standard single run</span></span>
-              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            </button>
-            <button type="button" class="mode-item" data-val="herding" role="option">
-              <span class="mi-dot" data-mode="herding"></span>
-              <span class="mi-txt"><span class="mi-name">Extreme Herding</span><span class="mi-desc">More turns + assert-verify gate</span></span>
-              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            </button>
-            <button type="button" class="mode-item" data-val="isolated" role="option">
-              <span class="mi-dot" data-mode="isolated"></span>
-              <span class="mi-txt"><span class="mi-name">Isolated branch</span><span class="mi-desc">Its own git worktree — two runs can share a repo, and the result reads as a diff</span></span>
-              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            </button>
-            <button type="button" class="mode-item" data-val="pack" role="option">
-              <span class="mi-dot" data-mode="pack"></span>
-              <span class="mi-txt"><span class="mi-name">Pack · best-of-N</span><span class="mi-desc">N isolated tries, keep the one that passes a check</span></span>
-              <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            </button>
+          <div class="mode-menu" id="modeMenu" role="dialog" aria-label="Run setup" data-i18n-aria-label="Run setup" hidden>
+            <p class="mode-auto-note"><strong data-i18n="Auto is the default.">Auto is the default.</strong> <span data-i18n="Collie chooses a run plan from the task; override only when you need a specific boundary.">Collie chooses a run plan from the task; override only when you need a specific boundary.</span></p>
+            <fieldset class="mode-group" data-run-group="intent" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Intent">Intent</legend>
+              <button type="button" class="mode-item is-active" data-axis="intent" data-val="build" role="radio" aria-checked="true" tabindex="0">
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" data-i18n="Build">Build</span><span class="mi-desc" data-i18n="Inspect, edit, run tools, and deliver the result">Inspect, edit, run tools, and deliver the result</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="intent" data-val="plan" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="plan"></span><span class="mi-txt"><span class="mi-name" data-i18n="Plan · read-only">Plan · read-only</span><span class="mi-desc" data-i18n="Tool gate blocks every write and command">Tool gate blocks every write and command</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="intent" data-val="test" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="required"></span><span class="mi-txt"><span class="mi-name" data-i18n="Test · read-only">Test · read-only</span><span class="mi-desc" data-i18n="Run only the proposed check and record evidence">Run only the proposed check and record evidence</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="intent" data-val="review" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="plan"></span><span class="mi-txt"><span class="mi-name" data-i18n="Review · read-only">Review · read-only</span><span class="mi-desc" data-i18n="Report findings with file and line evidence">Report findings with file and line evidence</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+            </fieldset>
+            <fieldset class="mode-group" data-run-group="quality" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Run depth">Run depth</legend>
+              <button type="button" class="mode-item" data-axis="quality" data-val="quick" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="plan"></span><span class="mi-txt"><span class="mi-name" data-i18n="Quick">Quick</span><span class="mi-desc" data-i18n="Fewer turns for small, well-scoped work">Fewer turns for small, well-scoped work</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item is-active" data-axis="quality" data-val="balanced" role="radio" aria-checked="true" tabindex="0">
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" data-i18n="Balanced">Balanced</span><span class="mi-desc" data-i18n="Default depth for everyday work">Default depth for everyday work</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="quality" data-val="thorough" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="thorough"></span><span class="mi-txt"><span class="mi-name" data-i18n="Thorough · Extreme Herding">Thorough · Extreme Herding</span><span class="mi-desc" data-i18n="More turns and more repair rounds">More turns and more repair rounds</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+            </fieldset>
+            <fieldset class="mode-group" data-run-group="effort" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Reasoning effort">Reasoning effort</legend>
+              <button type="button" class="mode-item is-active" data-axis="effort" data-val="auto" role="radio" aria-checked="true" tabindex="0"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name" data-i18n="Auto by task">Auto by task</span><span class="mi-desc" data-i18n="Use the lowest reasoning level that fits">Use the lowest reasoning level that fits</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" data-axis="effort" data-val="low" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot" data-mode="plan"></span><span class="mi-txt"><span class="mi-name">Low</span><span class="mi-desc">Fastest reasoning pass</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" data-axis="effort" data-val="medium" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name">Medium</span><span class="mi-desc">Everyday reasoning</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" data-axis="effort" data-val="high" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot" data-mode="thorough"></span><span class="mi-txt"><span class="mi-name">High</span><span class="mi-desc">For ambiguity and hard debugging</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+            </fieldset>
+            <fieldset class="mode-group" data-run-group="speed" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Generation speed">Generation speed</legend>
+              <button type="button" class="mode-item is-active" data-axis="speed" data-val="standard" role="radio" aria-checked="true" tabindex="0"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name">Standard</span><span class="mi-desc">Normal provider service tier</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" id="runFastItem" data-axis="speed" data-val="fast" role="radio" aria-checked="false" tabindex="-1" hidden><span class="mi-dot" data-mode="required"></span><span class="mi-txt"><span class="mi-name">Fast</span><span class="mi-desc">Same model, higher service tier</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <p class="mode-group-help" id="runFastHelp">Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.</p>
+            </fieldset>
+            <fieldset class="mode-group" data-run-group="verification" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Verification">Verification</legend>
+              <button type="button" class="mode-item is-active" data-axis="verification" data-val="auto" role="radio" aria-checked="true" tabindex="0">
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" data-i18n="Auto">Auto</span><span class="mi-desc" data-i18n="Ask for a check after edits when one is relevant">Ask for a check after edits when one is relevant</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="verification" data-val="required" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="required"></span><span class="mi-txt"><span class="mi-name" data-i18n="Required">Required</span><span class="mi-desc" data-i18n="Do not accept edited code without an executed assertion">Do not accept edited code without an executed assertion</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+            </fieldset>
+            <fieldset class="mode-group" data-run-group="workspace" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Workspace">Workspace</legend>
+              <button type="button" class="mode-item is-active" data-axis="workspace" data-val="current" role="radio" aria-checked="true" tabindex="0">
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" data-i18n="Current files">Current files</span><span class="mi-desc" data-i18n="Edit the working tree you already have open">Edit the working tree you already have open</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="workspace" data-val="isolated" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="isolated"></span><span class="mi-txt"><span class="mi-name" data-i18n="Isolated worktree">Isolated worktree</span><span class="mi-desc" data-i18n="Run on its own branch and review the diff first">Run on its own branch and review the diff first</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+            </fieldset>
+            <fieldset class="mode-group" data-run-group="strategy" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Strategy">Strategy</legend>
+              <button type="button" class="mode-item is-active" data-axis="strategy" data-val="single" role="radio" aria-checked="true" tabindex="0">
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" data-i18n="Single run">Single run</span><span class="mi-desc" data-i18n="One agent, one result">One agent, one result</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="strategy" data-val="pack" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="pack"></span><span class="mi-txt"><span class="mi-name" data-i18n="Pack · best-of-N">Pack · best-of-N</span><span class="mi-desc" data-i18n="N isolated candidates, selected by an executed check">N isolated candidates, selected by an executed check</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+            </fieldset>
           </div>
         </div>
-        <textarea id="input" rows="1" placeholder="Ask Collie to fix, build, or explain something…"></textarea>
+        <textarea id="input" rows="1" aria-label="Message Collie" data-i18n-placeholder="Describe the outcome you want…" placeholder="Describe the outcome you want…"></textarea>
         <input type="file" id="fileInput" accept="image/*" multiple hidden>
         <button class="attach" id="attachBtn" title="attach image (or paste / drop one)" aria-label="attach image">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
-        <button class="send" id="send" title="send" aria-label="send">
+        <button class="send" id="send" title="Send" aria-label="Send">
           <svg id="sendIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>
         </button>
       </div>
+      <div class="verify-opts" id="verifyOpts" hidden>
+        <label for="verifyCommand" data-i18n="Proposed check">Proposed check</label>
+        <input id="verifyCommand" type="text" autocomplete="off" placeholder="detecting a repository check…" aria-label="Proposed verification command">
+      </div>
       <div class="pack-opts" id="packOpts" hidden>
-        <label class="po-n">N&nbsp;<input id="packN" type="number" min="2" max="6" value="3" title="how many isolated attempts"></label>
-        <input id="packCheck" type="text" placeholder="check command (optional) — exit 0 = pass, e.g. pytest -q">
-        <label class="po-apply"><input id="packApply" type="checkbox"> apply winner to files</label>
+        <label class="po-n"><span data-i18n="Attempts">Attempts</span>&nbsp;<input id="packN" type="number" min="2" max="6" step="1" value="3" required inputmode="numeric" data-i18n-title="How many isolated attempts" title="How many isolated attempts"></label>
+        <input id="packCheck" type="text" data-i18n-placeholder="required check command — exit 0 = pass, e.g. pytest -q" data-i18n-aria-label="Required Pack check command" aria-label="Required Pack check command" placeholder="required check command — exit 0 = pass, e.g. pytest -q">
+        <label class="po-apply"><input id="packApply" type="checkbox"> <span data-i18n="apply winner to files">apply winner to files</span></label>
         <p class="pack-note">
-          <b class="good">Best for</b> bug fixes &amp; tasks with a clear pass/fail check — it runs N
-          isolated attempts and keeps the one that actually passes, so reliability beats a single try.
-          <b class="warn">Not for</b> building large or new files: it's N× the cost, and nothing is
-          written unless you tick <em>apply winner</em> (otherwise it's preview-only). To build a
-          feature, use <b>Normal</b> and let it write incrementally.
+          <b class="good" data-i18n="Best for">Best for</b>
+          <span data-i18n="bug fixes and tasks with a clear pass/fail check — it runs N isolated attempts and keeps the one that actually passes, so reliability beats a single try.">bug fixes and tasks with a clear pass/fail check — it runs N isolated attempts and keeps the one that actually passes, so reliability beats a single try.</span>
+          <b class="warn" data-i18n="Not for">Not for</b>
+          <span data-i18n="building large or new files: it is N× the cost, and nothing is written unless you choose apply winner (otherwise it is preview-only). For a large feature, use Single run and let it write incrementally.">building large or new files: it is N× the cost, and nothing is written unless you choose <em>apply winner</em> (otherwise it is preview-only). For a large feature, use <b>Single run</b> and let it write incrementally.</span>
         </p>
       </div>
       <div class="hint"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · streams live over SSE</div>
@@ -1252,7 +1522,7 @@
 </div>
 
 <!-- ============================================ model picker -->
-<div class="model-overlay" id="modelOverlay">
+<div class="model-overlay" id="modelOverlay" aria-hidden="true">
   <section class="model-dialog" role="dialog" aria-modal="true" aria-labelledby="modelTitle" aria-describedby="modelCaption">
     <div class="model-head">
       <div class="model-head-copy">
@@ -1282,16 +1552,17 @@
 </div>
 
 <!-- ============================================ onboarding (first-run: pick a brain) -->
-<div class="ob-overlay" id="obOverlay" role="dialog" aria-modal="true" aria-labelledby="obTitle">
+<div class="ob-overlay" id="obOverlay" role="dialog" aria-modal="true" aria-labelledby="obTitle" aria-hidden="true">
   <div class="ob-card">
     <div class="ob-hero">
       <img class="ob-logo" src="/logo.svg" alt="" width="56" height="56">
       <h1 id="obTitle">Welcome to Collie</h1>
-      <p class="ob-sub">Pick a brain to get started. Collie writes code, proves it works with a real test, and remembers.</p>
+      <p class="ob-sub">Choose a brain for your Collie. You can switch models later; Collie keeps one mission history, permission boundary and evidence trail across them.</p>
     </div>
     <div class="ob-label" id="obLabel">Ready to use</div>
     <div class="ob-grid" id="obGrid"></div>
-    <div class="ob-keyrow"><span id="obKeyText">Have an API key?</span><button class="ob-link" id="obKeyBtn">Connect with a key</button></div>
+    <div class="ob-keyrow"><span id="obKeyText">Have an API key?</span><button class="ob-link" id="obKeyBtn">Show setup</button></div>
+    <div class="set-hint" id="obKeyHelp" hidden>Set <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> in the environment that starts Collie, then reopen this screen. Keys are not stored in the browser.</div>
     <div class="ob-foot">
       <button class="ob-ghost" id="obBrowse">Browse all models</button>
       <button class="ob-ghost" id="obSkip">Skip for now</button>
@@ -1300,7 +1571,7 @@
 </div>
 
 <!-- ============================================ connect your browser (optional, after pick-a-brain) -->
-<div class="ob-overlay" id="brOverlay" role="dialog" aria-modal="true" aria-labelledby="brTitle">
+<div class="ob-overlay" id="brOverlay" role="dialog" aria-modal="true" aria-labelledby="brTitle" aria-hidden="true">
   <div class="ob-card">
     <div class="ob-hero">
       <div class="br-badge" aria-hidden="true">
@@ -1320,14 +1591,14 @@
 </div>
 
 <!-- ============================================ ambient desktop (optional, Windows; after pick-a-brain) -->
-<div class="ob-overlay" id="amOverlay" role="dialog" aria-modal="true" aria-labelledby="amTitle">
+<div class="ob-overlay" id="amOverlay" role="dialog" aria-modal="true" aria-labelledby="amTitle" aria-hidden="true">
   <div class="ob-card">
     <div class="ob-hero">
       <div class="br-badge" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4.5" width="18" height="13" rx="2"/><path d="M8 20.5h8M12 17.5v3"/></svg>
       </div>
       <h1 id="amTitle">Ambient desktop</h1>
-      <p class="ob-sub">Put Collie right behind your desktop icons — a live clock, weather, your music, an app dock, and a command bar to talk to Collie from anywhere. You can toggle it any time in Settings.</p>
+      <p class="ob-sub">Keep Collie one gesture away from the desktop. Ambient mode shows whether Collie is ready, running, or waiting for you, with a compact command bar. Optional; you can change it any time.</p>
     </div>
     <div class="ob-foot" style="justify-content:center;gap:12px;margin-top:6px">
       <button class="ob-ghost" id="amSkip">Not now</button>
@@ -1337,7 +1608,7 @@
 </div>
 
 <!-- ============================================ settings modal -->
-<div class="modal-overlay" id="setOverlay">
+<div class="modal-overlay" id="setOverlay" aria-hidden="true">
   <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="setTitle">
     <div class="modal-head">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:var(--pine)"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82M4.6 9a1.65 1.65 0 0 0-.33-1.82"/></svg>
@@ -1349,16 +1620,17 @@
     <div class="modal-body" id="setBody"><!-- rendered from /api/settings --></div>
     <div class="modal-foot">
       <span class="set-status" id="setStatus"></span>
+      <span class="set-autosave-note" data-i18n="Changes save automatically.">Changes save automatically.</span>
       <div class="spacer"></div>
-      <button class="btn-ghost" id="setCancel">Cancel</button>
-      <button class="btn-primary" id="setSave">Done</button>
+      <button class="btn-ghost" id="setCancel" hidden>Cancel</button>
+      <button class="btn-primary" id="setSave" data-i18n="Close">Close</button>
     </div>
   </div>
 </div>
 
-<div class="rec-overlay" id="recOverlay" hidden>
-  <div class="rec-modal">
-    <div class="rec-head"><span class="rec-title">Record</span><button class="rec-x" id="recClose">✕</button></div>
+<div class="rec-overlay" id="recOverlay" hidden aria-hidden="true">
+  <div class="rec-modal" role="dialog" aria-modal="true" aria-labelledby="recTitle">
+    <div class="rec-head"><span class="rec-title" id="recTitle">Record</span><button type="button" class="rec-x" id="recClose" aria-label="Close recording controls">✕</button></div>
     <div class="rec-body" id="recSetup">
       <div class="rec-row"><label>Source</label>
         <div class="rec-seg" id="recSourceSeg">
@@ -1369,7 +1641,7 @@
       </div>
       <div class="rec-row" id="recWindowRow"><label>Window</label><select id="recWindow"></select></div>
       <div class="rec-row" id="recRegionRow" hidden><label>Region</label><input id="recRegion" placeholder="X,Y,W,H  e.g. 0,0,1920,1080"></div>
-      <div class="rec-row"><label>Webcam</label><span class="rec-switch on" id="recCam"></span></div>
+      <div class="rec-row"><label for="recCam">Webcam</label><button type="button" class="rec-switch on" id="recCam" role="switch" aria-checked="true" aria-label="Include webcam"></button></div>
       <div class="rec-cam show" id="recCamOpts">
         <video id="recPreview" autoplay muted playsinline></video>
         <div class="rec-cam-side">
@@ -1380,7 +1652,7 @@
           </div>
         </div>
       </div>
-      <div class="rec-row"><label>Microphone</label><span class="rec-switch on" id="recMic"></span></div>
+      <div class="rec-row"><label for="recMic">Microphone</label><button type="button" class="rec-switch on" id="recMic" role="switch" aria-checked="true" aria-label="Include microphone"></button></div>
       <div class="rec-row"><label>System audio</label><select id="recSys"><option value="">Off</option></select></div>
       <button class="btn primary rec-start" id="recStart">● Start recording</button>
     </div>
@@ -1402,6 +1674,51 @@
   // CSRF token injected same-origin by the server; sent on every state-changing / agent-running
   // request so a drive-by page (which can't read this same-origin HTML) can't trigger them.
   var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
+  // Shared modal focus management. Each dialog remembers the control that opened it, receives a
+  // useful initial focus, traps Tab while visible, and restores focus on close. Keeping this in one
+  // place prevents the onboarding/settings/recording/model dialogs from drifting apart again.
+  var dialogReturnFocus = new WeakMap();
+  function visibleDialogOverlay() {
+    var candidates = [$("obOverlay"), $("brOverlay"), $("amOverlay"), $("setOverlay"),
+                      $("modelOverlay"), $("recOverlay")].filter(Boolean);
+    var visible = candidates.filter(function (el) {
+      return !el.hidden && (el.classList.contains("open") || el.id === "recOverlay");
+    });
+    return visible.length ? visible[visible.length - 1] : null;
+  }
+  function dialogOpened(overlay, initial) {
+    if (!overlay) return;
+    dialogReturnFocus.set(overlay, document.activeElement);
+    overlay.setAttribute("aria-hidden", "false");
+    window.setTimeout(function () {
+      var target = typeof initial === "string" ? overlay.querySelector(initial) : initial;
+      if (!target) target = overlay.querySelector('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]');
+      if (target && target.focus) target.focus();
+    }, 0);
+  }
+  function dialogClosed(overlay, fallback) {
+    if (!overlay) return;
+    overlay.setAttribute("aria-hidden", "true");
+    var target = dialogReturnFocus.get(overlay) || fallback;
+    if (target && target.offsetParent === null && fallback) target = fallback;
+    dialogReturnFocus.delete(overlay);
+    window.setTimeout(function () {
+      if (target && target.isConnected && target.focus) target.focus();
+    }, 0);
+  }
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Tab") return;
+    var overlay = visibleDialogOverlay();
+    if (!overlay) return;
+    var items = Array.prototype.slice.call(overlay.querySelectorAll(
+      'button:not([disabled]):not([hidden]),a[href],input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+    )).filter(function (el) { return el.offsetParent !== null; });
+    if (!items.length) { event.preventDefault(); return; }
+    var first = items[0], last = items[items.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    else if (!overlay.contains(document.activeElement)) { event.preventDefault(); first.focus(); }
+  }, true);
   // Escape ALL five HTML-significant chars. Quotes matter: md()'s link rule drops the URL into
   // href="$2", and a model/web-search result like [x](https://a"onmouseover="alert(1)) would
   // otherwise break out of the attribute (XSS). Escaping quotes also makes hlCode's string rule
@@ -1448,7 +1765,10 @@
   var UI_LANG = "en";
   // "zh-tw" MUST precede "zh": the prefix match below is first-wins, so navigator.language
   // "zh-TW"/"zh-HK" has to be tested against "zh-tw" before the bare "zh" (Simplified) swallows it.
-  var SUPPORTED = ["en", "zh-tw", "zh", "ja", "ko", "es", "fr", "de", "pt", "ru"];
+  // Only advertise languages that are complete across the workbench, mobile and remote surfaces.
+  // Partial dictionaries stay below as translation work-in-progress, but must never set an
+  // incorrect document language on an otherwise-English page.
+  var SUPPORTED = ["en", "zh-tw", "zh"];
   function resolveLang(v) {
     if (v && v !== "auto" && SUPPORTED.indexOf(v) >= 0) return v;
     var b = (navigator.language || "").toLowerCase();      // "pt-BR" -> pt, "zh-CN" -> zh, "zh-TW" -> zh-tw
@@ -1456,6 +1776,33 @@
     return "en";
   }
   var ZH = {
+    "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Library": "能力库", "Activity": "活动",
+    "Needs You": "需要你", "New task": "新任务", "Recent work": "最近工作",
+    "Ready to work": "随时可以开始", "What should we get done?": "我们要把什么事情做完？",
+    "Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.":
+      "告诉我你要的结果。Collie 会选择模型、工具、技能和执行者，持续推进任务，并交回证据。",
+    "Build or change something": "构建或修改", "Create, edit and test across the project.": "在整个项目中创建、修改并测试。",
+    "Research and decide": "研究并决策", "Investigate, compare and return a sourced recommendation.": "调查、比较，并给出有来源的建议。",
+    "Work across apps": "跨应用工作", "Use your signed-in browser and desktop tools.": "使用你已登录的浏览器和桌面工具。",
+    "Start a durable mission": "启动持续任务", "Keep moving across waits, retries and handoffs.": "跨越等待、重试和交接，持续推进。",
+    "Runs on this device": "在这台设备上运行", "Asks before sensitive actions": "敏感操作前询问",
+    "Returns scoped evidence": "交回有明确范围的证据", "Describe the outcome you want…": "描述你想达成的结果…",
+    "Auto is the default.": "默认由 Collie 自动选择。",
+    "Collie chooses a run plan from the task; override only when you need a specific boundary.": "Collie 会根据任务生成运行方案；只有需要特定边界时才手动覆盖。",
+    "Evidence": "证据", "No evidence yet": "尚无证据", "Checks appear here when they are relevant to the task.": "与任务相关的检查会显示在这里。",
+    "Shows the named checks Collie actually ran and the scope they cover.": "显示 Collie 实际执行的具名检查及其覆盖范围。",
+    "Collie will record the checks selected for this task and what they cover.": "Collie 会记录为本任务选择的检查及其覆盖范围。",
+    "Checking evidence…": "正在检查证据…", "Running the named check against the current result.": "正在针对当前结果运行具名检查。",
+    "✗ Check failed": "✗ 检查失败", "The recorded check did not pass; Collie must repair the result or report it as inconclusive.": "记录的检查未通过；Collie 必须修复结果，或明确报告无法得出结论。",
+    "✓ Check passed": "✓ 检查通过", "The named check passed. Open Run details to inspect its scope and evidence.": "具名检查已通过。打开运行详情可查看它的范围与证据。",
+    "No executed check": "没有已执行的检查", "This run made no code edit or no relevant executable check was selected.": "本次运行没有修改代码，或没有选择相关的可执行检查。",
+    "Changes save automatically.": "修改会自动保存。", "Close": "关闭",
+    "this computer": "这台电脑", "Your Collie on": "你的 Collie，运行于", "Runtime": "运行状态",
+    "Checking…": "检查中…", "Ready · supervisor connected": "就绪 · 监督进程已连接", "Needs attention": "需要处理",
+    "Unavailable": "不可用", "Default brain": "默认模型", "Automatic routing": "自动路由",
+    "Sensitive actions": "敏感操作", "Ask before acting": "操作前询问", "Recorded by check and scope": "按检查与范围记录",
+    "Choose a brain": "选择模型", "Review capabilities": "查看能力", "Manage connections": "管理连接",
+    "App connections": "应用连接", "Connections give Collie scoped tools from outside this device. Review their status and access here.": "连接会给 Collie 提供来自设备外部、权限明确的工具。你可以在这里查看状态与访问范围。",
     "MCP servers": "MCP 服务器",
     "No MCP servers configured yet.": "还没有配置 MCP 服务器。",
     "MCP servers give Collie tools from outside. Adding one hands Collie whatever tools that server exposes.": "MCP 服务器给 Collie 接上外部工具。加一个，等于把该服务器暴露的工具都交给 Collie 用。",
@@ -1471,9 +1818,52 @@
     "Sign in again": "重新登录", "Sign out": "退出登录", "Remove": "删除",
     "Remove the MCP server": "删除 MCP 服务器", "Its stored sign-in is deleted too.": "保存的登录凭据也会一并删除。",
     "Ask Collie to fix, build, or explain": "让 Collie 修复、构建或解释",
-    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.":
-      "它会先写一个复现、真的跑起来,直到检查变绿才收工——只用同类 agent 的一小部分 tokens。回答在这里流式出现;工具与 diff 在下方的运行抽屉里,验证门在左下角守着。",
+    "After edits, Auto asks for a relevant check; Verification · Required blocks completion until an executed assertion is green. The answer streams here, while tools and diffs live in the run drawer below.":
+      "编辑后，“自动”会在适用时要求执行检查；“验证 · 必须”则会阻止任务完成，直到实际执行的断言通过。回答会在这里流式显示，工具与 diff 位于下方的运行抽屉中。",
+    "Intent": "任务意图", "Build": "构建",
+    "Inspect, edit, run tools, and deliver the result": "检查、编辑、运行工具并交付结果",
+    "Plan · read-only": "计划 · 只读", "Tool gate blocks every write and command": "工具门禁会阻止所有写入和命令执行",
+    "Test · read-only": "测试 · 只读", "Run only the proposed check and record evidence": "只运行建议的检查并记录证据",
+    "Review · read-only": "审查 · 只读", "Report findings with file and line evidence": "用文件和行号证据报告问题",
+    "Run depth": "运行深度", "Quick": "快速", "Fewer turns for small, well-scoped work": "为小而明确的任务减少轮次",
+    "Reasoning effort": "推理强度", "Auto by task": "按任务自动", "Use the lowest reasoning level that fits": "使用足以完成任务的最低推理强度",
+    "Generation speed": "生成速度", "Proposed check": "建议检查", "Review": "审查", "Test": "测试",
+    "Effort": "执行深度", "Balanced": "均衡", "Default depth for everyday work": "日常任务的默认深度",
+    "Thorough · Extreme Herding": "深入 · Extreme Herding", "More turns and more repair rounds": "更多轮次与修复回合",
+    "Fast is not lower effort: real Fast keeps the same model and costs more. It will only appear for providers that can report that capability and price.": "Fast 不是降低执行深度：真正的 Fast 使用同一模型，但费用更高。只有能明确报告该能力和价格的提供商才会显示此选项。",
+    "Verification": "验证", "Auto": "自动", "Ask for a check after edits when one is relevant": "编辑后在适用时要求执行检查",
+    "Required": "必须", "Do not accept edited code without an executed assertion": "没有实际执行的断言就不接受代码修改",
+    "Workspace": "工作区", "Current files": "当前文件", "Edit the working tree you already have open": "编辑当前已打开的工作树",
+    "Isolated worktree": "隔离 worktree", "Run on its own branch and review the diff first": "在独立分支运行，并先审查 diff",
+    "Strategy": "执行策略", "Single run": "单次运行", "One agent, one result": "一个 agent，一个结果",
+    "Pack · best-of-N": "Pack · N 选一", "N isolated candidates, selected by an executed check": "运行 N 个隔离候选，并用实际检查选出结果",
+    "required check command — exit 0 = pass, e.g. pytest -q": "必须填写检查命令 — 退出码 0 表示通过，例如 pytest -q",
+    "apply winner to files": "将胜出结果应用到文件", "Plan": "计划", "Thorough": "深入", "Verify": "验证",
+    "Isolated": "隔离", "Pack": "Pack", "Run setup": "运行设置",
+    "Pack needs an executed check command to select a winner.": "Pack 需要一条实际执行的检查命令来选出胜出结果。",
+    "Attempts must be a whole number from 2 to 6.": "尝试次数必须是 2 到 6 之间的整数。",
+    "Attempts": "尝试次数", "How many isolated attempts": "要运行多少个隔离尝试", "Required Pack check command": "Pack 必填检查命令",
+    "Best for": "适合", "Not for": "不适合",
+    "bug fixes and tasks with a clear pass/fail check — it runs N isolated attempts and keeps the one that actually passes, so reliability beats a single try.": "有明确通过/失败检查的修复与任务。它会运行 N 个隔离尝试，并保留真正通过检查的结果，因此比单次尝试更可靠。",
+    "building large or new files: it is N× the cost, and nothing is written unless you choose apply winner (otherwise it is preview-only). For a large feature, use Single run and let it write incrementally.": "构建大型或全新文件。它的成本约为 N 倍；除非选择“应用胜出结果”，否则只预览、不写入。大型功能请使用“单次运行”，让 Collie 逐步写入。",
+    "Verification gate": "验证门禁", "Awaiting a task": "等待任务",
+    "Auto asks for a relevant check after edits; Required makes that check a finish gate.": "编辑后，“自动”会在适用时要求检查；“必须”会把该检查作为完成门禁。",
+    "Auto asks for a relevant check after edits; Verification · Required blocks completion until an executed assertion is green.": "编辑后，“自动”会在适用时要求检查；“验证 · 必须”会阻止任务完成，直到实际执行的断言通过。",
+    "Working…": "工作中…", "Collie is exploring. After an edit, the selected verification policy decides whether a check is advisory or required.": "Collie 正在探索。编辑后，所选验证策略决定检查是建议还是完成条件。",
+    "Verifying…": "验证中…", "Code changed — re-running the reproduction against the edit to confirm it prints green.": "代码已更改——正在对修改重新运行复现，确认结果通过。",
+    "✗ Reproduction failing": "✗ 复现失败", "The check errored or printed the wrong result — Collie loops back to repair, it will not finish here.": "检查报错或结果不正确——Collie 会返回修复，不会在这里结束。",
+    "✓ Reproduction passing": "✓ 复现通过", "An actual run on the fixed code came back green. This is the gate Collie ships on.": "检查已在修复后的代码上实际运行并通过。这才是可交付的门禁证据。",
+    "No gate needed": "无需门禁", "This run made no code edit, so there was nothing to reproduce — informational answer only.": "本次运行没有修改代码，因此无需复现——仅提供信息。",
+    "Pack stopped": "Pack 已停止", "No winner": "没有胜出结果", "Attempt": "尝试", "won": "胜出",
+    "stopped before the run started": "已在任务开始前停止",
+    "applied to files ✓": "已应用到文件 ✓", "apply failed — winner was not written": "应用失败——胜出结果未写入",
+    "not applied (preview only)": "未应用（仅预览）", "stopped": "已停止", "Pack finished with an error": "Pack 结束时发生错误",
+    "Pack · best-of-{n}": "Pack · {n} 选一", "running {n} attempts…": "正在运行 {n} 个尝试…", "check:": "检查：", "no check (Collie's own verify picks)": "无额外检查（由 Collie 自身验证选择）",
+    "apply on": "将应用结果", "queued": "等待中", "error": "错误", "check failed": "检查失败",
+    "verified ✓ · check ✓": "已验证 ✓ · 检查 ✓", "verified ✓": "已验证 ✓", "check ✓": "检查 ✓", "ran": "已运行",
+    "turn": "轮", "turns": "轮", "attempt {n} done…": "尝试 {n} 已完成…", "nothing passed the check": "没有候选结果通过检查",
     "Ask Collie to fix, build, or explain something…": "让 Collie 修复、构建或解释点什么…",
+    "Image upload failed — no run was started.": "图片上传失败——任务未启动。",
     "Steer while Collie works — Enter to send": "运行中可继续输入转向 — Enter 发送",
     "New thread": "新会话",
     "run details": "运行详情",
@@ -1521,10 +1911,80 @@
   // Traditional Chinese (Taiwan idiom). Generated from ZH via OpenCC s2twp — 設定/儲存/載入/訊息/
   // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
   var ZHTW = {
+    "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Library": "能力庫", "Activity": "活動",
+    "Needs You": "需要你", "New task": "新任務", "Recent work": "最近工作",
+    "Ready to work": "隨時可以開始", "What should we get done?": "我們要把什麼事情做完？",
+    "Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.":
+      "告訴我你要的結果。Collie 會選擇模型、工具、技能和執行者，持續推進任務，並交回證據。",
+    "Build or change something": "構建或修改", "Create, edit and test across the project.": "在整個專案中建立、修改並測試。",
+    "Research and decide": "研究並決策", "Investigate, compare and return a sourced recommendation.": "調查、比較，並給出有來源的建議。",
+    "Work across apps": "跨應用程式工作", "Use your signed-in browser and desktop tools.": "使用你已登入的瀏覽器和桌面工具。",
+    "Start a durable mission": "啟動持續任務", "Keep moving across waits, retries and handoffs.": "跨越等待、重試和交接，持續推進。",
+    "Runs on this device": "在這台裝置上執行", "Asks before sensitive actions": "敏感操作前詢問",
+    "Returns scoped evidence": "交回有明確範圍的證據", "Describe the outcome you want…": "描述你想達成的結果…",
+    "Auto is the default.": "預設由 Collie 自動選擇。",
+    "Collie chooses a run plan from the task; override only when you need a specific boundary.": "Collie 會根據任務產生執行方案；只有需要特定邊界時才手動覆蓋。",
+    "Evidence": "證據", "No evidence yet": "尚無證據", "Checks appear here when they are relevant to the task.": "與任務相關的檢查會顯示在這裡。",
+    "Shows the named checks Collie actually ran and the scope they cover.": "顯示 Collie 實際執行的具名檢查及其涵蓋範圍。",
+    "Collie will record the checks selected for this task and what they cover.": "Collie 會記錄為本任務選擇的檢查及其涵蓋範圍。",
+    "Checking evidence…": "正在檢查證據…", "Running the named check against the current result.": "正在針對目前結果執行具名檢查。",
+    "✗ Check failed": "✗ 檢查失敗", "The recorded check did not pass; Collie must repair the result or report it as inconclusive.": "記錄的檢查未通過；Collie 必須修復結果，或明確回報無法得出結論。",
+    "✓ Check passed": "✓ 檢查通過", "The named check passed. Open Run details to inspect its scope and evidence.": "具名檢查已通過。開啟執行詳情可查看它的範圍與證據。",
+    "No executed check": "沒有已執行的檢查", "This run made no code edit or no relevant executable check was selected.": "本次執行沒有修改程式碼，或沒有選擇相關的可執行檢查。",
+    "Changes save automatically.": "變更會自動儲存。", "Close": "關閉",
+    "this computer": "這台電腦", "Your Collie on": "你的 Collie，執行於", "Runtime": "執行狀態",
+    "Checking…": "檢查中…", "Ready · supervisor connected": "就緒 · 監督程序已連線", "Needs attention": "需要處理",
+    "Unavailable": "無法使用", "Default brain": "預設模型", "Automatic routing": "自動路由",
+    "Sensitive actions": "敏感操作", "Ask before acting": "操作前詢問", "Recorded by check and scope": "按檢查與範圍記錄",
+    "Choose a brain": "選擇模型", "Review capabilities": "查看能力", "Manage connections": "管理連線",
+    "App connections": "應用程式連線", "Connections give Collie scoped tools from outside this device. Review their status and access here.": "連線會給 Collie 提供來自裝置外部、權限明確的工具。你可以在這裡查看狀態與存取範圍。",
     "Ask Collie to fix, build, or explain": "讓 Collie 修復、構建或解釋",
-    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.":
-      "它會先寫一個復現、真的跑起來,直到檢查變綠才收工——只用同類 agent 的一小部分 tokens。回答在這裡流式出現;工具與 diff 在下方的執行抽屜裡,驗證門在左下角守著。",
+    "After edits, Auto asks for a relevant check; Verification · Required blocks completion until an executed assertion is green. The answer streams here, while tools and diffs live in the run drawer below.":
+      "編輯後，「自動」會在適用時要求執行檢查；「驗證 · 必須」則會阻止任務完成，直到實際執行的斷言通過。回答會在這裡即時顯示，工具與 diff 位於下方的執行抽屜中。",
+    "Intent": "任務意圖", "Build": "構建",
+    "Inspect, edit, run tools, and deliver the result": "檢查、編輯、執行工具並交付結果",
+    "Plan · read-only": "計畫 · 唯讀", "Tool gate blocks every write and command": "工具閘門會阻止所有寫入和命令執行",
+    "Test · read-only": "測試 · 唯讀", "Run only the proposed check and record evidence": "只執行建議的檢查並記錄證據",
+    "Review · read-only": "審查 · 唯讀", "Report findings with file and line evidence": "用檔案和行號證據回報問題",
+    "Run depth": "執行深度", "Quick": "快速", "Fewer turns for small, well-scoped work": "為小而明確的任務減少輪次",
+    "Reasoning effort": "推理強度", "Auto by task": "按任務自動", "Use the lowest reasoning level that fits": "使用足以完成任務的最低推理強度",
+    "Generation speed": "生成速度", "Proposed check": "建議檢查", "Review": "審查", "Test": "測試",
+    "Effort": "執行深度", "Balanced": "均衡", "Default depth for everyday work": "日常任務的預設深度",
+    "Thorough · Extreme Herding": "深入 · Extreme Herding", "More turns and more repair rounds": "更多輪次與修復回合",
+    "Fast is not lower effort: real Fast keeps the same model and costs more. It will only appear for providers that can report that capability and price.": "Fast 不是降低執行深度：真正的 Fast 使用同一模型，但費用更高。只有能明確回報該能力和價格的供應商才會顯示此選項。",
+    "Verification": "驗證", "Auto": "自動", "Ask for a check after edits when one is relevant": "編輯後在適用時要求執行檢查",
+    "Required": "必須", "Do not accept edited code without an executed assertion": "沒有實際執行的斷言就不接受程式碼修改",
+    "Workspace": "工作區", "Current files": "目前檔案", "Edit the working tree you already have open": "編輯目前已開啟的工作樹",
+    "Isolated worktree": "隔離 worktree", "Run on its own branch and review the diff first": "在獨立分支執行，並先審查 diff",
+    "Strategy": "執行策略", "Single run": "單次執行", "One agent, one result": "一個 agent，一個結果",
+    "Pack · best-of-N": "Pack · N 選一", "N isolated candidates, selected by an executed check": "執行 N 個隔離候選，並用實際檢查選出結果",
+    "required check command — exit 0 = pass, e.g. pytest -q": "必須填寫檢查命令 — 結束碼 0 表示通過，例如 pytest -q",
+    "apply winner to files": "將勝出結果套用到檔案", "Plan": "計畫", "Thorough": "深入", "Verify": "驗證",
+    "Isolated": "隔離", "Pack": "Pack", "Run setup": "執行設定",
+    "Pack needs an executed check command to select a winner.": "Pack 需要一條實際執行的檢查命令來選出勝出結果。",
+    "Attempts must be a whole number from 2 to 6.": "嘗試次數必須是 2 到 6 之間的整數。",
+    "Attempts": "嘗試次數", "How many isolated attempts": "要執行多少個隔離嘗試", "Required Pack check command": "Pack 必填檢查命令",
+    "Best for": "適合", "Not for": "不適合",
+    "bug fixes and tasks with a clear pass/fail check — it runs N isolated attempts and keeps the one that actually passes, so reliability beats a single try.": "有明確通過/失敗檢查的修復與任務。它會執行 N 個隔離嘗試，並保留真正通過檢查的結果，因此比單次嘗試更可靠。",
+    "building large or new files: it is N× the cost, and nothing is written unless you choose apply winner (otherwise it is preview-only). For a large feature, use Single run and let it write incrementally.": "構建大型或全新檔案。它的成本約為 N 倍；除非選擇「套用勝出結果」，否則只預覽、不寫入。大型功能請使用「單次執行」，讓 Collie 逐步寫入。",
+    "Verification gate": "驗證閘門", "Awaiting a task": "等待任務",
+    "Auto asks for a relevant check after edits; Required makes that check a finish gate.": "編輯後，「自動」會在適用時要求檢查；「必須」會把該檢查作為完成閘門。",
+    "Auto asks for a relevant check after edits; Verification · Required blocks completion until an executed assertion is green.": "編輯後，「自動」會在適用時要求檢查；「驗證 · 必須」會阻止任務完成，直到實際執行的斷言通過。",
+    "Working…": "執行中…", "Collie is exploring. After an edit, the selected verification policy decides whether a check is advisory or required.": "Collie 正在探索。編輯後，所選驗證策略決定檢查是建議還是完成條件。",
+    "Verifying…": "驗證中…", "Code changed — re-running the reproduction against the edit to confirm it prints green.": "程式碼已變更——正在對修改重新執行復現，確認結果通過。",
+    "✗ Reproduction failing": "✗ 復現失敗", "The check errored or printed the wrong result — Collie loops back to repair, it will not finish here.": "檢查出錯或結果不正確——Collie 會返回修復，不會在這裡結束。",
+    "✓ Reproduction passing": "✓ 復現通過", "An actual run on the fixed code came back green. This is the gate Collie ships on.": "檢查已在修復後的程式碼上實際執行並通過。這才是可交付的閘門證據。",
+    "No gate needed": "無需閘門", "This run made no code edit, so there was nothing to reproduce — informational answer only.": "本次執行沒有修改程式碼，因此無需復現——僅提供資訊。",
+    "Pack stopped": "Pack 已停止", "No winner": "沒有勝出結果", "Attempt": "嘗試", "won": "勝出",
+    "stopped before the run started": "已在任務開始前停止",
+    "applied to files ✓": "已套用到檔案 ✓", "apply failed — winner was not written": "套用失敗——勝出結果未寫入",
+    "not applied (preview only)": "未套用（僅預覽）", "stopped": "已停止", "Pack finished with an error": "Pack 結束時發生錯誤",
+    "Pack · best-of-{n}": "Pack · {n} 選一", "running {n} attempts…": "正在執行 {n} 個嘗試…", "check:": "檢查：", "no check (Collie's own verify picks)": "無額外檢查（由 Collie 自身驗證選擇）",
+    "apply on": "將套用結果", "queued": "等待中", "error": "錯誤", "check failed": "檢查失敗",
+    "verified ✓ · check ✓": "已驗證 ✓ · 檢查 ✓", "verified ✓": "已驗證 ✓", "check ✓": "檢查 ✓", "ran": "已執行",
+    "turn": "輪", "turns": "輪", "attempt {n} done…": "嘗試 {n} 已完成…", "nothing passed the check": "沒有候選結果通過檢查",
     "Ask Collie to fix, build, or explain something…": "讓 Collie 修復、構建或解釋點什麼…",
+    "Image upload failed — no run was started.": "圖片上傳失敗——任務未啟動。",
     "Steer while Collie works — Enter to send": "執行中可繼續輸入轉向 — Enter 傳送",
     "New thread": "新會話",
     "run details": "執行詳情",
@@ -1786,18 +2246,48 @@
     ru: { "General": "Общие", "Model": "Модель", "Tools": "Инструменты", "Retrieval": "Поиск", "Limits": "Лимиты", "Privacy": "Приватность", "Reliability": "Надёжность", "Skills": "Навыки" }
   };
   function t(en) { var d = I18N[UI_LANG]; return (d && d[en]) || en; }
+  var COLLIE_IDENTITY = {};
+  function collieName() {
+    var raw = String(COLLIE_IDENTITY.name || "Collie");
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+  function renderCollieIdentity() {
+    var name = collieName(), machine = COLLIE_IDENTITY.machine || t("this computer");
+    document.querySelectorAll("[data-collie-name]").forEach(function (el) { el.textContent = name; });
+    document.querySelectorAll("[data-collie-machine]").forEach(function (el) { el.textContent = machine; });
+    document.querySelectorAll("[data-collie-kicker]").forEach(function (el) {
+      el.textContent = name.toUpperCase() + " · " + String(machine).toUpperCase();
+    });
+    var loc = $("collieLocation");
+    if (loc) loc.textContent = [machine, COLLIE_IDENTITY.os].filter(Boolean).join(" · ") || t("this computer");
+    document.querySelectorAll("[data-collie-avatar]").forEach(function (img) {
+      img.src = COLLIE_IDENTITY.avatarFailed ? "/logo.svg" : "/api/avatar.png";
+      img.onerror = function () { this.onerror = null; COLLIE_IDENTITY.avatarFailed = true; this.src = "/logo.svg"; };
+    });
+    document.title = name === "Collie" ? "Collie · Home" : name + " · Collie";
+  }
+  fetch("/api/whoami").then(function (r) { return r.json(); }).then(function (d) {
+    COLLIE_IDENTITY = d || {}; renderCollieIdentity();
+  }).catch(function () { renderCollieIdentity(); });
   function applyLang() {
     // static chrome (live nodes + templates); dynamic strings route through t() at their call sites
-    var wt = document.querySelector(".wc-title"), ws = document.querySelector(".wc-sub");
-    if (wt) wt.textContent = t("Ask Collie to fix, build, or explain");
-    if (ws) ws.textContent = t("It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.");
+    document.querySelectorAll("[data-i18n]").forEach(function (el) {
+      el.textContent = t(el.getAttribute("data-i18n"));
+    });
+    document.querySelectorAll("[data-i18n-placeholder]").forEach(function (el) {
+      el.placeholder = t(el.getAttribute("data-i18n-placeholder"));
+    });
+    document.querySelectorAll("[data-i18n-title]").forEach(function (el) {
+      el.title = t(el.getAttribute("data-i18n-title"));
+    });
+    document.querySelectorAll("[data-i18n-aria-label]").forEach(function (el) {
+      el.setAttribute("aria-label", t(el.getAttribute("data-i18n-aria-label")));
+    });
     var hint = document.querySelector(".hint");
     if (hint) hint.innerHTML = ((I18N[UI_LANG] || {}).__kbd)
       || "<kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · streams live over SSE";
     var inp = $("input");
-    if (inp && !running) inp.placeholder = t("Ask Collie to fix, build, or explain something…");
-    var nb = $("newChat");
-    if (nb) nb.childNodes[nb.childNodes.length - 1].textContent = "\n      " + t("New thread") + "\n    ";
+    if (inp && !running) inp.placeholder = t("Describe the outcome you want…");
     var runDetails = $("runDetailsBtn");
     if (runDetails) {
       runDetails.title = t("run details");
@@ -1805,7 +2295,13 @@
     }
     var st = $("setTitle"); if (st) st.textContent = t("Settings");
     var sc = $("setCancel"); if (sc) sc.textContent = t("Cancel");
-    var sv = $("setSave"); if (sv) sv.textContent = t("Done");
+    var sv = $("setSave"); if (sv) sv.textContent = t("Close");
+    var gate = $("gate");
+    if (gate && typeof setGate === "function" && typeof GATE !== "undefined") {
+      setGate(gate.getAttribute("data-state") || "idle");
+    }
+    if (typeof renderCollieIdentity === "function") renderCollieIdentity();
+    if (window.refreshRunSetup) window.refreshRunSetup();
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -1826,18 +2322,29 @@
   function setEsc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
-  // Six categories over the schema's ten groups. Four of those groups hold one row each, which is
-  // why the old single scroll had no shape. `groups: null` marks the category that is not
-  // schema-driven at all (MCP is a list of servers with their own live state, not a value).
+  // Settings follow the product objects users reason about, rather than exposing the storage
+  // schema's implementation groups. Every key is still rendered from the server schema, so types,
+  // bounds and provider-owned defaults remain authoritative.
   var SET_CATS = [
-    { id: "essentials", label: "Essentials", zh: "常用",     groups: ["General", "Model"] },
-    { id: "caps",       label: "Capabilities", zh: "能力",   groups: ["Tools", "Desktop"] },
-    { id: "mcp",        label: "MCP",        zh: "MCP",      groups: null },
-    { id: "memory",     label: "Memory",     zh: "记忆检索", groups: ["Retrieval", "Skills"] },
-    { id: "limits",     label: "Limits",     zh: "限额可靠", groups: ["Limits", "Reliability"] },
-    { id: "privacy",    label: "Privacy",    zh: "隐私远程", groups: ["Privacy", "Remote"] }
+    { id: "overview", label: "My Collie", zh: "我的 Collie", kind: "overview", keys: [] },
+    { id: "brains", label: "Brains & routing", zh: "模型与路由",
+      keys: ["PROVIDER", "MODEL", "REASONING_EFFORT"] },
+    { id: "caps", label: "Capabilities", zh: "能力",
+      keys: ["WEBSEARCH", "BROWSER_BRIDGE", "PLAN_FIRST", "MCP_MANAGE"] },
+    { id: "devices", label: "Desktop & devices", zh: "桌面与设备",
+      keys: ["WALLPAPER", "DESKTOP_CONTROL", "SCREEN_CAPTURE", "REMOTE"] },
+    { id: "mcp", label: "Connections", zh: "连接",
+      keys: [], mcp: true },
+    { id: "memory", label: "Memory", zh: "记忆",
+      keys: ["EMBED", "DISTILL"] },
+    { id: "autonomy", label: "Autonomy & limits", zh: "自主与限额",
+      keys: ["MAX_TURNS", "MAX_COST", "MAX_TOTAL_TOKENS", "RETRIES", "OVERFLOW_RECOVERY"] },
+    { id: "privacy", label: "Privacy & security", zh: "隐私与安全",
+      keys: ["REDACT_SECRETS"] },
+    { id: "advanced", label: "Advanced", zh: "高级",
+      keys: ["LANG", "TEMPERATURE", "MAX_TOKENS", "HF_ENDPOINT", "RECENCY_HALFLIFE", "RERANK", "RETRY_BASE", "SKILL_DIRS"] }
   ];
-  var setActiveCat = "essentials";
+  var setActiveCat = "overview";
 
   function setPick(id) {
     setActiveCat = id;
@@ -1882,17 +2389,16 @@
   }
 
   function renderSettings(schema, values) {
-    var groups = [], seen = {};
-    schema.forEach(function (s) { if (!seen[s.group]) { seen[s.group] = []; groups.push(s.group); } seen[s.group].push(s); });
-    var html = "";
+    var byKey = {}, schemaKeys = [];
+    schema.forEach(function (s) { byKey[s.key] = s; schemaKeys.push(s.key); });
     // the schema (settings.py) only carries label_zh, so a Traditional user borrows the Simplified
     // panel labels — the chrome above is already proper Traditional via ZHTW; this is the secondary
     // surface, and 简体 labels beat English ones for a zh-tw reader.
     var L = (UI_LANG === "zh-tw") ? "zh" : UI_LANG, loc = L !== "en";
 
-    function groupHtml(g) {
+    function groupHtml(g, items) {
       var html = '<div class="set-group"><h4>' + setEsc(loc && GROUPS_I18N[L] && GROUPS_I18N[L][g] || g) + "</h4>";
-      (seen[g] || []).forEach(function (s) {
+      (items || []).forEach(function (s) {
         var v = values[s.key], id = "set_" + s.key, ctl;
         if (s.type === "select") {
           ctl = '<select id="' + id + '" data-key="' + s.key + '">' + (s.options || []).map(function (o) {
@@ -1924,27 +2430,55 @@
       return html + "</div>";
     }
 
-    // Any group the categories do not claim still has to appear — a setting added to settings.py
-    // later must not silently vanish from the panel because nobody updated a list over here.
+    function keysHtml(keys) {
+      var order = [], grouped = {};
+      (keys || []).forEach(function (key) {
+        var item = byKey[key]; if (!item) return;
+        var g = item.group || "Settings";
+        if (!grouped[g]) { grouped[g] = []; order.push(g); }
+        grouped[g].push(item);
+      });
+      return order.map(function (g) { return groupHtml(g, grouped[g]); }).join("");
+    }
+
+    function overviewHtml() {
+      var ident = (typeof COLLIE_IDENTITY !== "undefined" && COLLIE_IDENTITY) || {};
+      var name = ident.name || "Collie", machine = ident.machine || t("this computer");
+      var brain = [values.PROVIDER, values.MODEL].filter(Boolean).join(" · ") || t("Automatic routing");
+      return '<div class="set-overview"><div class="set-overview-hero set-row">'
+        + '<img data-collie-avatar src="/api/avatar.png" alt=""><div><h3 data-collie-name>' + setEsc(name) + '</h3>'
+        + '<p>' + setEsc(t("Your Collie on")) + ' <span data-collie-machine>' + setEsc(machine) + '</span></p></div></div>'
+        + '<div class="set-overview-grid">'
+        + '<div class="set-overview-card"><div class="k">' + setEsc(t("Runtime")) + '</div><div class="v" id="settingsRuntimeStatus">' + setEsc(t("Checking…")) + '</div></div>'
+        + '<div class="set-overview-card"><div class="k">' + setEsc(t("Default brain")) + '</div><div class="v">' + setEsc(brain) + '</div></div>'
+        + '<div class="set-overview-card"><div class="k">' + setEsc(t("Sensitive actions")) + '</div><div class="v">' + setEsc(t("Ask before acting")) + '</div></div>'
+        + '<div class="set-overview-card"><div class="k">' + setEsc(t("Evidence")) + '</div><div class="v">' + setEsc(t("Recorded by check and scope")) + '</div></div></div>'
+        + '<div class="set-quicklinks"><button data-settings-jump="brains">' + setEsc(t("Choose a brain")) + '</button>'
+        + '<button data-settings-jump="caps">' + setEsc(t("Review capabilities")) + '</button>'
+        + '<button data-settings-jump="mcp">' + setEsc(t("Manage connections")) + '</button></div></div>';
+    }
+
+    // A new server-side setting must never disappear just because the client category map has not
+    // caught up. Unclaimed keys are placed in Other and remain searchable/editable.
     var claimed = {};
-    SET_CATS.forEach(function (c) { (c.groups || []).forEach(function (g) { claimed[g] = 1; }); });
-    var orphans = groups.filter(function (g) { return !claimed[g]; });
+    SET_CATS.forEach(function (c) { (c.keys || []).forEach(function (key) { claimed[key] = 1; }); });
+    var orphans = schemaKeys.filter(function (key) { return !claimed[key]; });
     var cats = SET_CATS.slice();
-    if (orphans.length) cats.push({ id: "other", label: "Other", zh: "其他", groups: orphans });
+    if (orphans.length) cats.push({ id: "other", label: "Other", zh: "其他", keys: orphans });
 
     var rail = '<input class="set-search" id="setSearch" placeholder="' + setEsc(t("Search settings…")) + '">';
     var panes = "";
     cats.forEach(function (c) {
-      var count = c.groups ? c.groups.reduce(function (n, g) { return n + ((seen[g] || []).length); }, 0) : 0;
+      var count = (c.keys || []).filter(function (key) { return !!byKey[key]; }).length;
       var on = c.id === setActiveCat ? " on" : "";
       rail += '<button class="set-nav' + on + '" data-cat="' + c.id + '">'
             + setEsc(loc && c.zh ? c.zh : c.label)
-            + (c.groups ? '<span class="n">' + count + "</span>" : "") + "</button>";
-      var body = c.groups
-        ? c.groups.map(groupHtml).join("")
-        : '<p class="set-hint" style="margin:12px 0 10px">'
-          + setEsc(t("MCP servers give Collie tools from outside. Adding one hands Collie whatever tools that server exposes."))
-          + '</p><div id="mcpBox"></div>';
+            + (count ? '<span class="n">' + count + "</span>" : "") + "</button>";
+      var body = c.kind === "overview" ? overviewHtml() : keysHtml(c.keys);
+      if (c.mcp) body += '<div class="set-group"><h4>' + setEsc(t("App connections")) + '</h4>'
+          + '<p class="set-hint" style="margin:0 0 10px">'
+          + setEsc(t("Connections give Collie scoped tools from outside this device. Review their status and access here."))
+          + '</p><div id="mcpBox"></div></div>';
       panes += '<div class="set-pane' + on + '" data-cat="' + c.id + '"><h3>'
              + setEsc(loc && c.zh ? c.zh : c.label) + "</h3>" + body + "</div>";
     });
@@ -1953,8 +2487,21 @@
     setBody.querySelectorAll(".set-nav").forEach(function (n) {
       n.onclick = function () { var s = document.getElementById("setSearch"); if (s) s.value = ""; setFilter(""); setPick(n.dataset.cat); };
     });
+    setBody.querySelectorAll("[data-settings-jump]").forEach(function (button) {
+      button.onclick = function () { setPick(button.getAttribute("data-settings-jump")); };
+    });
     var box = document.getElementById("setSearch");
     if (box) box.oninput = function () { setFilter(box.value); };
+    if (typeof renderCollieIdentity === "function") renderCollieIdentity();
+    loadSettingsOverview();
+  }
+
+  function loadSettingsOverview() {
+    var node = document.getElementById("settingsRuntimeStatus");
+    if (!node) return;
+    fetch("/api/healthz").then(function (r) { return r.json(); }).then(function (d) {
+      node.textContent = d && (d.ok === true || d.status === "ok") ? t("Ready · supervisor connected") : t("Needs attention");
+    }).catch(function () { node.textContent = t("Unavailable"); });
   }
 
   // ---- MCP control plane (inside the settings modal) --------------------
@@ -2126,9 +2673,11 @@
     }).catch(function () { b.disabled = false; });
   });
 
-  function openSettings() {
+  function openSettings(category) {
+    if (category) setActiveCat = category;
     setStatus.textContent = t("loading…"); setStatus.className = "set-status";
     setOverlay.classList.add("open");
+    dialogOpened(setOverlay, "#setClose");
     // One catch covered the fetch, the JSON parse, renderSettings AND mcpLoad, and reported all
     // four as "failed to load" — so a render bug read as a dead server. The fetch is separated
     // from what happens to its result, and the message now carries the actual reason: a panel
@@ -2158,9 +2707,13 @@
       })
       .catch(function () {});          // both arms already reported; keep it off the console as unhandled
   }
-  function closeSettings() { setOverlay.classList.remove("open"); clearInterval(mcpPollTimer); }
+  function closeSettings() {
+    setOverlay.classList.remove("open"); clearInterval(mcpPollTimer);
+    dialogClosed(setOverlay, $("settingsBtn"));
+    if ($("navLibrary") && $("navLibrary").classList.contains("on") && typeof setProductNav === "function") setProductNav("home");
+  }
 
-  $("settingsBtn").onclick = openSettings;
+  $("settingsBtn").onclick = function () { openSettings(); };
 
   // ---- rewind: undo a run's edits --------------------------------------
   // The button appears only when a snapshot really exists. Restoring is destructive and cannot
@@ -2212,7 +2765,7 @@
 
   // ---- onboarding: first-run "pick a brain" ----------------------------
   var obOverlay = $("obOverlay");
-  function obClose() { obOverlay.classList.remove("open"); }
+  function obClose() { obOverlay.classList.remove("open"); dialogClosed(obOverlay, $("input")); }
   // Skip is remembered for THIS SESSION only. Connecting a brain needs no flag at all — the
   // configured provider becomes authed, so the trigger below simply stops firing. (A localStorage
   // "onboarded" flag was worse: after the settings were wiped collie silently ran on the mock
@@ -2267,7 +2820,7 @@
     if (!order.length) {
       $("obLabel").textContent = "Connect a brain";
       var em = document.createElement("div"); em.className = "ob-empty";
-      em.textContent = "No brain detected yet. Paste an API key below, or run a local model with Ollama — Collie finds it automatically.";
+      em.textContent = "No brain detected yet. Connect a subscription, configure an API key in Collie's launch environment, or run Ollama locally — Collie detects it automatically.";
       grid.appendChild(em); return;
     }
     $("obLabel").textContent = "Ready to use";
@@ -2291,10 +2844,13 @@
   }
   function obOpen() {
     fetch("/api/models?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
-      .then(function (d) { obRender((d || {}).entries); obOverlay.classList.add("open"); })
+      .then(function (d) { obRender((d || {}).entries); obOverlay.classList.add("open"); dialogOpened(obOverlay, ".ob-brain, #obKeyBtn"); })
       .catch(function () {});
   }
-  $("obKeyBtn").addEventListener("click", function () { obClose(); openSettings(); });
+  $("obKeyBtn").addEventListener("click", function () {
+    var help = $("obKeyHelp"), open = help.hidden;
+    help.hidden = !open; $("obKeyBtn").textContent = open ? "Hide setup" : "Show setup";
+  });
   $("obBrowse").addEventListener("click", function () { obClose(); openModelPicker(); });
   $("obSkip").addEventListener("click", obSkipped);
   obOverlay.addEventListener("click", function (ev) { if (ev.target === obOverlay) obSkipped(); });
@@ -2318,14 +2874,14 @@
         var working = prov && prov !== "mock" && entries.some(function (e) {
           return e.provider === prov && e.auth === "ok";
         });
-        if (!working) { obRender(entries); obOverlay.classList.add("open"); }
+        if (!working) { obRender(entries); obOverlay.classList.add("open"); dialogOpened(obOverlay, ".ob-brain, #obKeyBtn"); }
       }).catch(function () {});
   })();
 
   // ---- connect your browser (optional; offered after picking a brain, and from Settings) --------
   var brOverlay = $("brOverlay"), brTimer = null, brExtPath = "";
   function brStop() { if (brTimer) { clearTimeout(brTimer); brTimer = null; } }
-  function brClose() { brStop(); brOverlay.classList.remove("open"); }
+  function brClose() { brStop(); brOverlay.classList.remove("open"); dialogClosed(brOverlay, $("input")); }
   function brFinish() { brClose(); obDone(); }
   function brSetStatus(kind, text) {
     $("brDot").className = "br-dot" + (kind ? " " + kind : "");
@@ -2364,6 +2920,7 @@
     $("brSteps").innerHTML = ""; $("brDone").style.display = "none"; $("brOpenExt").style.display = "none";
     $("brSkip").style.display = ""; brSetStatus("wait", "Starting the local bridge…");
     brOverlay.classList.add("open");
+    dialogOpened(brOverlay, "#brSkip");
     fetch("/api/browser/start?token=" + encodeURIComponent(CT), { method: "POST" })
       .then(function (r) { return r.json(); }).then(function (d) {
         brBuildSteps(d || {}); brSetStatus("wait", "Waiting for the extension to connect…"); brPollLoop();
@@ -2376,13 +2933,13 @@
 
   // ---- ambient desktop (optional; Windows only; offered between pick-a-brain and connect-browser) --
   var amOverlay = $("amOverlay");
-  function amClose() { amOverlay.classList.remove("open"); }
+  function amClose() { amOverlay.classList.remove("open"); dialogClosed(amOverlay, $("input")); }
   function amNext() { amClose(); if (window.collieConnectBrowser) window.collieConnectBrowser(); else obDone(); }
   function amOpen() {
     // The ambient desktop is a Windows feature — on anything else, skip straight to the browser step.
     var isWin = /Win/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "");
     if (!isWin) { amNext(); return; }
-    amOverlay.classList.add("open");
+    amOverlay.classList.add("open"); dialogOpened(amOverlay, "#amEnable");
   }
   window.collieAmbientStep = amOpen;   // the pick-a-brain step chains here first
   function amSet(on, then) {
@@ -2396,80 +2953,93 @@
   });
   $("amSkip").addEventListener("click", function () { amSet(false, amNext); });
   amOverlay.addEventListener("click", function (ev) { if (ev.target === amOverlay) amNext(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (amOverlay.classList.contains("open")) { e.preventDefault(); amNext(); }
+    else if (brOverlay.classList.contains("open")) { e.preventDefault(); brFinish(); }
+    else if (obOverlay.classList.contains("open")) { e.preventDefault(); obSkipped(); }
+  });
 
-  $("setClose").onclick = closeSettings;
-  $("setCancel").onclick = closeSettings;
-  setOverlay.addEventListener("click", function (e) { if (e.target === setOverlay) closeSettings(); });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && setOverlay.classList.contains("open")) closeSettings(); });
-
-  // Settings apply on change. The Save button made a panel of independent switches behave like a
-  // form: you could change five things and find out afterwards which one broke, and "saved" only
-  // ever meant the file was written — which is precisely the false confidence that hid a bug where
-  // the value never reached the process that reads it. One control, one write, one verdict.
-  function currentSettingValues() {
-    var vals = {};
-    // The wrapper row carries data-key too, so select the CONTROLS. Reading `.value` off the row
-    // yields undefined, which survived only because document order happens to put the control
-    // second and overwrite it — an ordering accident, not a design.
-    setBody.querySelectorAll("input[data-key], select[data-key], textarea[data-key]").forEach(function (el) {
-      vals[el.getAttribute("data-key")] = el.getAttribute("data-bool") ? (el.checked ? "on" : "off") : el.value;
-    });
-    return vals;
+  // One setting, one write. This prevents a delayed text-field save from replaying stale values
+  // over a model change made elsewhere, and makes an apply failure belong to the exact control.
+  var _applyTimers = Object.create(null), _pendingSettings = Object.create(null);
+  var _settingWrites = Promise.resolve(true);
+  function settingValue(el) {
+    return el.getAttribute("data-bool") ? (el.checked ? "on" : "off") : el.value;
   }
-
   function applySetting(key, el) {
-    var vals = currentSettingValues();
-    setStatus.textContent = t("saving…"); setStatus.className = "set-status";
-    if (el) el.classList.add("saving");
-    return fetch("/api/settings?token=" + encodeURIComponent(CT), {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(vals)
-    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-      .then(function (res) {
-        if (el) el.classList.remove("saving");
-        if (!(res.ok && res.d.ok)) {
-          setStatus.textContent = (res.d && res.d.error) || t("could not apply");
-          setStatus.className = "set-status err";
-          return;
-        }
-        var saved = res.d.values || {};
-        // Report what the server ACTUALLY holds, not what was sent. A key pinned by a real
-        // environment variable is accepted, stored, and then ignored — silently, until now.
-        if (key && saved[key] !== undefined && String(saved[key]) !== String(vals[key])) {
-          setStatus.textContent = t("this setting is held by an environment variable — ") + key +
-                                  " = " + saved[key];
-          setStatus.className = "set-status err";
-        } else {
-          setStatus.textContent = t("applied");
-          setStatus.className = "set-status ok";
-          setTimeout(function () {
-            if (setStatus.textContent === t("applied")) setStatus.textContent = "";
-          }, 1400);
-        }
-        if (key === "LANG") { UI_LANG = resolveLang(saved.LANG); applyLang(); }
-        if (key === "PROVIDER" || key === "MODEL") loadModelCatalog(false);
-      })
-      .catch(function () {
-        if (el) el.classList.remove("saving");
-        setStatus.textContent = t("network error"); setStatus.className = "set-status err";
-      });
+    if (!key || !el) return _settingWrites;
+    var value = settingValue(el), payload = {}; payload[key] = value;
+    var perform = function () {
+      setStatus.textContent = t("saving…"); setStatus.className = "set-status";
+      el.classList.add("saving");
+      return fetch("/api/settings?token=" + encodeURIComponent(CT), {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload)
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          el.classList.remove("saving");
+          if (!(res.ok && res.d.ok)) {
+            setStatus.textContent = (res.d && res.d.error) || t("could not apply");
+            setStatus.className = "set-status err"; return false;
+          }
+          var saved = res.d.values || {};
+          if (saved[key] !== undefined && String(saved[key]) !== String(value)) {
+            setStatus.textContent = t("this setting is held by an environment variable — ") + key + " = " + saved[key];
+            setStatus.className = "set-status err"; return false;
+          }
+          setStatus.textContent = t("applied"); setStatus.className = "set-status ok";
+          setTimeout(function () { if (setStatus.textContent === t("applied")) setStatus.textContent = ""; }, 1400);
+          if (key === "LANG") { UI_LANG = resolveLang(saved.LANG); applyLang(); }
+          if (key === "PROVIDER" || key === "MODEL") loadModelCatalog(false);
+          return true;
+        }).catch(function () {
+          el.classList.remove("saving");
+          setStatus.textContent = t("network error"); setStatus.className = "set-status err"; return false;
+        });
+    };
+    _settingWrites = _settingWrites.then(perform, perform);
+    return _settingWrites;
   }
 
-  // Typing is debounced; a select or a checkbox commits on the spot.
-  var _applyTimer = null;
+  function flushSetting(key) {
+    if (_applyTimers[key]) clearTimeout(_applyTimers[key]);
+    delete _applyTimers[key];
+    var el = _pendingSettings[key]; delete _pendingSettings[key];
+    return el ? applySetting(key, el) : _settingWrites;
+  }
+  function flushPendingSettings() {
+    Object.keys(_pendingSettings).forEach(function (key) { flushSetting(key); });
+    return _settingWrites.then(function () { return !setStatus.classList.contains("err"); });
+  }
+  function requestCloseSettings() {
+    return flushPendingSettings().then(function (ok) { if (ok) closeSettings(); return ok; });
+  }
+
+  // Selects and toggles commit immediately. Text fields debounce independently, and blur/close
+  // flushes them, so switching between two fields can never discard the first pending value.
   setBody.addEventListener("change", function (e) {
-    var el = e.target.closest ? e.target.closest("[data-key]") : null;
+    var el = e.target.closest ? e.target.closest("input[data-key],select[data-key],textarea[data-key]") : null;
     if (!el) return;
-    applySetting(el.getAttribute("data-key"), el);
+    var key = el.getAttribute("data-key");
+    if (el.tagName === "SELECT" || el.getAttribute("data-bool")) applySetting(key, el);
+    else { _pendingSettings[key] = el; flushSetting(key); }
   });
   setBody.addEventListener("input", function (e) {
-    var el = e.target.closest ? e.target.closest("[data-key]") : null;
-    if (!el || el.tagName === "SELECT" || el.getAttribute("data-bool")) return;   // those fire `change`
-    clearTimeout(_applyTimer);
-    _applyTimer = setTimeout(function () { applySetting(el.getAttribute("data-key"), el); }, 700);
+    var el = e.target.closest ? e.target.closest("input[data-key],textarea[data-key]") : null;
+    if (!el || el.getAttribute("data-bool")) return;
+    var key = el.getAttribute("data-key");
+    _pendingSettings[key] = el; clearTimeout(_applyTimers[key]);
+    _applyTimers[key] = setTimeout(function () { flushSetting(key); }, 700);
   });
 
+  $("setClose").onclick = requestCloseSettings;
+  $("setCancel").onclick = requestCloseSettings;
+  setOverlay.addEventListener("click", function (e) { if (e.target === setOverlay) requestCloseSettings(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && setOverlay.classList.contains("open")) { e.preventDefault(); requestCloseSettings(); }
+  });
   var _sv = $("setSave");
-  if (_sv) _sv.onclick = function () { applySetting("", null).then(closeSettings); };
+  if (_sv) _sv.onclick = requestCloseSettings;
 
   var workPanel = $("workpanel"), runDetailsButton = $("runDetailsBtn");
   function setRunDetailsOpen(isOpen) {
@@ -2489,24 +3059,25 @@
   };
 
   // ---- state ------------------------------------------------------------
-  var currentSession = null;
+  var currentSession = null, currentRun = null;
   var priorTurns = -1;   // user-turns before the running run; interrupt recovery's baseline (-1 = unknown)
   var es = null, running = false, runStart = 0, tlCount = 0, diffCount = 0, streamRAF = 0;
+  var streamLaunchToken = 0, routePending = false, routeToken = 0;
 
   // ---- gate -------------------------------------------------------------
   var GATE = {
-    idle:      ["Awaiting a task", "Collie doesn't finish on the model's say-so. After an edit it re-runs a reproduction and won't accept <code>done</code> until it prints green."],
-    working:   ["Working…", "Collie is exploring. The verification gate arms the moment it edits code — until then there's nothing to verify."],
-    verifying: ["Verifying…", "Code changed — re-running the reproduction against the edit to confirm it prints green."],
-    fail:      ["✗ Reproduction failing", "The check errored or printed the wrong result — Collie loops back to repair, it will not finish here."],
-    pass:      ["✓ Reproduction passing", "An actual run on the fixed code came back green. This is the gate Collie ships on."],
-    none:      ["No gate needed", "This run made no code edit, so there was nothing to reproduce — informational answer only."]
+    idle:      ["No evidence yet", "Checks appear here when they are relevant to the task."],
+    working:   ["Working…", "Collie will record the checks selected for this task and what they cover."],
+    verifying: ["Checking evidence…", "Running the named check against the current result."],
+    fail:      ["✗ Check failed", "The recorded check did not pass; Collie must repair the result or report it as inconclusive."],
+    pass:      ["✓ Check passed", "The named check passed. Open Run details to inspect its scope and evidence."],
+    none:      ["No executed check", "This run made no code edit or no relevant executable check was selected."]
   };
   function setGate(state, subOverride) {
     var g = $("gate"); g.setAttribute("data-state", state);
     var pair = GATE[state] || GATE.idle;
-    $("gateStatus").textContent = pair[0];
-    $("gateSub").innerHTML = subOverride ? esc(subOverride) : pair[1];
+    $("gateStatus").textContent = t(pair[0]);
+    $("gateSub").innerHTML = subOverride ? esc(subOverride) : t(pair[1]);
   }
 
   // ---- pills ------------------------------------------------------------
@@ -2529,7 +3100,21 @@
     if (ms < 1000) return ms + "ms";
     return (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + "s";
   }
+  function setDecision(d, actualSpeed) {
+    var el = $("rDecision");
+    if (!el) return;
+    if (!d || !d.model) {
+      el.textContent = "Auto · waiting"; el.title = ""; return;
+    }
+    var speed = actualSpeed || d.actual_speed || d.speed || "standard";
+    el.textContent = [d.model, d.effort || "default", speed,
+      (d.intent || "build") + "/" + (d.quality || "balanced") +
+      "/" + (d.verification || "auto")].join(" · ");
+    el.title = (d.reasons || []).join("\n");
+  }
   function setReceipt(r) {
+    if (!r || !Object.keys(r).length) setDecision(null);
+    else if (r.decision) setDecision(r.decision, r.actual_speed);
     $("rPrefix").textContent = fmtInt(r.prefix_tokens);
     $("rTotal").textContent  = fmtInt(r.total_tokens);
     $("rTurns").textContent  = r.turns == null ? "—" : r.turns;
@@ -2558,6 +3143,9 @@
     $("timeline").innerHTML = '<div class="none">Tool calls, edits and reproductions stream here as they happen.</div>';
     $("diffs").innerHTML = '<div class="none">Edits appear as a colored +/- diff.</div>';
     $("tlCount").textContent = "0"; $("diffCount").textContent = "0";
+    if (typeof PERM_ROWS !== "undefined") PERM_ROWS = {};
+    if (typeof PENDING_PERMS !== "undefined") PENDING_PERMS = {};
+    if (typeof updateNeedsYou === "function") updateNeedsYou();
   }
   function elapsed() {
     var s = (Date.now() - runStart) / 1000;
@@ -2582,9 +3170,39 @@
   // through addEvent, because this one is not a record of something that happened — it is
   // a question, and the run stays suspended until it is answered from here, from a phone,
   // or from the desktop. Whoever answers first wins; the rest see the row settle.
-  var PERM_ROWS = {};
+  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {};
+  function updateNeedsYou() {
+    var n = Object.keys(GLOBAL_PERMS || {}).length, nav = $("needsYouNav"), count = $("needsYouCount");
+    if (!nav || !count) return;
+    nav.hidden = n === 0; count.textContent = String(n);
+    if (!n && nav.classList.contains("on") && typeof setProductNav === "function") setProductNav("home");
+  }
+  function trackPermission(d, sid) {
+    if (!d || !d.id) return;
+    GLOBAL_PERMS[d.id] = { session: sid || d.session || "", data: d };
+    updateNeedsYou();
+  }
+  function clearPermissionsForSession(sid) {
+    if (!sid) return;
+    Object.keys(GLOBAL_PERMS).forEach(function (id) {
+      if (GLOBAL_PERMS[id] && GLOBAL_PERMS[id].session === sid) settlePermission(id, "run ended");
+    });
+  }
+  function settlePermission(id, text) {
+    var row = PERM_ROWS[id];
+    if (row) {
+      var actions = row.querySelector(".perm-actions");
+      if (actions) actions.innerHTML = '<span class="detail">' + esc(text) + '</span>';
+    }
+    // Keep the settled row as history until the timeline is cleared. The initiating POST may
+    // return after the live-bus resolution and can then refine "answered elsewhere" to the local
+    // user's exact decision without resurrecting the actionable inbox item.
+    delete PENDING_PERMS[id]; delete GLOBAL_PERMS[id]; updateNeedsYou();
+  }
   function addPermission(d, sid) {
-    if (!d || !d.id || PERM_ROWS[d.id]) return;
+    if (!d || !d.id) return;
+    trackPermission(d, sid);
+    if (PERM_ROWS[d.id]) return;
     var tl = $("timeline");
     if (!tl) return;
     var none = tl.querySelector(".none"); if (none) none.remove();
@@ -2605,29 +3223,65 @@
     tl.appendChild(row);
     tl.scrollTop = tl.scrollHeight;
     PERM_ROWS[d.id] = row;
+    PENDING_PERMS[d.id] = row;
+    updateNeedsYou();
 
     function settle(text) {
-      var a = row.querySelector(".perm-actions");
-      if (a) a.innerHTML = '<span class="detail">' + esc(text) + '</span>';
+      settlePermission(d.id, text);
     }
     row.addEventListener("click", function (ev) {
       var b = ev.target && ev.target.closest ? ev.target.closest("button[data-a]") : null;
       if (!b) return;
       var answer = b.getAttribute("data-a");
-      settle("sending…");
+      var actions = row.querySelector(".perm-actions"), status = actions && actions.querySelector(".perm-send-status");
+      Array.prototype.forEach.call(row.querySelectorAll("button[data-a]"), function (button) { button.disabled = true; });
+      if (!status && actions) {
+        status = document.createElement("span"); status.className = "detail perm-send-status"; actions.appendChild(status);
+      }
+      if (status) status.textContent = "sending…";
       fetch("/api/approve?token=" + encodeURIComponent(CT),
         { method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ session: sid, id: d.id, answer: answer }) })
-        .then(function (r) { return r.json(); })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (r) {
           // resolved:false is the ordinary outcome of losing a race or of the run having
           // ended — say what happened rather than showing an error nobody can act on.
           settle(r && r.resolved ? (answer === "deny" ? "declined" : "allowed")
                                  : "already answered elsewhere");
         })
-        .catch(function () { settle("could not send — answer from the terminal"); });
+        .catch(function () {
+          // Keep the decision actionable when transport failed. A permission_resolved event may
+          // have won the race meanwhile; in that case settlePermission already removed it.
+          if (!PENDING_PERMS[d.id]) return;
+          Array.prototype.forEach.call(row.querySelectorAll("button[data-a]"), function (button) { button.disabled = false; });
+          var failed = row.querySelector(".perm-send-status");
+          if (failed) failed.textContent = "could not send — try again or answer elsewhere";
+        });
     });
   }
+
+  // Resolutions can come from this desktop, another Collie window, a phone, or the terminal.
+  // The initiating SSE only carries the original question, so the machine-wide live bus is the
+  // authoritative way to settle it everywhere and keep the global Needs You inbox truthful.
+  try {
+    var permissionLive = new EventSource("/api/live");
+    permissionLive.addEventListener("permission", function (e) {
+      try {
+        var d = JSON.parse(e.data || "{}"); trackPermission(d, d.session || "");
+        if (d.session && d.session === currentSession && !PERM_ROWS[d.id]) addPermission(d, d.session);
+      } catch (_) {}
+    });
+    permissionLive.addEventListener("permission_resolved", function (e) {
+      try {
+        var d = JSON.parse(e.data || "{}");
+        settlePermission(d.id, d.answer === "deny" ? "declined elsewhere" : "answered elsewhere");
+        if (d.session && d.session === currentSession && running) pstat("thinking…");
+      } catch (_) {}
+    });
+    permissionLive.addEventListener("done", function (e) {
+      try { var d = JSON.parse(e.data || "{}"); clearPermissionsForSession(d.session || ""); } catch (_) {}
+    });
+  } catch (_) {}
 
   function shortArgs(name, args) {
     if (!args) return "";
@@ -2696,6 +3350,246 @@
     log.appendChild(m); scrollDown();
     return m;
   }
+
+  // ---- Plan/Review artifacts -> explicit user-approved Build handoff ---------
+  function handoffPost(path, body) {
+    return fetch(path + "?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    }).then(function (r) { return r.json().then(function (d) {
+      if (!r.ok) { var e = new Error((d && d.error) || ("HTTP " + r.status)); e.payload = d; throw e; }
+      return d;
+    }); });
+  }
+  function handoffGet(path) {
+    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT))
+      .then(function (r) { return r.json().then(function (d) {
+        if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
+      }); });
+  }
+  function buildFromHandoff(handoff, label) {
+    if (!handoff || handoff.intent !== "build" || !handoff.prompt || running) return;
+    var config = readRunConfig();
+    config.intent = "build"; config.strategy = "single"; config.workspace = "current";
+    config.verification = "auto"; config.route_kind = "code";
+    config.explicit_axes = "intent,strategy,workspace,verification";
+    var shown = label || "Build approved artifact";
+    var textEl = addMsg("user", shown), msgEl = textEl && textEl.closest ? textEl.closest(".msg") : null;
+    runStream(handoff.prompt, [], config, handoff.session || currentSession, msgEl);
+  }
+  function handoffShell(kind, title) {
+    var prior = document.getElementById("handoffCard"); if (prior) prior.remove();
+    var card = document.createElement("section"); card.id = "handoffCard"; card.className = "handoff-card";
+    card.dataset.kind = kind;
+    card.innerHTML = '<div class="handoff-head"><span>' + setEsc(title) + '</span>' +
+      '<span class="handoff-badge">' + setEsc(kind === "plan" ? "EDITABLE PLAN" : "READ-ONLY REVIEW") + '</span></div>' +
+      '<div class="handoff-body"></div>';
+    var w = $("welcome"); if (w) w.remove(); $("log").appendChild(card); scrollDown(); return card;
+  }
+  function linesValue(items, field) {
+    return (items || []).map(function (x) { return typeof x === "string" ? x : (x && x[field]) || ""; }).filter(Boolean).join("\n");
+  }
+  function renderPlanArtifact(payload) {
+    if (!payload || !payload.artifact || currentSession !== payload.session) return;
+    var a = payload.artifact, card = handoffShell("plan", a.title || "Plan ready to review");
+    card.dataset.revision = String(a.revision || 0);
+    var body = card.querySelector(".handoff-body");
+    body.innerHTML =
+      '<label class="handoff-field">Title<input data-plan="title"></label>' +
+      '<label class="handoff-field">Files (one per line)<textarea data-plan="files"></textarea></label>' +
+      '<label class="handoff-field">Risks (one per line)<textarea data-plan="risks"></textarea></label>' +
+      '<label class="handoff-field">Checks (one command per line)<textarea data-plan="checks"></textarea></label>' +
+      '<div class="handoff-field">Todos<div class="handoff-todos"></div><button type="button" class="handoff-add">+ Add todo</button></div>' +
+      '<div class="handoff-actions"><span class="handoff-status">Edit the artifact, then approve the exact revision.</span>' +
+      '<button type="button" class="handoff-primary">Approve &amp; build</button></div>';
+    body.querySelector('[data-plan="title"]').value = a.title || "";
+    body.querySelector('[data-plan="files"]').value = linesValue(a.files);
+    body.querySelector('[data-plan="risks"]').value = linesValue(a.risks);
+    body.querySelector('[data-plan="checks"]').value = linesValue(a.checks, "command");
+    var todos = body.querySelector(".handoff-todos");
+    function addTodo(t) {
+      t = t || {}; var row = document.createElement("div"); row.className = "handoff-todo";
+      row.dataset.id = t.id || "";
+      row.innerHTML = '<select aria-label="Todo status"><option value="pending">Pending</option><option value="in_progress">In progress</option><option value="completed">Completed</option><option value="blocked">Blocked</option></select>' +
+        '<input aria-label="Todo" placeholder="Task"><button type="button" aria-label="Remove todo">×</button>';
+      row.querySelector("select").value = t.status || "pending"; row.querySelector("input").value = t.content || "";
+      row.querySelector("button").onclick = function () { row.remove(); }; todos.appendChild(row);
+    }
+    (a.todos || []).forEach(addTodo); body.querySelector(".handoff-add").onclick = function () { addTodo({}); };
+    function patch() {
+      function list(name) { return body.querySelector('[data-plan="' + name + '"]').value.split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean); }
+      return { session: payload.session, revision: Number(card.dataset.revision),
+        title: body.querySelector('[data-plan="title"]').value.trim(), files: list("files"), risks: list("risks"),
+        checks: list("checks").map(function (command) { return { command: command, status: "pending" }; }),
+        todos: Array.prototype.map.call(todos.querySelectorAll(".handoff-todo"), function (row, i) {
+          return { id: row.dataset.id || ("web-task-" + (i + 1)), content: row.querySelector("input").value.trim(),
+                   status: row.querySelector("select").value };
+        }).filter(function (x) { return x.content; }) };
+    }
+    var approve = body.querySelector(".handoff-primary"), status = body.querySelector(".handoff-status");
+    approve.onclick = function () {
+      if (running) { status.textContent = "Wait for the current run to finish."; return; }
+      approve.disabled = true; status.textContent = "Saving this revision…";
+      handoffPost("/api/plan", patch()).then(function (saved) {
+        card.dataset.revision = String(saved.artifact.revision);
+        status.textContent = "Approving…";
+        return handoffPost("/api/plan/approve", { session: payload.session, revision: saved.artifact.revision });
+      }).then(function (approved) {
+        card.dataset.revision = String(approved.artifact.revision); status.textContent = "Approved — starting Build.";
+        buildFromHandoff(approved.handoff, "Approve plan & build");
+      }).catch(function (err) {
+        status.textContent = err.message + (err.payload && err.payload.conflict ? " — reload the latest plan." : "");
+        approve.disabled = false;
+      });
+    };
+  }
+  function renderReviewArtifact(payload) {
+    if (!payload || currentSession !== payload.session) return;
+    var card = handoffShell("review", "Review findings"), body = card.querySelector(".handoff-body");
+    var findings = payload.findings || [];
+    if (!findings.length) {
+      body.innerHTML = '<div class="handoff-status">No structured findings were reported.</div>'; return;
+    }
+    findings.forEach(function (f) {
+      var row = document.createElement("label"); row.className = "review-finding";
+      row.innerHTML = '<input type="checkbox" data-finding="' + setEsc(f.id) + '" checked><span><span class="review-loc"></span>' +
+        '<span class="review-severity"></span><div class="review-msg"></div></span>';
+      row.querySelector(".review-loc").textContent = (f.path || "(no path)") + (f.line == null ? "" : ":" + f.line);
+      row.querySelector(".review-severity").textContent = f.severity || "medium";
+      row.querySelector(".review-msg").textContent = f.message || ""; body.appendChild(row);
+    });
+    var actions = document.createElement("div"); actions.className = "handoff-actions";
+    actions.innerHTML = '<span class="handoff-status">Select only the findings you want changed.</span>' +
+      '<button type="button" class="handoff-primary">Build selected fixes</button>'; body.appendChild(actions);
+    var status = actions.querySelector(".handoff-status"), button = actions.querySelector("button");
+    button.onclick = function () {
+      if (running) { status.textContent = "Wait for the current run to finish."; return; }
+      var ids = Array.prototype.map.call(body.querySelectorAll("[data-finding]:checked"), function (x) { return x.dataset.finding; });
+      if (!ids.length) { status.textContent = "Select at least one finding."; return; }
+      button.disabled = true; status.textContent = "Preparing Build handoff…";
+      handoffPost("/api/review/handoff", { session: payload.session, finding_ids: ids })
+        .then(function (d) { status.textContent = "Starting Build."; buildFromHandoff(d.handoff, "Build selected review fixes"); })
+        .catch(function (err) { status.textContent = err.message; button.disabled = false; });
+    };
+  }
+  function loadHandoffArtifact(session, intent) {
+    if (!session || (intent !== "plan" && intent !== "review")) return;
+    handoffGet("/api/" + intent + "?session=" + encodeURIComponent(session))
+      .then(intent === "plan" ? renderPlanArtifact : renderReviewArtifact).catch(function () {});
+  }
+
+  // ---- compact authenticated operations view (metadata only) ---------------
+  var activityPanel = $("activityPanel"), activityButton = $("activityBtn");
+  function activityGet(path) {
+    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT))
+      .then(function (r) { return r.json().then(function (d) {
+        if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
+      }); });
+  }
+  function activityPost(path, body) {
+    return fetch(path + "?token=" + encodeURIComponent(CT), { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
+      .then(function (r) { return r.json().then(function (d) {
+        if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
+      }); });
+  }
+  function activityLane(title, rows, render) {
+    var lane = document.createElement("section"); lane.className = "activity-lane";
+    var head = document.createElement("h4"); head.textContent = title; lane.appendChild(head);
+    var box = document.createElement("div"); box.className = "activity-rows"; lane.appendChild(box);
+    if (!(rows || []).length) { var empty = document.createElement("div"); empty.className = "activity-empty";
+      empty.textContent = "None"; box.appendChild(empty); return lane; }
+    rows.forEach(function (data) {
+      var row = document.createElement("div"); row.className = "activity-row";
+      render(row, data); box.appendChild(row);
+    });
+    return lane;
+  }
+  function activityText(row, id, state) {
+    var name = document.createElement("span"); name.className = "activity-id"; name.textContent = id || "—";
+    var status = document.createElement("span"); status.className = "activity-state"; status.textContent = state || "unknown";
+    row.appendChild(name); row.appendChild(status);
+  }
+  function activityAction(row, label, fn) {
+    var button = document.createElement("button"); button.type = "button"; button.textContent = label;
+    button.onclick = function () { button.disabled = true; Promise.resolve(fn()).finally(function () { button.disabled = false; }); };
+    row.appendChild(button); return button;
+  }
+  function renderActivity(activity, health, hooks) {
+    var badge = $("activityHealth"); badge.textContent = health.status || "unknown";
+    badge.classList.toggle("bad", !health.ok);
+    var grid = $("activityGrid"); grid.textContent = "";
+    var serviceRows = Object.keys(health.workers || {}).map(function (name) {
+      return { id: name, state: (health.workers[name].state || "unknown") + (health.workers[name].fresh ? " · fresh" : " · stale") };
+    });
+    Object.keys(health.services || {}).forEach(function (name) {
+      serviceRows.push({ id: name, state: health.services[name].ok ? "ok" : "down" });
+    });
+    if (health.supervisor && Object.keys(health.supervisor).length) {
+      serviceRows.push({ id: "supervisor", state: health.supervisor.status ||
+        (health.supervisor.running ? "running" : health.supervisor.installed ? "stopped" : "not installed") });
+    }
+    grid.appendChild(activityLane("Services", serviceRows,
+      function (row, data) { activityText(row, data.id, data.state); }));
+    grid.appendChild(activityLane("Missions", activity.missions || [], function (row, data) {
+      activityText(row, data.mission_id, data.state);
+    }));
+    grid.appendChild(activityLane("Automations", activity.automations || [], function (row, data) {
+      activityText(row, data.automation_id + " · " + data.execution_id, data.state);
+    }));
+    grid.appendChild(activityLane("Session recovery", (activity.sessions || []).filter(function (x) {
+      return x.recovery_required;
+    }), function (row, data) {
+      activityText(row, data.session_id, data.state);
+      ["completed", "not_fired", "cancel"].forEach(function (resolution) {
+        activityAction(row, resolution === "not_fired" ? "Not fired" : resolution, function () {
+          if (!window.confirm("I inspected the external state and confirm: " + resolution + ".")) return;
+          return activityPost("/api/recovery/reconcile", { session: data.session_id,
+            resolution: resolution, confirmed: true }).then(loadActivity);
+        });
+      });
+    }));
+    grid.appendChild(activityLane("Specialists", activity.task_runs || [], function (row, data) {
+      activityText(row, (data.role || "specialist") + " · " + data.run_id, data.status);
+      if (["completed", "failed", "cancelled"].indexOf(data.status) < 0) {
+        activityAction(row, "Steer", function () {
+          var text = window.prompt("Steer this specialist at its next safe boundary:");
+          if (!text) return;
+          return activityPost("/api/mission/specialist/steer", { run_id: data.run_id, text: text }).then(loadActivity);
+        });
+        activityAction(row, "Cancel", function () {
+          if (!window.confirm("Request specialist cancellation?")) return;
+          return activityPost("/api/mission/specialist/cancel", { run_id: data.run_id }).then(loadActivity);
+        });
+      }
+    }));
+    var hookRows = [{ id: (hooks.active ? "active" : "inactive") + " · " +
+      ((hooks.events || []).length + " events"), state: (hooks.pending || []).length + " pending review" }];
+    grid.appendChild(activityLane("Hooks (read-only)", hookRows, function (row, data) {
+      activityText(row, data.id, data.state);
+    }));
+  }
+  function loadActivity() {
+    if (!activityPanel || activityPanel.hidden) return Promise.resolve();
+    $("activityHealth").textContent = "loading";
+    return Promise.all([activityGet("/api/activity"), activityGet("/api/healthz"), activityGet("/api/hooks")])
+      .then(function (values) { renderActivity(values[0], values[1], values[2]); })
+      .catch(function (error) { $("activityHealth").textContent = error.message || "unavailable";
+        $("activityHealth").classList.add("bad"); });
+  }
+  function setActivityOpen(open) {
+    if (!activityPanel) return; activityPanel.hidden = !open;
+    activityButton.setAttribute("aria-expanded", open ? "true" : "false"); if (open) loadActivity();
+  }
+  if (activityButton) activityButton.onclick = function () {
+    var opening = activityPanel.hidden; setActivityOpen(opening);
+    if (typeof setProductNav === "function") setProductNav(opening ? "activity" : "home");
+  };
+  if ($("activityClose")) $("activityClose").onclick = function () {
+    setActivityOpen(false); if (typeof setProductNav === "function") setProductNav("home");
+  };
+  if ($("activityRefresh")) $("activityRefresh").onclick = loadActivity;
+  window.setInterval(function () { if (activityPanel && !activityPanel.hidden) loadActivity(); }, 10000);
 
   // ---- delegate missions: NL goal -> a durable, gated, verified campaign -----
   function missionPost(path, body) {
@@ -3364,6 +4258,8 @@
   var liveRuns = {};
   function runLabel(r) {
     if (r.state === "running") return t("working…");
+    if (r.state === "canceling") return t("stopping…");
+    if (r.state === "canceled") return t("stopped");
     if (r.state === "failed") return t("failed");
     return r.verified ? t("verified") : t("done");
   }
@@ -3399,13 +4295,16 @@
       Object.keys(liveRuns).forEach(function (id) {
         if (known[id]) return;
         var r = liveRuns[id];
-        if (r.state !== "running") return;      // finished-and-unsaved is a crash, not a thread
+        if (r.state !== "running" && r.state !== "canceling") return; // finished-and-unsaved is a crash, not a thread
         list.unshift({ id: id, title: r.ask || "(untitled)", last: r.ask || "", turns: r.turns || 0 });
       });
       if (!list.length) { box.innerHTML = '<div class="empty">No sessions yet.</div>'; return; }
       list.forEach(function (s) {
         var el = document.createElement("div");
         el.className = "thread" + (s.id === currentSession ? " active" : "");
+        el.setAttribute("role", "button"); el.tabIndex = 0;
+        el.setAttribute("aria-label", "Open thread " + (s.title || s.last || "untitled"));
+        if (s.id === currentSession) el.setAttribute("aria-current", "true");
         var rs = liveRuns[s.id];
         if (rs) el.className += " r-" + rs.state;
         el.innerHTML = '<div class="t-last">' + esc(s.title || s.last || "(untitled)") + '</div>' +
@@ -3415,9 +4314,14 @@
           (rs ? '<div class="t-state ' + rs.state + '">' + esc(runLabel(rs)) + '</div>' : '') +
           '<div class="t-turns">' + (s.turns || 0) + ' turn' + (s.turns === 1 ? "" : "s") + '</div>' +
           '<div class="t-acts">' +
-          '<button class="t-act" data-a="rename" title="Rename">✎</button>' +
-          '<button class="t-act" data-a="delete" title="Delete">✕</button></div>';
+          '<button class="t-act" data-a="rename" title="Rename" aria-label="Rename thread">✎</button>' +
+          '<button class="t-act" data-a="delete" title="Delete" aria-label="Delete thread">✕</button></div>';
         el.onclick = function () { openSession(s.id); };
+        el.onkeydown = function (ev) {
+          if ((ev.key === "Enter" || ev.key === " ") && ev.target === el) {
+            ev.preventDefault(); openSession(s.id);
+          }
+        };
         el.querySelector('[data-a="rename"]').onclick = function (ev) {
           ev.stopPropagation();
           var t = prompt("Rename thread:", s.title || s.last || "");
@@ -3446,6 +4350,7 @@
   // socket, and it is the whole reason Collie could hold only one thought at a time. The server owns
   // the run now, so leaving is just this window looking somewhere else.
   function detachRun() {
+    routeToken++; routePending = false; streamLaunchToken++;
     if (es) { try { es.close(); } catch (e) {} es = null; }
     if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }
     curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
@@ -3455,6 +4360,8 @@
   function openSession(id) {
     detachRun();
     currentSession = id;
+    if (typeof setProductNav === "function") setProductNav("home");
+    if (typeof setActivityOpen === "function") setActivityOpen(false);
     clearTimeline(); setGate("idle"); NOW.reset();
     setReceipt({}); loadSessions();
     $("log").innerHTML = "";
@@ -3466,12 +4373,18 @@
           var t = addMsg("assistant", ""); renderMd(t, m.content); addCopy(t, m.content);
         }
       });
+      var receipts = (s && s.run_receipts) || [], latestArtifactIntent = "";
+      for (var ri = receipts.length - 1; ri >= 0; ri--) {
+        var rd = receipts[ri] && receipts[ri].decision;
+        if (rd && (rd.intent === "plan" || rd.intent === "review")) { latestArtifactIntent = rd.intent; break; }
+      }
+      if (latestArtifactIntent) loadHandoffArtifact(id, latestArtifactIntent);
       scrollDown();
       // Reopening a thread that is STILL WORKING must not look like reading a finished one. The
       // saved file holds the PREVIOUS turn mid-run — the last thing written, not what is happening
       // — so without this you are shown a stale transcript with no sign that Collie is mid-sentence
       // in it, and the obvious next move is to ask for the same thing again.
-      if (liveRuns[id] && liveRuns[id].state === "running") followSession(id);
+      if (liveRuns[id] && (liveRuns[id].state === "running" || liveRuns[id].state === "canceling")) followSession(id);
     }).catch(function () {});
   }
 
@@ -3481,6 +4394,12 @@
   // following, shows the activity that arrives from here on, and swaps itself for the real
   // transcript the moment the run lands.
   function followSession(sid) {
+    var knownRun = liveRuns[sid] || {};
+    currentRun = knownRun.run || null; running = true; cancelPending = knownRun.state === "canceling";
+    setRunState(cancelPending ? "stopping" : "running", true);
+    var runButton = $("send");runButton.classList.add("stop");runButton.disabled=cancelPending;
+    runButton.title=cancelPending?"Stopping…":"Stop run";runButton.setAttribute("aria-label",cancelPending?"Stopping run":"Stop run");
+    $("input").disabled=cancelPending;$("input").placeholder=t("Steer while Collie works — Enter to send");
     var note = addEvent("meta", "eye", t("still working"),
                         t("this run started elsewhere — following it live; the thread fills in when it lands"));
     // A live bubble to put the steps in. Without one traceStep has nowhere to write (it returns on a
@@ -3496,6 +4415,7 @@
     // not news: rendering them as live activity would make a run look like it was doing ten things
     // in the same instant you opened it.
     var replaying = false;
+    src.addEventListener("start", function(m){try{var d=JSON.parse(m.data||"{}");if(d.run)currentRun=d.run;}catch(_){}});
     src.addEventListener("mirror_replay", function () { replaying = true; });
     src.addEventListener("mirror_live", function () { replaying = false; });
     ["tool", "edit", "repro"].forEach(function (ev) {
@@ -3510,38 +4430,64 @@
         } catch (e) {}
       });
     });
-    src.addEventListener("done", function () {
+    src.addEventListener("permission", function (m) {
+      if (currentSession !== sid) { stop(); return; }
+      try { addPermission(JSON.parse(m.data || "{}"), sid); pstat("waiting for you…"); } catch (e) {}
+    });
+    src.addEventListener("permission_resolved", function (m) {
+      try {
+        var d = JSON.parse(m.data || "{}");
+        settlePermission(d.id, d.answer === "deny" ? "declined elsewhere" : "answered elsewhere");
+      } catch (e) {}
+    });
+    src.addEventListener("done", function (m) {
+      var d={};try{d=JSON.parse(m.data||"{}");}catch(_){}
+      if(currentRun&&d.run&&d.run!==currentRun)return;
       stop();
       if (currentSession !== sid) return;
+      if(d.canceled)addEvent("meta","flag",t("run cancelled"),t("the run emitted its final canceled verdict"));
+      if(liveRuns[sid])liveRuns[sid].state=d.canceled?"canceled":(d.error?"failed":"done");
       if (note && note.parentNode) note.parentNode.removeChild(note);
       curMsg = flowEl = statusEl = pstatEl = curTextEl = null;   // drop the follow bubble
+      finishRunUI();
       openSession(sid);                      // the answer is saved — show the real thread
     });
   }
 
-  var WC_EXAMPLES = '<div class="wc-examples">'
-    + '<button type="button" class="wc-card" data-fill="Run the tests, find the one that\'s failing, and fix it.">'
-    + '<div class="wc-ct">🔧 Fix a failing test</div><div class="wc-cd">Reproduce, patch, and re-run until it\'s green.</div></button>'
-    + '<button type="button" class="wc-card" data-fill="Give me a tour of this repo — what each part does and where to start.">'
-    + '<div class="wc-ct">🧭 Tour this codebase</div><div class="wc-cd">Get oriented in an unfamiliar project fast.</div></button>'
-    + '<button type="button" class="wc-card" data-fill="Add a small feature and prove it works with a new test.">'
-    + '<div class="wc-ct">✨ Build a feature</div><div class="wc-cd">Ship it with a check that proves it works.</div></button>'
-    + '<button type="button" class="wc-card" data-fill="Open my browser and summarize the page I have open.">'
-    + '<div class="wc-ct">🖥️ Drive an app</div><div class="wc-cd">Collie lives on your computer, not just the repo.</div></button>'
-    + '</div>';
-  var WELCOME_HTML = '<div class="welcome" id="welcome"><img class="wc-logo" src="/logo.svg" alt="" />'
-    + '<div class="wc-title">Ask Collie to fix, build, or explain</div>'
-    + '<div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes '
-    + 'green — at a fraction of the tokens. The answer streams here; tools and '
-    + 'diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>'
-    + WC_EXAMPLES + '</div>';
+  // Keep one source of truth for the Home empty state. Re-insertion preserves its i18n and identity
+  // hooks, then applyLang/renderCollieIdentity refresh them for the current user and device.
+  var WELCOME_HTML = $("welcome").outerHTML;
+  function setProductNav(id) {
+    document.querySelectorAll(".side-nav-item").forEach(function (node) {
+      node.classList.toggle("on", node.id === "nav" + id.charAt(0).toUpperCase() + id.slice(1));
+    });
+    var titles = { home: "Home", missions: "Missions", library: "Library", activity: "Activity", needsYou: "Needs You" };
+    var title = $("pageTitle"); if (title && titles[id]) title.textContent = t(titles[id]);
+  }
   function newThread() {
     detachRun();                         // start a second thing while the first one runs
-    currentSession = null;
+    currentSession = null; currentRun = null;
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
+    setProductNav("home"); setActivityOpen(false);
     loadSessions(); $("input").focus();
   }
   $("newChat").onclick = newThread;
+  $("navHome").onclick = newThread;
+  $("navMissions").onclick = function () { newThread(); setProductNav("missions"); showMissions(); };
+  $("navLibrary").onclick = function () { setProductNav("library"); openSettings("caps"); };
+  $("navActivity").onclick = function () { setProductNav("activity"); setActivityOpen(true); };
+  $("needsYouNav").onclick = function () {
+    var ids = typeof GLOBAL_PERMS === "undefined" ? [] : Object.keys(GLOBAL_PERMS);
+    var id = ids.length ? ids[0] : "", rec = id ? GLOBAL_PERMS[id] : null;
+    if (!rec) return;
+    if (rec.session && rec.session !== currentSession) openSession(rec.session);
+    if (!PERM_ROWS[id]) addPermission(rec.data, rec.session);
+    setProductNav("needsYou"); setRunDetailsOpen(true);
+    setTimeout(function () {
+      var row = PERM_ROWS[id];
+      if (row && row.scrollIntoView) row.scrollIntoView({ behavior:"smooth", block:"center" });
+    }, 0);
+  };
 
   // Starter cards in the empty state: click one to drop a ready-made prompt into the composer (so a
   // first-timer sees what Collie is FOR). Delegated on #log so it works for both the initial welcome
@@ -3557,18 +4503,92 @@
   });
 
   // ---- run --------------------------------------------------------------
-  function stopRun() {
+  function finishStreamUI() {
     if (es) { try { es.close(); } catch (e) {} es = null; }
     if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }  // no late frame over the final render
     finishRunUI();
   }
+  var cancelPending = false, cancelPollTimer = 0;
+  function settleCancelFromRegistry(row) {
+    clearTimeout(cancelPollTimer);cancelPollTimer=0;pendStop();
+    if(statusEl){statusEl.remove();statusEl=null;}
+    if(currentSession&&liveRuns[currentSession])liveRuns[currentSession].state=row.state;
+    if(row.state==="canceled"){
+      if(curMsg)curMsg.remove();addEvent("meta","flag",t("run cancelled"),t("the run registry confirmed the canceled verdict"));
+    }else{
+      addEvent("meta",row.state==="failed"?"bad":"flag",row.state==="failed"?t("failed"):t("done"),
+               row.state==="failed"?(row.error||""):t("the run finished before cancellation took effect"));
+      recoverAfterInterrupt();
+    }
+    pstatEl=curTextEl=null;curMsg=flowEl=null;finishStreamUI();loadSessions();
+  }
+  function pollCancelTerminal() {
+    var watchSession=currentSession,watchRun=currentRun;
+    clearTimeout(cancelPollTimer);cancelPollTimer=setTimeout(function poll(){
+      fetch("/api/runs?token="+encodeURIComponent(CT)).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}).then(function(d){
+        var row=(d.runs||[]).find(function(x){return x.session===watchSession&&x.run===watchRun;});
+        if(row&&["canceled","done","failed"].indexOf(row.state)>=0){settleCancelFromRegistry(row);return;}
+        cancelPollTimer=setTimeout(poll,700);
+      }).catch(function(){cancelPollTimer=setTimeout(poll,1200);});
+    },700);
+  }
+  function cancelRun() {
+    if (!running || cancelPending) return Promise.resolve(false);
+    // While image attachments are still uploading there is no server run to cancel yet. Invalidate
+    // the pending launch locally; its eventual upload response is ignored by the launch token.
+    if (!currentRun && !es) {
+      streamLaunchToken++;
+      if (curMsg) curMsg.remove();
+      curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
+      addEvent("meta", "flag", t("run cancelled"), t("stopped before the run started"));
+      setGate("none", t("Run stopped by the user."));
+      finishStreamUI();
+      return Promise.resolve(true);
+    }
+    if (!currentSession || !currentRun) {
+      addErr(t("The run is still starting; wait for its run id before stopping."));
+      return Promise.resolve(false);
+    }
+    cancelPending = true;
+    var b = $("send"), input = $("input");
+    b.disabled = true; b.title = "Stopping…"; b.setAttribute("aria-label", "Stopping run");
+    input.disabled = true; setRunState("stopping", true); pstat("stopping…");
+    return fetch("/api/run/cancel?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: currentSession, run: currentRun })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; });
+    }).then(function (res) {
+      if (!res.ok || !res.d || res.d.ok === false) {
+        throw new Error((res.d && (res.d.error || res.d.message)) || "cancel is not supported by this server");
+      }
+      addEvent("meta","flag",t("cancellation requested"),t("waiting for the run's final canceled verdict"));
+      pstat("cancellation pending…");
+      if(res.d.status==="already_canceled")settleCancelFromRegistry({state:"canceled"});else pollCancelTerminal();
+      return true;
+    }).catch(function (err) {
+      cancelPending=false;
+      addErr(t("Could not stop the run") + " — " + (err && err.message ? err.message : err));
+      setRunState("running", true); pstat("still working…");
+      b.disabled = false; input.disabled = false;
+      b.title="Stop run";b.setAttribute("aria-label","Stop run");
+      return false;
+    });
+  }
   function finishRunUI() {
+    streamLaunchToken++;
+    clearTimeout(cancelPollTimer);cancelPollTimer=0;
+    cancelPending = false;
     running = false;
+    currentRun = null;
+    PENDING_PERMS = {}; updateNeedsYou();
     setRunState("idle", false);
     var b = $("send"); b.classList.remove("stop"); b.disabled = false;
+    b.title = "Send"; b.setAttribute("aria-label", "Send");
     $("sendIcon").innerHTML = '<path d="M4 12l16-8-6 16-3-7-7-1z"/>';
     var inp = $("input"); inp.disabled = false;
-    inp.placeholder = t("Ask Collie to fix, build, or explain something…");
+    inp.placeholder = t("Describe the outcome you want…");
+    if (window.setRunSetupLocked) window.setRunSetupLocked(false);
   }
 
   // ---- image attachments ------------------------------------------------
@@ -3600,7 +4620,14 @@
     return fetch("/api/upload?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ media_type: im.media_type, data: im.data })
-    }).then(function (r) { return r.json(); }).then(function (d) { return d.id || null; });
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok || !d || typeof d.id !== "string" || !d.id) {
+          throw new Error((d && typeof d.error === "string" && d.error) || ("HTTP " + r.status));
+        }
+        return d.id;
+      });
+    });
   }
   (function () {   // wiring: attach button, file input, paste, drag-drop
     var ab = $("attachBtn"), fi = $("fileInput"), inp = $("input"), comp = document.querySelector(".composer");
@@ -3658,10 +4685,75 @@
       if (el.classList) { el.classList.remove("pending"); el.classList.add("dropped"); }
       if (tag) tag.textContent = t("not delivered");
       addEvent("meta", "flag", t("not delivered"), t("run already finished — send again to start a new turn"));
-    }).catch(function () {});
+    }).catch(function (err) {
+      var tag=el&&el.querySelector&&el.querySelector(".sn-tag");
+      if(el&&el.classList){el.classList.remove("pending");el.classList.add("dropped");}
+      if(tag)tag.textContent=t("not delivered");
+      addEvent("meta","bad",t("not delivered"),t("steering request failed")+" — "+(err&&err.message?err.message:err));
+      addErr(t("Steer not delivered")+" — "+(err&&err.message?err.message:err));
+    });
+  }
+
+  function readRunConfig() {
+    var explicit = Object.keys(window.runExplicitAxes || {}).filter(function (k) {
+      return window.runExplicitAxes[k];
+    });
+    return {
+      intent: ($("runIntent") && $("runIntent").value) || "build",
+      quality: ($("runQuality") && $("runQuality").value) || "balanced",
+      verification: ($("runVerification") && $("runVerification").value) || "auto",
+      workspace: ($("runWorkspace") && $("runWorkspace").value) || "current",
+      strategy: ($("runStrategy") && $("runStrategy").value) || "single",
+      effort: ($("runEffort") && $("runEffort").value) || "auto",
+      speed: ($("runSpeed") && $("runSpeed").value) || "standard",
+      explicit_axes: explicit.length ? explicit.join(",") : "none",
+      verify_command: ($("verifyCommand") && $("verifyCommand").value.trim()) || "",
+      verify_source: ($("verifyCommand") && $("verifyCommand").dataset.source) || "",
+      n: $("packN") ? $("packN").value : "3",
+      check: ($("packCheck") && $("packCheck").value.trim()) || "",
+      apply: !!($("packApply") && $("packApply").checked)
+    };
+  }
+  function validateRunConfig(config) {
+    var packNEl = $("packN"), packCheckEl = $("packCheck"), verifyEl = $("verifyCommand");
+    if (packNEl) packNEl.setCustomValidity("");
+    if (packCheckEl) packCheckEl.setCustomValidity("");
+    if (verifyEl) verifyEl.setCustomValidity("");
+    if ((config.intent === "test" || config.verification === "required") && !config.verify_command) {
+      if (verifyEl) {
+        verifyEl.setCustomValidity(t("Test or Required verification needs a proposed check command."));
+        verifyEl.reportValidity(); verifyEl.focus();
+      }
+      return false;
+    }
+    if (config.strategy !== "pack") return true;
+    var n = Number(config.n);
+    if (!Number.isInteger(n) || n < 2 || n > 6) {
+      if (packNEl) {
+        packNEl.setCustomValidity(t("Attempts must be a whole number from 2 to 6."));
+        packNEl.reportValidity(); packNEl.focus();
+      }
+      return false;
+    }
+    if (!config.check) {
+      if (packCheckEl) {
+        packCheckEl.setCustomValidity(t("Pack needs an executed check command to select a winner."));
+        packCheckEl.reportValidity(); packCheckEl.focus();
+      }
+      return false;
+    }
+    return true;
+  }
+  function setRoutePending(value) {
+    routePending = !!value;
+    var b = $("send"), input = $("input");
+    if (b) b.disabled = routePending;
+    if (input) input.disabled = routePending;
+    if (window.setRunSetupLocked) window.setRunSetupLocked(routePending || running);
   }
 
   function send() {
+    if (routePending) return;
     var input = $("input");
     var q = input.value.trim();
     var imgs = attached.slice();
@@ -3687,29 +4779,39 @@
       return;
     }
     if (!q && !imgs.length) return;
+    var runConfig = readRunConfig(), runSession = currentSession;
+    if (!validateRunConfig(runConfig)) return;
     // explicit overrides force the interactive stream (skip the classifier)
     var forced = null;
     if (/^\/code\s+/i.test(q)) { forced = "code"; q = q.replace(/^\/code\s+/i, ""); }
     else if (/^\/chat\s+/i.test(q)) { forced = "chat"; q = q.replace(/^\/chat\s+/i, ""); }
     input.value = ""; input.style.height = "auto";
-    addMsg("user", q, imgs);            // show text + attached image thumbnails
+    var userTextEl = addMsg("user", q, imgs); // show text + attached image thumbnails
+    var userMsgEl = userTextEl && userTextEl.closest ? userTextEl.closest(".msg") : null;
     clearAttached();
     // The classifying head handles only chat/code. Mission is slash-command-only.
-    if (forced || imgs.length) { runStream(q, imgs); return; }
+    if (forced) runConfig.route_kind = forced;
+    if (forced || imgs.length) { runStream(q, imgs, runConfig, runSession, userMsgEl); return; }
     var routeHint = addRoutingHint();
+    var thisRoute = ++routeToken; setRoutePending(true);
     missionPost("/api/route", { text: q }).then(function (d) {
+      if (thisRoute !== routeToken) return;
+      setRoutePending(false);
       if (routeHint && routeHint.remove) routeHint.remove();
       if (d && d.error === "model_unavailable") {
         addErr(t("model unavailable — set a working provider in Settings")); return;
       }
-      runStream(q, imgs);
+      if (d && (d.kind === "chat" || d.kind === "code")) runConfig.route_kind = d.kind;
+      runStream(q, imgs, runConfig, runSession, userMsgEl);
     }).catch(function () {          // the local server itself is unreachable -> let the stream surface it
-      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs);
+      if (thisRoute !== routeToken) return;
+      setRoutePending(false);
+      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs, runConfig, runSession, userMsgEl);
     });
   }
 
   // the interactive stream run (chat/code) — extracted so the classifying head can gate it
-  function runStream(q, imgs) {
+  function runStream(q, imgs, runConfig, runSession, userMsgEl) {
     var input = $("input");
     addPending();                       // live "thinking" bubble in the conversation
     scrollDown(true);                   // sending always jumps to the latest
@@ -3718,29 +4820,40 @@
     clearTimeline(); setReceipt({});
     setGate("working");                 // neutral while exploring — NOT "verifying" until an edit
     setRunState("running", true);
-    running = true; runStart = Date.now();
+    running = true; currentRun = null; runStart = Date.now();
+    var thisLaunch = ++streamLaunchToken;
+    if (window.setRunSetupLocked) window.setRunSetupLocked(true);
     var b = $("send"); b.classList.add("stop"); b.disabled = false;
+    b.title = "Stop run"; b.setAttribute("aria-label", "Stop run");
     $("sendIcon").innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
     // input stays ENABLED so you can steer while it works; the button becomes Stop.
     input.placeholder = t("Steer while Collie works — Enter to send");
     // upload any attached images first (-> ids), then open the stream referencing them
     var launch = function (imgIds) {
-    var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false;
+    if (thisLaunch !== streamLaunchToken || !running) return;
+    var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false,
+        packCardEl = null, packRows = [];
 
-    var mode = ($("mode") && $("mode").value) || "normal";
-    // "Isolated" is not a way of running — it is where the run happens. The server still gets
-    // mode=normal; what changes is that it gets a worktree of its own to do it in.
-    var isolated = mode === "isolated";
-    if (isolated) mode = "normal";
-    var url = "/api/stream?q=" + encodeURIComponent(q) + "&mode=" + mode +
-              (isolated ? "&isolate=1" : "") +
+    var intent = runConfig.intent, quality = runConfig.quality,
+        verification = runConfig.verification, workspace = runConfig.workspace,
+        strategy = runConfig.strategy;
+    var url = "/api/stream?q=" + encodeURIComponent(q) +
+              "&intent=" + encodeURIComponent(intent) +
+              "&quality=" + encodeURIComponent(quality) +
+              "&verification=" + encodeURIComponent(verification) +
+              "&workspace=" + encodeURIComponent(workspace) +
+              "&strategy=" + encodeURIComponent(strategy) +
+              "&effort=" + encodeURIComponent(runConfig.effort || "auto") +
+              "&speed=" + encodeURIComponent(runConfig.speed || "standard") +
+              "&explicit_axes=" + encodeURIComponent(runConfig.explicit_axes || "none") +
+              (runConfig.route_kind ? "&route_kind=" + encodeURIComponent(runConfig.route_kind) : "") +
+              (runConfig.verify_command ? "&verify_command=" + encodeURIComponent(runConfig.verify_command) : "") +
+              (runConfig.verify_source ? "&verify_source=" + encodeURIComponent(runConfig.verify_source) : "") +
               "&token=" + encodeURIComponent(CT) +
               (imgIds && imgIds.length ? "&imgs=" + imgIds.join(",") : "") +
-              (currentSession ? "&session=" + encodeURIComponent(currentSession) : "");
-    if (mode === "pack") {
-      var pn = ($("packN") && $("packN").value) || "3";
-      var pchk = ($("packCheck") && $("packCheck").value.trim()) || "";
-      var papply = $("packApply") && $("packApply").checked;
+              (runSession ? "&session=" + encodeURIComponent(runSession) : "");
+    if (strategy === "pack") {
+      var pn = runConfig.n, pchk = runConfig.check, papply = runConfig.apply;
       url += "&n=" + encodeURIComponent(pn) + (pchk ? "&check=" + encodeURIComponent(pchk) : "") +
              (papply ? "&apply=1" : "");
     }
@@ -3754,12 +4867,16 @@
     es.addEventListener("start", function (e) {
       var d = JSON.parse(e.data);
       currentSession = d.session;
+      currentRun = d.run || null;
       // Exact baseline for interrupt recovery: user-turns in the thread BEFORE this run. Once this
       // run's answer is saved the file holds one more user turn than this, which is how recovery
       // tells "the answer landed" from "the file is just stale mid-run".
       priorTurns = (typeof d.prior_turns === "number") ? d.prior_turns : -1;
+      setDecision(d.decision || d, d.actual_speed);
       // run drawer stays as the user left it — no auto-open (it used to pop open on every run)
-      addEvent("meta", "flag", t("run started"), d.provider + " · " + d.prior_turns + " prior turns");
+      addEvent("meta", "flag", t("run started"),
+        (d.model || d.provider) + " · " + (d.effort || "default") + " · " +
+        (d.speed || "standard") + " · " + d.prior_turns + " prior turns");
     });
 
     es.addEventListener("steer", function (e) {
@@ -3838,60 +4955,119 @@
       else if (sawEdit && sawRepro && !lastReproPass) setGate("fail");
     });
 
-    es.addEventListener("pack_start", function (e) {
-      var d = JSON.parse(e.data);
-      pstat("running " + d.n + " attempts…");
-      var card = document.createElement("div"); card.className = "pack-card";
-      var head = "🎯 Pack · best-of-" + d.n +
-                 (d.check ? " · check: <code>" + setEsc(d.check) + "</code>"
-                          : " · no check (Collie's own verify picks)") +
-                 (d.apply ? " · <b>apply on</b>" : "");
+    function drawPackStart(d) {
+      if (packCardEl && packCardEl.isConnected) packCardEl.remove();
+      packRows = [];
+      pstat(t("running {n} attempts…").replace("{n}", d.n));
+      var card = document.createElement("div"); card.className = "pack-card"; packCardEl = card;
+      var head = "🎯 " + setEsc(t("Pack · best-of-{n}").replace("{n}", d.n));
+      if (!d.receiptOnly) {
+        head += (d.check ? " · " + setEsc(t("check:")) + " <code>" + setEsc(d.check) + "</code>"
+                         : " · " + setEsc(t("no check (Collie's own verify picks)"))) +
+                (d.apply ? " · <b>" + setEsc(t("apply on")) + "</b>" : "");
+      }
       var rows = "";
       for (var i = 0; i < d.n; i++) {
-        rows += '<div class="pk-row" id="pkrow' + i + '"><span class="pk-i">#' + (i + 1) +
-                '</span><span class="pk-dot pending"></span><span class="pk-st">queued</span>' +
+        rows += '<div class="pk-row"><span class="pk-i">#' + (i + 1) +
+                '</span><span class="pk-dot pending"></span><span class="pk-st">' + setEsc(t("queued")) + '</span>' +
                 '<span class="pk-meta"></span></div>';
       }
       card.innerHTML = '<div class="pk-head">' + head + "</div>" + rows;
+      packRows = Array.prototype.slice.call(card.querySelectorAll(".pk-row"));
       if (flowEl) flowEl.insertBefore(card, statusEl); else if (curMsg) curMsg.appendChild(card);
-    });
+    }
 
-    es.addEventListener("pack_attempt", function (e) {
-      var d = JSON.parse(e.data);
-      var row = $("pkrow" + d.idx);
+    function drawPackAttempt(d) {
+      var row = packRows[Number(d.idx)];
       if (!row) return;
       var st = row.querySelector(".pk-st"), meta = row.querySelector(".pk-meta"),
           dot = row.querySelector(".pk-dot"), status, cls;
-      if (d.error) { status = "error"; cls = "fail"; }
-      else if (d.check_pass === false) { status = "check failed"; cls = "fail"; }
-      else if (d.verified) { status = d.check_pass === true ? "verified ✓ · check ✓" : "verified ✓"; cls = "ok"; }
-      else if (d.check_pass === true) { status = "check ✓"; cls = "ok"; }
-      else { status = "ran"; cls = "ran"; }
+      if (d.error && /cancel/i.test(d.error)) { status = t("stopped"); cls = "stop"; }
+      else if (d.error) { status = t("error"); cls = "fail"; }
+      else if (d.check_pass === false) { status = t("check failed"); cls = "fail"; }
+      else if (d.verified) { status = t(d.check_pass === true ? "verified ✓ · check ✓" : "verified ✓"); cls = "ok"; }
+      else if (d.check_pass === true) { status = t("check ✓"); cls = "ok"; }
+      else { status = t("ran"); cls = "ran"; }
       dot.className = "pk-dot " + cls;
       st.textContent = status;
-      meta.textContent = (d.turns || 0) + " turns" +
+      var turns = d.turns || 0;
+      meta.textContent = turns + " " + t(turns === 1 ? "turn" : "turns") +
         (d.cost_usd ? " · $" + Number(d.cost_usd).toFixed(4) : "");
-      pstat("attempt " + (d.idx + 1) + " done…");
+      pstat(t("attempt {n} done…").replace("{n}", Number(d.idx) + 1));
+    }
+
+    es.addEventListener("pack_start", function (e) {
+      drawPackStart(JSON.parse(e.data));
+    });
+
+    es.addEventListener("verification_evidence", function (e) {
+      var payload = JSON.parse(e.data), d = payload.evidence || payload;
+      sawRepro = true; lastReproPass = !!d.passed; runVerified = !!d.passed;
+      addEvent("repro", d.passed ? "ok" : "bad",
+        d.passed ? "proposed check passed" : "proposed check failed",
+        (d.command || "") + (d.exit_code == null ? "" : " · exit " + d.exit_code),
+        d.passed ? "ok" : "bad");
+      setGate(d.passed ? "pass" : "fail", d.command || undefined);
+    });
+
+    es.addEventListener("pack_attempt", function (e) {
+      drawPackAttempt(JSON.parse(e.data));
     });
 
     es.addEventListener("done", function (e) {
       var d = JSON.parse(e.data);
+      if(currentRun&&d.run&&d.run!==currentRun)return;
       currentSession = d.session;
+      clearTimeout(cancelPollTimer);cancelPollTimer=0;
       setReceipt(d);
       pendStop();
       if (d.pack) {                                           // best-of-N summary + winner highlight
-        if (d.winner != null && $("pkrow" + d.winner)) $("pkrow" + d.winner).classList.add("winner");
+        var attempts = Array.isArray(d.attempts) ? d.attempts : [];
+        /* A mirror reconnect can deliver only the terminal event. Rebuild its candidate rows from
+           the terminal receipt so no-winner/apply-error/cancel still leave reviewable evidence. */
+        if (!packCardEl && attempts.length) {
+          drawPackStart({ n: d.n || attempts.length, receiptOnly: true });
+        }
+        attempts.forEach(drawPackAttempt);
+        if (d.winner != null && packRows[d.winner]) packRows[d.winner].classList.add("winner");
         var sum = document.createElement("div"); sum.className = "pack-summary";
-        if (d.winner == null) sum.innerHTML = "<b>No winner</b> — " + setEsc(d.reason || "nothing passed the check");
-        else sum.innerHTML = "🏆 <b>Attempt #" + (d.winner + 1) + " won</b> · " + setEsc(d.reason || "") +
-             (d.applied ? ' · <span class="pk-applied">applied to files ✓</span>'
-                        : ' · <span class="pk-noapply">not applied (preview only)</span>');
+        var applyFailed = !!(d.error && /^apply failed\b/i.test(d.error));
+        if (d.winner == null) {
+          var why = d.reason || d.error || t("nothing passed the check");
+          sum.classList.add(d.canceled ? "warn" : "fail");
+          sum.innerHTML = "<b>" + setEsc(t(d.canceled ? "Pack stopped" : "No winner")) + "</b> — " + setEsc(why);
+        } else {
+          var winnerWhy = d.reason || (applyFailed ? "" : (d.error || ""));
+          if (applyFailed) sum.classList.add("fail");
+          sum.innerHTML = "🏆 <b>" + setEsc(t("Attempt")) + " #" + (d.winner + 1) + " " + setEsc(t("won")) + "</b>" +
+               (winnerWhy ? " · " + setEsc(winnerWhy) : "") +
+               (d.applied ? ' · <span class="pk-applied">' + setEsc(t("applied to files ✓")) + '</span>'
+                : applyFailed ? ' · <span class="pk-applyfail">' + setEsc(t("apply failed — winner was not written")) + '</span>'
+                              : ' · <span class="pk-noapply">' + setEsc(t("not applied (preview only)")) + '</span>');
+        }
+        if (d.error || d.canceled) {
+          packRows.forEach(function (row) {
+            var dot = row.querySelector(".pk-dot.pending"); if (!dot) return;
+            dot.className = "pk-dot " + (d.canceled ? "stop" : "fail");
+            var st = row.querySelector(".pk-st");
+            if (st) st.textContent = t("stopped");
+          });
+        }
         if (flowEl) flowEl.insertBefore(sum, statusEl || null);
       }
       if (statusEl) { statusEl.remove(); statusEl = null; }   // drop the thinking line
-      if (d.error) {
-        if (curMsg) curMsg.remove();
-        addErr(d.error);
+      if (d.canceled) {
+        /* A Pack's completed candidate rows are evidence. Cancellation is a terminal verdict,
+           not a reason to delete that evidence from the conversation. */
+        if(curMsg && !d.pack)curMsg.remove();
+        addEvent("meta","flag",t("run cancelled"),t("the run emitted its final canceled verdict"));
+      } else if (d.error) {
+        if (!d.pack) {
+          if (curMsg) curMsg.remove();
+          addErr(d.error);
+        } else {
+          addEvent("meta", "bad", t("Pack finished with an error"), d.error, "bad");
+        }
       } else {
         // trust the streamed text if the provider's final answer came back empty, so a live-
         // streamed reply is never wiped to "(no answer)".
@@ -3926,8 +5102,10 @@
       pstatEl = curTextEl = null; curMsg = flowEl = null;
       // settle the gate on the final truth — TRUST the backend's verified signal (from the
       // receipt) over the client's own event bookkeeping, so a passing repro shows green.
-      if (d.pack) {
-        var wv = d.winner != null && d.attempts && d.attempts[d.winner] && d.attempts[d.winner].verified;
+      if (d.canceled) setGate("none",t("Run stopped by the user."));
+      else if (d.pack) {
+        var wa = d.winner != null && d.attempts && d.attempts[d.winner];
+        var wv = !!(wa && (wa.verified || wa.check_pass === true));
         setGate(d.winner == null ? "fail" : (wv ? "pass" : "none"),
                 d.winner == null ? "No attempt passed — Collie applied nothing." :
                 (wv ? null : "A winner was chosen, but no attempt's reproduction ran green."));
@@ -3936,12 +5114,17 @@
       else if (!sawEdit) setGate("none");
       else if (sawRepro) setGate(lastReproPass ? "pass" : "fail");
       else setGate("none", "An edit was made but no reproduction ran — Collie could not confirm it green.");
-      stopRun();
+      finishStreamUI();
+      if (!d.error && !d.canceled) loadHandoffArtifact(d.session, intent);
       loadSessions();
     });
 
     es.onerror = function () {
       // EventSource fires onerror both on network loss and on normal stream close.
+      if (running && cancelPending) {
+        try{es.close();}catch(_){}es=null;
+        pstat("cancellation pending — checking run status…");pollCancelTerminal();return;
+      }
       if (running) {
         pendStop();
         if (statusEl) { statusEl.remove(); statusEl = null; }
@@ -3950,21 +5133,34 @@
         if (curMsg && flowEl && !flowEl.querySelector(".text.md, .trace-step")) curMsg.remove();
         pstatEl = null; curMsg = flowEl = null;
         recoverAfterInterrupt();             // the run may have finished; salvage the saved answer
-        // (stopRun() below sets running=false synchronously, so the async openSession() re-render
+        // (finishStreamUI() below sets running=false synchronously, so the async openSession() re-render
         //  inside recoverAfterInterrupt — guarded on !running — is unblocked by the time it fires)
       }
-      stopRun();
+      finishStreamUI();
     };
     };   // close launch()
-    // upload any attached images first (-> ids), then open the stream; run text-only if upload fails
+    // Upload every attachment before opening the stream. A partial or failed upload must never be
+    // disguised as a text-only run: restore the exact draft and let the user retry knowingly.
     if (imgs.length) {
       Promise.all(imgs.map(uploadImg))
-        .then(function (ids) { launch(ids.filter(Boolean)); })
-        .catch(function () { launch([]); });
+        .then(function (ids) { launch(ids); })
+        .catch(function (err) {
+          if (thisLaunch !== streamLaunchToken || !running) return;
+          if (curMsg) curMsg.remove();
+          if (userMsgEl && userMsgEl.isConnected) userMsgEl.remove();
+          curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
+          input.value = q; input.style.height = "auto";
+          try { input.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+          attached = imgs.slice(); renderAttached();
+          addErr(t("Image upload failed — no run was started.") +
+                 (err && err.message ? " " + err.message : ""));
+          setGate("idle", t("Image upload failed — no run was started."));
+          finishStreamUI(); input.focus();
+        });
     } else launch([]);
   }
 
-  $("send").onclick = function () { if (running) stopRun(); else send(); };
+  $("send").onclick = function () { if (running) cancelRun(); else send(); };
 
   var modelOverlay = $("modelOverlay"), modelTrigger = $("modelTrigger"),
       modelTriggerLabel = $("modelTriggerLabel"), modelClose = $("modelClose"),
@@ -4120,6 +5316,10 @@
     }
     var currentOptionIndex = modelOptions().findIndex(function (option) { return option.dataset.modelId === modelCurrentId; });
     setModelActive(currentOptionIndex >= 0 ? currentOptionIndex : 0);
+    if (modelCatalogLoaded && !modelBusy) {
+      modelStatus.textContent = optionCount + (query ? " matching models" : " models available");
+      modelStatus.className = "model-status";
+    }
   }
 
   function setModelBusy(isBusy) {
@@ -4139,11 +5339,18 @@
     }).then(function (payload) {
       modelEntries = Array.isArray(payload.entries) ? payload.entries : [];
       modelCurrentId = payload.current || modelCurrentId;
+      var autoProvider = String(modelCurrentId || "").split(":")[0];
+      if (autoProvider) {
+        var providerEntry = modelEntries.find(function (entry) { return entry.provider === autoProvider; });
+        modelEntries.unshift({ id: autoProvider + ":", provider: autoProvider, model: "auto",
+          label: "Auto — Collie chooses per task", via: "task-aware routing",
+          tags: ["recommended", "adaptive effort"], source: "synthetic", auto: true,
+          auth: providerEntry ? providerEntry.auth : "ok",
+          kind: providerEntry ? providerEntry.kind : "subscription", price_in: 0, price_out: 0 });
+      }
       modelCatalogLoaded = true;
       updateModelTrigger();
       renderModelEntries();
-      modelStatus.textContent = modelEntries.length + " models available";
-      modelStatus.className = "model-status";
     }).catch(function () {
       modelStatus.textContent = "Could not load the model catalog.";
       modelStatus.className = "model-status err";
@@ -4157,6 +5364,7 @@
     modelTrigger.setAttribute("aria-expanded", "true");
     modelSearch.value = "";
     renderModelEntries();
+    dialogOpened(modelOverlay, modelSearch);
     window.setTimeout(function () { modelSearch.focus(); }, 0);
     loadModelCatalog(modelDiscover.checked);
   }
@@ -4165,7 +5373,7 @@
     if (modelBusy) return;
     modelOverlay.classList.remove("open");
     modelTrigger.setAttribute("aria-expanded", "false");
-    modelTrigger.focus();
+    dialogClosed(modelOverlay, modelTrigger);
   }
 
   function selectModel(entry) {
@@ -4174,13 +5382,15 @@
     modelStatus.textContent = "Switching to " + entry.label + "…";
     modelStatus.className = "model-status";
     fetch("/api/model?token=" + encodeURIComponent(CT), {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: entry.id })
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(entry.auto ? { auto: true } : { id: entry.id })
     }).then(function (response) {
       return response.json().then(function (payload) { return { ok: response.ok, payload: payload }; });
     }).then(function (result) {
       if (!result.ok || !result.payload.ok) throw new Error((result.payload || {}).error || "model switch failed");
       modelCurrentId = result.payload.provider + ":" + result.payload.model;
       updateModelTrigger();
+      if (window.refreshRunCapabilities) window.refreshRunCapabilities();
       modelStatus.textContent = "Switched · applies to your next message";
       modelStatus.className = "model-status ok";
       window.setTimeout(function () {
@@ -4228,36 +5438,164 @@
   });
   loadModelCatalog(false);
 
-  // custom run-mode picker: popover menu -> writes hidden #mode (send() reads .value),
-  // updates the trigger label + intensity dot, and reveals pack's N/check/apply row.
+  // Run setup is deliberately orthogonal: intent, effort, verification, workspace and strategy
+  // are not mutually-exclusive "modes". Hidden fields are the single contract read by runStream.
   (function () {
     var pick = $("modePick"), trig = $("modeTrigger"), menu = $("modeMenu"),
-        hidden = $("mode"), label = $("modeLabel"),
-        tdot = pick && pick.querySelector(".mt-dot"), po = $("packOpts");
+        label = $("modeLabel"), tdot = pick && pick.querySelector(".mt-dot"),
+        po = $("packOpts"), packCheck = $("packCheck"), verifyOpts = $("verifyOpts"),
+        verifyCommand = $("verifyCommand"),
+        fields = { intent: $("runIntent"), quality: $("runQuality"),
+          verification: $("runVerification"), workspace: $("runWorkspace"),
+          strategy: $("runStrategy"), effort: $("runEffort"), speed: $("runSpeed") };
+    var setupLocked = false, capabilities = null;
+    window.runExplicitAxes = window.runExplicitAxes || {};
     if (!pick) return;
     function open(o) {
       pick.classList.toggle("open", o); menu.hidden = !o;
       trig.setAttribute("aria-expanded", o ? "true" : "false");
+      if (o) {
+        var current = menu.querySelector('.mode-item[aria-checked="true"]:not(:disabled)') ||
+                      menu.querySelector(".mode-item:not(:disabled)");
+        if (current) current.focus();
+      }
     }
-    function choose(val) {
-      hidden.value = val;
-      var name = "Normal";
+    function paint() {
+      var intent = fields.intent.value, quality = fields.quality.value,
+          verification = fields.verification.value, workspace = fields.workspace.value,
+          strategy = fields.strategy.value, planning = intent === "plan",
+          reviewing = intent === "review", testing = intent === "test",
+          nonBuild = intent !== "build", packing = strategy === "pack";
       menu.querySelectorAll(".mode-item").forEach(function (it) {
-        var on = it.getAttribute("data-val") === val;
+        var axis = it.getAttribute("data-axis"), on = fields[axis].value === it.getAttribute("data-val");
+        var effortUnsupported = axis === "effort" && it.getAttribute("data-val") !== "auto" &&
+          capabilities && (capabilities.reasoning_efforts || []).indexOf(it.getAttribute("data-val")) < 0;
         it.classList.toggle("is-active", on);
-        if (on) name = it.querySelector(".mi-name").textContent;
+        it.setAttribute("aria-checked", on ? "true" : "false");
+        it.disabled = setupLocked || effortUnsupported || nonBuild &&
+                      (axis === "verification" || axis === "workspace" || axis === "strategy") ||
+                      packing && axis === "workspace";
+        /* One tab stop per radio group. Disabled Plan/Pack-dependent groups have none until
+           they become meaningful again. */
+        it.tabIndex = on && !it.disabled ? 0 : -1;
       });
-      label.textContent = name;
-      if (tdot) tdot.setAttribute("data-mode", val);
-      if (po) po.hidden = val !== "pack";
+      menu.querySelectorAll("[data-run-group]").forEach(function (g) {
+        var axis = g.getAttribute("data-run-group");
+        g.classList.toggle("is-disabled", nonBuild && ["verification","workspace","strategy"].indexOf(axis) >= 0 ||
+                                              packing && axis === "workspace");
+      });
+      var intentLabel = planning ? t("Plan") : reviewing ? t("Review") : testing ? t("Test") : "";
+      var depthLabel = quality === "thorough" ? t("Thorough") : quality === "quick" ? t("Quick") : t("Balanced");
+      var parts = [intentLabel || depthLabel];
+      if (!nonBuild && verification === "required") parts.push(t("Verify"));
+      if (!nonBuild && workspace === "isolated") parts.push(t("Isolated"));
+      if (!nonBuild && packing) parts.push(t("Pack"));
+      if (fields.speed.value === "fast") parts.push("Fast");
+      if (!Object.keys(window.runExplicitAxes).some(function (k) { return window.runExplicitAxes[k]; })) {
+        parts = [t("Auto")];
+      }
+      label.textContent = parts.join(" · ");
+      trig.title = t("Run setup") + " — " + parts.join(", ");
+      trig.setAttribute("aria-label", trig.title);
+      var tone = nonBuild ? (testing ? "verify" : "plan") : packing ? "pack" : workspace === "isolated" ? "isolated" :
+                 verification === "required" ? "verify" : quality;
+      if (tdot) tdot.setAttribute("data-mode", tone);
+      if (po) po.hidden = !packing;
+      if (verifyOpts) verifyOpts.hidden = !(testing || (!nonBuild && verification === "required"));
+      if (packCheck) packCheck.required = packing;
+      if (verifyCommand) verifyCommand.required = testing || (!nonBuild && verification === "required");
+      trig.disabled = setupLocked;
+      [$("packN"), packCheck, $("packApply"), verifyCommand].forEach(function (el) {
+        if (el) el.disabled = setupLocked;
+      });
+      if (setupLocked && !menu.hidden) open(false);
+    }
+    function choose(axis, val) {
+      if (!fields[axis]) return;
+      fields[axis].value = val;
+      window.runExplicitAxes[axis] = true;
+      // Plan has no meaningful verification/workspace/Pack execution. Pack already owns N isolated
+      // candidate trees, so nesting it in another worktree is both slow and misleading.
+      if (axis === "intent" && val !== "build") {
+        fields.verification.value = "auto"; fields.workspace.value = "current";
+        fields.strategy.value = "single";
+        delete window.runExplicitAxes.verification; delete window.runExplicitAxes.workspace;
+        delete window.runExplicitAxes.strategy;
+      }
+      if (axis === "strategy" && val === "pack") {
+        fields.workspace.value = "current"; delete window.runExplicitAxes.workspace;
+      }
+      paint();
     }
     trig.addEventListener("click", function (e) { e.stopPropagation(); open(menu.hidden); });
+    trig.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(true); }
+    });
     menu.querySelectorAll(".mode-item").forEach(function (it) {
-      it.addEventListener("click", function () { choose(it.getAttribute("data-val")); open(false); });
+      it.addEventListener("click", function () {
+        choose(it.getAttribute("data-axis"), it.getAttribute("data-val"));
+      });
+      it.addEventListener("keydown", function (e) {
+        var axis = it.getAttribute("data-axis"), items = Array.prototype.slice.call(
+          menu.querySelectorAll('.mode-item[data-axis="' + axis + '"]:not(:disabled)'));
+        var at = items.indexOf(it), next = at;
+        if (e.key === "ArrowDown") next = (at + 1) % items.length;
+        else if (e.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+        else if (e.key === "Home") next = 0;
+        else if (e.key === "End") next = items.length - 1;
+        else if (e.key === "Escape") { e.preventDefault(); open(false); trig.focus(); return; }
+        else return;
+        e.preventDefault();
+        var target = items[next];
+        /* role=radio carries the native radio keyboard contract: moving with an arrow/Home/End
+           also checks the newly focused item, rather than requiring a second Space press. */
+        choose(axis, target.getAttribute("data-val"));
+        target.focus();
+      });
     });
     document.addEventListener("click", function (e) { if (!pick.contains(e.target)) open(false); });
-    document.addEventListener("keydown", function (e) { if (e.key === "Escape") open(false); });
-    choose("normal");
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !menu.hidden) { open(false); trig.focus(); }
+    });
+    window.refreshRunSetup = paint;
+    window.setRunSetupLocked = function (value) { setupLocked = !!value; paint(); };
+    window.refreshRunCapabilities = function () {
+      return fetch("/api/run-capabilities").then(function (r) { return r.json(); }).then(function (caps) {
+        capabilities = caps || {};
+        var fast = $("runFastItem"), tiers = capabilities.speed_tiers || [];
+        if (fast) fast.hidden = tiers.indexOf("fast") < 0;
+        if (tiers.indexOf("fast") < 0 && fields.speed.value === "fast") {
+          fields.speed.value = "standard"; delete window.runExplicitAxes.speed;
+        }
+        var help = $("runFastHelp");
+        if (help) help.textContent = capabilities.fast_note ||
+          "Fast appears only for a provider/model with a reported same-model tier.";
+        paint();
+        return capabilities;
+      }).catch(function () {
+        var fast = $("runFastItem"); if (fast) fast.hidden = true;
+        capabilities = { reasoning_efforts: [], speed_tiers: ["standard"] }; paint();
+      });
+    };
+    window.refreshVerificationCandidates = function () {
+      return fetch("/api/verification").then(function (r) { return r.json(); }).then(function (data) {
+        var first = (data.candidates || [])[0]; if (!first) return;
+        if (verifyCommand && !verifyCommand.value) {
+          verifyCommand.value = first.command;
+          verifyCommand.dataset.source = first.source || "detected";
+        }
+        if (packCheck && !packCheck.value) packCheck.value = first.command;
+      }).catch(function () {});
+    };
+    var packN = $("packN");
+    if (packN) packN.addEventListener("input", function () { this.setCustomValidity(""); });
+    if (packCheck) packCheck.addEventListener("input", function () { this.setCustomValidity(""); });
+    if (verifyCommand) verifyCommand.addEventListener("input", function () {
+      this.setCustomValidity(""); this.dataset.source = "user";
+    });
+    paint();
+    window.refreshRunCapabilities();
+    window.refreshVerificationCandidates();
   })();
 
   // ---- composer input ---------------------------------------------------
@@ -4265,6 +5603,7 @@
   input.addEventListener("input", function () {
     input.style.height = "auto";
     input.style.height = Math.min(180, input.scrollHeight) + "px";
+    input.style.overflowY = input.scrollHeight > 180 ? "auto" : "hidden";
   });
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -4346,18 +5685,30 @@
         var st = $("recWindow"); $("recLiveSub").textContent = "Saving to ~/Videos/Collie · your webcam is in the bubble";
       } else { if (timer) { clearInterval(timer); timer = null; } startPreview(); }
     }
-    function open() { overlay.hidden = false; loadSources(); loadList(); reflect(); }
-    function close() { overlay.hidden = true; stopPreview(); if (timer) { clearInterval(timer); timer = null; } }
+    function open() {
+      overlay.hidden = false; dialogOpened(overlay, "#recClose");
+      loadSources(); loadList(); reflect();
+    }
+    function close() {
+      overlay.hidden = true; stopPreview(); if (timer) { clearInterval(timer); timer = null; }
+      dialogClosed(overlay, btn);
+    }
 
     function seg(id, cb) {
       document.querySelectorAll("#" + id + " button").forEach(function (b) {
+        b.setAttribute("aria-pressed", b.classList.contains("on") ? "true" : "false");
         b.onclick = function () {
-          b.parentNode.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
-          b.classList.add("on"); cb(b);
+          b.parentNode.querySelectorAll("button").forEach(function (x) {
+            x.classList.remove("on"); x.setAttribute("aria-pressed", "false");
+          });
+          b.classList.add("on"); b.setAttribute("aria-pressed", "true"); cb(b);
         };
       });
     }
-    function sw(id, cb) { var el = $(id); el.onclick = function () { el.classList.toggle("on"); cb(el.classList.contains("on")); }; }
+    function sw(id, cb) { var el = $(id); el.onclick = function () {
+      el.classList.toggle("on"); var on = el.classList.contains("on");
+      el.setAttribute("aria-checked", on ? "true" : "false"); cb(on);
+    }; }
     seg("recSourceSeg", function (b) {
       src = b.dataset.src;
       $("recWindowRow").hidden = src !== "window";
@@ -4393,6 +5744,9 @@
     $("recClose").onclick = close;
     overlay.onclick = function (e) { if (e.target === overlay) close(); };
     btn.addEventListener("click", open);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !overlay.hidden) { e.preventDefault(); close(); }
+    });
 
     function poll() {
       fetch("/api/record/status").then(function (r) { return r.json(); }).then(function (d) {

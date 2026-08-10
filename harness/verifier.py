@@ -173,6 +173,33 @@ class Verifier:
         return Verdict(VERIFIED, "no precondition declared")
 
 
+class GoalVerifier:
+    """Independent end-to-end Mission outcome verifier.
+
+    Action verifiers answer "did this one primitive do what it claimed?".  A
+    goal verifier answers the wider question "is the user's whole goal now
+    satisfied?".  The base implementation deliberately refuses to infer that
+    from a model's ``done`` token; deployments inject a domain verifier that
+    re-observes the world and returns a :class:`Verdict`.
+    """
+
+    def verify(self, goal: str, case: dict, events=(), steps=()) -> Verdict:
+        return Verdict(INCONCLUSIVE,
+                       "no independent mission-level goal verifier configured")
+
+
+class CallableGoalVerifier(GoalVerifier):
+    """Small adapter for services/tests that already expose a verification callable."""
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def verify(self, goal: str, case: dict, events=(), steps=()) -> Verdict:
+        result = self.fn(goal, case, events, steps)
+        return result if isinstance(result, Verdict) else Verdict(
+            INCONCLUSIVE, "goal verifier returned no typed evidence verdict")
+
+
 # ── the code gate, re-expressed (proves the abstraction is faithful) ────────
 class CodeReproVerifier(Verifier):
     """collie's existing assert-verify gate as a Verifier. Channel = the process

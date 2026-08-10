@@ -61,7 +61,12 @@ See [The desktop app](desktop.md) for what these do and how they fit together.
 | `collie mission start "<goal>"` | Persist a durable campaign and return its ID immediately. |
 | `collie mission start "<goal>" --auto --domains x.com,*.y.com --actions-per-hour 6` | Pre-authorize only the named domains and paced irreversible actions. Also supports `--max-actions` and `--max-steps`. |
 | `collie mission ls \| status \| run \| pause \| resume \| cancel \| confirm \| continue \| accept \| check \| reconcile` | Inspect, gate, and control durable campaigns. |
-| `collie jobs daemon` | Foreground wake loop for Jobs/Missions; catches up after sleep. Start it again after reboot. |
+| `collie jobs daemon` | Foreground wake loop for Jobs/Missions; catches up after sleep. `collie supervisor install` keeps it available after sign-in/reboot. |
+| `collie activity [--health]` | One durable view of foreground runs, Missions, specialists, automations, recovery, and worker health. |
+| `collie recovery ls \| show \| reconcile` | Inspect crash-uncertain tool boundaries; reconciliation always requires an explicit resolution and `--yes`. |
+| `collie hooks status \| check \| trust \| untrust` | Review deterministic hooks and trust only the exact configuration hash. |
+| `collie supervisor install \| status \| uninstall` | Manage the per-user Windows 24×7 worker supervisor. |
+| `collie automations upsert \| list \| status \| tick \| daemon` | Manage durable timer/file/page/webhook automation execution. |
 | `collie acp` | Run as an ACP agent over stdio (Zed / JetBrains / neovim). |
 
 ## Configuration precedence

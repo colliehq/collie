@@ -22,9 +22,12 @@ Routes:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -69,6 +72,242 @@ _AUDIO_OK_HOSTS = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaize
 # quietly failed is indistinguishable from one the user simply has not finished.
 _MCP_LOGIN_ERR = {}                  # server name -> last login error
 _MCP_LOGIN_BUSY = set()              # server names with a login in flight
+
+
+def _web_plan_scope(session):
+    """The browser and the model's PlanTool must address the exact same artifact."""
+    return "web:" + str(session or "").strip()
+
+
+def _review_findings(answer):
+    """Turn a read-only Review answer into selectable, structured findings.
+
+    Prefer a JSON ``findings`` block when the model supplied one, while accepting
+    ordinary review bullets as a useful fallback.  This is deliberately an
+    artifact parser, not another model call: Review remains read-only and its
+    handoff stays deterministic/auditable.
+    """
+    text = str(answer or "")
+    candidates = []
+    for raw in re.findall(r"```(?:json)?\s*(.*?)```", text, re.I | re.S):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            parsed = parsed.get("findings")
+        if isinstance(parsed, list):
+            candidates = parsed
+            break
+    if not candidates:
+        # [high] path/to/file.py:42 - explanation
+        pattern = re.compile(
+            r"^\s*(?:[-*]\s*)?(?:\[(critical|high|medium|low|info)\]\s*)?"
+            r"(?:`?([^`:\n]+\.[A-Za-z0-9_+-]+)`?)(?::(\d+))?\s*[-:–—]\s*(.+)$",
+            re.I)
+        for line in text.splitlines():
+            match = pattern.match(line)
+            if match:
+                candidates.append({"severity": match.group(1) or "medium",
+                                   "path": match.group(2).strip(),
+                                   "line": match.group(3), "message": match.group(4).strip()})
+    findings = []
+    for item in candidates[:100]:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or item.get("description") or "").strip()[:4000]
+        if not message:
+            continue
+        severity = str(item.get("severity") or "medium").strip().lower()
+        if severity not in ("critical", "high", "medium", "low", "info"):
+            severity = "medium"
+        path = str(item.get("path") or item.get("file") or "").strip()[:500]
+        try:
+            line = int(item.get("line")) if item.get("line") not in (None, "") else None
+        except (TypeError, ValueError):
+            line = None
+        key = "%s\0%s\0%s\0%s" % (path, line or "", severity, message)
+        findings.append({"id": "finding-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12],
+                         "path": path, "line": line, "severity": severity,
+                         "message": message})
+    return findings
+
+
+def _latest_review_artifact(session):
+    from . import sessions
+    saved = sessions.load(str(session or "").strip()) or {}
+    for receipt in reversed(saved.get("run_receipts") or []):
+        findings = receipt.get("review_findings") if isinstance(receipt, dict) else None
+        if isinstance(findings, list):
+            return {"session": str(session), "run": receipt.get("run"),
+                    "readonly": True, "findings": findings}
+    return {"session": str(session), "run": None, "readonly": True, "findings": []}
+
+
+def _plan_build_prompt(artifact):
+    lines = ["Implement the user-approved plan below. Treat it as the execution brief, inspect the "
+             "current workspace before editing, and verify the result."]
+    if artifact.get("title"):
+        lines.append("\nPlan: " + artifact["title"])
+    if artifact.get("files"):
+        lines.append("Files in scope:\n" + "\n".join("- " + x for x in artifact["files"]))
+    if artifact.get("risks"):
+        lines.append("Risks to handle:\n" + "\n".join("- " + x for x in artifact["risks"]))
+    if artifact.get("todos"):
+        lines.append("Tasks:\n" + "\n".join(
+            "- [%s] %s (%s)" % ("x" if t.get("status") == "completed" else " ",
+                                 t.get("content", ""), t.get("id", ""))
+            for t in artifact["todos"]))
+    if artifact.get("checks"):
+        lines.append("Checks:\n" + "\n".join("- " + c.get("command", "")
+                                               for c in artifact["checks"]))
+    return "\n\n".join(lines)
+
+
+def _review_build_prompt(findings):
+    lines = ["Fix only the review findings selected by the user. Inspect each location before "
+             "editing and run relevant checks after the fixes."]
+    for finding in findings:
+        loc = finding.get("path") or "(unspecified file)"
+        if finding.get("line") is not None:
+            loc += ":" + str(finding["line"])
+        lines.append("- [%s] %s — %s" % (finding.get("severity", "medium"), loc,
+                                          finding.get("message", "")))
+    return "\n".join(lines)
+
+
+def _state_root():
+    from .controlplane import state_dir
+    return state_dir()
+
+
+def _public_recovery(row, session_id=""):
+    """Recovery metadata safe for an operations surface (never transcript/tool args)."""
+    row = row if isinstance(row, dict) else {}
+    return {k: v for k, v in {
+        "session_id": session_id or row.get("session_id"), "run_id": row.get("run_id"),
+        "turn": row.get("turn"), "state": row.get("state"), "updated": row.get("updated"),
+        "recovery_required": bool(row.get("recovery_required")),
+        "auto_resumable": bool(row.get("auto_resumable")), "reason": row.get("reason"),
+    }.items() if v is not None}
+
+
+def _public_task_run(row):
+    """Specialist lifecycle without task, result, leash, resources or workspace content."""
+    row = row if isinstance(row, dict) else {}
+    keys = ("run_id", "parent_run_id", "root_run_id", "mission_id", "depth", "role",
+            "status", "background", "cancel_requested", "cancel_ack_at", "progress_seq",
+            "progress_at", "input_tokens", "output_tokens", "model_cost_usd",
+            "active_wall_ms", "retry_count", "created_at", "updated_at")
+    return {key: row.get(key) for key in keys if row.get(key) is not None}
+
+
+def _public_tree(value):
+    value = value if isinstance(value, dict) else {}
+    root = value.get("root")
+    return {"root": _public_task_run(root) if isinstance(root, dict) else None,
+            "flat": [_public_task_run(row) for row in (value.get("flat") or [])
+                     if isinstance(row, dict)]}
+
+
+def _public_activity(raw):
+    """Allowlisted Activity response; raw control-plane rows contain private work content."""
+    raw = raw if isinstance(raw, dict) else {}
+    missions = [{k: row.get(k) for k in ("mission_id", "state", "updated_at", "lane")
+                 if row.get(k) is not None}
+                for row in (raw.get("missions") or []) if isinstance(row, dict)]
+    automations = [{k: row.get(k) for k in
+                    ("execution_id", "automation_id", "state", "attempts", "created_at",
+                     "updated_at", "started_at", "finished_at") if row.get(k) is not None}
+                   for row in (raw.get("automations") or []) if isinstance(row, dict)]
+    notifications = [{k: row.get(k) for k in
+                      ("notification_id", "run_id", "kind", "state", "created_at", "acked_at")
+                      if row.get(k) is not None}
+                     for row in (raw.get("notifications") or []) if isinstance(row, dict)]
+    return {
+        "at": raw.get("at"),
+        "sessions": [_public_recovery(row) for row in (raw.get("sessions") or [])],
+        "missions": missions,
+        "task_runs": [_public_task_run(row) for row in (raw.get("task_runs") or [])],
+        "automations": automations, "notifications": notifications,
+        # Lane failures are useful; exception strings are not guaranteed to be
+        # content-free, so expose presence without reflecting arbitrary text.
+        "errors": {str(k): "unavailable" for k in (raw.get("errors") or {})},
+    }
+
+
+def _public_health(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    workers = {}
+    for name, row in (raw.get("workers") or {}).items():
+        row = row if isinstance(row, dict) else {}
+        workers[str(name)] = {k: row.get(k) for k in ("state", "fresh", "age_s", "pid")
+                              if row.get(k) is not None}
+    heartbeats = {}
+    for name, row in (raw.get("heartbeats") or {}).items():
+        row = row if isinstance(row, dict) else {}
+        heartbeats[str(name)] = {k: row.get(k) for k in
+                                 ("state", "fresh", "age_s", "pid", "updated_at", "expires_at")
+                                 if row.get(k) is not None}
+    work = raw.get("work") if isinstance(raw.get("work"), dict) else {}
+    recovery = [{k: row.get(k) for k in
+                 ("kind", "session_id", "run_id", "parent_run_id", "execution_id",
+                  "automation_id", "state", "status", "role", "reason")
+                 if row.get(k) is not None}
+                for row in (work.get("recovery_required") or []) if isinstance(row, dict)]
+    supervisor = raw.get("supervisor") if isinstance(raw.get("supervisor"), dict) else {}
+    services_raw = raw.get("services") if isinstance(raw.get("services"), dict) else {}
+    services = {}
+    if isinstance(services_raw.get("web"), dict):
+        services["web"] = {"ok": bool(services_raw["web"].get("ok"))}
+    if isinstance(services_raw.get("browser"), dict):
+        browser = services_raw["browser"]
+        services["browser"] = {
+            "ok": bool(browser.get("ok")),
+            "extension_connected": bool(browser.get("extension_connected")),
+            "last_poll_secs_ago": browser.get("last_poll_secs_ago"),
+        }
+    credentials = [{k: row.get(k) for k in
+                    ("name", "state", "expires_at", "seconds_remaining",
+                     "refresh_available", "refresh_owner", "action")
+                    if row.get(k) is not None}
+                   for row in (raw.get("credentials") or []) if isinstance(row, dict)]
+    queues_raw = raw.get("queues") if isinstance(raw.get("queues"), dict) else {}
+    queues = {}
+    for name in ("slack", "notifications"):
+        row = queues_raw.get(name)
+        if isinstance(row, dict):
+            # Queue health is counts only. Never forward a future payload/error field.
+            queues[name] = {str(k): value for k, value in row.items()
+                            if isinstance(value, (int, float, bool)) and not isinstance(value, str)}
+    return {
+        "ok": bool(raw.get("ok")), "status": raw.get("status") or "unknown", "at": raw.get("at"),
+        "workers": workers, "heartbeats": heartbeats,
+        "services": services, "credentials": credentials, "queues": queues,
+        "supervisor": {k: supervisor.get(k) for k in
+                       ("installed", "enabled", "running", "status", "mode", "task_name",
+                        "last_result") if supervisor.get(k) is not None},
+        "work": {"interactive_active": work.get("interactive_active", 0),
+                 "missions_active": work.get("missions_active", 0),
+                 "task_runs_active": work.get("task_runs_active", 0),
+                 "automations_active": work.get("automations_active", 0),
+                 "recovery_required": recovery},
+        "activity_errors": {str(k): "unavailable" for k in (raw.get("activity_errors") or {})},
+    }
+
+
+def _public_specialist(value):
+    value = value if isinstance(value, dict) else {}
+    out = {}
+    if isinstance(value.get("run"), dict): out["run"] = _public_task_run(value["run"])
+    if isinstance(value.get("tree"), dict): out["tree"] = _public_tree(value["tree"])
+    if isinstance(value.get("events"), list):
+        out["events"] = [{k: event.get(k) for k in ("event_id", "kind", "at")
+                          if event.get(k) is not None}
+                         for event in value["events"] if isinstance(event, dict)]
+    for key in ("mission_id", "run_id", "available", "attached", "queued", "message_id", "error"):
+        if value.get(key) is not None: out[key] = value.get(key)
+    return out
 
 # A Web/Desktop process is already Collie's long-lived local process, so it also
 # wakes due Missions. The ticker owns no plan: each pass only finds durable rows
@@ -518,14 +757,23 @@ class Handler(BaseHTTPRequestHandler):
     # sid -> {state, started, ask, cwd, turns, verified, error, ended}
     _runs_lock = threading.Lock()
     _runs: dict = {}
+    _cancel_events: dict = {}       # sid -> (run id, Event), never exposed in JSON snapshots
     _RUNS_KEEP = 30                 # finished runs stay listable so the list can show a verdict
 
     @classmethod
     def _run_begin(cls, sid, ask, cwd):
         with cls._runs_lock:
+            current = cls._runs.get(sid)
+            if current is not None and current.get("ended") is None:
+                return None
+            run_id = os.urandom(8).hex()
+            cancel = threading.Event()
             cls._runs[sid] = {"session": sid, "state": "running", "started": time.time(),
                               "ask": (ask or "")[:120], "cwd": cwd, "turns": 0,
-                              "verified": None, "error": "", "ended": None}
+                              "verified": None, "error": "", "ended": None,
+                              "run": run_id, "cancel_requested": None}
+            cls._cancel_events[sid] = (run_id, cancel)
+            return run_id
 
     @classmethod
     def _run_mark(cls, sid, **kw):
@@ -535,31 +783,71 @@ class Handler(BaseHTTPRequestHandler):
                 r.update(kw)
 
     @classmethod
-    def _run_end(cls, sid, res=None, error=""):
+    def _run_end(cls, sid, res=None, error="", canceled=False, run_id=None):
         with cls._runs_lock:
             r = cls._runs.get(sid)
             # First verdict wins. The success path records the real one and the `finally` guard runs
             # straight after it; without this the guard would overwrite every good result with its
             # own catch-all and every finished run would read as failed.
-            if r is None or r["ended"]:
+            if r is None or r["ended"] or (run_id is not None and r.get("run") != run_id):
                 return
-            r["state"] = "failed" if (error or getattr(res, "error", "")) else "done"
-            r["error"] = (error or getattr(res, "error", "") or "")[:200]
+            entry = cls._cancel_events.get(sid)
+            was_canceled = bool(canceled or getattr(res, "canceled", False)
+                                or (entry and entry[0] == r.get("run") and entry[1].is_set()))
+            r["state"] = ("canceled" if was_canceled else
+                          ("failed" if (error or getattr(res, "error", "")) else "done"))
+            r["error"] = ("canceled by user" if was_canceled else
+                          (error or getattr(res, "error", "") or "")[:200])
             r["ended"] = time.time()
             if res is not None:
                 r["turns"] = getattr(res, "turns", 0) or 0
-                r["verified"] = bool(getattr(res, "verified", False))
+                r["verified"] = False if was_canceled else bool(getattr(res, "verified", False))
             # keep the most recent finished runs, drop the rest — a verdict nobody looked at within
             # thirty runs is not one the sidebar should still be offering
             done = sorted([x for x in cls._runs.values() if x["ended"]], key=lambda x: x["ended"])
             for old in done[:-cls._RUNS_KEEP]:
                 cls._runs.pop(old["session"], None)
+                cls._cancel_events.pop(old["session"], None)
+
+    @classmethod
+    def _run_cancel(cls, sid, run_id=None):
+        with cls._runs_lock:
+            r = cls._runs.get(sid)
+            if r is None:
+                return {"ok": False, "status": "not_running", "session": sid}
+            if run_id and run_id != r.get("run"):
+                return {"ok": False, "status": "run_mismatch", "session": sid,
+                        "run": r.get("run")}
+            if r.get("ended") is not None:
+                status = "already_canceled" if r.get("state") == "canceled" else "not_running"
+                return {"ok": status == "already_canceled", "status": status,
+                        "session": sid, "run": r.get("run")}
+            entry = cls._cancel_events.get(sid)
+            if entry is None or entry[0] != r.get("run"):
+                return {"ok": False, "status": "not_running", "session": sid}
+            already = entry[1].is_set()
+            entry[1].set()
+            r["state"] = "canceling"
+            r["cancel_requested"] = r.get("cancel_requested") or time.time()
+            out = {"ok": True, "status": "already_requested" if already else "cancel_requested",
+                   "session": sid, "run": r.get("run")}
+        # An approval can be parked indefinitely. Orphaning it wakes that waiter; the loop then
+        # observes the cancel flag before executing the next tool.
+        cls._inbox_close(sid)
+        return out
+
+    @classmethod
+    def _run_cancelled(cls, sid, run_id):
+        with cls._runs_lock:
+            entry = cls._cancel_events.get(sid)
+            return bool(entry and entry[0] == run_id and entry[1].is_set())
 
     @classmethod
     def _runs_snapshot(cls):
         with cls._runs_lock:
             return sorted((dict(r) for r in cls._runs.values()),
-                          key=lambda r: (r["state"] != "running", -(r["ended"] or r["started"])))
+                          key=lambda r: (r["state"] not in ("running", "canceling"),
+                                         -(r["ended"] or r["started"])))
 
     @classmethod
     def _steer_open(cls, sid):
@@ -624,7 +912,12 @@ class Handler(BaseHTTPRequestHandler):
             store = cls._inbox_runs.get(sid)
         if store is None:
             return False
-        return bool(store.resolve(item_id, resolution))
+        resolved = bool(store.resolve(item_id, resolution))
+        if resolved:
+            event = {"id": item_id, "answer": resolution}
+            cls._mirror_pub(sid, "permission_resolved", event)
+            cls._live_pub("permission_resolved", dict(event, session=sid))
+        return resolved
 
     @classmethod
     def _inbox_pending(cls, sid):
@@ -784,8 +1077,11 @@ class Handler(BaseHTTPRequestHandler):
             self._sse("mirror_hello", {"session": sid})
             # Hand over what already happened before this window arrived, marked as a replay so the
             # page can render it as history rather than as things happening right now.
+            pending_ids = {str(item.get("id") or "") for item in Handler._inbox_pending(sid)}
             with Handler._mirror_lock:
-                past = list(Handler._mirror_backlog.get(sid, ()))
+                past = [event for event in Handler._mirror_backlog.get(sid, ())
+                        if event[0] != "permission" or
+                        str((event[1] or {}).get("id") or "") in pending_ids]
             if past:
                 self._sse("mirror_replay", {"session": sid, "count": len(past)})
                 for kind, data in past:
@@ -811,11 +1107,54 @@ class Handler(BaseHTTPRequestHandler):
                         Handler._mirror_subs.pop(sid, None)
 
     # ------------------------------------------------------------------ helpers
+    def end_headers(self):
+        """Security defaults for every response, including errors, JSON, media, and SSE."""
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy",
+                         "camera=(self), microphone=(self), display-capture=(self), "
+                         "geolocation=(), payment=(), usb=(), browsing-topics=()")
+        # Ambient intentionally embeds the same-origin wallpaper/map; block every other origin.
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        super().end_headers()
+
+    @staticmethod
+    def _html_csp(body: bytes) -> str:
+        """Authorize this exact document's inline scripts without allowing arbitrary inline JS."""
+        scripts = re.findall(
+            br"<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script\s*>", body,
+            flags=re.IGNORECASE | re.DOTALL)
+        hashes = []
+        for script in scripts:
+            # The HTML tokenizer normalizes CRLF/CR to LF before CSP checks the inline text.
+            # Hash that parsed representation, not the checkout's platform line endings.
+            normalized = script.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            digest = base64.b64encode(hashlib.sha256(normalized).digest()).decode("ascii")
+            value = "'sha256-%s'" % digest
+            if value not in hashes:
+                hashes.append(value)
+        script_src = "script-src 'self'" + ((" " + " ".join(hashes)) if hashes else "")
+        return "; ".join((
+            "default-src 'self'",
+            script_src,
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "media-src 'self' data: blob:",
+            "connect-src 'self' https://ipapi.co https://api.open-meteo.com",
+            "frame-src 'self'",
+            "frame-ancestors 'self'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'self'",
+        ))
+
     def _send_html(self, body: bytes, code: int = 200, ctype: str = "text/html; charset=utf-8"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if ctype.lower().startswith("text/html"):
+            self.send_header("Content-Security-Policy", self._html_csp(body))
         self.end_headers()
         self.wfile.write(body)
 
@@ -934,6 +1273,72 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._send_json({"runs": Handler._runs_snapshot()})
+            if path in ("/api/activity", "/api/healthz", "/api/recovery", "/api/hooks") or \
+                    path.startswith("/api/recovery/"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                if path == "/api/activity":
+                    from .controlplane import activity
+                    return self._send_json(_public_activity(activity(_state_root(), limit=250)))
+                if path == "/api/healthz":
+                    from .controlplane import health
+                    return self._send_json(_public_health(health(_state_root())))
+                if path == "/api/hooks":
+                    from .hooks import HookManager
+                    manager = HookManager(os.getcwd())
+                    return self._send_json({"active": manager.active, "events": manager.events(),
+                                            "pending": [{"path": str(x.get("path") or ""),
+                                                         "sha256": str(x.get("sha256") or "")}
+                                                        for x in manager.pending],
+                                            "trust_changes_allowed": False})
+                from . import sessions
+                session_dir = os.path.join(_state_root(), "sessions")
+                if path == "/api/recovery":
+                    return self._send_json({"sessions": [
+                        _public_recovery(row) for row in
+                        sessions.active_runs(limit=250, directory=session_dir)]})
+                sid = urllib.parse.unquote(path[len("/api/recovery/"):]).strip()
+                if not sid:
+                    return self._send_json({"error": "session required"}, 400)
+                state = sessions.recovery_state(sid, directory=session_dir)
+                if state is None:
+                    return self._send_json({"error": "no active recovery state"}, 404)
+                return self._send_json(_public_recovery(state, sid))
+            if path in ("/api/mission/run-tree", "/api/mission/specialist"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                query = urllib.parse.parse_qs(parsed.query)
+                from .missionweb import MissionService
+                svc = MissionService()
+                try:
+                    if path == "/api/mission/run-tree":
+                        mid = str(query.get("id", [""])[0] or "").strip()
+                        if not mid:
+                            return self._send_json({"error": "id required"}, 400)
+                        value = svc.inspect_run_tree(mid)
+                        if isinstance(value.get("tree"), dict):
+                            value = dict(value); value["tree"] = _public_tree(value["tree"])
+                        value.pop("path", None)
+                    else:
+                        run_id = str(query.get("run_id", [""])[0] or "").strip()
+                        if not run_id:
+                            return self._send_json({"error": "run_id required"}, 400)
+                        value = _public_specialist(svc.inspect_specialist(run_id))
+                    return self._send_json(value, 404 if value.get("error") else 200)
+                finally:
+                    svc.close()
+            if path in ("/api/plan", "/api/review"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                sid = (urllib.parse.parse_qs(parsed.query).get("session", [""])[0] or "").strip()
+                if not sid:
+                    return self._send_json({"error": "session required"}, 400)
+                if path == "/api/plan":
+                    from .plantool import PlanArtifactStore
+                    artifact = PlanArtifactStore().get(_web_plan_scope(sid))
+                    return self._send_json({"session": sid, "artifact": artifact,
+                                            "can_approve": not artifact.get("approved")})
+                return self._send_json(_latest_review_artifact(sid))
             if path == "/api/checkpoints":
                 return self._serve_checkpoints()
             if path == "/api/settings":
@@ -950,6 +1355,20 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 return self._send_json({"schema": settings.SCHEMA, "values": vals})
+            if path == "/api/run-capabilities":
+                # Static provider/model truth for the run setup.  In particular the
+                # UI hides Fast unless this exact pair has a known same-model wire
+                # contract and billing premium.
+                from . import settings
+                from .providers import provider_capabilities
+                settings.apply()
+                name = _provider()
+                model = settings.get("MODEL", "") or None
+                return self._send_json(provider_capabilities(name, model))
+            if path == "/api/verification":
+                from .verification import detect_verification_commands
+                return self._send_json({"cwd": os.getcwd(),
+                                        "candidates": detect_verification_commands(os.getcwd())})
             if path == "/api/mcp":
                 # The MCP control plane: what is configured and what state it is really in. Read-only
                 # and deliberately out-of-band — when a bad server is what is breaking collie, you
@@ -1258,6 +1677,139 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/pair":
                 return self._serve_pair_exchange()
+            if path == "/api/run/cancel":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(4096)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                sid = str(body.get("session") or "").strip()
+                if not sid:
+                    return self._send_json({"error": "session required"}, 400)
+                out = Handler._run_cancel(sid, str(body.get("run") or "").strip() or None)
+                code = 200 if out.get("ok") else (409 if out.get("status") == "run_mismatch" else 404)
+                return self._send_json(out, code)
+            if path in ("/api/plan", "/api/plan/approve", "/api/review/handoff"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(131072)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                sid = str(body.get("session") or "").strip()
+                if not sid:
+                    return self._send_json({"error": "session required"}, 400)
+                if path == "/api/review/handoff":
+                    artifact = _latest_review_artifact(sid)
+                    wanted = {str(x) for x in (body.get("finding_ids") or [])}
+                    selected = [x for x in artifact["findings"] if x.get("id") in wanted]
+                    if not selected:
+                        return self._send_json({"error": "select at least one current finding"}, 400)
+                    return self._send_json({"ok": True, "handoff": {
+                        "session": sid, "intent": "build", "source": "review",
+                        "finding_ids": [x["id"] for x in selected],
+                        "prompt": _review_build_prompt(selected)}})
+                from .plantool import PlanArtifactStore, RevisionConflict
+                store = PlanArtifactStore()
+                if "revision" not in body:
+                    return self._send_json({"error": "revision required for safe update"}, 400)
+                try:
+                    if path == "/api/plan":
+                        # Approval is its own explicit, auditable user action.
+                        patch = {k: body[k] for k in
+                                 ("title", "files", "risks", "checks", "todos") if k in body}
+                        # Any edit invalidates the previous approval. The next Build
+                        # handoff must approve the exact newly-saved revision.
+                        patch["approved"] = False
+                        artifact = store.update(_web_plan_scope(sid), patch,
+                                                expected_revision=body["revision"], actor="user")
+                        return self._send_json({"ok": True, "session": sid,
+                                                "artifact": artifact})
+                    artifact = store.update(_web_plan_scope(sid), {"approved": True},
+                                            expected_revision=body["revision"], actor="user")
+                except RevisionConflict as exc:
+                    return self._send_json({"error": str(exc), "conflict": True}, 409)
+                except (TypeError, ValueError) as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                return self._send_json({"ok": True, "artifact": artifact,
+                                        "can_start": True, "handoff": {
+                                            "session": sid, "intent": "build", "source": "plan",
+                                            "plan_revision": artifact["revision"],
+                                            "prompt": _plan_build_prompt(artifact)}})
+            if path == "/api/recovery/reconcile":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                if body.get("confirmed") is not True:
+                    return self._send_json({"error": "explicit confirmed=true is required"}, 400)
+                sid = str(body.get("session") or "").strip()
+                resolution = str(body.get("resolution") or "").strip()
+                if not sid:
+                    return self._send_json({"error": "session required"}, 400)
+                from . import sessions
+                try:
+                    state = sessions.reconcile_recovery(
+                        sid, resolution, note=str(body.get("note") or "")[:1000], confirmed=True,
+                        directory=os.path.join(_state_root(), "sessions"))
+                except KeyError:
+                    return self._send_json({"error": "no such session"}, 404)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
+                return self._send_json({"ok": True, "session": sid,
+                                        "state": _public_recovery(state, sid) if state else None})
+            if path in ("/api/automation/webhook", "/api/automations/webhook"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(131072)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                aid = str(body.get("automation_id") or "").strip()
+                payload = body.get("payload")
+                if not aid or not isinstance(payload, dict):
+                    return self._send_json({"error": "automation_id and object payload required"}, 400)
+                from .automations import (AutomationQueueFull, AutomationStore, PermissionDenied,
+                                          TriggerEngine)
+                try:
+                    with AutomationStore(os.path.join(_state_root(), "automations.db")) as store:
+                        eid = TriggerEngine(store).ingest_webhook(
+                            aid, payload, authenticated=True,
+                            delivery_id=str(body.get("delivery_id") or "")[:200])
+                except KeyError as exc:
+                    return self._send_json({"error": str(exc)}, 404)
+                except PermissionDenied as exc:
+                    return self._send_json({"error": str(exc)}, 403)
+                except AutomationQueueFull as exc:
+                    return self._send_json({"error": str(exc)}, 429)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                return self._send_json({"ok": True, "accepted": bool(eid),
+                                        "execution_id": eid})
+            if path in ("/api/mission/specialist/steer", "/api/mission/specialist/cancel"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                run_id = str(body.get("run_id") or "").strip()
+                if not run_id:
+                    return self._send_json({"error": "run_id required"}, 400)
+                from .missionweb import MissionService
+                svc = MissionService()
+                try:
+                    if path.endswith("/steer"):
+                        text = str(body.get("text") or "").strip()
+                        if not text:
+                            return self._send_json({"error": "text required"}, 400)
+                        value = svc.steer_specialist(run_id, text[:4000],
+                                                     str(body.get("sender_run_id") or "")[:100])
+                    else:
+                        value = svc.cancel_specialist(
+                            run_id, str(body.get("sender_run_id") or "")[:100])
+                    value = _public_specialist(value)
+                    return self._send_json(value, 404 if value.get("error") else 200)
+                finally:
+                    svc.close()
             if path == "/api/checkpoint/restore":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -1436,8 +1988,15 @@ class Handler(BaseHTTPRequestHandler):
                         try:
                             from . import wallpaper as wp
                             wp.install() if want_wp else wp.uninstall()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # The desktop toggle controls a real OS integration. If that operation
+                            # fails, restore the persisted value and report the failure; claiming
+                            # success here leaves Settings disagreeing with what starts at logon.
+                            settings.update({"WALLPAPER": "on" if prev_wp else "off"})
+                            settings.apply()
+                            return self._send_json({"ok": False,
+                                                    "error": "could not apply ambient desktop: %s" % exc,
+                                                    "values": settings.all_values()}, 500)
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
             if path == "/api/browser/start":
                 # onboarding "connect your browser": bring the localhost bridge up (windowless), so the
@@ -1565,6 +2124,20 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, UnicodeDecodeError):
                     return self._send_json({"error": "bad json"}, 400)
                 from . import settings, catalog
+                if (body or {}).get("auto") is True:
+                    # Unpin only the model. Provider/auth stays exactly where the
+                    # user put it; the task router chooses within that provider.
+                    provider = settings.get("PROVIDER", "") or _provider()
+                    if not provider:
+                        return self._send_json({"error": "choose a provider before Auto"}, 400)
+                    settings.update({"MODEL": ""})
+                    settings.apply()
+                    out = {"ok": True, "provider": provider, "model": "", "auto": True}
+                    if settings.pinned("MODEL"):
+                        out.update(ok=False, pinned=["MODEL"], error=(
+                            "Saved Auto, but COLLIE_MODEL is set in this collie's environment and "
+                            "outranks it. Restart collie without COLLIE_MODEL."))
+                    return self._send_json(out)
                 provider, model = catalog.resolve((body or {}).get("id", ""))
                 if not provider:
                     return self._send_json({"error": "bad model id"}, 400)
@@ -1676,7 +2249,10 @@ class Handler(BaseHTTPRequestHandler):
                                                 "detail": "no model configured"}, 503)
                     _rmodel = os.environ.get("COLLIE_ROUTER_MODEL") or (
                         DEFAULT_ROUTER_MODEL if _name in ("anthropic-oauth", "anthropic") else None)
-                    prov = make_provider(_name, _rmodel)
+                    # Classification is tiny and reversible.  Keep it at the
+                    # lowest supported effort regardless of the execution run's
+                    # configured depth; the resolved task gets its own decision.
+                    prov = make_provider(_name, _rmodel, effort="low")
                     return self._send_json(classify(text, prov))
                 except ModelUnavailable as e:
                     return self._send_json({"error": "model_unavailable", "detail": str(e)}, 503)
@@ -2250,7 +2826,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(s)
 
     def _serve_stream(self, qs):
-        from .cli import make_harness
+        from .cli import (configure_run_options, default_gate, make_harness,
+                          normalize_run_options)
         from . import sessions, settings
         settings.apply()   # a Settings-panel save takes effect on the next query, no restart
 
@@ -2271,6 +2848,36 @@ class Handler(BaseHTTPRequestHandler):
             self._sse("done", {"session": sid, "answer": "", "error": "empty message"})
             return
 
+        # Run controls are independent axes.  Keep the old `mode=` values as a compatibility
+        # adapter, but canonicalize immediately so no later branch can accidentally treat a
+        # workspace choice as a quality/verification choice again.
+        legacy_mode = (qs.get("mode", ["normal"])[0] or "normal").strip().lower()
+        if legacy_mode not in ("normal", "herding", "isolated", "pack"):
+            self._sse("done", {"session": sid, "answer": "",
+                               "error": "unknown legacy run mode: " + legacy_mode})
+            return
+        try:
+            requested_opts = normalize_run_options(
+                qs.get("intent", ["build"])[0],
+                qs.get("quality", ["thorough" if legacy_mode == "herding" else "balanced"])[0],
+                qs.get("verification", ["required" if legacy_mode == "herding" else "auto"])[0],
+            )
+        except ValueError as e:
+            self._sse("done", {"session": sid, "answer": "", "error": str(e)})
+            return
+        strategy = (qs.get("strategy", ["pack" if legacy_mode == "pack" else "single"])[0]
+                    or "single").strip().lower()
+        workspace = (qs.get("workspace", ["isolated" if (
+            legacy_mode == "isolated" or qs.get("isolate", ["0"])[0] in ("1", "true", "on")
+        ) else "current"])[0] or "current").strip().lower()
+        if strategy not in ("single", "pack"):
+            self._sse("done", {"session": sid, "answer": "",
+                               "error": "strategy must be single or pack"})
+            return
+        if workspace not in ("current", "isolated"):
+            self._sse("done", {"session": sid, "answer": "",
+                               "error": "workspace must be current or isolated"})
+            return
         # No provider -> refuse here, in one legible frame. Everything below assumes a model: the
         # old default answered from mock's fixtures, and the run path would otherwise hand "" down
         # to make_provider to fail deeper and less clearly. The SSE headers are already committed,
@@ -2282,10 +2889,124 @@ class Handler(BaseHTTPRequestHandler):
                                "(a saved one did not reach this run)"})
             return
 
+        # A transcript stopped at a model/turn boundary is safe to continue.  One stopped while an
+        # external tool may have fired is not: loading and replaying that suffix can duplicate an
+        # irreversible effect.  Recovery reconciliation is a separate, explicit API action.
+        if qs.get("session", [""])[0]:
+            recovery = sessions.recovery_state(sid)
+            if recovery and recovery.get("recovery_required"):
+                self._sse("done", {
+                    "session": sid, "answer": "", "error": recovery.get("reason") or
+                    "recovery required before this session can continue",
+                    "recovery_required": True, "recovery": recovery,
+                })
+                return
+
         # seed the full prior thread so the web UI has the same --continue continuity the CLI has
         prior = sessions.load(sid) if qs.get("session", [""])[0] else None
         history = (prior or {}).get("messages") or []
         cwd = os.getcwd()
+
+        # New clients send a non-empty sentinel ("none") when every axis is Auto. Older clients
+        # predate Auto and expect any supplied query field to be literal, so preserve that contract.
+        from .router import parse_explicit_axes, resolve_run_decision
+        if "explicit_axes" in qs:
+            explicit_axes = parse_explicit_axes(qs.get("explicit_axes", ["none"])[0])
+        else:
+            explicit_axes = parse_explicit_axes(
+                [a for a in ("intent", "quality", "verification", "workspace", "strategy",
+                             "effort", "speed") if a in qs])
+        if legacy_mode == "herding":
+            explicit_axes = parse_explicit_axes(list(explicit_axes) + ["quality", "verification"])
+        elif legacy_mode == "isolated":
+            explicit_axes = parse_explicit_axes(list(explicit_axes) + ["workspace"])
+        elif legacy_mode == "pack":
+            explicit_axes = parse_explicit_axes(list(explicit_axes) + ["strategy"])
+
+        effort_request = qs.get("effort", [settings.get("REASONING_EFFORT", "auto") or "auto"])[0]
+        speed_request = qs.get("speed", ["standard"])[0]
+        configured_model = settings.get("MODEL", "") or None
+        try:
+            decision = resolve_run_decision(
+                q, provider=prov, model=configured_model, effort=effort_request,
+                speed=speed_request, route_kind=qs.get("route_kind", [""])[0],
+                intent=requested_opts["intent"], quality=requested_opts["quality"],
+                verification=requested_opts["verification"], workspace=workspace,
+                strategy=strategy, explicit_axes=explicit_axes, history=history)
+        except ValueError as e:
+            self._sse("done", {"session": sid, "answer": "", "error": str(e)})
+            return
+        run_opts = {"intent": decision.intent, "quality": decision.quality,
+                    "verification": decision.verification}
+        strategy, workspace = decision.strategy, decision.workspace
+
+        # Show/edit this proposal in the UI, then carry the exact command into Test/Required
+        # evidence. API clients that omit it get the same deterministic detector.
+        from .verification import detect_verification_commands
+        verify_command = (qs.get("verify_command", [""])[0] or "").strip()
+        verify_source = ((qs.get("verify_source", [""])[0] or "").strip()[:160]
+                         if verify_command else "")
+        if verify_command and not verify_source:
+            verify_source = "user"
+        detected_checks = detect_verification_commands(cwd)
+        if not verify_command and detected_checks:
+            verify_command = detected_checks[0]["command"]
+            verify_source = detected_checks[0]["source"]
+
+        readonly = run_opts["intent"] in ("plan", "review")
+        if readonly:
+            label = run_opts["intent"].title()
+            if strategy != "single":
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "%s is read-only; Pack is only available for Build" % label})
+                return
+            if workspace != "current":
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "%s uses the current read-only workspace; isolation is only available for Build" % label})
+                return
+            if run_opts["verification"] != "auto":
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "%s does not edit code; Required verification is only available for Build" % label})
+                return
+        if run_opts["intent"] == "test":
+            if strategy != "single" or workspace != "current":
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "Test is read-only and runs once in the current workspace"})
+                return
+            if not verify_command:
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "Test needs a detected or explicit verification command"})
+                return
+            test_gate = default_gate(cwd, mode="test", commands=[verify_command])
+            if not test_gate.evaluate("bash", {"command": verify_command}).allowed:
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "Test command must be one allowlisted command without shell chaining"})
+                return
+        if strategy == "pack" and workspace == "isolated":
+            self._sse("done", {"session": sid, "answer": "",
+                               "error": "Pack already creates isolated attempts; choose Current workspace"})
+            return
+        if strategy == "pack" and run_opts["intent"] != "build":
+            self._sse("done", {"session": sid, "answer": "",
+                               "error": "Pack is only available for Build"})
+            return
+
+        pack_n, pack_check, pack_apply = 3, None, False
+        if strategy == "pack":
+            try:
+                pack_n = int(qs.get("n", ["3"])[0] or 3)
+            except ValueError:
+                pack_n = 0
+            if pack_n < 2 or pack_n > 6:
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "Pack attempts must be a whole number from 2 to 6"})
+                return
+            pack_check = (qs.get("check", [""])[0] or "").strip() or None
+            if not pack_check:
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": "Pack needs an executed check command to select a winner"})
+                return
+            pack_apply = qs.get("apply", ["0"])[0] in ("1", "on", "true")
 
         # ?isolate=1 — run this one in its own git worktree, on its own branch.
         #
@@ -2298,7 +3019,7 @@ class Handler(BaseHTTPRequestHandler):
         # the shared tree is exactly the collision that was asked to be avoided, and saying nothing
         # about it is how you find out afterwards.
         wt_info = None
-        if qs.get("isolate", ["0"])[0] in ("1", "true", "on"):
+        if workspace == "isolated":
             from . import worktree as _wt
             wt_info = _wt.prepare(cwd, sid, label=q)
             if not wt_info["ok"]:
@@ -2307,55 +3028,141 @@ class Handler(BaseHTTPRequestHandler):
                 return
             cwd = wt_info["dir"]
 
-        start_d = {"session": sid, "provider": prov, "cwd": cwd,
-                   "prior_turns": sum(1 for m in history if m.get("role") == "user")}
+        run_id = Handler._run_begin(sid, q, cwd)
+        if run_id is None:
+            self._sse("done", {"session": sid, "answer": "",
+                               "error": "this session already has an active run"})
+            return
+
+        def _tx(kind, data):
+            # A run belongs to the server, not the initiating socket. Every lifecycle path uses this
+            # guarded writer, including pack, so closing a window never strands a running registry row.
+            try:
+                self._sse(kind, data)
+            except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+                pass
+
+        decision_payload = decision.to_dict()
+        if verify_command:
+            decision_payload["verification_proposal"] = {
+                "command": verify_command, "source": verify_source,
+            }
+        start_d = {"session": sid, "run": run_id, "provider": prov, "cwd": cwd,
+                   "prior_turns": sum(1 for m in history if m.get("role") == "user"),
+                   "intent": run_opts["intent"], "quality": run_opts["quality"],
+                   "verification": run_opts["verification"], "workspace": workspace,
+                   "strategy": strategy, "model": decision.model,
+                   "effort": decision.effort, "speed": decision.speed,
+                   "decision": decision_payload}
         if wt_info:
             start_d["branch"] = wt_info["branch"]
             start_d["isolated"] = True
-        self._sse("start", start_d)
+        _tx("start", start_d)
         Handler._live_pub("start", start_d)   # let open Maps enter live mode for this run
         Handler._mirror_pub(sid, "start", start_d)   # + any window mirroring this session
-        Handler._run_begin(sid, q, cwd)              # the process-wide answer to "what is running?"
 
         # PACK mode (🎯 best-of-N): run the task N times in isolation, pick the winner by what
         # actually PASSES. No token stream — each attempt runs silently; we push a `pack_attempt`
         # event as each one lands, then a `done` carrying the winning answer + why it won.
-        if (qs.get("mode", ["normal"])[0]) == "pack":
+        if strategy == "pack":
             from . import pack as _pack
-            try:
-                n = int(qs.get("n", ["3"])[0] or 3)
-            except ValueError:
-                n = 3
-            check = (qs.get("check", [""])[0] or "").strip() or None
-            apply_ = qs.get("apply", ["0"])[0] in ("1", "on", "true")
-            self._sse("pack_start", {"n": max(1, min(8, n)), "check": check or "", "apply": apply_})
+            _tx("pack_start", {"n": pack_n, "check": pack_check,
+                               "apply": pack_apply, "decision": decision_payload})
 
             def _emit(i, rec):
-                self._sse("pack_attempt", {
+                _tx("pack_attempt", {
                     "idx": rec.get("idx", i), "verified": bool(rec.get("verified")),
                     "turns": rec.get("turns", 0), "error": (rec.get("error") or "")[:120],
-                    "cost_usd": rec.get("cost_usd", 0.0), "check_pass": rec.get("check_pass")})
+                    "cost_usd": rec.get("cost_usd", 0.0), "check_pass": rec.get("check_pass"),
+                    "provider": rec.get("provider"), "model": rec.get("model"),
+                    "effort": rec.get("effort"), "speed": rec.get("speed"),
+                    "verification_evidence": rec.get("verification_evidence")})
             try:
-                pr = _pack.run_pack(q, cwd, n=n, check=check, provider=prov,
-                                    apply=apply_, emit=_emit)
-            except BrokenPipeError:
-                return
+                pr = _pack.run_pack(user_msg, cwd, n=pack_n, check=pack_check, provider=prov,
+                                    model=decision.model, effort=decision.effort,
+                                    speed=decision.speed, apply=pack_apply, emit=_emit,
+                                    cancel=lambda: Handler._run_cancelled(sid, run_id),
+                                    quality=run_opts["quality"],
+                                    verification=run_opts["verification"],
+                                    # Pack has no single foreground approval card.  Give every
+                                    # candidate the normal project gate anyway: local repo work is
+                                    # allowed, anything external fails closed instead of running
+                                    # ungated merely because this is a multi-candidate strategy.
+                                    gate_factory=lambda attempt_cwd: default_gate(attempt_cwd),
+                                    history=history)
             except Exception as e:
-                self._sse("done", {"session": sid, "answer": "", "error": "pack failed: %s" % e})
+                error = "pack failed: %s: %s" % (type(e).__name__, e)
+                try:
+                    sessions.append_exchange(sid, user_msg, error, project="web", cwd=cwd)
+                except Exception:
+                    pass
+                Handler._run_end(sid, error=error, run_id=run_id)
+                done_d = {"session": sid, "run": run_id, "answer": "", "error": error,
+                          "pack": True, "decision": decision_payload,
+                          "model": decision.model, "effort": decision.effort,
+                          "speed": decision.speed}
+                try:
+                    sessions.append_run_receipt(sid, {
+                        "run": run_id, "decision": decision_payload,
+                        "error": error, "pack": True,
+                    })
+                except Exception:
+                    pass
+                Handler._mirror_pub(sid, "done", done_d)
+                Handler._live_pub("done", {"session": sid, "run": run_id, "error": error})
+                _tx("done", done_d)
                 return
             win = pr.get("winner")
             ans = pr.get("answer", "") if win is not None else ""
-            if ans:
-                sessions.save(sid, [{"role": "user", "content": q},
-                                    {"role": "assistant", "content": ans}],
-                              project="web", cwd=cwd, answer=ans)
-            self._sse("done", {
-                "session": sid, "answer": ans,
-                "error": None if win is not None else ("no winner — " + pr.get("reason", "nothing passed")),
+            canceled = bool(pr.get("canceled") or Handler._run_cancelled(sid, run_id))
+            error = ("canceled by user" if canceled else
+                     (("apply failed — " + pr.get("apply_error", ""))
+                      if pack_apply and pr.get("apply_error") else
+                      (None if win is not None else
+                       ("no winner — " + pr.get("reason", "nothing passed")))))
+            saved_answer = ("_[stopped by user]_" if canceled else
+                            ((ans + "\n\n_[%s]_" % error) if ans and error else
+                             (ans or error or "")))
+            try:
+                sessions.append_exchange(sid, user_msg, saved_answer, project="web", cwd=cwd)
+            except Exception as e:
+                error = error or "could not save pack history: %s: %s" % (type(e).__name__, e)
+            turns = 0
+            winner_rec = None
+            if win is not None and 0 <= win < len(pr.get("attempts") or []):
+                winner_rec = pr["attempts"][win]
+                turns = winner_rec.get("turns", 0) or 0
+            Handler._run_mark(sid, turns=turns,
+                              verified=bool(winner_rec and winner_rec.get("verified")))
+            Handler._run_end(sid, error=error or "", canceled=canceled, run_id=run_id)
+            done_d = {
+                "session": sid, "run": run_id, "answer": ans, "error": error,
+                "canceled": canceled,
                 "pack": True, "winner": win, "reason": pr.get("reason", ""),
                 "applied": pr.get("applied", False), "attempts": pr.get("attempts", []),
                 "n": pr.get("n"), "cost_usd": pr.get("total_cost_usd", 0.0),
-                "subscription": prov in ("anthropic-oauth", "claude-cli")})
+                "model": (winner_rec or {}).get("model") or decision.model,
+                "effort": decision.effort,
+                "speed": decision.speed,
+                "actual_speed": (winner_rec or {}).get("speed") or decision.speed,
+                "decision": decision_payload,
+                "verification_evidence": (winner_rec or {}).get("verification_evidence"),
+                "subscription": prov in ("anthropic-oauth", "claude-cli", "codex-oauth",
+                                           "codex-sub", "codex")}
+            try:
+                sessions.append_run_receipt(sid, {
+                    "run": run_id, "decision": decision_payload, "pack": True,
+                    "winner": win, "reason": pr.get("reason", ""),
+                    "error": error or "", "model": done_d["model"],
+                    "actual_speed": done_d["actual_speed"],
+                    "verification_evidence": done_d["verification_evidence"],
+                })
+            except Exception:
+                pass
+            Handler._mirror_pub(sid, "done", done_d)
+            Handler._live_pub("done", {"session": sid, "run": run_id, "turns": turns,
+                                        "canceled": canceled})
+            _tx("done", done_d)
             return
 
         h = None
@@ -2363,12 +3170,20 @@ class Handler(BaseHTTPRequestHandler):
             # build INSIDE the try: make_harness -> AnthropicOAuth can raise on a missing token
             # (the advertised real path), and the SSE headers are already committed — so a
             # provider error must arrive as a clean `done{error}` frame, not an escaped 500.
-            from .cli import default_gate
             # `prov` (not _provider()) — it is the provider this request already resolved and
             # reported in the frames above; re-reading it here could answer differently.
-            h = make_harness(cwd, provider=prov, project="web",
+            gate_mode = (run_opts["intent"] if run_opts["intent"] in
+                         ("plan", "review", "test") else None)
+            h = make_harness(cwd, provider=prov, model=decision.model,
+                             effort=decision.effort, speed=decision.speed,
+                             project="web",
                              code_search=True, web_search=True, exec_code=True, delegate=True,
-                             gate=default_gate(cwd))
+                             gate=default_gate(
+                                 cwd, mode=gate_mode,
+                                 commands=[verify_command] if gate_mode == "test" else None))
+            configure_run_options(h, **run_opts)
+            h.cancelled = lambda: Handler._run_cancelled(sid, run_id)
+            h.checkpoint_scope = "web:" + sid
             # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
             # shell + the user's logged-in browser. Nudge it to ACT on local/system questions (time, tz,
             # hardware, status, location) via bash/powershell.exe instead of refusing for "lack of a tool".
@@ -2385,21 +3200,19 @@ class Handler(BaseHTTPRequestHandler):
                     "Do NOT preface your work with what you are about to do (no 'let me check', no 'I'll look "
                     "into it') — just do it, then give the result directly and concisely."
                 )
+                if run_opts["intent"] == "plan":
+                    h.composer.identity += (
+                        " For this Plan run, write the final editable artifact through the plan tool "
+                        "with title, files, risks, checks, and todos before answering. Do not approve it."
+                    )
+                elif run_opts["intent"] == "review":
+                    h.composer.identity += (
+                        " For this Review run, end with one fenced JSON object shaped as "
+                        "{\"findings\":[{\"path\":\"...\",\"line\":1,\"severity\":\"high|medium|low\","
+                        "\"message\":\"...\"}]}. Report an empty findings array when there are no issues."
+                    )
             except Exception:
                 pass
-            # run mode: "herding" (🐕 Extreme Herding) pushes harder — more turns + the executed
-            # assert-verify gate on (won't finish until a reproduction prints green).
-            # Turn ceilings sit well above typical need: session 10e8 (2026-07-14) exhausted the old
-            # 10-turn normal cap mid info-hunt and shipped its half-way plan as the "answer".
-            # Subscription providers (anthropic-oauth / claude-cli) make extra turns cost $0.
-            if (qs.get("mode", ["normal"])[0]) == "herding":
-                h.max_turns = max(h.max_turns, 48)   # never shallower than 48; a bigger panel value wins
-                h.verify_gate = True
-                h.require_assert = True
-                if hasattr(h, "verify_max"):
-                    h.verify_max = 4
-            elif not settings.get("MAX_TURNS"):
-                h.max_turns = 40                     # raised default; the Settings panel / env still wins
             # every structural event hits BOTH the starting client's socket and the live bus (so the
             # Map / mini-map render it in real time); the token firehose stays client-only.
             # The run does not belong to the socket that started it.
@@ -2413,11 +3226,6 @@ class Handler(BaseHTTPRequestHandler):
             # Writing to the departed client is the only part allowed to fail. The live bus and the
             # session mirror always get the event, which is what lets a window re-attach later, and
             # what makes leaving a run to start another one possible at all.
-            def _tx(kind, d):
-                try:
-                    self._sse(kind, d)
-                except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
-                    pass
             h.emit = lambda kind, d: (_tx(kind, d), Handler._live_pub(kind, d),
                                       Handler._mirror_pub(sid, kind, d))
             h.stream_cb = lambda piece: (_tx("token", {"t": piece}),
@@ -2428,9 +3236,13 @@ class Handler(BaseHTTPRequestHandler):
             # It rides the mirror as well as the socket, so re-attaching a window after a
             # dropped connection re-delivers a still-pending question instead of losing it.
             from .inbox import VIS_INLINE, InboxStore, inbox_approver
-            inbox = InboxStore(on_new=lambda it: (_tx("permission", _perm(it)),
-                                                  Handler._mirror_pub(sid, "permission", _perm(it)),
-                                                  Handler._notify_waiting(sid, it)))
+            def _permission_new(it):
+                payload = _perm(it)
+                _tx("permission", payload)
+                Handler._mirror_pub(sid, "permission", payload)
+                Handler._live_pub("permission", dict(payload, session=sid))
+                Handler._notify_waiting(sid, it)
+            inbox = InboxStore(on_new=_permission_new)
             Handler._inbox_open(sid, inbox)
             h.approve = inbox_approver(inbox, sid, visibility=VIS_INLINE)
             # mid-run steering: register a per-session queue; the loop drains it at each turn boundary.
@@ -2466,20 +3278,53 @@ class Handler(BaseHTTPRequestHandler):
                 res = h.run("web", user_msg, consolidate=True, history=history)
             finally:
                 stop_hb.set()                  # end the heartbeat before we send `done`
+            canceled = bool(getattr(res, "canceled", False)
+                            or Handler._run_cancelled(sid, run_id))
+            verification_evidence = None
+            should_check = (run_opts["intent"] == "test" or
+                            run_opts["verification"] == "required")
+            if should_check and verify_command and not canceled:
+                from .verification import run_verification_command
+                verification_evidence = run_verification_command(
+                    verify_command, cwd, source=verify_source or "detected",
+                    after_last_edit=True)
+                evidence_event = {"session": sid, "run": run_id,
+                                  "evidence": verification_evidence}
+                _tx("verification_evidence", evidence_event)
+                Handler._live_pub("verification_evidence", evidence_event)
+                Handler._mirror_pub(sid, "verification_evidence", evidence_event)
+                if run_opts["intent"] == "test":
+                    res.verified = bool(verification_evidence["passed"])
+                elif not verification_evidence["passed"]:
+                    res.verified = False
+                    check_error = "required check failed: %s (exit %s)" % (
+                        verify_command, verification_evidence.get("exit_code"))
+                    res.error = ((res.error + "; ") if res.error else "") + check_error
             sessions.save(sid, res.messages, project="web", cwd=cwd, answer=res.answer or "")
-            Handler._live_pub("done", {"session": sid, "turns": res.turns})   # live map: run finished
+            Handler._live_pub("done", {"session": sid, "run": run_id,
+                                        "turns": res.turns, "canceled": canceled})
+            actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
             done_d = {
-                "session": sid, "answer": res.answer or "", "error": res.error,
+                "session": sid, "run": run_id, "answer": res.answer or "", "error": res.error,
+                "canceled": canceled,
                 "model": res.model, "prefix_tokens": res.prefix_tokens,
                 "input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
                 "total_tokens": res.total_tokens, "turns": res.turns,
                 "max_turns": getattr(h, "max_turns", None),
                 "tool_calls": res.tool_calls, "wall_ms": res.wall_ms,
                 "cost_usd": res.cost_usd,
+                "effort": decision.effort, "speed": decision.speed,
+                "actual_speed": actual_speed, "decision": decision_payload,
+                "verification_evidence": verification_evidence,
                 # flat-subscription paths draw a fixed bucket, so the real charge is $0 — cost_usd is
                 # only a per-token ESTIMATE of what it'd cost on the metered API. Flag it so the UI
                 # doesn't present the estimate as a real charge.
-                "subscription": _provider() in ("anthropic-oauth", "claude-cli")}
+                "subscription": prov in ("anthropic-oauth", "claude-cli", "codex-oauth",
+                                           "codex-sub", "codex")}
+            review_findings = (_review_findings(res.answer or "")
+                               if run_opts["intent"] == "review" else None)
+            if review_findings is not None:
+                done_d["review_findings"] = review_findings
             # An isolated run's result is a branch, not a claim. Say which one, and what is on it,
             # so the next step is `git diff` rather than "did anything happen?".
             if wt_info:
@@ -2490,25 +3335,43 @@ class Handler(BaseHTTPRequestHandler):
                 done_d["changed"] = len(st["files"])
                 done_d["worktree"] = wt_info["dir"]
 
+            try:
+                sessions.append_run_receipt(sid, {
+                    "run": run_id, "decision": decision_payload,
+                    "model": res.model, "effort": decision.effort,
+                    "requested_speed": decision.speed, "actual_speed": actual_speed,
+                    "verified": bool(getattr(res, "verified", False)),
+                    "verification_evidence": verification_evidence,
+                    "error": res.error or "", "canceled": canceled,
+                    "review_findings": review_findings,
+                })
+            except Exception:
+                pass
+
             # Record the verdict BEFORE trying to tell the client, and let telling it fail. A run
             # whose browser had gone away finished its work, saved its answer, and was then filed as
             # a failure — because this frame went straight to a dead socket and the BrokenPipeError
             # jumped over the line that stored the result. The work was real; only the audience left.
-            Handler._run_end(sid, res)
+            Handler._run_end(sid, res, canceled=canceled, run_id=run_id)
             Handler._mirror_pub(sid, "done", done_d)   # mirroring windows see the run finish too
-            Handler._notify_done(sid, res, wall_ms=res.wall_ms)
-            try:
-                self._sse("done", done_d)
-            except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
-                pass
+            if not canceled:
+                Handler._notify_done(sid, res, wall_ms=res.wall_ms)
+            _tx("done", done_d)
         except BrokenPipeError:
             # Only reachable now from a write outside h.emit; the run's own emits swallow it.
-            Handler._run_end(sid, error="client went away")
+            Handler._run_end(sid, error="client went away", run_id=run_id)
         except Exception as e:
-            Handler._run_end(sid, error="%s: %s" % (type(e).__name__, e))
+            error = "%s: %s" % (type(e).__name__, e)
+            Handler._run_end(sid, error=error, run_id=run_id)
+            _tx("done", {"session": sid, "run": run_id, "answer": "", "error": error,
+                         "canceled": Handler._run_cancelled(sid, run_id),
+                         "model": decision.model, "effort": decision.effort,
+                         "speed": decision.speed, "decision": decision_payload})
             try:
-                self._sse("done", {"session": sid, "answer": "",
-                                   "error": "%s: %s" % (type(e).__name__, e)})
+                sessions.append_run_receipt(sid, {
+                    "run": run_id, "decision": decision_payload, "error": error,
+                    "canceled": Handler._run_cancelled(sid, run_id),
+                })
             except Exception:
                 pass
             # A run that CRASHED is the one most worth being told about, and it never reaches the
@@ -2522,7 +3385,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             # Whatever happened, nothing may stay listed as running — a sidebar that shows a dot
             # forever is worse than one that shows nothing, because it is believed.
-            Handler._run_end(sid, error="ended without a verdict")
+            Handler._run_end(sid, error="ended without a verdict", run_id=run_id)
             Handler._steer_close(sid)      # run over: reject further steers for this session
             Handler._inbox_close(sid)      # and close any question its run can no longer act on
             if h is not None:
