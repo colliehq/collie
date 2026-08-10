@@ -119,6 +119,23 @@ def main():
             tok = pg.eval_on_selector('meta[name="collie-token"]', "e => e.content")
             check("CSRF token injected", bool(tok) and len(tok) == 32, "token=%r" % tok)
 
+            # Slash commands must be discoverable. A command that exists only in docs is why users
+            # typed `/` and saw nothing, and it made the old --auto syntax feel mandatory.
+            pg.fill("#input", "/")
+            pg.wait_for_selector("#slashMenu", state="visible", timeout=5000)
+            commands = pg.eval_on_selector_all(
+                "#slashMenu .slash-option:not([hidden])",
+                "els => els.map(e => e.getAttribute('data-command'))")
+            check("slash opens a command palette",
+                  commands == ["/mission ", "/mission --review ", "/code ", "/chat "],
+                  str(commands))
+            pg.press("#input", "ArrowDown")
+            pg.press("#input", "Enter")
+            check("slash palette keyboard selection fills without sending",
+                  pg.input_value("#input") == "/mission --review " and
+                  not pg.is_visible("#slashMenu"))
+            pg.fill("#input", "")
+
             # --- run setup exposes independent axes; workspace/Pack are not quality modes ---
             axes = pg.eval_on_selector_all(
                 ".mode-item", "els => els.map(e => [e.getAttribute('data-axis'),e.getAttribute('data-val')])")

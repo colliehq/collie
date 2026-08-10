@@ -255,6 +255,21 @@ User-facing presets should express preferences, not mechanisms: **Fast**, **Bala
 **Local only**, or **Budget capped**. Raw model parameters, embedder configuration, retry timing,
 and environment variables belong under Advanced.
 
+### Connected work identity
+
+Collie may have a user-provisioned work identity of its own: display name, mailbox, phone or
+Google Voice number, signed-in browser sessions, and provider accounts. These are Connections, not
+text copied into a prompt. Once the user connects an identity and grants a use scope, routine
+signup, verification-code retrieval, form progression, and publishing inside that scope should run
+without repeated confirmation in Hands-off Missions.
+
+Credential and one-time-code material stays in the connector/vault boundary. It must not enter the
+Mission case, model-visible event history, action arguments, Receipts, or screenshots. Account
+creation must preserve the chosen identity and platform; Collie must not fabricate a person,
+misrepresent affiliation, evade platform enforcement, or turn a marketing goal into unsolicited
+bulk spam. A person-required CAPTCHA/MFA challenge is a resumable Needs You step, not a failed
+Mission. Completing the handoff returns to the same browser space and next action.
+
 ## Desktop control plane and runtime data plane
 
 The desktop application is Collie's home, but it must not own durable execution state in its view
@@ -448,7 +463,10 @@ or obscure risk.
 Settings should be organized around user intent:
 
 1. **My Collie:** personal display name, effective-name source/lock, voice, personality, and appearance.
-2. **Autonomy & approvals:** default Leash, unattended behavior, escalation, and budgets.
+2. **Autonomy & approvals:** plain Missions default to Hands-off inside the Leash; Review is a
+   per-Mission override. Connected work identities and verification-code inboxes are usable capabilities, while
+   person-required CAPTCHA/MFA, new consent, spending, scope expansion, and uncertain duplicates
+   enter Needs You. Configure escalation and budgets here too.
 3. **Brains & routing:** connected providers and Fast / Balanced / Deep / Local-only policy.
 4. **Capabilities & connections:** files, browser, desktop, apps, MCP, and accounts.
 5. **Memory:** sources, write policy, review, correct, forget, import, and export.

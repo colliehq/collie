@@ -64,7 +64,7 @@ See [The desktop app](desktop.md) for what these do and how they fit together.
 | `collie mem` | Inspect / manage the memory store. |
 | `collie jobs ls \| inbox \| run \| confirm \| receipts` | Delegated work. |
 | `collie mission start "<goal>"` | Persist a durable campaign and return its ID immediately. |
-| `collie mission start "<goal>" --auto --domains x.com,*.y.com --actions-per-hour 6` | Pre-authorize only the named domains and paced irreversible actions. Also supports `--max-actions` and `--max-steps`. |
+| `collie mission start "<goal>" --domains x.com,*.y.com --actions-per-hour 6` | Start with the saved Mission autonomy mode and named, paced boundaries. `--review` asks before irreversible actions; legacy `--auto` explicitly selects Hands-off. Also supports `--max-actions` and `--max-steps`. |
 | `collie mission ls \| status \| run \| pause \| resume \| cancel \| confirm \| continue \| accept \| check \| reconcile` | Inspect, gate, and control durable campaigns. |
 | `collie jobs daemon` | Foreground wake loop for Jobs/Missions; catches up after sleep. `collie supervisor install` keeps it available after sign-in/reboot. |
 | `collie activity [--health]` | One durable view of foreground runs, Missions, specialists, automations, recovery, and worker health. |

@@ -2396,7 +2396,7 @@ def cmd_mission(args):
         elif action == "start":
             goal = (args.text or "").strip()
             if not goal:
-                print('usage: collie mission start "<goal>" [--auto]'); return 1
+                print('usage: collie mission start "<goal>" [--review]'); return 1
             bounds = {}
             if args.domains:
                 bounds["allowed_domains"] = [x.strip() for x in args.domains.split(",")
@@ -2408,7 +2408,8 @@ def cmd_mission(args):
             if args.max_steps is not None:
                 bounds["max_total_steps"] = args.max_steps
             try:
-                out = svc.start(goal, autonomous=bool(args.auto), **bounds)
+                autonomy = True if args.auto else (False if args.review else None)
+                out = svc.start(goal, autonomous=autonomy, **bounds)
             except ValueError as e:
                 print("invalid Mission leash: %s" % e); return 1
             if args.run and not out.get("error"):
@@ -3359,8 +3360,11 @@ def main(argv=None):
                                "reconcile"])
     pmis.add_argument("text", nargs="?", default="", help="goal (start) or mission id")
     pmis.add_argument("nonce", nargs="?", default="", help="confirmation nonce")
-    pmis.add_argument("--auto", action="store_true",
-                      help="pre-authorize irreversible actions within the mission leash")
+    autonomy = pmis.add_mutually_exclusive_group()
+    autonomy.add_argument("--auto", action="store_true",
+                          help="hands-off mode for this Mission (legacy explicit override)")
+    autonomy.add_argument("--review", action="store_true",
+                          help="confirm each irreversible external action for this Mission")
     pmis.add_argument("--domains", default="",
                       help="comma-separated browser domain allowlist (supports globs)")
     pmis.add_argument("--actions-per-hour", type=int, default=None,

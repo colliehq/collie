@@ -12,18 +12,30 @@ only from a user-authored command:
 
 ```text
 /mission <goal>
-/mission --auto <goal>
-/mission --auto --domains=x.com,*.y.com --rate=6 <goal>
+/mission --review <goal>
+/mission --domains=x.com,*.y.com --rate=6 <goal>
 /mission list
 /mission status|run|pause|resume|cancel|check|continue|accept|reconcile <id>
 ```
 
 The slash parser currently belongs to the Web/Desktop chat surface; scripts use
-`collie mission ...`. `/delegate` is a compatibility alias. `--auto`
-pre-authorizes irreversible capabilities inside the leash; otherwise every exact
-send/publish payload parks for confirmation. Commerce is not exposed through the
-generic publish primitive: payment needs a dedicated capability with an explicit,
-payload-bound amount.
+`collie mission ...`. `/delegate` is a compatibility alias. Plain `/mission` uses
+the saved **Mission autonomy** setting, whose default is Hands-off: available
+actions inside the leash run without a confirmation at every send/publish step.
+`--review` is the one-Mission override that parks each irreversible external action.
+`--auto` remains a backward-compatible explicit Hands-off override, but is no
+longer the primary UI. Commerce is not exposed through the generic publish
+primitive: payment needs a dedicated capability with an explicit, payload-bound
+amount.
+
+Hands-off does not mean pretending missing capabilities exist. A connected work
+identity—authorized email, phone/Google Voice number, signed-in browser session,
+or verification-code inbox—may be used directly, including retrieving and filling
+an OTP without persisting it in Mission history. A CAPTCHA or MFA challenge that
+explicitly requires a person, an unavailable credential, a new identity/consent
+choice, new spending authority, or uncertain duplicate risk becomes a temporary
+Needs You handoff. The user handles that one step and Continue resumes the same
+Mission. Collie does not bypass or outsource platform security checks.
 
 ## State machine
 
@@ -47,8 +59,8 @@ keeps its token; Resume is unavailable until that owner acknowledges `paused`.
 An external action already in flight cannot honestly be recalled, but a second
 worker cannot overlap it or overwrite its lifecycle state.
 
-`continue` is for a temporary human assist such as CAPTCHA/MFA and returns control
-to Collie. `accept` means the human is taking over or accepting reported completion.
+`continue` is for a temporary human assist such as a person-required CAPTCHA/MFA
+and returns control to Collie. `accept` means the human is taking over or accepting reported completion.
 Creation is persistence-first: the caller sees a queued ID before model/browser
 work starts, so it can be managed or cancelled immediately.
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.21.1 — Hands-off Missions without command-line ceremony
+
+- **Plain `/mission` now means sustained execution inside your rules.** The saved Mission autonomy
+  mode defaults to Hands-off, so publish/send steps already inside the Leash do not ask again merely
+  because they are irreversible. `--review` is the clear per-Mission override; legacy `--auto`
+  remains compatible but is no longer the main UI or documentation path.
+
+- **Slash commands are discoverable.** Typing `/` opens a keyboard-accessible palette for Mission,
+  reviewed Mission, Code and Chat, and the Home starter now inserts the simple `/mission` form.
+  Receipts say `execution attempted` instead of the ambiguous `action fired` when verification fails.
+
+- **A connected work identity is usable, not decorative.** User-authorized mailboxes, phone/Google
+  Voice numbers, signed-in sessions and verification-code inboxes may support routine signup and OTP
+  completion without persisting secrets or codes in Mission history. Person-required CAPTCHA/MFA,
+  unavailable identity, new consent/spending, scope expansion and duplicate uncertainty remain
+  resumable Needs You boundaries; Collie does not bypass platform security checks.
+
+- **Browser verification understands platforms and rich editors.** A live page origin now proves the
+  platform/site expectation, while `content`, `body`, `post_text` and similar semantic expectations
+  are checked against independently reread editor values. Abstract `platform` and `tweet_text`
+  fields no longer make a valid X draft unverifiable, and the same Gate still rejects the right text
+  on the wrong site.
+
+- **Duration is part of completion.** The Mission driver is explicitly required to wait and continue
+  for goals that name a cadence or time window instead of declaring a 24-hour campaign complete
+  after its first action.
+
+- **Windows upgrades keep their rollback guarantee when directory rename is unavailable.** The
+  installer still prefers an atomic runtime rename, but can make a complete known-good backup copy
+  when Windows retains a non-delete-sharing directory handle. A later install failure removes the
+  partial runtime and restores that backup exactly as before.
+
 ## v0.21.0 — A personal AI operations system, from one calm entrance
 
 - **The companion is named, renameable, and no longer trapped on a coloured tile.** First run now

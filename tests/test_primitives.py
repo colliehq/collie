@@ -189,6 +189,16 @@ def test_browse_and_submit_real():
     check(_browse_verify(_Rec({"expect": {"Make": "Toyota"}}), {"result": "done", "form": []}).status
           == FAILED, "'done' over an empty form is refuted, not trusted")
     check(_browse_verify(_Rec({}), res).status == VERIFIED, "no expect + substantially filled -> VERIFIED")
+    social = {"result": "drafted", "page": {"host": "x.com", "title": "Compose / X"},
+              "form": [{"label": "tweetTextarea_0", "value": "Try VocalCode today"}]}
+    check(_browse_verify(_Rec({"expect": {"platform": "Twitter/X",
+                                          "tweet_text": "Try VocalCode today"}}), social).status
+          == VERIFIED,
+          "platform uses live page identity and rich editor text does not require an invented label")
+    wrong_site = dict(social, page={"host": "facebook.com", "title": "Marketplace"})
+    check(_browse_verify(_Rec({"expect": {"platform": "Twitter/X",
+                                          "tweet_text": "Try VocalCode today"}}), wrong_site).status
+          == FAILED, "semantic expectations still refute a draft on the wrong platform")
 
     sub = get_capability("browse.submit")
     check(sub.reversible is False and sub.risk == "publish", "browse.submit is irreversible (gated)")

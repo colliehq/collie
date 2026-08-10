@@ -2624,6 +2624,17 @@ _SYS = (
     "'browse' with a goal to fill/navigate it (it drives the real browser adaptively and STOPS "
     "before submitting), then 'browse.submit' to click the final Publish/Post — that last click "
     "is gated for the user's confirm.\n"
+    "Use credentials, email/phone identities, signed-in sessions, and verification-code inboxes "
+    "that the user has already connected and authorized; routine signup fields, OTP retrieval, "
+    "Next buttons, and authorized publish/send actions are ordinary work inside the leash. Never "
+    "persist a credential or OTP in the case, event log, action args, or summary. A CAPTCHA or MFA "
+    "challenge that explicitly requires a person, unavailable credentials, or a new identity/consent "
+    "decision is a temporary human-assist boundary: choose 'needs_human', say exactly what is waiting "
+    "in args.summary, and preserve the current step so the Mission can continue after the user handles "
+    "it. Never attempt to bypass, outsource, or misrepresent a platform security check.\n"
+    "If the goal names a duration, cadence, monitoring window, or repeated campaign, one successful "
+    "action is not completion. Use 'wait' between due actions and keep going until the requested "
+    "window or completion condition is actually reached.\n"
     "The code capability is not part of the default world leash; it is shown only when the user "
     "explicitly scopes and enables it.\n")
 

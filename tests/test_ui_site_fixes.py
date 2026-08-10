@@ -42,7 +42,10 @@ def test_ecosystem_shell_exposes_missions_pack_library_and_global_approvals():
 
     for node in ("navHome", "navMissions", "navPack", "navLibrary", "navActivity", "needsYouNav"):
         assert f'id="{node}"' in desktop
-    assert 'data-fill="/mission --auto "' in desktop
+    assert 'data-fill="/mission "' in desktop
+    assert 'id="slashMenu"' in desktop and 'data-command="/mission --review "' in desktop
+    assert "function updateSlashMenu()" in desktop and "chooseSlash(opts[slashIndex])" in desktop
+    assert '"MISSION_APPROVAL_MODE"' in desktop
     assert "/api/whoami" in desktop and "data-collie-name" in desktop
     assert "Returns scoped evidence" in desktop and "Proves its work" not in desktop
     assert "GLOBAL_PERMS = {}" in desktop

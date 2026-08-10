@@ -2293,8 +2293,11 @@ class Handler(BaseHTTPRequestHandler):
                                    "max_irreversible_actions", "max_total_steps",
                                    "spend_max_usd") if body.get(k) is not None}
                         try:
-                            created = svc.start(
-                                goal, autonomous=bool(body.get("autonomous")), **bounds)
+                            autonomy = body.get("autonomous") if "autonomous" in body else None
+                            if autonomy is not None and not isinstance(autonomy, bool):
+                                return self._send_json(
+                                    {"error": "autonomous must be a boolean when supplied"}, 400)
+                            created = svc.start(goal, autonomous=autonomy, **bounds)
                         except ValueError as e:
                             return self._send_json({"error": str(e)}, 400)
                         return self._send_json(created, 201)

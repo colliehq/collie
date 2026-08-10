@@ -134,8 +134,18 @@ class MissionService:
         return self._run_tree.get(run_id) if self._run_tree is not None and run_id else None
 
     # ── commands ──
-    def start(self, goal: str, autonomous: bool = False, case: dict = None, **bounds) -> dict:
-        """Persist first and return the id immediately; /run or the daemon claims it."""
+    def start(self, goal: str, autonomous: bool | None = None,
+              case: dict = None, **bounds) -> dict:
+        """Persist first and return the id immediately; /run or the daemon claims it.
+
+        ``None`` means use the user's Mission default.  Keeping this resolution at
+        the service boundary makes Web, CLI, mobile and future surfaces agree;
+        explicit True/False remains the per-Mission override and keeps API callers
+        deterministic.
+        """
+        if autonomous is None:
+            from . import settings
+            autonomous = settings.get("MISSION_APPROVAL_MODE", "smart") == "smart"
         mid = "msn_" + secrets.token_hex(6)
         # Durable jobs get their own worktree by default.  The Web/CLI provisioner
         # binds its canonical path later through bind_workspace(); ordinary world

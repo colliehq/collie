@@ -138,6 +138,12 @@ def test_prefix_override_skips_model():
     start = classify("/mission --auto share weekly updates", boom)
     check(start["mission_command"] == "start" and start["autonomous"] and
           start["goal"] == "share weekly updates", "shared parser preserves explicit autonomy")
+    default = classify("/mission share weekly updates", boom)
+    check(default["mission_command"] == "start" and default["autonomous"] is None,
+          "plain mission defers to the saved autonomy mode")
+    review = classify("/mission --review share weekly updates", boom)
+    check(review["mission_command"] == "start" and review["autonomous"] is False and
+          review["goal"] == "share weekly updates", "review is an explicit per-mission override")
     bare = classify("/mission", boom)
     check(bare["mission_command"] == "list" and boom.calls == 0,
           "bare /mission is an explicit list command with zero model calls")

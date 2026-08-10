@@ -41,6 +41,11 @@ def test_mission_api_is_authed_persistent_and_manageable(monkeypatch, tmp_path):
         assert code == 201 and created["state"] == "queued"
         mid = created["mission_id"]
 
+        code, bad_mode = _request(
+            root + "/api/mission" + token, "POST",
+            {"goal": "do not coerce strings into authority", "autonomous": "false"})
+        assert code == 400 and "boolean" in bad_mode["error"]
+
         code, status = _request(root + "/api/mission?id=" + mid + "&token=" + webapp.TOKEN)
         assert code == 200 and status["mission_id"] == mid
         assert set(status["controls"]) == {"run", "pause", "cancel"}

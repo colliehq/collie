@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -103,6 +104,20 @@ def test_missions_listing():
     svc.close()
 
 
+def test_plain_mission_uses_saved_autonomy_default():
+    print("test_plain_mission_uses_saved_autonomy_default")
+    svc = _svc([])
+    with patch("harness.settings.get", return_value="smart"):
+        hands_off = svc.start("run the campaign")
+    with patch("harness.settings.get", return_value="review"):
+        review = svc.start("draft before publishing")
+    check(svc.store.get(hands_off["mission_id"]).leash["irreversible"] == "allow",
+          "plain Mission uses saved Hands-off mode")
+    check(svc.store.get(review["mission_id"]).leash["irreversible"] == "confirm",
+          "plain Mission uses saved Review mode")
+    svc.close()
+
+
 def test_pause_resume_check_and_cancel():
     print("test_pause_resume_check_and_cancel")
     svc = _svc([W, H])
@@ -141,7 +156,7 @@ def test_read_surfaces_do_not_require_a_provider():
     print("test_read_surfaces_do_not_require_a_provider")
     fd, p = tempfile.mkstemp(suffix=".db"); os.close(fd)
     svc = MissionService(base=p, provider="")
-    st = svc.start("persist only")
+    st = svc.start("persist only", autonomous=False)
     check(st["state"] == QUEUED and len(svc.missions()) == 1,
           "create/status/list work without constructing a model provider")
     svc.close()
@@ -150,7 +165,7 @@ def test_read_surfaces_do_not_require_a_provider():
 def test_human_assist_can_continue_without_ending_the_mission():
     print("test_human_assist_can_continue_without_ending_the_mission")
     svc = _svc([H, {"action": "done", "reason": "finished after MFA"}])
-    st = svc.start("finish signup")
+    st = svc.start("finish signup", autonomous=False)
     st = svc.run(st["mission_id"]); mid = st["mission_id"]
     check(st["needs_human"] and "continue" in st["controls"],
           "a temporary human hand-off offers continue separately from accept")
@@ -170,7 +185,7 @@ def test_mock_provider_never_fakes_durable_progress():
     print("test_mock_provider_never_fakes_durable_progress")
     fd, p = tempfile.mkstemp(suffix=".db"); os.close(fd)
     svc = MissionService(base=p, provider="mock")
-    created = svc.start("real-world task")
+    created = svc.start("real-world task", autonomous=False)
     out = svc.run(created["mission_id"])
     check(out["state"] == QUEUED and "error" in out,
           "the canned mock provider cannot advance a durable real-world mission")
@@ -180,7 +195,7 @@ def test_mock_provider_never_fakes_durable_progress():
 def test_refused_parked_action_does_not_deadlock_the_mission():
     print("test_refused_parked_action_does_not_deadlock_the_mission")
     svc = _svc([P, H])
-    st = svc.start("publish safely")
+    st = svc.start("publish safely", autonomous=False)
     st = svc.run(st["mission_id"]); mid, nonce = st["mission_id"], st["inbox"]["nonce"]
     assert svc.actions.refuse(nonce, "approval expired")
     repaired = svc.status(mid)
@@ -195,7 +210,7 @@ def test_refused_parked_action_does_not_deadlock_the_mission():
 def test_reconcile_wrong_state_has_no_side_effects():
     print("test_reconcile_wrong_state_has_no_side_effects")
     svc = _svc([P])
-    st = svc.start("publish safely")
+    st = svc.start("publish safely", autonomous=False)
     st = svc.run(st["mission_id"]); mid, nonce = st["mission_id"], st["inbox"]["nonce"]
     before = svc.actions.get(nonce)
     out = svc.reconcile(mid, "this is not a recovery state")
@@ -210,7 +225,7 @@ def test_reconcile_wrong_state_has_no_side_effects():
 def test_reconcile_fences_cleanup_before_requeue():
     print("test_reconcile_fences_cleanup_before_requeue")
     svc = _svc([])
-    st = svc.start("recover safely"); mid = st["mission_id"]
+    st = svc.start("recover safely", autonomous=False); mid = st["mission_id"]
     nonce = svc.actions.propose(
         "web.submit", {"what": "old"}, job_id=mid, leash_id=mid)
     svc.store.set_state(mid, RECOVERY_REQUIRED, "inspect first")
@@ -279,7 +294,7 @@ def test_stale_reconciler_cannot_revoke_a_fresh_action():
 def test_reconcile_resolves_old_inbox_but_preserves_executed_key():
     print("test_reconcile_resolves_old_inbox_but_preserves_executed_key")
     svc = _svc([P])
-    st = svc.start("publish exactly once")
+    st = svc.start("publish exactly once", autonomous=False)
     st = svc.run(st["mission_id"]); mid, nonce = st["mission_id"], st["inbox"]["nonce"]
     svc.actions.confirm(nonce)
     svc.actions.execute(
@@ -303,7 +318,8 @@ def test_reconcile_resolves_old_inbox_but_preserves_executed_key():
 def test_reconcile_clears_only_unmaterialized_reserved_keys():
     print("test_reconcile_clears_only_unmaterialized_reserved_keys")
     svc = _svc([])
-    st = svc.start("recover reservation crash", max_irreversible_actions=1)
+    st = svc.start("recover reservation crash", autonomous=False,
+                   max_irreversible_actions=1)
     mid = st["mission_id"]
     leash = svc.store.get(mid).leash
     old_run = svc.store.claim_run(mid)
@@ -326,7 +342,7 @@ def test_reconcile_clears_only_unmaterialized_reserved_keys():
 def test_reconcile_releases_a_previously_refused_materialized_key():
     print("test_reconcile_releases_a_previously_refused_materialized_key")
     svc = _svc([])
-    st = svc.start("retry an action proven not fired"); mid = st["mission_id"]
+    st = svc.start("retry an action proven not fired", autonomous=False); mid = st["mission_id"]
     leash = svc.store.get(mid).leash
     old_run = svc.store.claim_run(mid)
     ok, _why, _retry = svc.store.reserve_action(
@@ -355,7 +371,7 @@ def test_reconcile_releases_a_previously_refused_materialized_key():
 def test_status_never_releases_an_executed_action_key():
     print("test_status_never_releases_an_executed_action_key")
     svc = _svc([P])
-    st = svc.start("publish exactly once")
+    st = svc.start("publish exactly once", autonomous=False)
     st = svc.run(st["mission_id"]); mid, nonce = st["mission_id"], st["inbox"]["nonce"]
     svc.actions.confirm(nonce)
     svc.actions.execute(
@@ -375,7 +391,7 @@ def test_status_never_releases_an_executed_action_key():
 def test_reconcile_waits_for_old_execution_latch():
     print("test_reconcile_waits_for_old_execution_latch")
     svc = _svc([P])
-    st = svc.start("publish after crash")
+    st = svc.start("publish after crash", autonomous=False)
     st = svc.run(st["mission_id"]); mid, nonce = st["mission_id"], st["inbox"]["nonce"]
     svc.actions.confirm(nonce)
     old_run = svc.store.claim_run(mid, expected=(NEEDS_YOU,))
@@ -418,6 +434,7 @@ def main():
     test_start_gate_confirm_handoff()
     test_bad_confirm_is_soft_error()
     test_missions_listing()
+    test_plain_mission_uses_saved_autonomy_default()
     test_pause_resume_check_and_cancel()
     test_wrong_mission_nonce_and_cancelled_nonce_are_refused()
     test_read_surfaces_do_not_require_a_provider()

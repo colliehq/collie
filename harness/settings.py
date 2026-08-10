@@ -139,6 +139,25 @@ SCHEMA = [
     {"group": "Retrieval", "key": "DISTILL", "label": "Distill turns into memories", "type": "bool", "default": "off",
      "hint": "Summarize long turns into compact facts as you go, so future recall stays cheap and on-point."},
 
+    {"group": "Autonomy", "key": "MISSION_APPROVAL_MODE", "label": "Mission autonomy",
+     "label_zh": "Mission 自主模式", "type": "select", "default": "smart",
+     "options": [
+         {"value": "smart", "label": "Hands-off — interrupt only when needed",
+          "label_zh": "放手执行 — 仅在确实需要我时打断"},
+         {"value": "review", "label": "Review every external action",
+          "label_zh": "逐项审阅外部操作"}],
+     "hint": "The default for plain /mission. Hands-off lets Collie execute available actions "
+             "inside the Mission leash without asking at every publish/send step. It still stops "
+             "for credentials or identity that have not been connected, CAPTCHA/MFA that requires "
+             "a person, new consent choices, new spending "
+             "authority, scope expansion, and uncertain duplicate risk. Use /mission --review "
+             "to override one Mission.",
+     "hint_zh": "普通 /mission 的默认模式。放手执行会让 Collie 在 Mission Leash 范围内直接执行"
+                "已有能力，不再每次发布/发送都询问；尚未连接的凭据或工作身份、必须由本人完成的"
+                " CAPTCHA/MFA、新的同意选择、新增支出权限、扩大范围，以及结果不确定可能重复时"
+                "仍会停下来。已连接并授权的邮箱、号码、验证码收件箱和登录态可直接使用。单次任务可用 "
+                "/mission --review 覆盖。"},
+
     {"group": "Limits", "key": "MAX_TURNS", "label": "Max turns", "type": "number", "default": "50", "min": "1", "max": "120",
      "hint": "Hard cap on tool/response turns for one message before collie stops and reports back. Info-hunt + build tasks routinely need 20-30; on a flat subscription extra turns cost $0, so high is safe."},
     {"group": "Limits", "key": "MAX_COST", "label": "Budget: stop past $", "type": "number", "default": "0", "min": "0", "step": "0.01",
@@ -206,7 +225,7 @@ _ZH = {
 }
 # group headers, for the panel
 GROUPS_ZH = {"Identity": "身份", "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程",
-             "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
+             "Retrieval": "检索", "Autonomy": "自主", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
 for _s in SCHEMA:
     _t = _ZH.get(_s["key"])
     if not _t:

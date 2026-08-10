@@ -388,7 +388,7 @@ end;
   /SUPPRESSMSGBOXES turns into exit code 5. We kill only processes whose path is under the install
   dir, so an unrelated Python elsewhere is never touched. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var rc: Integer; app, pythonDir: String;
+var rc: Integer; app, pythonDir, ps: String;
 begin
   Result := '';
   app := ExpandConstant('{app}');
@@ -426,8 +426,26 @@ begin
     end;
   end else if DirExists(pythonDir) then begin
     if not RenameFile(pythonDir, UpgradeBackupDir) then begin
-      Result := 'Cannot create the Collie upgrade rollback backup. Close Collie and try again.';
-      Exit;
+      { Windows can retain a non-delete-sharing directory handle briefly even after every Collie
+        process has exited.  The files remain readable/writable, so keep the same rollback guarantee
+        with a complete copy instead of turning an otherwise safe silent upgrade into exit code 7.
+        The source stays in place for [InstallDelete]/[Files] to overlay; on any later failure,
+        RestoreUpgradeBackup deletes that partial tree and restores this known-good copy. }
+      Log('Atomic runtime backup rename was unavailable; trying a complete copy fallback.');
+      ps := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+      if not Exec(ps,
+          '-NoProfile -NonInteractive -Command "$ErrorActionPreference=''Stop''; ' +
+          'Copy-Item -LiteralPath ''' + pythonDir + ''' -Destination ''' +
+          UpgradeBackupDir + ''' -Recurse -Force"',
+          '', SW_HIDE, ewWaitUntilTerminated, rc) then begin
+        Result := 'Cannot start the Collie upgrade rollback backup copy.';
+        Exit;
+      end;
+      if (rc <> 0) or (not DirExists(UpgradeBackupDir)) then begin
+        Log('Runtime backup copy failed with exit code ' + IntToStr(rc) + '.');
+        Result := 'Cannot create the Collie upgrade rollback backup. Close Collie and try again.';
+        Exit;
+      end;
     end;
     UpgradeBackupActive := True;
   end;

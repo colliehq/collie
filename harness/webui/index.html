@@ -921,7 +921,7 @@
 
   /* ------------------------------------------------------- composer */
   .composer { border-top: 1px solid var(--line); background: var(--surface); padding: 12px 22px 16px; }
-  .composer .inner { max-width: 980px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end;
+  .composer .inner { max-width: 980px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; position:relative;
                      background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px;
                      padding: 8px 8px 8px 14px; transition: border-color .15s, box-shadow .15s; }
   .composer .inner:focus-within { border-color: var(--pine); box-shadow: 0 0 0 3px color-mix(in srgb,var(--meadow) 20%,transparent); }
@@ -929,6 +929,18 @@
                        font: inherit; font-size: 15px; line-height: 1.5; max-height: 180px; padding: 6px 0; outline: none;
                        overflow-y:hidden; }
   .composer textarea::placeholder { color: var(--faint); }
+  .slash-menu { position:absolute; left:0; bottom:calc(100% + 9px); z-index:35;
+    width:min(430px,calc(100vw - 44px)); padding:7px; border:1px solid var(--line);
+    border-radius:12px; background:var(--surface); box-shadow:var(--shadow-lg); }
+  .slash-menu[hidden] { display:none; }
+  .slash-option { width:100%; display:flex; align-items:center; gap:12px; border:0;
+    border-radius:8px; padding:9px 10px; color:var(--ink); background:transparent;
+    font:inherit; text-align:left; cursor:pointer; }
+  .slash-option:hover,.slash-option.active { background:var(--surface-2); }
+  .slash-command { min-width:116px; color:var(--pine); font:600 12.5px/1.2 var(--mono); }
+  .slash-copy { display:flex; min-width:0; flex-direction:column; gap:2px; }
+  .slash-name { font-size:12.5px; font-weight:600; }
+  .slash-desc { color:var(--muted); font-size:11px; line-height:1.35; }
   /* run setup: independent intent / quality / verification / workspace / strategy axes */
   .modepick { position: relative; align-self: stretch; display: flex; }
   .mode-trigger { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line);
@@ -1409,10 +1421,10 @@
               <div class="wc-ct" data-i18n="Research and decide">Research and decide</div><div class="wc-cd" data-i18n="Investigate, compare and return a sourced recommendation.">Investigate, compare and return a sourced recommendation.</div></button>
             <button type="button" class="wc-card" data-fill="Use the apps already open on this computer to complete this outcome: ">
               <div class="wc-ct" data-i18n="Work across apps">Work across apps</div><div class="wc-cd" data-i18n="Use your signed-in browser and desktop tools.">Use your signed-in browser and desktop tools.</div></button>
-            <button type="button" class="wc-card" data-fill="/mission --auto ">
+            <button type="button" class="wc-card" data-fill="/mission ">
               <div class="wc-ct" data-i18n="Start a durable mission">Start a durable mission</div><div class="wc-cd" data-i18n="Keep moving across waits, retries and handoffs.">Keep moving across waits, retries and handoffs.</div></button>
           </div>
-          <div class="wc-trust"><span data-i18n="Runs on this device">Runs on this device</span><span data-i18n="Asks before sensitive actions">Asks before sensitive actions</span><span data-i18n="Returns scoped evidence">Returns scoped evidence</span></div>
+          <div class="wc-trust"><span data-i18n="Runs on this device">Runs on this device</span><span data-i18n="Asks only when your input is required">Asks only when your input is required</span><span data-i18n="Returns scoped evidence">Returns scoped evidence</span></div>
         </div>
       </div>
     </div>
@@ -1495,6 +1507,20 @@
     <div class="composer" id="composer">
       <div class="attach-strip" id="attachStrip" hidden></div>
       <div class="inner">
+        <div class="slash-menu" id="slashMenu" role="listbox" aria-label="Commands" hidden>
+          <button type="button" class="slash-option" role="option" data-command="/mission ">
+            <span class="slash-command">/mission</span><span class="slash-copy"><span class="slash-name" data-i18n="Durable mission">Durable mission</span><span class="slash-desc" data-i18n="Runs hands-off using your saved Autonomy rules.">Runs hands-off using your saved Autonomy rules.</span></span>
+          </button>
+          <button type="button" class="slash-option" role="option" data-command="/mission --review ">
+            <span class="slash-command">/mission --review</span><span class="slash-copy"><span class="slash-name" data-i18n="Mission with review">Mission with review</span><span class="slash-desc" data-i18n="Confirm each irreversible external action.">Confirm each irreversible external action.</span></span>
+          </button>
+          <button type="button" class="slash-option" role="option" data-command="/code ">
+            <span class="slash-command">/code</span><span class="slash-copy"><span class="slash-name" data-i18n="Code task">Code task</span><span class="slash-desc" data-i18n="Force this message into the code workspace.">Force this message into the code workspace.</span></span>
+          </button>
+          <button type="button" class="slash-option" role="option" data-command="/chat ">
+            <span class="slash-command">/chat</span><span class="slash-copy"><span class="slash-name" data-i18n="Conversation">Conversation</span><span class="slash-desc" data-i18n="Force a read-only answer or research turn.">Force a read-only answer or research turn.</span></span>
+          </button>
+        </div>
         <div class="modepick" id="modePick">
           <input type="hidden" id="runIntent" value="build">
           <input type="hidden" id="runQuality" value="balanced">
@@ -1933,8 +1959,12 @@
     "Research and decide": "研究并决策", "Investigate, compare and return a sourced recommendation.": "调查、比较，并给出有来源的建议。",
     "Work across apps": "跨应用工作", "Use your signed-in browser and desktop tools.": "使用你已登录的浏览器和桌面工具。",
     "Start a durable mission": "启动持续任务", "Keep moving across waits, retries and handoffs.": "跨越等待、重试和交接，持续推进。",
-    "Runs on this device": "在这台设备上运行", "Asks before sensitive actions": "敏感操作前询问",
+    "Runs on this device": "在这台设备上运行", "Asks only when your input is required": "只在确实需要你时询问",
     "Returns scoped evidence": "交回有明确范围的证据", "Describe the outcome you want…": "描述你想达成的结果…",
+    "Durable mission": "持续任务", "Runs hands-off using your saved Autonomy rules.": "按你保存的自主规则放手执行。",
+    "Mission with review": "逐项审阅的任务", "Confirm each irreversible external action.": "每个不可逆外部操作都先确认。",
+    "Code task": "代码任务", "Force this message into the code workspace.": "把这条消息明确交给代码工作区。",
+    "Conversation": "对话", "Force a read-only answer or research turn.": "明确进行只读回答或研究。",
     "Auto is the default.": "默认由 Collie 自动选择。",
     "Collie chooses a run plan from the task; override only when you need a specific boundary.": "Collie 会根据任务生成运行方案；只有需要特定边界时才手动覆盖。",
     "Evidence": "证据", "No evidence yet": "尚无证据", "Checks appear here when they are relevant to the task.": "与任务相关的检查会显示在这里。",
@@ -2101,8 +2131,12 @@
     "Research and decide": "研究並決策", "Investigate, compare and return a sourced recommendation.": "調查、比較，並給出有來源的建議。",
     "Work across apps": "跨應用程式工作", "Use your signed-in browser and desktop tools.": "使用你已登入的瀏覽器和桌面工具。",
     "Start a durable mission": "啟動持續任務", "Keep moving across waits, retries and handoffs.": "跨越等待、重試和交接，持續推進。",
-    "Runs on this device": "在這台裝置上執行", "Asks before sensitive actions": "敏感操作前詢問",
+    "Runs on this device": "在這台裝置上執行", "Asks only when your input is required": "只在確實需要你時詢問",
     "Returns scoped evidence": "交回有明確範圍的證據", "Describe the outcome you want…": "描述你想達成的結果…",
+    "Durable mission": "持續任務", "Runs hands-off using your saved Autonomy rules.": "依你儲存的自主規則放手執行。",
+    "Mission with review": "逐項審閱的任務", "Confirm each irreversible external action.": "每個不可逆外部操作都先確認。",
+    "Code task": "程式碼任務", "Force this message into the code workspace.": "把這則訊息明確交給程式碼工作區。",
+    "Conversation": "對話", "Force a read-only answer or research turn.": "明確進行唯讀回答或研究。",
     "Auto is the default.": "預設由 Collie 自動選擇。",
     "Collie chooses a run plan from the task; override only when you need a specific boundary.": "Collie 會根據任務產生執行方案；只有需要特定邊界時才手動覆蓋。",
     "Evidence": "證據", "No evidence yet": "尚無證據", "Checks appear here when they are relevant to the task.": "與任務相關的檢查會顯示在這裡。",
@@ -2533,7 +2567,7 @@
     { id: "memory", label: "Memory", zh: "记忆",
       keys: ["EMBED", "DISTILL"] },
     { id: "autonomy", label: "Autonomy & limits", zh: "自主与限额",
-      keys: ["MAX_TURNS", "MAX_COST", "MAX_TOTAL_TOKENS", "RETRIES", "OVERFLOW_RECOVERY"] },
+      keys: ["MISSION_APPROVAL_MODE", "MAX_TURNS", "MAX_COST", "MAX_TOTAL_TOKENS", "RETRIES", "OVERFLOW_RECOVERY"] },
     { id: "privacy", label: "Privacy & security", zh: "隐私与安全",
       keys: ["REDACT_SECRETS"] },
     { id: "advanced", label: "Advanced", zh: "高级",
@@ -4209,7 +4243,8 @@
   function _startMissionCard(goal, autonomous, bounds) {
     var card = newMissionCard();
     card.querySelector(".mbody").textContent = t("creating the mission…");
-    var payload = Object.assign({ goal: goal, autonomous: !!autonomous }, bounds || {});
+    var payload = Object.assign({ goal: goal }, bounds || {});
+    if (typeof autonomous === "boolean") payload.autonomous = autonomous;
     missionPost("/api/mission", payload).then(function (st) {
       renderMission(card, st);                    // id is visible before any long step starts
       if (st && st.mission_id && !st.error) runMissionCard(card, st.mission_id);
@@ -4240,8 +4275,8 @@
   function missionHelp() {
     var card = newMissionCard();
     card.querySelector(".mbody").textContent =
-      "/mission <goal> · /mission --auto <goal> · /mission list · " +
-      "/mission --auto --domains=x.com,*.y.com --rate=6 <goal> · " +
+      "/mission <goal> (uses your Autonomy setting) · /mission --review <goal> · /mission list · " +
+      "advanced: /mission --domains=x.com,*.y.com --rate=6 <goal> · " +
       "/mission status|pause|resume|cancel|check|continue|accept|reconcile <id>";
   }
   function handleMissionCommand(text) {
@@ -4279,10 +4314,11 @@
     }
     var explicit = /^start\s+([\s\S]+)$/i.exec(raw);
     var goal = explicit ? explicit[1].trim() : raw;
-    var autonomous = false, bounds = {}, option;
-    while ((option = /^--(auto|autonomous|domains=\S+|rate=\d+|max-actions=\d+|max-steps=\d+)(?:\s+|$)/i.exec(goal))) {
+    var autonomous = null, bounds = {}, option;
+    while ((option = /^--(auto|autonomous|review|confirm|domains=\S+|rate=\d+|max-actions=\d+|max-steps=\d+)(?:\s+|$)/i.exec(goal))) {
       var rawOpt = option[1]; goal = goal.slice(option[0].length).trim();
       if (/^(auto|autonomous)$/i.test(rawOpt)) autonomous = true;
+      else if (/^(review|confirm)$/i.test(rawOpt)) autonomous = false;
       else if (/^domains=/i.test(rawOpt)) bounds.allowed_domains = rawOpt.slice(rawOpt.indexOf("=") + 1).split(",").filter(Boolean);
       else if (/^rate=/i.test(rawOpt)) bounds.actions_per_hour = Number(rawOpt.split("=")[1]);
       else if (/^max-actions=/i.test(rawOpt)) bounds.max_irreversible_actions = Number(rawOpt.split("=")[1]);
@@ -4345,7 +4381,7 @@
         var line = document.createElement("div");
         line.textContent = (receipt.capability || "action") + " · " +
           (receipt.verdict || "no verdict") + " · " +
-          (receipt.fired ? "action fired" : "action not fired");
+          (receipt.fired ? "execution attempted" : "not executed");
         receipts.appendChild(line);
       });
       b.appendChild(receipts);
@@ -6193,12 +6229,68 @@
 
   // ---- composer input ---------------------------------------------------
   var input = $("input");
+  var slashMenu = $("slashMenu"), slashIndex = 0;
+
+  function slashOptions() {
+    return slashMenu ? Array.prototype.slice.call(slashMenu.querySelectorAll(".slash-option:not([hidden])")) : [];
+  }
+  function paintSlash(index) {
+    var opts = slashOptions();
+    if (!opts.length) { if (slashMenu) slashMenu.hidden = true; return; }
+    slashIndex = Math.max(0, Math.min(index, opts.length - 1));
+    opts.forEach(function (opt, i) {
+      opt.classList.toggle("active", i === slashIndex);
+      opt.setAttribute("aria-selected", i === slashIndex ? "true" : "false");
+    });
+  }
+  function updateSlashMenu() {
+    if (!slashMenu) return;
+    var q = input.value.replace(/^\s+/, "");
+    // Commands are discoverable while the user is naming one. Once a normal
+    // argument starts, get out of the way and let the composer behave normally.
+    var choosing = /^\/[^\s]*(?:\s+--[^\s]*)?$/.test(q);
+    if (!choosing || q.indexOf("\n") >= 0) { slashMenu.hidden = true; return; }
+    var needle = q.toLowerCase(), hits = 0;
+    slashMenu.querySelectorAll(".slash-option").forEach(function (opt) {
+      var cmd = (opt.getAttribute("data-command") || "").trimEnd().toLowerCase();
+      var show = cmd.indexOf(needle) === 0;
+      opt.hidden = !show; if (show) hits++;
+    });
+    slashMenu.hidden = !hits;
+    if (hits) paintSlash(0);
+  }
+  function chooseSlash(opt) {
+    if (!opt) return;
+    input.value = opt.getAttribute("data-command") || "";
+    slashMenu.hidden = true;
+    input.focus();
+    try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (slashMenu) slashMenu.addEventListener("mousedown", function (e) {
+    var opt = e.target && e.target.closest ? e.target.closest(".slash-option") : null;
+    if (!opt) return;
+    e.preventDefault(); chooseSlash(opt);
+  });
   input.addEventListener("input", function () {
     input.style.height = "auto";
     input.style.height = Math.min(180, input.scrollHeight) + "px";
     input.style.overflowY = input.scrollHeight > 180 ? "auto" : "hidden";
+    updateSlashMenu();
   });
   input.addEventListener("keydown", function (e) {
+    if (slashMenu && !slashMenu.hidden) {
+      var opts = slashOptions();
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        paintSlash((slashIndex + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length);
+        return;
+      }
+      if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+        e.preventDefault(); chooseSlash(opts[slashIndex]); return;
+      }
+      if (e.key === "Escape") { e.preventDefault(); slashMenu.hidden = true; return; }
+    }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
