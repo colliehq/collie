@@ -25,6 +25,17 @@ def check(ok, label):
 
 
 def main():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as fh:
+        package_cfg = fh.read()
+    check("[tool.setuptools.exclude-package-data]" in package_cfg and
+          'harness = ["browser_ext/token.txt"]' in package_cfg,
+          "the per-machine browser bearer is explicitly excluded from wheels")
+    with open(os.path.join(root, "MANIFEST.in"), encoding="utf-8") as fh:
+        manifest = fh.read()
+    check("exclude harness/browser_ext/token.txt" in manifest,
+          "the per-machine browser bearer is explicitly excluded from sdists")
+
     # A checkout is neither, which is the case every developer is in.
     check(plat.in_app_bundle() is False, "a source checkout is not an app bundle")
     check(plat.translocated() is False, "and is not translocated")

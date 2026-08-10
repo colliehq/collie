@@ -1242,8 +1242,9 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
         await dbgSend(tabId, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
         await dbgSend(tabId, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
         if (kind === "type") {
-          await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
-          await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+          const selectMask = await selectAllMask();
+          await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: selectMask, key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
+          await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: selectMask, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
           await dbgSend(tabId, "Input.insertText", { text: text || "" });
           if (submit) {
             await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
@@ -1367,8 +1368,9 @@ async function trustedType(selector, text, submit) {
       await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
     }
     // select-all (Ctrl+A) so we replace rather than append, then type as real keystrokes
-    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
-    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    const selectMask = await selectAllMask();
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: selectMask, key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: selectMask, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
     await dbgSend(tab.id, "Input.insertText", { text: text || "" });
     if (submit) {
       await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
@@ -1441,8 +1443,9 @@ async function trustedTypeRef(ref, text, submit) {
       await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
       await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
     }
-    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
-    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    const selectMask = await selectAllMask();
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: selectMask, key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: selectMask, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
     await dbgSend(tab.id, "Input.insertText", { text: text || "" });
     if (submit) {
       await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
@@ -1507,6 +1510,17 @@ function modMask(mods) {
     m |= MODBIT[String(name).toLowerCase()] || 0;
   }
   return m;
+}
+
+async function selectAllMask() {
+  // Command+A is select-all on macOS. Ctrl+A there moves/inserts differently depending on the
+  // focused control, which made trusted `type` append to old text and corrupted later actions.
+  try {
+    const info = await chrome.runtime.getPlatformInfo();
+    return info && info.os === "mac" ? MODBIT.meta : MODBIT.ctrl;
+  } catch (e) {
+    return MODBIT.ctrl;
+  }
 }
 
 // Injected: the synthetic fallback for a key. It reaches listeners bound to keydown/keyup, which is

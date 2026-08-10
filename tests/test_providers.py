@@ -156,7 +156,10 @@ def test_provider_error_contract_matrix():
     os.environ["_CT_KEY"] = "k"
     oc = OpenAICompatProvider("http://x", "_CT_KEY", "m", name="deepseek")
     provs = [an, ol, oc]
-    with patch("harness.providers._read_oauth_token", lambda: "tok"):
+    # A real expired Claude Code credential on the developer's machine must not pre-empt this
+    # transport-error matrix. Expiry has its own tests; this one owns the token state completely.
+    with patch("harness.providers._read_oauth_token", lambda: "tok"), \
+         patch("harness.providers.claude_oauth_expired", lambda *a, **k: False):
         provs.append(oa)
         for p in provs:
             for f in faults:

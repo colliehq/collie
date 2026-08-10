@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 import time
+import subprocess as _real_subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -65,6 +66,16 @@ class _Pipe:
         self.closed = True
 
 
+class _SubprocessProxy:
+    """Module-local Popen seam without mutating Python's process-wide subprocess module."""
+
+    def __init__(self, popen):
+        self.Popen = popen
+
+    def __getattr__(self, name):
+        return getattr(_real_subprocess, name)
+
+
 def _worker(sb, posted, reactions, rc=0, payload=None, err=""):
     """A Worker whose run is a canned process and whose Slack is a list."""
     sb.say = lambda token, channel, text, thread="", tag="", broadcast=False: (
@@ -75,7 +86,9 @@ def _worker(sb, posted, reactions, rc=0, payload=None, err=""):
         {"id": "U_HUMAN", "name": "Daming", "is_bot": False}]
     sb.api = lambda method, token, **p: {"ok": True, "user_id": "U_ME"}
     body = json.dumps(payload) if payload is not None else "{}"
-    sb.subprocess.Popen = lambda *a, **k: _Proc(body, err, rc)
+    # Do not assign subprocess.Popen on Python's shared module object: presence/guard helpers use
+    # subprocess.run, whose implementation would then receive this tiny fake and fail far away.
+    sb.subprocess = _SubprocessProxy(lambda *a, **k: _Proc(body, err, rc))
 
     q = sb.TaskQueue("TestDog")
     q.path = os.path.join(sb.QUEUE_DIR, "queue-testdog-unit.json")

@@ -1,0 +1,3 @@
+# Per-machine browser bridge bearer. It is ignored by Git and excluded from wheel package data;
+# sdist has its own file-list mechanism, so deny it here as well even if stale egg-info remembers it.
+exclude harness/browser_ext/token.txt

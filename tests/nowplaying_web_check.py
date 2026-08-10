@@ -43,6 +43,10 @@ def main():
         pg.on("pageerror", lambda e: errs.append(str(e)))
 
         pg.goto(BASE + "/?token=" + TOKEN, wait_until="networkidle")
+        # A fresh isolated server intentionally opens first-run onboarding. This suite exercises
+        # the toolbar control underneath it, so dismiss the modal as a user would before clicking.
+        if pg.locator("#obOverlay.open").count():
+            pg.click("#obSkip")
         check(not errs, "the page loads without a JS error%s"
               % ("" if not errs else ": " + errs[0][:80]))
         check(pg.locator("#npPill").count() == 1, "the control is in the page")

@@ -63,7 +63,10 @@ def test_two_agents_on_one_task_do_not_see_each_other(monkeypatch):
     with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as cwd:
         monkeypatch.setattr(cli, "DATA", data)
         shared = SqliteMemory(cli._paths()[0])
-        shared.remember("this repo builds with `make all`", project="repo")
+        # Keep the shared fact relevant under the supported BM25-only fallback too. Isolation is
+        # what this test measures; relying on a semantic embedder made the assertion depend on
+        # whichever optional model happened to be installed on the machine.
+        shared.remember("when the widget crashes, this repo builds with `make all`", project="repo")
         shared.close()
 
         secret = "the crash comes from widget_factory.py line 42, a stale cache"

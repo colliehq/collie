@@ -47,3 +47,9 @@ version = { attr = "harness.__version__" }
 # needs — it builds the .exe on first use via the in-box csc (no .NET SDK). Windows-only feature.
 harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png", "browser_ext/*",
            "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico"]
+
+[tool.setuptools.exclude-package-data]
+# browser-bridge writes this per-machine bearer beside the unpacked extension.  An old egg-info
+# SOURCES cache can remember the ignored file, so package-data's broad browser_ext/* needs an
+# explicit deny-list too: a wheel must never become a copy of the builder's local credential.
+harness = ["browser_ext/token.txt"]

@@ -47,7 +47,7 @@ def main():
               "...or, with no history, to a discovered project")
 
         webapp.Handler._REPOS_CACHE.pop("repos", None)
-        check(webapp.Handler._default_repo() == neutral,
+        check(os.path.realpath(webapp.Handler._default_repo()) == os.path.realpath(neutral),
               "...and with nothing at all it returns the cwd rather than inventing one")
 
         os.chdir(repo)
