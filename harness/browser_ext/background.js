@@ -926,7 +926,10 @@ function pageAdvanceInfo(ref) {
   if (type === "file") return { error: "file controls require the gated upload path" };
   if (/(captcha|recaptcha|hcaptcha|human.?verification|verify.?you.?are.?human|security.?challenge)/i.test(meta))
     return { error: "CAPTCHA or human verification requires Needs You" };
-  if (/(?:^|\b)(post|publish|send|submit|save|create\s+(?:account|page)|sign\s*up|register|authorize|grant\s+access|allow\s+access|approve|pay|buy|purchase|checkout|place\s+order|delete|remove|deactivate|unsubscribe|log\s*out|sign\s*out)(?:\b|$)/i.test(label))
+  // Opening LinkedIn's editor is reversible; its launcher is literally "Start a post".
+  // Keep the final "Post" button fenced while permitting only this explicit setup label.
+  const reversibleComposerLauncher = /^start\s+(?:a\s+)?post$/i.test(label);
+  if (!reversibleComposerLauncher && /(?:^|\b)(post|publish|send|submit|save|create\s+(?:account|page)|sign\s*up|register|authorize|grant\s+access|allow\s+access|approve|pay|buy|purchase|checkout|place\s+order|delete|remove|deactivate|unsubscribe|log\s*out|sign\s*out)(?:\b|$)/i.test(label))
     return { error: "consequential control '" + label + "' requires the outer Mission gate" };
   if (href && /(?:^|[/?&=])(?:logout|signout|unsubscribe|delete|remove|deactivate|activate|verify|confirm)(?:[/?&=]|$)/i.test(href))
     return { error: "consequential navigation requires the outer Mission gate" };

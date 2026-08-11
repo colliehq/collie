@@ -380,13 +380,16 @@ function run(root, max, opts, frames) {
 {
   const company = el('button', { text: 'Company' });
   const publish = el('button', { text: 'Publish' });
+  const startPost = el('button', { text: 'Start a post' });
   const captcha = el('button', { attrs: { 'aria-label': 'Complete CAPTCHA' }, text: 'Continue' });
-  const win = { __collieRefs: new Map([['e1', company], ['e2', publish], ['e3', captcha]]) };
+  const win = { __collieRefs: new Map([['e1', company], ['e2', publish], ['e3', captcha],
+                                       ['e4', startPost]]) };
   const api = new Function('window', grab('function pageAdvanceInfo(ref)') +
     '\nreturn { pageAdvanceInfo };')(win);
   t('ordinary Company selection is a reversible advance', api.pageAdvanceInfo('e1').allowed === true);
   t('a final Publish control is refused before click', !!api.pageAdvanceInfo('e2').error);
   t('CAPTCHA controls are refused before click', !!api.pageAdvanceInfo('e3').error);
+  t('Start a post may open a reversible composer', api.pageAdvanceInfo('e4').allowed === true);
 }
 
 {

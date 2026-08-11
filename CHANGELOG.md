@@ -20,6 +20,8 @@
 - **Takeover is no longer ambiguous.** The terminal button is labeled **End mission & take over**
   and requires confirmation. **Return to Collie** creates an audited successor that inherits
   completed semantic action keys, preventing already-fired work from replaying.
+- **Opening LinkedIn's composer is reversible again.** `Start a post` may prepare the editor,
+  while the actual `Post` control remains behind Verification Gate.
 
 ## v0.21.21 — Keep OAuth consent active and verify delayed redirects
 
