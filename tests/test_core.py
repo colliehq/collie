@@ -85,7 +85,12 @@ def test_panel_settings_survive_a_fork():
     # escaping there: on Windows `sys.path.insert(0, 'C:\Users\…')` made \U a truncated unicode
     # escape, the grandchild died of SyntaxError before printing, and the assert blamed settings.
     # Non-COLLIE_ names on purpose — apply() treats every inherited COLLIE_* as "the user set this".
+    # Redirect the actual settings path as well as the broader state directory.
+    # COLLIE_STATE_DIR does not define settings._PATH; without this explicit path
+    # the subprocess writes its LANG fixture into the developer's real
+    # ~/.collie/settings.json while the suite is running.
     env = {**os.environ, "COLLIE_STATE_DIR": state,
+           "COLLIE_SETTINGS_PATH": os.path.join(state, "settings.json"),
            "FORKTEST_REPO": os.getcwd(), "FORKTEST_STATE": state}
     parent = ("import os, sys\n"
               "sys.path.insert(0, os.environ['FORKTEST_REPO'])\n"
