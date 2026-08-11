@@ -4,8 +4,9 @@
 
 - **Browser inspection is no longer mistaken for a failed form fill.** A Mission can explicitly
   mark navigation/inspection as `read_only`; the Gate then verifies the independently reread live
-  page identity instead of demanding form fields. Empty-form fill operations remain inconclusive,
-  so the new path cannot weaken draft or submission verification.
+  page identity instead of demanding form fields. If a planner omits the flag, an unmistakable
+  “inspect/check” plus “do not change/submit” goal is recognized conservatively. Empty-form fill
+  operations remain inconclusive, so the new path cannot weaken draft or submission verification.
 
 - **Silent upgrades no longer rewrite user settings.** The installer seeds the selected language on
   first install only; upgrades retain the existing language, provider, model and every other saved

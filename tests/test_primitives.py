@@ -237,6 +237,12 @@ def test_browse_and_submit_real():
           "explicit read-only browsing verifies against the independently reread live page")
     check(_browse_verify(_Rec({}), inspected).status == INCONCLUSIVE,
           "an empty-form fill cannot masquerade as read-only success without the explicit flag")
+    inferred = _Rec({"goal": "Inspect available signed-in sessions; do not register, change, or submit anything."})
+    check(_browse_verify(inferred, inspected).status == VERIFIED,
+          "an unmistakable inspect plus no-write goal survives a planner omitting read_only=true")
+    ambiguous = _Rec({"goal": "Inspect the page and fill the promotion form."})
+    check(_browse_verify(ambiguous, inspected).status == INCONCLUSIVE,
+          "a read verb without an explicit no-write clause cannot weaken form verification")
     no_page = dict(inspected, page={})
     check(_browse_verify(_Rec({"read_only": True}), no_page).status == INCONCLUSIVE,
           "read-only browsing still fails closed without independent page identity")

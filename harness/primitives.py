@@ -571,6 +571,31 @@ def _real_browse(runner=None, form_reader=None):
     return execute
 
 
+def _explicit_read_only_browse(args):
+    """Recognize only an unmistakable no-write inspection request.
+
+    The explicit boolean is the primary contract.  The narrow language fallback
+    exists because planners can omit an optional JSON field even while spelling
+    out "inspect; do not change or submit anything" in the goal.  Requiring both
+    a read verb and a no-write clause keeps ordinary failed form fills outside
+    this path.
+    """
+    a = args or {}
+    if a.get("read_only") is True:
+        return True
+    goal = str(a.get("goal") or a.get("task") or "")
+    read_intent = bool(re.search(
+        r"(?i)\b(inspect|review|check|identify|read|observe|audit|look\s+at)\b|"
+        r"查看|检查|核实|审查|识别", goal))
+    no_write = bool(re.search(
+        r"(?i)\bread[- ]only\b|\bwithout\s+(?:making\s+)?(?:changes?|changing|"
+        r"submitting|posting|publishing|sending|editing|filling|clicking)\b|"
+        r"\bdo\s+not\s+(?:register|message|change|create|submit|post|publish|send|"
+        r"edit|fill|click)\b|只读|不要.{0,80}(?:修改|提交|发布|注册|发送|创建|填写|点击)",
+        goal))
+    return read_intent and no_write
+
+
 def _browse_verify(rec, result):
     """Done-check by an INDEPENDENT re-read of the form, not the agent's self-report.
     If the caller passed `expect` ({label: value}), assert each value is actually
@@ -579,7 +604,7 @@ def _browse_verify(rec, result):
     r = result or {}
     form = r.get("form") or []
     expect = (rec.args or {}).get("expect") or {}
-    read_only = bool((rec.args or {}).get("read_only"))
+    read_only = _explicit_read_only_browse(rec.args or {})
     if not r.get("result") and not form:
         return Verdict(FAILED, "browse produced no result")
 
@@ -997,8 +1022,9 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         "navigate, act) — handles dynamic/obfuscated sites like Facebook Marketplace. Fills up to the "
         "final submit then STOPS (reversible). Pass `expect` using exact visible field labels. For a "
         "rich-text editor use content/body/post_text; platform/site is checked against the live page "
-        "origin. For inspection/navigation with no form changes pass read_only=true. The outcome is "
-        "verified by an INDEPENDENT re-read, not the agent's say-so.",
+        "origin. For inspection/navigation with no form changes pass read_only=true (an explicit "
+        "inspect + do-not-change/submit goal is also recognized fail-closed). The outcome is verified "
+        "by an INDEPENDENT re-read, not the agent's say-so.",
         args_hint='{"goal": "fill a Marketplace vehicle listing for a 2015 Corolla, $9500", '
                   '"expect": {"Make":"Toyota","Model":"Corolla","Year":"2015","Price":"9500"}, '
                   '"read_only": false}'))
