@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.21.21 — Keep OAuth consent active and verify delayed redirects
+
+- **A final browser action activates its already-bound Mission tab before snapshotting.** Consent
+  pages that intentionally disable approval in background tabs can now become actionable without
+  weakening exact-button or TOCTOU binding.
+- **Composite no-write inspection instructions remain read-only.** Goals such as “without
+  navigating, reloading, opening, clicking, typing, or submitting” no longer misclassify semantic
+  page expectations as form fields when a planner omits the optional `read_only` flag.
+- **A fired click is re-observed for a bounded window, never repeated.** OAuth redirects and SPA
+  success states that land shortly after the trusted click can verify normally, while unresolved
+  actions remain inconclusive. Persisted targets now strip query strings and OAuth state, using an
+  opaque digest for exact URL binding instead.
+
 ## v0.21.20 — Lock read-only OAuth pages and bind delayed consent controls
 
 - **A read-only CURRENT-page task cannot silently guess another URL on the same host.** When the

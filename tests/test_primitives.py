@@ -262,6 +262,10 @@ def test_browse_and_submit_real():
     inferred = _Rec({"goal": "Inspect available signed-in sessions; do not register, change, or submit anything."})
     check(_browse_verify(inferred, inspected).status == VERIFIED,
           "an unmistakable inspect plus no-write goal survives a planner omitting read_only=true")
+    composite = _Rec({"goal": "Inspect the CURRENT page only, without navigating, reloading, "
+                                     "opening a URL, clicking, typing, or submitting."})
+    check(_browse_verify(composite, inspected).status == VERIFIED,
+          "a composite no-write clause remains read-only when the planner omits read_only=true")
     ambiguous = _Rec({"goal": "Inspect the page and fill the promotion form."})
     check(_browse_verify(ambiguous, inspected).status == INCONCLUSIVE,
           "a read verb without an explicit no-write clause cannot weaken form verification")
@@ -323,6 +327,42 @@ def test_browse_and_submit_real():
           usub.verify(_Rec({}), ur).status == INCONCLUSIVE,
           "a click without a permalink/toast/state change is not called published")
 
+    class DelayedRedirect(FakeActuator):
+        def __init__(self):
+            super().__init__(result_url="https://www.producthunt.com/my/welcome?code=private")
+            self._url = "https://github.test/login/oauth/authorize?state=private"
+            self.clicked = False
+
+        def click_ref(self, ref):
+            self.calls.append(("click_ref", ref)); self.clicked = True
+            return self._url
+
+        def wait(self, seconds):
+            self.calls.append(("wait", seconds))
+            if self.clicked:
+                self._url = self.result_url
+            return True
+
+        def snapshot(self):
+            self.calls.append(("snapshot",))
+            body = "Welcome" if self._url.startswith("https://www.producthunt.com/") \
+                else '[e7] button "Authorize producthunt"'
+            return {"url": self._url, "snapshot": body}
+
+    delayed_redirect = DelayedRedirect()
+    clear_registry(); register_primitives(stub=False, actuator=delayed_redirect,
+                                           browse_runner=lambda _g: "prepared")
+    oauth = get_capability("browse.submit")
+    oauth_args = {"button": "Authorize producthunt",
+                  "success_url_contains": "producthunt.com"}
+    oauth_snap = oauth.snapshot(oauth_args, "m-oauth")
+    oauth_result = oauth.execute(_Rec(oauth_args, job_id="m-oauth", snapshot=oauth_snap))
+    check(oauth_result.get("confirmed") and any(c[0] == "wait" for c in delayed_redirect.calls),
+          "submit re-observes a delayed OAuth redirect without firing a second click")
+    check("?" not in oauth_snap.get("url", "") and "private" not in repr(oauth_snap) and
+          "?" not in oauth_result.get("target", "") and "private" not in repr(oauth_result),
+          "OAuth query credentials never persist in target snapshots or postconditions")
+
 
 def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     print("test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target")
@@ -383,6 +423,8 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
         prepared = consent.snapshot({"button": "Authorize producthunt"}, "m-delay")
     check(prepared.get("ref") == "e7" and delayed.reads == 3 and sleep.call_count == 2,
           "final target preparation briefly rereads one exact disabled consent button until enabled")
+    check(delayed.calls and delayed.calls[0] == ("show",),
+          "final target preparation activates its already-bound tab before checking consent state")
 
 
 def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():

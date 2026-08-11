@@ -96,6 +96,18 @@ class BridgeActuator:
         r = self._cmd({"action": "snapshot", "max": 400, "text": False})
         return r if isinstance(r, dict) else {}
 
+    def show(self):
+        # Consent pages such as GitHub intentionally keep their final control
+        # disabled while the tab is in the background.  Focusing the already
+        # bound Mission tab is reversible and lets the final-action snapshot
+        # observe the same actionable state the user would see.
+        self._cmd({"action": "show"})
+        return True
+
+    def wait(self, seconds):
+        self._cmd({"action": "wait", "ms": max(0, min(30000, int(float(seconds) * 1000)))})
+        return True
+
     def eval(self, expr):
         return self._cmd({"action": "eval", "expr": expr})
 
@@ -175,6 +187,14 @@ class FakeActuator:
             else '[e1] button "Publish"'
         return {"url": self.current_url(), "snapshot": body,
                 "count": 1}
+
+    def show(self):
+        self.calls.append(("show",))
+        return True
+
+    def wait(self, seconds):
+        self.calls.append(("wait", seconds))
+        return True
 
     def eval(self, expr):
         self.calls.append(("eval",))

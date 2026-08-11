@@ -664,6 +664,19 @@ def _safe_page_name(url):
     return (parsed.hostname or "") + (parsed.path or "/")
 
 
+def _redacted_page_url(url):
+    """Persist page identity without query credentials, OAuth state, or fragments."""
+    parsed = urlsplit(str(url or ""))
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    return "%s://%s%s" % (parsed.scheme, parsed.netloc, parsed.path or "/")
+
+
+def _page_url_digest(url):
+    """Opaque exact-URL binding used for TOCTOU without storing the URL itself."""
+    return hashlib.sha256(str(url or "").encode("utf-8")).hexdigest()
+
+
 def _real_browse(runner=None, form_reader=None):
     def execute(rec):
         from .browserbridge import space_identity
@@ -756,7 +769,18 @@ def _explicit_read_only_browse(args):
         r"\bdo\s+not\s+(?:register|message|change|create|submit|post|publish|send|"
         r"edit|fill|click)\b|只读|不要.{0,80}(?:修改|提交|发布|注册|发送|创建|填写|点击)",
         goal))
-    return read_intent and no_write
+    # Planners naturally produce composite clauses such as "without navigating,
+    # reloading, opening, clicking, typing, or submitting".  The old expression
+    # only recognized the first word after ``without`` and therefore treated
+    # semantic page expectations as form fields whenever ``read_only`` was
+    # omitted.  Require an actual mutation verb later in the same bounded clause;
+    # "without navigating" alone is deliberately not enough, because a caller
+    # could still intend to fill the current page.
+    composite_no_write = bool(re.search(
+        r"(?is)\bwithout\b[^.\n]{0,180}\b(?:submitting|posting|publishing|sending|"
+        r"editing|filling|clicking|typing|changing|creating|registering)\b",
+        goal))
+    return read_intent and (no_write or composite_no_write)
 
 
 def _browse_verify(rec, result):
@@ -944,6 +968,8 @@ def _browse_target_snapshot(actuator):
         act = _space_actuator(actuator, job_id)
         if act is None or not hasattr(act, "page_identity") or not hasattr(act, "snapshot"):
             raise RuntimeError("cannot snapshot the browser target")
+        if hasattr(act, "show"):
+            act.show()
         ident = act.page_identity() or {}
         tree, target = {}, None
         # GitHub and some other consent pages intentionally render the final
@@ -968,7 +994,8 @@ def _browse_target_snapshot(actuator):
         form_json = json.dumps(form, sort_keys=True, ensure_ascii=False,
                                separators=(",", ":"))
         return {"space": _mission_space(job_id), "tab_id": ident.get("tab_id"),
-                "title": ident.get("title") or "", "url": full_url,
+                "title": ident.get("title") or "", "url": _redacted_page_url(full_url),
+                "url_digest": _page_url_digest(full_url),
                 "origin": "%s://%s" % (u.scheme, u.netloc),
                 "button": str(button), "ref": target["ref"],
                 "target": target["line"],
@@ -983,6 +1010,8 @@ def _browse_target_unchanged(actuator):
         act = _space_actuator(actuator, getattr(rec, "job_id", ""))
         if act is None:
             return False
+        if hasattr(act, "show"):
+            act.show()
         ident = act.page_identity() or {}
         tree = act.snapshot() or {}
         target = _find_button(tree, old.get("button"))
@@ -991,8 +1020,10 @@ def _browse_target_unchanged(actuator):
         form_json = json.dumps(form, sort_keys=True, ensure_ascii=False,
                                separators=(",", ":"))
         form_digest = hashlib.sha256(form_json.encode("utf-8")).hexdigest()
+        url_matches = (_page_url_digest(full_url) == old.get("url_digest")
+                       if old.get("url_digest") else full_url == old.get("url"))
         return bool(target and ident.get("tab_id") == old.get("tab_id") and
-                    full_url == old.get("url") and
+                    url_matches and
                     target.get("line") == old.get("target") and
                     target.get("ref") == old.get("ref") and
                     form_digest == old.get("form_digest"))
@@ -1016,34 +1047,50 @@ def _real_browse_submit(actuator=None):
         except Exception as e:
             return {"submitted": False, "error": "publish click failed: %s: %s" % (type(e).__name__, e)}
         old = getattr(rec, "snapshot", None) or {}
-        try:
-            ident = act.page_identity() or {}
-            tree = act.snapshot() or {}
-        except Exception as e:
-            return {"submitted": True, "confirmed": False, "button": button,
-                    "error": "clicked, but fresh postcondition read failed: %s" % e}
-        new_url = str(tree.get("url") or ident.get("url") or "")
-        page = "\n".join((str(ident.get("title") or ""),
-                           str(tree.get("snapshot") or "")))
-        failure = re.search(r"\b(error|required|could not|couldn't|failed|captcha|"
-                            r"rate limit|try again|something went wrong)\b", page, re.I)
         success_text = str((rec.args or {}).get("success_text") or "").strip()
         success_url = str((rec.args or {}).get("success_url_contains") or "").strip()
-        explicit = ((success_text and success_text.casefold() in page.casefold()) or
-                    (success_url and success_url in new_url))
-        marker = re.search(r"\b(published|posted|sent successfully|your post is live|"
-                           r"view post|successfully published)\b", page, re.I)
-        target_gone = _find_button(tree, old.get("button")) is None
-        navigated = bool(new_url and new_url != str(old.get("url") or ""))
-        permalink = re.search(
-            r"/(?:posts?|status|items?|listings?|p|reels?|videos?|updates?)/[^/?#]+",
-            urlsplit(new_url).path, re.I) if new_url else None
-        confirmed = bool(not failure and (((explicit or marker) and
-                                            (navigated or target_gone)) or
-                                           (permalink and navigated and target_gone)))
+        confirmed, new_url, last_error = False, "", ""
+        # A trusted click can return before an OAuth redirect or SPA success
+        # state lands.  Re-observe the page for a short bounded window; never
+        # click again.  This converts a real success from "inconclusive" without
+        # weakening the evidence requirement.
+        for attempt in range(5):
+            try:
+                ident = act.page_identity() or {}
+                tree = act.snapshot() or {}
+            except Exception as e:
+                last_error = "clicked, but fresh postcondition read failed: %s" % e
+                tree, ident = {}, {}
+            new_url = str(tree.get("url") or ident.get("url") or "")
+            page = "\n".join((str(ident.get("title") or ""),
+                               str(tree.get("snapshot") or "")))
+            failure = re.search(r"\b(error|required|could not|couldn't|failed|captcha|"
+                                r"rate limit|try again|something went wrong)\b", page, re.I)
+            explicit = ((success_text and success_text.casefold() in page.casefold()) or
+                        (success_url and success_url in new_url))
+            marker = re.search(r"\b(published|posted|sent successfully|your post is live|"
+                               r"view post|successfully published)\b", page, re.I)
+            target_gone = _find_button(tree, old.get("button")) is None
+            navigated = bool(new_url and (
+                _page_url_digest(new_url) != old.get("url_digest")
+                if old.get("url_digest") else new_url != str(old.get("url") or "")))
+            permalink = re.search(
+                r"/(?:posts?|status|items?|listings?|p|reels?|videos?|updates?)/[^/?#]+",
+                urlsplit(new_url).path, re.I) if new_url else None
+            confirmed = bool(not failure and (((explicit or marker) and
+                                                (navigated or target_gone)) or
+                                               (permalink and navigated and target_gone)))
+            if confirmed or attempt >= 4:
+                break
+            if hasattr(act, "wait"):
+                act.wait(0.75)
+            else:
+                time.sleep(0.75)
         return {"case": {"published": True} if confirmed else {},
                 "submitted": True, "confirmed": confirmed, "button": button,
-                "target": new_url, "postcondition":
+                "target": _redacted_page_url(new_url),
+                "error": last_error if not confirmed and last_error else "",
+                "postcondition":
                     ("fresh success state observed" if confirmed else
                      "click fired; no fresh publication evidence")}
     return execute
