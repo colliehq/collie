@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.21.18 — Trusted exact-ref final clicks
+
+- **Sites that reject synthetic events can now accept gated final actions.** `browse.submit` uses a
+  genuine CDP click while retaining the exact accessibility ref captured by the outer Gate.
+- **A real click cannot drift onto a different control.** After the visible cursor delay, the
+  extension re-resolves the approved node, recomputes its center, and refuses the action if that
+  node disappeared, moved off-screen, or became covered.
+
 ## v0.21.17 — Localized final-action binding
 
 - **A verified form can bind its final button across UI languages.** Common Post, Publish, Save,

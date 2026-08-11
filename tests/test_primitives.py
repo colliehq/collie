@@ -384,6 +384,19 @@ def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():
     check(bb.cmd.get("trusted") is False and bb.cmd.get("ref") == "e1",
           "final Mission click targets the exact live node, never stale screen coordinates")
 
+    class TrustedBB:
+        def __init__(self): self.cmd = None
+        def _call(self, cmd):
+            self.cmd = cmd
+            return {"ok": True, "data": {"click": {"clicked": "Save", "trusted": True}}}
+
+    tbb = TrustedBB()
+    tact = BridgeActuator.__new__(BridgeActuator)
+    tact._bb, tact._space = tbb, "mission-one"
+    tact.trusted_click_ref("e34")
+    check(tbb.cmd.get("ref") == "e34" and tbb.cmd.get("trusted") is True,
+          "final browser writes can request a trusted click on the exact approved ref")
+
 
 def test_browse_domain_boundary_survives_redirects_and_blocks_action_gets():
     print("test_browse_domain_boundary_survives_redirects_and_blocks_action_gets")

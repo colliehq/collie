@@ -478,6 +478,9 @@ function run(root, max, opts, frames) {
      [api.pagePointLabel('Post text').x, api.pagePointLabel('Post text').y], [300, 150]);
   t('trusted browser typing has a label-addressed CDP path',
     src.includes('await trustedTypeLabel(cmd.label, cmd.text, !!cmd.submit)'));
+  t('trusted exact-ref clicks revalidate the same live node after the cursor delay',
+    src.includes('await execMain(pagePointStillRef, [ref])') &&
+    src.includes('refRevalidated: true'));
 }
 
 {

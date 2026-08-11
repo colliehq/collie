@@ -842,6 +842,24 @@ function pagePointRef(ref) {
   return { x, y, inView, label: (el.innerText || el.value || ref || "").trim().slice(0, 80) };
 }
 
+// Re-resolve an exact ref immediately before a trusted coordinate click. Moving the visible cursor
+// and attaching the debugger takes a few hundred milliseconds; a responsive layout can move a
+// different control under the old coordinates during that window. The final-action path must keep
+// both properties: a genuine isTrusted event and the exact node that the outer Gate approved.
+function pagePointStillRef(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected) return { error: "approved ref " + ref + " is no longer live" };
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+  if (!inView) return { error: "approved ref " + ref + " moved off-screen before click" };
+  const hit = document.elementFromPoint(x, y);
+  if (!hit || !(hit === el || (el.contains && el.contains(hit))))
+    return { error: "approved ref " + ref + " moved or became covered before click" };
+  return { x, y, inView: true, label: (el.innerText || el.value || ref || "").trim().slice(0, 80) };
+}
+
 function pageClickRef(ref) {
   const m = window.__collieRefs;
   const el = m && m.get ? m.get(ref) : null;
@@ -1572,11 +1590,13 @@ async function trustedClickRef(ref) {
   try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
   try {
     await ensureAttached(tab.id);
-    const b = { x: pt.x, y: pt.y, button: "left" };
+    const fresh = await execMain(pagePointStillRef, [ref]);
+    if (!fresh || fresh.error) return fresh || { error: "approved element changed before click" };
+    const b = { x: fresh.x, y: fresh.y, button: "left" };
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x, y: b.y, buttons: 0 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
     await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
-    return { clicked: pt.label, trusted: true };
+    return { clicked: fresh.label, trusted: true, refRevalidated: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
     const r = await execMain(pageClickRef, [ref]);

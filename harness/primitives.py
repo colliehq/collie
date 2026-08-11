@@ -954,7 +954,10 @@ def _real_browse_submit(actuator=None):
             ref = (getattr(rec, "snapshot", None) or {}).get("ref")
             if not ref or not hasattr(act, "click_ref"):
                 return {"submitted": False, "error": "approved button identity is missing"}
-            act.click_ref(ref)
+            if hasattr(act, "trusted_click_ref"):
+                act.trusted_click_ref(ref)
+            else:
+                act.click_ref(ref)
         except Exception as e:
             return {"submitted": False, "error": "publish click failed: %s: %s" % (type(e).__name__, e)}
         old = getattr(rec, "snapshot", None) or {}

@@ -81,11 +81,15 @@ class BridgeActuator:
         return getattr(self, "_url", "")
 
     def click_ref(self, ref: str) -> str:
-        # Synthetic element.click targets the exact snapshotted live node.  The
-        # bridge's optional trusted path converts a ref to screen coordinates and
-        # can hit a different element if layout shifts during its cursor delay —
-        # unacceptable for the final irreversible Mission boundary.
+        # Synthetic exact-ref click remains useful for sites that accept DOM events.
         self._cmd({"action": "click", "ref": ref, "trusted": False})
+        return getattr(self, "_url", "")
+
+    def trusted_click_ref(self, ref: str) -> str:
+        # Final writes frequently reject isTrusted=false. The extension re-resolves this exact ref
+        # after its cursor delay and refuses the click if the node moved, disappeared, or became
+        # covered, preserving the Gate's identity binding while delivering a genuine CDP event.
+        self._cmd({"action": "click", "ref": ref, "trusted": True})
         return getattr(self, "_url", "")
 
     def snapshot(self):
