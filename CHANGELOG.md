@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.21.4 — Multi-platform Mission discovery
+
+- **Different sites no longer trigger polling backoff.** The Mission anti-spin guard now tracks the
+  resource being observed: refreshing the same inbox still pauses after three consecutive reads,
+  while first-time checks of X, Reddit, LinkedIn, Product Hunt, and other distinct sites can proceed
+  in one run.
+
+- **The planner distinguishes literal polling from semantic inspection.** `observe.expect` is now
+  documented to the planner as an exact page substring. Account identity and page-state discovery
+  use one read-only browser action per site, preventing false “not logged in” conclusions and
+  preventing a reversible browser child from attempting to cross unrelated site boundaries.
+
 ## v0.21.3 — Verified read-only browser work
 
 - **Browser inspection is no longer mistaken for a failed form fill.** A Mission can explicitly

@@ -1501,12 +1501,34 @@ class MissionDriver:
     # after this many actions in one advance, park for the human. A durable errand
     # makes progress in a few actions then waits — it does not need dozens per wake.
     max_steps = 40
-    # anti-poll-spin: after this many CONSECUTIVE reversible reads (e.g. observe the
-    # inbox again and again), force a durable wait instead of reading in a tight loop.
+    # anti-poll-spin: after this many CONSECUTIVE reversible reads of the SAME
+    # target (e.g. observe one inbox again and again), force a durable wait instead
+    # of reading in a tight loop. First reads of different sites are discovery, not
+    # polling, and must not make a multi-channel mission sleep for an hour.
     # In the world each read is a real, slow browser fetch — polling 40x is wrong;
     # a monitor should read, then WAIT. Resets when an irreversible action fires.
     read_streak_cap = 3
     read_wait_s = 3600
+
+    @staticmethod
+    def _observe_target(args):
+        """Return a privacy-safe identity for the resource being polled.
+
+        Expectations deliberately do not participate: changing the search phrase
+        while refreshing the same page is still polling. Query strings/fragments
+        are omitted because they can contain credentials or user identifiers.
+        """
+        a = args or {}
+        raw_url = str(a.get("url") or a.get("target") or "").strip()
+        if raw_url:
+            parsed = urlsplit(raw_url)
+            target = "%s://%s%s" % (
+                (parsed.scheme or "https").lower(),
+                (parsed.hostname or "").lower(),
+                parsed.path or "/")
+        else:
+            target = str(a.get("inbox") or a.get("channel") or "default").strip().lower()
+        return (bool(a.get("authed") or a.get("inbox")), target)
 
     def __init__(self, store: MissionStore, actions: ActionStore, decider,
                  capabilities=None, goal_verifier=None, *, lane="mission",
@@ -1920,7 +1942,8 @@ class MissionDriver:
 
     def _drive_claimed(self, mission_id, token, heartbeat=True) -> str:
         """Drive a mission whose RUNNING slot has already been atomically claimed."""
-        reads = 0                                     # consecutive reversible reads (anti-poll-spin)
+        reads = 0                                     # consecutive reads of one target
+        read_target = None
         heartbeat_pair = self._start_heartbeat(mission_id, token) if heartbeat else None
         try:
             # A confirmed action may be waiting only because the shared browser
@@ -2106,6 +2129,9 @@ class MissionDriver:
                 # local reversible work such as composing several channel-ready
                 # deliverables before the first external action.
                 is_poll_read = cap.name == "observe"
+                next_read_target = self._observe_target(args) if is_poll_read else None
+                if is_poll_read and next_read_target != read_target:
+                    reads = 0
                 if is_poll_read and reads >= self.read_streak_cap:
                     self.store.schedule_wait(mission_id, int(time.time()) + self.read_wait_s)
                     return self._finish(
@@ -2301,7 +2327,12 @@ class MissionDriver:
                     return self._finish(
                         mission_id, token, NEEDS_YOU,
                         f"{cap.name} fired but remains uncertain: {verdict.reason}")
-                reads = reads + 1 if is_poll_read else 0
+                if is_poll_read:
+                    reads += 1
+                    read_target = next_read_target
+                else:
+                    reads = 0
+                    read_target = None
 
             return self._finish(mission_id, token, NEEDS_YOU,
                                 "step budget exhausted — needs your input")
@@ -2624,6 +2655,10 @@ _SYS = (
     "When WAITING on an external event (a reply, availability, a price drop): observe "
     "ONCE, and if nothing has changed use 'wait' (with args.seconds) — do NOT observe/"
     "read repeatedly in a row; a monitor reads, then waits, then reads again later.\n"
+    "The 'observe' args.expect value is a LITERAL substring to find on one known page, not a "
+    "question or semantic inspection request. To identify an account, understand page state, or "
+    "inspect several platforms, use one separate read-only 'browse' action per site; never ask one "
+    "browse child to cross several unrelated sites.\n"
     "To ACT on a website (fill a marketplace listing, submit a form, publish a post): use "
     "'browse' with a goal to fill/navigate it (it drives the real browser adaptively and STOPS "
     "before submitting), then 'browse.submit' to click the final Publish/Post — that last click "

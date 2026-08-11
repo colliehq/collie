@@ -176,6 +176,29 @@ def test_anti_poll_spin():
     actions.close()
 
 
+def test_distinct_observe_targets_are_not_poll_backoff():
+    """Reading several different platforms once is discovery, not a tight poll."""
+    print("test_distinct_observe_targets_are_not_poll_backoff")
+    clear_registry()
+    register_primitives(stub=True)
+    reads = [
+        {"action": "observe", "args": {"url": f"https://site{i}.test/home", "authed": True},
+         "reason": "inspect a distinct account"}
+        for i in range(5)
+    ]
+    drv, store, actions = _driver(reads + [HAND])
+    create_mission(store, "multi-site-read", "inspect several signed-in platforms",
+                   leash=world_leash(autonomous=True))
+
+    state = drv.advance("multi-site-read")
+    completed = [s for s in store.steps("multi-site-read") if s["name"] == "observe"]
+    check(state == NEEDS_YOU and len(completed) == 5 and
+          store.next_wait("multi-site-read") is None,
+          "different observe targets proceed without the one-hour polling delay")
+    store.close()
+    actions.close()
+
+
 def test_local_compose_work_is_not_treated_as_polling():
     """Several writing steps before the first external action must not inherit
     the one-hour inbox-poll backoff."""
@@ -808,8 +831,8 @@ def test_transient_model_failure_becomes_durable_backoff():
           "temporary provider outage schedules durable exponential backoff")
 
 
-def test_model_decider_exposes_unambiguous_compose_contract():
-    print("test_model_decider_exposes_unambiguous_compose_contract")
+def test_model_decider_exposes_unambiguous_primitive_contracts():
+    print("test_model_decider_exposes_unambiguous_primitive_contracts")
 
     class Capture:
         def __init__(self):
@@ -827,8 +850,9 @@ def test_model_decider_exposes_unambiguous_compose_contract():
                  "args": '{"facts","instruction","text (final literal only)"}'}
     ModelDecider(provider)("prepare a campaign", {}, [primitive])
     check("args.instruction" in provider.system and "ONLY" in provider.system and
-          "final literal only" in provider.user,
-          "the planner sees an unambiguous generation-vs-literal compose contract")
+          "LITERAL substring" in provider.system and "one separate read-only 'browse'" in
+          provider.system and "final literal only" in provider.user,
+          "the planner sees unambiguous compose and browser-observation contracts")
 
 
 def test_credentials_handoff_before_any_durable_action_payload():
@@ -852,6 +876,7 @@ def main():
     test_autonomous_with_durable_wait()
     test_leash_denies_out_of_scope()
     test_anti_poll_spin()
+    test_distinct_observe_targets_are_not_poll_backoff()
     test_local_compose_work_is_not_treated_as_polling()
     test_browse_mission_gates_publish()
     test_code_step_in_a_mission()
@@ -877,7 +902,7 @@ def main():
     test_registered_semantic_projection_canonicalizes_aliases()
     test_irreversible_capability_without_semantic_projection_fails_closed()
     test_transient_model_failure_becomes_durable_backoff()
-    test_model_decider_exposes_unambiguous_compose_contract()
+    test_model_decider_exposes_unambiguous_primitive_contracts()
     test_credentials_handoff_before_any_durable_action_payload()
     if _fails:
         print(f"\n{len(_fails)} FAILED")
