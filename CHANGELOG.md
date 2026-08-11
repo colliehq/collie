@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.21.14 — Trusted rich-editor input and active-field verification
+
+- **Label-addressed typing now uses genuine browser input when high-fidelity mode is enabled.**
+  React/contenteditable editors such as X receive real click, select-all, and text-insertion events,
+  so a DOM-filled draft can no longer leave the live Post button disabled merely because the app
+  never accepted the synthetic event.
+- **Duplicate mounted composers no longer steal writes.** Label targeting ranks rendered,
+  in-viewport, modal-local fields ahead of stale off-screen copies, and browser field/form snapshots
+  exclude hidden controls from actionable verification.
+- **Per-site input authorization is inspectable.** Browser mode responses report the requested
+  origin's effective high-fidelity setting as well as the currently active tab setting.
+
 ## v0.21.13 — OAuth boundary verification and flow-secret redaction
 
 - **A cross-domain OAuth redirect cannot pass form verification by accident.** The restricted

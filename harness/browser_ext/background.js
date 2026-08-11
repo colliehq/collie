@@ -245,6 +245,36 @@ function pagePoint(text, selector, broad) {
   return out;
 }
 
+// Resolve a labelled editor to one physical point for the trusted-input path.  A label is a useful
+// addressing fallback on obfuscated apps, but unlike a snapshot ref it can match several mounted
+// composers.  Use the same active-editor ranking as pageTypeLabel so the real keystrokes and the
+// synthetic fallback never disagree about which field they target. Self-contained (page-injected).
+function pagePointLabel(labelText) {
+  const t = (labelText || "").trim().toLowerCase();
+  const candidates = [...document.querySelectorAll(
+    "input,textarea,[contenteditable=true],[role=textbox]")].map((e) => {
+    const l = e.closest("label");
+    const names = [l ? (l.innerText || "") : "", e.getAttribute("aria-label") || "",
+                   e.getAttribute("data-testid") || "", e.getAttribute("name") || ""];
+    if (!t || !names.join(" ").toLowerCase().includes(t)) return null;
+    const r = e.getBoundingClientRect();
+    const rendered = r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+                     (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+    const inView = rendered && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+    const exact = names.some((n) => n.trim().toLowerCase() === t);
+    const modal = !!e.closest('[aria-modal="true"],[role="dialog"],dialog[open]');
+    return { e, score: (rendered ? 100 : 0) + (inView ? 20 : 0) + (modal ? 10 : 0) + (exact ? 5 : 0) };
+  }).filter(Boolean).sort((a, b) => b.score - a.score);
+  const el = candidates.length ? candidates[0].e : null;
+  if (!el || candidates[0].score < 100) return { error: "no rendered field labeled " + labelText };
+  el.scrollIntoView({ block: "center", inline: "center" });
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  return { x, y, inView: r.width > 0 && r.height > 0 && x >= 0 && y >= 0 &&
+          x <= innerWidth && y <= innerHeight,
+          label: (el.getAttribute("aria-label") || labelText || "").trim().slice(0, 80) };
+}
+
 // Injected (MAIN world): show a visible pointer that GLIDES to (x,y) and pulses a ring — so you can
 // watch Collie operate the page instead of things just changing on their own. Self-contained.
 function pageCursor(x, y) {
@@ -308,13 +338,25 @@ function pageType(selector, text, submit) {
 // Self-contained: this runs injected in the PAGE, so it can't call other extension fns.
 function pageTypeLabel(labelText, text) {
   const t = (labelText || "").toLowerCase();
-  const el = [...document.querySelectorAll(
-    "input,textarea,[contenteditable=true],[role=textbox]")].find((e) => {
+  // Modern editors commonly keep a second, stale composer mounted off-screen (X is a
+  // representative example).  Choosing the first matching aria-label writes into that dormant
+  // editor: a DOM read-back looks perfect while React keeps the real Post button disabled.  Rank
+  // rendered, in-viewport, modal-local and exact-label candidates before fuzzy/off-screen ones.
+  const candidates = [...document.querySelectorAll(
+    "input,textarea,[contenteditable=true],[role=textbox]")].map((e) => {
     const l = e.closest("label");
     const names = [l ? (l.innerText || "") : "", e.getAttribute("aria-label") || "",
                    e.getAttribute("data-testid") || "", e.getAttribute("name") || ""];
-    return names.join(" ").toLowerCase().includes(t);
-  });
+    if (!names.join(" ").toLowerCase().includes(t)) return null;
+    const r = e.getBoundingClientRect();
+    const rendered = r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+                     (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+    const inView = rendered && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+    const exact = names.some((n) => n.trim().toLowerCase() === t);
+    const modal = !!e.closest('[aria-modal="true"],[role="dialog"],dialog[open]');
+    return { e, score: (rendered ? 100 : 0) + (inView ? 20 : 0) + (modal ? 10 : 0) + (exact ? 5 : 0) };
+  }).filter(Boolean).sort((a, b) => b.score - a.score);
+  const el = candidates.length ? candidates[0].e : null;
   if (!el) return { error: "no field labeled " + labelText };
   el.focus();
   if (el.isContentEditable || el.getAttribute("contenteditable") !== null) {
@@ -397,7 +439,11 @@ function pageFields() {
   // let alone that it had to be set before the form would submit. Their options are returned too,
   // because "there is a dropdown" is useless without knowing what may be chosen.
   return [...document.querySelectorAll(
-    "input,textarea,select,[role=combobox],[contenteditable=true],[role=textbox]")].map((e) => {
+    "input,textarea,select,[role=combobox],[contenteditable=true],[role=textbox]")].filter((e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+           (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+  }).map((e) => {
     const anc = e.closest("label");
     let lt = anc ? (anc.innerText || "").trim().split("\n")[0] : "";
     if (!lt && e.id) { const f = document.querySelector('label[for="' + CSS.escape(e.id) + '"]'); if (f) lt = (f.innerText || "").trim().split("\n")[0]; }
@@ -420,7 +466,14 @@ function pageFields() {
 // done-checks; Python applies the durable redaction and size bounds.
 function pageFormSnapshot() {
   const fields = [...document.querySelectorAll(
-    "input,textarea,select,[role=combobox],[contenteditable],[role=textbox]")].map((e) => {
+    "input,textarea,select,[role=combobox],[contenteditable],[role=textbox]")].filter((e) => {
+    // Verification is about the form a person can act on, not hidden framework/OAuth state or a
+    // stale composer mounted outside the rendered page.  Besides preventing false positives this
+    // makes the snapshot agree with browser_fields and label-based typing.
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+           (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+  }).map((e) => {
     const anc = e.closest("label");
     let label = anc ? (anc.innerText || "").trim().split("\n")[0] : "";
     if (!label && e.id) {
@@ -1474,6 +1527,37 @@ async function trustedType(selector, text, submit) {
   }
 }
 
+async function trustedTypeLabel(label, text, submit) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  if (!(await focusForTrusted(tab)))
+    return Object.assign({ trusted: false, note: NO_FOCUS },
+                         await exec(pageTypeLabel, [label, text]));
+  const pt = await exec(pagePointLabel, [label]);
+  if (!pt || pt.error) return pt || { error: "no field labeled " + label };
+  if (!pt.inView) return { error: "field '" + label + "' off-screen after scroll — cannot type there" };
+  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
+  try {
+    await ensureAttached(tab.id);
+    const b = { x: pt.x, y: pt.y, button: "left" };
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.insertText", { text: text || "" });
+    if (submit) {
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    }
+    return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+    const r = await exec(pageTypeLabel, [label, text]);
+    return Object.assign({ trusted: false,
+      note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
+  }
+}
+
 // Trusted click/type addressed by a snapshot `ref` (instead of text/selector). Same CDP mechanism
 // as trustedClick/trustedType — only the element-locating step differs (pagePointRef pulls the exact
 // element the snapshot handed the model, so there is no ambiguous text/selector match).
@@ -2038,7 +2122,9 @@ async function runStep(cmd) {
       if (cmd.origin && cmd.scope) await setSiteMode(cmd.origin, cmd.scope);
       const t = await targetTab(false);
       const origin = t ? originOf(t) : "";
-      return { global: await trustedGlobal(), origin, effective: await trustedForOrigin(origin) };
+      return { global: await trustedGlobal(), origin, effective: await trustedForOrigin(origin),
+               configured_origin: cmd.origin || "",
+               configured_effective: cmd.origin ? await trustedForOrigin(cmd.origin) : undefined };
     }
     if (cmd.action === "press")
       return await doPress(cmd.key, cmd.modifiers, cmd.repeat);
@@ -2096,6 +2182,8 @@ async function runStep(cmd) {
                                      : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
       } else if ((await wantTrusted(cmd)) && cmd.selector) {
         r = await trustedType(cmd.selector, cmd.text, !!cmd.submit);
+      } else if ((await wantTrusted(cmd)) && cmd.label) {
+        r = await trustedTypeLabel(cmd.label, cmd.text, !!cmd.submit);
       } else {
         r = cmd.label ? await exec(pageTypeLabel, [cmd.label, cmd.text])
                       : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);

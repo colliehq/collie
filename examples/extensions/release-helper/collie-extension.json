@@ -7,7 +7,7 @@
   "description": "A small, data-only example showing the trusted Library lifecycle.",
   "license": "MIT",
   "collie": {
-    "min_version": "0.21.13",
+    "min_version": "0.21.14",
     "max_version": "1.0.0"
   },
   "platforms": [

@@ -429,12 +429,12 @@ function run(root, max, opts, frames) {
   };
   const Input = function (type) { return { type: type }; };
   const api = new Function(
-    'window', 'document', 'CSS', 'Event', 'InputEvent',
+    'window', 'document', 'CSS', 'Event', 'InputEvent', 'innerWidth', 'innerHeight',
     [grab('function pageFields()'), grab('function pageTypeLabel(labelText, text)'),
      grab('function pageTypeRef(ref, text, submit)'),
      grab('function pageFormSnapshot()')].join('\n') +
     '\nreturn { pageFields, pageTypeLabel, pageTypeRef, pageFormSnapshot };'
-  )(win, doc, { escape: (s) => s }, Input, Input);
+  )(win, doc, { escape: (s) => s }, Input, Input, VIEW.w, VIEW.h);
   const fields = api.pageFields();
   eq('a contenteditable editor is listed as richtext', fields[0] && fields[0].kind, 'richtext');
   eq('its accessible name survives as the field label', fields[0] && fields[0].label, 'Post text');
@@ -445,6 +445,39 @@ function run(root, max, opts, frames) {
   eq('CSP-safe form snapshot retains the full rich-editor value',
      api.pageFormSnapshot().fields[0].value, 'VocalCode by ref');
   t('rich editor typing emits an input event', editor.events.indexOf('input') >= 0);
+}
+
+// X and similar React apps keep stale composers mounted with the same accessible label. Label-based
+// typing must choose the rendered/in-viewport editor, and high-fidelity mode must have a real label
+// route instead of silently falling back to synthetic DOM events.
+{
+  function editorAt(rect) {
+    const e = el('div', { attrs: { contenteditable: 'true', role: 'textbox',
+                                   'aria-label': 'Post text' }, rect });
+    e.isContentEditable = true; e.innerText = ''; e.textContent = ''; e.focus = () => {};
+    e.dispatchEvent = function (ev) { if (ev.type === 'input') this.innerText = this.textContent; return true; };
+    return e;
+  }
+  const stale = editorAt(OFFSCREEN);
+  const active = editorAt({ width: 400, height: 100, top: 100, left: 100, bottom: 200, right: 500 });
+  const doc = {
+    querySelectorAll: () => [stale, active],
+    querySelector: () => null,
+    getElementById: () => null,
+  };
+  const Input = function (type) { return { type }; };
+  const api = new Function(
+    'document', 'Event', 'InputEvent', 'innerWidth', 'innerHeight',
+    grab('function pageTypeLabel(labelText, text)') + '\n' +
+    grab('function pagePointLabel(labelText)') +
+    '\nreturn { pageTypeLabel, pagePointLabel };'
+  )(doc, Input, Input, VIEW.w, VIEW.h);
+  api.pageTypeLabel('Post text', 'active copy');
+  eq('label typing ignores an off-screen stale composer', [stale.innerText, active.innerText], ['', 'active copy']);
+  eq('trusted label targeting resolves the active editor point',
+     [api.pagePointLabel('Post text').x, api.pagePointLabel('Post text').y], [300, 150]);
+  t('trusted browser typing has a label-addressed CDP path',
+    src.includes('await trustedTypeLabel(cmd.label, cmd.text, !!cmd.submit)'));
 }
 
 {
