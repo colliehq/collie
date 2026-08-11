@@ -191,9 +191,11 @@ Filename: "{#PyW}"; Parameters: "-m harness.cli wallpaper --install"; WorkingDir
 ; Per-user Scheduled Task, no elevation. The optional bridge choice is persisted in the generated
 ; desired-state file on first install; updates preserve the user's existing supervisor config.
 Filename: "{#PyW}"; Parameters: "-m harness.supervisor install --no-boot"; WorkingDir: "{app}\python"; \
-  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: bridge
+  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: bridge; \
+  BeforeInstall: RestoreUpgradeSettingsBeforeSupervisor
 Filename: "{#PyW}"; Parameters: "-m harness.supervisor install --no-boot --disable-worker bridge"; WorkingDir: "{app}\python"; \
-  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: not bridge
+  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: not bridge; \
+  BeforeInstall: RestoreUpgradeSettingsBeforeSupervisor
 ; Start recovery in this login now; Task Scheduler owns subsequent logons. InstanceLock makes a
 ; duplicate updater launch harmless.
 Filename: "{#PyW}"; Parameters: "-m harness.supervisor run"; WorkingDir: "{app}\python"; \
@@ -307,6 +309,9 @@ var
   CurPage: Integer;      { the page currently shown (the timer callback reads it) }
   UpgradeBackupDir: String;
   UpgradeBackupActive: Boolean;
+  UpgradeSettingsPath: String;
+  UpgradeSettingsBackup: String;
+  UpgradeSettingsBackupActive: Boolean;
   InstallCommitted: Boolean;
 
 procedure Repaint;
@@ -413,6 +418,20 @@ begin
     old files. Rename the complete runtime first so a cancelled/failed upgrade remains bootable. }
   pythonDir := app + '\python';
   UpgradeBackupDir := app + '\.collie-upgrade-backup-python';
+  { User state is outside the install directory, but no process may rewrite it during an upgrade. Keep an exact
+    copy anyway: this catches a stale desktop/settings request or a future post-install helper that
+    accidentally replaces the merge-safe file. The backup is deliberately beside settings.json so
+    a failed final restore remains recoverable after Setup's temporary directory disappears. }
+  UpgradeSettingsPath := ExpandConstant('{%USERPROFILE}\.collie\settings.json');
+  UpgradeSettingsBackup := UpgradeSettingsPath + '.collie-upgrade-backup';
+  if (DirExists(pythonDir) or DirExists(UpgradeBackupDir)) and
+     FileExists(UpgradeSettingsPath) then begin
+    if not CopyFile(UpgradeSettingsPath, UpgradeSettingsBackup, False) then begin
+      Result := 'Cannot preserve Collie settings for this upgrade.';
+      Exit;
+    end;
+    UpgradeSettingsBackupActive := True;
+  end;
   if FileExists(UpgradeBackupDir) then begin
     Result := 'Cannot prepare a safe Collie upgrade: the rollback path is a file.';
     Exit;
@@ -452,6 +471,25 @@ begin
   end;
 end;
 
+procedure RestoreUpgradeSettings(KeepBackup: Boolean);
+begin
+  if not UpgradeSettingsBackupActive then Exit;
+  if CopyFile(UpgradeSettingsBackup, UpgradeSettingsPath, False) then begin
+    Log('Restored the exact pre-upgrade Collie settings file.');
+    if not KeepBackup then begin
+      DeleteFile(UpgradeSettingsBackup);
+      UpgradeSettingsBackupActive := False;
+    end;
+  end else
+    Log('Could not restore Collie settings; retained backup: ' + UpgradeSettingsBackup);
+end;
+
+procedure RestoreUpgradeSettingsBeforeSupervisor;
+begin
+  { Supervisor children must start from the preserved provider/model, not a transient rewrite. }
+  RestoreUpgradeSettings(True);
+end;
+
 procedure RestoreUpgradeBackup;
 var pythonDir: String; rc: Integer;
 begin
@@ -476,8 +514,11 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssDone then begin
+  if CurStep = ssPostInstall then
+    RestoreUpgradeSettings(True)
+  else if CurStep = ssDone then begin
     { ssDone is emitted only for a successful install, after the non-postinstall [Run] entries. }
+    RestoreUpgradeSettings(False);
     InstallCommitted := True;
     if UpgradeBackupActive and DirExists(UpgradeBackupDir) then begin
       if not DelTree(UpgradeBackupDir, True, True, True) then
@@ -490,6 +531,7 @@ end;
 procedure DeinitializeSetup;
 begin
   { Also runs on Cancel and fatal extraction/copy errors. First installs have no active backup. }
+  RestoreUpgradeSettings(False);
   RestoreUpgradeBackup;
 end;
 

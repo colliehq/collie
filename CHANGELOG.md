@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.21.6 — Exact settings preservation during upgrades
+
+- **Upgrades snapshot and restore the complete settings file.** In addition to skipping the
+  first-install language command, Setup now preserves an exact pre-upgrade `settings.json`, restores
+  it before supervisor children start, restores it again at successful completion, and restores it
+  on rollback. This protects provider, model, language, identity, and every other preference from
+  any stale UI request or future post-install helper that writes during the upgrade window.
+
 ## v0.21.5 — Durable multi-site Mission context
 
 - **Recent Mission evidence now keeps the newest entries.** When the model context is bounded, the

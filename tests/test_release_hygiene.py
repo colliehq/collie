@@ -183,6 +183,14 @@ def test_installer_upgrade_cleanup_is_targeted_to_owned_runtime_packages():
     assert "Check: ShouldApplyAppLanguage" in language_entry
     assert "function ShouldApplyAppLanguage: Boolean" in iss
     assert "Result := not UpgradeBackupActive" in iss
+    # Defense in depth: snapshot the entire merge-safe settings file for an upgrade and restore it
+    # before supervisor children start as well as at successful/failed Setup termination.
+    assert "settings.json.collie-upgrade-backup" not in iss  # path is derived, never duplicated
+    assert "UpgradeSettingsBackup := UpgradeSettingsPath + '.collie-upgrade-backup'" in iss
+    assert "procedure RestoreUpgradeSettings(KeepBackup: Boolean)" in iss
+    assert "BeforeInstall: RestoreUpgradeSettingsBeforeSupervisor" in run_section
+    assert "if CurStep = ssPostInstall then" in iss
+    assert "RestoreUpgradeSettings(False);" in iss
 
 
 def test_payload_build_fails_closed_and_verifies_code_metadata_and_assets():
