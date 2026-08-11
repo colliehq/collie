@@ -2377,6 +2377,30 @@ class MissionDriver:
                 # before any verdict routing or next model/action boundary.
                 if not self.store.owns_run(mission_id, token):
                     return self._lost_state(mission_id, token)
+                if verdict.status == FAILED and cap.reversible:
+                    # A reversible primitive proved that its attempted state did
+                    # not satisfy the contract. That is actionable observation,
+                    # not a reason to kill a long-running campaign. Fold a bounded
+                    # diagnostic and let the planner choose a repaired next step;
+                    # cumulative retry/turn budgets still stop pathological loops.
+                    current = self.store.get(mission_id)
+                    case = dict(current.case if current else {})
+                    failures = list(case.get("_recent_failures") or [])
+                    failures.append({"at": int(time.time()), "capability": cap.name,
+                                     "reason": str(verdict.reason or "")[:1000],
+                                     "result": _compact_event(result, 2000)})
+                    case["_recent_failures"] = failures[-8:]
+                    if not self.store.set_case_owned(mission_id, token, case):
+                        return self._lost_state(mission_id, token)
+                    self.store.account_runtime(mission_id, token, retries=1)
+                    self.store.record_checkpoint(
+                        mission_id, token, "reversible_failure",
+                        {"capability": cap.name, "reason": str(verdict.reason or "")[:500]},
+                        case=case)
+                    exhausted = self.store.budget_reason(mission_id)
+                    if exhausted:
+                        return self._finish(mission_id, token, NEEDS_YOU, exhausted)
+                    continue
                 if verdict.status == FAILED:
                     return self._finish(mission_id, token, FAILED_S,
                                         f"{cap.name} failed: {verdict.reason}")

@@ -414,6 +414,42 @@ function pageFields() {
   }).filter((x) => x.label && x.kind !== "hidden");
 }
 
+// Independent verification snapshot. Unlike pageEval this is injected as a
+// real function by chrome.scripting, so strict sites such as X can be reread
+// without requiring CSP `unsafe-eval`. Keep full rich-editor text for exact
+// done-checks; Python applies the durable redaction and size bounds.
+function pageFormSnapshot() {
+  const fields = [...document.querySelectorAll(
+    "input,textarea,select,[role=combobox],[contenteditable],[role=textbox]")].map((e) => {
+    const anc = e.closest("label");
+    let label = anc ? (anc.innerText || "").trim().split("\n")[0] : "";
+    if (!label && e.id) {
+      const f = document.querySelector('label[for="' + CSS.escape(e.id) + '"]');
+      if (f) label = (f.innerText || "").trim().split("\n")[0];
+    }
+    label = label || e.getAttribute("aria-label") || e.getAttribute("data-testid") ||
+      e.getAttribute("name") || e.getAttribute("role") || e.tagName;
+    const role = e.getAttribute("role");
+    const rich = e.isContentEditable || e.getAttribute("contenteditable") !== null;
+    const value = role === "combobox"
+      ? (anc ? (anc.innerText || "").replace(/\n/g, " ").trim() : "")
+      : ((rich ? e.innerText : e.value) || "");
+    const meta = [label, e.type, e.name, e.id, e.autocomplete,
+                  e.getAttribute("aria-label")].join(" ");
+    const sensitive = e.type === "password" || e.type === "email" || e.type === "tel" ||
+      /(pass(word|code)?|secret|token|api.?key|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);
+    return { label, value: sensitive ? "[redacted]" : String(value).slice(0, 4000),
+             sensitive: !!sensitive, filled: !!value };
+  }).filter((x) => x.label && x.filled);
+  const actions = [...document.querySelectorAll("button,input[type=submit],[role=button]")].map((e) => {
+    const label = (e.getAttribute("aria-label") || e.innerText || e.value || "").trim();
+    const disabled = !!e.disabled || e.getAttribute("aria-disabled") === "true";
+    const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    return { label, disabled, visible };
+  }).filter((x) => x.visible && /^(post|publish|send|submit|save|next|continue)$/i.test(x.label));
+  return { fields, actions };
+}
+
 // Attach files by writing the <input type=file>'s FileList directly — never by clicking the page's
 // "choose file" button. That button opens the OS file picker, and Chrome only opens one for a
 // genuine user gesture: a synthetic or CDP-driven click produces NO dialog at all, so there is
@@ -2037,6 +2073,7 @@ async function runStep(cmd) {
     }
     if (cmd.action === "pick") return await exec(pagePick, [cmd.label, cmd.option]);
     if (cmd.action === "fields") return await exec(pageFields, []);
+    if (cmd.action === "form_snapshot") return await exec(pageFormSnapshot, []);
     if (cmd.action === "upload")   // MAIN world: a snapshot ref resolves against window.__collieRefs
       return await execMain(pageUpload, [cmd.selector || "", cmd.files || [], cmd.ref || ""]);
     if (cmd.action === "reload") {

@@ -72,6 +72,26 @@ def test_hung_action_is_fenced_and_late_worker_cannot_fold(tmp_path):
     assert actions.receipts() and actions.receipts()[0]["fired"] == 1
 
 
+def test_reversible_failure_returns_to_planner_with_diagnostic(tmp_path):
+    store, actions = _stores(tmp_path)
+    attempts = []
+
+    def decide(_goal, case, _caps):
+        attempts.append(case)
+        return ({"action": "inspect", "args": {}} if len(attempts) == 1 else
+                {"action": "needs_human", "args": {"summary": "repaired next step"}})
+
+    cap = Capability("inspect", lambda _rec: {"result": "button disabled"},
+                     lambda _rec, _result: Verdict(FAILED, "final action disabled"),
+                     reversible=True, risk="read")
+    create_mission(store, "repair", "recover autonomously",
+                   leash=world_leash(may=["inspect"], autonomous=True))
+    state = MissionDriver(store, actions, decide, [cap]).advance("repair")
+    assert state == NEEDS_YOU
+    assert attempts[1]["_recent_failures"][-1]["reason"] == "final action disabled"
+    assert store.runtime("repair")["retry_count"] == 1
+
+
 def test_phase_aware_crash_recovery(tmp_path):
     store, _actions = _stores(tmp_path)
     create_mission(store, "safe", "model only", leash=world_leash())

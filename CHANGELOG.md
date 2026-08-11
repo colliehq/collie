@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.21.11 — CSP-proof browser verification and self-repair
+
+- **Rich form verification no longer depends on page `eval`.** A structured extension snapshot
+  rereads full input and contenteditable values even on strict-CSP sites such as X, while retaining
+  sensitive-field redaction. It also records whether final Post/Publish/Next actions are enabled.
+- **Final-action targeting prefers an enabled button over same-named navigation links.** Disabled
+  submit controls are rejected before the irreversible boundary instead of accidentally targeting a
+  global “Post” link.
+- **Failed reversible steps feed a bounded diagnostic back to the Mission planner.** Campaigns can
+  shorten an overlong post, correct a form, or choose another read path autonomously; cumulative
+  retry and model-turn budgets still stop loops.
+
 ## v0.21.10 — Safe failed-Mission retry
 
 - **A normally failed Mission can now be retried without erasing its audit trail.** `mission retry`

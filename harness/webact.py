@@ -95,6 +95,10 @@ class BridgeActuator:
     def eval(self, expr):
         return self._cmd({"action": "eval", "expr": expr})
 
+    def form_snapshot(self):
+        r = self._cmd({"action": "form_snapshot"})
+        return r if isinstance(r, dict) else {"fields": [], "actions": []}
+
     def read(self, max_chars: int = 2000) -> str:
         r = self._cmd({"action": "read"})
         return (r if isinstance(r, str) else str(r))[:max_chars]

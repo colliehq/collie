@@ -401,8 +401,9 @@ function run(root, max, opts, frames) {
   const api = new Function(
     'window', 'document', 'CSS', 'Event', 'InputEvent',
     [grab('function pageFields()'), grab('function pageTypeLabel(labelText, text)'),
-     grab('function pageTypeRef(ref, text, submit)')].join('\n') +
-    '\nreturn { pageFields, pageTypeLabel, pageTypeRef };'
+     grab('function pageTypeRef(ref, text, submit)'),
+     grab('function pageFormSnapshot()')].join('\n') +
+    '\nreturn { pageFields, pageTypeLabel, pageTypeRef, pageFormSnapshot };'
   )(win, doc, { escape: (s) => s }, Input, Input);
   const fields = api.pageFields();
   eq('a contenteditable editor is listed as richtext', fields[0] && fields[0].kind, 'richtext');
@@ -411,6 +412,8 @@ function run(root, max, opts, frames) {
   eq('label typing lands in a contenteditable editor', editor.innerText, 'VocalCode by label');
   api.pageTypeRef('e1', 'VocalCode by ref');
   eq('ref typing lands in a contenteditable editor', editor.innerText, 'VocalCode by ref');
+  eq('CSP-safe form snapshot retains the full rich-editor value',
+     api.pageFormSnapshot().fields[0].value, 'VocalCode by ref');
   t('rich editor typing emits an input event', editor.events.indexOf('input') >= 0);
 }
 

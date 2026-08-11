@@ -562,19 +562,33 @@ def _sanitize_form(form):
     return out
 
 
-def _read_form(space=""):
+def _read_form_state(space=""):
     from . import browserbridge as _bb
     try:
-        r = _bb._call({"action": "eval", "expr": _FORM_SNAPSHOT,
-                       "space": space} if space else
-                      {"action": "eval", "expr": _FORM_SNAPSHOT})
-        data = r.get("data", {}).get("value") if isinstance(r, dict) else None
-        return _sanitize_form(json.loads(data) if isinstance(data, str) else (data or []))
+        r = _bb._call({"action": "form_snapshot", "space": space} if space else
+                      {"action": "form_snapshot"})
+        data = r.get("data", r) if isinstance(r, dict) else None
+        fields = data.get("fields") if isinstance(data, dict) else []
+        actions = data.get("actions") if isinstance(data, dict) else []
+        safe_actions = [{"label": str(a.get("label") or "")[:80],
+                         "disabled": bool(a.get("disabled"))}
+                        for a in actions if isinstance(a, dict) and a.get("label")]
+        return _sanitize_form(fields or []), safe_actions[:20]
     except Exception:
-        return []
+        return [], []
+
+
+def _read_form(space=""):
+    return _read_form_state(space)[0]
 
 
 def _actuator_form(act, space):
+    if act is not None and hasattr(act, "form_snapshot"):
+        try:
+            data = act.form_snapshot() or {}
+            return _sanitize_form(data.get("fields") or [])
+        except Exception:
+            return []
     if act is not None and hasattr(act, "eval"):
         try:
             data = act.eval(_FORM_SNAPSHOT)
@@ -598,7 +612,10 @@ def _real_browse(runner=None, form_reader=None):
                      r"card(?: number)?)\s*(?:is|=|:)\s*)\S+", r"\1[redacted]", out)
         out = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
                      "[redacted-email]", out, flags=re.I)
-        form = _sanitize_form(form_reader()) if form_reader else _read_form(space)
+        if form_reader:
+            form, form_actions = _sanitize_form(form_reader()), []
+        else:
+            form, form_actions = _read_form_state(space)
         # Page identity is evidence too.  A platform/site is not an HTML form
         # field, and treating it as one produced impossible contracts such as
         # expect={platform: Twitter/X}.  Keep only origin-level identity and a
@@ -608,7 +625,8 @@ def _real_browse(runner=None, form_reader=None):
         page = {"host": (parsed.hostname or "").lower(),
                 "title": str(ident.get("title") or "")[:160]}
         return {"case": {"browsed": True, "browse_result": (out or "")[:600]},
-                "result": out, "form": form, "page": page}
+                "result": out, "form": form, "form_actions": form_actions,
+                "page": page}
     return execute
 
 
@@ -709,6 +727,12 @@ def _browse_verify(rec, result):
         missing = [k for k, v in expect.items() if not _expected_present(k, v)]
         if missing:
             return Verdict(FAILED, "form fields NOT confirmed filled: " + ", ".join(missing))
+        final_actions = [a for a in (r.get("form_actions") or [])
+                         if str(a.get("label") or "").lower() in
+                         ("post", "publish", "send", "submit", "save", "next", "continue")]
+        if final_actions and not any(not a.get("disabled") for a in final_actions):
+            return Verdict(FAILED, "form is filled but final action remains disabled: " +
+                           ", ".join(str(a.get("label")) for a in final_actions))
         ev = Observation(channel="form-reread", at=1, ok=True, asserted=True,
                          detail="; ".join("%s=%s" % (k, v) for k, v in expect.items()))
         return Verdict(VERIFIED, "independently confirmed %d field(s) filled" % len(expect), (ev,))
@@ -730,12 +754,19 @@ def _find_button(snapshot, button):
     wanted = str(button or "").strip().casefold()
     hits = []
     for line in str((snapshot or {}).get("snapshot") or "").splitlines():
-        m = re.search(r"\[([^\]]+)\]\s+(?:button|link|menuitem)\s+\"([^\"]+)\"", line)
-        if m and m.group(2).strip().casefold() == wanted:
+        m = re.search(r"\[([^\]]+)\]\s+(button|link|menuitem)\s+\"([^\"]+)\"", line)
+        if m and m.group(3).strip().casefold() == wanted:
             if re.search(r"×\s*[2-9]\d*|identical siblings", line, re.I):
                 return None
-            hits.append({"ref": m.group(1), "line": line.strip()})
-    return hits[0] if len(hits) == 1 else None
+            hits.append({"ref": m.group(1), "role": m.group(2),
+                         "line": line.strip(),
+                         "disabled": bool(re.search(r"\(disabled\)|\[disabled\]|aria-disabled", line, re.I))})
+    buttons = [h for h in hits if h["role"] in ("button", "menuitem")]
+    enabled = [h for h in buttons if not h["disabled"]]
+    if buttons:
+        return enabled[0] if len(enabled) == 1 else None
+    links = [h for h in hits if h["role"] == "link" and not h["disabled"]]
+    return links[0] if len(links) == 1 else None
 
 
 def _browse_target_snapshot(actuator):

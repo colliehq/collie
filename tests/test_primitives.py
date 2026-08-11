@@ -274,6 +274,14 @@ def test_browse_and_submit_real():
                                           "tweet_text": "Try VocalCode today"}}), social).status
           == VERIFIED,
           "platform uses live page identity and rich editor text does not require an invented label")
+    disabled_social = dict(social, form_actions=[{"label": "Post", "disabled": True}])
+    check(_browse_verify(_Rec({"expect": {"post_text": "Try VocalCode today"}}),
+                         disabled_social).status == FAILED,
+          "a filled rich editor is not ready when its final Post action remains disabled")
+    enabled_social = dict(social, form_actions=[{"label": "Post", "disabled": False}])
+    check(_browse_verify(_Rec({"expect": {"post_text": "Try VocalCode today"}}),
+                         enabled_social).status == VERIFIED,
+          "an enabled final Post action preserves the verified form verdict")
     wrong_site = dict(social, page={"host": "facebook.com", "title": "Marketplace"})
     check(_browse_verify(_Rec({"expect": {"platform": "Twitter/X",
                                           "tweet_text": "Try VocalCode today"}}), wrong_site).status
@@ -316,6 +324,12 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     collapsed = {"snapshot": '[e1] button "Publish" ×2 (identical siblings: e1–e2)'}
     check(_find_button(collapsed, "Publish") is None,
           "a collapsed row with two identical Publish buttons is ambiguous")
+    social_post = {"snapshot": '[e1] link "Post"\n[e2] button "Post"'}
+    check(_find_button(social_post, "Post")["ref"] == "e2",
+          "a final Post button wins over an identically named navigation link")
+    disabled_post = {"snapshot": '[e1] link "Post"\n[e2] button "Post" (disabled)'}
+    check(_find_button(disabled_post, "Post") is None,
+          "a disabled final Post button never falls back to the navigation link")
 
 
 def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():
