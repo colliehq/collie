@@ -103,13 +103,27 @@ def _bounded_sequence_tail(value, limit=1800):
     if not isinstance(value, list):
         return _bounded_json(value, limit)
     kept = []
-    per_item = min(700, max(240, int(limit) // 3))
-    for item in reversed(value):
-        bounded = _bounded_json(item, per_item)
+    remaining = int(limit)
+    for newest_index, item in enumerate(reversed(value)):
+        # The latest operator note is the recovery contract. Giving every item
+        # one third of the budget truncated an ordinary instruction and silently
+        # dropped its URL/final clause.
+        item_limit = min(700, max(160, remaining - 8)) if newest_index == 0 else \
+            min(500, max(160, remaining - 8))
+        bounded = _bounded_json(item, item_limit)
+        if (isinstance(item, dict) and isinstance(bounded, dict) and
+                bounded.get("truncated")):
+            # A giant payload value must not erase the item's small identity
+            # fields (marker/capability/at) just because it sorts before them.
+            bounded = _bounded_mapping_values(item, item_limit)
         candidate = [bounded] + kept
-        if len(json.dumps(candidate, ensure_ascii=False, default=str)) > int(limit):
+        encoded_len = len(json.dumps(candidate, ensure_ascii=False, default=str))
+        if encoded_len > int(limit):
             break
         kept = candidate
+        remaining = max(0, int(limit) - encoded_len)
+        if remaining < 160 or len(kept) >= 3:
+            break
     if not kept and value:
         kept = [_bounded_json(value[-1], max(160, int(limit) - 32))]
     return kept

@@ -437,7 +437,7 @@ function pageFormSnapshot() {
     const meta = [label, e.type, e.name, e.id, e.autocomplete,
                   e.getAttribute("aria-label")].join(" ");
     const sensitive = e.type === "password" || e.type === "email" || e.type === "tel" ||
-      /(pass(word|code)?|secret|token|api.?key|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);
+      /(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);
     return { label, value: sensitive ? "[redacted]" : String(value).slice(0, 4000),
              sensitive: !!sensitive, filled: !!value };
   }).filter((x) => x.label && x.filled);
@@ -795,6 +795,37 @@ function pageClickRef(ref) {
   if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
   el.scrollIntoView({ block: "center" }); el.click();
   return { clicked: (el.innerText || el.value || ref).trim().slice(0, 80) };
+}
+
+// Classify a snapshot ref before the restricted Mission browser may click it. This is an
+// enforcement boundary, not a model prompt: navigation/menu/focus steps may proceed, while a
+// final external write, consent, purchase, destructive action or human-verification control stays
+// behind the outer Mission gate. Only exact refs are accepted, never fuzzy text/coordinates.
+function pageAdvanceInfo(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+  const label = (el.getAttribute("aria-label") || el.innerText || el.value ||
+                 el.getAttribute("title") || ref || "").trim().slice(0, 160);
+  const role = (el.getAttribute("role") || "").toLowerCase();
+  const tag = (el.tagName || "").toLowerCase();
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  const link = tag === "a" ? el : (el.closest ? el.closest("a") : null);
+  const href = link ? String(link.getAttribute("href") || link.href || "") : "";
+  const meta = [label, role, tag, type, href, el.id || "", el.getAttribute("name") || "",
+                el.getAttribute("data-testid") || ""].join(" ");
+  if (el.disabled || el.getAttribute("aria-disabled") === "true")
+    return { error: "ref " + ref + " is disabled" };
+  if (type === "file") return { error: "file controls require the gated upload path" };
+  if (/(captcha|recaptcha|hcaptcha|human.?verification|verify.?you.?are.?human|security.?challenge)/i.test(meta))
+    return { error: "CAPTCHA or human verification requires Needs You" };
+  if (/(?:^|\b)(post|publish|send|submit|save|create\s+(?:account|page)|sign\s*up|register|authorize|grant\s+access|allow\s+access|approve|pay|buy|purchase|checkout|place\s+order|delete|remove|deactivate|unsubscribe|log\s*out|sign\s*out)(?:\b|$)/i.test(label))
+    return { error: "consequential control '" + label + "' requires the outer Mission gate" };
+  if (href && /(?:^|[/?&=])(?:logout|signout|unsubscribe|delete|remove|deactivate|activate|verify|confirm)(?:[/?&=]|$)/i.test(href))
+    return { error: "consequential navigation requires the outer Mission gate" };
+  const editable = !!el.isContentEditable || el.getAttribute("contenteditable") !== null ||
+                   role === "textbox" || tag === "input" || tag === "textarea";
+  return { allowed: true, label, role, tag, href: href.slice(0, 300), editable };
 }
 
 function pageTypeRef(ref, text, submit) {
@@ -2039,6 +2070,18 @@ async function runStep(cmd) {
       }
       await sleep(800);
       return { click: r, page: await exec(pageRead, []) };
+    }
+    if (cmd.action === "advance") {
+      if (!cmd.ref || splitFrameRef(cmd.ref))
+        return { advance: { error: "browser_advance currently requires a top-page snapshot ref" } };
+      const info = await execMain(pageAdvanceInfo, [cmd.ref]);
+      if (!info || info.error || !info.allowed)
+        return { advance: info || { error: "could not classify the target" } };
+      const clicked = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref)
+                                               : await execMain(pageClickRef, [cmd.ref]);
+      await sleep(500);
+      if (clicked && clicked.error) return { advance: clicked };
+      return { advance: Object.assign({}, info, clicked || {}), page: await exec(pageRead, []) };
     }
     if (cmd.action === "type") {
       let r;

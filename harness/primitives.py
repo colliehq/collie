@@ -468,13 +468,15 @@ class _BoundBrowserTool:
 def _restrict_browse_child(h, space, allowed_domains=None):
     """Positive authority list: nothing desktop/MCP/filesystem can survive."""
     allow = {"browser_open", "browser_read", "browser_snapshot", "browser_fields",
-             "browser_links", "browser_type", "browser_pick"}
+             "browser_links", "browser_type", "browser_pick", "browser_advance"}
     for name in list(h.registry._tools):
         if name not in allow:
             h.registry._tools.pop(name, None)
     boundary = {"domains": list(allowed_domains or []), "first_host": ""}
     for name in list(h.registry._tools):
-        kind = "type" if name == "browser_type" else "open" if name == "browser_open" else "read"
+        kind = ("type" if name == "browser_type" else
+                "open" if name == "browser_open" else
+                "advance" if name == "browser_advance" else "read")
         h.registry._tools[name] = _BoundBrowserTool(
             h.registry._tools[name], space, kind, name, boundary)
 
@@ -499,9 +501,12 @@ def _live_browse(goal, space="mission-standalone", allowed_domains=None):
     prompt = (goal.strip() + "\n\n"
               "Act ONLY through the available reversible browser tools (browser_open / browser_snapshot / "
               "browser_fields / browser_type with a snapshot `ref` or `label` / browser_pick / "
-              "browser_links / browser_read). Generic click, Enter, script, "
-              "and upload are intentionally unavailable; if one is needed, stop and report the exact "
-              "button/action so the outer Mission can gate it. The form is DYNAMIC: picking a "
+              "browser_advance with an exact snapshot `ref` / browser_links / browser_read). "
+              "browser_advance may open menus, choose a non-final step, follow sign-in navigation, "
+              "or focus an editor; it refuses final submit/publish/account-creation, CAPTCHA, consent, "
+              "commerce, and destructive controls. Enter, script, and upload are unavailable; if a "
+              "consequential action is needed, stop and report its exact button so the outer Mission "
+              "can gate it. The form is DYNAMIC: picking a "
               "value can REVEAL or CHANGE other fields (e.g. after Vehicle type, Make becomes a dropdown "
               "and Mileage/Body-style/Condition appear).\n"
               "WORKFLOW — repeat until complete:\n"
@@ -534,12 +539,12 @@ _FORM_SNAPSHOT = (
     "var l=e.closest('label');var lab=l?(l.innerText||'').trim().split('\\n')[0]:(e.getAttribute('aria-label')||e.getAttribute('data-testid')||e.getAttribute('role')||e.tagName);"
     "var val=e.getAttribute('role')==='combobox'?(l?(l.innerText||'').replace(/\\n/g,' ').trim():''):(e.value||e.innerText||'');"
     "var meta=[lab,e.type,e.name,e.id,e.autocomplete,e.getAttribute('aria-label')].join(' ');"
-    "var sensitive=e.type==='password'||e.type==='email'||e.type==='tel'||/(pass(word|code)?|secret|token|api.?key|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);"
+    "var sensitive=e.type==='password'||e.type==='email'||e.type==='tel'||/(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);"
     "return {label:lab,value:sensitive?'[redacted]':val,sensitive:!!sensitive,filled:!!val};}).filter(x=>x.label&&x.filled))")
 
 
 _SENSITIVE_FIELD = re.compile(
-    r"pass(word|code)?|secret|token|api.?key|otp|one.?time|verification.?code|"
+    r"pass(word|code)?|secret|token|api.?key|captcha|recaptcha|otp|one.?time|verification.?code|"
     r"cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|"
     r"street.?address|postal|zip.?code|birth|dob|user.?name", re.I)
 
@@ -640,8 +645,10 @@ def _explicit_read_only_browse(args):
     this path.
     """
     a = args or {}
-    if a.get("read_only") is True:
-        return True
+    # An explicit false is just as meaningful as true. Falling through to the
+    # heuristic let a failed form fill masquerade as a verified inspection.
+    if "read_only" in a:
+        return a.get("read_only") is True
     goal = str(a.get("goal") or a.get("task") or "")
     read_intent = bool(re.search(
         r"(?i)\b(inspect|review|check|identify|read|observe|audit|look\s+at)\b|"

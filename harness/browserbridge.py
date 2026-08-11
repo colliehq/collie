@@ -1047,6 +1047,31 @@ class BrowserClick(Tool):
         return out
 
 
+class BrowserAdvance(Tool):
+    name, tier = "browser_advance", "always"
+    description = ("Click one exact snapshot ref only when it is a reversible UI step: open a menu, "
+                   "choose a non-final option, follow sign-in navigation, or focus a rich-text editor. "
+                   "The extension independently refuses disabled controls, final Post/Publish/Send/"
+                   "Create-account actions, CAPTCHA/human verification, consent grants, commerce, "
+                   "destructive actions, and consequential links. Re-snapshot after it changes the page. "
+                   "Args: ref from browser_snapshot.")
+    schema = {"type": "object", "properties": {"ref": {"type": "string"}},
+              "required": ["ref"]}
+
+    def run(self, args, ctx):
+        ref = str(args.get("ref") or "").strip()
+        if not ref:
+            return "ERROR(browser): browser_advance requires an exact snapshot ref"
+        res = _call({"action": "advance", "ref": ref})
+        d = _data(res) or {}
+        advance = d.get("advance") if isinstance(d, dict) else None
+        err = ((advance or {}).get("error") if isinstance(advance, dict) else None) or \
+              (d.get("error") if isinstance(d, dict) else None)
+        if err:
+            return "ERROR(browser): %s" % err
+        return _fence(_fmt(res))
+
+
 class BrowserType(Tool):
     name, tier = "browser_type", "always"
     description = ("Type text into a form field. Target it by `ref` (from browser_snapshot — "
@@ -1542,7 +1567,7 @@ class BrowserScreenshot(Tool):
 
 
 def register_browser_bridge(registry):
-    for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserType(),
+    for t in (BrowserOpen(), BrowserRead(), BrowserSnapshot(), BrowserClick(), BrowserAdvance(), BrowserType(),
               BrowserPick(), BrowserUpload(), BrowserFields(), BrowserLinks(), BrowserConsole(),
               BrowserEval(), BrowserScreenshot(), BrowserReloadExtension(),
               BrowserScript(), BrowserTabs(), BrowserPress(), BrowserHover(), BrowserDrag()):

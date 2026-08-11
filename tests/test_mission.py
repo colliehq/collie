@@ -228,6 +228,17 @@ def test_model_context_keeps_newest_results_and_per_site_browse_facts():
     actions.close()
 
 
+def test_model_context_preserves_complete_latest_human_update():
+    print("test_model_context_preserves_complete_latest_human_update")
+    tail = " FINAL-URL=https://vocalcode.app/ NEVER-DUPLICATE"
+    note = "Use this exact approved copy: " + ("x" * 340) + tail
+    encoded = _model_case_json({"old": "z" * 30000,
+                                "human_updates": [{"at": 1, "note": "older"},
+                                                  {"at": 2, "note": note}]}, 2400)
+    check(tail in encoded,
+          "the newest ordinary operator note keeps its final URL/constraint after compaction")
+
+
 def test_local_compose_work_is_not_treated_as_polling():
     """Several writing steps before the first external action must not inherit
     the one-hour inbox-poll backoff."""
@@ -907,6 +918,7 @@ def main():
     test_anti_poll_spin()
     test_distinct_observe_targets_are_not_poll_backoff()
     test_model_context_keeps_newest_results_and_per_site_browse_facts()
+    test_model_context_preserves_complete_latest_human_update()
     test_local_compose_work_is_not_treated_as_polling()
     test_browse_mission_gates_publish()
     test_code_step_in_a_mission()

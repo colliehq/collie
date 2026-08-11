@@ -378,6 +378,32 @@ function run(root, max, opts, frames) {
 // Rich editors (X, LinkedIn, Reddit) are contenteditable divs rather than input/textarea controls.
 // They must be visible to browser_fields and writable by both a label and a snapshot ref.
 {
+  const company = el('button', { text: 'Company' });
+  const publish = el('button', { text: 'Publish' });
+  const captcha = el('button', { attrs: { 'aria-label': 'Complete CAPTCHA' }, text: 'Continue' });
+  const win = { __collieRefs: new Map([['e1', company], ['e2', publish], ['e3', captcha]]) };
+  const api = new Function('window', grab('function pageAdvanceInfo(ref)') +
+    '\nreturn { pageAdvanceInfo };')(win);
+  t('ordinary Company selection is a reversible advance', api.pageAdvanceInfo('e1').allowed === true);
+  t('a final Publish control is refused before click', !!api.pageAdvanceInfo('e2').error);
+  t('CAPTCHA controls are refused before click', !!api.pageAdvanceInfo('e3').error);
+}
+
+{
+  const token = el('textarea', { attrs: { name: 'g-recaptcha-response' },
+                                 value: '0cAF-live-secret' });
+  const doc = {
+    querySelectorAll: (q) => String(q).startsWith('input,textarea') ? [token] : [],
+    querySelector: () => null,
+  };
+  const api = new Function('document', 'CSS', grab('function pageFormSnapshot()') +
+    '\nreturn { pageFormSnapshot };')(doc, { escape: (s) => s });
+  const field = api.pageFormSnapshot().fields[0];
+  eq('CAPTCHA response tokens are redacted in CSP-safe snapshots', field && field.value, '[redacted]');
+  t('the CAPTCHA field is marked sensitive', !!(field && field.sensitive));
+}
+
+{
   const editor = el('div', { attrs: { contenteditable: 'true', role: 'textbox',
                                       'aria-label': 'Post text' } });
   editor.isContentEditable = true;

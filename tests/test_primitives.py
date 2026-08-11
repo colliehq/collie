@@ -265,6 +265,10 @@ def test_browse_and_submit_real():
     ambiguous = _Rec({"goal": "Inspect the page and fill the promotion form."})
     check(_browse_verify(ambiguous, inspected).status == INCONCLUSIVE,
           "a read verb without an explicit no-write clause cannot weaken form verification")
+    explicit_write = _Rec({"read_only": False,
+                           "goal": "Fill a code-review post without submitting it."})
+    check(_browse_verify(explicit_write, inspected).status == INCONCLUSIVE,
+          "explicit read_only=false prevents write failures being verified by language fallback")
     no_page = dict(inspected, page={})
     check(_browse_verify(_Rec({"read_only": True}), no_page).status == INCONCLUSIVE,
           "read-only browsing still fails closed without independent page identity")
@@ -315,11 +319,13 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     raw = [{"label": "Email", "value": "owner@example.test"},
            {"label": "Password", "value": "hunter2"},
            {"label": "Card number", "value": "4111111111111111"},
+           {"label": "g-recaptcha-response", "value": "0cAF-secret-token"},
            {"label": "Description", "value": "A safe listing"}]
     safe = _sanitize_form(raw)
     encoded = repr(safe)
     check("owner@example.test" not in encoded and "hunter2" not in encoded and
-          "4111111111111111" not in encoded and encoded.count("[redacted]") == 3,
+          "4111111111111111" not in encoded and "0cAF-secret" not in encoded and
+          encoded.count("[redacted]") == 4,
           "credentials and signup/payment PII never enter durable form snapshots")
     collapsed = {"snapshot": '[e1] button "Publish" ×2 (identical siblings: e1–e2)'}
     check(_find_button(collapsed, "Publish") is None,
@@ -440,7 +446,7 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
                 def run(self, args, _ctx): self.calls.append(dict(args)); return "ok"
             self._tools = {name: Tool(name) for name in (
                 "browser_open", "browser_read", "browser_fields", "browser_type",
-                "browser_pick", "browser_snapshot", "browser_links", "browser_click",
+                "browser_pick", "browser_snapshot", "browser_links", "browser_click", "browser_advance",
                 "browser_press", "browser_drag", "browser_upload", "browser_script",
                 "browser_eval", "bash", "desktop_click", "desktop_type",
                 "enable_capability", "mcpctl_add", "slack_send", "load_tools")}
@@ -452,7 +458,7 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
 
         def run(self, _task_id, prompt):
             allowed = {"browser_open", "browser_read", "browser_snapshot", "browser_fields",
-                       "browser_links", "browser_type", "browser_pick"}
+                       "browser_links", "browser_type", "browser_pick", "browser_advance"}
             check(set(self.registry._tools) == allowed,
                   "reversible browse child is a positive browser-only authority list")
             wrapped = self.registry._tools["browser_type"]

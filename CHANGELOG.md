@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.21.12 — Reversible browser advancement and privacy hardening
+
+- **Mission browsing can now cross ordinary multi-step UI.** A new exact-ref `browser_advance`
+  action opens menus, follows sign-in navigation, chooses non-final options, and focuses rich-text
+  editors. The extension itself refuses final publishes/account creation, CAPTCHA, consent grants,
+  commerce, destructive actions, and consequential links, which remain behind the outer Gate.
+- **Explicit write intent can no longer be reclassified as a read.** `read_only: false` now wins over
+  language heuristics, so failed social-editor fills cannot receive a false verified receipt.
+- **CAPTCHA response fields are redacted before durable storage.** Both the CSP-safe extension
+  snapshot and Python defense-in-depth sanitizer recognize CAPTCHA/recaptcha tokens as secrets.
+- **The newest recovery note keeps its complete tail.** Context compaction preserves an ordinary
+  operator instruction, including its final URL or constraint, before spending budget on history.
+
 ## v0.21.11 — CSP-proof browser verification and self-repair
 
 - **Rich form verification no longer depends on page `eval`.** A structured extension snapshot

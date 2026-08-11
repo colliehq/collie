@@ -306,6 +306,22 @@ def test_ambiguous_click_still_warns():
         bb._call = real
 
 
+def test_reversible_advance_uses_only_an_exact_ref_and_surfaces_refusal():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"advance": {"allowed": True, "clicked": "Company"}}))
+        out = bb.BrowserAdvance().run({"ref": "e16"}, CTX)
+        check(stub.sent[0]["action"] == "advance" and stub.sent[0]["ref"] == "e16",
+              "reversible advance sends only the exact snapshotted ref")
+        check("Company" in out, "an allowed reversible step is reported")
+        with_stub(ok({"advance": {"error": "consequential control requires the outer Mission gate"}}))
+        refused = bb.BrowserAdvance().run({"ref": "e9"}, CTX)
+        check(refused.startswith("ERROR(browser)"),
+              "an extension-side consequential-target refusal remains a hard error")
+    finally:
+        bb._call = real
+
+
 # --- the rest of a hand: keys, hover, drag, a bare point ----------------------------------------------
 def test_press_passes_key_and_modifiers_through():
     real = bb._call

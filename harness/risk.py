@@ -92,6 +92,9 @@ _BASE: dict[str, RiskClass] = {
     # Browser writes. Every one of these acts inside the user's logged-in session.
     "browser_open": RiskClass.EXTERNAL,
     "browser_click": RiskClass.EXTERNAL,
+    # Narrower than browser_click and extension-enforced, but it still acts in
+    # the user's real authenticated session, so the global policy stays strict.
+    "browser_advance": RiskClass.EXTERNAL,
     "browser_type": RiskClass.EXTERNAL,
     "browser_press": RiskClass.EXTERNAL,
     "browser_hover": RiskClass.EXTERNAL,
