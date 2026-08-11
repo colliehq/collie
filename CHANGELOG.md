@@ -8,6 +8,10 @@
 - **Due work returns as an explicit planner obligation.** A fired timer surfaces the exact branch
   in Mission context, and only a result explicitly bound to that branch can resolve it. Provider
   backoff, browser-resource contention, and legacy whole-Mission waits remain blocking.
+- **A reversible uncertainty no longer stops every branch.** Failed or inconclusive reads,
+  research, drafts, and browser preparation become bounded planner diagnostics so Collie can
+  repair the branch or continue unrelated work. Consequential submission still requires a newest
+  verified preparation result.
 - **The audit trail is now a working activity ledger.** Verified, failed, uncertain, authorization,
   and scheduled outcomes are condensed from append-only events and placed in every model turn.
   Completed consequential actions also produce a durable do-not-repeat list backed by the existing

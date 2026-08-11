@@ -10,7 +10,7 @@ from harness.mission import (_model_case_json, MissionDriver, MissionStore,
                              ModelDecider, create_mission, world_leash)
 from harness.missionweb import MissionService
 from harness.providers import Completion, Usage
-from harness.verifier import FAILED, VERIFIED, Observation, Verdict
+from harness.verifier import FAILED, INCONCLUSIVE, VERIFIED, Observation, Verdict
 
 
 def _stores(tmp_path):
@@ -90,6 +90,31 @@ def test_reversible_failure_returns_to_planner_with_diagnostic(tmp_path):
     assert state == NEEDS_YOU
     assert attempts[1]["_recent_failures"][-1]["reason"] == "final action disabled"
     assert store.runtime("repair")["retry_count"] == 1
+
+
+def test_reversible_uncertainty_does_not_stop_independent_branches(tmp_path):
+    store, actions = _stores(tmp_path)
+    seen = []
+
+    def decide(_goal, case, _caps):
+        seen.append(case)
+        return ({"action": "inspect", "args": {}} if len(seen) == 1 else
+                {"action": "needs_human", "args": {"summary": "other work finished"}})
+
+    cap = Capability(
+        "inspect", lambda _rec: {"result": "content without a bound page"},
+        lambda _rec, _result: Verdict(INCONCLUSIVE, "page host was unavailable"),
+        reversible=True, risk="read")
+    create_mission(store, "uncertain-read", "continue other branches",
+                   leash=world_leash(may=["inspect"], autonomous=True))
+    state = MissionDriver(store, actions, decide, [cap]).advance("uncertain-read")
+
+    assert state == NEEDS_YOU
+    assert len(seen) == 2
+    assert seen[1]["_recent_failures"][-1]["verdict"] == INCONCLUSIVE
+    assert store.runtime("uncertain-read")["retry_count"] == 1
+    store.close()
+    actions.close()
 
 
 def test_phase_aware_crash_recovery(tmp_path):

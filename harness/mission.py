@@ -2977,16 +2977,18 @@ class MissionDriver:
                 # before any verdict routing or next model/action boundary.
                 if not self.store.owns_run(mission_id, token):
                     return self._lost_state(mission_id, token)
-                if verdict.status == FAILED and cap.reversible:
-                    # A reversible primitive proved that its attempted state did
-                    # not satisfy the contract. That is actionable observation,
-                    # not a reason to kill a long-running campaign. Fold a bounded
-                    # diagnostic and let the planner choose a repaired next step;
-                    # cumulative retry/turn budgets still stop pathological loops.
+                if verdict.status in (FAILED, INCONCLUSIVE) and cap.reversible:
+                    # A reversible primitive that failed or could not be verified
+                    # is actionable diagnostic evidence, not a reason to stop all
+                    # independent Mission branches.  The planner may repair it or
+                    # move on; submit preconditions still reject any consequential
+                    # action whose newest preparation is not verified, and the
+                    # cumulative retry/turn budgets stop pathological loops.
                     current = self.store.get(mission_id)
                     case = dict(current.case if current else {})
                     failures = list(case.get("_recent_failures") or [])
                     failures.append({"at": int(time.time()), "capability": cap.name,
+                                     "verdict": verdict.status,
                                      "reason": str(verdict.reason or "")[:1000],
                                      "result": _compact_event(result, 2000)})
                     case["_recent_failures"] = failures[-8:]
@@ -2994,8 +2996,9 @@ class MissionDriver:
                         return self._lost_state(mission_id, token)
                     self.store.account_runtime(mission_id, token, retries=1)
                     self.store.record_checkpoint(
-                        mission_id, token, "reversible_failure",
-                        {"capability": cap.name, "reason": str(verdict.reason or "")[:500]},
+                        mission_id, token, "reversible_issue",
+                        {"capability": cap.name, "verdict": verdict.status,
+                         "reason": str(verdict.reason or "")[:500]},
                         case=case)
                     exhausted = self.store.budget_reason(mission_id)
                     if exhausted:
@@ -3382,6 +3385,9 @@ _SYS = (
     "value in args.expect; never say 'use the case draft', 'prepared copy', 'above', or equivalent. "
     "Rich text/body expectations are exact, not prefix checks. Choose browse.submit only when the "
     "newest browse result is verified; after any failed/inconclusive browse, repair it first.\n"
+    "A reversible failed or inconclusive action is recorded in CASE._recent_failures and does not "
+    "stop unrelated branches. Repair it once when useful, then pursue independent work instead of "
+    "repeating the same unavailable observation.\n"
     "For 'compose', put the writing request in args.instruction and supporting material in "
     "args.facts. Use args.text ONLY when it already contains the complete, final, ready-to-use "
     "copy. Never put an instruction such as 'write/create/draft a post' in args.text.\n"
