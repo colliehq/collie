@@ -350,6 +350,8 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     disabled_post = {"snapshot": '[e1] link "Post"\n[e2] button "Post" (disabled)'}
     check(_find_button(disabled_post, "Post") is None,
           "a disabled final Post button never falls back to the navigation link")
+    check(_find_button(disabled_post, "Post", include_disabled=True)["disabled"],
+          "snapshot preparation can distinguish one delayed disabled target from absence")
     localized_save = {"snapshot": '[e1] button "保存"'}
     check(_find_button(localized_save, "Save")["ref"] == "e1" and
           _find_button(localized_save, "保存 / Save")["ref"] == "e1",
@@ -360,6 +362,27 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     disabled_localized = {"snapshot": '[e1] button "保存" (disabled)'}
     check(_find_button(disabled_localized, "Save") is None,
           "localized matching never turns a disabled final button into an enabled target")
+
+    class DelayedConsent(FakeActuator):
+        def __init__(self):
+            super().__init__(); self._url = "https://github.test/oauth"; self.reads = 0
+
+        def snapshot(self):
+            self.reads += 1
+            disabled = " (disabled)" if self.reads < 3 else ""
+            return {"url": self._url,
+                    "snapshot": '[e7] button "Authorize producthunt"' + disabled}
+
+    from unittest.mock import patch
+    delayed = DelayedConsent()
+    clear_registry()
+    register_primitives(stub=False, actuator=delayed,
+                        browse_runner=lambda _goal: "prepared")
+    consent = get_capability("browse.submit")
+    with patch("harness.primitives.time.sleep") as sleep:
+        prepared = consent.snapshot({"button": "Authorize producthunt"}, "m-delay")
+    check(prepared.get("ref") == "e7" and delayed.reads == 3 and sleep.call_count == 2,
+          "final target preparation briefly rereads one exact disabled consent button until enabled")
 
 
 def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():
@@ -540,6 +563,28 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
     check(not called and rejected.get("contract_error") and
           _browse_verify(incomplete, rejected).status == FAILED,
           "a browser child cannot invent content referenced only from the outer case")
+
+    # Cross-domain pinning is not enough for OAuth: a child that was told to inspect
+    # the CURRENT page must not guess another authorize URL on the same host.
+    locked = {"url": "https://github.test/login/oauth/authorize?client_id=real&state=secret",
+              "title": "Authorize application"}
+
+    def drift_same_host(*_args, **_kwargs):
+        locked["url"] = "https://github.test/login/oauth/authorize?client_id=guessed"
+        return {"_browse_answer": "inspected", "_scope_error": ""}
+
+    with patch("harness.primitives._live_browse", side_effect=drift_same_host), \
+         patch("harness.browserbridge.space_identity", side_effect=lambda _space: dict(locked)), \
+         patch("harness.primitives._read_form_state", return_value=([], [])):
+        locked_execute = _real_browse()
+        locked_rec = _Rec({"read_only": True, "expect": {},
+                           "goal": "Inspect only the CURRENT GitHub OAuth page; do not navigate, reload, or open anything."},
+                          job_id="m-oauth-lock")
+        drifted = locked_execute(locked_rec)
+    check("locked URL" in drifted.get("scope_error", "") and
+          "state=secret" not in drifted.get("scope_error", "") and
+          _browse_verify(locked_rec, drifted).status == FAILED,
+          "an explicit current-page read fails closed on same-host URL drift without leaking OAuth state")
 
 
 def test_code_primitive():

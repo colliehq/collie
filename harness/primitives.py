@@ -639,6 +639,31 @@ def _actuator_form(act, space):
     return _read_form(space)
 
 
+def _locks_current_page(args):
+    """True only for an explicit read-only inspection that forbids navigation.
+
+    Domain pinning prevents cross-site drift, but an OAuth child can still guess
+    a different URL on the same host.  When the caller says CURRENT page and no
+    navigation/reload/open, bind the reversible step to the exact starting URL.
+    """
+    if not _explicit_read_only_browse(args or {}):
+        return False
+    goal = str((args or {}).get("goal") or (args or {}).get("task") or "")
+    current = bool(re.search(r"(?i)\bcurrent\b|当前|本页", goal))
+    no_nav = bool(re.search(
+        r"(?i)\bwithout\s+(?:any\s+)?(?:navigating|navigation|reloading|reload|opening)\b|"
+        r"\bdo\s+not\s+(?:navigate|reload|open)\b|"
+        r"\bno\s+(?:navigation|reload)\b|不要.{0,30}(?:导航|刷新|打开)|禁止.{0,20}(?:导航|刷新)",
+        goal))
+    return current and no_nav
+
+
+def _safe_page_name(url):
+    """Describe browser drift without persisting OAuth/query credentials."""
+    parsed = urlsplit(str(url or ""))
+    return (parsed.hostname or "") + (parsed.path or "/")
+
+
 def _real_browse(runner=None, form_reader=None):
     def execute(rec):
         from .browserbridge import space_identity
@@ -646,6 +671,9 @@ def _real_browse(runner=None, form_reader=None):
         goal = args.get("goal") or args.get("task") or ""
         space = _mission_space(getattr(rec, "job_id", ""))
         domains = (args.get("_leash") or {}).get("allowed_domains") or []
+        lock_current = _locks_current_page(args)
+        start_ident = (space_identity(space) or {}) if lock_current and runner is None else {}
+        start_url = str(start_ident.get("url") or "")
         # The restricted browser child receives only this goal, never the outer Mission case.  A
         # planner instruction such as "use the prepared copy from the case" therefore forces the
         # child to invent the missing body.  Refuse before touching the browser unless every
@@ -689,6 +717,12 @@ def _real_browse(runner=None, form_reader=None):
         # expect={platform: Twitter/X}.  Keep only origin-level identity and a
         # bounded title; query strings/fragments may carry credentials or PII.
         ident = (space_identity(space) or {}) if runner is None else {}
+        end_url = str(ident.get("url") or "")
+        if lock_current and start_url and end_url and end_url != start_url:
+            locked_error = (
+                "read-only current-page browse navigated away from its locked URL "
+                "(%s -> %s)" % (_safe_page_name(start_url), _safe_page_name(end_url)))
+            scope_error = scope_error or locked_error
         parsed = urlsplit(str(ident.get("url") or ""))
         page = {"host": (parsed.hostname or "").lower(),
                 "title": str(ident.get("title") or "")[:160]}
@@ -864,7 +898,7 @@ def _button_labels(button):
     return exact, semantic
 
 
-def _find_button(snapshot, button):
+def _find_button(snapshot, button, include_disabled=False):
     exact, semantic = _button_labels(button)
     hits = []
     for line in str((snapshot or {}).get("snapshot") or "").splitlines():
@@ -881,10 +915,18 @@ def _find_button(snapshot, button):
     exact_buttons = [h for h in buttons if h["label"] in exact]
     if exact_buttons:
         enabled = [h for h in exact_buttons if not h["disabled"]]
-        return enabled[0] if len(enabled) == 1 else None
+        if len(enabled) == 1:
+            return enabled[0]
+        if include_disabled and len(exact_buttons) == 1:
+            return exact_buttons[0]
+        return None
     if buttons:
         enabled = [h for h in buttons if not h["disabled"]]
-        return enabled[0] if len(enabled) == 1 else None
+        if len(enabled) == 1:
+            return enabled[0]
+        if include_disabled and len(buttons) == 1:
+            return buttons[0]
+        return None
     exact_links = [h for h in hits if h["role"] == "link" and h["label"] in exact
                    and not h["disabled"]]
     if exact_links:
@@ -903,8 +945,21 @@ def _browse_target_snapshot(actuator):
         if act is None or not hasattr(act, "page_identity") or not hasattr(act, "snapshot"):
             raise RuntimeError("cannot snapshot the browser target")
         ident = act.page_identity() or {}
-        tree = act.snapshot() or {}
-        target = _find_button(tree, button)
+        tree, target = {}, None
+        # GitHub and some other consent pages intentionally render the final
+        # control disabled for a short safety delay.  A one-shot snapshot made
+        # a valid, already verified target look missing and sent the Mission
+        # back through planning.  Re-read only when the exact unique target is
+        # present-but-disabled; ambiguity and true absence still fail at once.
+        for attempt in range(4):
+            tree = act.snapshot() or {}
+            target = _find_button(tree, button)
+            if target:
+                break
+            pending = _find_button(tree, button, include_disabled=True)
+            if not pending or not pending.get("disabled") or attempt >= 3:
+                break
+            time.sleep(1)
         full_url = tree.get("url") or ident.get("url")
         if not full_url or not target:
             raise RuntimeError("target page/button is missing or ambiguous; prepare the page again")

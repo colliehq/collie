@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.21.20 — Lock read-only OAuth pages and bind delayed consent controls
+
+- **A read-only CURRENT-page task cannot silently guess another URL on the same host.** When the
+  goal explicitly forbids navigation, reload, or opening another page, Collie binds the step to the
+  exact starting URL and fails closed on any drift without persisting OAuth query credentials.
+- **Short consent-button safety delays no longer cause needless replanning.** Final-action snapshot
+  preparation briefly rereads one exact unique disabled target and binds it only after it becomes
+  enabled; missing or ambiguous controls still fail immediately and no click is attempted.
+
 ## v0.21.19 — Recover stale reversible action latches
 
 - **A timed-out reversible child cannot permanently prevent Mission retry.** A failed Mission with
