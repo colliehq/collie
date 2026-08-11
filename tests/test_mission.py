@@ -176,6 +176,29 @@ def test_anti_poll_spin():
     actions.close()
 
 
+def test_local_compose_work_is_not_treated_as_polling():
+    """Several writing steps before the first external action must not inherit
+    the one-hour inbox-poll backoff."""
+    print("test_local_compose_work_is_not_treated_as_polling")
+    clear_registry()
+    register_primitives(stub=True)
+    writes = [
+        {"action": "compose", "args": {"facts": "fact", "instruction": f"post {i}"},
+         "reason": "prepare channel copy"}
+        for i in range(5)
+    ]
+    drv, store, actions = _driver(writes + [HAND])
+    create_mission(store, "compose-burst", "prepare a multi-channel campaign",
+                   leash=world_leash(autonomous=True))
+    state = drv.advance("compose-burst")
+    completed = [s for s in store.steps("compose-burst") if s["name"] == "compose"]
+    check(state == NEEDS_YOU and len(completed) == 5 and
+          store.next_wait("compose-burst") is None,
+          "local composition proceeds without the durable polling delay")
+    store.close()
+    actions.close()
+
+
 def test_browse_mission_gates_publish():
     """The FB path: a mission uses `browse` (reversible, auto) to fill the form, then
     `browse.submit` (irreversible) PARKS for confirm; confirm+resume publishes."""
@@ -785,6 +808,29 @@ def test_transient_model_failure_becomes_durable_backoff():
           "temporary provider outage schedules durable exponential backoff")
 
 
+def test_model_decider_exposes_unambiguous_compose_contract():
+    print("test_model_decider_exposes_unambiguous_compose_contract")
+
+    class Capture:
+        def __init__(self):
+            self.system = ""
+            self.user = ""
+
+        def complete(self, system, messages, _tools):
+            self.system = system
+            self.user = messages[0]["content"]
+            return Completion(text='{"action":"needs_human","args":{"summary":"done"}}')
+
+    provider = Capture()
+    primitive = {"name": "compose", "reversible": True,
+                 "description": "Create final ready-to-use copy.",
+                 "args": '{"facts","instruction","text (final literal only)"}'}
+    ModelDecider(provider)("prepare a campaign", {}, [primitive])
+    check("args.instruction" in provider.system and "ONLY" in provider.system and
+          "final literal only" in provider.user,
+          "the planner sees an unambiguous generation-vs-literal compose contract")
+
+
 def test_credentials_handoff_before_any_durable_action_payload():
     print("test_credentials_handoff_before_any_durable_action_payload")
     clear_registry(); register_primitives(stub=True)
@@ -806,6 +852,7 @@ def main():
     test_autonomous_with_durable_wait()
     test_leash_denies_out_of_scope()
     test_anti_poll_spin()
+    test_local_compose_work_is_not_treated_as_polling()
     test_browse_mission_gates_publish()
     test_code_step_in_a_mission()
     test_pause_preserves_due_wait_and_cancel_is_terminal()
@@ -830,6 +877,7 @@ def main():
     test_registered_semantic_projection_canonicalizes_aliases()
     test_irreversible_capability_without_semantic_projection_fails_closed()
     test_transient_model_failure_becomes_durable_backoff()
+    test_model_decider_exposes_unambiguous_compose_contract()
     test_credentials_handoff_before_any_durable_action_payload()
     if _fails:
         print(f"\n{len(_fails)} FAILED")

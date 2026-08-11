@@ -2102,7 +2102,11 @@ class MissionDriver:
                 if dec.denied:
                     return self._finish(mission_id, token, FAILED_S,
                                         f"leash denied: {dec.reason}")
-                if cap.reversible and reads >= self.read_streak_cap:
+                # This delay prevents tight inbox polling. It must not throttle
+                # local reversible work such as composing several channel-ready
+                # deliverables before the first external action.
+                is_poll_read = cap.name == "observe"
+                if is_poll_read and reads >= self.read_streak_cap:
                     self.store.schedule_wait(mission_id, int(time.time()) + self.read_wait_s)
                     return self._finish(
                         mission_id, token, WAITING,
@@ -2297,7 +2301,7 @@ class MissionDriver:
                     return self._finish(
                         mission_id, token, NEEDS_YOU,
                         f"{cap.name} fired but remains uncertain: {verdict.reason}")
-                reads = reads + 1 if cap.reversible else 0
+                reads = reads + 1 if is_poll_read else 0
 
             return self._finish(mission_id, token, NEEDS_YOU,
                                 "step budget exhausted — needs your input")
@@ -2624,6 +2628,9 @@ _SYS = (
     "'browse' with a goal to fill/navigate it (it drives the real browser adaptively and STOPS "
     "before submitting), then 'browse.submit' to click the final Publish/Post — that last click "
     "is gated for the user's confirm.\n"
+    "For 'compose', put the writing request in args.instruction and supporting material in "
+    "args.facts. Use args.text ONLY when it already contains the complete, final, ready-to-use "
+    "copy. Never put an instruction such as 'write/create/draft a post' in args.text.\n"
     "Use credentials, email/phone identities, signed-in sessions, and verification-code inboxes "
     "that the user has already connected and authorized; routine signup fields, OTP retrieval, "
     "Next buttons, and authorized publish/send actions are ordinary work inside the leash. Never "

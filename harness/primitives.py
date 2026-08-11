@@ -63,7 +63,12 @@ def _stub_research(rec):
 def _stub_compose(rec):
     a = rec.args or {}
     facts = a.get("facts") or a.get("about") or a.get("query") or ""
-    text = a.get("text") or f"(stub) composed text about {facts!r}"
+    # ``text`` is an already-finished literal. ``instruction`` asks the
+    # composer to create the deliverable. Keeping those meanings separate
+    # prevents "write a post about ..." from being stored as the post itself.
+    text = a.get("text") or (
+        f"(stub) composed text for {a.get('instruction')!r} about {facts!r}"
+        if a.get("instruction") else f"(stub) composed text about {facts!r}")
     return {"case": {"composed": True}, "text": text}
 
 
@@ -140,19 +145,33 @@ def _real_compose(provider=None):
     def execute(rec):
         a = rec.args or {}
         facts = a.get("facts") or a.get("about") or a.get("_case") or a.get("query") or ""
+        instruction = str(a.get("instruction") or "").strip()
         prov = provider or _get_provider()
-        text = a.get("text") or ""
-        if not text and prov is not None:
-            sys = ("Write a concise, HONEST piece of text for the user's errand from these "
-                   "facts — a marketplace listing, a reply, or an email as appropriate. "
-                   "Plain text only, no preamble.")
+        # ``text`` is already-final copy. Generation requests belong in
+        # ``instruction`` so the result cannot silently echo a writing request.
+        text = str(a.get("text") or "").strip()
+        should_generate = bool(instruction) or not text
+        if should_generate and prov is not None:
+            sys = ("Create the final, ready-to-use text for the user's errand. Follow the "
+                   "instruction precisely, use only the supplied facts, and stay honest. "
+                   "Return the deliverable itself in plain text with no planning notes, "
+                   "placeholders, or preamble.")
+            payload = {"facts": facts}
+            if instruction:
+                payload["instruction"] = instruction
+            if text:
+                payload["draft"] = text
             try:
                 comp = prov.complete(
-                    sys, [{"role": "user", "content": json.dumps(facts, ensure_ascii=False)[:3000]}], [])
+                    sys, [{"role": "user", "content":
+                           json.dumps(payload, ensure_ascii=False)[:6000]}], [])
                 if getattr(comp, "stop_reason", "") != "error":
                     text = (getattr(comp, "text", "") or "").strip()
             except Exception:
                 text = ""
+        if instruction and not text:
+            return {"case": {"composed": False}, "text": "",
+                    "error": "composer could not produce the requested deliverable"}
         if not text:                     # no model / empty -> a plain factual fallback
             text = facts if isinstance(facts, str) else json.dumps(facts, ensure_ascii=False)
         return {"case": {"composed": True, "draft": text}, "text": text}
@@ -160,7 +179,11 @@ def _real_compose(provider=None):
 
 
 def _compose_verify(rec, result):
-    if (result or {}).get("text"):
+    text = str((result or {}).get("text") or "").strip()
+    instruction = str(((rec.args or {}).get("instruction") or "")).strip()
+    if instruction and text == instruction:
+        return Verdict(FAILED, "composer echoed the instruction instead of producing final text")
+    if text:
         return Verdict(VERIFIED, "text composed")
     return Verdict(FAILED, "nothing composed")
 
@@ -930,8 +953,9 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         args_hint='{"query"}'))
     register(Capability(
         name="compose", execute=compose_exec, verify=compose_verify, reversible=True,
-        risk="read", description="Turn facts into text (listing / reply / email).",
-        args_hint='{"facts","text"}'))
+        risk="read", description=("Create final ready-to-use copy. Put a generation request in "
+                                  "instruction; use text only for already-final literal copy."),
+        args_hint='{"facts","instruction","text (final literal only)"}'))
     register(Capability(
         name="observe", execute=observe_exec, verify=observe_verify, reversible=True,
         risk="read", resource=browser_resource,

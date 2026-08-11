@@ -104,6 +104,46 @@ def test_compose_real():
     check(cap.verify(_Rec({}), r).status == VERIFIED, "composed text verifies")
 
 
+def test_compose_instruction_produces_deliverable_instead_of_echoing_request():
+    print("test_compose_instruction_produces_deliverable_instead_of_echoing_request")
+
+    class CapturingProvider:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, system, messages, tools):
+            self.calls.append((system, messages, tools))
+            return type("C", (), {
+                "text": "VocalCode keeps voice input local. Try it at vocalcode.app.",
+                "stop_reason": "end_turn",
+            })()
+
+    provider = CapturingProvider()
+    clear_registry()
+    register_primitives(stub=False, provider=provider)
+    cap = get_capability("compose")
+    instruction = "Write a final short launch post with a link."
+    rec = _Rec({"facts": "VocalCode uses local speech recognition.",
+                "instruction": instruction})
+    result = cap.execute(rec)
+    check(len(provider.calls) == 1 and instruction in provider.calls[0][1][0]["content"],
+          "compose sends the explicit instruction to the writing model")
+    check(result.get("text", "").startswith("VocalCode keeps") and
+          result.get("text") != instruction,
+          "compose returns final copy rather than the writing instruction")
+    check(cap.verify(rec, result).status == VERIFIED,
+          "generated final copy verifies")
+
+    literal = "Already final copy — publish this exactly."
+    result2 = cap.execute(_Rec({"facts": "ignored", "text": literal}))
+    check(result2.get("text") == literal and len(provider.calls) == 1,
+          "an explicitly final literal is preserved without another model call")
+
+    echoed = {"text": instruction}
+    check(cap.verify(rec, echoed).status == FAILED,
+          "an echoed writing instruction cannot be recorded as composed copy")
+
+
 def test_observe_loggedout_real():
     print("test_observe_loggedout_real")
     httpd, port = _server()
@@ -409,6 +449,7 @@ def main():
     test_live_browse_cannot_bypass_the_outer_action_gate()
     test_code_primitive()
     test_compose_real()
+    test_compose_instruction_produces_deliverable_instead_of_echoing_request()
     test_observe_loggedout_real()
     test_web_submit_real_drives_and_verifies()
     test_web_submit_no_browser_degrades()

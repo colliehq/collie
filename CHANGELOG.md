@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.21.2 — Mission composition that produces the deliverable
+
+- **Compose requests and final copy now have distinct fields.** Mission planning puts writing
+  instructions in `instruction`, while `text` is reserved for already-final literal copy. The
+  composer follows the requested format and returns the ready-to-use deliverable; an echoed
+  instruction is rejected by verification instead of being recorded as a successful draft.
+
+- **Polling backoff applies only to actual observation loops.** Research and local multi-channel
+  composition can proceed in one startup burst; repeated inbox/page observation still receives the
+  durable one-hour anti-spin delay.
+
 ## v0.21.1 — Hands-off Missions without command-line ceremony
 
 - **Plain `/mission` now means sustained execution inside your rules.** The saved Mission autonomy
