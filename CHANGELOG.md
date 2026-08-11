@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.21.15 — Bounded browser-agent latency
+
+- **Routine browser execution no longer inherits open-ended deep reasoning.** Mission browse
+  children use medium reasoning effort by default while preserving the configured model and
+  allowing explicit browser-specific overrides.
+- **A reversible browser step has an 18-turn default ceiling instead of 35.** The outer Mission can
+  repair from a bounded diagnostic rather than letting a two-field form monopolize the full
+  ten-minute action watchdog.
+- **The browser workflow now has an explicit no-spin condition.** One- or two-field tasks use one
+  read/fill/verify pass and stop with a precise diagnostic after two failures on the same field.
+
 ## v0.21.14 — Trusted rich-editor input and active-field verification
 
 - **Label-addressed typing now uses genuine browser input when high-fidelity mode is enabled.**

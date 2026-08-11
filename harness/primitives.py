@@ -489,8 +489,15 @@ def _live_browse(goal, space="mission-standalone", allowed_domains=None):
     from .browserbridge import space_identity
     from . import settings as _s
     _s.apply()
-    h = make_harness(_browse_dir(), provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
-                     project="browse", embed="hash")
+    provider = _s.get("PROVIDER")
+    # Browser manipulation is an execution subtask, not an open-ended architecture problem.  An
+    # explicit medium effort keeps the same configured/default model but prevents provider-default
+    # deep reasoning from turning two form fields into a ten-minute run.  Both axes remain
+    # independently overridable for unusually hard sites.
+    browser_model = os.environ.get("COLLIE_BROWSE_MODEL") or _s.get("MODEL")
+    browser_effort = os.environ.get("COLLIE_BROWSE_EFFORT") or "medium"
+    h = make_harness(_browse_dir(), provider=provider, model=browser_model,
+                     project="browse", embed="hash", effort=browser_effort)
     # Prompt text is not an authority boundary.  Keep a positive list, wrap every
     # survivor in this Mission's isolated browser space, and force type.submit off.
     boundary = _restrict_browse_child(h, space, allowed_domains)
@@ -499,7 +506,14 @@ def _live_browse(goal, space="mission-standalone", allowed_domains=None):
         h.force_edit = False
     except Exception:
         pass
-    h.max_turns = int(os.environ.get("COLLIE_BROWSE_TURNS", "35"))
+    # A Mission can issue another bounded browse step after receiving a diagnostic.  Letting one
+    # child consume 35 model turns instead made a reversible two-field fill monopolize its entire
+    # 600-second watchdog.  Eighteen is ample for multi-step forms while giving the outer planner a
+    # timely chance to repair or choose a different route.
+    try:
+        h.max_turns = max(4, min(35, int(os.environ.get("COLLIE_BROWSE_TURNS", "18"))))
+    except (TypeError, ValueError):
+        h.max_turns = 18
     prompt = (goal.strip() + "\n\n"
               "Act ONLY through the available reversible browser tools (browser_open / browser_snapshot / "
               "browser_fields / browser_type with a snapshot `ref` or `label` / browser_pick / "
@@ -520,6 +534,9 @@ def _live_browse(goal, space="mission-standalone", allowed_domains=None):
               "  4. keep going until EVERY field the listing needs is filled — fill ALL of them "
               "(vehicle type, year, make, model, mileage, price, description, condition, …), do NOT stop "
               "after the first one or two.\n"
+              "EFFICIENCY: for one or two known fields, take one fresh field/snapshot read, one fill pass, "
+              "and one verification read. Do not re-read unchanged state. If the same field fails twice, "
+              "stop and report the exact failure instead of looping.\n"
               "CRITICAL: do NOT click any IRREVERSIBLE button (Publish, Post, Send, Pay, Place order, "
               "Next-to-publish) — fill everything up to that point and STOP, then report each field you "
               "filled and its final value.")

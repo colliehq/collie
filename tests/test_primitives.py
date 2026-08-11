@@ -481,14 +481,18 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
                   "unscoped browse is pinned to its first site against cross-site exfiltration")
             check("outer Mission can gate it" in prompt,
                   "child is told to hand consequential actions back to Mission")
+            check(self.max_turns == 18 and "If the same field fails twice" in prompt,
+                  "browser child has a bounded anti-loop budget and explicit stop condition")
             if self.drift is not None:
                 self.drift["url"] = "https://oauth.test/login"
             return type("R", (), {"answer": "prepared", "error": ""})()
 
-    with patch("harness.cli.make_harness", return_value=FakeHarness()):
+    with patch("harness.cli.make_harness", return_value=FakeHarness()) as make:
         outcome = _live_browse("prepare the form")
         check(outcome.get("_browse_answer") == "prepared" and not outcome.get("_scope_error"),
               "safe browse child still runs and reports its final domain boundary")
+        check(make.call_args.kwargs.get("effort") == "medium",
+              "routine browser execution defaults to medium reasoning effort")
     state = {"url": "https://social.test/start"}
     with patch("harness.cli.make_harness", return_value=FakeHarness(state)), \
          patch("harness.browserbridge.space_identity", side_effect=lambda _space: dict(state)):
