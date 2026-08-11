@@ -268,7 +268,12 @@ attestation or an executed host check. Review them with `collie mem pending`, th
 `execute_code` is a
 batching surface, not an authority shortcut—executable inner calls pass through the same
 permission, audit, secret-redaction, checkpoint, and verification-accounting path as ordinary tool
-calls; invariant-violating calls are denied and recorded at that boundary.
+calls; invariant-violating calls are denied and recorded at that boundary. It is **not an OS
+sandbox**: direct Python operations such as `open()`, sockets, subprocesses, and ctypes do not pass
+through that broker and have the same host authority as `bash`. Run untrusted workloads in a
+separately sandboxed container/VM. Process-tree cleanup contains ordinary background children;
+on POSIX, deliberately escaping into another session (`setsid`/double-fork) also requires that
+external sandbox boundary.
 
 ## Platforms
 
@@ -294,6 +299,12 @@ python -m bench.multirun_eval                                # pass@1 / pass@k /
 python -m bench.polyglot_eval --langs python,cpp,javascript  # Aider-Polyglot, multi-language
 python -m harness.cli compare --vs all                       # vs Claude Code / Aider / …
 ```
+
+Cross-harness publication uses the fail-closed
+[benchmark protocol](docs/harness-benchmark.md): frozen model/task/grader/container revisions,
+fresh memory, pass@1, three or more seeds, aggregate root-plus-subagent budgets, and hashed
+trace/patch/usage/grader evidence. `python -m harness.benchmark_protocol validate manifest.json` spends
+nothing and refuses mutable or incomplete configurations before a paid run starts.
 
 ## Honesty & policy
 

@@ -611,6 +611,8 @@ class MissionStore:
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_tokens INTEGER NOT NULL DEFAULT 0,
+            model_calls INTEGER NOT NULL DEFAULT 0,
+            turns INTEGER NOT NULL DEFAULT 0,
             model_cost_microusd INTEGER NOT NULL DEFAULT 0,
             retry_count INTEGER NOT NULL DEFAULT 0,
             storage_bytes INTEGER NOT NULL DEFAULT 0,
@@ -625,9 +627,19 @@ class MissionStore:
         runtime_cols = {r[1] for r in self.db.execute("PRAGMA table_info(mission_runtime)")}
         for col, decl in (("lane", "TEXT NOT NULL DEFAULT 'mission'"),
                           ("external_run_id", "TEXT NOT NULL DEFAULT ''"),
-                          ("parent_mission_id", "TEXT NOT NULL DEFAULT ''")):
+                          ("parent_mission_id", "TEXT NOT NULL DEFAULT ''"),
+                          ("model_calls", "INTEGER NOT NULL DEFAULT 0"),
+                          ("turns", "INTEGER NOT NULL DEFAULT 0")):
             if col not in runtime_cols:
-                self.db.execute("ALTER TABLE mission_runtime ADD COLUMN %s %s" % (col, decl))
+                try:
+                    self.db.execute(
+                        "ALTER TABLE mission_runtime ADD COLUMN %s %s" % (col, decl))
+                except sqlite3.OperationalError:
+                    # Multiple long-lived Collie processes may race the same
+                    # additive upgrade; accept only the peer-already-added case.
+                    if col not in {r[1] for r in self.db.execute(
+                            "PRAGMA table_info(mission_runtime)")}:
+                        raise
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS mission_runtime_parent "
             "ON mission_runtime(parent_mission_id)")
@@ -642,6 +654,15 @@ class MissionStore:
         self.db.execute(
             "INSERT OR IGNORE INTO mission_runtime(mission_id,progress_at) "
             "SELECT mission_id,updated_at FROM missions")
+        # Idempotent crash-safe repair: decision reservations are the durable
+        # logical call/turn receipts.  MAX never rewinds a newer counter (and
+        # remains valid if calls and turns later diverge), while a process dying
+        # after ALTER but before this UPDATE is repaired on the next open.
+        for col in ("model_calls", "turns"):
+            self.db.execute(
+                "UPDATE mission_runtime SET %s=MAX(%s,(SELECT COUNT(*) "
+                "FROM mission_events e WHERE e.mission_id=mission_runtime.mission_id "
+                "AND e.kind='decision'))" % (col, col))
         # Specialist ancestry is budget authority, not mutable conversational
         # context.  New rows persist it directly below.  Existing databases from
         # before that column existed get one conservative migration from the
@@ -769,6 +790,8 @@ class MissionStore:
             "COALESCE(SUM(r.input_tokens),0) input_tokens,"
             "COALESCE(SUM(r.output_tokens),0) output_tokens,"
             "COALESCE(SUM(r.cache_tokens),0) cache_tokens,"
+            "COALESCE(SUM(r.model_calls),0) model_calls,"
+            "COALESCE(SUM(r.turns),0) turns,"
             "COALESCE(SUM(r.model_cost_microusd),0) model_cost_microusd,"
             "COALESCE(SUM(r.retry_count),0) retry_count,"
             "COALESCE(SUM(r.storage_bytes),0) storage_bytes "
@@ -799,6 +822,10 @@ class MissionStore:
              float(rt.get("model_cost_usd", 0.0)) >=
              float(leash.get("max_model_cost_usd", 25.0)),
              "mission model-cost budget exhausted"),
+            (int(leash.get("max_model_calls", leash.get("max_total_steps", 1000))) > 0 and
+             int(rt.get("model_calls", 0)) >=
+             int(leash.get("max_model_calls", leash.get("max_total_steps", 1000))),
+             "mission model-call budget exhausted"),
             (int(leash.get("max_active_wall_seconds", 21600)) > 0 and
              int(rt.get("active_wall_ms", 0)) >=
              int(leash.get("max_active_wall_seconds", 21600)) * 1000,
@@ -1865,9 +1892,26 @@ class MissionStore:
                                 "mission external-action rate limit reached", \
                                 recent[0]["at"] + 3600
                 if action_key:
-                    old = self.db.execute(
-                        "SELECT state FROM mission_action_keys WHERE mission_id=? "
-                        "AND action_key=?", (mission_id, action_key)).fetchone()
+                    # A semantic key for an irreversible action fences the whole
+                    # durable campaign, not merely the specialist which happened
+                    # to propose it.  BEGIN IMMEDIATE serializes this read+insert
+                    # across MissionStore connections, so two siblings cannot
+                    # both observe an empty slot.  Querying the live lineage/tree
+                    # also covers rows written by the legacy per-Mission schema
+                    # without a destructive table rewrite.
+                    if irreversible:
+                        root_mission_id = lineage[-1]["mission_id"]
+                        old = self.db.execute(
+                            "WITH RECURSIVE subtree(mission_id) AS (SELECT ? UNION "
+                            "SELECT r.mission_id FROM mission_runtime r JOIN subtree "
+                            "ON r.parent_mission_id=subtree.mission_id) "
+                            "SELECT k.state FROM mission_action_keys k JOIN subtree "
+                            "ON subtree.mission_id=k.mission_id WHERE k.action_key=? "
+                            "LIMIT 1", (root_mission_id, action_key)).fetchone()
+                    else:
+                        old = self.db.execute(
+                            "SELECT state FROM mission_action_keys WHERE mission_id=? "
+                            "AND action_key=?", (mission_id, action_key)).fetchone()
                     if old:
                         self.db.commit()
                         return False, "duplicate external action blocked (%s)" % old["state"], 0
@@ -1912,6 +1956,9 @@ class MissionStore:
                 self.db.execute(
                     "INSERT INTO mission_events(mission_id,kind,name,payload_json,at) "
                     "VALUES(?,?,?,?,?)", (mission_id, "decision", "model", "{}", now))
+                self.db.execute(
+                    "UPDATE mission_runtime SET model_calls=model_calls+1,turns=turns+1 "
+                    "WHERE mission_id=?", (mission_id,))
                 self.db.commit()
             except Exception:
                 self.db.rollback()
@@ -3714,7 +3761,8 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
                    "browse", "browse.*", "verification.*"]
     known = {"spend_max_usd", "allowed_domains", "max_total_steps",
              "max_irreversible_actions", "actions_per_hour", "max_model_tokens",
-             "max_model_cost_usd", "max_active_wall_seconds", "max_elapsed_seconds",
+             "max_model_cost_usd", "max_model_calls", "max_active_wall_seconds",
+             "max_elapsed_seconds",
              "max_step_seconds", "max_retries", "max_storage_bytes", "checkpoint_keep",
              "human_escalate_seconds", "human_timeout_seconds", "workspace_mode",
              "max_specialists", "max_specialist_depth"}
@@ -3722,7 +3770,8 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
     if unknown:
         raise ValueError("unenforced Mission leash bound(s): " + ", ".join(unknown))
     for key in ("max_total_steps", "max_irreversible_actions", "actions_per_hour",
-                "max_model_tokens", "max_active_wall_seconds", "max_elapsed_seconds",
+                "max_model_tokens", "max_model_calls", "max_active_wall_seconds",
+                "max_elapsed_seconds",
                 "max_step_seconds", "max_retries", "max_storage_bytes", "checkpoint_keep",
                 "human_escalate_seconds", "human_timeout_seconds", "max_specialists",
                 "max_specialist_depth"):
@@ -3764,6 +3813,7 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
              "actions_per_hour": 12,
              "max_model_tokens": 2_000_000,
              "max_model_cost_usd": 25.0,
+             "max_model_calls": 1000,
              "max_active_wall_seconds": 21_600,
              "max_elapsed_seconds": 2_592_000,
              "max_step_seconds": 600,
@@ -3791,6 +3841,8 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
         if expires:
             leash["expires"] = expires
     leash.update(bounds)
+    if "max_model_calls" not in bounds:
+        leash["max_model_calls"] = int(leash.get("max_total_steps", 1000))
     return leash
 
 

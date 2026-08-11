@@ -50,15 +50,40 @@ class ScratchMemory:
         return getattr(self.base, name)
 
     def recall(self, query: str, project: str = "global", k: int = 8, pool: int = 50,
-               statuses=None) -> list:
-        mine = self._own.recall(query, project=_SCRATCH, k=k, pool=pool, statuses=statuses)
-        shared = self.base.recall(query, project=self.read_project, k=k, pool=pool,
-                                  statuses=statuses)
+               statuses=None, *, allowed_scopes=None) -> list:
+        logical_project = str(project or "global")
+        if allowed_scopes is None:
+            # ``scratch`` is the legacy scope used by direct overlay writes;
+            # newer writes retain the caller's logical scope.  The shared
+            # store is intentionally mapped to ``read_project``.
+            own_scopes = tuple(dict.fromkeys(
+                (logical_project, _SCRATCH, "global")))
+            shared_scopes = tuple(dict.fromkeys(
+                (str(self.read_project), "global")))
+        else:
+            own_scopes = SqliteMemory._allowed_scopes(logical_project, allowed_scopes)
+            # Explicit logical authority follows the adapter's project mapping
+            # without exposing the physical shared project to Pack callers.
+            shared_scopes = tuple(dict.fromkeys(
+                str(self.read_project) if scope == logical_project else scope
+                for scope in own_scopes))
+        mine = self._own.recall(
+            query, project=_SCRATCH, k=k, pool=pool, statuses=statuses,
+            allowed_scopes=own_scopes)
+        shared = self.base.recall(
+            query, project=self.read_project, k=k, pool=pool, statuses=statuses,
+            allowed_scopes=shared_scopes)
         seen = {hit.get("text") for hit in mine}
         return (mine + [h for h in shared if h.get("text") not in seen])[:k]
 
     def remember(self, text: str, keys: str = "", project: str = "global", **kw):
+        kw.setdefault("scope", project)
         return self._own.remember(text, keys=keys, project=_SCRATCH, **kw)
+
+    @staticmethod
+    def claim_boundary(project: str) -> dict[str, str]:
+        """Map a caller's logical claim boundary to this overlay's storage row."""
+        return {"project": _SCRATCH, "scope": str(project or "global")}
 
     # Lifecycle methods must be explicit.  Letting __getattr__ forward them to
     # ``base`` would turn a Pack candidate's proposal (or promotion of its local
@@ -85,8 +110,18 @@ class ScratchMemory:
         return self._own.get_claim(memory_id)
 
     def list_claims(self, status: str | None = None, project: str | None = None,
-                    limit: int = 100) -> list[dict]:
-        return self._own.list_claims(status=status, project=_SCRATCH, limit=limit)
+                    limit: int = 100, *, allowed_scopes=None) -> list[dict]:
+        if project is None and allowed_scopes is None:
+            # The overlay contains no shared rows, so this is the same local
+            # admin listing the underlying memory API has always exposed.
+            return self._own.list_claims(status=status, limit=limit)
+        if allowed_scopes is None:
+            logical_project = str(project or "global")
+            allowed_scopes = tuple(dict.fromkeys(
+                (logical_project, _SCRATCH, "global")))
+        return self._own.list_claims(
+            status=status, project=_SCRATCH, limit=limit,
+            allowed_scopes=allowed_scopes)
 
     def core_blocks(self, scopes: list) -> list:
         # The composer builds scopes as [f"project:{project}", "global"]; rewrite the project scope

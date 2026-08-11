@@ -207,6 +207,216 @@ def test_legacy_facts_migrate_as_active_with_legacy_provenance():
             memory.close()
 
 
+def test_migration_repairs_cross_boundary_and_orphaned_supersession_links():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "memory.db")
+        memory = SqliteMemory(path, embedder=HashEmbedding())
+        scope_old = memory.remember(
+            "scopealpha predecessor", project="repo", scope="repo",
+            consolidate=False)
+        scope_new = memory.remember(
+            "restricted scope successor", project="repo", scope="private-review",
+            consolidate=False)
+        project_old = memory.remember(
+            "projectbeta predecessor", project="repo", scope="repo",
+            consolidate=False)
+        project_new = memory.remember(
+            "other project successor", project="other", scope="repo",
+            consolidate=False)
+        same_old = memory.remember(
+            "same boundary predecessor", project="repo", scope="repo",
+            consolidate=False)
+        same_new = memory.remember(
+            "same boundary successor", project="repo", scope="repo",
+            consolidate=False)
+        orphan_old = memory.remember(
+            "orphan predecessor", project="repo", scope="repo",
+            consolidate=False)
+        memory.db.execute(
+            "UPDATE facts SET superseded_by=? WHERE id=?", (scope_new, scope_old))
+        memory.db.execute(
+            "UPDATE facts SET superseded_by=? WHERE id=?", (project_new, project_old))
+        memory.db.execute(
+            "UPDATE facts SET superseded_by=? WHERE id=?", (same_new, same_old))
+        memory.db.execute(
+            "UPDATE facts SET superseded_by=? WHERE id=?", (999999, orphan_old))
+        memory.db.commit()
+        memory.close()
+
+        # Opening twice proves the repair is safe and idempotent.
+        for _ in range(2):
+            memory = SqliteMemory(path, embedder=HashEmbedding())
+            assert memory.get_claim(scope_old)["superseded_by"] is None
+            assert memory.get_claim(project_old)["superseded_by"] is None
+            assert memory.get_claim(same_old)["superseded_by"] == same_new
+            assert memory.get_claim(orphan_old)["superseded_by"] is None
+            memory.close()
+
+        memory = SqliteMemory(path, embedder=HashEmbedding())
+        try:
+            assert [h["id"] for h in memory.recall(
+                "scopealpha", project="repo")] == [scope_old]
+            assert [h["id"] for h in memory.recall(
+                "projectbeta", project="repo")] == [project_old]
+        finally:
+            memory.close()
+
+
+def test_recall_and_scoped_listing_enforce_claim_scope_and_project():
+    root = tempfile.TemporaryDirectory()
+    memory = SqliteMemory(os.path.join(root.name, "memory.db"), embedder=HashEmbedding())
+    try:
+        project_claim = memory.remember(
+            "scope sentinel project fact", keys="scope sentinel",
+            project="repo", scope="repo")
+        foreign_scope = memory.remember(
+            "scope sentinel foreign fact", keys="scope sentinel",
+            project="repo", scope="private-review")
+        global_claim = memory.remember(
+            "scope sentinel global fact", keys="scope sentinel",
+            project="global", scope="global")
+        other_project = memory.remember(
+            "scope sentinel other project", keys="scope sentinel",
+            project="other", scope="private-review")
+
+        expected_default = {project_claim, global_claim}
+        assert {h["id"] for h in memory.recall(
+            "scope sentinel", project="repo", k=10)} == expected_default
+        assert {rid for rid, _ in memory._sparse(
+            "scope sentinel", "repo", 20)} == expected_default
+        assert {rid for rid, _ in memory._dense(
+            "scope sentinel", "repo", 20)} == expected_default
+
+        # Explicit authority may expose a non-default scope, but it never
+        # relaxes the independent project/global row boundary.
+        assert [h["id"] for h in memory.recall(
+            "scope sentinel", project="repo", k=10,
+            allowed_scopes=("private-review",))] == [foreign_scope]
+        assert memory.recall(
+            "scope sentinel", project="repo", allowed_scopes=()) == []
+
+        assert {c["id"] for c in memory.list_claims(project="repo")} == {
+            project_claim}
+        assert [c["id"] for c in memory.list_claims(
+            project="repo", allowed_scopes=("private-review",))] == [foreign_scope]
+        # No project means the pre-existing local-admin surface, not an agent recall.
+        assert {c["id"] for c in memory.list_claims()} == {
+            project_claim, foreign_scope, global_claim, other_project}
+    finally:
+        memory.close()
+        root.cleanup()
+
+
+def test_promotion_cannot_rewrite_scope_or_consolidate_across_scopes():
+    root = tempfile.TemporaryDirectory()
+    memory = SqliteMemory(os.path.join(root.name, "memory.db"), embedder=HashEmbedding())
+    try:
+        baseline = memory.remember(
+            "deploy with make release", project="repo", scope="repo")
+        restricted = memory.propose(
+            "deploy with make release", project="repo", scope="private-review",
+            source="agent_tool", provenance={"run_id": 7})
+
+        assert not memory.promote(
+            restricted, status="verified", scope="global",
+            evidence="reviewer tried to widen the boundary")
+        pending = memory.get_claim(restricted)
+        assert pending["status"] == "proposed"
+        assert pending["scope"] == "private-review"
+
+        assert memory.promote(
+            restricted, status="verified", scope="private-review",
+            evidence="reviewed inside the original boundary")
+        assert memory.get_claim(restricted)["scope"] == "private-review"
+        assert memory.get_claim(baseline)["superseded_by"] is None
+        assert [h["id"] for h in memory.recall(
+            "deploy make release", project="repo")] == [baseline]
+        assert [h["id"] for h in memory.recall(
+            "deploy make release", project="repo",
+            allowed_scopes=("private-review",))] == [restricted]
+    finally:
+        memory.close()
+        root.cleanup()
+
+
+def test_run_settlement_ignores_forged_or_foreign_claim_ids_and_never_invalidates():
+    from harness.loop import Harness
+
+    root, memory = _memory()
+    try:
+        harness = object.__new__(Harness)
+        harness.memory = memory
+        harness.project = "repo"
+        producer = {"run_id": 41, "task_id": "learn", "provider": "stub",
+                    "model": "stub-1"}
+        res = RunResult(run_id=41, task_id="learn", provider="stub", model="stub-1")
+
+        def proposal(text, **overrides):
+            args = {"project": "repo", "scope": "repo",
+                    "source": "run_consolidation", "provenance": producer}
+            args.update(overrides)
+            return memory.propose(text, **args)
+
+        owned = proposal("owned pending run conclusion")
+        for forged_run_id in (True, 41.9, 10 ** 100):
+            forged_result = RunResult(
+                run_id=forged_run_id, task_id="learn", provider="stub", model="stub-1",
+                memory_claim_ids=[owned])
+            assert harness.settle_run_memory(forged_result, True) == {
+                "promoted": 0, "rejected": 0}
+            assert memory.get_claim(owned)["status"] == "proposed"
+        foreign_project = proposal("foreign project conclusion", project="other")
+        foreign_scope = proposal("foreign scope conclusion", scope="private-review")
+        foreign_source = proposal("foreign producer conclusion", source="agent_tool")
+        foreign_run = proposal(
+            "foreign run conclusion",
+            provenance=dict(producer, run_id=99))
+        malformed = proposal("malformed provenance conclusion", provenance="not-json")
+        ambiguous = proposal(
+            "duplicate-key provenance conclusion",
+            provenance=('{"model":"stub-1","provider":"stub","run_id":99,'
+                        '"run_id":41,"task_id":"learn"}'))
+        already_accepted = proposal("previously accepted conclusion")
+        assert memory.promote(already_accepted, status="verified", evidence="prior check")
+
+        res.memory_claim_ids = [
+            True, 0, 1.5, "not-an-id", 999999, 10 ** 100, "9" * 5000,
+            str(foreign_project),
+            foreign_scope, foreign_source, foreign_run, malformed, ambiguous,
+            already_accepted, owned, owned,
+        ]
+        settled = harness.settle_run_memory(
+            res, True, {"kind": "command", "passed": True}, source="test_host")
+        assert settled == {"promoted": 1, "rejected": 0}
+        accepted = memory.get_claim(owned)
+        assert accepted["status"] == "verified"
+        assert accepted["source"] == "run_consolidation"
+        assert accepted["provenance"] == (
+            '{"model":"stub-1","provider":"stub","run_id":41,"task_id":"learn"}')
+        assert '"project":"repo"' in accepted["review_provenance"]
+        for claim_id in (
+                foreign_project, foreign_scope, foreign_source, foreign_run,
+                malformed, ambiguous):
+            assert memory.get_claim(claim_id)["status"] == "proposed"
+
+        rejected = proposal("owned failed run conclusion")
+        res.memory_claim_ids = [already_accepted, owned, foreign_scope, rejected]
+        settled = harness.settle_run_memory(
+            res, False, {"kind": "command", "passed": False}, source="test_host")
+        assert settled == {"promoted": 0, "rejected": 1}
+        assert memory.get_claim(rejected)["status"] == "rejected"
+        assert memory.get_claim(rejected)["source"] == "run_consolidation"
+        assert memory.get_claim(rejected)["provenance"] == accepted["provenance"]
+        # Replayed accepted ids and unrelated pending ids are untouched.  In
+        # particular, failure settlement has no invalidate fallback anymore.
+        assert memory.get_claim(already_accepted)["status"] == "verified"
+        assert memory.get_claim(owned)["status"] == "verified"
+        assert memory.get_claim(foreign_scope)["status"] == "proposed"
+    finally:
+        memory.close()
+        root.cleanup()
+
+
 def test_run_consolidation_waits_for_verification_then_settles():
     """A successful-looking answer is quarantined; executed evidence controls recall."""
     from harness import cli

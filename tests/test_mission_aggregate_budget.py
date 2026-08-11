@@ -141,8 +141,54 @@ def test_total_steps_is_atomic_across_root_and_siblings(tmp_path):
         "SELECT COUNT(*) n FROM mission_events WHERE kind='decision'"
     ).fetchone()["n"]
     assert count == 2
+    assert left.aggregate_runtime("root")["model_calls"] == 2
+    assert left.aggregate_runtime("root")["turns"] == 2
     left.close()
     right.close()
+
+
+def test_model_call_budget_is_independent_and_defaults_are_durable(tmp_path):
+    store = MissionStore(str(tmp_path / "calls.db"))
+    leash = world_leash(
+        max_total_steps=10, max_model_calls=1, max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    assert store.reserve_decision("root", leash)
+    assert store.runtime("root")["model_calls"] == 1
+    assert store.runtime("root")["turns"] == 1
+    assert store.budget_reason("root") == "mission model-call budget exhausted"
+    assert store.reserve_decision("root", leash) is False
+    store.close()
+
+
+def test_model_call_counter_repairs_partial_column_migration(tmp_path):
+    path = str(tmp_path / "partial-calls.db")
+    store = MissionStore(path)
+    leash = world_leash(max_total_steps=10, max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    assert store.reserve_decision("root", leash)
+    assert store.reserve_decision("root", leash)
+    store.close()
+
+    # Represents a prior process which successfully added the columns but died
+    # before it could backfill decision receipts or record any migration marker.
+    db = sqlite3.connect(path)
+    db.execute("ALTER TABLE mission_runtime DROP COLUMN model_calls")
+    db.execute("ALTER TABLE mission_runtime DROP COLUMN turns")
+    db.execute(
+        "ALTER TABLE mission_runtime ADD COLUMN model_calls INTEGER NOT NULL DEFAULT 0")
+    db.execute(
+        "ALTER TABLE mission_runtime ADD COLUMN turns INTEGER NOT NULL DEFAULT 0")
+    db.commit()
+    db.close()
+
+    reopened = MissionStore(path)
+    assert reopened.runtime("root")["model_calls"] == 2
+    assert reopened.runtime("root")["turns"] == 2
+    reopened.close()
+    again = MissionStore(path)
+    assert again.runtime("root")["model_calls"] == 2
+    assert again.runtime("root")["turns"] == 2
+    again.close()
 
 
 @pytest.mark.parametrize(
@@ -204,6 +250,65 @@ def test_irreversible_quotas_are_atomic_across_root_and_siblings_and_refund(
     retried = stores[loser].reserve_action(
         loser, loser + "-retry", True, leash, "social.publish",
         {"mission": loser, "retry": True}, tokens[loser])
+    assert retried[0], retried
+    left.close()
+    right.close()
+
+
+def test_irreversible_semantic_key_is_atomic_across_campaign_and_releasable(
+        tmp_path):
+    path = str(tmp_path / "semantic-keys.db")
+    setup = MissionStore(path)
+    leash = world_leash(
+        max_total_steps=20, max_irreversible_actions=20,
+        actions_per_hour=20, max_storage_bytes=10_000_000)
+    create_mission(setup, "root", "root", leash=leash)
+    _create_child(setup, "left", "root", leash)
+    _create_child(setup, "right", "root", leash)
+    setup.close()
+
+    left, right = MissionStore(path), MissionStore(path)
+    tokens = {"left": left.claim_run("left"), "right": right.claim_run("right")}
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def reserve(store, mission_id):
+        barrier.wait()
+        results[mission_id] = store.reserve_action(
+            mission_id, "publish:release-42", True, leash,
+            "social.publish", {"release": 42}, tokens[mission_id])
+
+    threads = [
+        threading.Thread(target=reserve, args=(left, "left")),
+        threading.Thread(target=reserve, args=(right, "right")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert not any(thread.is_alive() for thread in threads)
+    winners = [mid for mid, result in results.items() if result[0]]
+    losers = [mid for mid, result in results.items() if not result[0]]
+    assert len(winners) == len(losers) == 1
+    assert "duplicate external action blocked" in results[losers[0]][1]
+    assert left.db.execute(
+        "SELECT COUNT(*) n FROM mission_action_keys WHERE action_key=?",
+        ("publish:release-42",)).fetchone()["n"] == 1
+
+    # The fence belongs to this root campaign, not to the key globally.
+    create_mission(left, "other-root", "independent", leash=leash)
+    other_token = left.claim_run("other-root")
+    assert left.reserve_action(
+        "other-root", "publish:release-42", True, leash,
+        "social.publish", {"release": 42}, other_token)[0]
+
+    stores = {"left": left, "right": right}
+    winner, loser = winners[0], losers[0]
+    assert stores[winner].release_action_key(
+        winner, "publish:release-42", tokens[winner])
+    retried = stores[loser].reserve_action(
+        loser, "publish:release-42", True, leash,
+        "social.publish", {"release": 42}, tokens[loser])
     assert retried[0], retried
     left.close()
     right.close()

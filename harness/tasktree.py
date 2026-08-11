@@ -50,6 +50,16 @@ def _jl(value, default=None):
         return {} if default is None else default
 
 
+def _canonical_workspace(path):
+    """Return the durable path spelling used for workspace replay identity."""
+    return os.path.realpath(os.path.abspath(str(path))) if path else ""
+
+
+def _same_workspace(left, right):
+    return os.path.normcase(_canonical_workspace(left)) == \
+        os.path.normcase(_canonical_workspace(right))
+
+
 def normalize_artifact_refs(values):
     """Keep only bounded references; child output content never rides the mailbox.
 
@@ -117,6 +127,7 @@ def narrow_leash(parent, requested=None):
     numeric_caps = {
         "spend_max_usd", "max_total_steps", "max_irreversible_actions",
         "actions_per_hour", "max_model_tokens", "max_model_cost_usd",
+        "max_model_calls",
         "max_active_wall_seconds", "max_elapsed_seconds", "max_step_seconds",
         "max_retries", "max_storage_bytes", "checkpoint_keep",
         "human_escalate_seconds", "human_timeout_seconds", "max_specialists",
@@ -236,10 +247,13 @@ class TaskTreeStore:
             task TEXT NOT NULL, status TEXT NOT NULL, background INTEGER NOT NULL DEFAULT 0,
             leash_json TEXT NOT NULL, resources_json TEXT NOT NULL DEFAULT '[]',
             workspace_mode TEXT NOT NULL DEFAULT 'worktree', workspace TEXT NOT NULL DEFAULT '',
+            spawn_workspace TEXT NOT NULL DEFAULT '',
             owns_workspace INTEGER NOT NULL DEFAULT 0, result TEXT NOT NULL DEFAULT '',
             owner_token TEXT NOT NULL DEFAULT '', lease_until INTEGER NOT NULL DEFAULT 0,
             progress_seq INTEGER NOT NULL DEFAULT 0, progress_at INTEGER NOT NULL DEFAULT 0,
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_tokens INTEGER NOT NULL DEFAULT 0,
+            model_calls INTEGER NOT NULL DEFAULT 0, turns INTEGER NOT NULL DEFAULT 0,
             model_cost_microusd INTEGER NOT NULL DEFAULT 0,
             active_wall_ms INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0,
             cancel_requested INTEGER NOT NULL DEFAULT 0,
@@ -262,8 +276,106 @@ class TaskTreeStore:
             kind TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}',
             state TEXT NOT NULL DEFAULT 'queued', created_at INTEGER NOT NULL,
             acked_at INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS agent_mission_usage_projection(
+            run_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL DEFAULT '',
+            initialized INTEGER NOT NULL DEFAULT 1,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_tokens INTEGER NOT NULL DEFAULT 0,
+            model_calls INTEGER NOT NULL DEFAULT 0,
+            turns INTEGER NOT NULL DEFAULT 0,
+            model_cost_microusd INTEGER NOT NULL DEFAULT 0,
+            active_wall_ms INTEGER NOT NULL DEFAULT 0,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS tasktree_schema_migrations(
+            name TEXT PRIMARY KEY, completed_at INTEGER NOT NULL);
         """)
+        run_cols = {row[1] for row in self.db.execute("PRAGMA table_info(agent_runs)")}
+        if "cache_tokens" not in run_cols:
+            try:
+                self.db.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN cache_tokens "
+                    "INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                # A daemon and web process may open the same pre-upgrade DB.
+                # Accept only the benign race where the peer added the column.
+                if "cache_tokens" not in {
+                        row[1] for row in self.db.execute("PRAGMA table_info(agent_runs)")}:
+                    raise
+        for col in ("model_calls", "turns"):
+            if col not in run_cols:
+                try:
+                    self.db.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN %s "
+                        "INTEGER NOT NULL DEFAULT 0" % col)
+                except sqlite3.OperationalError:
+                    if col not in {
+                            row[1] for row in self.db.execute(
+                                "PRAGMA table_info(agent_runs)")}:
+                        raise
+        if "spawn_workspace" not in run_cols:
+            try:
+                self.db.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN spawn_workspace "
+                    "TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                if "spawn_workspace" not in {
+                        row[1] for row in self.db.execute("PRAGMA table_info(agent_runs)")}:
+                    raise
+        # The marker, rather than table existence, closes the crash window where
+        # one process creates the projection table but dies before old rows are
+        # baselined.  Committing schema ALTERs first lets BEGIN IMMEDIATE make the
+        # resumable data migration and its marker one atomic unit.
         self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            spawn_migrated = self.db.execute(
+                "SELECT 1 FROM tasktree_schema_migrations "
+                "WHERE name='spawn_workspace_v1'").fetchone()
+            if not spawn_migrated:
+                # Repair every empty legacy value, not just rows seen by the
+                # process that added the column. ``workspace`` may have been
+                # bound later, so the immutable creation event distinguishes
+                # runs born empty from runs born against a checkout.
+                legacy = self.db.execute(
+                    "SELECT r.run_id,r.workspace,e.payload_json FROM agent_runs r "
+                    "LEFT JOIN agent_events e ON e.event_id=(SELECT MIN(c.event_id) "
+                    "FROM agent_events c WHERE c.run_id=r.run_id AND c.kind='created') "
+                    "WHERE r.spawn_workspace=''"
+                ).fetchall()
+                for row in legacy:
+                    created = _jl(row["payload_json"])
+                    initial = "" if created.get("status") == WORKSPACE_REQUIRED \
+                        else _canonical_workspace(row["workspace"])
+                    if initial:
+                        self.db.execute(
+                            "UPDATE agent_runs SET spawn_workspace=? WHERE run_id=?",
+                            (initial, row["run_id"]))
+                self.db.execute(
+                    "INSERT INTO tasktree_schema_migrations(name,completed_at) VALUES(?,?)",
+                    ("spawn_workspace_v1", int(time.time())))
+            projection_migrated = self.db.execute(
+                "SELECT 1 FROM tasktree_schema_migrations "
+                "WHERE name='mission_usage_projection_v1'").fetchone()
+            if not projection_migrated:
+                # Pre-upgrade counters may already contain usage projected by the old
+                # before/after delta path.  There is no lossless way to recover each
+                # Mission's share from an ancestor aggregate, so baseline those rows
+                # once on their first authoritative Mission reconciliation.  New runs
+                # insert an initialized zero watermark at creation and charge in full.
+                self.db.execute(
+                    "INSERT OR IGNORE INTO agent_mission_usage_projection("
+                    "run_id,mission_id,initialized,updated_at) "
+                    "SELECT run_id,mission_id,0,? FROM agent_runs",
+                    (int(time.time()),))
+                self.db.execute(
+                    "INSERT INTO tasktree_schema_migrations(name,completed_at) VALUES(?,?)",
+                    ("mission_usage_projection_v1", int(time.time())))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
     def _hook(self, event, payload, subject=""):
         if self.hooks is None:
@@ -357,7 +469,7 @@ class TaskTreeStore:
         task = str(task)[:4000]
         leash = dict(leash or {})
         resources = normalize_resources(resources)
-        workspace = os.path.realpath(os.path.abspath(workspace)) if workspace else ""
+        workspace = _canonical_workspace(workspace)
         status = QUEUED if workspace or workspace_mode != "worktree" else WORKSPACE_REQUIRED
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
@@ -373,20 +485,25 @@ class TaskTreeStore:
                         decoded["leash"] == leash and
                         decoded["resources"] == resources and
                         decoded["workspace_mode"] == workspace_mode and
-                        decoded["workspace"] == workspace
+                        _same_workspace(decoded.get("spawn_workspace", ""), workspace)
                     )
                     if not matches:
                         self.db.rollback()
                         raise ValueError(
-                            "root run id is already bound to a different operation")
+                            "root run id collision: already bound to a different operation")
                     self.db.commit()
                     return decoded
                 self.db.execute(
                     "INSERT INTO agent_runs(run_id,parent_run_id,root_run_id,mission_id,depth,role,"
-                    "task,status,leash_json,resources_json,workspace_mode,workspace,created_at,updated_at,"
-                    "progress_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "task,status,leash_json,resources_json,workspace_mode,workspace,spawn_workspace,"
+                    "created_at,updated_at,progress_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (run_id, "", run_id, mission_id, 0, "orchestrator", task, status,
-                     _js(leash), _js(resources), workspace_mode, workspace, now, now, now))
+                     _js(leash), _js(resources), workspace_mode, workspace, workspace,
+                     now, now, now))
+                self.db.execute(
+                    "INSERT INTO agent_mission_usage_projection("
+                    "run_id,mission_id,initialized,updated_at) VALUES(?,?,1,?)",
+                    (run_id, str(mission_id or ""), now))
                 self._event_locked(run_id, "created", {"status": status}, now)
                 self.db.commit()
             except Exception:
@@ -418,7 +535,7 @@ class TaskTreeStore:
                                  (resource["kind"], resource["id"]))
         run_id = run_id or "run_" + secrets.token_hex(8)
         now = int(time.time())
-        workspace = os.path.realpath(os.path.abspath(workspace)) if workspace else ""
+        workspace = _canonical_workspace(workspace)
         status = QUEUED if workspace or workspace_mode != "worktree" else WORKSPACE_REQUIRED
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
@@ -432,11 +549,13 @@ class TaskTreeStore:
                     decoded["task"] == str(task)[:4000] and
                     decoded["leash"] == child_leash and
                     decoded["resources"] == child_resources and
-                    decoded["workspace_mode"] == workspace_mode
+                    decoded["workspace_mode"] == workspace_mode and
+                    _same_workspace(decoded.get("spawn_workspace", ""), workspace)
                 )
                 if not matches:
                     self.db.rollback()
-                    raise ValueError("specialist run id is already bound to different authority")
+                    raise ValueError(
+                        "specialist run id collision: already bound to different authority")
                 self.db.commit()
                 return decoded
             current_parent = self.db.execute(
@@ -468,11 +587,16 @@ class TaskTreeStore:
                                              (new["kind"], new["id"]))
             self.db.execute(
                 "INSERT INTO agent_runs(run_id,parent_run_id,root_run_id,mission_id,depth,role,"
-                "task,status,leash_json,resources_json,workspace_mode,workspace,created_at,updated_at,"
-                "progress_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "task,status,leash_json,resources_json,workspace_mode,workspace,spawn_workspace,"
+                "created_at,updated_at,progress_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, parent_run_id, parent["root_run_id"], "",
                  parent["depth"] + 1, str(role or "specialist")[:80], str(task)[:4000], status,
-                 _js(child_leash), _js(child_resources), workspace_mode, workspace, now, now, now))
+                 _js(child_leash), _js(child_resources), workspace_mode, workspace, workspace,
+                 now, now, now))
+            self.db.execute(
+                "INSERT INTO agent_mission_usage_projection("
+                "run_id,mission_id,initialized,updated_at) VALUES(?,'',1,?)",
+                (run_id, now))
             self._event_locked(run_id, "created", {"parent_run_id": parent_run_id,
                                                      "role": role, "status": status}, now)
             self._event_locked(parent_run_id, "child_created", {"run_id": run_id,
@@ -558,13 +682,28 @@ class TaskTreeStore:
         return self.get(run_id)
 
     def bind_mission(self, run_id, mission_id):
+        mission_id = str(mission_id)
+        now = int(time.time())
         with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
             cur = self.db.execute(
                 "UPDATE agent_runs SET mission_id=?,updated_at=? WHERE run_id=? "
                 "AND status NOT IN (?,?,?) AND owner_token='' "
                 "AND (mission_id='' OR mission_id=?)",
-                (str(mission_id)[:100], int(time.time()), run_id,
-                 COMPLETED, FAILED, CANCELLED, str(mission_id)[:100]))
+                (mission_id, now, run_id, COMPLETED, FAILED, CANCELLED, mission_id))
+            if cur.rowcount:
+                projection = self.db.execute(
+                    "SELECT mission_id FROM agent_mission_usage_projection WHERE run_id=?",
+                    (run_id,)).fetchone()
+                if projection and projection["mission_id"] not in ("", mission_id):
+                    self.db.rollback()
+                    return False
+                self.db.execute(
+                    "INSERT INTO agent_mission_usage_projection("
+                    "run_id,mission_id,initialized,updated_at) VALUES(?,?,0,?) "
+                    "ON CONFLICT(run_id) DO UPDATE SET mission_id=excluded.mission_id,"
+                    "updated_at=excluded.updated_at",
+                    (run_id, mission_id, now))
             self.db.commit()
         return cur.rowcount == 1
 
@@ -1378,32 +1517,206 @@ class TaskTreeStore:
             raise ValueError("specialist target is outside caller descendant scope")
         return self.request_cancel(target_run_id, sender_run_id)
 
+    @staticmethod
+    def _usage_values(*, input_tokens=0, output_tokens=0, cache_tokens=0,
+                      model_calls=0, turns=0, cost_usd=0.0,
+                      model_cost_microusd=None, wall_ms=0, retries=0):
+        cost = (max(0, int(model_cost_microusd))
+                if model_cost_microusd is not None else
+                max(0, int(round(float(cost_usd) * 1_000_000))))
+        return {
+            "input_tokens": max(0, int(input_tokens)),
+            "output_tokens": max(0, int(output_tokens)),
+            "cache_tokens": max(0, int(cache_tokens)),
+            "model_calls": max(0, int(model_calls)),
+            "turns": max(0, int(turns)),
+            "model_cost_microusd": cost,
+            "active_wall_ms": max(0, int(wall_ms)),
+            "retry_count": max(0, int(retries)),
+        }
+
+    def _ancestry_locked(self, run_id):
+        """Return actor -> root rows while failing closed on corrupt ancestry."""
+        ancestry, seen = [], set()
+        cursor = self.db.execute(
+            "SELECT run_id,parent_run_id,root_run_id FROM agent_runs WHERE run_id=?",
+            (run_id,)).fetchone()
+        expected_root = cursor["root_run_id"] if cursor else ""
+        while cursor:
+            current = cursor["run_id"]
+            if current in seen or len(ancestry) >= 64:
+                raise ValueError("run usage ancestry is cyclic or too deep")
+            if cursor["root_run_id"] != expected_root:
+                raise ValueError("run usage ancestry crosses root authority")
+            seen.add(current)
+            ancestry.append(current)
+            parent_id = cursor["parent_run_id"]
+            if not parent_id:
+                if current != cursor["root_run_id"]:
+                    raise ValueError("run usage ancestry is incomplete")
+                return ancestry
+            cursor = self.db.execute(
+                "SELECT run_id,parent_run_id,root_run_id FROM agent_runs WHERE run_id=?",
+                (parent_id,)).fetchone()
+            if not cursor:
+                raise ValueError("run usage ancestry is incomplete")
+        raise ValueError("run missing")
+
+    def _charge_usage_locked(self, ancestry, usage):
+        if not any(usage.values()):
+            return
+        marks = ",".join("?" for _ in ancestry)
+        self.db.execute(
+            "UPDATE agent_runs SET input_tokens=input_tokens+?,"
+            "output_tokens=output_tokens+?,cache_tokens=cache_tokens+?,"
+            "model_calls=model_calls+?,turns=turns+?,"
+            "model_cost_microusd=model_cost_microusd+?,"
+            "active_wall_ms=active_wall_ms+?,retry_count=retry_count+? "
+            "WHERE run_id IN (%s)" % marks,
+            (usage["input_tokens"], usage["output_tokens"],
+             usage["cache_tokens"], usage["model_calls"], usage["turns"],
+             usage["model_cost_microusd"], usage["active_wall_ms"],
+             usage["retry_count"], *ancestry))
+
+    def mission_usage_projection(self, run_id):
+        """Return the durable own-Mission high watermark for diagnostics/tests."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT * FROM agent_mission_usage_projection WHERE run_id=?",
+                (run_id,)).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["initialized"] = bool(out["initialized"])
+        out["model_cost_usd"] = out["model_cost_microusd"] / 1_000_000.0
+        return out
+
+    def project_mission_usage(self, run_id, mission_id, *, input_tokens=0,
+                              output_tokens=0, cache_tokens=0, model_calls=0,
+                              turns=0, cost_usd=0.0, model_cost_microusd=None,
+                              wall_ms=0, retries=0):
+        """Project one Mission's absolute own usage exactly once into its run tree.
+
+        MissionStore and TaskTreeStore are separate durable databases, so a
+        process can die after Mission accounting commits but before TaskTree is
+        updated.  Absolute per-run high watermarks make the next reconciliation
+        charge only the missing positive delta.  The watermark update and the
+        actor-plus-ancestor charge share one ``BEGIN IMMEDIATE`` transaction.
+        """
+        mission_id = str(mission_id or "")
+        absolute = self._usage_values(
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_tokens=cache_tokens, model_calls=model_calls, turns=turns,
+            cost_usd=cost_usd, model_cost_microusd=model_cost_microusd,
+            wall_ms=wall_ms, retries=retries)
+        now = int(time.time())
+        columns = tuple(absolute)
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                run = self.db.execute(
+                    "SELECT * FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+                if not run:
+                    raise ValueError("run missing")
+                if not mission_id or run["mission_id"] != mission_id:
+                    raise ValueError("Mission usage source does not match run binding")
+                ancestry = self._ancestry_locked(run_id)
+                projection = self.db.execute(
+                    "SELECT * FROM agent_mission_usage_projection WHERE run_id=?",
+                    (run_id,)).fetchone()
+                if not projection:
+                    # A current-version create always inserts this row.  Missing
+                    # therefore means a rolling-upgrade/partial legacy writer;
+                    # baseline conservatively rather than treating old aggregate
+                    # counters as zero and double charging them.
+                    self.db.execute(
+                        "INSERT INTO agent_mission_usage_projection("
+                        "run_id,mission_id,initialized,updated_at) VALUES(?,?,0,?)",
+                        (run_id, mission_id, now))
+                    projection = self.db.execute(
+                        "SELECT * FROM agent_mission_usage_projection WHERE run_id=?",
+                        (run_id,)).fetchone()
+                if projection["mission_id"] not in ("", mission_id):
+                    raise ValueError("Mission usage watermark belongs to another Mission")
+
+                if not projection["initialized"]:
+                    # See the migration note in __init__.  Existing aggregate
+                    # counters may contain this Mission already; charge only a
+                    # provable deficit, then adopt the authoritative absolute
+                    # values as the forward high watermark.
+                    child_totals = self.db.execute(
+                        "SELECT " + ",".join(
+                            "COALESCE(SUM(%s),0) AS %s" % (name, name)
+                            for name in columns) +
+                        " FROM agent_runs WHERE parent_run_id=?", (run_id,)
+                    ).fetchone()
+                    # Legacy TaskTree counters are subtree aggregates: a child
+                    # charge also incremented every ancestor.  Subtracting the
+                    # immediate-child aggregates recovers this run's own already
+                    # projected share and prevents descendant usage from masking
+                    # a missing root/self charge during upgrade.
+                    legacy_own = {
+                        name: max(0, int(run[name] or 0) -
+                                  int(child_totals[name] or 0))
+                        for name in columns
+                    }
+                    delta = {name: max(0, absolute[name] - legacy_own[name])
+                             for name in columns}
+                    kind = "mission_usage_baselined"
+                else:
+                    delta = {name: max(0, absolute[name] - int(projection[name] or 0))
+                             for name in columns}
+                    kind = "mission_usage_projected"
+                high = {name: max(absolute[name], int(projection[name] or 0))
+                        for name in columns}
+                self.db.execute(
+                    "UPDATE agent_mission_usage_projection SET mission_id=?,initialized=1,"
+                    "input_tokens=?,output_tokens=?,cache_tokens=?,model_calls=?,turns=?,"
+                    "model_cost_microusd=?,active_wall_ms=?,retry_count=?,updated_at=? "
+                    "WHERE run_id=?",
+                    (mission_id, high["input_tokens"], high["output_tokens"],
+                     high["cache_tokens"], high["model_calls"], high["turns"],
+                     high["model_cost_microusd"], high["active_wall_ms"],
+                     high["retry_count"], now, run_id))
+                self._charge_usage_locked(ancestry, delta)
+                if any(delta.values()) or kind == "mission_usage_baselined":
+                    self._event_locked(
+                        run_id, kind,
+                        {"mission_id": mission_id, "delta": delta,
+                         "high_watermark": high}, now)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+        return [(rid, self.budget_reason(rid)) for rid in ancestry
+                if self.budget_reason(rid)]
+
     def account_usage(self, run_id, token, *, input_tokens=0, output_tokens=0,
+                      cache_tokens=0, model_calls=0, turns=0,
                       cost_usd=0.0, wall_ms=0, retries=0):
         """Charge a specialist and every ancestor, preventing fan-out budget escape."""
-        run = self.get(run_id)
-        if not run:
-            return []
-        ancestry = []
-        cursor = run
-        while cursor:
-            ancestry.append(cursor["run_id"])
-            cursor = self.get(cursor["parent_run_id"]) if cursor["parent_run_id"] else None
+        usage = self._usage_values(
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_tokens=cache_tokens, model_calls=model_calls, turns=turns,
+            cost_usd=cost_usd, wall_ms=wall_ms, retries=retries)
         with self.lock:
-            owner = self.db.execute(
-                "SELECT 1 FROM agent_runs WHERE run_id=? AND owner_token=? "
-                "AND status IN (?,?)", (run_id, token, RUNNING, CANCEL_REQUESTED)).fetchone()
-            if not owner:
-                return ["run ownership lost"]
-            marks = ",".join("?" for _ in ancestry)
-            self.db.execute(
-                "UPDATE agent_runs SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,"
-                "model_cost_microusd=model_cost_microusd+?,active_wall_ms=active_wall_ms+?,"
-                "retry_count=retry_count+? WHERE run_id IN (%s)" % marks,
-                (max(0, int(input_tokens)), max(0, int(output_tokens)),
-                 max(0, int(round(float(cost_usd) * 1_000_000))), max(0, int(wall_ms)),
-                 max(0, int(retries)), *ancestry))
-            self.db.commit()
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                owner = self.db.execute(
+                    "SELECT 1 FROM agent_runs WHERE run_id=? AND owner_token=? "
+                    "AND status IN (?,?)",
+                    (run_id, token, RUNNING, CANCEL_REQUESTED)).fetchone()
+                if not owner:
+                    exists = self.db.execute(
+                        "SELECT 1 FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+                    self.db.rollback()
+                    return ["run ownership lost"] if exists else []
+                ancestry = self._ancestry_locked(run_id)
+                self._charge_usage_locked(ancestry, usage)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return [(rid, self.budget_reason(rid)) for rid in ancestry if self.budget_reason(rid)]
 
     def budget_reason(self, run_id):
@@ -1412,8 +1725,13 @@ class TaskTreeStore:
             return "run missing"
         leash = run["leash"]
         checks = (
-            (run["input_tokens"] + run["output_tokens"] >=
+            (run["input_tokens"] + run["output_tokens"] + run["cache_tokens"] >=
              int(leash.get("max_model_tokens", 2_000_000)), "model-token budget exhausted"),
+            (run["model_calls"] >= int(leash.get(
+                "max_model_calls", leash.get("max_total_steps", 1000))),
+             "model-call budget exhausted"),
+            (run["turns"] >= int(leash.get("max_total_steps", 1000)),
+             "model-turn budget exhausted"),
             (run["model_cost_usd"] >= float(leash.get("max_model_cost_usd", 25)),
              "model-cost budget exhausted"),
             (run["active_wall_ms"] >= int(leash.get("max_active_wall_seconds", 21600)) * 1000,
@@ -1528,6 +1846,24 @@ class TaskTreeStore:
             query += " WHERE " + " AND ".join(where)
         with self.lock:
             rows = self.db.execute(query + " ORDER BY created_at,run_id", args).fetchall()
+        return [self._decode(row) for row in rows]
+
+    def usage_reconciliation_runs(self):
+        """Return only runs whose Mission usage can still need reconciliation.
+
+        Current writers project usage before making a TaskTree run terminal. A
+        terminal current-schema row is therefore clean; legacy/uninitialized rows
+        remain eligible exactly once. This keeps daemon ticks proportional to live
+        work instead of the entire historical run table.
+        """
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT r.* FROM agent_runs r LEFT JOIN "
+                "agent_mission_usage_projection p ON p.run_id=r.run_id "
+                "WHERE r.status NOT IN (?,?,?) OR (r.mission_id<>'' AND "
+                "(p.run_id IS NULL OR p.initialized=0)) "
+                "ORDER BY r.created_at,r.run_id",
+                (COMPLETED, FAILED, CANCELLED)).fetchall()
         return [self._decode(row) for row in rows]
 
     def notifications(self, state="queued", limit=100):

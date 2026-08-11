@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sqlite3
 import threading
 import time
 
@@ -107,6 +108,273 @@ def test_workspace_and_mission_bindings_are_immutable_once_set(tmp_path):
     assert store.bind_workspace(root["run_id"], str(repo))
     assert store.bind_workspace(root["run_id"], str(other)) is None
     assert store.get(root["run_id"])["workspace"] == os.path.realpath(str(repo))
+
+
+def test_specialist_replay_uses_canonical_spawn_workspace_and_reports_collision(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, repo = _root(store, tmp_path)
+    nested = repo / "nested"
+    nested.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    run_id = "run_workspace_identity"
+    first = store.spawn_specialist(
+        root["run_id"], "reader", "inspect canonical workspace",
+        resources=[], workspace=str(repo), run_id=run_id)
+    replay = store.spawn_specialist(
+        root["run_id"], "reader", "inspect canonical workspace",
+        resources=[], workspace=os.path.join(str(nested), ".."), run_id=run_id)
+    assert replay["run_id"] == first["run_id"]
+
+    with pytest.raises(ValueError, match="run id collision"):
+        store.spawn_specialist(
+            root["run_id"], "reader", "inspect canonical workspace",
+            resources=[], workspace=str(other), run_id=run_id)
+
+
+def test_root_replay_keeps_its_spawn_workspace_identity_after_binding(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    leash = world_leash(max_specialist_depth=2)
+    run_id = "run_root_workspace_identity"
+    root = store.create_root(
+        "provision later", leash, [], run_id=run_id, workspace="")
+    assert root["status"] == WORKSPACE_REQUIRED
+    assert store.bind_workspace(run_id, str(repo), owns_workspace=True)
+
+    replay = store.create_root(
+        "provision later", leash, [], run_id=run_id, workspace="")
+    assert replay["workspace"] == os.path.realpath(str(repo))
+    assert replay["spawn_workspace"] == ""
+
+    with pytest.raises(ValueError, match="root run id collision"):
+        store.create_root(
+            "provision later", leash, [], run_id=run_id, workspace=str(repo))
+
+
+def test_tasktree_legacy_schema_migrates_spawn_workspace_and_cache_budget(tmp_path):
+    path = str(tmp_path / "legacy-tree.db")
+    store = TaskTreeStore(path)
+    root, repo = _root(store, tmp_path, max_model_tokens=5)
+    child = store.spawn_specialist(
+        root["run_id"], "writer", "upgrade safely", resources=[],
+        workspace="", run_id="run_legacy_writer")
+    worktree = tmp_path / "legacy-worktree"
+    worktree.mkdir()
+    assert store.bind_workspace(child["run_id"], str(worktree), owns_workspace=True)
+    assert store.bind_mission(child["run_id"], "spc_legacy_writer")
+    token = store.claim(child["run_id"])
+    assert store.account_usage(
+        child["run_id"], token, cache_tokens=5, model_calls=2, turns=3)
+    store.close()
+
+    legacy = sqlite3.connect(path)
+    legacy.execute("ALTER TABLE agent_runs DROP COLUMN spawn_workspace")
+    legacy.execute("ALTER TABLE agent_runs DROP COLUMN cache_tokens")
+    legacy.execute("ALTER TABLE agent_runs DROP COLUMN model_calls")
+    legacy.execute("ALTER TABLE agent_runs DROP COLUMN turns")
+    # Simulate a process dying after CREATE TABLE but before old rows and the
+    # durable migration marker were committed.
+    legacy.execute("DELETE FROM agent_mission_usage_projection")
+    legacy.execute(
+        "DELETE FROM tasktree_schema_migrations "
+        "WHERE name='mission_usage_projection_v1'")
+    legacy.commit()
+    legacy.close()
+
+    reopened = TaskTreeStore(path)
+    migrated = reopened.get(child["run_id"])
+    assert migrated["spawn_workspace"] == ""
+    assert migrated["cache_tokens"] == 0
+    assert migrated["model_calls"] == 0
+    assert migrated["turns"] == 0
+    projection = reopened.mission_usage_projection(child["run_id"])
+    assert projection and projection["initialized"] is False
+    replay = reopened.spawn_specialist(
+        root["run_id"], "writer", "upgrade safely", resources=[],
+        workspace="", run_id=child["run_id"])
+    assert replay["workspace"] == os.path.realpath(str(worktree))
+
+    exhausted = reopened.project_mission_usage(
+        child["run_id"], "spc_legacy_writer",
+        cache_tokens=5, model_calls=2, turns=3)
+    assert (child["run_id"], "model-token budget exhausted") in exhausted
+    assert (root["run_id"], "model-token budget exhausted") in exhausted
+    assert reopened.get(child["run_id"])["cache_tokens"] == 5
+    assert reopened.get(root["run_id"])["cache_tokens"] == 5
+    assert reopened.get(child["run_id"])["model_calls"] == 2
+    assert reopened.get(root["run_id"])["model_calls"] == 2
+    # Reconciliation replays the same absolute receipt without charging twice.
+    reopened.project_mission_usage(
+        child["run_id"], "spc_legacy_writer",
+        cache_tokens=5, model_calls=2, turns=3)
+    assert reopened.get(root["run_id"])["cache_tokens"] == 5
+    assert reopened.get(root["run_id"])["turns"] == 3
+
+
+def test_spawn_workspace_backfill_resumes_when_column_already_exists(tmp_path):
+    path = str(tmp_path / "partial-workspace-migration.db")
+    store = TaskTreeStore(path)
+    root, repo = _root(store, tmp_path)
+    run_id = root["run_id"]
+    store.close()
+
+    partial = sqlite3.connect(path)
+    partial.execute(
+        "UPDATE agent_runs SET spawn_workspace='' WHERE run_id=?", (run_id,))
+    partial.execute(
+        "DELETE FROM tasktree_schema_migrations WHERE name='spawn_workspace_v1'")
+    partial.commit()
+    partial.close()
+
+    reopened = TaskTreeStore(path)
+    assert reopened.get(run_id)["spawn_workspace"] == os.path.realpath(str(repo))
+    replay = reopened.create_root(
+        "root task", root["leash"], root["resources"], run_id=run_id,
+        workspace=str(repo), workspace_mode="current")
+    assert replay["run_id"] == run_id
+
+
+def test_long_mission_id_survives_usage_projection(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    mission_id = "mission-" + "x" * 140
+    root, _repo = _root(store, tmp_path, mission_id=mission_id)
+
+    store.project_mission_usage(
+        root["run_id"], mission_id, input_tokens=7,
+        model_calls=1, turns=1)
+
+    assert store.get(root["run_id"])["mission_id"] == mission_id
+    assert store.mission_usage_projection(root["run_id"])["mission_id"] == mission_id
+    assert store.get(root["run_id"])["input_tokens"] == 7
+
+
+def test_legacy_projection_recovers_root_own_usage_hidden_by_child_aggregate(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, repo = _root(store, tmp_path, mission_id="msn_root")
+    child = store.spawn_specialist(
+        root["run_id"], "reader", "inspect", resources=[],
+        workspace=str(repo), run_id="run_legacy_child_usage")
+    assert store.bind_mission(child["run_id"], "spc_child")
+
+    # Old accounting charged the child's 100 tokens to both rows but never
+    # projected the root Mission's own 50 tokens.
+    store.db.execute(
+        "UPDATE agent_runs SET input_tokens=100 WHERE run_id IN (?,?)",
+        (root["run_id"], child["run_id"]))
+    store.db.execute(
+        "UPDATE agent_mission_usage_projection SET initialized=0,input_tokens=0 "
+        "WHERE run_id IN (?,?)", (root["run_id"], child["run_id"]))
+    store.db.commit()
+
+    store.project_mission_usage(root["run_id"], "msn_root", input_tokens=50)
+    store.project_mission_usage(child["run_id"], "spc_child", input_tokens=100)
+
+    assert store.get(child["run_id"])["input_tokens"] == 100
+    assert store.get(root["run_id"])["input_tokens"] == 150
+
+
+def test_usage_reconciliation_poll_excludes_clean_terminal_history(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, _repo = _root(store, tmp_path, mission_id="msn_root")
+    store.project_mission_usage(root["run_id"], "msn_root", input_tokens=1)
+    store.db.execute(
+        "UPDATE agent_runs SET status=? WHERE run_id=?", (COMPLETED, root["run_id"]))
+    store.db.commit()
+    assert store.usage_reconciliation_runs() == []
+
+    store.db.execute(
+        "UPDATE agent_mission_usage_projection SET initialized=0 WHERE run_id=?",
+        (root["run_id"],))
+    store.db.commit()
+    assert [row["run_id"] for row in store.usage_reconciliation_runs()] == [root["run_id"]]
+
+
+def test_absolute_mission_usage_projection_is_atomic_idempotent_and_public(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, repo = _root(store, tmp_path, mission_id="msn_root")
+    child = store.spawn_specialist(
+        root["run_id"], "reader", "inspect", resources=[],
+        workspace=str(repo), run_id="run_usage_child")
+    assert store.bind_mission(child["run_id"], "spc_child")
+
+    store.project_mission_usage(
+        root["run_id"], "msn_root", input_tokens=4, cache_tokens=1,
+        model_calls=1, turns=1, model_cost_microusd=100_000,
+        wall_ms=10)
+    store.project_mission_usage(
+        child["run_id"], "spc_child", input_tokens=2, output_tokens=3,
+        cache_tokens=4, model_calls=2, turns=2,
+        model_cost_microusd=200_000, wall_ms=20, retries=1)
+    aggregate = store.get(root["run_id"])
+    own_child = store.get(child["run_id"])
+    assert (aggregate["input_tokens"], aggregate["output_tokens"],
+            aggregate["cache_tokens"]) == (6, 3, 5)
+    assert (aggregate["model_calls"], aggregate["turns"],
+            aggregate["active_wall_ms"], aggregate["retry_count"]) == (3, 3, 30, 1)
+    assert aggregate["model_cost_usd"] == pytest.approx(0.3)
+    assert own_child["input_tokens"] == 2
+
+    # Exact replay does nothing; a later absolute receipt charges only its
+    # positive delta to the actor and every ancestor.
+    store.project_mission_usage(
+        child["run_id"], "spc_child", input_tokens=2, output_tokens=3,
+        cache_tokens=4, model_calls=2, turns=2,
+        model_cost_microusd=200_000, wall_ms=20, retries=1)
+    store.project_mission_usage(
+        child["run_id"], "spc_child", input_tokens=5, output_tokens=3,
+        cache_tokens=4, model_calls=3, turns=3,
+        model_cost_microusd=250_000, wall_ms=25, retries=1)
+    aggregate = store.get(root["run_id"])
+    assert aggregate["input_tokens"] == 9
+    assert aggregate["model_calls"] == 4
+    assert aggregate["turns"] == 4
+    assert aggregate["model_cost_usd"] == pytest.approx(0.35)
+
+    from harness.webapp import _public_task_run
+    public = _public_task_run(aggregate)
+    assert public["cache_tokens"] == 5
+    assert public["model_calls"] == 4
+    assert public["turns"] == 4
+
+
+def test_concurrent_absolute_projection_charges_one_delta(tmp_path):
+    path = str(tmp_path / "tree.db")
+    setup = TaskTreeStore(path)
+    root, repo = _root(setup, tmp_path, mission_id="msn_root")
+    child = setup.spawn_specialist(
+        root["run_id"], "reader", "inspect", resources=[],
+        workspace=str(repo), run_id="run_concurrent_usage")
+    assert setup.bind_mission(child["run_id"], "spc_child")
+    setup.close()
+
+    left, right = TaskTreeStore(path), TaskTreeStore(path)
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def project(store):
+        try:
+            barrier.wait()
+            store.project_mission_usage(
+                child["run_id"], "spc_child", input_tokens=5,
+                model_calls=1, turns=1)
+        except Exception as exc:  # surfaced below with both worker outcomes
+            errors.append(exc)
+
+    threads = [threading.Thread(target=project, args=(store,))
+               for store in (left, right)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert left.get(child["run_id"])["input_tokens"] == 5
+    assert left.get(root["run_id"])["input_tokens"] == 5
+    assert left.get(root["run_id"])["model_calls"] == 1
+    left.close()
+    right.close()
 
 
 def test_background_progress_steer_and_cancel_ack_are_durable(tmp_path):
@@ -320,6 +588,9 @@ def test_child_usage_charges_every_ancestor_and_stale_claim_fails_closed(tmp_pat
     assert store.get(root["run_id"])["input_tokens"] == 6
     assert store.recover_stale(int(time.time()) + 1) == 1
     assert store.get(child["run_id"])["status"] == RECOVERY_REQUIRED
+    assert store.account_usage(child["run_id"], token, input_tokens=1) == [
+        "run ownership lost"]
+    assert store.account_usage("run_missing", token, input_tokens=1) == []
     assert store.reconcile(child["run_id"], "worktree inspected")
     assert store.get(child["run_id"])["status"] == QUEUED
 
@@ -1382,6 +1653,132 @@ def test_specialist_dispatcher_runs_real_child_model_and_tool_to_completion(tmp_
     assert child_mission.state == "done_verified"
     assert child_mission.case["researched"] is True
     assert any(event["kind"] == "completed" for event in tree.events(child["run_id"]))
+
+
+def test_specialist_dispatcher_finally_projects_usage_after_driver_exception(
+        tmp_path, monkeypatch):
+    tree = TaskTreeStore(str(tmp_path / "tree.db"))
+    service = MissionService(
+        base=str(tmp_path / "svc"), decider=lambda *_: {}, stub=True, run_tree=tree)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    mission = service.start("orchestrate", may=["research"])
+    root = service.create_run_tree(
+        mission["mission_id"],
+        [{"kind": "file", "id": str(repo), "mode": "write"}],
+        workspace=str(repo))["root"]
+    child = service.spawn_specialist(
+        mission["mission_id"], "researcher", "pause after one slice",
+        resources=[{"kind": "file", "id": str(repo), "mode": "read"}],
+        workspace=str(repo))
+    token = tree.claim(child["run_id"])
+
+    class FailingDriver:
+        def advance(self, mid):
+            assert service.store.reserve_decision(
+                mid, service.store.get(mid).leash)
+            assert service.store.account_runtime(
+                mid, input_tokens=11, cache_tokens=7, cost_usd=0.25,
+                wall_ms=19, retries=1)
+            raise RuntimeError("crash after Mission accounting")
+
+    monkeypatch.setattr(service, "_driver", lambda **_kwargs: FailingDriver())
+
+    service._run_specialist(tree.get(child["run_id"]), token)
+
+    projected = tree.get(child["run_id"])
+    aggregate = tree.get(root["run_id"])
+    assert projected["status"] == RECOVERY_REQUIRED
+    assert (projected["input_tokens"], projected["cache_tokens"],
+            projected["model_calls"], projected["turns"]) == (11, 7, 1, 1)
+    assert aggregate["input_tokens"] == 11
+    assert aggregate["cache_tokens"] == 7
+    assert aggregate["model_calls"] == 1
+
+
+def test_specialist_reconciles_root_usage_before_ancestor_budget_check(
+        tmp_path, monkeypatch):
+    tree = TaskTreeStore(str(tmp_path / "tree.db"))
+    service = MissionService(
+        base=str(tmp_path / "svc"), decider=lambda *_: {}, stub=True, run_tree=tree)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    mission = service.start(
+        "orchestrate", may=["research"], max_model_tokens=5)
+    root = service.create_run_tree(
+        mission["mission_id"],
+        [{"kind": "file", "id": str(repo), "mode": "write"}],
+        workspace=str(repo))["root"]
+    child = service.spawn_specialist(
+        mission["mission_id"], "researcher", "must not start over budget",
+        resources=[{"kind": "file", "id": str(repo), "mode": "read"}],
+        workspace=str(repo))
+    assert service.store.account_runtime(mission["mission_id"], input_tokens=5)
+    token = tree.claim(child["run_id"])
+    called = []
+    monkeypatch.setattr(
+        service, "_driver", lambda **_kwargs: called.append(True))
+
+    service._run_specialist(tree.get(child["run_id"]), token)
+
+    assert called == []
+    assert tree.get(root["run_id"])["input_tokens"] == 5
+    assert tree.get(child["run_id"])["input_tokens"] == 0
+    assert tree.get(child["run_id"])["status"] == NEEDS_YOU
+
+
+def test_status_catches_up_crash_gap_once_for_root_and_descendant_usage(tmp_path):
+    tree_path = str(tmp_path / "tree.db")
+    base = str(tmp_path / "svc")
+    tree = TaskTreeStore(tree_path)
+    service = MissionService(base=base, decider=lambda *_: {}, stub=True, run_tree=tree)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    mission = service.start("orchestrate", may=["research"])
+    root = service.create_run_tree(
+        mission["mission_id"],
+        [{"kind": "file", "id": str(repo), "mode": "write"}],
+        workspace=str(repo))["root"]
+    child = service.spawn_specialist(
+        mission["mission_id"], "researcher", "inspect one branch",
+        resources=[{"kind": "file", "id": str(repo), "mode": "read"}],
+        workspace=str(repo))
+
+    # These authoritative commits represent a process dying before either
+    # TaskTree projection.  Each receipt is own-Mission usage, not an aggregate.
+    assert service.store.reserve_decision(
+        mission["mission_id"], service.store.get(mission["mission_id"]).leash)
+    assert service.store.reserve_decision(
+        child["mission_id"], service.store.get(child["mission_id"]).leash)
+    assert service.store.account_runtime(
+        mission["mission_id"], input_tokens=4, cache_tokens=1,
+        cost_usd=0.1, wall_ms=10)
+    assert service.store.account_runtime(
+        child["mission_id"], input_tokens=2, output_tokens=3, cache_tokens=5,
+        cost_usd=0.2, wall_ms=20, retries=1)
+    assert tree.get(root["run_id"])["input_tokens"] == 0
+    service.close()
+    tree.close()
+
+    reopened_tree = TaskTreeStore(tree_path)
+    reopened = MissionService(
+        base=base, decider=lambda *_: {}, stub=True, run_tree=reopened_tree)
+    status = reopened.status(mission["mission_id"])
+    aggregate = reopened_tree.get(root["run_id"])
+    own_child = reopened_tree.get(child["run_id"])
+    assert status["usage_projection_errors"] == []
+    assert status["aggregate_runtime"]["model_calls"] == 2
+    assert (aggregate["input_tokens"], aggregate["output_tokens"],
+            aggregate["cache_tokens"]) == (6, 3, 6)
+    assert (aggregate["model_calls"], aggregate["turns"],
+            aggregate["active_wall_ms"], aggregate["retry_count"]) == (2, 2, 30, 1)
+    assert own_child["input_tokens"] == 2
+    assert own_child["cache_tokens"] == 5
+
+    # Status/terminal reconciliation is freely retryable.
+    reopened.status(mission["mission_id"])
+    assert reopened_tree.get(root["run_id"])["input_tokens"] == 6
+    assert reopened_tree.get(root["run_id"])["model_calls"] == 2
 
 
 def test_model_agent_spawn_child_completion_folds_result_and_wakes_parent(tmp_path):

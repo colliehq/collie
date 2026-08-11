@@ -366,6 +366,110 @@ def test_execute_code_no_fd_leak():
         ec.run({"code": "print(%d)" % i, "timeout": 10}, ctx)
     assert fds() - before <= 2, "execute_code leaks listen sockets (server_close missing): +%d fds" % (fds() - before)
 
+def _execute_code_for_test(work, code, timeout=20):
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    return reg.get("execute_code").run({"code": code, "timeout": timeout}, _ctx(work))
+
+def test_execute_code_reaps_descendants_after_normal_exit_and_exception():
+    """A returned/failed parent must not leave a delayed child to mutate the repo afterwards."""
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_tree_") as work:
+        for name, ending in (("normal", 'print("parent done")'),
+                             ("exception", 'raise RuntimeError("parent failed")')):
+            marker = os.path.join(work, name + ".late")
+            delayed = ("import time; time.sleep(1.0); "
+                       "open(%r, 'w').write('late')" % marker)
+            code = ("import subprocess, sys\n"
+                    "flags = (getattr(subprocess, 'DETACHED_PROCESS', 0) | "
+                    "getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))\n"
+                    "subprocess.Popen([sys.executable, '-c', %r], stdin=subprocess.DEVNULL, "
+                    "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+                    "creationflags=flags)\n%s"
+                    % (delayed, ending))
+            out = _execute_code_for_test(work, code)
+            assert "parent done" in out if name == "normal" else "RuntimeError" in out, out
+        time.sleep(1.4)
+        assert not os.path.exists(os.path.join(work, "normal.late")), (
+            "normal execute_code return leaked a late-writing descendant")
+        assert not os.path.exists(os.path.join(work, "exception.late")), (
+            "failed execute_code leaked a late-writing descendant")
+
+def test_execute_code_timeout_reaps_descendants_before_return():
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_timeout_") as work:
+        marker = os.path.join(work, "timeout.late")
+        delayed = ("import time; time.sleep(1.5); "
+                   "open(%r, 'w').write('late')" % marker)
+        code = ("import subprocess, sys, time\n"
+                "flags = (getattr(subprocess, 'DETACHED_PROCESS', 0) | "
+                "getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))\n"
+                "subprocess.Popen([sys.executable, '-c', %r], stdin=subprocess.DEVNULL, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+                "creationflags=flags)\n"
+                "time.sleep(30)" % delayed)
+        out = _execute_code_for_test(work, code, timeout=1)
+        assert "timed out after 1s" in out, out
+        time.sleep(1.0)
+        assert not os.path.exists(marker), "timed-out execute_code leaked a delayed descendant"
+
+def test_execute_code_windows_job_refuses_explicit_breakaway():
+    if os.name != "nt":
+        return
+    out = _execute_code_for_test(
+        tempfile.gettempdir(),
+        "import subprocess, sys\n"
+        "try:\n"
+        " subprocess.Popen([sys.executable, '-c', 'print(1)'], "
+        "creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB)\n"
+        " print('BREAKAWAY_ALLOWED')\n"
+        "except OSError as e:\n"
+        " print('BREAKAWAY_BLOCKED', getattr(e, 'winerror', None))")
+    assert "BREAKAWAY_BLOCKED 5" in out and "BREAKAWAY_ALLOWED" not in out, out
+
+def test_execute_code_isolated_imports_and_repo_local_imports():
+    """PYTHON* cannot inject startup code, while an ordinary local module remains importable."""
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_imports_") as work, \
+            tempfile.TemporaryDirectory(prefix="collie_progtool_poison_") as poison:
+        marker = os.path.join(work, "injected")
+        open(os.path.join(poison, "sitecustomize.py"), "w").write(
+            "open(%r, 'w').write('PYTHONPATH executed')\n" % marker)
+        open(os.path.join(work, "json.py"), "w").write(
+            "open(%r, 'w').write('cwd shadowed stdlib')\n" % marker)
+        open(os.path.join(work, "local_for_execute_code.py"), "w").write("VALUE = 73\n")
+        prior = {key: os.environ.get(key) for key in
+                 ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT")}
+        os.environ.update({"PYTHONPATH": poison, "PYTHONHOME": poison,
+                           "PYTHONSTARTUP": os.path.join(poison, "sitecustomize.py"),
+                           "PYTHONINSPECT": "1"})
+        try:
+            out = _execute_code_for_test(
+                work, "import json, local_for_execute_code\n"
+                      "print('LOCAL', local_for_execute_code.VALUE, json.__name__)")
+        finally:
+            for key, value in prior.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        assert "LOCAL 73 json" in out, out
+        assert not os.path.exists(marker), "ambient/cwd import injection executed before stdlib"
+
+def test_execute_code_capture_is_bounded_while_both_pipes_are_drained():
+    out = _execute_code_for_test(
+        tempfile.gettempdir(),
+        "import sys\n"
+        "sys.stdout.write('O' * 2_000_000)\n"
+        "sys.stderr.write('E' * 2_000_000)\n"
+        "raise RuntimeError('bounded-tail')")
+    assert len(out) < 8000, "execute_code returned/stored unbounded output: %d chars" % len(out)
+    assert out.startswith("O" * 100) and "bounded-tail" in out[-1500:], out[-2000:]
+    import inspect as _inspect
+    from harness import progtool as _progtool
+    source = _inspect.getsource(_progtool.ExecuteCodeTool.run)
+    assert "capture_output=True" not in source and "_BoundedCapture" in source, (
+        "execute_code must stream into bounded collectors, not subprocess.run capture_output")
+
 _MOCK_MCP = r'''
 import json, sys
 TOOLS = [{"name":"echo","description":"Echo text.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}]

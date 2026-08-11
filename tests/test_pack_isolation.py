@@ -13,7 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from harness import cli
 from harness.memory import SqliteMemory
+from harness.loop import Harness
 from harness.providers import Completion, ModelProvider, Usage
+from harness.recorder import RunResult
 from harness.scratch import ScratchMemory, isolate_harness
 
 
@@ -82,6 +84,29 @@ def test_scratch_claim_lifecycle_never_reaches_the_shared_store():
         assert mem.reject(rejected, evidence="losing candidate")
         assert mem.get_claim(rejected)["status"] == "rejected"
         assert not base.list_claims(status="rejected")
+        mem.close()
+
+
+def test_scratch_run_claims_settle_inside_the_logical_project_boundary():
+    with tempfile.TemporaryDirectory() as root:
+        base = SqliteMemory(os.path.join(root, "memory.db"))
+        mem = ScratchMemory(base, read_project="repo")
+        producer = {"run_id": 41, "task_id": "learn", "provider": "stub",
+                    "model": "stub-1"}
+        claim_id = mem.propose(
+            "candidate-local verified conclusion", project="agent-3",
+            source="run_consolidation", provenance=producer)
+        harness = object.__new__(Harness)
+        harness.memory = mem
+        harness.project = "agent-3"
+        result = RunResult(
+            run_id=41, task_id="learn", provider="stub", model="stub-1",
+            memory_claim_ids=[claim_id])
+
+        assert harness.settle_run_memory(result, True) == {
+            "promoted": 1, "rejected": 0}
+        assert mem.get_claim(claim_id)["status"] == "verified"
+        assert base.count() == 0
         mem.close()
 
 

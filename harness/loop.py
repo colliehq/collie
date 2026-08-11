@@ -1949,25 +1949,108 @@ class Harness:
 
         CLI/web checks run outside ``run()``, so proposal ids travel on RunResult. Repeated
         settlement is safe because memory lifecycle methods only transition pending proposals.
+        The ids themselves are untrusted transport data: only a run-consolidation proposal whose
+        immutable producer identity exactly matches this run may cross the verification boundary.
         """
         promoted = rejected = 0
         evidence = self._safe_memory_evidence(evidence)
-        provenance = {"run_id": int(getattr(res, "run_id", 0) or 0),
-                      "task_id": str(getattr(res, "task_id", "") or "")}
-        for claim_id in list(getattr(res, "memory_claim_ids", None) or []):
+        raw_run_id = getattr(res, "run_id", 0)
+        if (not isinstance(raw_run_id, int) or isinstance(raw_run_id, bool)
+                or raw_run_id <= 0 or raw_run_id > 9_223_372_036_854_775_807):
+            return {"promoted": 0, "rejected": 0}
+        run_id = raw_run_id
+        task_id = getattr(res, "task_id", "")
+        provider = getattr(res, "provider", "")
+        model = getattr(res, "model", "")
+        if (not isinstance(task_id, str) or not task_id
+                or not isinstance(provider, str)
+                or not isinstance(model, str)):
+            return {"promoted": 0, "rejected": 0}
+        project = str(getattr(self, "project", "") or "")
+        boundary = {"project": project, "scope": project}
+        claim_boundary = getattr(self.memory, "claim_boundary", None)
+        if callable(claim_boundary):
+            try:
+                candidate = claim_boundary(project)
+            except (TypeError, ValueError):
+                return {"promoted": 0, "rejected": 0}
+            if (not isinstance(candidate, dict)
+                    or not isinstance(candidate.get("project"), str)
+                    or not isinstance(candidate.get("scope"), str)
+                    or not candidate["project"] or not candidate["scope"]):
+                return {"promoted": 0, "rejected": 0}
+            boundary = candidate
+        producer = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "provider": provider,
+            "model": model,
+        }
+        producer_text = json.dumps(
+            producer, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if not task_id or not project:
+            return {"promoted": 0, "rejected": 0}
+        raw_claim_ids = getattr(res, "memory_claim_ids", None) or []
+        if isinstance(raw_claim_ids, (str, bytes)):
+            return {"promoted": 0, "rejected": 0}
+        try:
+            raw_claim_ids = list(raw_claim_ids)
+        except TypeError:
+            return {"promoted": 0, "rejected": 0}
+        get_claim = getattr(self.memory, "get_claim", None)
+        if not callable(get_claim):
+            return {"promoted": 0, "rejected": 0}
+        review_provenance = dict(producer, project=project)
+        seen = set()
+        for raw_claim_id in raw_claim_ids:
+            # Do not coerce floats, booleans, or arbitrary objects into another
+            # claim's integer primary key.
+            if isinstance(raw_claim_id, bool):
+                continue
+            if isinstance(raw_claim_id, int):
+                claim_id = raw_claim_id
+            elif isinstance(raw_claim_id, str):
+                digits = raw_claim_id.strip()
+                if not digits.isascii() or not digits.isdigit():
+                    continue
+                digits = digits.lstrip("0") or "0"
+                if len(digits) > 19:
+                    continue
+                try:
+                    claim_id = int(digits)
+                except (ValueError, OverflowError):
+                    continue
+            else:
+                continue
+            if claim_id <= 0 or claim_id > 9_223_372_036_854_775_807 \
+                    or claim_id in seen:
+                continue
+            seen.add(claim_id)
+            try:
+                claim = get_claim(claim_id)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not claim or claim.get("status") != "proposed":
+                continue
+            if (claim.get("project") != boundary["project"]
+                    or claim.get("scope") != boundary["scope"]
+                    or claim.get("source") != "run_consolidation"
+                    # Run consolidation writes deterministic JSON.  Exact text
+                    # comparison also rejects duplicate JSON keys or alternate
+                    # scalar types that a permissive parser could normalize.
+                    or claim.get("provenance") != producer_text):
+                continue
             if passed:
                 promoted += int(bool(self.memory.promote(
                     claim_id, status="verified", evidence=evidence, source=source,
-                    provenance=provenance)))
+                    provenance=review_provenance)))
             else:
-                changed = self.memory.reject(
-                    claim_id, evidence=evidence, source=source, provenance=provenance)
-                if not changed:
-                    invalidate = getattr(self.memory, "invalidate", None)
-                    changed = bool(invalidate and invalidate(
-                        claim_id, evidence=evidence, source=source,
-                        provenance=provenance))
-                rejected += int(bool(changed))
+                # A failed verifier rejects only this run's still-pending
+                # proposal.  It must never invalidate an already accepted fact
+                # merely because an id was replayed or forged into RunResult.
+                rejected += int(bool(self.memory.reject(
+                    claim_id, evidence=evidence, source=source,
+                    provenance=review_provenance)))
         return {"promoted": promoted, "rejected": rejected}
 
     @staticmethod

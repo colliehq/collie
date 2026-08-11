@@ -10,15 +10,25 @@
 - **Fan-out shares one Mission budget.** Durable parent lineage makes model tokens, cost, active
   wall time, retries, storage, model turns, irreversible-action count, and action rate cumulative
   across the entire descendant tree. Sibling model-turn and irreversible-action/rate reservations
-  are checked atomically in SQLite; other usage is charged when each in-flight boundary returns.
+  are checked atomically in SQLite; semantic keys for irreversible effects now fence the whole
+  campaign, not only the specialist that proposed them. TaskTree replay binds the immutable spawn
+  workspace and counts cached tokens instead of letting either escape its original authority or
+  aggregate budget.
 - **Agent memory is a claim before it is a fact.** `remember` and automatic run consolidation now
   create quarantined proposals. Normal recall sees only legacy, attested, or verified claims;
-  executed host checks promote or reject proposals while preserving evidence and provenance.
-- **`execute_code` no longer bypasses the host boundary.** Every executable inner tool call now
-  traverses the normal argument repair, permission gate, audit, lifecycle hooks, secret handling,
-  checkpoint, and verification accounting path; invariant-violating calls are denied and recorded
-  there. Timeout revocation blocks late approvals and preserves an explicit recovery fence when an
-  inner external effect may still be running.
+  executed host checks promote or reject only proposals whose immutable run, task, project, scope,
+  provider, and model provenance matches. Recall, consolidation, and migrations preserve project
+  and scope boundaries.
+- **`execute_code` owns its ordinary child process tree and bounded output.** Brokered helper calls
+  still traverse argument repair, permission, audit, lifecycle, secret, checkpoint, and verification
+  accounting. Isolated interpreter startup blocks ambient Python import injection, output is drained
+  into fixed-size buffers, and descendants are reaped on success, failure, or timeout. Direct Python
+  I/O remains intentionally equivalent to `bash`, so untrusted code still requires a container/VM.
+- **Cross-harness claims have a fail-closed protocol.** Controlled and product tracks freeze their
+  declared inputs separately, expand a complete repeated run matrix, enforce aggregate
+  root-plus-descendant budgets, and require an independently metered usage receipt plus hashed
+  trace, patch, serial-run timing, and grader evidence before reporting paired,
+  task-cluster-aware results.
 
 ## v0.21.23 — Continue across branch waits and remember completed work
 

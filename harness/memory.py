@@ -121,8 +121,24 @@ class SqliteMemory:
         # ``scope`` is a claim's trust boundary.  For old rows the only scope
         # that existed was ``project``, so preserve that exact meaning.
         c.execute("UPDATE facts SET scope=project WHERE scope IS NULL OR scope='' ")
+        # Older builds consolidated by project alone.  That could leave an
+        # allowed-scope predecessor hidden behind a successor the caller is not
+        # authorized to retrieve.  Repair those historical links once (and
+        # harmlessly on every open); valid same-project/same-scope chains stay
+        # intact.
+        c.execute("""UPDATE facts SET superseded_by=NULL
+                     WHERE superseded_by IS NOT NULL AND NOT EXISTS(
+                         SELECT 1 FROM facts AS successor
+                         WHERE successor.id=facts.superseded_by
+                           AND COALESCE(successor.project,'')=COALESCE(facts.project,'')
+                           AND COALESCE(successor.scope,'')=COALESCE(facts.scope,''))""")
         c.execute("""CREATE INDEX IF NOT EXISTS facts_recall_scope
                      ON facts(project,status,superseded_by)""")
+        # ``facts_recall_scope`` predates claim scopes and cannot be changed in
+        # place on existing databases.  Keep it for compatibility and add a
+        # scope-aware index under a new name for every scoped read path below.
+        c.execute("""CREATE INDEX IF NOT EXISTS facts_scope_recall_v2
+                     ON facts(project,scope,status,superseded_by)""")
         try:
             c.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
                 USING fts5(text, keys, content='facts', content_rowid='id')""")
@@ -164,14 +180,42 @@ class SqliteMemory:
             raise ValueError("invalid memory status: %s" % ", ".join(sorted(invalid)))
         return values
 
+    @staticmethod
+    def _allowed_scopes(project: str, allowed_scopes=None) -> tuple[str, ...]:
+        """Normalize the trust scopes a caller has explicitly been given.
+
+        Historically ``project`` was the only boundary.  Migrated rows use it
+        as their scope, while globally shared rows use ``global``; accepting
+        those two scopes by default preserves that API without making any
+        other scope in the same project implicitly readable.
+        """
+        if allowed_scopes is None:
+            values = (str(project or "global"), "global")
+        elif isinstance(allowed_scopes, str):
+            values = (allowed_scopes,)
+        else:
+            values = tuple(allowed_scopes)
+        # Stable de-duplication keeps SQL parameters deterministic.  Empty or
+        # None scope names grant no authority rather than becoming wildcards.
+        return tuple(dict.fromkeys(
+            str(value) for value in values if value is not None and str(value)))
+
+    @staticmethod
+    def claim_boundary(project: str) -> dict[str, str]:
+        """Return the physical project/scope used for a logical claim write."""
+        value = str(project or "global")
+        return {"project": value, "scope": value}
+
     def _nearest(self, vec, project: str, statuses=None, *, embed_model: str | None = None,
-                 exclude_id: int | None = None):
-        """(id, cosine) of the most similar non-superseded fact in the project, or (None, 0)."""
+                 exclude_id: int | None = None, scope: str | None = None):
+        """Nearest accepted fact inside one project *and* trust scope."""
         best_id, best = None, 0.0
         statuses = self._statuses(statuses)
         q = ",".join("?" * len(statuses))
-        where = ["project=?", "superseded_by IS NULL", "status IN (%s)" % q]
-        params = [project, *statuses]
+        scope = str(scope or project)
+        where = ["project=?", "scope=?", "superseded_by IS NULL",
+                 "status IN (%s)" % q]
+        params = [project, scope, *statuses]
         # Embeddings from different models are not in the same vector space.
         # Promotion can happen in a later process whose current embedder differs,
         # so match using the proposal's stored model, not self.embed_model.
@@ -225,7 +269,8 @@ class SqliteMemory:
         # were later rejected, a verified A would remain hidden behind the rejected row forever.
         # Accepted host writes may still consolidate within the accepted set.
         near_id, sim = self._nearest(
-            vec, project, RECALLABLE_STATUSES, embed_model=self.embed_model) \
+            vec, project, RECALLABLE_STATUSES, embed_model=self.embed_model,
+            scope=scope) \
             if (consolidate and vec and status in RECALLABLE_STATUSES) else (None, 0.0)
         emb = json.dumps(vec)
         cur = self.db.execute(
@@ -283,10 +328,9 @@ class SqliteMemory:
                    "reviewed_at=?", "superseded_by=NULL"]
         params = [status, _metadata_text(reviewer or "host"),
                   _metadata_text(reviewer_provenance), int(reviewed_at or _now())]
-        for name, value in (("review_evidence", evidence), ("scope", scope)):
-            if value is not None:
-                changes.append("%s=?" % name)
-                params.append(_metadata_text(value))
+        if evidence is not None:
+            changes.append("review_evidence=?")
+            params.append(_metadata_text(evidence))
         memory_id = int(memory_id)
         params.append(memory_id)
         try:
@@ -295,9 +339,17 @@ class SqliteMemory:
             # the same transaction.
             self.db.execute("BEGIN IMMEDIATE")
             proposal = self.db.execute(
-                """SELECT project,embedding,embed_model FROM facts
+                """SELECT project,scope,embedding,embed_model FROM facts
                    WHERE id=? AND status='proposed'""", (memory_id,)).fetchone()
             if proposal is None:
+                self.db.rollback()
+                return False
+            # ``scope`` remains in the public signature as a compatibility
+            # assertion, but a reviewer cannot widen or rewrite the producer's
+            # trust boundary.  A mismatch fails closed and leaves the proposal
+            # pending for an explicitly authorized review path.
+            if (scope is not None
+                    and str(scope or proposal["project"]) != str(proposal["scope"])):
                 self.db.rollback()
                 return False
             near_id, sim = None, 0.0
@@ -308,7 +360,8 @@ class SqliteMemory:
             if consolidate and vec:
                 near_id, sim = self._nearest(
                     vec, proposal["project"], RECALLABLE_STATUSES,
-                    embed_model=proposal["embed_model"], exclude_id=memory_id)
+                    embed_model=proposal["embed_model"], exclude_id=memory_id,
+                    scope=proposal["scope"])
             cur = self.db.execute(
                 "UPDATE facts SET %s WHERE id=? AND status='proposed'" % ", ".join(changes),
                 params)
@@ -392,7 +445,7 @@ class SqliteMemory:
         return dict(row) if row else None
 
     def list_claims(self, status: str | None = None, project: str | None = None,
-                    limit: int = 100) -> list[dict]:
+                    limit: int = 100, *, allowed_scopes=None) -> list[dict]:
         """Review surface for hosts; rejected/proposed claims stay out of recall."""
         where, params = [], []
         if status is not None:
@@ -403,6 +456,17 @@ class SqliteMemory:
         if project is not None:
             where.append("project=?")
             params.append(project)
+        # An unscoped all-project listing is the existing local-admin review
+        # surface (``collie mem pending``).  Once a project or explicit scope
+        # capability is supplied, however, list obeys the same trust boundary
+        # as recall.
+        scopes = None
+        if project is not None or allowed_scopes is not None:
+            scopes = self._allowed_scopes(project or "global", allowed_scopes)
+            if not scopes:
+                return []
+            where.append("scope IN (%s)" % ",".join("?" * len(scopes)))
+            params.extend(scopes)
         sql = "SELECT * FROM facts"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -450,9 +514,13 @@ class SqliteMemory:
     #  ARCHIVAL read — HYBRID retrieval (the pain-#1 fix)
     # ------------------------------------------------------------------ #
     def _sparse(self, query: str, project: str, limit: int,
-                statuses=None) -> list[tuple[int, float]]:
+                statuses=None, *, allowed_scopes=None) -> list[tuple[int, float]]:
         statuses = self._statuses(statuses)
+        scopes = self._allowed_scopes(project, allowed_scopes)
+        if not scopes:
+            return []
         sq = ",".join("?" * len(statuses))
+        scope_q = ",".join("?" * len(scopes))
         rows = []
         if self.has_fts:
             try:
@@ -462,8 +530,9 @@ class SqliteMemory:
                        FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                        WHERE facts_fts MATCH ? AND (f.project=? OR f.project='global')
                              AND f.superseded_by IS NULL AND f.status IN (%s)
-                       ORDER BY score LIMIT ?""" % sq,
-                    (match, project, *statuses, limit)).fetchall()
+                             AND f.scope IN (%s)
+                       ORDER BY score LIMIT ?""" % (sq, scope_q),
+                    (match, project, *statuses, *scopes, limit)).fetchall()
                 # bm25 lower == better; return as (id, rank_score) ascending handled by RRF
                 return [(r["id"], -r["score"]) for r in rows]
             except sqlite3.OperationalError:
@@ -471,27 +540,31 @@ class SqliteMemory:
         # LIKE fallback: match ANY of the first few query tokens (not just the first word)
         toks = [t for t in query.strip().split() if len(t) > 2][:4] or [query.strip()]
         clause = " OR ".join(["text LIKE ? OR keys LIKE ?"] * len(toks))
-        params = [project, *statuses]
+        params = [project, *statuses, *scopes]
         for t in toks:
             params += ["%" + t + "%", "%" + t + "%"]
         params.append(limit)
         rows = self.db.execute(
             "SELECT id FROM facts WHERE (project=? OR project='global') AND status IN (%s) "
-            "AND superseded_by IS NULL "
-            "AND (%s) LIMIT ?" % (sq, clause), params).fetchall()
+            "AND superseded_by IS NULL AND scope IN (%s) "
+            "AND (%s) LIMIT ?" % (sq, scope_q, clause), params).fetchall()
         return [(r["id"], 1.0) for r in rows]
 
     def _dense(self, query: str, project: str, limit: int,
-               statuses=None) -> list[tuple[int, float]]:
+               statuses=None, *, allowed_scopes=None) -> list[tuple[int, float]]:
         if self.embedder is None:                          # BM25-only mode — no dense arm
             return []
         statuses = self._statuses(statuses)
+        scopes = self._allowed_scopes(project, allowed_scopes)
+        if not scopes:
+            return []
         sq = ",".join("?" * len(statuses))
+        scope_q = ",".join("?" * len(scopes))
         qv = self.embedder.embed(query, kind="query")
         rows = self.db.execute(
             "SELECT id, embedding FROM facts WHERE (project=? OR project='global') "
-            "AND superseded_by IS NULL AND status IN (%s)" % sq,
-            (project, *statuses)).fetchall()
+            "AND superseded_by IS NULL AND status IN (%s) AND scope IN (%s)" %
+            (sq, scope_q), (project, *statuses, *scopes)).fetchall()
         # HashEmbedding (bag-of-words) produces spurious positive cosines on token overlap, so we
         # abstain on non-positive for it; a REAL semantic embedder's weakly-related passage (cosine
         # near 0) is genuine signal — keep it so cross-lingual/paraphrase matches enter RRF.
@@ -508,11 +581,17 @@ class SqliteMemory:
         return scored[:limit]
 
     def recall(self, query: str, project: str = "global", k: int = 8,
-               pool: int = 50, statuses=None) -> list[dict]:
+               pool: int = 50, statuses=None, *, allowed_scopes=None) -> list[dict]:
         """Hybrid: BM25 + dense cosine, fused with Reciprocal Rank Fusion."""
+        project = str(project or "global")
         statuses = self._statuses(statuses)
-        sparse = self._sparse(query, project, pool, statuses)
-        dense = self._dense(query, project, pool, statuses)
+        scopes = self._allowed_scopes(project, allowed_scopes)
+        if not scopes:
+            return []
+        sparse = self._sparse(
+            query, project, pool, statuses, allowed_scopes=scopes)
+        dense = self._dense(
+            query, project, pool, statuses, allowed_scopes=scopes)
         fused = rrf([[i for i, _ in sparse], [i for i, _ in dense]], k=60)
         # With a reranker, fuse to a LARGER candidate pool and let the cross-encoder pick
         # the final top-k (it scores query+doc jointly — sharper than RRF's rank fusion).
@@ -520,11 +599,16 @@ class SqliteMemory:
         if not cand:
             return []
         q = ",".join("?" * len(cand))
+        sq = ",".join("?" * len(statuses))
+        scope_q = ",".join("?" * len(scopes))
         rows = self.db.execute(
             """SELECT id,text,keys,importance,created_at,status,source,evidence,
                       provenance,scope,review_source,review_evidence,
-                      review_provenance,reviewed_at FROM facts WHERE id IN (%s)""" % q,
-            [i for i, _ in cand]).fetchall()
+                      review_provenance,reviewed_at FROM facts WHERE id IN (%s)
+                      AND (project=? OR project='global')
+                      AND superseded_by IS NULL AND status IN (%s)
+                      AND scope IN (%s)""" % (q, sq, scope_q),
+            [i for i, _ in cand] + [project, *statuses, *scopes]).fetchall()
         by_id = {r["id"]: r for r in rows}
 
         ranked = cand                                    # default: RRF order

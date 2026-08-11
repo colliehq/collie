@@ -198,7 +198,8 @@ def _public_task_run(row):
     row = row if isinstance(row, dict) else {}
     keys = ("run_id", "parent_run_id", "root_run_id", "mission_id", "depth", "role",
             "status", "background", "cancel_requested", "cancel_ack_at", "progress_seq",
-            "progress_at", "input_tokens", "output_tokens", "model_cost_usd",
+            "progress_at", "input_tokens", "output_tokens", "cache_tokens",
+            "model_calls", "turns", "model_cost_usd",
             "active_wall_ms", "retry_count", "created_at", "updated_at")
     return {key: row.get(key) for key in keys if row.get(key) is not None}
 

@@ -239,6 +239,54 @@ class MissionService:
                        (mission.case or {}).get("_specialist_run_id") or "")
         return str((mission.case or {}).get("_run_id") or "")
 
+    def _project_mission_usage(self, mid, run_id=""):
+        """Project one Mission's absolute *own* runtime into TaskTree."""
+        if self._run_tree is None:
+            return []
+        mission = self.store.get(mid)
+        if not mission:
+            return []
+        run_id = str(run_id or self._mission_run_id(mission) or "")
+        if not run_id:
+            return []
+        runtime = self.store.runtime(mid)
+        return self._run_tree.project_mission_usage(
+            run_id, mid,
+            input_tokens=runtime.get("input_tokens", 0),
+            output_tokens=runtime.get("output_tokens", 0),
+            cache_tokens=runtime.get("cache_tokens", 0),
+            model_calls=runtime.get("model_calls", 0),
+            turns=runtime.get("turns", 0),
+            model_cost_microusd=runtime.get("model_cost_microusd", 0),
+            wall_ms=runtime.get("active_wall_ms", 0),
+            retries=runtime.get("retry_count", 0))
+
+    def _reconcile_tasktree_usage(self, mid=None, limit=None):
+        """Catch up cross-database usage gaps without double charging descendants."""
+        if self._run_tree is None:
+            return {"projected": 0, "errors": [], "exhausted": []}
+        if mid:
+            mission = self.store.get(mid)
+            run_id = self._mission_run_id(mission)
+            rows = self._run_tree.tree(run_id).get("flat", []) if run_id else []
+        else:
+            rows = self._run_tree.usage_reconciliation_runs()
+        projected, errors, exhausted, seen = 0, [], [], set()
+        candidates = rows if limit is None else rows[:max(1, int(limit))]
+        for run in candidates:
+            run_id = str(run.get("run_id") or "")
+            mission_id = str(run.get("mission_id") or "")
+            if not run_id or not mission_id or run_id in seen:
+                continue
+            seen.add(run_id)
+            try:
+                exhausted.extend(self._project_mission_usage(mission_id, run_id))
+                projected += 1
+            except (ValueError, sqlite3.Error) as exc:
+                errors.append({"run_id": run_id, "mission_id": mission_id,
+                               "error": "%s: %s" % (type(exc).__name__, exc)})
+        return {"projected": projected, "errors": errors, "exhausted": exhausted}
+
     def _tasktree_guarded_capabilities(self, capabilities):
         """Bind code workspace ownership to this service's durable run tree.
 
@@ -589,6 +637,8 @@ class MissionService:
         if not mission or mission.state != FAILED_S or self._run_tree is None:
             return False
         run_id = self._mission_run_id(mission)
+        if run_id:
+            self._project_mission_usage(mid, run_id)
         run = self._run_tree.get(run_id) if run_id else None
         if run and not run.get("parent_run_id"):
             self._run_tree.fail_mission_root(
@@ -641,6 +691,7 @@ class MissionService:
         run_id = self._mission_run_id(mission)
         if not run_id:
             return False
+        self._project_mission_usage(mid, run_id)
         run = self._run_tree.get(run_id)
         if not run or run.get("parent_run_id"):
             # Specialist runs are completed by their scoped dispatcher while it
@@ -826,6 +877,7 @@ class MissionService:
         self.store.record_checkpoint(
             mid, "", "run_tree_created", {"run_id": run["run_id"]},
             case=case, allow_unowned=True)
+        self._project_mission_usage(mid, run["run_id"])
         return self._run_tree.tree(run["run_id"])
 
     def spawn_specialist(self, mid: str, role: str, task: str, *, leash=None,
@@ -1128,6 +1180,7 @@ class MissionService:
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
         run_id = m.case.get("_run_id")
+        usage = self._reconcile_tasktree_usage(mid)
         return {
             "mission_id": mid,
             "available": self._run_tree is not None,
@@ -1135,6 +1188,7 @@ class MissionService:
             "path": getattr(self._run_tree, "path", None),
             "tree": self._run_tree.tree(run_id) if self._run_tree and run_id
                     else {"root": None, "flat": []},
+            "usage_projection_errors": usage["errors"],
         }
 
     def inspect_specialist(self, run_id: str, event_limit: int = 100) -> dict:
@@ -1144,8 +1198,12 @@ class MissionService:
         run = self._run_tree.get(run_id)
         if not run:
             return {"error": "unknown specialist run", "run_id": run_id}
+        usage = self._reconcile_tasktree_usage(run.get("mission_id") or "") \
+            if run.get("mission_id") else {"errors": []}
+        run = self._run_tree.get(run_id) or run
         return {"run": run, "tree": self._run_tree.tree(run_id),
-                "events": self._run_tree.events(run_id, event_limit)}
+                "events": self._run_tree.events(run_id, event_limit),
+                "usage_projection_errors": usage["errors"]}
 
     def steer_specialist(self, run_id: str, text: str, sender_run_id: str = "") -> dict:
         """Queue a durable steer which is consumed at the next safe boundary."""
@@ -1171,6 +1229,11 @@ class MissionService:
         m = self.store.get(mid)
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
+        usage = self._reconcile_tasktree_usage(mid)
+        if usage["errors"]:
+            return {**self.status(mid),
+                    "error": "usage reconciliation failed closed",
+                    "usage_projection_errors": usage["errors"]}
         if self._specialist_run(mid):
             return {**self.status(mid),
                     "error": "specialist Missions run only through their scoped dispatcher"}
@@ -1183,6 +1246,8 @@ class MissionService:
             self._driver().advance(mid)
         except Exception as e:
             return {**self.status(mid), "error": f"run unavailable: {e}"}
+        finally:
+            self._reconcile_tasktree_usage(mid)
         self._sync_terminal_mission_tree(mid)
         return self.status(mid)
 
@@ -1608,6 +1673,7 @@ class MissionService:
         what colliejobd calls on wake)."""
         import time
         at = int(now if now is not None else time.time())
+        usage_reconciliation = self._reconcile_tasktree_usage()
         recovered = self.store.recover_stale_runs(at)
         escalations = self.store.escalate_human_waits(at)
         specialists = 0
@@ -1626,19 +1692,23 @@ class MissionService:
         if not self.store.list(state=QUEUED) and not self.store.due_waits(at):
             if mid:
                 return {**self.status(mid), "escalations": [e for e in escalations
-                                                             if e["mission_id"] == mid]}
+                                                              if e["mission_id"] == mid]}
             return {"advanced": 0, "specialists_advanced": specialists,
                     "parents_resumed": parent_wakes,
                     "recovered": recovered,
+                    "usage_reconciliation": usage_reconciliation,
                     "escalations": escalations}
         n = self._driver().tick_missions(at, max_workers=self._mission_workers)
+        usage_reconciliation = self._reconcile_tasktree_usage()
         self._sync_terminal_mission_trees()
         if mid:
             return {**self.status(mid), "escalations": [e for e in escalations
                                                          if e["mission_id"] == mid]}
         return {"advanced": n, "specialists_advanced": specialists,
                 "parents_resumed": parent_wakes,
-                "recovered": recovered, "escalations": escalations}
+                "recovered": recovered,
+                "usage_reconciliation": usage_reconciliation,
+                "escalations": escalations}
 
     def _specialist_control(self, run_id, token):
         run = self._run_tree.get(run_id)
@@ -1667,14 +1737,24 @@ class MissionService:
 
         beat = threading.Thread(target=heartbeat, name="specialist-heartbeat", daemon=True)
         beat.start()
-        before = self.store.runtime(child_mid) if child_mid else {}
         try:
             if not child_mid or not self.store.get(child_mid):
                 self._run_tree.block(
                     run_id, token,
                     "specialist runner has no bound Mission/worktree", needs_you=True)
                 return
-            budget = self._run_tree.budget_reason(run_id)
+            # Catch up any Mission accounting committed before an earlier process
+            # died.  Reconcile the whole campaign (including the root Mission's
+            # own usage) before the TaskTree ancestor budget gate.
+            root_run = self._run_tree.get(run.get("root_run_id") or "") or run
+            usage = self._reconcile_tasktree_usage(
+                root_run.get("mission_id") or child_mid)
+            if usage["errors"]:
+                raise RuntimeError("usage reconciliation failed closed: %s" %
+                                   usage["errors"][0]["error"])
+            exhausted = list(dict.fromkeys(tuple(item) for item in usage["exhausted"]))
+            budget = "; ".join("%s: %s" % item for item in exhausted) or \
+                self._run_tree.budget_reason(run_id)
             if budget:
                 self._run_tree.block(run_id, token, budget, needs_you=True)
                 return
@@ -1696,19 +1776,7 @@ class MissionService:
                     else child.state
             else:
                 state = child.state
-            after = self.store.runtime(child_mid)
-            exhausted = self._run_tree.account_usage(
-                run_id, token,
-                input_tokens=max(0, int(after.get("input_tokens", 0)) -
-                                 int(before.get("input_tokens", 0))),
-                output_tokens=max(0, int(after.get("output_tokens", 0)) -
-                                  int(before.get("output_tokens", 0))),
-                cost_usd=max(0.0, float(after.get("model_cost_usd", 0.0)) -
-                             float(before.get("model_cost_usd", 0.0))),
-                wall_ms=max(0, int(after.get("active_wall_ms", 0)) -
-                            int(before.get("active_wall_ms", 0))),
-                retries=max(0, int(after.get("retry_count", 0)) -
-                            int(before.get("retry_count", 0))))
+            exhausted = self._project_mission_usage(child_mid, run_id)
             current_run = self._run_tree.get(run_id) or {}
             if (current_run.get("status") == "cancel_requested" or
                     current_run.get("cancel_requested")):
@@ -1763,6 +1831,15 @@ class MissionService:
                 run_id, token, "specialist dispatcher failed: %s: %s" %
                 (type(exc).__name__, exc))
         finally:
+            if child_mid and self.store.get(child_mid):
+                try:
+                    # Idempotent absolute reconciliation also covers a driver
+                    # exception after Mission accounting committed.
+                    self._project_mission_usage(child_mid, run_id)
+                except Exception as exc:
+                    self._run_tree.mark_recovery(
+                        run_id, token, "usage projection failed: %s: %s" %
+                        (type(exc).__name__, exc))
             stop.set()
             beat.join(timeout=2)
 
@@ -1874,6 +1951,7 @@ class MissionService:
         m = self.store.get(mid)
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
+        usage_reconciliation = self._reconcile_tasktree_usage(mid)
         inbox = None
         action_in_flight = False
         if m.state == NEEDS_YOU:
@@ -1910,6 +1988,7 @@ class MissionService:
                         self.store.complete_action_key(mid, nonce, EXECUTED)
         next_wait = self.store.next_wait(mid)
         runtime = self.store.runtime(mid)
+        aggregate_runtime = self.store.aggregate_runtime(mid)
         activity = self.store.activity_ledger(mid, 24)
         checkpoint = self.store.latest_checkpoint(mid)
         run_tree = None
@@ -1968,6 +2047,8 @@ class MissionService:
             "action_in_flight": action_in_flight,
             "next_wake_at": next_wait["fire_at"] if next_wait else None,
             "runtime": runtime,
+            "aggregate_runtime": aggregate_runtime,
+            "usage_projection_errors": usage_reconciliation["errors"],
             "budget_exhausted": self.store.budget_reason(mid) or None,
             "latest_checkpoint": ({k: checkpoint[k] for k in
                                    ("seq", "phase", "payload", "at")}
