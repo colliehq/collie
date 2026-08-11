@@ -1421,6 +1421,9 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return self._send_json({"schema": settings.SCHEMA, "values": vals,
                                         "identity": whoami()})
+            if path == "/api/work-identities":
+                from .workidentity import public_connections
+                return self._send_json({"connections": public_connections(_state_root())})
             if path == "/api/run-capabilities":
                 # Static provider/model truth for the run setup.  In particular the
                 # UI hides Fast unless this exact pair has a known same-model wire
@@ -2105,6 +2108,24 @@ class Handler(BaseHTTPRequestHandler):
                                                     "error": "could not apply ambient desktop: %s" % exc,
                                                     "values": settings.all_values()}, 500)
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
+            if path == "/api/work-identities":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(4096)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                action = str(body.get("action") or "").strip().lower()
+                connection = str(body.get("connection") or "google_voice").strip().lower()
+                if connection != "google_voice" or action not in ("connect", "disconnect"):
+                    return self._send_json({"error": "unknown work-identity action"}, 400)
+                from .workidentity import connect_google_voice, disconnect_google_voice
+                try:
+                    result = (connect_google_voice(body.get("last4", ""), _state_root())
+                              if action == "connect" else
+                              disconnect_google_voice(_state_root()))
+                except (RuntimeError, ValueError) as exc:
+                    return self._send_json({"error": str(exc)}, 409)
+                return self._send_json({"ok": True, "connection": result})
             if path == "/api/browser/start":
                 # onboarding "connect your browser": bring the localhost bridge up (windowless), so the
                 # extension has something to poll. Returns the extension folder for the Load-unpacked step.

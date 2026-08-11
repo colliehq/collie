@@ -1129,6 +1129,21 @@
   .mhead { display: flex; gap: 8px; align-items: center; }
   .mgoal { font-weight: 600; }
   .mnote { color: var(--faint); font-size: 13px; }
+  .msummary { display: grid; gap: 7px; padding: 10px 11px; border: 1px solid var(--line);
+              border-radius: 10px; background: color-mix(in srgb, var(--surface) 82%, transparent); }
+  .msummary-row { display: grid; grid-template-columns: 82px minmax(0,1fr); gap: 9px;
+                  font-size: 13px; line-height: 1.4; }
+  .msummary-label { color: var(--faint); font-size: 11px; text-transform: uppercase;
+                    letter-spacing: .04em; }
+  .msummary-value { min-width: 0; overflow-wrap: anywhere; }
+  .msummary-row.blocked .msummary-value { color: #d99532; }
+  .mauth { padding: 9px 10px; border: 1px solid color-mix(in srgb,#e8a33d 52%,var(--line));
+           border-radius: 9px; background: color-mix(in srgb,#e8a33d 10%,transparent);
+           font-size: 12.5px; line-height: 1.45; }
+  .mauth strong { display: block; margin-bottom: 2px; }
+  .mdetails { font-size: 12.5px; color: var(--faint); }
+  .mdetails > summary { cursor: pointer; user-select: none; }
+  .mdetails .mcase { margin-top: 7px; }
   .mchip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
            background: color-mix(in srgb, var(--meadow) 22%, transparent); border: 1px solid var(--line); }
   .mchip.step { background: transparent; color: var(--faint); }
@@ -1152,7 +1167,9 @@
   .mbtn { padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); cursor: pointer;
           background: var(--surface); color: var(--ink); font-size: 13px; }
   .mbtn.confirm { background: color-mix(in srgb, #e8a33d 26%, transparent); border-color: #e8a33d; }
-  .mbtn.accept { background: color-mix(in srgb, var(--pine) 24%, transparent); }
+  .mbtn.accept { background: color-mix(in srgb, var(--coral) 16%, transparent);
+                 border-color: color-mix(in srgb, var(--coral) 50%, var(--line)); }
+  .mbtn.return { background: color-mix(in srgb, var(--pine) 24%, transparent); }
   .mbtn:disabled { opacity: .5; cursor: default; }
   .margs { font-size: 12px; color: var(--faint); word-break: break-all; }
 
@@ -2085,6 +2102,18 @@
     "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.":
       "流被中断——若 Collie 仍在工作,稍后从侧栏重新打开本会话即可看到结果。",
     "run started": "运行开始",
+    "Current": "当前", "Completed": "已完成", "Next": "下一步", "Blocked by": "阻塞原因",
+    "Nothing verified yet": "尚无已验证步骤", "Mission details": "任务详情",
+    "Authorization waiting": "等待授权", "Collie is continuing independent work.": "Collie 正在继续不依赖该授权的工作。",
+    "I handled this step — continue": "我已完成这一步 — 继续",
+    "End mission & take over": "结束任务并由我接管", "Return to Collie": "交还给 Collie",
+    "This ends the Mission without independent verification. Take over permanently?": "这会在没有独立验证的情况下结束整个任务。确定永久接管吗？",
+    "Completed by user acceptance; no independent verification was recorded.": "任务由用户接管而结束，没有记录独立验证。",
+    "Recorded receipts": "已记录回执",
+    "Collie-assigned line": "分配给 Collie 的工作号码", "Open Google Voice Messages in Chrome, then connect.": "请先在 Chrome 打开 Google Voice 消息页，然后连接。",
+    "Messages, calls, voicemail, verification codes, and routine Voice operation. Number transfer, purchases, and Google account security remain separate.": "可用于短信、电话、语音信箱、验证码和日常 Voice 操作；号码转移、购买服务和 Google 账户安全仍需单独授权。",
+    "Disconnect": "断开", "Connect open Voice tab": "连接已打开的 Voice 页面",
+    "Disconnect Google Voice verification codes?": "断开 Google Voice 验证码连接？",
     "switching…": "切换中…",
     "switched · applies to your next message": "已切换 · 下一条消息生效",
     "not logged in for that provider": "未登录该 provider",
@@ -2239,6 +2268,18 @@
     "stream interrupted — if Collie was still working, reopen this thread from the sidebar in a moment.":
       "流被中斷——若 Collie 仍在工作,稍後從側欄重新開啟本會話即可看到結果。",
     "run started": "執行開始",
+    "Current": "目前", "Completed": "已完成", "Next": "下一步", "Blocked by": "阻塞原因",
+    "Nothing verified yet": "尚無已驗證步驟", "Mission details": "任務詳情",
+    "Authorization waiting": "等待授權", "Collie is continuing independent work.": "Collie 正在繼續不依賴該授權的工作。",
+    "I handled this step — continue": "我已完成這一步 — 繼續",
+    "End mission & take over": "結束任務並由我接管", "Return to Collie": "交還給 Collie",
+    "This ends the Mission without independent verification. Take over permanently?": "這會在沒有獨立驗證的情況下結束整個任務。確定永久接管嗎？",
+    "Completed by user acceptance; no independent verification was recorded.": "任務由使用者接管而結束，沒有記錄獨立驗證。",
+    "Recorded receipts": "已記錄回執",
+    "Collie-assigned line": "分配給 Collie 的工作號碼", "Open Google Voice Messages in Chrome, then connect.": "請先在 Chrome 開啟 Google Voice 訊息頁，再進行連線。",
+    "Messages, calls, voicemail, verification codes, and routine Voice operation. Number transfer, purchases, and Google account security remain separate.": "可用於簡訊、電話、語音信箱、驗證碼與日常 Voice 操作；號碼移轉、購買服務和 Google 帳戶安全仍需另行授權。",
+    "Disconnect": "中斷連線", "Connect open Voice tab": "連線已開啟的 Voice 頁面",
+    "Disconnect Google Voice verification codes?": "中斷 Google Voice 驗證碼連線？",
     "switching…": "切換中…",
     "switched · applies to your next message": "已切換 · 下一條訊息生效",
     "not logged in for that provider": "未登入該 provider",
@@ -2567,7 +2608,7 @@
     { id: "memory", label: "Memory", zh: "记忆",
       keys: ["EMBED", "DISTILL"] },
     { id: "autonomy", label: "Autonomy & limits", zh: "自主与限额",
-      keys: ["MISSION_APPROVAL_MODE", "MAX_TURNS", "MAX_COST", "MAX_TOTAL_TOKENS", "RETRIES", "OVERFLOW_RECOVERY"] },
+      keys: ["MISSION_APPROVAL_MODE", "PROFILE_AGE_BAND", "AUTO_APPLY_PROFILE_CLAIMS", "MAX_AUTO_AUTH_RISK", "DEFER_MISSING_AUTHORIZATIONS", "MAX_TURNS", "MAX_COST", "MAX_TOTAL_TOKENS", "RETRIES", "OVERFLOW_RECOVERY"] },
     { id: "privacy", label: "Privacy & security", zh: "隐私与安全",
       keys: ["REDACT_SECRETS"] },
     { id: "advanced", label: "Advanced", zh: "高级",
@@ -2714,7 +2755,7 @@
       if (c.mcp) body += '<div class="set-group"><h4>' + setEsc(t("App connections")) + '</h4>'
           + '<p class="set-hint" style="margin:0 0 10px">'
           + setEsc(t("Connections give Collie scoped tools from outside this device. Review their status and access here."))
-          + '</p><div id="mcpBox"></div></div>';
+          + '</p><div id="workIdentityBox"></div><div id="mcpBox"></div></div>';
       panes += '<div class="set-pane' + on + '" data-cat="' + c.id + '"><h3>'
              + setEsc(loc && c.zh ? c.zh : c.label) + "</h3>" + body + "</div>";
     });
@@ -2730,7 +2771,40 @@
     if (box) box.oninput = function () { setFilter(box.value); };
     if (typeof renderCollieIdentity === "function") renderCollieIdentity();
     loadSettingsOverview();
+    workIdentityLoad();
   }
+
+  function workIdentityRender(d) {
+    var box = document.getElementById("workIdentityBox"); if (!box) return;
+    var row = ((d && d.connections) || [])[0] || { connected:false };
+    var badges = '<span class="mcp-badge">' + setEsc(t("Collie-assigned line")) + '</span>';
+    if (row.connected) badges += '<span class="mcp-badge">' + setEsc(t("signed in")) + '</span>';
+    var action = row.connected ? "disconnect" : "connect";
+    box.innerHTML = '<div class="mcp-item"><div class="mcp-top"><span class="mcp-name">Google Voice</span>'
+      + badges + '</div><div class="mcp-target">' + setEsc(row.connected ? row.account : t("Open Google Voice Messages in Chrome, then connect.")) + '</div>'
+      + '<div class="set-hint">' + setEsc(t("Messages, calls, voicemail, verification codes, and routine Voice operation. Number transfer, purchases, and Google account security remain separate.")) + '</div>'
+      + '<div class="mcp-acts"><button data-work-identity="' + action + '">'
+      + setEsc(t(row.connected ? "Disconnect" : "Connect open Voice tab")) + '</button></div></div>';
+  }
+  function workIdentityLoad() {
+    return fetch("/api/work-identities").then(function (r) { return r.json(); })
+      .then(workIdentityRender).catch(function () {});
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest ? e.target.closest("[data-work-identity]") : null;
+    if (!b) return;
+    var action = b.getAttribute("data-work-identity");
+    if (action === "disconnect" && !confirm(t("Disconnect Google Voice verification codes?"))) return;
+    b.disabled = true;
+    fetch("/api/work-identities?token=" + encodeURIComponent(CT), {
+      method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({action:action, connection:"google_voice"})
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      b.disabled = false;
+      if (d.error) { alert(d.error); return; }
+      workIdentityLoad();
+    }).catch(function () { b.disabled = false; alert(t("Could not reach Collie.")); });
+  });
 
   function loadSettingsOverview() {
     var node = document.getElementById("settingsRuntimeStatus");
@@ -4345,12 +4419,26 @@
     head.appendChild(mchip(missionStateLabel(st.state), "state-" + st.state));
     if (st.error) head.appendChild(mchip(st.error, "state-failed"));
     b.appendChild(head);
-    var goal = document.createElement("div"); goal.className = "mgoal"; goal.textContent = st.goal;
+    var summary = st.summary || {};
+    var goal = document.createElement("div"); goal.className = "mgoal"; goal.textContent = summary.title || st.goal;
     b.appendChild(goal);
-    if (st.result) { var r = document.createElement("div"); r.className = "mnote"; r.textContent = st.result; b.appendChild(r); }
+    var sb = document.createElement("div"); sb.className = "msummary";
+    function summaryRow(label, value, cls) {
+      if (!value) return;
+      var row = document.createElement("div"); row.className = "msummary-row" + (cls ? " " + cls : "");
+      var lab = document.createElement("div"); lab.className = "msummary-label"; lab.textContent = t(label);
+      var val = document.createElement("div"); val.className = "msummary-value";
+      val.textContent = Array.isArray(value) ? (value.length ? value.join(" · ") : t("Nothing verified yet")) : value;
+      row.appendChild(lab); row.appendChild(val); sb.appendChild(row);
+    }
+    summaryRow("Current", summary.current || st.result || missionStateLabel(st.state));
+    summaryRow("Completed", summary.completed || []);
+    summaryRow("Next", summary.next);
+    summaryRow("Blocked by", summary.blocker, "blocked");
+    b.appendChild(sb);
     if (st.state === "done_accepted") {
       var accepted = document.createElement("div"); accepted.className = "mnote";
-      accepted.textContent = "Completed by user acceptance; no independent verification was recorded.";
+      accepted.textContent = t("Completed by user acceptance; no independent verification was recorded.");
       b.appendChild(accepted);
     }
     if (st.action_in_flight) {
@@ -4358,15 +4446,28 @@
       inflight.textContent = t("An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.");
       b.appendChild(inflight);
     }
+    var pendingAuth = ((st.case || {}).pending_authorizations || []).filter(function (x) { return x && typeof x === "object"; });
+    pendingAuth.forEach(function (auth) {
+      var box = document.createElement("div"); box.className = "mauth";
+      var title = document.createElement("strong"); title.textContent = t("Authorization waiting") + (auth.domain ? " · " + auth.domain : "");
+      var text = document.createElement("div"); text.textContent = auth.summary || auth.operation || auth.kind || t("Needs You");
+      var note = document.createElement("div"); note.className = "mnote";
+      note.textContent = st.state === "needs_you" ? missionStateLabel(st.state) : t("Collie is continuing independent work.");
+      box.appendChild(title); box.appendChild(text); box.appendChild(note); b.appendChild(box);
+    });
     var keys = Object.keys(st.case || {});
-    if (keys.length) {
+    if (keys.length || st.result) {
+      var details = document.createElement("details"); details.className = "mdetails";
+      var detailsTitle = document.createElement("summary"); detailsTitle.textContent = t("Mission details");
+      details.appendChild(detailsTitle);
       var cl = document.createElement("div"); cl.className = "mcase";
+      if (st.result) { var resultRow = document.createElement("div"); resultRow.textContent = "result: " + st.result; cl.appendChild(resultRow); }
       keys.forEach(function (k) {
         var v = st.case[k]; if (v && typeof v === "object") v = JSON.stringify(v);
         var row = document.createElement("div"); row.textContent = k + ": " + String(v).slice(0, 140);
         cl.appendChild(row);
       });
-      b.appendChild(cl);
+      details.appendChild(cl); b.appendChild(details);
     }
     if ((st.steps || []).length) {
       var sl = document.createElement("div"); sl.className = "msteps";
@@ -4375,7 +4476,7 @@
     }
     if ((st.receipts || []).length) {
       var receipts = document.createElement("div"); receipts.className = "mcase";
-      var receiptTitle = document.createElement("strong"); receiptTitle.textContent = "Recorded receipts";
+      var receiptTitle = document.createElement("strong"); receiptTitle.textContent = t("Recorded receipts");
       receipts.appendChild(receiptTitle);
       st.receipts.forEach(function (receipt) {
         var line = document.createElement("div");
@@ -4407,15 +4508,28 @@
       }
     } else if (st.needs_human) {            // hand-off: your call
       var hbtn = document.createElement("button"); hbtn.className = "mbtn confirm";
-      hbtn.textContent = t("I handled it — continue");
+      hbtn.textContent = t("I handled this step — continue");
       hbtn.onclick = function () { missionAction(card, hbtn, missionPost("/api/mission/continue", { id: st.mission_id }), function (x) {
-        reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
+        reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, x.mission_id);
       }); };
       acts.appendChild(hbtn);
       var abtn = document.createElement("button"); abtn.className = "mbtn accept";
-      abtn.textContent = t("Accept & take over");
-      abtn.onclick = function () { missionAction(card, abtn, missionPost("/api/mission/accept", { id: st.mission_id })); };
+      abtn.textContent = t("End mission & take over");
+      abtn.onclick = function () {
+        if (!window.confirm(t("This ends the Mission without independent verification. Take over permanently?"))) return;
+        missionAction(card, abtn, missionPost("/api/mission/accept", { id: st.mission_id }));
+      };
       acts.appendChild(abtn);
+    }
+    if (st.state === "done_accepted" && (st.controls || []).indexOf("continue") >= 0) {
+      var returnBtn = document.createElement("button"); returnBtn.className = "mbtn return";
+      returnBtn.textContent = t("Return to Collie");
+      returnBtn.onclick = function () { missionAction(card, returnBtn, missionPost("/api/mission/continue", {
+        id: st.mission_id, note: "Return control to Collie and continue without repeating predecessor actions."
+      }), function (x) {
+        reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, x.mission_id);
+      }); };
+      acts.appendChild(returnBtn);
     }
     if ((st.controls || []).indexOf("check") >= 0) {
       var kbtn = document.createElement("button"); kbtn.className = "mbtn check";

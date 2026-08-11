@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.21.22 — Keep Missions moving across authorization waits
+
+- **Missing authorization is branch-scoped.** Collie records a structured Needs You request and
+  continues independent Mission work; it pauses the whole Mission only when every remaining path
+  depends on that request.
+- **Confirmed profile facts are reusable without becoming blanket consent.** A local age threshold
+  can satisfy an exact low/medium-risk form claim, while CAPTCHA, person-required MFA, KYC,
+  biometrics, legal signatures, security keys, and spending stay person-required. Verification
+  codes from an authorized Google Voice/mail connection remain ordinary connected work and are
+  never persisted in Mission history.
+- **Google Voice can be Collie's assigned work line.** The Connection grants operational use of
+  messages, calls, voicemail, verification codes, and routine Voice settings while storing only a
+  masked number. Number transfer/release, purchases, and Google-account security remain separate
+  authority. Codes still move through a dedicated transient read-and-fill path without exposure
+  to the model, Mission state, audit log, or Receipt.
+- **Mission cards now say what is happening.** Current work, verified steps, next action, blockers,
+  and waiting authorizations are summarized before bounded details and receipts.
+- **Takeover is no longer ambiguous.** The terminal button is labeled **End mission & take over**
+  and requires confirmation. **Return to Collie** creates an audited successor that inherits
+  completed semantic action keys, preventing already-fired work from replaying.
+
 ## v0.21.21 — Keep OAuth consent active and verify delayed redirects
 
 - **A final browser action activates its already-bound Mission tab before snapshotting.** Consent

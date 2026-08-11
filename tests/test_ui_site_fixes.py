@@ -170,6 +170,17 @@ def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failure
     assert "function missionResponse" in desktop and "if (!r.ok) throw new Error" in desktop
     assert "missionError(card" in desktop and "Activity could not refresh" in desktop
     assert 'fetch("/api/healthz?token=" + encodeURIComponent(CT))' in desktop
+    assert "End mission & take over" in desktop and "Return to Collie" in desktop
+    assert "Accept & take over" not in desktop
+    assert "This ends the Mission without independent verification." in desktop
+    assert 'summaryRow("Current"' in desktop and 'summaryRow("Next"' in desktop
+    assert "pending_authorizations" in desktop and "Collie is continuing independent work." in desktop
+    for key in ("PROFILE_AGE_BAND", "AUTO_APPLY_PROFILE_CLAIMS",
+                "MAX_AUTO_AUTH_RISK", "DEFER_MISSING_AUTHORIZATIONS"):
+        assert key in desktop
+    assert "/api/work-identities" in desktop
+    assert "Connect open Voice tab" in desktop and "Collie-assigned line" in desktop
+    assert 'name="verification.fill"' in read("harness/primitives.py")
 
 
 def test_visual_run_views_name_scoped_checks_without_universal_verification_claims():

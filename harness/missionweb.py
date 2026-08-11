@@ -52,6 +52,62 @@ def _clean(d: dict) -> dict:
     return {k: v for k, v in (d or {}).items() if k not in ("_case", "_leash")}
 
 
+def _short(value, limit=500):
+    value = " ".join(str(value or "").split())
+    return value[:limit]
+
+
+def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait):
+    """Build a bounded, deterministic operator view without another model call."""
+    case = mission.case or {}
+    pending_auth = [x for x in case.get("pending_authorizations", [])
+                    if isinstance(x, dict)][-8:]
+    completed = []
+    failed = 0
+    for step in steps:
+        verdict = str(step.get("verdict") or "").lower()
+        name = _short(step.get("name"), 100)
+        if verdict in ("verified", "standing-authorized") and name and name not in completed:
+            completed.append(name)
+        if verdict in ("failed", "inconclusive"):
+            failed += 1
+    verified_receipts = sum(1 for r in receipts if r.get("verdict") == "verified")
+    pending = len(pending_auth) + (1 if inbox else 0)
+    current = _short(mission.result, 500) or _short(runtime.get("active_phase"), 160)
+    if inbox:
+        next_step = "Confirm the prepared %s action" % _short(inbox.get("capability"), 100)
+    elif pending_auth:
+        next_step = _short(pending_auth[0].get("summary"), 500)
+        if mission.state not in (NEEDS_YOU, PAUSED):
+            next_step += " (authorization is waiting; independent work continues)"
+    elif next_wait:
+        next_step = "Re-check at %s" % next_wait.get("fire_at")
+    elif mission.state == QUEUED:
+        next_step = "Start the next Mission step"
+    elif mission.state in (RUNNING, PAUSING, RECONCILING):
+        next_step = _short(runtime.get("active_phase"), 160) or "Continue the active step"
+    elif mission.state == DONE_ACCEPTED:
+        next_step = "Return this Mission to Collie if more work remains"
+    elif mission.state == DONE_VERIFIED:
+        next_step = "No remaining work; completion was independently verified"
+    else:
+        next_step = "Review the Mission state"
+    blocker = ""
+    if mission.state == NEEDS_YOU:
+        blocker = (_short(pending_auth[0].get("summary"), 500) if pending_auth
+                   else _short(mission.result, 500) or "A person-required step")
+    return {
+        "title": _short(mission.goal, 300),
+        "current": current or "Ready",
+        "completed": completed[-8:],
+        "next": next_step,
+        "blocker": blocker,
+        "authorization_waiting": len(pending_auth),
+        "progress": {"verified": len(completed) + verified_receipts,
+                     "pending": pending, "failed": failed},
+    }
+
+
 class MissionService:
     def __init__(self, base: str = None, decider=None, provider: str = None,
                  model: str = None, stub=None, state_dir: str = None,
@@ -427,9 +483,11 @@ class MissionService:
         }
         successor = "msn_" + secrets.token_hex(6)
         create_mission(self.store, successor, m.goal, case=case, leash=dict(m.leash))
+        inherited = self.store.inherit_completed_action_keys(mid, successor)
         self.store.record_event(
             successor, "control", "retry",
-            payload={"predecessor": mid, "note": retry_note})
+            payload={"predecessor": mid, "note": retry_note,
+                     "inherited_action_keys": inherited})
         self.store.record_checkpoint(
             successor, "", "retried",
             {"predecessor": mid, "receipts": len(receipt_context)},
@@ -633,6 +691,53 @@ class MissionService:
         m = self.store.get(mid)
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
+        if m.state == DONE_ACCEPTED:
+            # Acceptance is immutable audit history. Returning work to Collie
+            # therefore creates a successor rather than falsifying that terminal
+            # record, while inherited semantic keys prevent replay of fired work.
+            live_actions = [r for r in self.actions.list()
+                            if r.get("job_id") == mid and r.get("state") == EXECUTING]
+            if live_actions or self.store.active_resources(mid):
+                return {**self.status(mid),
+                        "error": "cannot return while predecessor action outcome is uncertain"}
+            prior_receipts = [r for r in self.actions.receipts()
+                              if r.get("job_id") == mid][-40:]
+            receipt_context = [{
+                "capability": r.get("capability"),
+                "fired": bool(r.get("fired")),
+                "verdict": r.get("verdict"),
+                "reason": _short(r.get("verdict_reason"), 500),
+                "evidence": _short(r.get("evidence"), 1000),
+            } for r in prior_receipts]
+            now = int(time.time())
+            continuation_note = _short(note, 2000) or (
+                "Return control to Collie. Inspect predecessor receipts before every "
+                "external action and never duplicate fired work.")
+            case = {
+                "_continued_from": mid,
+                "predecessor": {
+                    "mission_id": mid,
+                    "state": m.state,
+                    "result": _short(m.result, 2000),
+                    "receipts": receipt_context,
+                    "case": _clean(m.case),
+                },
+                "human_updates": [{"at": now, "recovery": True,
+                                   "note": continuation_note}],
+            }
+            successor = "msn_" + secrets.token_hex(6)
+            create_mission(self.store, successor, m.goal, case=case, leash=dict(m.leash))
+            inherited = self.store.inherit_completed_action_keys(mid, successor)
+            self.store.record_event(
+                successor, "control", "return_to_collie",
+                payload={"predecessor": mid, "note": continuation_note,
+                         "inherited_action_keys": inherited})
+            self.store.record_checkpoint(
+                successor, "", "continued",
+                {"predecessor": mid, "receipts": len(receipt_context),
+                 "inherited_action_keys": inherited},
+                case=case, allow_unowned=True)
+            return self.status(successor)
         _name, nonce = self.store.last_parked(mid)
         if m.state != NEEDS_YOU or nonce or not self.store.continue_handoff(mid, note):
             return {**self.status(mid), "error": f"cannot continue from {m.state}"}
@@ -892,6 +997,8 @@ class MissionService:
             controls = ["reconcile", "cancel"]
         elif m.state == FAILED_S:
             controls = ["retry"]
+        elif m.state == DONE_ACCEPTED:
+            controls = ["continue"]
         recovery_actions = []
         if m.state in (RECOVERY_REQUIRED, RECONCILING):
             recovery_actions = [
@@ -901,12 +1008,17 @@ class MissionService:
                 for r in self.actions.list()
                 if r.get("job_id") == mid and r.get("state") in
                    (PENDING, APPROVED, EXECUTING, EXECUTED)]
+        steps = [{"name": s["name"], "verdict": s["verdict"]}
+                 for s in self.store.steps(mid)]
+        receipts = [{"capability": r["capability"], "verdict": r["verdict"],
+                     "fired": bool(r["fired"])}
+                    for r in self.actions.receipts() if r.get("job_id") == mid]
         return {
             "mission_id": mid, "goal": m.goal, "state": m.state, "result": m.result,
             "created_at": m.created_at, "updated_at": m.updated_at,
             "case": _clean(m.case),
-            "steps": [{"name": s["name"], "verdict": s["verdict"]}
-                      for s in self.store.steps(mid)],
+            "summary": _mission_summary(m, steps, receipts, runtime, inbox, next_wait),
+            "steps": steps,
             "recent_events": self.store.events(mid, 20),
             "inbox": inbox,                       # non-null -> render a Confirm button
             "needs_human": (m.state == NEEDS_YOU and inbox is None and
@@ -933,9 +1045,7 @@ class MissionService:
             },
             "controls": controls,
             "recovery_actions": recovery_actions,
-            "receipts": [{"capability": r["capability"], "verdict": r["verdict"],
-                          "fired": bool(r["fired"])}
-                         for r in self.actions.receipts() if r.get("job_id") == mid],
+            "receipts": receipts,
         }
 
     def missions(self) -> list:

@@ -81,6 +81,69 @@ def _stub_observe(rec):
             "present": present, "detail": f"(stub) observation #{n}, signal={present}"}
 
 
+def _stub_verification_fill(rec):
+    return {"case": {"verification_code_filled": True}, "filled": True,
+            "source": "connected_verification_inbox"}
+
+
+def _verification_fill_verify(rec, result):
+    if (result or {}).get("filled"):
+        return Verdict(VERIFIED, "fresh matching verification code filled from connected inbox")
+    return Verdict(FAILED, (result or {}).get("error") or "verification code was not filled")
+
+
+def _verification_field(snapshot, requested=""):
+    text = str((snapshot or {}).get("snapshot") or "")
+    requested = str(requested or "").strip()
+    hits = []
+    for line in text.splitlines():
+        match = re.search(r"\[([^\]]+)\]\s+(?:textbox|input|combobox)\s+\"([^\"]+)\"", line, re.I)
+        if not match:
+            continue
+        label = match.group(2)
+        if requested:
+            match_label = requested.casefold() in label.casefold()
+        else:
+            match_label = bool(re.search(
+                r"verification|security code|one[ -]?time|\botp\b|验证码|驗證碼|校验码|確認碼",
+                label, re.I))
+        if match_label:
+            hits.append(match.group(1))
+    return hits[0] if len(hits) == 1 else ""
+
+
+def _real_verification_fill(actuator, otp_reader=None):
+    def execute(rec):
+        args = rec.args or {}
+        service = str(args.get("service") or "").strip()
+        if not service:
+            return {"filled": False, "error": "expected service name is required"}
+        act = _space_actuator(actuator, getattr(rec, "job_id", ""))
+        if act is None or not hasattr(act, "snapshot") or not hasattr(act, "type_ref"):
+            return {"filled": False, "error": "connected browser is unavailable"}
+        target = act.snapshot() or {}
+        ref = _verification_field(target, args.get("field"))
+        if not ref:
+            return {"filled": False, "error": "verification-code field is missing or ambiguous"}
+        reader = otp_reader
+        if reader is None:
+            from .workidentity import take_google_voice_code
+            reader = take_google_voice_code
+        code = ""
+        try:
+            code, meta = reader(service, max_age_seconds=args.get("max_age_seconds", 600))
+            act.type_ref(ref, code, submit=False)
+            return {"case": {"verification_code_filled": True}, "filled": True,
+                    "source": meta.get("source", "connected_verification_inbox"),
+                    "account": meta.get("account", ""),
+                    "received_at": int(meta.get("received_at") or 0)}
+        except Exception as exc:
+            return {"filled": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+        finally:
+            code = ""  # make the intended lifetime explicit; never return or persist it
+    return execute
+
+
 def _read_verify(rec, result):
     return Verdict(VERIFIED, (result or {}).get("detail") or "observation recorded")
 
@@ -1265,7 +1328,8 @@ def _semantic_browse_submit(args):
 
 # ══════════════════════════ registration ═════════════════════════════════════
 def register_primitives(stub: bool = True, actuator=None, provider=None,
-                        research_runner=None, browse_runner=None, code_runner=None):
+                        research_runner=None, browse_runner=None, code_runner=None,
+                        otp_reader=None):
     """Register the neutral primitive set. `stub=True` wires the canned bodies
     (container tests / safe default). `stub=False` wires the REAL bodies; deps are
     injectable (actuator/provider/research_runner/browse_runner/code_runner) for
@@ -1279,6 +1343,7 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         browse_exec, browse_verify = _stub_browse, _browse_verify
         bsubmit_exec, bsubmit_verify = _stub_browse_submit, _browse_submit_verify
         code_exec, code_verify = _stub_code, _code_verify
+        verification_exec, verification_verify = _stub_verification_fill, _verification_fill_verify
         browser_resource = code_resource = bsubmit_snapshot = bsubmit_unchanged = None
     else:
         research_exec, research_verify = _real_research(research_runner), _real_research_verify
@@ -1289,6 +1354,8 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         browse_exec, browse_verify = _real_browse(browse_runner), _browse_verify
         bsubmit_exec, bsubmit_verify = _real_browse_submit(actuator), _browse_submit_verify
         code_exec, code_verify = _real_code(code_runner), _code_verify
+        verification_exec = _real_verification_fill(actuator, otp_reader)
+        verification_verify = _verification_fill_verify
         browser_resource = "browser-profile"
         bsubmit_snapshot = _browse_target_snapshot(actuator)
         bsubmit_unchanged = _browse_target_unchanged(actuator)
@@ -1309,6 +1376,13 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         description="Re-observe the world (logged-out fetch for evidence, "
         "or authed browser read to poll an inbox).",
         args_hint='{"url","expect","authed"}'))
+    register(Capability(
+        name="verification.fill", execute=verification_exec, verify=verification_verify,
+        reversible=True, risk="read", resource=browser_resource,
+        description=("Read one fresh service-matching code from a connected verification inbox "
+                     "and fill the current code field internally. The code is never returned to "
+                     "the model, Mission case, event log, or receipt."),
+        args_hint='{"service":"Product Hunt","field":"Verification code","max_age_seconds":600}'))
     register(Capability(
         name="web.submit", execute=submit_exec, verify=submit_verify, reversible=False,
         risk="publish", resource=browser_resource,
@@ -1352,5 +1426,5 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         "a filesystem-confined child. Mission grants no shell; unverified edits hand off for review.",
         args_hint='{"goal": "fix the null-pointer in parser.py", "workspace": "/path/to/repo"}'))
     return [get_capability(name) for name in
-            ("research", "compose", "observe", "web.submit", "web.send",
+            ("research", "compose", "observe", "verification.fill", "web.submit", "web.send",
              "browse", "browse.submit", "code")]

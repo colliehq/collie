@@ -68,6 +68,10 @@ class BridgeActuator:
         self._cmd({"action": "type", "selector": selector, "text": text or "", "submit": submit})
         return True
 
+    def type_ref(self, ref: str, text: str, submit: bool = False) -> bool:
+        self._cmd({"action": "type", "ref": ref, "text": text or "", "submit": submit})
+        return True
+
     def click(self, selector: str) -> str:
         # the bridge click matches by visible text OR css selector; it returns the
         # resulting page text, not a URL, so callers verify by re-observing.
@@ -190,6 +194,10 @@ class FakeActuator:
 
     def show(self):
         self.calls.append(("show",))
+        return True
+
+    def type_ref(self, ref, text, submit=False):
+        self.calls.append(("type_ref", ref, "[sensitive]", submit))
         return True
 
     def wait(self, seconds):

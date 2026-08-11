@@ -503,6 +503,42 @@ function pageFormSnapshot() {
   return { fields, actions };
 }
 
+// Connection-only helpers.  They return the minimum material needed by the host:
+// identity returns only the final four digits, and OTP returns one fresh code to
+// the dedicated read-and-fill primitive (never to a model/browser snapshot).
+function pageVoiceIdentity() {
+  if (location.origin !== "https://voice.google.com") return { error: "not a Google Voice page" };
+  const panel = document.querySelector('[aria-label="Call panel"], [role="region"][aria-label*="Call"]');
+  const text = (panel && panel.innerText) || "";
+  const digits = text.replace(/\D/g, "");
+  if (digits.length < 10) return { error: "Google Voice number is not visible" };
+  return { connected: true, last4: digits.slice(0, 10).slice(-4) };
+}
+
+function pageGoogleVoiceOtp(service, maxAgeSeconds) {
+  if (location.origin !== "https://voice.google.com") return { error: "not a Google Voice page" };
+  const wanted = String(service || "").trim().toLowerCase();
+  if (!wanted) return { error: "expected service is required" };
+  const maxAge = Math.min(900, Math.max(60, Number(maxAgeSeconds) || 600)) * 1000;
+  const now = Date.now(), hits = [];
+  const roots = document.querySelectorAll('[aria-label="Latest messages"] button, main button');
+  for (const button of roots) {
+    const raw = String(button.getAttribute("aria-label") || button.innerText || "").trim();
+    if (!raw || raw.toLowerCase().indexOf(wanted) < 0 ||
+        !/(verification|security|one[ -]?time|\botp\b|验证码|驗證碼|校验码|確認碼)/i.test(raw)) continue;
+    const stampNode = button.querySelector("p");
+    const stamp = stampNode ? Date.parse(stampNode.textContent || "") : NaN;
+    if (!Number.isFinite(stamp) || stamp > now + 60000 || now - stamp > maxAge) continue;
+    const message = stampNode ? raw.replace(stampNode.textContent || "", " ") : raw;
+    const codes = [...message.matchAll(/(^|\D)(\d{4,8})(?!\d)/g)]
+      .map((m) => m[2]).filter((x) => !/^20\d\d$/.test(x));
+    const unique = [...new Set(codes)];
+    if (unique.length === 1) hits.push({ code: unique[0], received_at: Math.floor(stamp / 1000) });
+  }
+  if (hits.length !== 1) return { error: hits.length ? "multiple fresh matching codes" : "no fresh matching code" };
+  return hits[0];
+}
+
 // Attach files by writing the <input type=file>'s FileList directly — never by clicking the page's
 // "choose file" button. That button opens the OS file picker, and Chrome only opens one for a
 // genuine user gesture: a synthetic or CDP-driven click produces NO dialog at all, so there is
@@ -2066,6 +2102,14 @@ async function runStep(cmd) {
       let tab = null;
       if (cmd.tab_id != null) {
         try { tab = await chrome.tabs.get(cmd.tab_id); } catch (e) { return { error: "no tab with id " + cmd.tab_id }; }
+      } else if (cmd.origin) {
+        let origin;
+        try { origin = new URL(cmd.origin).origin; } catch (e) { return { error: "invalid attach origin" }; }
+        try {
+          const found = await chrome.tabs.query({ url: origin + "/*" });
+          if (found.length > 1) return { error: "more than one tab is open for " + origin };
+          tab = found[0] || null;
+        } catch (e) {}
       } else {
         try { const found = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); tab = found && found[0]; }
         catch (e) {}
@@ -2225,6 +2269,9 @@ async function runStep(cmd) {
     if (cmd.action === "pick") return await exec(pagePick, [cmd.label, cmd.option]);
     if (cmd.action === "fields") return await exec(pageFields, []);
     if (cmd.action === "form_snapshot") return await exec(pageFormSnapshot, []);
+    if (cmd.action === "voice_identity") return await exec(pageVoiceIdentity, []);
+    if (cmd.action === "google_voice_otp")
+      return await exec(pageGoogleVoiceOtp, [cmd.service || "", cmd.max_age_seconds || 600]);
     if (cmd.action === "upload")   // MAIN world: a snapshot ref resolves against window.__collieRefs
       return await execMain(pageUpload, [cmd.selector || "", cmd.files || [], cmd.ref || ""]);
     if (cmd.action === "reload") {

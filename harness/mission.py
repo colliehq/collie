@@ -27,7 +27,7 @@ itself, and lets the model drive everything else:
     the entire flow. Each advance, the container asks the decider "given this goal
     and what you know so far (the case), what is the ONE next action?" — a neutral
     primitive (primitives.py: research / compose / observe / web.submit / web.send),
-    or a control move (wait N / needs_human / done). The container gates + runs it,
+    or a control move (wait N / needs_authorization / needs_human / done). The container gates + runs it,
     folds the result into the case, and asks again. No per-errand code.
 
 `decider(goal, case, primitives) -> {"action","args","reason"}`. Production wires
@@ -61,8 +61,108 @@ from .verifier import FAILED, INCONCLUSIVE, VERIFIED, Verdict
 
 _TERMINAL = {DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED}
 # control moves the decider can return instead of a primitive name
-WAIT, DONE, NEEDS_HUMAN = "wait", "done", "needs_human"
+WAIT, DONE, NEEDS_HUMAN, NEEDS_AUTHORIZATION = (
+    "wait", "done", "needs_human", "needs_authorization")
 _AWAITING = "awaiting-confirm"
+
+_AUTH_RISK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+_PERSON_REQUIRED_AUTH = {
+    "captcha", "biometric", "kyc", "identity_proof", "legal_signature",
+    "payment", "spending", "person_required_mfa", "security_key",
+}
+
+
+def _setting_on(value) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _standing_authority() -> dict:
+    """Return the user's reusable, non-secret Mission authority profile.
+
+    This intentionally stores an age *band*, never a birth date.  The returned
+    facts are explicit user claims from Settings, not model inferences.  Hard
+    person/security/legal boundaries are listed so the decider cannot mistake
+    Hands-off mode for authority to solve or attest anything it encounters.
+    """
+    from . import settings
+    try:
+        age = int(settings.get("PROFILE_AGE_BAND", "unset"))
+    except (TypeError, ValueError):
+        age = 0
+    max_risk = str(settings.get("MAX_AUTO_AUTH_RISK", "medium") or "medium").lower()
+    if max_risk not in ("low", "medium"):
+        max_risk = "medium"
+    claims = {}
+    for threshold in (16, 18, 21):
+        claims["age_at_least_%d" % threshold] = bool(age >= threshold)
+    return {
+        "source": "user_settings",
+        "auto_apply_profile_claims": _setting_on(
+            settings.get("AUTO_APPLY_PROFILE_CLAIMS", "off")),
+        "defer_missing_authorizations": _setting_on(
+            settings.get("DEFER_MISSING_AUTHORIZATIONS", "on")),
+        "max_auto_risk": max_risk,
+        "claims": claims,
+        "never_auto": sorted(_PERSON_REQUIRED_AUTH),
+    }
+
+
+def _authorization_request(args, reason="") -> dict:
+    """Normalize one model request into a stable, receipt-safe authorization key."""
+    args = dict(args or {})
+    summary = str(args.get("summary") or reason or "authorization required").strip()[:1000]
+    kind = str(args.get("kind") or args.get("category") or "routine").strip().lower()
+    kind = re.sub(r"[^a-z0-9_.-]", "_", kind)[:80] or "routine"
+    claim = str(args.get("claim") or "").strip().lower()
+    if not claim:
+        age = re.search(r"(?:at least|age(?:d)?|满)\s*(16|18|21)|"
+                        r"(16|18|21)\s*(?:years? old|岁)", summary, re.I)
+        if age:
+            claim = "age_at_least_%s" % next(x for x in age.groups() if x)
+    if claim and not re.fullmatch(r"[a-z0-9_.-]{1,100}", claim):
+        claim = ""
+    risk = str(args.get("risk") or "medium").strip().lower()
+    if risk not in _AUTH_RISK:
+        risk = "medium"
+    raw_url = str(args.get("url") or "").strip()
+    domain = str(args.get("domain") or args.get("platform") or "").strip().lower()
+    if raw_url:
+        domain = (urlsplit(raw_url).hostname or domain).lower()
+    domain = re.sub(r"[^a-z0-9.-]", "", domain)[:253]
+    operation = str(args.get("operation") or args.get("button") or
+                    args.get("action") or "authorize").strip().lower()[:120]
+    material = {"kind": kind, "claim": claim, "risk": risk,
+                "domain": domain, "operation": operation}
+    key = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:20]
+    return {"id": "auth_" + key, **material, "summary": summary,
+            "blocking": bool(args.get("blocking")), "requested_at": int(time.time())}
+
+
+def _standing_authorizes(request, authority) -> tuple[bool, str]:
+    """Resolve only a deterministic match to an explicit standing fact.
+
+    A model cannot make an unsafe request delegable by labeling it low-risk:
+    person/security/legal categories are a hard deny, and an asserted fact must
+    exist in the user's settings profile.  Ordinary publish/send authority stays
+    in the existing payload-bound Leash and Verification Gate.
+    """
+    request, authority = dict(request or {}), dict(authority or {})
+    kind = str(request.get("kind") or "routine")
+    if kind in _PERSON_REQUIRED_AUTH:
+        return False, "%s always requires the person" % kind
+    risk = str(request.get("risk") or "medium")
+    ceiling = str(authority.get("max_auto_risk") or "medium")
+    if _AUTH_RISK.get(risk, 1) > _AUTH_RISK.get(ceiling, 1):
+        return False, "%s risk exceeds the %s standing ceiling" % (risk, ceiling)
+    claim = str(request.get("claim") or "")
+    if claim:
+        if not authority.get("auto_apply_profile_claims"):
+            return False, "automatic profile claims are disabled"
+        if not bool((authority.get("claims") or {}).get(claim)):
+            return False, "the exact profile claim is not confirmed"
+        return True, "exact user-confirmed profile claim"
+    return False, "no exact standing grant matches this request"
 
 
 class ResourceBusy(RefusedError):
@@ -158,6 +258,7 @@ def _compact_case_storage(case, max_chars=64000):
 
     priority_names = {
         "_mission_summary", "_recent_results", "human_updates", "browse_sites", "signal",
+        "pending_authorizations", "resolved_authorizations",
         "observe_count", "submitted", "published", "sent", "url", "draft",
         "code_verified", "coded", "last_sent_to", "_isolated_workspace",
         "_workspace", "_run_id", "_specialist_run_id", "_parent_mission_id",
@@ -193,7 +294,8 @@ def _model_case_json(case, limit=12000):
     makes truncation deterministic and retains the information needed to resume.
     """
     case = dict(case or {})
-    priority = ("_authority", "_mission_summary", "human_updates", "browse_sites",
+    priority = ("_authority", "_standing_authority", "_mission_summary", "human_updates",
+                "pending_authorizations", "resolved_authorizations", "browse_sites",
                 "_recent_results", "_recent_events", "_checkpoint")
     ordered = {key: case[key] for key in priority if key in case}
     ordered.update({key: value for key, value in case.items() if key not in ordered})
@@ -203,7 +305,9 @@ def _model_case_json(case, limit=12000):
         return raw
     # Preserve every priority field in bounded form, then spend the remainder on
     # older context.  The explicit marker prevents the model treating it as full.
-    budgets = {"_authority": 1200, "_mission_summary": 1000, "human_updates": 900,
+    budgets = {"_authority": 1200, "_standing_authority": 1200,
+               "_mission_summary": 1000, "human_updates": 900,
+               "pending_authorizations": 1400, "resolved_authorizations": 900,
                "browse_sites": 3500, "_recent_results": 2200,
                "_recent_events": 1500, "_checkpoint": 400}
     head = {}
@@ -1512,6 +1616,24 @@ class MissionStore:
                 (state, mission_id, nonce))
             self.db.commit()
 
+    def inherit_completed_action_keys(self, source_mission_id, target_mission_id):
+        """Fence a successor from replaying predecessor actions with known outcomes.
+
+        Reserved/materialized rows may represent an action that never fired or an
+        outcome-uncertain boundary, so they are deliberately not copied.  Completed
+        rows keep their semantic key and receipt nonce but shed run ownership: a new
+        worker can inspect them, never acquire them as its own reservation.
+        """
+        with self._lock:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO mission_action_keys("
+                "mission_id,action_key,nonce,state,at,owner_token,reservation_id) "
+                "SELECT ?,action_key,nonce,state,at,'','' FROM mission_action_keys "
+                "WHERE mission_id=? AND state NOT IN ('reserved','materialized')",
+                (target_mission_id, source_mission_id))
+            self.db.commit()
+        return cur.rowcount
+
     def list(self, state=None):
         q, a = "SELECT mission_id FROM missions", ()
         if state:
@@ -1546,7 +1668,7 @@ class MissionDriver:
 
     `decider(goal, case, primitives) -> {"action","args","reason"}` where action is
     a registered primitive name OR a control move: 'wait' (args.seconds),
-    'needs_human' (args.summary), 'done'.
+    'needs_authorization' (structured args), 'needs_human' (args.summary), 'done'.
     """
 
     # a runaway decider (loops forever choosing reversible actions) must not spin;
@@ -1876,6 +1998,100 @@ class MissionDriver:
         m = self.store.get(mission_id)
         return m.state if m else fallback
 
+    def _refresh_authorizations(self, mission_id, token, mission):
+        """Apply newly saved standing facts without stopping independent work."""
+        authority = _standing_authority()
+        case = dict((mission or self.store.get(mission_id)).case)
+        pending = [dict(x) for x in (case.get("pending_authorizations") or [])
+                   if isinstance(x, dict)]
+        resolved = list(case.get("resolved_authorizations") or [])
+        keep, changed = [], False
+        for request in pending:
+            ok, why = _standing_authorizes(request, authority)
+            if not ok:
+                keep.append(request)
+                continue
+            item = {**request, "resolved_at": int(time.time()),
+                    "resolution": "standing_authority", "reason": why}
+            resolved.append(item)
+            changed = True
+            self.store.record_event(
+                mission_id, "authorization", "standing_resolved",
+                nonce=str(request.get("id") or ""),
+                payload={"kind": request.get("kind"), "claim": request.get("claim"),
+                         "domain": request.get("domain"), "reason": why})
+        if changed:
+            case["pending_authorizations"] = keep
+            case["resolved_authorizations"] = resolved[-20:]
+            if not self.store.set_case_owned(mission_id, token, case):
+                return None, authority
+            mission = self.store.get(mission_id)
+        return mission, authority
+
+    def _handle_authorization(self, mission_id, token, mission, args, reason):
+        """Resolve or defer one authorization request at branch scope.
+
+        Missing authority is recorded in the Mission case and global status, then
+        the decider gets another turn to pursue an independent branch.  Repeating
+        the same unresolved request immediately is treated as proof that no other
+        branch is currently available and parks the Mission instead of spinning.
+        """
+        request = _authorization_request(args, reason)
+        authority = _standing_authority()
+        ok, why = _standing_authorizes(request, authority)
+        case = dict(mission.case)
+        pending = [dict(x) for x in (case.get("pending_authorizations") or [])
+                   if isinstance(x, dict)]
+        resolved = list(case.get("resolved_authorizations") or [])
+        previous = next((x for x in pending if x.get("id") == request["id"]), None)
+        recent_non_decisions = [e for e in self.store.events(mission_id, 8)
+                                if e.get("kind") != "decision"]
+        last_nondecision = recent_non_decisions[-1] if recent_non_decisions else {}
+        immediate_repeat = bool(
+            previous and last_nondecision.get("kind") == "authorization" and
+            last_nondecision.get("name") == "deferred" and
+            last_nondecision.get("nonce") == request["id"])
+        if ok:
+            pending = [x for x in pending if x.get("id") != request["id"]]
+            resolved.append({**request, "resolved_at": int(time.time()),
+                             "resolution": "standing_authority", "reason": why})
+            case["pending_authorizations"] = pending
+            case["resolved_authorizations"] = resolved[-20:]
+            if not self.store.set_case_owned(mission_id, token, case):
+                return self._lost_state(mission_id, token)
+            self.store.record_step(
+                mission_id, NEEDS_AUTHORIZATION, request["id"], "standing-authorized")
+            self.store.record_event(
+                mission_id, "authorization", "standing_resolved", request["id"],
+                {"kind": request["kind"], "claim": request["claim"],
+                 "domain": request["domain"], "reason": why})
+            return "_continue"
+
+        if previous:
+            request["requested_at"] = previous.get("requested_at", request["requested_at"])
+            request["attempts"] = int(previous.get("attempts", 1)) + 1
+            pending = [request if x.get("id") == request["id"] else x for x in pending]
+        else:
+            request["attempts"] = 1
+            pending.append(request)
+        case["pending_authorizations"] = pending[-20:]
+        if not self.store.set_case_owned(mission_id, token, case):
+            return self._lost_state(mission_id, token)
+        self.store.record_step(mission_id, NEEDS_AUTHORIZATION, request["id"], "pending")
+        self.store.record_event(
+            mission_id, "authorization", "deferred", request["id"],
+            {"kind": request["kind"], "claim": request["claim"],
+             "risk": request["risk"], "domain": request["domain"],
+             "summary": request["summary"], "reason": why})
+
+        should_park = (request.get("blocking") or immediate_repeat or
+                       not authority.get("defer_missing_authorizations"))
+        if should_park:
+            return self._finish(
+                mission_id, token, NEEDS_YOU,
+                request["summary"] or "authorization is the only remaining dependency")
+        return "_continue"
+
     @staticmethod
     def _action_key(cap, args, snapshot):
         if cap.reversible:
@@ -2052,6 +2268,9 @@ class MissionDriver:
                         continue
                     return controlled
                 m = self.store.get(mission_id)
+                m, standing = self._refresh_authorizations(mission_id, token, m)
+                if m is None:
+                    return self._lost_state(mission_id, token)
                 exhausted = self.store.budget_reason(mission_id)
                 if exhausted:
                     return self._finish(mission_id, token, NEEDS_YOU, exhausted)
@@ -2060,6 +2279,7 @@ class MissionDriver:
                                         "mission model-turn budget exhausted")
                 model_case = dict(m.case)
                 model_case["_authority"] = m.leash
+                model_case["_standing_authority"] = standing
                 model_case["_recent_events"] = self.store.events(mission_id, 20)
                 checkpoint = self.store.latest_checkpoint(mission_id)
                 if checkpoint:
@@ -2131,6 +2351,18 @@ class MissionDriver:
                     return self._finish(mission_id, token, NEEDS_YOU,
                                         "driver returned no next action")
                 if action == DONE:
+                    pending_auth = [x for x in (m.case.get("pending_authorizations") or [])
+                                    if isinstance(x, dict)]
+                    if pending_auth:
+                        summary = str(pending_auth[0].get("summary") or
+                                      "authorization required")[:500]
+                        self.store.record_event(
+                            mission_id, "authorization", "all_remaining_blocked",
+                            payload={"count": len(pending_auth), "summary": summary})
+                        return self._finish(
+                            mission_id, token, NEEDS_YOU,
+                            "%d authorization request(s) remain; next: %s" %
+                            (len(pending_auth), summary))
                     self.store.record_step(mission_id, DONE, "", "reported")
                     self.store.record_event(mission_id, "control", DONE,
                                             payload={"reason": reason})
@@ -2187,6 +2419,12 @@ class MissionDriver:
                     return self._finish(
                         mission_id, token, NEEDS_YOU,
                         args.get("summary") or reason or "needs your input")
+                if action == NEEDS_AUTHORIZATION:
+                    routed = self._handle_authorization(
+                        mission_id, token, m, args, reason)
+                    if routed == "_continue":
+                        continue
+                    return routed
                 if action == WAIT:
                     try:
                         secs = max(1, min(int(args.get("seconds", 3600)), 31536000))
@@ -2702,7 +2940,7 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
     other bounds); otherwise they park for confirm. Only bounds enforced by
     deterministic host checks should be supplied; opaque metadata is not authority."""
     default_may = ["research", "compose", "observe", "web.*",
-                   "browse", "browse.*"]
+                   "browse", "browse.*", "verification.*"]
     known = {"spend_max_usd", "allowed_domains", "max_total_steps",
              "max_irreversible_actions", "actions_per_hour", "max_model_tokens",
              "max_model_cost_usd", "max_active_wall_seconds", "max_elapsed_seconds",
@@ -2777,11 +3015,16 @@ _SYS = (
     "You are collie's mission driver. You are pursuing ONE goal over time. Given the "
     "goal, what you already know (the case), and the actions available, choose the "
     "SINGLE next action. Reply with STRICT JSON and nothing else:\n"
-    '{"action": <a primitive name | "wait" | "needs_human" | "done">, '
+    '{"action": <a primitive name | "wait" | "needs_authorization" | "needs_human" | "done">, '
     '"args": {..}, "reason": "<one short clause>"}\n'
     "Rules: use only a listed primitive; pick 'wait' with args.seconds to poll or "
-    "let time pass; 'needs_human' with args.summary to hand a decision back to the "
-    "user; 'done' only when the goal is actually achieved. Irreversible actions "
+    "let time pass; use 'needs_authorization' for a missing permission/fact with "
+    "args.summary, args.kind, args.risk (low/medium/high/critical), optional args.claim, "
+    "args.domain and args.operation. It is branch-scoped: default args.blocking=false so "
+    "the request enters Needs You while you continue independent work; set blocking=true "
+    "only after every remaining path depends on it. Use 'needs_human' only for a genuinely "
+    "person-required step or when no independent path remains. 'done' only when the goal is "
+    "actually achieved. Irreversible actions "
     "(publish/send/pay) will be confirmed by the user unless pre-authorized — "
     "propose them anyway; the gate handles authority.\n"
     "When WAITING on an external event (a reply, availability, a price drop): observe "
@@ -2809,11 +3052,18 @@ _SYS = (
     "Use credentials, email/phone identities, signed-in sessions, and verification-code inboxes "
     "that the user has already connected and authorized; routine signup fields, OTP retrieval, "
     "Next buttons, and authorized publish/send actions are ordinary work inside the leash. Never "
-    "persist a credential or OTP in the case, event log, action args, or summary. A CAPTCHA or MFA "
-    "challenge that explicitly requires a person, unavailable credentials, or a new identity/consent "
-    "decision is a temporary human-assist boundary: choose 'needs_human', say exactly what is waiting "
-    "in args.summary, and preserve the current step so the Mission can continue after the user handles "
-    "it. Never attempt to bypass, outsource, or misrepresent a platform security check.\n"
+    "A phone explicitly connected as Collie's assigned work line may be used for messages, calls, "
+    "voicemail, and routine provider settings within the Mission goal and Leash; releasing or "
+    "transferring the number, purchases, and Google-account security changes require new authority. "
+    "For an already-requested code from a connected inbox, choose 'verification.fill' with the "
+    "exact service name; it reads and fills the code internally without exposing it to you. "
+    "persist a credential or OTP in the case, event log, action args, or summary. The case may contain "
+    "_standing_authority: exact user-confirmed facts there are reusable up to the stated risk ceiling; "
+    "perform the matching ordinary browser work instead of asking again. If the fact or permission is "
+    "missing, choose 'needs_authorization' and continue another branch. A CAPTCHA or MFA challenge "
+    "that explicitly requires a person, biometric/KYC, legal signature, security key, or spending "
+    "boundary stays 'needs_human'. Preserve the current step so the Mission can continue after the "
+    "user handles it. Never attempt to bypass, outsource, or misrepresent a platform security check.\n"
     "If the goal names a duration, cadence, monitoring window, or repeated campaign, one successful "
     "action is not completion. Use 'wait' between due actions and keep going until the requested "
     "window or completion condition is actually reached.\n"

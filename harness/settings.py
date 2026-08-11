@@ -44,6 +44,19 @@ SCHEMA = [
              "--name selects a kennel dog and stays authoritative for that server.",
      "hint_zh": "这只 Collie 在主页、手机和动态桌面上显示的名字。不会改动 Slack 应用、@用户名或邮件地址；"
                 "显式的 web --name 用来选择犬舍成员，并始终以该名字为准。"},
+    {"group": "Identity", "key": "PROFILE_AGE_BAND", "label": "Age eligibility",
+     "label_zh": "年龄资格", "type": "select", "default": "unset",
+     "options": [
+         {"value": "unset", "label": "Not provided", "label_zh": "未提供"},
+         {"value": "16", "label": "I am 16 or older", "label_zh": "我已满 16 岁"},
+         {"value": "18", "label": "I am 18 or older", "label_zh": "我已满 18 岁"},
+         {"value": "21", "label": "I am 21 or older", "label_zh": "我已满 21 岁"}],
+     "hint": "A local eligibility claim, not your birth date. Collie may reuse it only when "
+             "automatic profile claims are enabled below and a form asks the same or a lower "
+             "threshold. CAPTCHA, biometric/KYC, signatures and person-required MFA never use it.",
+     "hint_zh": "仅保存在本机的年龄资格声明，不保存生日。只有下方开启自动使用个人事实时，Collie "
+                "才会在表单询问相同或更低年龄门槛时复用；CAPTCHA、生物识别/KYC、签名和明确要求本人"
+                "完成的 MFA 永远不会因此自动通过。"},
     # UI language: the web GUI chrome + this panel render in it. auto = follow the browser.
     # label_zh / hint_zh on any entry (and label_zh inside options) localize the panel — the GUI
     # picks them when the resolved language is zh; missing translations fall back to English.
@@ -157,6 +170,31 @@ SCHEMA = [
                 " CAPTCHA/MFA、新的同意选择、新增支出权限、扩大范围，以及结果不确定可能重复时"
                 "仍会停下来。已连接并授权的邮箱、号码、验证码收件箱和登录态可直接使用。单次任务可用 "
                 "/mission --review 覆盖。"},
+    {"group": "Autonomy", "key": "AUTO_APPLY_PROFILE_CLAIMS",
+     "label": "Use confirmed profile facts automatically", "label_zh": "自动使用已确认的个人事实",
+     "type": "bool", "default": "off",
+     "hint": "Let Hands-off Missions apply facts you explicitly saved (for example an age "
+             "threshold) to matching low/medium-risk forms. This does not authorize CAPTCHA, "
+             "person-required MFA, biometric/KYC, legal signatures, payments, or a different claim.",
+     "hint_zh": "允许放手执行的 Mission 把你明确保存的事实（例如年龄门槛）用于匹配的低/中风险表单。"
+                "这不会授权 CAPTCHA、明确要求本人的 MFA、生物识别/KYC、法律签名、付款或不同的声明。"},
+    {"group": "Autonomy", "key": "MAX_AUTO_AUTH_RISK",
+     "label": "Maximum automatic authorization risk", "label_zh": "自动授权最高风险",
+     "type": "select", "default": "medium",
+     "options": [
+         {"value": "low", "label": "Low only", "label_zh": "仅低风险"},
+         {"value": "medium", "label": "Low and medium", "label_zh": "低风险和中风险"}],
+     "hint": "The ceiling for delegable standing authorizations. High/critical identity, legal, "
+             "security and spending boundaries remain Needs You even in Hands-off mode.",
+     "hint_zh": "可委托长期授权的风险上限。即使在放手执行模式，高/严重级身份、法律、安全和支出边界"
+                "仍进入 Needs You。"},
+    {"group": "Autonomy", "key": "DEFER_MISSING_AUTHORIZATIONS",
+     "label": "Keep working while authorization waits", "label_zh": "等待授权时继续其他工作",
+     "type": "bool", "default": "on",
+     "hint": "Put a missing authorization in Needs You and continue independent Mission work. "
+             "The whole Mission pauses only when every remaining path depends on it.",
+     "hint_zh": "把缺失授权放入 Needs You，同时继续不依赖它的 Mission 工作；只有所有剩余路径都依赖"
+                "该授权时，整个 Mission 才暂停。"},
 
     {"group": "Limits", "key": "MAX_TURNS", "label": "Max turns", "type": "number", "default": "50", "min": "1", "max": "120",
      "hint": "Hard cap on tool/response turns for one message before collie stops and reports back. Info-hunt + build tasks routinely need 20-30; on a flat subscription extra turns cost $0, so high is safe."},
@@ -362,6 +400,12 @@ def save(values: dict) -> dict:
     clean = {k: v for k, v in (values or {}).items() if k in _KEYS and v not in (None, "")}
     if "COMPANION_NAME" in clean:
         clean["COMPANION_NAME"] = normalize_companion_name(clean["COMPANION_NAME"], allow_empty=False)
+    if "PROFILE_AGE_BAND" in clean and str(clean["PROFILE_AGE_BAND"]) not in {
+            "unset", "16", "18", "21"}:
+        raise ValueError("age eligibility must be unset, 16, 18, or 21")
+    if "MAX_AUTO_AUTH_RISK" in clean and str(clean["MAX_AUTO_AUTH_RISK"]) not in {
+            "low", "medium"}:
+        raise ValueError("automatic authorization risk must be low or medium")
     os.makedirs(os.path.dirname(_PATH), exist_ok=True)
     tmp = "%s.%d.%s.tmp" % (_PATH, os.getpid(), os.urandom(4).hex())   # unique per writer: a fixed
     with open(tmp, "w", encoding="utf-8") as f:                        # .tmp let concurrent panel saves

@@ -430,6 +430,29 @@ def test_reconcile_waits_for_old_execution_latch():
     svc.close()
 
 
+def test_terminal_takeover_can_return_to_a_deduplicated_successor():
+    print("test_terminal_takeover_can_return_to_a_deduplicated_successor")
+    svc = _svc([P, H])
+    old = svc.start("finish the launch", autonomous=True)
+    old = svc.run(old["mission_id"]); old_mid = old["mission_id"]
+    check(old["summary"]["completed"] and old["summary"]["current"],
+          "Mission status contains a deterministic current-task summary")
+    accepted = svc.accept(old_mid)
+    check(accepted["state"] == DONE_ACCEPTED and "continue" in accepted["controls"],
+          "terminal takeover clearly offers a return-to-Collie recovery")
+    successor = svc.continue_after_human(old_mid, "continue the remaining launch work")
+    inherited = svc.store.db.execute(
+        "SELECT action_key,state FROM mission_action_keys WHERE mission_id=?",
+        (successor["mission_id"],)).fetchall()
+    check(successor["state"] == QUEUED and successor["mission_id"] != old_mid and
+          svc.store.get(old_mid).state == DONE_ACCEPTED,
+          "returning creates a queued successor without rewriting terminal audit history")
+    check(inherited and all(row["state"] not in ("reserved", "materialized")
+                            for row in inherited),
+          "the successor inherits completed semantic keys so fired work cannot repeat")
+    svc.close()
+
+
 def test_failed_retry_retires_only_stale_reversible_execution():
     print("test_failed_retry_retires_only_stale_reversible_execution")
     svc = _svc([])

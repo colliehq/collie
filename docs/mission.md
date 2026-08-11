@@ -37,6 +37,19 @@ choice, new spending authority, or uncertain duplicate risk becomes a temporary
 Needs You handoff. The user handles that one step and Continue resumes the same
 Mission. Collie does not bypass or outsource platform security checks.
 
+Reusable profile facts are explicit, local eligibility claims rather than inferred
+identity. For example, a user can save an age threshold and allow Collie to reuse
+that exact or lower threshold on low/medium-risk forms. The claim never authorizes
+CAPTCHA, person-required MFA, biometric/KYC, legal signatures, security keys, or
+spending. Codes readable from an authorized Google Voice/mail connection are
+ordinary connected work; the code itself stays outside Mission case/history.
+
+Missing authorization is branch-scoped by default. It is recorded in
+`case.pending_authorizations`, surfaced as Needs You, and the decider receives
+another turn to pursue independent work. The whole Mission enters `needs_you` only
+when the request is explicitly blocking, the same unresolved request is immediately
+repeated, or completion is reported while requests remain.
+
 ## State machine
 
 ```text
@@ -60,7 +73,10 @@ An external action already in flight cannot honestly be recalled, but a second
 worker cannot overlap it or overwrite its lifecycle state.
 
 `continue` is for a temporary human assist such as a person-required CAPTCHA/MFA
-and returns control to Collie. `accept` means the human is taking over or accepting reported completion.
+and returns control to Collie. The UI labels `accept` as **End mission & take over**:
+it is terminal and records no independent verification. A later **Return to Collie**
+creates a successor Mission instead of rewriting that audit history; completed
+semantic action keys and bounded receipts are inherited so fired work cannot replay.
 Creation is persistence-first: the caller sees a queued ID before model/browser
 work starts, so it can be managed or cancelled immediately.
 

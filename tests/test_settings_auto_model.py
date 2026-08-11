@@ -27,3 +27,18 @@ def test_settings_round_trip_does_not_invent_or_pin_a_model(tmp_path, monkeypatc
         model=settings.get("MODEL", "") or None, route_kind="code")
     assert tiny.model == "gpt-5.6-luna"
     assert hard.model == "gpt-5.6-sol"
+
+
+def test_reusable_profile_authority_accepts_only_bounded_values(tmp_path, monkeypatch):
+    import pytest
+    from harness import settings
+
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings, "_PATH", str(path))
+    monkeypatch.setattr(settings, "_cache", {"mtime": -1.0, "data": {}})
+    saved = settings.save({"PROFILE_AGE_BAND": "18", "MAX_AUTO_AUTH_RISK": "medium"})
+    assert saved["PROFILE_AGE_BAND"] == "18"
+    with pytest.raises(ValueError):
+        settings.save({"PROFILE_AGE_BAND": "17"})
+    with pytest.raises(ValueError):
+        settings.save({"MAX_AUTO_AUTH_RISK": "high"})

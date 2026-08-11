@@ -21,6 +21,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -925,6 +926,78 @@ def test_credentials_handoff_before_any_durable_action_payload():
           "credentials trigger a human browser handoff before ActionStore persistence")
     check("without persisting" in store.get("secret").result,
           "the handoff explains the privacy boundary")
+    store.close(); actions.close()
+
+
+def test_missing_authorization_defers_only_its_branch():
+    print("test_missing_authorization_defers_only_its_branch")
+    clear_registry(); register_primitives(stub=True)
+    ask = {"action": "needs_authorization", "args": {
+        "kind": "profile_claim", "claim": "age_at_least_16",
+        "risk": "medium", "domain": "producthunt.com",
+        "summary": "Confirm that the account holder is at least 16"}}
+    drv, store, actions = _driver([ask, R, {"action": "done", "reason": "other work done"}])
+    authority = {
+        "auto_apply_profile_claims": False,
+        "defer_missing_authorizations": True,
+        "max_auto_risk": "medium", "claims": {}, "never_auto": []}
+    create_mission(store, "branch-auth", "prepare a launch",
+                   leash=world_leash(autonomous=True))
+    with patch("harness.mission._standing_authority", return_value=authority):
+        state = drv.advance("branch-auth")
+    case = store.get("branch-auth").case
+    check(state == NEEDS_YOU and case.get("researched"),
+          "an authorization wait does not stop independent research")
+    check(case.get("pending_authorizations", [])[0]["claim"] == "age_at_least_16",
+          "the branch-scoped authorization request remains durable")
+    store.close(); actions.close()
+
+
+def test_exact_saved_profile_claim_is_reused_automatically():
+    print("test_exact_saved_profile_claim_is_reused_automatically")
+    clear_registry(); register_primitives(stub=True)
+    ask = {"action": "needs_authorization", "args": {
+        "kind": "profile_claim", "claim": "age_at_least_16",
+        "risk": "medium", "domain": "producthunt.com",
+        "summary": "Confirm that the account holder is at least 16"}}
+    drv, store, actions = _driver([ask, R, HAND])
+    authority = {
+        "auto_apply_profile_claims": True,
+        "defer_missing_authorizations": True,
+        "max_auto_risk": "medium",
+        "claims": {"age_at_least_16": True}, "never_auto": []}
+    create_mission(store, "saved-fact", "prepare a launch",
+                   leash=world_leash(autonomous=True))
+    with patch("harness.mission._standing_authority", return_value=authority):
+        state = drv.advance("saved-fact")
+    case = store.get("saved-fact").case
+    check(state == NEEDS_YOU and case.get("researched"),
+          "an exact confirmed profile fact authorizes the matching form and work continues")
+    check(case.get("resolved_authorizations", [])[0]["resolution"] == "standing_authority" and
+          not case.get("pending_authorizations"),
+          "the reused fact has a durable non-secret authorization receipt")
+    store.close(); actions.close()
+
+
+def test_person_required_security_checks_never_auto_authorize():
+    print("test_person_required_security_checks_never_auto_authorize")
+    clear_registry(); register_primitives(stub=True)
+    ask = {"action": "needs_authorization", "args": {
+        "kind": "captcha", "risk": "low", "blocking": True,
+        "summary": "Complete the human verification challenge"}}
+    drv, store, actions = _driver([ask])
+    authority = {
+        "auto_apply_profile_claims": True,
+        "defer_missing_authorizations": True,
+        "max_auto_risk": "medium",
+        "claims": {"age_at_least_16": True}, "never_auto": []}
+    create_mission(store, "captcha-boundary", "finish signup",
+                   leash=world_leash(autonomous=True))
+    with patch("harness.mission._standing_authority", return_value=authority):
+        state = drv.advance("captcha-boundary")
+    check(state == NEEDS_YOU and store.get("captcha-boundary").case.get(
+          "pending_authorizations", [])[0]["kind"] == "captcha",
+          "CAPTCHA remains a person-required boundary regardless of the standing risk ceiling")
     store.close(); actions.close()
 
 def main():
