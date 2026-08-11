@@ -6,8 +6,8 @@ import pytest
 from harness.actions import ActionStore
 from harness.jobs import (CANCELLED, Capability, DONE_VERIFIED, FAILED_S, NEEDS_YOU, PAUSED,
                           QUEUED, RECOVERY_REQUIRED, RUNNING, WAITING)
-from harness.mission import (_model_case_json, MissionDriver, MissionStore,
-                             ModelDecider, create_mission, world_leash)
+from harness.mission import (_authorization_request, _model_case_json, MissionDriver,
+                             MissionStore, ModelDecider, create_mission, world_leash)
 from harness.missionweb import MissionService
 from harness.providers import Completion, Usage
 from harness.verifier import FAILED, INCONCLUSIVE, VERIFIED, Observation, Verdict
@@ -290,6 +290,90 @@ def test_repeated_branch_wait_sleeps_instead_of_spinning(tmp_path):
     assert store.next_wait("wait-spin") is not None
     scheduled = [e for e in store.events("wait-spin") if e["kind"] == "followup"]
     assert len(scheduled) == 2
+    store.close()
+    actions.close()
+
+
+def test_campaign_coverage_refuses_whole_wait_and_early_completion(tmp_path):
+    store, actions = _stores(tmp_path)
+    coverage = [
+        {"branch": "Indie Hackers", "status": "pending", "required": True},
+        {"branch": "Medium", "status": "pending", "required": True},
+    ]
+    decisions = iter([
+        {"action": "wait", "args": {"seconds": 900, "branch": "engagement monitor"},
+         "reason": "check engagement later"},
+        {"action": "wait", "args": {"seconds": 900, "branch": "engagement monitor"},
+         "reason": "nothing else to do"},
+        {"action": "done", "reason": "campaign is done"},
+        {"action": "update_coverage", "args": {
+            "branch": "Indie Hackers signup", "status": "blocked",
+            "summary": "Sign-in is unavailable in the connected browser."}},
+        {"action": "update_coverage", "args": {
+            "branch": "Medium", "status": "completed",
+            "summary": "Draft was published and its URL was observed."}},
+        {"action": "wait", "args": {"seconds": 900, "branch": "engagement monitor"},
+         "reason": "monitor scheduled channels"},
+    ])
+    create_mission(
+        store, "coverage", "promote across all listed channels",
+        case={"_campaign_coverage": coverage}, leash=world_leash())
+    driver = MissionDriver(store, actions, lambda *_: next(decisions), [])
+
+    assert driver.advance("coverage") == WAITING
+    statuses = {x["branch"]: x["status"]
+                for x in store.get("coverage").case["_campaign_coverage"]}
+    assert statuses == {"Indie Hackers": "blocked", "Medium": "completed"}
+    events = store.events("coverage", 100)
+    assert any(e["kind"] == "coverage" and e["name"] == "wait_refused" for e in events)
+    assert any(e["kind"] == "coverage" and e["name"] == "completion_refused" for e in events)
+    store.close()
+    actions.close()
+
+
+def test_resolved_claim_reuses_equal_or_stronger_authorization(tmp_path):
+    store, actions = _stores(tmp_path)
+    resolved = _authorization_request({
+        "kind": "profile_claim", "risk": "medium", "domain": "producthunt.com",
+        "operation": "complete onboarding age checkbox",
+        "claim": "age_at_least_required_by_product_hunt"})
+    resolved["resolution"] = "approved"
+    requested = {
+        "kind": "profile_claim", "risk": "low", "domain": "producthunt.com",
+        "operation": "complete Product Hunt personal age attestation",
+        "claim": "age_at_least_required_by_product_hunt",
+        "summary": "Confirm Product Hunt age requirement",
+    }
+    decisions = iter([
+        {"action": "needs_authorization", "args": requested,
+         "reason": "age checkbox needs authorization"},
+        {"action": "needs_human", "args": {"summary": "review"}},
+    ])
+    create_mission(store, "semantic-auth", "continue signup",
+                   case={"resolved_authorizations": [resolved]}, leash=world_leash())
+    driver = MissionDriver(store, actions, lambda *_: next(decisions), [])
+
+    assert driver.advance("semantic-auth") == NEEDS_YOU
+    case = store.get("semantic-auth").case
+    assert not case.get("pending_authorizations")
+    assert len(case["resolved_authorizations"]) == 1
+    assert any(e["kind"] == "authorization" and e["name"] == "resolved_reused"
+               for e in store.events("semantic-auth", 30))
+    store.close()
+    actions.close()
+
+
+def test_public_brand_handle_is_not_treated_as_secret_or_personal_pii(tmp_path):
+    store, actions = _stores(tmp_path)
+    cap = Capability("browse", lambda _r: {}, reversible=True, risk="write")
+    driver = MissionDriver(store, actions, lambda *_: {}, [cap])
+
+    assert driver._bound_refusal(
+        {}, cap,
+        {"goal": "Create the VocalCode profile",
+         "expect": {"Choose a username": "VocalCode"}}, {}) == ""
+    assert "credential/PII field" in driver._bound_refusal(
+        {}, cap, {"expect": {"Password": "do-not-store"}}, {})
     store.close()
     actions.close()
 

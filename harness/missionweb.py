@@ -33,8 +33,9 @@ from .actions import (APPROVED, EXECUTED, EXECUTING, EXPIRED, PENDING, REFUSED,
 from .jobs import (CANCELLED, DONE_ACCEPTED, DONE_VERIFIED, FAILED_S, NEEDS_YOU,
                    PAUSED, PAUSING, QUEUED, RECONCILING, RECOVERY_REQUIRED,
                    RUNNING, WAITING, Capability)
-from .mission import (MissionDriver, MissionStore, ModelDecider, ResourceBusy,
-                      create_mission, world_leash)
+from .mission import (_campaign_coverage, _open_campaign_coverage,
+                      _resolved_authorization, MissionDriver, MissionStore,
+                      ModelDecider, ResourceBusy, create_mission, world_leash)
 from .primitives import register_primitives
 from .verifier import FAILED as VERIFY_FAILED, VERIFIED as VERIFY_VERIFIED, Verdict
 
@@ -65,8 +66,13 @@ def _short(value, limit=500):
 def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activity=None):
     """Build a bounded, deterministic operator view without another model call."""
     case = mission.case or {}
+    resolved_auth = [x for x in case.get("resolved_authorizations", [])
+                     if isinstance(x, dict)]
     pending_auth = [x for x in case.get("pending_authorizations", [])
-                    if isinstance(x, dict)][-8:]
+                    if isinstance(x, dict) and
+                    not _resolved_authorization(x, resolved_auth)][-8:]
+    coverage = _campaign_coverage(case)
+    open_coverage = _open_campaign_coverage(case)
     completed = []
     for item in (activity or []):
         if item.get("status") == "completed":
@@ -83,10 +89,20 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activi
         if verdict in ("failed", "inconclusive"):
             failed += 1
     verified_receipts = sum(1 for r in receipts if r.get("verdict") == "verified")
-    pending = len(pending_auth) + (1 if inbox else 0)
-    current = _short(mission.result, 500) or _short(runtime.get("active_phase"), 160)
+    pending = len(pending_auth) + len(open_coverage) + (1 if inbox else 0)
+    phase = _short(runtime.get("active_phase"), 160)
+    if mission.state in (RUNNING, PAUSING, RECONCILING) and open_coverage:
+        current = "Working on campaign branch: %s" % _short(
+            open_coverage[0].get("branch"), 180)
+    elif mission.state in (RUNNING, PAUSING, RECONCILING):
+        current = phase or _short(mission.result, 500)
+    else:
+        current = _short(mission.result, 500) or phase
     if inbox:
         next_step = "Confirm the prepared %s action" % _short(inbox.get("capability"), 100)
+    elif open_coverage:
+        next_step = "Continue campaign branch: %s" % _short(
+            open_coverage[0].get("branch"), 180)
     elif pending_auth:
         next_step = _short(pending_auth[0].get("summary"), 500)
         if mission.state not in (NEEDS_YOU, PAUSED):
@@ -105,8 +121,9 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activi
         next_step = "Review the Mission state"
     blocker = ""
     if mission.state == NEEDS_YOU:
-        blocker = (_short(pending_auth[0].get("summary"), 500) if pending_auth
-                   else _short(mission.result, 500) or "A person-required step")
+        blocker = (_short(mission.result, 500) or
+                   (_short(pending_auth[0].get("summary"), 500) if pending_auth else "") or
+                   "A person-required step")
     return {
         "title": _short(mission.goal, 300),
         "current": current or "Ready",
@@ -114,6 +131,11 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activi
         "next": next_step,
         "blocker": blocker,
         "authorization_waiting": len(pending_auth),
+        "coverage": {
+            "total": len(coverage),
+            "open": len(open_coverage),
+            "next": [_short(x.get("branch"), 120) for x in open_coverage[:5]],
+        },
         "progress": {"verified": len(completed) + verified_receipts,
                      "pending": pending, "failed": failed},
     }

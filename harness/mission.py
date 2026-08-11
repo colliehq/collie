@@ -61,8 +61,8 @@ from .verifier import FAILED, INCONCLUSIVE, VERIFIED, Verdict
 
 _TERMINAL = {DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED}
 # control moves the decider can return instead of a primitive name
-WAIT, DONE, NEEDS_HUMAN, NEEDS_AUTHORIZATION = (
-    "wait", "done", "needs_human", "needs_authorization")
+WAIT, DONE, NEEDS_HUMAN, NEEDS_AUTHORIZATION, UPDATE_COVERAGE = (
+    "wait", "done", "needs_human", "needs_authorization", "update_coverage")
 _AWAITING = "awaiting-confirm"
 
 _AUTH_RISK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -70,6 +70,9 @@ _PERSON_REQUIRED_AUTH = {
     "captcha", "biometric", "kyc", "identity_proof", "legal_signature",
     "payment", "spending", "person_required_mfa", "security_key",
 }
+_COVERAGE_TERMINAL = {"completed", "blocked", "scheduled", "deferred", "skipped"}
+
+
 def _setting_on(value) -> bool:
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -137,6 +140,45 @@ def _authorization_request(args, reason="") -> dict:
             "blocking": bool(args.get("blocking")), "requested_at": int(time.time())}
 
 
+def _resolved_authorization(request, resolved) -> dict | None:
+    """Return an equal-or-stronger explicit grant for the same semantic request.
+
+    Model wording is not authorization identity.  A confirmed claim such as a
+    Product Hunt age attestation remains the same grant when the planner later
+    changes the operation phrase or asks at a lower risk level.  Claim-less
+    requests stay strict so unrelated missing facts on one site cannot alias.
+    """
+    request = dict(request or {})
+    request_id = str(request.get("id") or "")
+    request_kind = str(request.get("kind") or "")
+    request_claim = str(request.get("claim") or "")
+    request_domain = str(request.get("domain") or "").lower()
+    request_operation = re.sub(r"\s+", " ", str(request.get("operation") or "").lower()).strip()
+    request_risk = _AUTH_RISK.get(str(request.get("risk") or "medium"), 1)
+    for raw in resolved or []:
+        if not isinstance(raw, dict) or not raw.get("resolution"):
+            continue
+        item = dict(raw)
+        if request_id and str(item.get("id") or "") == request_id:
+            return item
+        if str(item.get("kind") or "") != request_kind:
+            continue
+        if str(item.get("domain") or "").lower() != request_domain:
+            continue
+        if _AUTH_RISK.get(str(item.get("risk") or "medium"), 1) < request_risk:
+            continue
+        item_claim = str(item.get("claim") or "")
+        if request_claim:
+            if item_claim == request_claim:
+                return item
+            continue
+        item_operation = re.sub(
+            r"\s+", " ", str(item.get("operation") or "").lower()).strip()
+        if request_operation and item_operation == request_operation:
+            return item
+    return None
+
+
 def _followup_request(args, reason="", now=None) -> dict:
     """Normalize an explicitly branch-scoped wait into durable case state."""
     args = dict(args or {})
@@ -159,6 +201,54 @@ def _followup_request(args, reason="", now=None) -> dict:
         "scheduled_at": now,
         "status": "scheduled",
     }
+
+
+def _campaign_coverage(case) -> list[dict]:
+    """Return bounded, normalized campaign branches from durable Mission state."""
+    rows = []
+    for raw in (dict(case or {}).get("_campaign_coverage") or []):
+        if not isinstance(raw, dict):
+            continue
+        branch = re.sub(r"\s+", " ", str(raw.get("branch") or "").strip())[:180]
+        if not branch:
+            continue
+        status = str(raw.get("status") or "pending").strip().lower()
+        if status not in ({"pending", "active", "attempted"} | _COVERAGE_TERMINAL):
+            status = "pending"
+        rows.append({**raw, "branch": branch, "status": status,
+                     "required": bool(raw.get("required", True))})
+    return rows[-40:]
+
+
+def _open_campaign_coverage(case) -> list[dict]:
+    return [row for row in _campaign_coverage(case)
+            if row.get("required", True) and row.get("status") not in _COVERAGE_TERMINAL]
+
+
+def _coverage_branch_index(rows, branch):
+    """Match an exact branch, or one unique lifecycle-word alias.
+
+    Models commonly call a ``launch`` branch ``signup`` or ``onboarding`` once
+    they reach that phase.  Accepting only a unique normalized match preserves
+    deterministic coverage accounting without letting a fuzzy label close the
+    wrong channel.
+    """
+    branch = str(branch or "").strip()
+    exact = [i for i, row in enumerate(rows)
+             if str(row.get("branch") or "").lower() == branch.lower()]
+    if len(exact) == 1:
+        return exact[0]
+
+    def key(value):
+        words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+        lifecycle = {"launch", "signup", "sign", "up", "onboarding",
+                     "presence", "account", "campaign", "branch"}
+        return " ".join(word for word in words if word not in lifecycle)
+
+    wanted = key(branch)
+    aliases = [i for i, row in enumerate(rows)
+               if wanted and key(row.get("branch")) == wanted]
+    return aliases[0] if len(aliases) == 1 else None
 
 
 def _standing_authorizes(request, authority) -> tuple[bool, str]:
@@ -282,6 +372,7 @@ def _compact_case_storage(case, max_chars=64000):
         "_mission_summary", "_recent_results", "human_updates", "browse_sites", "signal",
         "pending_authorizations", "resolved_authorizations",
         "pending_followups", "_due_followups", "resolved_followups",
+        "_campaign_coverage",
         "observe_count", "submitted", "published", "sent", "url", "draft",
         "code_verified", "coded", "last_sent_to", "_isolated_workspace",
         "_workspace", "_run_id", "_specialist_run_id", "_parent_mission_id",
@@ -319,7 +410,7 @@ def _model_case_json(case, limit=12000):
     case = dict(case or {})
     priority = ("_authority", "_standing_authority", "_mission_summary", "human_updates",
                 "pending_authorizations", "resolved_authorizations",
-                "pending_followups", "_due_followups", "_activity_ledger",
+                "_campaign_coverage", "pending_followups", "_due_followups", "_activity_ledger",
                 "_do_not_repeat", "browse_sites", "_recent_results",
                 "_recent_events", "_checkpoint")
     ordered = {key: case[key] for key in priority if key in case}
@@ -333,6 +424,7 @@ def _model_case_json(case, limit=12000):
     budgets = {"_authority": 1000, "_standing_authority": 1000,
                "_mission_summary": 900, "human_updates": 700,
                "pending_authorizations": 1000, "resolved_authorizations": 600,
+               "_campaign_coverage": 1800,
                "pending_followups": 1000, "_due_followups": 800,
                "_activity_ledger": 2200, "_do_not_repeat": 900,
                "browse_sites": 1900, "_recent_results": 1200,
@@ -343,7 +435,7 @@ def _model_case_json(case, limit=12000):
             continue
         if key == "browse_sites":
             head[key] = _bounded_mapping_values(ordered[key], budgets[key])
-        elif key in ("human_updates", "pending_followups", "_due_followups",
+        elif key in ("human_updates", "_campaign_coverage", "pending_followups", "_due_followups",
                      "_activity_ledger", "_do_not_repeat", "_recent_results",
                      "_recent_events"):
             head[key] = _bounded_sequence_tail(ordered[key], budgets[key])
@@ -715,8 +807,8 @@ class MissionStore:
              now - int(created_at or now) >=
              int(leash.get("max_elapsed_seconds", 2592000)),
              "mission elapsed-time budget exhausted"),
-            (int(leash.get("max_retries", 32)) > 0 and
-             int(rt.get("retry_count", 0)) >= int(leash.get("max_retries", 32)),
+            (int(leash.get("max_retries", 128)) > 0 and
+             int(rt.get("retry_count", 0)) >= int(leash.get("max_retries", 128)),
              "mission retry budget exhausted"),
             (int(leash.get("max_storage_bytes", 5_000_000)) > 0 and
              int(rt.get("storage_bytes", 0)) >=
@@ -2302,6 +2394,17 @@ class MissionDriver:
         resolved = list(case.get("resolved_authorizations") or [])
         keep, changed = [], False
         for request in pending:
+            existing = _resolved_authorization(request, resolved)
+            if existing:
+                changed = True
+                self.store.record_event(
+                    mission_id, "authorization", "resolved_reused",
+                    str(request.get("id") or ""),
+                    {"kind": request.get("kind"), "claim": request.get("claim"),
+                     "domain": request.get("domain"),
+                     "matched_id": existing.get("id"),
+                     "reason": "equal-or-stronger Mission authorization was already resolved"})
+                continue
             ok, why = _standing_authorizes(request, authority)
             if not ok:
                 keep.append(request)
@@ -2411,7 +2514,21 @@ class MissionDriver:
         except (TypeError, ValueError):
             secs = 3600
         request = _followup_request(args, reason)
+        open_coverage = _open_campaign_coverage(mission.case)
         if not request or args.get("blocking") or args.get("transient"):
+            if open_coverage and not args.get("transient"):
+                case = dict(mission.case)
+                names = [str(x.get("branch") or "") for x in open_coverage[:6]]
+                case["signal"] = (
+                    "Whole-Mission wait refused: required campaign coverage remains: " +
+                    ", ".join(names))[:800]
+                if not self.store.set_case_owned(mission_id, token, case):
+                    return self._lost_state(mission_id, token)
+                self.store.record_event(
+                    mission_id, "coverage", "wait_refused",
+                    payload={"open": len(open_coverage), "branches": names,
+                             "requested_blocking": bool(args.get("blocking"))})
+                return "_continue"
             self.store.schedule_wait(mission_id, int(time.time()) + secs)
             self.store.record_event(
                 mission_id, "control", WAIT,
@@ -2448,6 +2565,12 @@ class MissionDriver:
         due = [x for x in due if x.get("id") != request["id"]]
         case["pending_followups"] = pending[-20:]
         case["_due_followups"] = due[-20:]
+        open_coverage = _open_campaign_coverage(case)
+        if immediate_repeat and open_coverage:
+            names = [str(x.get("branch") or "") for x in open_coverage[:6]]
+            case["signal"] = (
+                "Monitoring branch scheduled, but whole-Mission wait refused because "
+                "required campaign coverage remains: " + ", ".join(names))[:800]
         if not self.store.set_case_owned(mission_id, token, case):
             return self._lost_state(mission_id, token)
         self.store.record_step(mission_id, WAIT, request["id"], "scheduled")
@@ -2459,6 +2582,14 @@ class MissionDriver:
 
         if not immediate_repeat:
             return "_continue"
+        if open_coverage:
+            self.store.record_step(mission_id, WAIT, request["id"], "coverage-open")
+            self.store.record_event(
+                mission_id, "coverage", "wait_refused", request["id"],
+                {"open": len(open_coverage),
+                 "branches": [str(x.get("branch") or "") for x in open_coverage[:6]],
+                 "scheduled_branch": request["branch"]})
+            return "_continue"
         wake_at = min(int(x.get("due_at") or time.time() + 60) for x in pending)
         self.store.schedule_wait(mission_id, wake_at)
         self.store.record_event(
@@ -2468,6 +2599,61 @@ class MissionDriver:
                      "branches": len(pending)})
         return self._finish(mission_id, token, WAITING,
                             reason or request["summary"])
+
+    def _handle_coverage_update(self, mission_id, token, mission, args, reason):
+        """Update one predeclared campaign branch without trusting it as evidence."""
+        args = dict(args or {})
+        branch = re.sub(r"\s+", " ", str(args.get("branch") or "").strip())[:180]
+        status = str(args.get("status") or "").strip().lower()
+        detail = str(args.get("summary") or args.get("evidence") or reason or "").strip()[:1000]
+        allowed = {"pending", "active", "attempted"} | _COVERAGE_TERMINAL
+        case = dict(mission.case)
+        rows = _campaign_coverage(case)
+        index = _coverage_branch_index(rows, branch)
+        invalid = ""
+        if not branch or index is None:
+            invalid = "coverage branch is not present in the required campaign backlog"
+        elif status not in allowed:
+            invalid = "coverage status must be one of %s" % ", ".join(sorted(allowed))
+        elif status in _COVERAGE_TERMINAL and not detail:
+            invalid = "terminal coverage status requires a concise reason or evidence"
+        elif status == "scheduled":
+            followups = [dict(x) for x in (case.get("pending_followups") or [])
+                         if isinstance(x, dict)]
+            if not any(str(x.get("branch") or "").lower() == branch.lower()
+                       for x in followups):
+                invalid = "scheduled coverage requires a matching durable follow-up"
+        if invalid:
+            case["signal"] = ("Coverage update refused for %s: %s" %
+                              (branch or "unnamed branch", invalid))[:800]
+            if not self.store.set_case_owned(mission_id, token, case):
+                return self._lost_state(mission_id, token)
+            self.store.record_event(
+                mission_id, "coverage", "update_refused",
+                payload={"branch": branch, "status": status, "reason": invalid})
+            return "_continue"
+
+        now = int(time.time())
+        requested_branch = branch
+        item = dict(rows[index])
+        branch = str(item.get("branch") or branch)
+        item.update({"status": status, "updated_at": now})
+        if detail:
+            item["summary"] = detail
+        rows[index] = item
+        case["_campaign_coverage"] = rows[-40:]
+        case.pop("signal", None)
+        if not self.store.set_case_owned(mission_id, token, case):
+            return self._lost_state(mission_id, token)
+        self.store.record_step(mission_id, UPDATE_COVERAGE, branch, status)
+        self.store.record_event(
+            mission_id, "coverage", "updated", branch,
+            {"branch": branch, "requested_branch": requested_branch,
+             "status": status, "summary": detail})
+        self.store.record_checkpoint(
+            mission_id, token, "coverage_updated",
+            {"branch": branch, "status": status}, case=case)
+        return "_continue"
 
     def _handle_authorization(self, mission_id, token, mission, args, reason):
         """Resolve or defer one authorization request at branch scope.
@@ -2484,6 +2670,22 @@ class MissionDriver:
         pending = [dict(x) for x in (case.get("pending_authorizations") or [])
                    if isinstance(x, dict)]
         resolved = list(case.get("resolved_authorizations") or [])
+        existing = _resolved_authorization(request, resolved)
+        if existing:
+            pending = [x for x in pending
+                       if not _resolved_authorization(x, [existing])]
+            case["pending_authorizations"] = pending
+            case["resolved_authorizations"] = resolved[-20:]
+            if not self.store.set_case_owned(mission_id, token, case):
+                return self._lost_state(mission_id, token)
+            self.store.record_step(
+                mission_id, NEEDS_AUTHORIZATION, request["id"], "already-authorized")
+            self.store.record_event(
+                mission_id, "authorization", "resolved_reused", request["id"],
+                {"kind": request["kind"], "claim": request["claim"],
+                 "domain": request["domain"], "matched_id": existing.get("id"),
+                 "resolution": existing.get("resolution")})
+            return "_continue"
         previous = next((x for x in pending if x.get("id") == request["id"]), None)
         recent_non_decisions = [e for e in self.store.events(mission_id, 8)
                                 if e.get("kind") != "decision"]
@@ -2580,13 +2782,21 @@ class MissionDriver:
             r"e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|"
             r"user.?name", re.I)
 
+        def public_handle(key, child):
+            """A bounded public account handle is profile data, not a secret."""
+            return (bool(re.search(r"user.?name|public.?handle|profile.?handle", str(key), re.I))
+                    and isinstance(child, str)
+                    and bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", child)))
+
         def sensitive_path(value, path=""):
             if isinstance(value, dict):
                 for key, child in value.items():
                     if str(key).startswith("_"):
                         continue
                     child_path = (path + "." + str(key)).strip(".")
-                    if sensitive_key.search(str(key)) and child not in (None, "", [], {}):
+                    if (sensitive_key.search(str(key)) and
+                            not public_handle(key, child) and
+                            child not in (None, "", [], {})):
                         return child_path
                     found = sensitive_path(child, child_path)
                     if found:
@@ -2798,7 +3008,26 @@ class MissionDriver:
                     self.store.record_event(mission_id, "control", "invalid", payload={"reason": reason})
                     return self._finish(mission_id, token, NEEDS_YOU,
                                         "driver returned no next action")
+                if action == UPDATE_COVERAGE:
+                    routed = self._handle_coverage_update(
+                        mission_id, token, m, args, reason)
+                    if routed == "_continue":
+                        continue
+                    return routed
                 if action == DONE:
+                    open_coverage = _open_campaign_coverage(m.case)
+                    if open_coverage:
+                        names = [str(x.get("branch") or "") for x in open_coverage[:6]]
+                        case = dict(m.case)
+                        case["signal"] = (
+                            "Completion refused: required campaign coverage remains: " +
+                            ", ".join(names))[:800]
+                        if not self.store.set_case_owned(mission_id, token, case):
+                            return self._lost_state(mission_id, token)
+                        self.store.record_event(
+                            mission_id, "coverage", "completion_refused",
+                            payload={"open": len(open_coverage), "branches": names})
+                        continue
                     if self.completion_guard is not None:
                         try:
                             blocked = self.completion_guard(mission_id, m) or {}
@@ -3217,6 +3446,19 @@ class MissionDriver:
                     reads = 0
                     read_target = None
 
+            current = self.store.get(mission_id)
+            open_coverage = _open_campaign_coverage(current.case if current else {})
+            if open_coverage:
+                self.store.schedule_wait(mission_id, int(time.time()) + 5)
+                self.store.record_event(
+                    mission_id, "coverage", "planning_slice_yielded",
+                    payload={"open": len(open_coverage),
+                             "branches": [str(x.get("branch") or "")
+                                          for x in open_coverage[:6]]})
+                return self._finish(
+                    mission_id, token, WAITING,
+                    "%d campaign branch(es) remain; continuing in the next planning slice" %
+                    len(open_coverage))
             return self._finish(mission_id, token, NEEDS_YOU,
                                 "step budget exhausted — needs your input")
         except Exception as e:
@@ -3525,7 +3767,10 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
              "max_active_wall_seconds": 21_600,
              "max_elapsed_seconds": 2_592_000,
              "max_step_seconds": 600,
-             "max_retries": 32,
+             # Broad, long-running Missions routinely encounter recoverable site
+             # and form drift across many branches. Keep retries bounded, but do
+             # not size the campaign-wide envelope like a single short errand.
+             "max_retries": 128,
              "max_storage_bytes": 5_000_000,
              "checkpoint_keep": 64,
              "human_escalate_seconds": 3_600,
@@ -3554,7 +3799,7 @@ _SYS = (
     "You are collie's mission driver. You are pursuing ONE goal over time. Given the "
     "goal, what you already know (the case), and the actions available, choose the "
     "SINGLE next action. Reply with STRICT JSON and nothing else:\n"
-    '{"action": <a primitive name | "wait" | "needs_authorization" | "needs_human" | "done">, '
+    '{"action": <a primitive name | "wait" | "update_coverage" | "needs_authorization" | "needs_human" | "done">, '
     '"args": {..}, "reason": "<one short clause>"}\n'
     "Rules: use only a listed primitive. CASE.human_updates are durable user/operator "
     "steering in chronological order: the newest explicit instruction overrides conflicting "
@@ -3565,6 +3810,15 @@ _SYS = (
     "with args.seconds plus a stable args.branch name; Collie schedules that branch and "
     "continues other independent work. Immediately repeat that same wait only when no "
     "independent work remains. Set args.blocking=true only for a whole-Mission wait. "
+    "When CASE contains _campaign_coverage, it is a REQUIRED breadth contract. Work every "
+    "required pending/active/attempted branch before asking the whole Mission to wait or finish. "
+    "Unless a due follow-up or a concrete prerequisite requires otherwise, choose the first "
+    "required open branch in that list so the durable priority order is honored. "
+    "Include args.campaign_branch with the exact branch name on research/compose/browse actions. "
+    "After a branch has a concrete outcome, choose update_coverage with args.branch, args.status "
+    "(completed, blocked, scheduled, deferred, skipped, pending, active, or attempted), and a "
+    "concise args.summary explaining the evidence. scheduled is valid only after a matching named "
+    "wait was durably created. The host refuses wait/done while required coverage remains open. "
     "When CASE contains _due_followups, perform the oldest due check before unrelated "
     "work and copy its branch exactly into that action's args.followup_branch; do not "
     "report done until it has been checked. Use 'needs_authorization' for "
@@ -3605,12 +3859,15 @@ _SYS = (
     "Use credentials, email/phone identities, signed-in sessions, and verification-code inboxes "
     "that the user has already connected and authorized; routine signup fields, OTP retrieval, "
     "Next buttons, and authorized publish/send actions are ordinary work inside the leash. "
+    "A public brand username/handle is non-secret profile data. When ordinary account setup needs "
+    "one and no preference is saved, prefer the product/companion brand from GOAL/CASE; never "
+    "invent a person's identity or use an inferred personal name. "
     "A phone explicitly connected as Collie's assigned work line may be used for messages, calls, "
     "voicemail, and routine provider settings within the Mission goal and Leash; releasing or "
     "transferring the number, purchases, and Google-account security changes require new authority. "
     "For an already-requested code from a connected inbox, choose 'verification.fill' with the "
     "exact service name; it reads and fills the code internally without exposing it to you. "
-    "persist a credential or OTP in the case, event log, action args, or summary. The case may contain "
+    "Never persist a credential or OTP in the case, event log, action args, or summary. The case may contain "
     "_standing_authority: exact user-confirmed facts there are reusable up to the stated risk ceiling; "
     "perform the matching ordinary browser work instead of asking again. If the fact or permission is "
     "missing, choose 'needs_authorization' and continue another branch. A CAPTCHA or MFA challenge "

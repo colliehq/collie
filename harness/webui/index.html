@@ -2116,6 +2116,7 @@
       "流被中断——若 Collie 仍在工作,稍后从侧栏重新打开本会话即可看到结果。",
     "run started": "运行开始",
     "Current": "当前", "Completed": "已完成", "Next": "下一步", "Blocked by": "阻塞原因",
+    "Coverage": "渠道覆盖", "complete": "已完成", "open": "未完成",
     "Nothing verified yet": "尚无已验证步骤", "Mission details": "任务详情",
     "Authorization waiting": "等待授权", "Collie is continuing independent work.": "Collie 正在继续不依赖该授权的工作。",
     "I handled this step — continue": "我已完成这一步 — 继续",
@@ -2285,6 +2286,7 @@
       "流被中斷——若 Collie 仍在工作,稍後從側欄重新開啟本會話即可看到結果。",
     "run started": "執行開始",
     "Current": "目前", "Completed": "已完成", "Next": "下一步", "Blocked by": "阻塞原因",
+    "Coverage": "渠道覆蓋", "complete": "已完成", "open": "未完成",
     "Nothing verified yet": "尚無已驗證步驟", "Mission details": "任務詳情",
     "Authorization waiting": "等待授權", "Collie is continuing independent work.": "Collie 正在繼續不依賴該授權的工作。",
     "I handled this step — continue": "我已完成這一步 — 繼續",
@@ -4452,6 +4454,11 @@
     }
     summaryRow("Current", summary.current || st.result || missionStateLabel(st.state));
     summaryRow("Completed", summary.completed || []);
+    var coverage = summary.coverage || {};
+    var coverageValue = coverage.total ?
+      ((coverage.total - coverage.open) + " / " + coverage.total + " " + t("complete") +
+       " · " + coverage.open + " " + t("open")) : "";
+    summaryRow("Coverage", coverageValue);
     summaryRow("Next", summary.next);
     summaryRow("Blocked by", summary.blocker, "blocked");
     b.appendChild(sb);
