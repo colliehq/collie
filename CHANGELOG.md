@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.21.9 — Rich social-media editor support
+
+- **Mission browsing can now see and fill contenteditable post composers.** The browser field
+  inventory includes rich-text editors used by X, LinkedIn, and Reddit; label- and snapshot-ref
+  typing update those editors and emit the input/change events expected by modern web apps. The
+  restricted browser child is also explicitly guided to fall back from labelled fields to an exact
+  accessibility-snapshot textbox ref, without granting it generic or final-submit clicks.
+
 ## v0.21.8 — Read-only browser verification precedence
 
 - **Semantic inspection hints no longer become imaginary form fields.** An explicit no-write

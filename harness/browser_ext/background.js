@@ -282,7 +282,12 @@ function pageType(selector, text, submit) {
   // set through the NATIVE prototype setter so React's tracker registers it. Inlined
   // (not a shared helper): this function is injected into the PAGE via
   // chrome.scripting.executeScript and cannot reference other extension-scope functions.
-  {
+  if (el.isContentEditable || el.getAttribute("contenteditable") !== null) {
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true,
+                                               inputType: "insertText", data: text }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  } else {
     const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
                                             : window.HTMLInputElement.prototype;
     const d = Object.getOwnPropertyDescriptor(proto, "value");
@@ -303,18 +308,29 @@ function pageType(selector, text, submit) {
 // Self-contained: this runs injected in the PAGE, so it can't call other extension fns.
 function pageTypeLabel(labelText, text) {
   const t = (labelText || "").toLowerCase();
-  const el = [...document.querySelectorAll("input,textarea")].find((e) => {
-    const l = e.closest("label"); return l && (l.innerText || "").toLowerCase().includes(t);
+  const el = [...document.querySelectorAll(
+    "input,textarea,[contenteditable=true],[role=textbox]")].find((e) => {
+    const l = e.closest("label");
+    const names = [l ? (l.innerText || "") : "", e.getAttribute("aria-label") || "",
+                   e.getAttribute("data-testid") || "", e.getAttribute("name") || ""];
+    return names.join(" ").toLowerCase().includes(t);
   });
   if (!el) return { error: "no field labeled " + labelText };
   el.focus();
-  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
-                                          : window.HTMLInputElement.prototype;
-  const d = Object.getOwnPropertyDescriptor(proto, "value");
-  if (d && d.set) d.set.call(el, text); else el.value = text;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
+  if (el.isContentEditable || el.getAttribute("contenteditable") !== null) {
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true,
+                                               inputType: "insertText", data: text }));
+  } else {
+    const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+                                            : window.HTMLInputElement.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, "value");
+    if (d && d.set) d.set.call(el, text); else el.value = text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  return { typed: (text || "").slice(0, 40), value: (el.value || "").slice(0, 40), label: labelText };
+  const landed = el.isContentEditable ? el.innerText : el.value;
+  return { typed: (text || "").slice(0, 40), value: (landed || "").slice(0, 40), label: labelText };
 }
 
 // Pick an option from a labelled dropdown/combobox: click the combobox, wait for its
@@ -380,16 +396,19 @@ function pageFields() {
   // native dropdowns were invisible here — the agent could not even see that the field existed,
   // let alone that it had to be set before the form would submit. Their options are returned too,
   // because "there is a dropdown" is useless without knowing what may be chosen.
-  return [...document.querySelectorAll("input,textarea,select,[role=combobox]")].map((e) => {
+  return [...document.querySelectorAll(
+    "input,textarea,select,[role=combobox],[contenteditable=true],[role=textbox]")].map((e) => {
     const anc = e.closest("label");
     let lt = anc ? (anc.innerText || "").trim().split("\n")[0] : "";
     if (!lt && e.id) { const f = document.querySelector('label[for="' + CSS.escape(e.id) + '"]'); if (f) lt = (f.innerText || "").trim().split("\n")[0]; }
     const role = e.getAttribute("role");
     const isSelect = e.tagName === "SELECT";
+    const rich = e.isContentEditable || e.getAttribute("contenteditable") !== null;
     const out = { label: lt || e.getAttribute("aria-label") || e.getAttribute("name") || "",
                   kind: (isSelect || role === "combobox") ? "dropdown"
-                        : (e.tagName === "TEXTAREA" ? "text" : (e.getAttribute("type") || "text")),
-                  value: (e.value || "").slice(0, 40) };
+                        : (rich ? "richtext"
+                           : (e.tagName === "TEXTAREA" ? "text" : (e.getAttribute("type") || "text"))),
+                  value: ((rich ? e.innerText : e.value) || "").slice(0, 40) };
     if (isSelect) out.options = [...e.options].map((o) => (o.text || "").trim()).slice(0, 20);
     return out;
   }).filter((x) => x.label && x.kind !== "hidden");
@@ -765,10 +784,16 @@ function pageTypeRef(ref, text, submit) {
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return { picked: (hit.text || "").trim(), value: el.value, landed: el.value === hit.value };
   }
-  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-  const d = Object.getOwnPropertyDescriptor(proto, "value");
-  if (d && d.set) d.set.call(el, text); else el.value = text;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
+  if (el.isContentEditable || el.getAttribute("contenteditable") !== null) {
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true,
+                                               inputType: "insertText", data: text }));
+  } else {
+    const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, "value");
+    if (d && d.set) d.set.call(el, text); else el.value = text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   el.dispatchEvent(new Event("change", { bubbles: true }));
   if (submit) {
     const form = el.form;

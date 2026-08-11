@@ -375,6 +375,45 @@ function run(root, max, opts, frames) {
 // pageFields did not list selects at all, and pageTypeRef wrote through the HTMLInputElement value
 // setter, which leaves a <select> untouched — every attempt came back "typed" with the old option
 // still selected. A dropdown the agent is shown but cannot move is worse than one it cannot see.
+// Rich editors (X, LinkedIn, Reddit) are contenteditable divs rather than input/textarea controls.
+// They must be visible to browser_fields and writable by both a label and a snapshot ref.
+{
+  const editor = el('div', { attrs: { contenteditable: 'true', role: 'textbox',
+                                      'aria-label': 'Post text' } });
+  editor.isContentEditable = true;
+  editor.innerText = '';
+  editor.textContent = '';
+  editor.focus = () => {};
+  editor.events = [];
+  editor.dispatchEvent = function (e) {
+    this.events.push(e.type);
+    if (e.type === 'input') this.innerText = this.textContent;
+    return true;
+  };
+  const win = { HTMLSelectElement: { prototype: {} }, HTMLInputElement: { prototype: {} },
+                HTMLTextAreaElement: { prototype: {} }, __collieRefs: new Map([['e1', editor]]) };
+  const doc = {
+    querySelectorAll: (q) => String(q).includes('contenteditable') ? [editor] : [],
+    querySelector: () => null,
+    getElementById: () => null,
+  };
+  const Input = function (type) { return { type: type }; };
+  const api = new Function(
+    'window', 'document', 'CSS', 'Event', 'InputEvent',
+    [grab('function pageFields()'), grab('function pageTypeLabel(labelText, text)'),
+     grab('function pageTypeRef(ref, text, submit)')].join('\n') +
+    '\nreturn { pageFields, pageTypeLabel, pageTypeRef };'
+  )(win, doc, { escape: (s) => s }, Input, Input);
+  const fields = api.pageFields();
+  eq('a contenteditable editor is listed as richtext', fields[0] && fields[0].kind, 'richtext');
+  eq('its accessible name survives as the field label', fields[0] && fields[0].label, 'Post text');
+  api.pageTypeLabel('Post text', 'VocalCode by label');
+  eq('label typing lands in a contenteditable editor', editor.innerText, 'VocalCode by label');
+  api.pageTypeRef('e1', 'VocalCode by ref');
+  eq('ref typing lands in a contenteditable editor', editor.innerText, 'VocalCode by ref');
+  t('rich editor typing emits an input event', editor.events.indexOf('input') >= 0);
+}
+
 {
   function option(text, value) { return { text: text, value: value === undefined ? text : value }; }
   function select(opts, attrs) {
