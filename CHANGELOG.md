@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.21.3 — Verified read-only browser work
+
+- **Browser inspection is no longer mistaken for a failed form fill.** A Mission can explicitly
+  mark navigation/inspection as `read_only`; the Gate then verifies the independently reread live
+  page identity instead of demanding form fields. Empty-form fill operations remain inconclusive,
+  so the new path cannot weaken draft or submission verification.
+
 ## v0.21.2 — Mission composition that produces the deliverable
 
 - **Compose requests and final copy now have distinct fields.** Mission planning puts writing

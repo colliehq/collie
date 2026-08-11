@@ -579,8 +579,24 @@ def _browse_verify(rec, result):
     r = result or {}
     form = r.get("form") or []
     expect = (rec.args or {}).get("expect") or {}
+    read_only = bool((rec.args or {}).get("read_only"))
     if not r.get("result") and not form:
         return Verdict(FAILED, "browse produced no result")
+
+    # A deliberate inspection/navigation action has no form to fill.  It still
+    # needs independent evidence: the bridge re-read of the live page identity.
+    # Without the explicit flag, an empty form remains inconclusive so a failed
+    # fill cannot disguise itself as successful browsing.
+    if read_only and not expect:
+        page = r.get("page") or {}
+        host = str(page.get("host") or "").strip().lower()
+        title = str(page.get("title") or "").strip()
+        if not host:
+            return Verdict(INCONCLUSIVE,
+                           "read-only browse returned no independently confirmed page")
+        ev = Observation(channel="browser-page-reread", at=1, ok=True, asserted=True,
+                         detail=(host + ((" · " + title) if title else "")))
+        return Verdict(VERIFIED, "independently confirmed read-only browse on " + host, (ev,))
 
     def _norm(s):                                    # ignore $, commas, spacing ("9500" == "$9,500")
         return re.sub(r"[^a-z0-9]", "", str(s).lower())
@@ -981,9 +997,11 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         "navigate, act) — handles dynamic/obfuscated sites like Facebook Marketplace. Fills up to the "
         "final submit then STOPS (reversible). Pass `expect` using exact visible field labels. For a "
         "rich-text editor use content/body/post_text; platform/site is checked against the live page "
-        "origin. The outcome is verified by an INDEPENDENT re-read, not the agent's say-so.",
+        "origin. For inspection/navigation with no form changes pass read_only=true. The outcome is "
+        "verified by an INDEPENDENT re-read, not the agent's say-so.",
         args_hint='{"goal": "fill a Marketplace vehicle listing for a 2015 Corolla, $9500", '
-                  '"expect": {"Make":"Toyota","Model":"Corolla","Year":"2015","Price":"9500"}}'))
+                  '"expect": {"Make":"Toyota","Model":"Corolla","Year":"2015","Price":"9500"}, '
+                  '"read_only": false}'))
     register(Capability(
         name="browse.submit", execute=bsubmit_exec, verify=bsubmit_verify, reversible=False,
         risk="publish", snapshot=bsubmit_snapshot, unchanged=bsubmit_unchanged,

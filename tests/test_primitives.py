@@ -229,6 +229,17 @@ def test_browse_and_submit_real():
     check(_browse_verify(_Rec({"expect": {"Make": "Toyota"}}), {"result": "done", "form": []}).status
           == FAILED, "'done' over an empty form is refuted, not trusted")
     check(_browse_verify(_Rec({}), res).status == VERIFIED, "no expect + substantially filled -> VERIFIED")
+    inspected = {"result": "Current public facts recorded", "form": [],
+                 "page": {"host": "vocalcode.app", "title": "VocalCode"}}
+    inspected_verdict = _browse_verify(_Rec({"read_only": True}), inspected)
+    check(inspected_verdict.status == VERIFIED and inspected_verdict.evidence and
+          inspected_verdict.evidence[0].channel == "browser-page-reread",
+          "explicit read-only browsing verifies against the independently reread live page")
+    check(_browse_verify(_Rec({}), inspected).status == INCONCLUSIVE,
+          "an empty-form fill cannot masquerade as read-only success without the explicit flag")
+    no_page = dict(inspected, page={})
+    check(_browse_verify(_Rec({"read_only": True}), no_page).status == INCONCLUSIVE,
+          "read-only browsing still fails closed without independent page identity")
     social = {"result": "drafted", "page": {"host": "x.com", "title": "Compose / X"},
               "form": [{"label": "tweetTextarea_0", "value": "Try VocalCode today"}]}
     check(_browse_verify(_Rec({"expect": {"platform": "Twitter/X",
