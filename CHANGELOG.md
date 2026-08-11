@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.21.10 — Safe failed-Mission retry
+
+- **A normally failed Mission can now be retried without erasing its audit trail.** `mission retry`
+  creates a fenced successor with the same goal and authority, carries bounded predecessor context
+  and receipts forward for duplicate avoidance, and refuses to start while an earlier external
+  action or resource is still outcome-uncertain. Failed Mission status now advertises `retry` as
+  its explicit recovery control.
+
 ## v0.21.9 — Rich social-media editor support
 
 - **Mission browsing can now see and fill contenteditable post composers.** The browser field

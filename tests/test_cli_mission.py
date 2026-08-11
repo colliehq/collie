@@ -4,6 +4,7 @@ import json
 
 from harness import cli
 from harness.mission import MissionStore
+from harness.jobs import FAILED_S
 
 
 def _run(capsys, argv):
@@ -46,3 +47,25 @@ def test_cli_reconciles_only_the_explicit_recovery_state(monkeypatch, tmp_path, 
                             "site and receipts inspected", "--json"])
     assert rc == 0 and out["state"] == "queued"
     assert out["case"]["human_updates"][-1]["recovery"] is True
+
+
+def test_cli_retries_failed_mission_as_a_fenced_successor(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    rc, created = _run(capsys, ["mission", "start", "finish campaign", "--auto", "--json"])
+    old = created["mission_id"]
+    store = MissionStore(str(tmp_path / "jobs.db"))
+    store.set_state(old, FAILED_S, "rich editor was not filled")
+    store.close()
+
+    rc, retried = _run(capsys, ["mission", "retry", old, "--note",
+                                "No external write occurred; use the editor fix.", "--json"])
+    assert rc == 0 and retried["state"] == "queued"
+    assert retried["mission_id"] != old
+    assert retried["goal"] == "finish campaign"
+    assert retried["case"]["predecessor"]["mission_id"] == old
+    assert retried["case"]["human_updates"][-1]["recovery"] is True
+    assert retried["controls"] == ["run", "pause", "cancel"]
+
+    rc, old_status = _run(capsys, ["mission", "status", old, "--json"])
+    assert rc == 0 and old_status["state"] == "failed"
+    assert old_status["controls"] == ["retry"]

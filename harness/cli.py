@@ -2426,6 +2426,8 @@ def cmd_mission(args):
                 out = svc.pause(mid)
             elif action == "resume":
                 out = svc.resume(mid)
+            elif action == "retry":
+                out = svc.retry(mid, args.note or "")
             elif action == "cancel":
                 out = svc.cancel(mid)
             elif action == "accept":
@@ -3353,9 +3355,9 @@ def main(argv=None):
     pj.set_defaults(fn=cmd_jobs)
 
     pmis = sub.add_parser(
-        "mission", help="durable campaigns: start/list/run/pause/resume/cancel/reconcile")
+        "mission", help="durable campaigns: start/list/run/pause/resume/retry/cancel/reconcile")
     pmis.add_argument("action",
-                      choices=["start", "ls", "status", "run", "pause", "resume",
+                      choices=["start", "ls", "status", "run", "pause", "resume", "retry",
                                "cancel", "confirm", "continue", "accept", "check",
                                "reconcile"])
     pmis.add_argument("text", nargs="?", default="", help="goal (start) or mission id")
@@ -3377,7 +3379,7 @@ def main(argv=None):
                       help="for start: run synchronously instead of leaving it queued")
     pmis.add_argument("--json", action="store_true")
     pmis.add_argument("--note", default="",
-                      help="inspection note for recovery reconciliation")
+                      help="inspection note for recovery reconciliation or failed retry")
     pmis.set_defaults(fn=cmd_mission)
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally

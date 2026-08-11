@@ -357,6 +357,68 @@ class MissionService:
         return self.status(mid) if target else {
             **self.status(mid), "error": f"cannot resume from {m.state}"}
 
+    def retry(self, mid: str, note: str = "") -> dict:
+        """Create a fenced successor for an ordinarily failed Mission.
+
+        A failed row is immutable audit history, so retry never rewinds it.  The
+        successor inherits the exact leash and receives bounded predecessor
+        context plus receipts so the decider can reconcile already-fired work
+        instead of repeating it.  Any still-executing action/resource refuses the
+        retry: that is outcome-uncertain recovery, not an ordinary retry.
+        """
+        m = self.store.get(mid)
+        if not m:
+            return {"error": "unknown mission", "mission_id": mid}
+        if m.state != FAILED_S:
+            return {**self.status(mid), "error": f"cannot retry from {m.state}"}
+        live_actions = [r for r in self.actions.list()
+                        if r.get("job_id") == mid and r.get("state") == EXECUTING]
+        if live_actions or self.store.active_resources(mid):
+            return {**self.status(mid),
+                    "error": "cannot retry while predecessor action outcome is uncertain"}
+
+        receipts = [r for r in self.actions.receipts()
+                    if r.get("job_id") == mid][-40:]
+        receipt_context = [{
+            "capability": r.get("capability"),
+            "fired": bool(r.get("fired")),
+            "verdict": r.get("verdict"),
+            "reason": str(r.get("verdict_reason") or "")[:500],
+            "evidence": str(r.get("evidence") or "")[:1000],
+        } for r in receipts]
+        now = int(time.time())
+        retry_note = str(note or "").strip()[:2000]
+        case = {
+            "_retry_of": mid,
+            "predecessor": {
+                "mission_id": mid,
+                "state": m.state,
+                "result": str(m.result or "")[:2000],
+                "receipts": receipt_context,
+                # Namespacing keeps stale browser state from being mistaken for
+                # the successor's current page while retaining useful research
+                # and composed copy for recovery.
+                "case": _clean(m.case),
+            },
+            "human_updates": [{
+                "at": now,
+                "recovery": True,
+                "note": retry_note or (
+                    "Retry the failed predecessor. Inspect predecessor receipts "
+                    "before every external action and never duplicate fired work."),
+            }],
+        }
+        successor = "msn_" + secrets.token_hex(6)
+        create_mission(self.store, successor, m.goal, case=case, leash=dict(m.leash))
+        self.store.record_event(
+            successor, "control", "retry",
+            payload={"predecessor": mid, "note": retry_note})
+        self.store.record_checkpoint(
+            successor, "", "retried",
+            {"predecessor": mid, "receipts": len(receipt_context)},
+            case=case, allow_unowned=True)
+        return self.status(successor)
+
     def pause(self, mid: str) -> dict:
         m = self.store.get(mid)
         if not m:
@@ -811,6 +873,8 @@ class MissionService:
             controls = ["reconcile", "cancel"]
         elif m.state == RECONCILING:
             controls = ["reconcile", "cancel"]
+        elif m.state == FAILED_S:
+            controls = ["retry"]
         recovery_actions = []
         if m.state in (RECOVERY_REQUIRED, RECONCILING):
             recovery_actions = [
