@@ -269,6 +269,11 @@ def test_browse_and_submit_real():
                            "goal": "Fill a code-review post without submitting it."})
     check(_browse_verify(explicit_write, inspected).status == INCONCLUSIVE,
           "explicit read_only=false prevents write failures being verified by language fallback")
+    crossed = {"result": "OAuth stopped", "form": [{"label": "hidden", "value": "x"}],
+               "page": {"host": "linkedin.com", "title": "OAuth"},
+               "scope_error": "browse ended outside its single-action domain boundary"}
+    check(_browse_verify(_Rec({"read_only": False}), crossed).status == FAILED,
+          "an OAuth provider form cannot verify after leaving the browse domain boundary")
     no_page = dict(inspected, page={})
     check(_browse_verify(_Rec({"read_only": True}), no_page).status == INCONCLUSIVE,
           "read-only browsing still fails closed without independent page identity")
@@ -320,13 +325,16 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
            {"label": "Password", "value": "hunter2"},
            {"label": "Card number", "value": "4111111111111111"},
            {"label": "g-recaptcha-response", "value": "0cAF-secret-token"},
+           {"label": "csrfToken", "value": "csrf-secret"},
+           {"label": "session_redirect", "value": "/oauth?state=private"},
            {"label": "Description", "value": "A safe listing"}]
     safe = _sanitize_form(raw)
     encoded = repr(safe)
     check("owner@example.test" not in encoded and "hunter2" not in encoded and
           "4111111111111111" not in encoded and "0cAF-secret" not in encoded and
-          encoded.count("[redacted]") == 4,
-          "credentials and signup/payment PII never enter durable form snapshots")
+          "csrf-secret" not in encoded and "state=private" not in encoded and
+          encoded.count("[redacted]") == 6,
+          "credentials, OAuth state, and signup/payment PII never enter durable form snapshots")
     collapsed = {"snapshot": '[e1] button "Publish" ×2 (identical siblings: e1–e2)'}
     check(_find_button(collapsed, "Publish") is None,
           "a collapsed row with two identical Publish buttons is ambiguous")
@@ -452,9 +460,10 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
                 "enable_capability", "mcpctl_add", "slack_send", "load_tools")}
 
     class FakeHarness:
-        def __init__(self):
+        def __init__(self, drift=None):
             self.registry, self.memory, self.recorder = Registry(), Obj(), Obj()
             self.answer = ""
+            self.drift = drift
 
         def run(self, _task_id, prompt):
             allowed = {"browser_open", "browser_read", "browser_snapshot", "browser_fields",
@@ -472,10 +481,20 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
                   "unscoped browse is pinned to its first site against cross-site exfiltration")
             check("outer Mission can gate it" in prompt,
                   "child is told to hand consequential actions back to Mission")
+            if self.drift is not None:
+                self.drift["url"] = "https://oauth.test/login"
             return type("R", (), {"answer": "prepared", "error": ""})()
 
     with patch("harness.cli.make_harness", return_value=FakeHarness()):
-        check(_live_browse("prepare the form") == "prepared", "safe browse child still runs")
+        outcome = _live_browse("prepare the form")
+        check(outcome.get("_browse_answer") == "prepared" and not outcome.get("_scope_error"),
+              "safe browse child still runs and reports its final domain boundary")
+    state = {"url": "https://social.test/start"}
+    with patch("harness.cli.make_harness", return_value=FakeHarness(state)), \
+         patch("harness.browserbridge.space_identity", side_effect=lambda _space: dict(state)):
+        crossed = _live_browse("prepare one site's form")
+        check("social.test -> oauth.test" in crossed.get("_scope_error", ""),
+              "the live child reports a final OAuth redirect outside its action boundary")
 
 
 def test_code_primitive():

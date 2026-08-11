@@ -479,19 +479,21 @@ def _restrict_browse_child(h, space, allowed_domains=None):
                 "advance" if name == "browser_advance" else "read")
         h.registry._tools[name] = _BoundBrowserTool(
             h.registry._tools[name], space, kind, name, boundary)
+    return boundary
 
 
 def _live_browse(goal, space="mission-standalone", allowed_domains=None):
     import os
     os.environ.setdefault("COLLIE_BROWSER_BRIDGE", "1")   # drive the user's real browser via the bridge
     from .cli import make_harness
+    from .browserbridge import space_identity
     from . import settings as _s
     _s.apply()
     h = make_harness(_browse_dir(), provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
                      project="browse", embed="hash")
     # Prompt text is not an authority boundary.  Keep a positive list, wrap every
     # survivor in this Mission's isolated browser space, and force type.submit off.
-    _restrict_browse_child(h, space, allowed_domains)
+    boundary = _restrict_browse_child(h, space, allowed_domains)
     h.self_verify = False
     try:
         h.force_edit = False
@@ -526,7 +528,21 @@ def _live_browse(goal, space="mission-standalone", allowed_domains=None):
         h.memory.close(); h.recorder.close()
     except Exception:
         pass
-    return res.answer or res.error or ""
+    answer = res.answer or res.error or ""
+    ident = space_identity(space) or {}
+    final_host = (urlsplit(str(ident.get("url") or "")).hostname or "").lower()
+    first_host = str(boundary.get("first_host") or "").lower()
+    domains = boundary.get("domains") or []
+    if domains:
+        in_scope = not final_host or any(
+            fnmatch.fnmatchcase(final_host, str(pattern).lower()) for pattern in domains)
+    else:
+        in_scope = (not final_host or not first_host or final_host == first_host or
+                    final_host.endswith("." + first_host))
+    return {"_browse_answer": answer,
+            "_scope_error": "" if in_scope else
+                "browse ended outside its single-action domain boundary (%s -> %s)" %
+                (first_host or "unknown", final_host or "unknown")}
 
 
 # Independent form re-read (the verify's ground truth): after the acting agent
@@ -539,12 +555,15 @@ _FORM_SNAPSHOT = (
     "var l=e.closest('label');var lab=l?(l.innerText||'').trim().split('\\n')[0]:(e.getAttribute('aria-label')||e.getAttribute('data-testid')||e.getAttribute('role')||e.tagName);"
     "var val=e.getAttribute('role')==='combobox'?(l?(l.innerText||'').replace(/\\n/g,' ').trim():''):(e.value||e.innerText||'');"
     "var meta=[lab,e.type,e.name,e.id,e.autocomplete,e.getAttribute('aria-label')].join(' ');"
-    "var sensitive=e.type==='password'||e.type==='email'||e.type==='tel'||/(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);"
+    "var sensitive=e.type==='password'||e.type==='email'||e.type==='tel'||/(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|csrf|authenticity|oauth|session.?redirect|cancel.?redirect|redirect.?uri|login.?csrf|page.?instance|sid.?string|control.?id|referer|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);"
     "return {label:lab,value:sensitive?'[redacted]':val,sensitive:!!sensitive,filled:!!val};}).filter(x=>x.label&&x.filled))")
 
 
 _SENSITIVE_FIELD = re.compile(
-    r"pass(word|code)?|secret|token|api.?key|captcha|recaptcha|otp|one.?time|verification.?code|"
+    r"pass(word|code)?|secret|token|api.?key|captcha|recaptcha|csrf|authenticity|oauth|"
+    r"session.?redirect|cancel.?redirect|redirect.?uri|login.?csrf|page.?instance|"
+    r"sid.?string|control.?id|referer|"
+    r"otp|one.?time|verification.?code|"
     r"cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|"
     r"street.?address|postal|zip.?code|birth|dob|user.?name", re.I)
 
@@ -609,7 +628,13 @@ def _real_browse(runner=None, form_reader=None):
         goal = (rec.args or {}).get("goal") or (rec.args or {}).get("task") or ""
         space = _mission_space(getattr(rec, "job_id", ""))
         domains = ((rec.args or {}).get("_leash") or {}).get("allowed_domains") or []
-        out = runner(goal) if runner else _live_browse(goal, space, domains)
+        raw_out = runner(goal) if runner else _live_browse(goal, space, domains)
+        scope_error = ""
+        if isinstance(raw_out, dict) and "_browse_answer" in raw_out:
+            out = raw_out.get("_browse_answer") or ""
+            scope_error = str(raw_out.get("_scope_error") or "")
+        else:
+            out = raw_out
         # Child summaries are durable case/event material.  Defense in depth for
         # a child that ignored the prompt and echoed signup/contact credentials.
         out = str(out or "")
@@ -631,7 +656,7 @@ def _real_browse(runner=None, form_reader=None):
                 "title": str(ident.get("title") or "")[:160]}
         return {"case": {"browsed": True, "browse_result": (out or "")[:600]},
                 "result": out, "form": form, "form_actions": form_actions,
-                "page": page}
+                "page": page, **({"scope_error": scope_error} if scope_error else {})}
     return execute
 
 
@@ -671,6 +696,8 @@ def _browse_verify(rec, result):
     form = r.get("form") or []
     expect = (rec.args or {}).get("expect") or {}
     read_only = _explicit_read_only_browse(rec.args or {})
+    if r.get("scope_error"):
+        return Verdict(FAILED, str(r.get("scope_error"))[:300])
     if not r.get("result") and not form:
         return Verdict(FAILED, "browse produced no result")
 
@@ -1116,9 +1143,11 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         name="browse.submit", execute=bsubmit_exec, verify=bsubmit_verify, reversible=False,
         risk="publish", snapshot=bsubmit_snapshot, unchanged=bsubmit_unchanged,
         resource=browser_resource,
-        description="Click one exact snapshotted final IRREVERSIBLE button (Publish / Post) "
-        "after `browse` has filled the form. Gated — parks for your confirm.",
-        args_hint='{"button": "Publish"}', semantic_args=_semantic_browse_submit))
+        description="Click one exact snapshotted final CONSEQUENTIAL button (Publish / Post / "
+        "Create account / Authorize app) after `browse` has prepared the page. Gated and "
+        "independently verified; commerce is refused and uses a dedicated pay capability.",
+        args_hint='{"button": "Authorize app", "success_url_contains": "producthunt.com"}',
+        semantic_args=_semantic_browse_submit))
     register(Capability(
         name="code", execute=code_exec, verify=code_verify, reversible=True, risk="code",
         resource=code_resource,

@@ -437,7 +437,7 @@ function pageFormSnapshot() {
     const meta = [label, e.type, e.name, e.id, e.autocomplete,
                   e.getAttribute("aria-label")].join(" ");
     const sensitive = e.type === "password" || e.type === "email" || e.type === "tel" ||
-      /(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);
+      /(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|csrf|authenticity|oauth|session.?redirect|cancel.?redirect|redirect.?uri|login.?csrf|page.?instance|sid.?string|control.?id|referer|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);
     return { label, value: sensitive ? "[redacted]" : String(value).slice(0, 4000),
              sensitive: !!sensitive, filled: !!value };
   }).filter((x) => x.label && x.filled);

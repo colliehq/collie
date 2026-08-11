@@ -392,8 +392,10 @@ function run(root, max, opts, frames) {
 {
   const token = el('textarea', { attrs: { name: 'g-recaptcha-response' },
                                  value: '0cAF-live-secret' });
+  const oauth = el('input', { attrs: { name: 'session_redirect' },
+                              value: '/oauth?state=private' });
   const doc = {
-    querySelectorAll: (q) => String(q).startsWith('input,textarea') ? [token] : [],
+    querySelectorAll: (q) => String(q).startsWith('input,textarea') ? [token, oauth] : [],
     querySelector: () => null,
   };
   const api = new Function('document', 'CSS', grab('function pageFormSnapshot()') +
@@ -401,6 +403,8 @@ function run(root, max, opts, frames) {
   const field = api.pageFormSnapshot().fields[0];
   eq('CAPTCHA response tokens are redacted in CSP-safe snapshots', field && field.value, '[redacted]');
   t('the CAPTCHA field is marked sensitive', !!(field && field.sensitive));
+  eq('OAuth redirect state is redacted in CSP-safe snapshots',
+     api.pageFormSnapshot().fields[1].value, '[redacted]');
 }
 
 {

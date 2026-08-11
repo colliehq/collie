@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.21.13 — OAuth boundary verification and flow-secret redaction
+
+- **A cross-domain OAuth redirect cannot pass form verification by accident.** The restricted
+  browser child now reports the domain it actually ended on; leaving a single-action boundary is a
+  failed step even when the provider login page contains many prefilled or hidden fields.
+- **OAuth transitions can be resumed as explicit gated steps.** `browse.submit` now documents final
+  account creation and app-authorization buttons, with success URL/text postconditions, while still
+  refusing commerce.
+- **OAuth flow state is treated as secret.** CSRF/authenticity values, OAuth tokens, redirect state,
+  page/session identifiers, and referers are redacted in both extension and Python form snapshots.
+
 ## v0.21.12 — Reversible browser advancement and privacy hardening
 
 - **Mission browsing can now cross ordinary multi-step UI.** A new exact-ref `browser_advance`
