@@ -3005,7 +3005,17 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
              "max_specialist_depth": 2,
              "workspace_mode": "current"}
     if expires:
-        leash["expires"] = expires
+        # Leash evaluation compares canonical UTC timestamps lexically. API callers
+        # commonly have an epoch deadline; accepting it without normalization stores
+        # an int that crashes the first primitive-catalog evaluation (str > int).
+        if isinstance(expires, (int, float)) and not isinstance(expires, bool):
+            expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
+        elif isinstance(expires, str):
+            expires = expires.strip()
+        else:
+            raise ValueError("Mission leash expires must be an ISO timestamp or epoch seconds")
+        if expires:
+            leash["expires"] = expires
     leash.update(bounds)
     return leash
 

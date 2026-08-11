@@ -1000,6 +1000,15 @@ def test_person_required_security_checks_never_auto_authorize():
           "CAPTCHA remains a person-required boundary regardless of the standing risk ceiling")
     store.close(); actions.close()
 
+
+def test_world_leash_normalizes_epoch_expiry_for_runtime_comparison():
+    print("test_world_leash_normalizes_epoch_expiry_for_runtime_comparison")
+    leash = world_leash(expires=1786495837)
+    check(leash["expires"] == "2026-08-12T00:50:37Z",
+          "epoch deadlines normalize to the UTC string used by leash evaluation")
+    check(isinstance(leash["expires"], str),
+          "an epoch never survives the builder to cause a str-vs-int runtime failure")
+
 def main():
     test_confirm_gate_then_resume()
     test_autonomous_with_durable_wait()
@@ -1036,6 +1045,7 @@ def main():
     test_transient_model_failure_becomes_durable_backoff()
     test_model_decider_exposes_unambiguous_primitive_contracts()
     test_credentials_handoff_before_any_durable_action_payload()
+    test_world_leash_normalizes_epoch_expiry_for_runtime_comparison()
     if _fails:
         print(f"\n{len(_fails)} FAILED")
         sys.exit(1)
