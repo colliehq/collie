@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.21.17 — Localized final-action binding
+
+- **A verified form can bind its final button across UI languages.** Common Post, Publish, Save,
+  Send, and Submit labels are matched through a deliberately small localization table, including
+  bilingual planner descriptions such as `保存 / Save`.
+- **Localization does not weaken the irreversible-action boundary.** Collie still requires one
+  unique enabled live button; multiple localized candidates, duplicate controls, and disabled
+  controls remain refused before any click can fire.
+
 ## v0.21.16 — Self-contained browser payloads and submit sequencing
 
 - **A failed form preparation can no longer be followed by `browse.submit`.** The Mission container

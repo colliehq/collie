@@ -350,6 +350,16 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     disabled_post = {"snapshot": '[e1] link "Post"\n[e2] button "Post" (disabled)'}
     check(_find_button(disabled_post, "Post") is None,
           "a disabled final Post button never falls back to the navigation link")
+    localized_save = {"snapshot": '[e1] button "保存"'}
+    check(_find_button(localized_save, "Save")["ref"] == "e1" and
+          _find_button(localized_save, "保存 / Save")["ref"] == "e1",
+          "a unique localized final button matches an English or bilingual planner label")
+    ambiguous_locales = {"snapshot": '[e1] button "Save"\n[e2] button "保存"'}
+    check(_find_button(ambiguous_locales, "保存 / Save") is None,
+          "a bilingual label never guesses between two localized final buttons")
+    disabled_localized = {"snapshot": '[e1] button "保存" (disabled)'}
+    check(_find_button(disabled_localized, "Save") is None,
+          "localized matching never turns a disabled final button into an enabled target")
 
 
 def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():

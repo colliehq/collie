@@ -831,21 +831,64 @@ def _space_actuator(actuator, job_id):
     return act
 
 
+_FINAL_BUTTON_EQUIVALENTS = (
+    # The browser tree exposes the page's locale, while the planning model may describe the same
+    # final action in the user's language, in English, or as a bilingual label ("保存 / Save").
+    # Keep this deliberately limited to common final-action verbs.  `_find_button` still requires
+    # one unique enabled live button, so translation never turns a vague label into a guessed click.
+    frozenset(("save", "save changes", "保存", "保存更改", "guardar", "enregistrer",
+               "speichern", "salva", "opslaan", "zapisz", "сохранить", "저장", "kaydet",
+               "lưu", "บันทึก", "simpan")),
+    frozenset(("publish", "发布", "發佈", "publier", "veröffentlichen", "publicar",
+               "pubblica", "publiceren", "opublikuj", "опубликовать", "公開", "게시",
+               "yayınla")),
+    frozenset(("post", "发帖", "發文", "投稿", "게시하기")),
+    frozenset(("send", "发送", "傳送", "envoyer", "senden", "enviar", "invia",
+               "verzenden", "wyślij", "отправить", "送信", "보내기", "gönder")),
+    frozenset(("submit", "提交", "送出", "soumettre", "absenden", "enviar",
+               "invia", "indienen", "prześlij", "отправить", "送信", "제출")),
+)
+
+
+def _button_labels(button):
+    raw = str(button or "").strip().casefold()
+    # A bilingual description is not normally the DOM's literal accessible name.  Treat each side
+    # as a semantic hint, but never as permission to match arbitrary substrings.
+    parts = {p.strip() for p in re.split(r"\s*(?:/|｜)\s*", raw) if p.strip()}
+    exact = {raw} if raw else set()
+    semantic = set(parts)
+    seeds = set(parts)
+    for group in _FINAL_BUTTON_EQUIVALENTS:
+        if seeds.intersection(group):
+            semantic.update(group)
+    return exact, semantic
+
+
 def _find_button(snapshot, button):
-    wanted = str(button or "").strip().casefold()
+    exact, semantic = _button_labels(button)
     hits = []
     for line in str((snapshot or {}).get("snapshot") or "").splitlines():
         m = re.search(r"\[([^\]]+)\]\s+(button|link|menuitem)\s+\"([^\"]+)\"", line)
-        if m and m.group(3).strip().casefold() == wanted:
+        label = m.group(3).strip().casefold() if m else ""
+        if m and label in semantic:
             if re.search(r"×\s*[2-9]\d*|identical siblings", line, re.I):
                 return None
             hits.append({"ref": m.group(1), "role": m.group(2),
+                         "label": label,
                          "line": line.strip(),
                          "disabled": bool(re.search(r"\(disabled\)|\[disabled\]|aria-disabled", line, re.I))})
     buttons = [h for h in hits if h["role"] in ("button", "menuitem")]
-    enabled = [h for h in buttons if not h["disabled"]]
-    if buttons:
+    exact_buttons = [h for h in buttons if h["label"] in exact]
+    if exact_buttons:
+        enabled = [h for h in exact_buttons if not h["disabled"]]
         return enabled[0] if len(enabled) == 1 else None
+    if buttons:
+        enabled = [h for h in buttons if not h["disabled"]]
+        return enabled[0] if len(enabled) == 1 else None
+    exact_links = [h for h in hits if h["role"] == "link" and h["label"] in exact
+                   and not h["disabled"]]
+    if exact_links:
+        return exact_links[0] if len(exact_links) == 1 else None
     links = [h for h in hits if h["role"] == "link" and not h["disabled"]]
     return links[0] if len(links) == 1 else None
 
