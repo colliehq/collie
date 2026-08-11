@@ -283,6 +283,53 @@ class ActionStore:
             self.db.commit()
         return cur.rowcount
 
+    def retire_stale_reversible(self, nonce, *, min_age_s=600,
+                                reason="stale reversible execution retired") -> bool:
+        """Close an abandoned reversible EXECUTING latch with an honest receipt.
+
+        This is intentionally incapable of touching publish/send/commerce/destructive actions.
+        It exists for a process that died or timed out after claiming a read/compose/browse/code
+        action, leaving an ordinary failed Mission impossible to retry forever.  The caller must
+        separately prove the Mission has no live run/resource owner; age and capability checks here
+        are defense in depth.  We record ``fired=True`` because the runner did start, but the result
+        remains INCONCLUSIVE rather than inventing success or pretending it never ran.
+        """
+        safe = {"research", "compose", "browse", "observe", "code"}
+        now = int(time.time())
+        with self._lock:
+            row = self._row(nonce)
+            if not row or row["state"] != EXECUTING or row["capability"] not in safe:
+                return False
+            if str(row["risk"] or "").lower() in {
+                    "publish", "send", "commerce", "destructive", "irreversible"}:
+                return False
+            started = int(row["attempted_at"] or row["created_at"] or now)
+            if now - started < max(60, int(min_age_s)):
+                return False
+            record = ActionRecord(
+                nonce=row["nonce"], capability=row["capability"],
+                args=json.loads(row["args_json"] or "{}"), digest=row["digest"],
+                risk=row["risk"], state=row["state"], job_id=row["job_id"],
+                leash_id=row["leash_id"], snapshot=json.loads(row["snapshot_json"] or "{}"),
+                created_at=row["created_at"], expires_at=row["expires_at"])
+            verdict = Verdict(INCONCLUSIVE, str(reason or "stale reversible execution retired")[:200])
+            _rc, params = self._mk_receipt(
+                record, approved=True, fired=True, verdict=verdict)
+            self.db.execute("BEGIN IMMEDIATE")
+            cur = self.db.execute(
+                "UPDATE pending_actions SET state=?,executed_at=? "
+                "WHERE nonce=? AND state=?",
+                (EXECUTED, now, nonce, EXECUTING))
+            if cur.rowcount != 1:
+                self.db.rollback()
+                return False
+            self.db.execute(
+                """INSERT INTO receipts(nonce,job_id,capability,args_redacted,leash_id,
+                     approved,fired,verdict,verdict_reason,evidence,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""", params)
+            self.db.commit()
+        return True
+
     # ── execute: the deterministic, model-free executor ──
     def execute(self, nonce, side_effect_fn, donecheck_fn=None,
                 unchanged_fn=None, redact_fn=None) -> Receipt:

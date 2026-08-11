@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from harness.jobs import (clear_registry, NEEDS_YOU, WAITING, DONE_ACCEPTED,
+from harness.jobs import (clear_registry, NEEDS_YOU, WAITING, DONE_ACCEPTED, FAILED_S,
                           PAUSED, CANCELLED, QUEUED, RECONCILING,
                           RECOVERY_REQUIRED)  # noqa: E402
 from harness.missionweb import MissionService  # noqa: E402
@@ -430,6 +430,49 @@ def test_reconcile_waits_for_old_execution_latch():
     svc.close()
 
 
+def test_failed_retry_retires_only_stale_reversible_execution():
+    print("test_failed_retry_retires_only_stale_reversible_execution")
+    svc = _svc([])
+    st = svc.start("recover a failed browser preparation", autonomous=True); mid = st["mission_id"]
+    with svc.store._lock:
+        svc.store.db.execute("UPDATE missions SET state=?,run_token='',lease_until=0 WHERE mission_id=?",
+                             (FAILED_S, mid))
+        svc.store.db.commit()
+    old = svc.actions.propose("browse", {"goal": "inspect"}, risk="read", job_id=mid)
+    svc.actions.confirm(old)
+    with svc.actions._lock:
+        svc.actions.db.execute(
+            "UPDATE pending_actions SET state='executing',attempted_at=? WHERE nonce=?",
+            (1, old))
+        svc.actions.db.commit()
+    retried = svc.retry(mid, "independent inspection proved no final submit fired")
+    receipt = svc.actions.receipts(old)
+    check(not retried.get("error") and retried.get("mission_id") != mid,
+          "a stale reversible latch no longer dead-ends an ordinary failed-Mission retry")
+    check(svc.actions.get(old).state == "executed" and receipt and
+          receipt[-1]["verdict"] == "inconclusive" and receipt[-1]["fired"],
+          "retiring the stale latch leaves an honest inconclusive fired receipt")
+
+    blocked_mid = svc.start("never retire an uncertain publish", autonomous=True)["mission_id"]
+    with svc.store._lock:
+        svc.store.db.execute("UPDATE missions SET state=?,run_token='',lease_until=0 WHERE mission_id=?",
+                             (FAILED_S, blocked_mid))
+        svc.store.db.commit()
+    dangerous = svc.actions.propose(
+        "browse.submit", {"button": "Post"}, risk="publish", job_id=blocked_mid)
+    svc.actions.confirm(dangerous)
+    with svc.actions._lock:
+        svc.actions.db.execute(
+            "UPDATE pending_actions SET state='executing',attempted_at=? WHERE nonce=?",
+            (1, dangerous))
+        svc.actions.db.commit()
+    blocked = svc.retry(blocked_mid, "do not guess")
+    check("outcome is uncertain" in blocked.get("error", "") and
+          svc.actions.get(dangerous).state == "executing",
+          "a stale consequential latch still blocks retry and remains untouched")
+    svc.close()
+
+
 def main():
     test_start_gate_confirm_handoff()
     test_bad_confirm_is_soft_error()
@@ -449,6 +492,7 @@ def main():
     test_reconcile_releases_a_previously_refused_materialized_key()
     test_status_never_releases_an_executed_action_key()
     test_reconcile_waits_for_old_execution_latch()
+    test_failed_retry_retires_only_stale_reversible_execution()
     if _fails:
         print(f"\n{len(_fails)} FAILED")
         sys.exit(1)

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.21.19 — Recover stale reversible action latches
+
+- **A timed-out reversible child cannot permanently prevent Mission retry.** A failed Mission with
+  no live run or resource lease may retire an old research/compose/browse/observe/code execution
+  latch after its watchdog window and create a durable inconclusive receipt.
+- **Consequential uncertainty is never auto-cleared.** Publish, send, commerce, destructive, and
+  other irreversible execution latches still block retry until explicitly inspected and reconciled.
+
 ## v0.21.18 — Trusted exact-ref final clicks
 
 - **Sites that reject synthetic events can now accept gated final actions.** `browse.submit` uses a

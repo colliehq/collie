@@ -371,9 +371,26 @@ class MissionService:
             return {"error": "unknown mission", "mission_id": mid}
         if m.state != FAILED_S:
             return {**self.status(mid), "error": f"cannot retry from {m.state}"}
+        active_resources = self.store.active_resources(mid)
         live_actions = [r for r in self.actions.list()
                         if r.get("job_id") == mid and r.get("state") == EXECUTING]
-        if live_actions or self.store.active_resources(mid):
+        # A timed-out reversible child can outlive the process that owned its ActionStore latch.
+        # Once the Mission is terminal, has no run token/resource lease, and the latch is older than
+        # the action watchdog, retire only the explicitly safe capability set. Consequential actions
+        # remain outcome-uncertain forever until inspected through the recovery path.
+        if live_actions and not m.run_token and not active_resources:
+            min_age = max(60, int((m.leash or {}).get("max_step_seconds", 600)))
+            for row in live_actions:
+                nonce = str(row.get("nonce") or "")
+                if self.actions.retire_stale_reversible(
+                        nonce, min_age_s=min_age,
+                        reason="stale reversible execution retired before failed-Mission retry"):
+                    self.store.record_event(
+                        mid, "watchdog", "stale_reversible_retired", nonce=nonce,
+                        payload={"capability": row.get("capability"), "min_age_seconds": min_age})
+            live_actions = [r for r in self.actions.list()
+                            if r.get("job_id") == mid and r.get("state") == EXECUTING]
+        if live_actions or active_resources:
             return {**self.status(mid),
                     "error": "cannot retry while predecessor action outcome is uncertain"}
 
