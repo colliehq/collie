@@ -176,6 +176,14 @@ def test_installer_upgrade_cleanup_is_targeted_to_owned_runtime_packages():
     assert "if CurStep = ssDone" in iss
     assert "InstallCommitted := True" in iss
 
+    # A silent upgrade has no language-page choice and must not touch the user's settings file.
+    # Only first install seeds LANG; upgrades preserve provider/model and all other preferences.
+    run_section = iss.split("[Run]", 1)[1].split("[UninstallRun]", 1)[0]
+    language_entry = run_section.split('Parameters: "{code:AppLangParam}"', 1)[1].split("\n\n", 1)[0]
+    assert "Check: ShouldApplyAppLanguage" in language_entry
+    assert "function ShouldApplyAppLanguage: Boolean" in iss
+    assert "Result := not UpgradeBackupActive" in iss
+
 
 def test_payload_build_fails_closed_and_verifies_code_metadata_and_assets():
     script = (ROOT / "installer" / "build_payload.ps1").read_text(encoding="utf-8")

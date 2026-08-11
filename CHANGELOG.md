@@ -7,6 +7,10 @@
   page identity instead of demanding form fields. Empty-form fill operations remain inconclusive,
   so the new path cannot weaken draft or submission verification.
 
+- **Silent upgrades no longer rewrite user settings.** The installer seeds the selected language on
+  first install only; upgrades retain the existing language, provider, model and every other saved
+  preference without running a settings write.
+
 ## v0.21.2 — Mission composition that produces the deliverable
 
 - **Compose requests and final copy now have distinct fields.** Mission planning puts writing

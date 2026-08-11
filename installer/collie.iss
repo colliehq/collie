@@ -178,10 +178,11 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; \
   StatusMsg: "{cm:StatusWebView2}"; Flags: waituntilterminated
 
-; 2) carry the chosen language into the app, so the first launch is already localized.
-;    {code:AppLangParam} expands to `config LANG <code>` (or a harmless no-op when it's "auto").
+; 2) carry the chosen language into a FIRST install, so its first launch is localized. An upgrade
+;    must not write settings.json at all: the existing language and every provider/model choice are
+;    user state, and a silent upgrade has no language-page decision to apply.
 Filename: "{#PyW}"; Parameters: "{code:AppLangParam}"; WorkingDir: "{app}\python"; \
-  StatusMsg: "{cm:StatusLang}"; Flags: runhidden waituntilterminated
+  StatusMsg: "{cm:StatusLang}"; Flags: runhidden waituntilterminated; Check: ShouldApplyAppLanguage
 
 ; 3) optional wallpaper. Browser bridge logon/recovery is owned by the supervisor below.
 Filename: "{#PyW}"; Parameters: "-m harness.cli wallpaper --install"; WorkingDir: "{app}\python"; \
@@ -710,4 +711,11 @@ begin
     Result := '-m harness.cli config'
   else
     Result := '-m harness.cli config LANG ' + c;
+end;
+
+function ShouldApplyAppLanguage: Boolean;
+begin
+  { PrepareToInstall sets this before [Files] for every upgrade/recovery path and it stays set
+    through all non-postinstall [Run] entries. First installs have no runtime backup. }
+  Result := not UpgradeBackupActive;
 end;
