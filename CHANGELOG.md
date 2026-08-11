@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.21.23 — Continue across branch waits and remember completed work
+
+- **A timer can pause one workstream without pausing the Mission.** A named follow-up is recorded
+  durably while Collie continues independent work. Repeating the same timer immediately proves
+  that no other branch is ready and sleeps the Mission until the earliest scheduled check.
+- **Due work returns as an explicit planner obligation.** A fired timer surfaces the exact branch
+  in Mission context, and only a result explicitly bound to that branch can resolve it. Provider
+  backoff, browser-resource contention, and legacy whole-Mission waits remain blocking.
+- **The audit trail is now a working activity ledger.** Verified, failed, uncertain, authorization,
+  and scheduled outcomes are condensed from append-only events and placed in every model turn.
+  Completed consequential actions also produce a durable do-not-repeat list backed by the existing
+  semantic idempotency fence.
+- **Mission cards show recent activity directly.** Operators can see human-readable outcomes,
+  timestamps, uncertainty, scheduled checks, and repeat-protected external actions without opening
+  raw case state or reconstructing work from receipts.
+- **Large Mission context stays valid JSON.** Total-envelope compaction now shrinks the largest
+  fields while retaining recovery-critical field names instead of byte-slicing the serialized case.
+
 ## v0.21.22 — Keep Missions moving across authorization waits
 
 - **Missing authorization is branch-scoped.** Collie records a structured Needs You request and

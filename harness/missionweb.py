@@ -57,17 +57,23 @@ def _short(value, limit=500):
     return value[:limit]
 
 
-def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait):
+def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activity=None):
     """Build a bounded, deterministic operator view without another model call."""
     case = mission.case or {}
     pending_auth = [x for x in case.get("pending_authorizations", [])
                     if isinstance(x, dict)][-8:]
     completed = []
+    for item in (activity or []):
+        if item.get("status") == "completed":
+            label = _short(item.get("summary") or item.get("capability"), 160)
+            if label and label not in completed:
+                completed.append(label)
     failed = 0
     for step in steps:
         verdict = str(step.get("verdict") or "").lower()
         name = _short(step.get("name"), 100)
-        if verdict in ("verified", "standing-authorized") and name and name not in completed:
+        if (not activity and verdict in ("verified", "standing-authorized") and
+                name and name not in completed):
             completed.append(name)
         if verdict in ("failed", "inconclusive"):
             failed += 1
@@ -971,6 +977,7 @@ class MissionService:
                         self.store.complete_action_key(mid, nonce, EXECUTED)
         next_wait = self.store.next_wait(mid)
         runtime = self.store.runtime(mid)
+        activity = self.store.activity_ledger(mid, 24)
         checkpoint = self.store.latest_checkpoint(mid)
         run_tree = None
         if self._run_tree and m.case.get("_run_id"):
@@ -1017,8 +1024,10 @@ class MissionService:
             "mission_id": mid, "goal": m.goal, "state": m.state, "result": m.result,
             "created_at": m.created_at, "updated_at": m.updated_at,
             "case": _clean(m.case),
-            "summary": _mission_summary(m, steps, receipts, runtime, inbox, next_wait),
+            "summary": _mission_summary(
+                m, steps, receipts, runtime, inbox, next_wait, activity),
             "steps": steps,
+            "activity": activity,
             "recent_events": self.store.events(mid, 20),
             "inbox": inbox,                       # non-null -> render a Confirm button
             "needs_human": (m.state == NEEDS_YOU and inbox is None and

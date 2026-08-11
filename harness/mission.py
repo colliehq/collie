@@ -139,6 +139,30 @@ def _authorization_request(args, reason="") -> dict:
             "blocking": bool(args.get("blocking")), "requested_at": int(time.time())}
 
 
+def _followup_request(args, reason="", now=None) -> dict:
+    """Normalize an explicitly branch-scoped wait into durable case state."""
+    args = dict(args or {})
+    branch = str(args.get("branch") or args.get("key") or "").strip()
+    if not branch:
+        return {}
+    branch = re.sub(r"\s+", " ", branch)[:180]
+    try:
+        seconds = max(1, min(int(args.get("seconds", 3600)), 31536000))
+    except (TypeError, ValueError):
+        seconds = 3600
+    now = int(time.time() if now is None else now)
+    stable = hashlib.sha256(branch.lower().encode("utf-8")).hexdigest()[:20]
+    return {
+        "id": "followup_%s" % stable,
+        "branch": branch,
+        "summary": str(args.get("summary") or reason or branch).strip()[:500],
+        "seconds": seconds,
+        "due_at": now + seconds,
+        "scheduled_at": now,
+        "status": "scheduled",
+    }
+
+
 def _standing_authorizes(request, authority) -> tuple[bool, str]:
     """Resolve only a deterministic match to an explicit standing fact.
 
@@ -259,6 +283,7 @@ def _compact_case_storage(case, max_chars=64000):
     priority_names = {
         "_mission_summary", "_recent_results", "human_updates", "browse_sites", "signal",
         "pending_authorizations", "resolved_authorizations",
+        "pending_followups", "_due_followups", "resolved_followups",
         "observe_count", "submitted", "published", "sent", "url", "draft",
         "code_verified", "coded", "last_sent_to", "_isolated_workspace",
         "_workspace", "_run_id", "_specialist_run_id", "_parent_mission_id",
@@ -295,8 +320,10 @@ def _model_case_json(case, limit=12000):
     """
     case = dict(case or {})
     priority = ("_authority", "_standing_authority", "_mission_summary", "human_updates",
-                "pending_authorizations", "resolved_authorizations", "browse_sites",
-                "_recent_results", "_recent_events", "_checkpoint")
+                "pending_authorizations", "resolved_authorizations",
+                "pending_followups", "_due_followups", "_activity_ledger",
+                "_do_not_repeat", "browse_sites", "_recent_results",
+                "_recent_events", "_checkpoint")
     ordered = {key: case[key] for key in priority if key in case}
     ordered.update({key: value for key, value in case.items() if key not in ordered})
     raw = json.dumps(ordered, ensure_ascii=False, default=str)
@@ -305,18 +332,22 @@ def _model_case_json(case, limit=12000):
         return raw
     # Preserve every priority field in bounded form, then spend the remainder on
     # older context.  The explicit marker prevents the model treating it as full.
-    budgets = {"_authority": 1200, "_standing_authority": 1200,
-               "_mission_summary": 1000, "human_updates": 900,
-               "pending_authorizations": 1400, "resolved_authorizations": 900,
-               "browse_sites": 3500, "_recent_results": 2200,
-               "_recent_events": 1500, "_checkpoint": 400}
+    budgets = {"_authority": 1000, "_standing_authority": 1000,
+               "_mission_summary": 900, "human_updates": 700,
+               "pending_authorizations": 1000, "resolved_authorizations": 600,
+               "pending_followups": 1000, "_due_followups": 800,
+               "_activity_ledger": 2200, "_do_not_repeat": 900,
+               "browse_sites": 1900, "_recent_results": 1200,
+               "_recent_events": 900, "_checkpoint": 300}
     head = {}
     for key in priority:
         if key not in ordered:
             continue
         if key == "browse_sites":
             head[key] = _bounded_mapping_values(ordered[key], budgets[key])
-        elif key in ("human_updates", "_recent_results", "_recent_events"):
+        elif key in ("human_updates", "pending_followups", "_due_followups",
+                     "_activity_ledger", "_do_not_repeat", "_recent_results",
+                     "_recent_events"):
             head[key] = _bounded_sequence_tail(ordered[key], budgets[key])
         else:
             head[key] = _bounded_json(ordered[key], budgets[key])
@@ -330,7 +361,36 @@ def _model_case_json(case, limit=12000):
         if len(encoded) > limit:
             break
         head[key] = value
-    return json.dumps(head, ensure_ascii=False, default=str)[:limit]
+    encoded = json.dumps(head, ensure_ascii=False, default=str)
+    # Never hand the planner byte-sliced JSON.  With several recovery-critical
+    # fields present at once, independent per-field budgets can exceed the total
+    # envelope. Repeatedly shrink the largest value while retaining every field
+    # name; the final context is both bounded and syntactically valid.
+    for _ in range(80):
+        if len(encoded) <= limit:
+            return encoded
+        candidates = [(len(json.dumps(value, ensure_ascii=False, default=str)), key)
+                      for key, value in head.items() if key != "_context_truncated"]
+        if not candidates:
+            break
+        size, key = max(candidates)
+        value = head[key]
+        if isinstance(value, list) and len(value) > 1:
+            head[key] = value[-max(1, len(value) // 2):]
+        else:
+            head[key] = _bounded_json(value, max(64, int(size * .55)))
+        newer = json.dumps(head, ensure_ascii=False, default=str)
+        if len(newer) >= len(encoded):
+            head[key] = {"truncated": True}
+            newer = json.dumps(head, ensure_ascii=False, default=str)
+        encoded = newer
+    if len(encoded) <= limit:
+        return encoded
+    # The minimum envelope is far below the enforced 1,000-character floor, but
+    # retain a valid fail-closed fallback if a future field name changes that.
+    return json.dumps({"_context_truncated": True,
+                       "_mission_summary": "working context exceeded its safe envelope"},
+                      ensure_ascii=False)
 
 
 @dataclass
@@ -1418,7 +1478,7 @@ class MissionStore:
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
             r = self.db.execute(
-                "SELECT w.wait_id,w.mission_id FROM mission_waits w "
+                "SELECT w.wait_id,w.mission_id,w.fire_at FROM mission_waits w "
                 "JOIN missions m ON m.mission_id=w.mission_id WHERE "
                 + " AND ".join(where) + " ORDER BY w.fire_at LIMIT 1", args).fetchone()
             if not r:
@@ -1440,7 +1500,8 @@ class MissionStore:
                 "WHERE mission_id=?", (now, now, now, now, r["mission_id"]))
             self.db.commit()
         self.record_checkpoint(r["mission_id"], token, "claimed",
-                               {"wake_wait_id": r["wait_id"]})
+                               {"wake_wait_id": r["wait_id"],
+                                "wake_fire_at": r["fire_at"]})
         return r["mission_id"], token
 
     def record_event(self, mission_id, kind, name="", nonce="", payload=None):
@@ -1461,6 +1522,80 @@ class MissionStore:
         return [{"kind": r["kind"], "name": r["name"], "nonce": r["nonce"],
                  "payload": _jl(r["payload_json"]), "at": r["at"]}
                 for r in reversed(rows)]
+
+    def do_not_repeat(self, mission_id, limit=20):
+        """Describe consequential actions protected by durable semantic keys.
+
+        The model never needs the opaque hash itself.  It needs the durable fact
+        that a concrete external action was already attempted/completed and must
+        not be synthesized again under a fresh wording or browser element ref.
+        """
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT k.nonce,k.state,k.at,s.name,s.verdict FROM mission_action_keys k "
+                "LEFT JOIN mission_steps s ON s.mission_id=k.mission_id AND "
+                "s.nonce=k.nonce WHERE k.mission_id=? AND k.state NOT IN "
+                "('reserved','materialized') ORDER BY k.at DESC LIMIT ?",
+                (mission_id, int(limit))).fetchall()
+        return [{"capability": str(r["name"] or "external action")[:120],
+                 "status": str(r["verdict"] or r["state"] or "attempted")[:80],
+                 "at": int(r["at"] or 0),
+                 "instruction": "Do not repeat this external action."}
+                for r in reversed(rows)]
+
+    def activity_ledger(self, mission_id, limit=24):
+        """Return a compact human/model-readable view of the append-only audit log."""
+        protected = set()
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT nonce FROM mission_action_keys WHERE mission_id=? AND "
+                "state NOT IN ('reserved','materialized')", (mission_id,)).fetchall()
+            protected = {str(r["nonce"] or "") for r in rows if r["nonce"]}
+
+        entries = []
+        for event in self.events(mission_id, 240):
+            kind, name = str(event.get("kind") or ""), str(event.get("name") or "")
+            payload = event.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {}
+            status, summary = "", ""
+            if kind == "result":
+                verdict = str(payload.get("verdict") or "").lower()
+                status = {VERIFIED: "completed", FAILED: "failed",
+                          INCONCLUSIVE: "uncertain"}.get(verdict, verdict or "recorded")
+                summary = str(payload.get("reason") or "%s %s" % (name, status))
+            elif kind == "goal_verification":
+                verdict = str(payload.get("verdict") or "").lower()
+                status = {VERIFIED: "completed", FAILED: "failed",
+                          INCONCLUSIVE: "uncertain"}.get(verdict, verdict or "recorded")
+                summary = str(payload.get("reason") or "Mission completion checked")
+            elif kind == "authorization":
+                status = "completed" if name == "standing_resolved" else "authorization_waiting"
+                summary = str(payload.get("summary") or payload.get("reason") or
+                              payload.get("claim") or "Authorization recorded")
+            elif kind == "followup":
+                status = ("scheduled" if name == "scheduled" else
+                          str(payload.get("verdict") or "checked"))
+                summary = str(payload.get("summary") or payload.get("reason") or
+                              "Follow-up %s" % name)
+            elif kind == "control" and name == WAIT:
+                status = "scheduled"
+                summary = str(payload.get("reason") or "Mission wake scheduled")
+            elif kind == "control" and name in (NEEDS_HUMAN, "invalid"):
+                status = "waiting_input" if name == NEEDS_HUMAN else "failed"
+                summary = str(payload.get("summary") or payload.get("reason") or name)
+            elif kind in ("watchdog", "gate"):
+                status = "failed" if kind == "gate" else "uncertain"
+                summary = str(payload.get("reason") or payload.get("error") or name)
+            if not status:
+                continue
+            entry = {"at": int(event.get("at") or 0), "kind": kind,
+                     "capability": name[:120], "status": status[:80],
+                     "summary": " ".join(summary.split())[:500]}
+            if event.get("nonce") in protected:
+                entry["do_not_repeat"] = True
+            entries.append(entry)
+        return entries[-max(1, int(limit)):]
 
     def reserve_action(self, mission_id, action_key, irreversible, leash, name,
                        payload, run_token):
@@ -2028,6 +2163,152 @@ class MissionDriver:
             mission = self.store.get(mission_id)
         return mission, authority
 
+    def _refresh_followups(self, mission_id, token, mission):
+        """Promote elapsed branch timers into explicit due work for the planner."""
+        case = dict((mission or self.store.get(mission_id)).case)
+        pending = [dict(x) for x in (case.get("pending_followups") or [])
+                   if isinstance(x, dict)]
+        due = [dict(x) for x in (case.get("_due_followups") or [])
+               if isinstance(x, dict)]
+        now, keep, changed = int(time.time()), [], False
+        checkpoint = self.store.latest_checkpoint(mission_id)
+        woke_from_timer = bool(
+            checkpoint and checkpoint.get("phase") == "claimed" and
+            (checkpoint.get("payload") or {}).get("wake_wait_id"))
+        forced_due_id = ""
+        if woke_from_timer and pending:
+            forced_due_id = str(min(
+                pending, key=lambda x: int(x.get("due_at") or 0)).get("id") or "")
+        known_due = {str(x.get("id") or "") for x in due}
+        for item in pending:
+            if (int(item.get("due_at") or 0) > now and
+                    str(item.get("id") or "") != forced_due_id):
+                keep.append(item)
+                continue
+            item["status"] = "due"
+            item["surfaced_at"] = now
+            if str(item.get("id") or "") not in known_due:
+                due.append(item)
+                known_due.add(str(item.get("id") or ""))
+            changed = True
+            self.store.record_event(
+                mission_id, "followup", "due", str(item.get("id") or ""),
+                {"branch": item.get("branch"), "summary": item.get("summary"),
+                 "due_at": item.get("due_at")})
+        if not changed:
+            return mission
+        case["pending_followups"] = keep[-20:]
+        case["_due_followups"] = due[-20:]
+        if not self.store.set_case_owned(mission_id, token, case):
+            return None
+        return self.store.get(mission_id)
+
+    def _consume_due_followup(self, mission_id, token, capability, verdict, args=None):
+        """Resolve only the due branch explicitly bound to this completed check."""
+        current = self.store.get(mission_id)
+        if not current:
+            return False
+        case = dict(current.case)
+        due = [dict(x) for x in (case.get("_due_followups") or [])
+               if isinstance(x, dict)]
+        if not due:
+            return True
+        binding = str((args or {}).get("followup_branch") or
+                      (args or {}).get("followup_id") or "").strip().lower()
+        index = next((i for i, x in enumerate(due)
+                      if binding and binding in
+                      (str(x.get("branch") or "").strip().lower(),
+                       str(x.get("id") or "").strip().lower())), None)
+        if index is None:
+            return True
+        item = due.pop(index)
+        item.update({"status": "checked", "checked_at": int(time.time()),
+                     "capability": str(capability or "")[:120],
+                     "verdict": str(verdict or "")[:80]})
+        resolved = list(case.get("resolved_followups") or [])
+        resolved.append(item)
+        case["_due_followups"] = due[-20:]
+        case["resolved_followups"] = resolved[-20:]
+        if not self.store.set_case_owned(mission_id, token, case):
+            return False
+        self.store.record_event(
+            mission_id, "followup", "checked", str(item.get("id") or ""),
+            {"branch": item.get("branch"), "summary": item.get("summary"),
+             "capability": capability, "verdict": verdict})
+        return True
+
+    def _handle_wait(self, mission_id, token, mission, args, reason):
+        """Schedule one branch without pausing unrelated work.
+
+        Legacy/unscoped waits, provider backoff, and explicit blocking waits retain
+        whole-Mission semantics.  A named branch is deferred once; if the planner
+        immediately repeats it, that is deterministic evidence that no independent
+        work is currently available and the Mission sleeps until the earliest timer.
+        """
+        args = dict(args or {})
+        try:
+            secs = max(1, min(int(args.get("seconds", 3600)), 31536000))
+        except (TypeError, ValueError):
+            secs = 3600
+        request = _followup_request(args, reason)
+        if not request or args.get("blocking") or args.get("transient"):
+            self.store.schedule_wait(mission_id, int(time.time()) + secs)
+            self.store.record_event(
+                mission_id, "control", WAIT,
+                payload={"seconds": secs, "reason": reason,
+                         "blocking": bool(args.get("blocking")),
+                         "transient": bool(args.get("transient"))})
+            return self._finish(mission_id, token, WAITING,
+                                reason or "waiting %ss" % secs)
+
+        case = dict(mission.case)
+        pending = [dict(x) for x in (case.get("pending_followups") or [])
+                   if isinstance(x, dict)]
+        due = [dict(x) for x in (case.get("_due_followups") or [])
+               if isinstance(x, dict)]
+        previous = next((x for x in pending if x.get("id") == request["id"]), None)
+        recent = [e for e in self.store.events(mission_id, 8)
+                  if e.get("kind") != "decision"]
+        last = recent[-1] if recent else {}
+        immediate_repeat = bool(
+            previous and last.get("kind") == "followup" and
+            last.get("name") == "scheduled" and
+            last.get("nonce") == request["id"])
+
+        if previous:
+            request["scheduled_at"] = int(previous.get("scheduled_at") or
+                                          request["scheduled_at"])
+            request["attempts"] = int(previous.get("attempts") or 1) + 1
+            if immediate_repeat:
+                request["due_at"] = int(previous.get("due_at") or request["due_at"])
+            pending = [request if x.get("id") == request["id"] else x for x in pending]
+        else:
+            request["attempts"] = 1
+            pending.append(request)
+        due = [x for x in due if x.get("id") != request["id"]]
+        case["pending_followups"] = pending[-20:]
+        case["_due_followups"] = due[-20:]
+        if not self.store.set_case_owned(mission_id, token, case):
+            return self._lost_state(mission_id, token)
+        self.store.record_step(mission_id, WAIT, request["id"], "scheduled")
+        self.store.record_event(
+            mission_id, "followup", "scheduled", request["id"],
+            {"branch": request["branch"], "summary": request["summary"],
+             "seconds": request["seconds"], "due_at": request["due_at"],
+             "attempts": request["attempts"]})
+
+        if not immediate_repeat:
+            return "_continue"
+        wake_at = min(int(x.get("due_at") or time.time() + 60) for x in pending)
+        self.store.schedule_wait(mission_id, wake_at)
+        self.store.record_event(
+            mission_id, "control", WAIT,
+            payload={"seconds": max(0, wake_at - int(time.time())),
+                     "reason": reason or request["summary"],
+                     "branches": len(pending)})
+        return self._finish(mission_id, token, WAITING,
+                            reason or request["summary"])
+
     def _handle_authorization(self, mission_id, token, mission, args, reason):
         """Resolve or defer one authorization request at branch scope.
 
@@ -2271,6 +2552,9 @@ class MissionDriver:
                 m, standing = self._refresh_authorizations(mission_id, token, m)
                 if m is None:
                     return self._lost_state(mission_id, token)
+                m = self._refresh_followups(mission_id, token, m)
+                if m is None:
+                    return self._lost_state(mission_id, token)
                 exhausted = self.store.budget_reason(mission_id)
                 if exhausted:
                     return self._finish(mission_id, token, NEEDS_YOU, exhausted)
@@ -2280,6 +2564,10 @@ class MissionDriver:
                 model_case = dict(m.case)
                 model_case["_authority"] = m.leash
                 model_case["_standing_authority"] = standing
+                model_case["_activity_ledger"] = self.store.activity_ledger(
+                    mission_id, 24)
+                model_case["_do_not_repeat"] = self.store.do_not_repeat(
+                    mission_id, 20)
                 model_case["_recent_events"] = self.store.events(mission_id, 20)
                 checkpoint = self.store.latest_checkpoint(mission_id)
                 if checkpoint:
@@ -2363,6 +2651,29 @@ class MissionDriver:
                             mission_id, token, NEEDS_YOU,
                             "%d authorization request(s) remain; next: %s" %
                             (len(pending_auth), summary))
+                    pending_followups = [
+                        x for x in (m.case.get("pending_followups") or [])
+                        if isinstance(x, dict)]
+                    if pending_followups:
+                        wake_at = min(int(x.get("due_at") or time.time() + 60)
+                                      for x in pending_followups)
+                        self.store.schedule_wait(mission_id, wake_at)
+                        self.store.record_event(
+                            mission_id, "control", WAIT,
+                            payload={"reason": "scheduled follow-ups remain",
+                                     "seconds": max(0, wake_at - int(time.time())),
+                                     "branches": len(pending_followups)})
+                        return self._finish(
+                            mission_id, token, WAITING,
+                            "%d scheduled follow-up(s) remain" % len(pending_followups))
+                    due_followups = [
+                        x for x in (m.case.get("_due_followups") or [])
+                        if isinstance(x, dict)]
+                    if due_followups:
+                        return self._finish(
+                            mission_id, token, NEEDS_YOU,
+                            "driver reported done before checking %d due follow-up(s)" %
+                            len(due_followups))
                     self.store.record_step(mission_id, DONE, "", "reported")
                     self.store.record_event(mission_id, "control", DONE,
                                             payload={"reason": reason})
@@ -2426,16 +2737,10 @@ class MissionDriver:
                         continue
                     return routed
                 if action == WAIT:
-                    try:
-                        secs = max(1, min(int(args.get("seconds", 3600)), 31536000))
-                    except (TypeError, ValueError):
-                        secs = 3600
-                    self.store.schedule_wait(mission_id, int(time.time()) + secs)
-                    self.store.record_event(mission_id, "control", WAIT,
-                                            payload={"seconds": secs, "reason": reason,
-                                                     "transient": bool(args.get("transient"))})
-                    return self._finish(mission_id, token, WAITING,
-                                        reason or f"waiting {secs}s")
+                    routed = self._handle_wait(mission_id, token, m, args, reason)
+                    if routed == "_continue":
+                        continue
+                    return routed
 
                 cap = self._capability(action)
                 if not cap:
@@ -2658,10 +2963,16 @@ class MissionDriver:
                 if verdict.status == VERIFIED:
                     if not self._fold(m, cap.name, result, token=token):
                         return self._lost_state(mission_id, token)
+                    if not self._consume_due_followup(
+                            mission_id, token, cap.name, verdict.status, args):
+                        return self._lost_state(mission_id, token)
                     self.store.record_checkpoint(
                         mission_id, token, "folded",
                         {"capability": cap.name, "nonce": nonce},
                         case=self.store.get(mission_id).case)
+                elif not self._consume_due_followup(
+                        mission_id, token, cap.name, verdict.status, args):
+                    return self._lost_state(mission_id, token)
                 # PAUSING may commit the completed result above, but must settle
                 # before any verdict routing or next model/action boundary.
                 if not self.store.owns_run(mission_id, token):
@@ -2771,6 +3082,7 @@ class MissionDriver:
         if controlled:
             return controlled
         m = self.store.get(mission_id)
+        rec = self.actions.get(nonce)
         step_timeout = max(0.05, float(m.leash.get("max_step_seconds", 600)))
         self.store.record_checkpoint(
             mission_id, token, "executing",
@@ -2826,9 +3138,17 @@ class MissionDriver:
         if verdict.status == VERIFIED:
             if not self._fold(m, name, result, token=token):
                 return self._lost_state(mission_id, token)
+            if not self._consume_due_followup(
+                    mission_id, token, name, verdict.status,
+                    rec.args if rec else {}):
+                return self._lost_state(mission_id, token)
             self.store.record_checkpoint(
                 mission_id, token, "folded", {"capability": name, "nonce": nonce},
                 case=self.store.get(mission_id).case)
+        elif not self._consume_due_followup(
+                mission_id, token, name, verdict.status,
+                rec.args if rec else {}):
+            return self._lost_state(mission_id, token)
         if not self.store.owns_run(mission_id, token):
             return self._lost_state(mission_id, token)
         if verdict.status == FAILED:
@@ -3027,8 +3347,14 @@ _SYS = (
     "SINGLE next action. Reply with STRICT JSON and nothing else:\n"
     '{"action": <a primitive name | "wait" | "needs_authorization" | "needs_human" | "done">, '
     '"args": {..}, "reason": "<one short clause>"}\n'
-    "Rules: use only a listed primitive; pick 'wait' with args.seconds to poll or "
-    "let time pass; use 'needs_authorization' for a missing permission/fact with "
+    "Rules: use only a listed primitive. To let only one workstream wait, pick 'wait' "
+    "with args.seconds plus a stable args.branch name; Collie schedules that branch and "
+    "continues other independent work. Immediately repeat that same wait only when no "
+    "independent work remains. Set args.blocking=true only for a whole-Mission wait. "
+    "When CASE contains _due_followups, perform the oldest due check before unrelated "
+    "work and copy its branch exactly into that action's args.followup_branch; do not "
+    "report done until it has been checked. Use 'needs_authorization' for "
+    "a missing permission/fact with "
     "args.summary, args.kind, args.risk (low/medium/high/critical), optional args.claim, "
     "args.domain and args.operation. It is branch-scoped: default args.blocking=false so "
     "the request enters Needs You while you continue independent work; set blocking=true "
@@ -3061,7 +3387,7 @@ _SYS = (
     "copy. Never put an instruction such as 'write/create/draft a post' in args.text.\n"
     "Use credentials, email/phone identities, signed-in sessions, and verification-code inboxes "
     "that the user has already connected and authorized; routine signup fields, OTP retrieval, "
-    "Next buttons, and authorized publish/send actions are ordinary work inside the leash. Never "
+    "Next buttons, and authorized publish/send actions are ordinary work inside the leash. "
     "A phone explicitly connected as Collie's assigned work line may be used for messages, calls, "
     "voicemail, and routine provider settings within the Mission goal and Leash; releasing or "
     "transferring the number, purchases, and Google-account security changes require new authority. "

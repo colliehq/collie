@@ -1137,6 +1137,19 @@
                     letter-spacing: .04em; }
   .msummary-value { min-width: 0; overflow-wrap: anywhere; }
   .msummary-row.blocked .msummary-value { color: #d99532; }
+  .mactivity { display: grid; gap: 6px; padding: 2px 1px; }
+  .mactivity-title { color: var(--faint); font-size: 11px; text-transform: uppercase;
+                     letter-spacing: .04em; }
+  .mactivity-item { display: grid; grid-template-columns: 9px minmax(0,1fr) auto;
+                    gap: 8px; align-items: baseline; font-size: 12.5px; line-height: 1.4; }
+  .mactivity-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .mactivity-item.completed .mactivity-dot { background: var(--meadow); }
+  .mactivity-item.scheduled .mactivity-dot { background: #4a90d9; }
+  .mactivity-item.uncertain .mactivity-dot,
+  .mactivity-item.authorization_waiting .mactivity-dot { background: #e8a33d; }
+  .mactivity-item.failed .mactivity-dot { background: var(--coral); }
+  .mactivity-text { min-width: 0; overflow-wrap: anywhere; }
+  .mactivity-meta { color: var(--faint); font-size: 11px; white-space: nowrap; }
   .mauth { padding: 9px 10px; border: 1px solid color-mix(in srgb,#e8a33d 52%,var(--line));
            border-radius: 9px; background: color-mix(in srgb,#e8a33d 10%,transparent);
            font-size: 12.5px; line-height: 1.45; }
@@ -2109,7 +2122,10 @@
     "End mission & take over": "结束任务并由我接管", "Return to Collie": "交还给 Collie",
     "This ends the Mission without independent verification. Take over permanently?": "这会在没有独立验证的情况下结束整个任务。确定永久接管吗？",
     "Completed by user acceptance; no independent verification was recorded.": "任务由用户接管而结束，没有记录独立验证。",
-    "Recorded receipts": "已记录回执",
+    "Recorded receipts": "已记录回执", "Activity log": "活动日志",
+    "completed": "已完成", "scheduled": "已安排", "uncertain": "结果待确认",
+    "authorization_waiting": "等待授权", "waiting_input": "等待输入",
+    "checked": "已复查", "recorded": "已记录", "protected from repeat": "已防止重复执行",
     "Collie-assigned line": "分配给 Collie 的工作号码", "Open Google Voice Messages in Chrome, then connect.": "请先在 Chrome 打开 Google Voice 消息页，然后连接。",
     "Messages, calls, voicemail, verification codes, and routine Voice operation. Number transfer, purchases, and Google account security remain separate.": "可用于短信、电话、语音信箱、验证码和日常 Voice 操作；号码转移、购买服务和 Google 账户安全仍需单独授权。",
     "Disconnect": "断开", "Connect open Voice tab": "连接已打开的 Voice 页面",
@@ -2275,7 +2291,10 @@
     "End mission & take over": "結束任務並由我接管", "Return to Collie": "交還給 Collie",
     "This ends the Mission without independent verification. Take over permanently?": "這會在沒有獨立驗證的情況下結束整個任務。確定永久接管嗎？",
     "Completed by user acceptance; no independent verification was recorded.": "任務由使用者接管而結束，沒有記錄獨立驗證。",
-    "Recorded receipts": "已記錄回執",
+    "Recorded receipts": "已記錄回執", "Activity log": "活動日誌",
+    "completed": "已完成", "scheduled": "已安排", "uncertain": "結果待確認",
+    "authorization_waiting": "等待授權", "waiting_input": "等待輸入",
+    "checked": "已複查", "recorded": "已記錄", "protected from repeat": "已防止重複執行",
     "Collie-assigned line": "分配給 Collie 的工作號碼", "Open Google Voice Messages in Chrome, then connect.": "請先在 Chrome 開啟 Google Voice 訊息頁，再進行連線。",
     "Messages, calls, voicemail, verification codes, and routine Voice operation. Number transfer, purchases, and Google account security remain separate.": "可用於簡訊、電話、語音信箱、驗證碼與日常 Voice 操作；號碼移轉、購買服務和 Google 帳戶安全仍需另行授權。",
     "Disconnect": "中斷連線", "Connect open Voice tab": "連線已開啟的 Voice 頁面",
@@ -4436,6 +4455,24 @@
     summaryRow("Next", summary.next);
     summaryRow("Blocked by", summary.blocker, "blocked");
     b.appendChild(sb);
+    if ((st.activity || []).length) {
+      var activity = document.createElement("div"); activity.className = "mactivity";
+      var activityTitle = document.createElement("div"); activityTitle.className = "mactivity-title";
+      activityTitle.textContent = t("Activity log"); activity.appendChild(activityTitle);
+      (st.activity || []).slice(-8).reverse().forEach(function (item) {
+        var line = document.createElement("div");
+        line.className = "mactivity-item " + (item.status || "recorded");
+        var dot = document.createElement("span"); dot.className = "mactivity-dot";
+        var text = document.createElement("div"); text.className = "mactivity-text";
+        text.textContent = item.summary || item.capability || t("Activity");
+        var meta = document.createElement("div"); meta.className = "mactivity-meta";
+        var when = item.at ? new Date(item.at * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
+        meta.textContent = t(item.status || "recorded") + (when ? " · " + when : "") +
+          (item.do_not_repeat ? " · " + t("protected from repeat") : "");
+        line.appendChild(dot); line.appendChild(text); line.appendChild(meta); activity.appendChild(line);
+      });
+      b.appendChild(activity);
+    }
     if (st.state === "done_accepted") {
       var accepted = document.createElement("div"); accepted.className = "mnote";
       accepted.textContent = t("Completed by user acceptance; no independent verification was recorded.");

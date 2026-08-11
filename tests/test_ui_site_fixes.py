@@ -174,6 +174,8 @@ def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failure
     assert "Accept & take over" not in desktop
     assert "This ends the Mission without independent verification." in desktop
     assert 'summaryRow("Current"' in desktop and 'summaryRow("Next"' in desktop
+    assert 'className = "mactivity"' in desktop and 't("Activity log")' in desktop
+    assert "protected from repeat" in desktop
     assert "pending_authorizations" in desktop and "Collie is continuing independent work." in desktop
     for key in ("PROFILE_AGE_BAND", "AUTO_APPLY_PROFILE_CLAIMS",
                 "MAX_AUTO_AUTH_RISK", "DEFER_MISSING_AUTHORIZATIONS"):
