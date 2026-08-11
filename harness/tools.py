@@ -714,7 +714,8 @@ class MemorySearchTool(Tool):
 
 class RememberTool(Tool):
     name = "remember"
-    description = "Store a durable fact in long-term memory. Args: text, optional keys."
+    description = ("Propose a fact for long-term memory review. It is not recalled until the "
+                   "host promotes it after attestation or verification. Args: text, optional keys.")
     schema = {"type": "object", "properties": {
         "text": {"type": "string"}, "keys": {"type": "string"}},
         "required": ["text"]}
@@ -724,8 +725,23 @@ class RememberTool(Tool):
         if _e:
             return _e
         keys = args.get("keys", "")
-        rid = ctx.memory.remember(text, keys=keys if isinstance(keys, str) else "", project=ctx.project)
-        return "remembered #%d" % rid
+        propose = getattr(ctx.memory, "propose", None)
+        if not callable(propose):
+            # Fail closed: falling back to an old ``remember`` implementation
+            # would turn an unreviewed model assertion straight into recallable
+            # durable memory.
+            return "ERROR: memory store does not support reviewable proposals; nothing stored"
+        kwargs = {
+            "keys": keys if isinstance(keys, str) else "",
+            "project": ctx.project,
+            "source": "agent_tool",
+            "provenance": getattr(ctx, "checkpoint_scope", "") or "",
+            "scope": ctx.project,
+        }
+        rid = propose(text, **kwargs)
+        if rid == -1:
+            return "memory proposal declined (not durable enough to store)"
+        return "memory proposal #%d created (pending review; not yet recallable)" % rid
 
 
 def _sh(s: str) -> str:

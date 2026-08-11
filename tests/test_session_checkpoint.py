@@ -49,3 +49,26 @@ def test_uncertain_tool_requires_explicit_reconciliation(monkeypatch, tmp_path):
     loaded = sessions.load("s4")
     assert loaded["messages"][-1]["tool_call_id"] == "c1"
     assert "receipt 42" in loaded["messages"][-1]["content"]
+
+
+def test_reconciliation_does_not_duplicate_an_already_paired_parent_call(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path))
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c0", "name": "execute_code", "args": {"code": "..."}}]},
+        {"role": "tool", "tool_call_id": "c0", "name": "execute_code",
+         "content": "ERROR: inner external effect may still be running"},
+    ]
+    sessions.checkpoint(
+        "paired", messages, run_id="run-paired", state="external_action",
+        detail={"tool_name": "execute_code", "tool_call_id": "c0"})
+
+    sessions.reconcile_recovery(
+        "paired", "completed", note="external receipt inspected", confirmed=True)
+    loaded = sessions.load("paired")
+    paired = [m for m in loaded["messages"]
+              if m.get("role") == "tool" and m.get("tool_call_id") == "c0"]
+    assert len(paired) == 1
+    assert loaded["messages"][-1]["role"] == "user"
+    assert "external receipt inspected" in loaded["messages"][-1]["content"]

@@ -6,7 +6,8 @@ turn instead of ten tool messages in the context window — the single biggest s
 on tokens-per-task, exactly the axis collie competes on.
 
 Design (lean, keyless): while the script runs, collie stands up an ephemeral 127.0.0.1 HTTP
-server exposing the registry tools (POST /tool {name,args} -> {result}). The child process
+server whose requests are brokered back through the live Harness tool dispatcher
+(POST /tool {name,args} -> {result}). The child process
 gets a tiny preamble defining read_file/grep/glob/code_search/bash/web_search/tool() helpers
 that POST to it. Only the child's STDOUT (capped) returns to the model. The server binds to
 loopback on an ephemeral port and is torn down when the script exits. Same trust level as the
@@ -62,13 +63,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _deny(self):
         body = b'{"result": "ERROR(rpc): forbidden"}'
-        self.send_response(403)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
         try:
+            self.send_response(403)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
             self.wfile.write(body)
-        except Exception:
+        except OSError:
             pass
 
     def do_POST(self):
@@ -85,27 +86,30 @@ class _Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("content-length", 0) or 0)
             req = json.loads(self.rfile.read(n) or b"{}")
             name = req.get("name", "")
-            # depth guard: the RPC registry contains execute_code + delegate (both register into the
-            # same registry the handler exposes). Letting the child call them would spawn nested
-            # subprocesses / full sub-agent loops from a daemon handler thread — unbounded
-            # amplification. execute_code has no other recursion guard, so refuse it here.
-            if name in ("execute_code", "delegate"):
-                out = ("ERROR: %s cannot be called from inside execute_code (prevents nested "
-                       "subprocess / sub-agent amplification) — do this directly." % name)
+            # Never dispatch against the registry here.  That used to bypass the Harness
+            # permission gate, audit ledger, lifecycle hooks and durability fence.  The
+            # callback is installed only while Harness is executing this execute_code call;
+            # direct/embedded use without a broker therefore fails closed.  Even forbidden
+            # recursion is routed to the broker so its denial gets the same durable receipts.
+            broker = getattr(self.server, "collie_tool_broker", None)
+            if broker is None:
+                out = "ERROR: execute_code inner tool broker is unavailable"
             else:
-                tl = self.server.collie_registry.get(name)
-                if tl is None:
-                    out = "ERROR: no such tool %s" % name
-                else:
-                    out = tl.run(req.get("args", {}) or {}, self.server.collie_ctx)
+                out = broker(name, req.get("args", {}) or {})
             body = json.dumps({"result": out if isinstance(out, str) else str(out)}).encode()
         except Exception as e:
             body = json.dumps({"result": "ERROR(rpc): %s" % e}).encode()
-        self.send_response(200)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            # The child is killed on timeout and may close its socket while an inner
+            # tool is finishing. The Harness recovery fence already records that
+            # ambiguity; a loopback response write failure adds no useful signal.
+            pass
 
 
 class ExecuteCodeTool(Tool):
@@ -132,8 +136,7 @@ class ExecuteCodeTool(Tool):
         timeout = max(1, min(300, int(args.get("timeout", 60))))
         token = secrets.token_hex(16)
         srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        srv.collie_registry = self._registry
-        srv.collie_ctx = ctx
+        srv.collie_tool_broker = getattr(ctx, "tool_broker", None)
         srv.collie_token = token
         port = srv.server_address[1]
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -164,6 +167,9 @@ class ExecuteCodeTool(Tool):
                         + ("\n[stderr] " + tail if tail else ""))
             return out
         finally:
+            revoke = getattr(getattr(srv, "collie_tool_broker", None), "revoke", None)
+            if callable(revoke):
+                revoke()
             srv.shutdown()
             srv.server_close()          # shutdown() stops serve_forever but LEAKS the listen socket
             if path:

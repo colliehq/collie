@@ -8,11 +8,13 @@
 """
 from __future__ import annotations
 import ast
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
+import threading
 import time
 
 from . import __version__
@@ -501,6 +503,9 @@ class Harness:
         # run reaches its cap. None preserves the standalone/legacy path.
         self.shared_budget = None
         self.checkpoint_scope = ""       # surfaces may narrow undo below the shared memory project
+        # Hosts that will run a stronger out-of-process verifier set this before run(). It prevents
+        # a brief/incorrect durable promotion between the in-loop repro and that final verdict.
+        self.defer_memory_promotion = False
         # When a surface supplies its durable conversation id, persist the full
         # transcript at every model/tool boundary. This makes a killed process
         # resumable without pretending an interrupted external tool never fired.
@@ -584,7 +589,7 @@ class Harness:
                        error="%s: %s" % (type(exc).__name__, exc))
             return False
 
-    def _authorize(self, tc, tool):
+    def _authorize(self, tc, tool, still_active=None):
         """Decide whether this call may run. Returns None to allow, or the reason it was
         refused (which becomes the call's result, so the model can route around it).
 
@@ -597,6 +602,8 @@ class Harness:
         """
         if self.gate is None:
             return None                       # ungated caller (benchmarks, embedded uses)
+        if still_active is not None and not still_active():
+            return "parent execute_code invocation is no longer active"
         try:
             d = self.gate.evaluate(tc.name, tc.args, tool)
         except Exception as e:
@@ -642,6 +649,13 @@ class Harness:
             outcome = self.approve(tc.name, tc.args, d)
         except Exception as e:
             return "could not ask for approval (%s: %s)" % (type(e).__name__, e)
+
+        # An execute_code subprocess may have timed out while an approval UI was parked. A late
+        # Allow must neither execute the stale call nor mint a standing rule/audit receipt for it.
+        if still_active is not None and not still_active():
+            self._emit("gate", name=tc.name, decision="denied", risk=d.risk,
+                       reason="parent execute_code invocation ended before approval returned")
+            return "parent execute_code invocation is no longer active"
 
         from .gate import ALLOWING, Outcome
         try:
@@ -820,6 +834,7 @@ class Harness:
         msgs0.append({"role": "user", "content": prompt_content})
         session = {"messages": msgs0}
         journal_state = "turn_boundary"
+        journal_detail = {}
         self._session_checkpoint(session["messages"], rid, 0, journal_state)
         # privacy: secrets found in tool output are swapped for {{SECRET:…}} placeholders before
         # they can reach ANY cloud provider; the vault (in-memory only, never persisted) lets the
@@ -1130,19 +1145,21 @@ class Harness:
                     # Authorizing up front is the point: when the model proposes five calls, the
                     # human sees all five and decides, instead of discovering the third one only
                     # after the first two already happened irreversibly.
-                    _prepared = []
-                    hook_contexts = []
-                    for tc in comp.tool_calls:
+                    def _prepare_tool_call(raw_tc, still_active=None, forced_denial=None):
+                        """Canonicalize and authorize one call without executing it.
+
+                        Both provider-authored calls and execute_code RPC calls enter here.  Keeping
+                        this as one closure preserves the load-bearing ordering: authorization sees
+                        repaired arguments, but never secret-restored values.
+                        """
+                        tc = raw_tc
                         tool = self.registry.get(tc.name)
                         repairs = []
                         if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
-                            _prepared.append((tc, tool, repairs, None))
-                            continue
+                            return tc, tool, repairs, None
                         if tool is not None:
-                            # repair known model quirks (json-string args, file_path->path) BEFORE
-                            # dispatch. REBUILD tc (never mutate) so the session keeps the model's
-                            # raw args for replay fidelity while the tool sees canonical args.
-                            rargs, repairs = repair_args(tc.args, getattr(tool, "schema", {}) or {})
+                            rargs, repairs = repair_args(
+                                tc.args, getattr(tool, "schema", {}) or {})
                             if repairs:
                                 tc = ToolCall(tc.id, tc.name, rargs)
                                 res.arg_repairs += 1
@@ -1153,12 +1170,333 @@ class Harness:
                         }, subject=tc.name)
                         if pre is not None and pre.additional_context:
                             hook_contexts.extend(pre.additional_context)
+                        if forced_denial and not self._cancel_requested():
+                            # Host invariants (currently: memory must not outlive a timed-out RPC)
+                            # are not user-overridable permission questions, but they are still
+                            # auditable denials at the same boundary as Gate decisions.
+                            from .gate import Decision
+                            from .risk import classify, target_for
+                            risk = classify(
+                                tc.name, tool, getattr(self.gate, "risk_overrides", None)).value
+                            target = target_for(
+                                tc.name, tc.args,
+                                getattr(self.gate, "origin_lookup", None))
+                            policy = Decision(False, forced_denial, risk=risk, target=target)
+                            self._audit(
+                                tc, policy, stage="denied", outcome="refused",
+                                reason=forced_denial)
+                            self._emit("gate", name=tc.name, decision="denied",
+                                       reason=forced_denial, risk=risk, target=target)
                         denied = ("run canceled" if self._cancel_requested() else
-                                  ("lifecycle hook denied this tool: %s" %
-                                   (pre.reason or "policy rejection")
-                                   if pre is not None and not pre.allowed else
-                                   self._authorize(tc, tool)))
-                        _prepared.append((tc, tool, repairs, denied))
+                                  (forced_denial if forced_denial else
+                                   ("lifecycle hook denied this tool: %s" %
+                                    (pre.reason or "policy rejection")
+                                    if pre is not None and not pre.allowed else
+                                    self._authorize(tc, tool, still_active=still_active))))
+                        return tc, tool, repairs, denied
+
+                    def _account_tool_outcome(tc, out):
+                        """Apply the normal edit/reproduction accounting to every dispatched call."""
+                        nonlocal did_edit, last_edit_turn, last_repro_turn
+                        nonlocal last_repro_failed, last_repro_asserted
+                        nonlocal last_edit_path, last_edit_text, best_diff
+                        try:            # edit-accounting + repro detection: best-effort bookkeeping
+                            if os.environ.get("COLLIE_DEBUG"):
+                                a = json.dumps(tc.args, ensure_ascii=False)
+                                print("  T%d %s(%s) -> %s" % (
+                                    turn, tc.name, a[:90], str(out)[:120].replace("\n", " ")),
+                                    flush=True)
+                            # count an edit ONLY if it actually landed. edit_file/write_file
+                            # return "ERROR: old_string not found/appears N times" WITHOUT writing.
+                            edit_ok = (tc.name in ("write_file", "edit_file")
+                                       and isinstance(out, str)
+                                       and not out.startswith(("ERROR", "DENIED")))
+                            if edit_ok:
+                                did_edit = True
+                                last_edit_turn = turn
+                                # A landed edit invalidates earlier reproduction evidence, including
+                                # an internal execute_code call that reproduced before a later write.
+                                last_repro_turn, last_repro_failed, last_repro_asserted = (
+                                    -100, False, False)
+                                p = tc.args.get("path", "")
+                                if p:
+                                    p = p if isinstance(p, str) else str(p)
+                                    rp = (os.path.relpath(p, self.cwd)
+                                          if os.path.isabs(p) else p)
+                                    edited_files.add(rp)
+                                    last_edit_path = rp
+                                last_edit_text = (tc.args.get("new_string")
+                                                  or tc.args.get("content") or last_edit_text)
+                                self._emit("edit", path=last_edit_path,
+                                           old=tc.args.get("old_string", ""),
+                                           new=tc.args.get("new_string")
+                                           or tc.args.get("content", ""))
+                                if self.force_edit:
+                                    best_diff = _tree_diff(self.cwd) or best_diff
+                            if did_edit and _is_repro_cmd(tc.name, tc.args):
+                                last_repro_turn = turn
+                                o = out if isinstance(out, str) else str(out)
+                                last_repro_failed = _repro_failed(o)
+                                last_repro_asserted = _is_asserting_cmd(
+                                    tc.args.get("command") or "")
+                                self._emit("repro", passed=not last_repro_failed,
+                                           asserted=last_repro_asserted,
+                                           cmd=(tc.args.get("command") or "")[:200])
+                        except Exception as _acc_e:
+                            if os.environ.get("COLLIE_DEBUG"):
+                                print("  [accounting error, continuing] %s" % _acc_e, flush=True)
+
+                    def _execute_prepared_tool(tc, tool, repairs, denied, *, record_result=True,
+                                               journal_parent=None, still_active=None,
+                                               begin_effect=None, end_effect=None):
+                        """The single Harness execution boundary used by normal and RPC calls.
+
+                        Internal calls deliberately do not append a standalone tool-result message:
+                        the provider emitted only the parent execute_code tool_use, so such a message
+                        would be protocol-invalid.  They still pass through every host-owned fence.
+                        """
+                        nonlocal journal_state, journal_detail
+                        if still_active is not None and not still_active():
+                            # A late HTTP handler must not mutate a completed RunResult, fire hooks,
+                            # or overwrite the parent's terminal session checkpoint.
+                            return "DENIED: parent execute_code invocation is no longer active"
+                        uncertain_boundary = False
+                        if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
+                            out = ("ERROR: tool call arguments were not valid JSON (truncated or "
+                                   "malformed). Raw prefix: %s. Re-emit the call with valid JSON "
+                                   "arguments." % str(tc.args.get("_malformed_args"))[:500])
+                        elif denied is not None:
+                            out = "DENIED: %s" % denied
+                            res.denied_calls += 1
+                        elif still_active is not None and not still_active():
+                            out = "DENIED: parent execute_code invocation is no longer active"
+                            res.denied_calls += 1
+                        else:
+                            try:
+                                # Restore placeholders only at the execution boundary.  Remember is
+                                # the sole exception because it persists its input as plaintext.
+                                skip_restore = tc.name == "remember"
+                                run_args = (_redact.restore(tc.args, self._secret_vault)
+                                            if (_redact_on and not skip_restore) else tc.args)
+                                journal_state = "executing_tool"
+                                parent = journal_parent or {}
+                                detail = {
+                                    "tool_name": parent.get("tool_name") or tc.name,
+                                    "tool_call_id": parent.get("tool_call_id") or tc.id,
+                                }
+                                if not record_result:
+                                    detail.update(internal=True, inner_tool_name=tc.name,
+                                                  inner_tool_call_id=tc.id)
+                                journal_detail = dict(detail)
+                                if still_active is not None and not still_active():
+                                    return ("DENIED: parent execute_code invocation ended before "
+                                            "the inner tool could execute")
+                                checkpointed = self._session_checkpoint(
+                                    session["messages"], rid, turn, journal_state, detail)
+                                if checkpointed is False:
+                                    out = ("ERROR: durability checkpoint failed; tool was not "
+                                           "executed because crash recovery could not be fenced")
+                                elif still_active is not None and not still_active():
+                                    return ("DENIED: parent execute_code invocation ended before "
+                                            "the inner tool could execute")
+                                elif tool is None:
+                                    out = "ERROR: no such tool %s" % tc.name
+                                elif begin_effect is not None and not begin_effect():
+                                    return ("DENIED: parent execute_code invocation ended before "
+                                            "the inner consequential tool could execute")
+                                elif tc.name == "execute_code":
+                                    # The broker exists only for the duration of this parent call.
+                                    # Restoring/deleting it in finally prevents a stale closure from
+                                    # leaking the completed run's authority through a reused ToolCtx.
+                                    had_broker = hasattr(ctx, "tool_broker")
+                                    previous_broker = getattr(ctx, "tool_broker", None)
+                                    inner_broker = _make_inner_broker(tc.id)
+                                    ctx.tool_broker = inner_broker
+                                    try:
+                                        out = tool.run(run_args, ctx)
+                                    finally:
+                                        if had_broker:
+                                            ctx.tool_broker = previous_broker
+                                        else:
+                                            delattr(ctx, "tool_broker")
+                                    if inner_broker.uncertain:
+                                        uncertain_boundary = True
+                                        res.error = ("execute_code ended while an inner tool "
+                                                     "was still running; "
+                                                     "recovery inspection is required")
+                                        if not str(out).startswith("ERROR"):
+                                            out = "ERROR: %s\n%s" % (res.error, out)
+                                else:
+                                    try:
+                                        out = tool.run(run_args, ctx)
+                                    finally:
+                                        if end_effect is not None:
+                                            end_effect()
+                            except Exception as e:
+                                out = "ERROR: tool %s failed: %s" % (tc.name, e)
+                        if (not record_result and still_active is not None and
+                                not still_active()):
+                            # The parent execute_code call has already returned and
+                            # persisted an external_action recovery fence.  A late
+                            # handler may finish the real effect, but it must never
+                            # rewrite the closed RunResult, transcript, hooks, counters,
+                            # or checkpoint state from its daemon thread.
+                            if _redact_on:
+                                out = _redact.redact_obj(out, self._secret_vault)
+                            return out
+                        # A custom or deferred tool may return structured data.  Redact it before
+                        # lifecycle hooks, event sinks, transcripts, or the RPC response can see it;
+                        # limiting this boundary to strings would leak nested secret values.
+                        if _redact_on:
+                            out = _redact.redact_obj(out, self._secret_vault)
+                        failed_tool = isinstance(out, str) and (
+                            out.startswith("ERROR") or out.startswith("DENIED"))
+                        post = self._hook(
+                            "PostToolUseFailure" if failed_tool else "PostToolUse", {
+                                "run_id": rid, "task_id": task_id, "turn": turn,
+                                "tool_name": tc.name, "tool_input": tc.args,
+                                "tool_response": out,
+                            }, subject=tc.name)
+                        if post is not None and post.additional_context:
+                            hook_contexts.extend(post.additional_context)
+                        res.tool_calls += 1
+                        if record_result:
+                            # Only provider-authored calls get protocol messages.  RPC calls are
+                            # summarized by the parent execute_code result instead.
+                            tmsg = {"role": "tool", "tool_call_id": tc.id,
+                                    "name": tc.name, "content": out}
+                            if repairs:
+                                tmsg["repairs"] = repairs
+                            session["messages"].append(tmsg)
+                        # An internal RPC result does not finish the provider-authored execute_code
+                        # tool_use. Keep recovery fenced on that real parent id until its one paired
+                        # result is appended below; otherwise a crash fabricates an orphan rpc id and
+                        # falsely reports the still-running parent as auto-resumable.
+                        journal_state = ("external_action" if uncertain_boundary else
+                                         "tool_complete" if record_result else "executing_tool")
+                        parent = journal_parent or {}
+                        detail = {
+                            "tool_name": parent.get("tool_name") or tc.name,
+                            "tool_call_id": parent.get("tool_call_id") or tc.id,
+                            "ok": not failed_tool,
+                        }
+                        if not record_result:
+                            detail.update(internal=True, inner_complete=True,
+                                          inner_tool_name=tc.name, inner_tool_call_id=tc.id)
+                        journal_detail = dict(detail)
+                        self._session_checkpoint(
+                            session["messages"], rid, turn, journal_state, detail)
+                        # Internal screenshots stay queued until the parent result is paired; adding
+                        # a user image before that result would break provider tool-use ordering.
+                        if record_result and getattr(ctx, "images", None):
+                            for img in ctx.images:
+                                label = img.get("label") or "screen"
+                                session["messages"].append({"role": "user", "content": [
+                                    {"type": "text", "text": "[screenshot: %s]" % label},
+                                    {"type": "image",
+                                     "media_type": img.get("media_type", "image/png"),
+                                     "data": img["data"]}]})
+                            ctx.images.clear()
+                        rprev = ""
+                        if isinstance(out, str) and out.strip():
+                            first = next((ln for ln in out.splitlines() if ln.strip()), "")
+                            rprev = first[:160] + (" …" if len(out) > len(first) + 2 else "")
+                        emit_data = {
+                            "name": tc.name, "args": tc.args,
+                            "ok": not failed_tool,
+                            "result": rprev,
+                        }
+                        if not record_result:
+                            emit_data["internal"] = True
+                        self._emit("tool", **emit_data)
+                        _account_tool_outcome(tc, out)
+                        return out
+
+                    def _make_inner_broker(parent_call_id):
+                        # ThreadingHTTPServer may receive concurrent calls from a user script.  The
+                        # Harness transcript, counters and checkpoint journal are ordered state, so
+                        # serialize those calls while leaving the child process itself unconstrained.
+                        secret_vault = self._secret_vault
+                        class InnerBroker:
+                            def __init__(self):
+                                self.lock = threading.RLock()
+                                self.sequence = 0
+                                self.revoked = threading.Event()
+                                self.state_lock = threading.Lock()
+                                self.effects_in_flight = 0
+                                self.uncertain = False
+
+                            def revoke(self):
+                                # Non-blocking: an inbox approver can be waiting on another thread.
+                                # Its eventual answer is re-checked below and cannot fire late.
+                                self.revoked.set()
+                                with self.state_lock:
+                                    if self.effects_in_flight:
+                                        self.uncertain = True
+
+                            def active(self):
+                                return not self.revoked.is_set()
+
+                            def begin_effect(self):
+                                with self.state_lock:
+                                    if self.revoked.is_set():
+                                        return False
+                                    self.effects_in_flight += 1
+                                    return True
+
+                            def end_effect(self):
+                                with self.state_lock:
+                                    self.effects_in_flight = max(0, self.effects_in_flight - 1)
+
+                            def __call__(self, name, args):
+                              with self.lock:
+                                if self.revoked.is_set():
+                                    return "DENIED: parent execute_code invocation is no longer active"
+                                self.sequence += 1
+                                # The parent execute_code source is restored immediately before
+                                # execution. A secret used by that script therefore returns over
+                                # RPC as plaintext; put it back behind a placeholder before Gate,
+                                # hooks, audit and checkpoints observe the dynamic call. The normal
+                                # execution boundary restores it again only for tool.run().
+                                safe_args = (_redact.redact_obj(args, secret_vault)
+                                             if _redact_on else args)
+                                inner = ToolCall("%s:rpc:%d" % (parent_call_id, self.sequence),
+                                                 str(name or ""), safe_args)
+                                # Memory shares a connection with end-of-run settlement.  A timed-
+                                # out daemon RPC must not keep reading/writing that connection after
+                                # the Harness returns and its caller consolidates or closes it.
+                                forced_denial = None
+                                if inner.name in ("execute_code", "delegate"):
+                                    forced_denial = (
+                                        "%s cannot be called from inside execute_code; nested "
+                                        "subprocess or sub-agent amplification is disabled" %
+                                        inner.name)
+                                elif inner.name in ("remember", "memory_search"):
+                                    forced_denial = (
+                                        "memory tools cannot run inside execute_code; call this "
+                                        "tool directly so its lifecycle is joined to the parent run")
+                                prepared = _prepare_tool_call(
+                                    inner, still_active=self.active,
+                                    forced_denial=forced_denial)
+                                if self.revoked.is_set():
+                                    return "DENIED: parent execute_code invocation is no longer active"
+                                if not self.begin_effect():
+                                    return ("DENIED: parent execute_code invocation ended before "
+                                            "the inner tool could execute")
+                                try:
+                                    return _execute_prepared_tool(
+                                        *prepared, record_result=False,
+                                        journal_parent={"tool_name": "execute_code",
+                                                        "tool_call_id": parent_call_id},
+                                        still_active=self.active)
+                                finally:
+                                    self.end_effect()
+                        return InnerBroker()
+
+                    _prepared = []
+                    hook_contexts = []
+                    for tc in comp.tool_calls:
+                        _prepared.append(_prepare_tool_call(tc))
 
                     # ── pass 2: execute what cleared ──
                     for tool_idx, (tc, tool, repairs, _denied) in enumerate(_prepared):
@@ -1178,157 +1516,18 @@ class Harness:
                                            ok=False, canceled=True,
                                            result="run stopped before execution")
                             break
-                        # malformed/truncated JSON args (provider sentinel, point 7): report the REAL
-                        # fault, not a misleading "missing required arg".
-                        if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
-                            out = ("ERROR: tool call arguments were not valid JSON (truncated or "
-                                   "malformed). Raw prefix: %s. Re-emit the call with valid JSON "
-                                   "arguments." % str(tc.args.get("_malformed_args"))[:500])
-                        elif _denied is not None:
-                            # The refusal goes back to the model as this call's RESULT, never as a
-                            # dropped call: an unpaired tool_use 400s the provider on the next turn
-                            # (and on --continue), and a model that is told why can route around it
-                            # — write the step into the report for a human instead of doing it.
-                            out = "DENIED: %s" % _denied
-                            res.denied_calls += 1
-                        else:
-                            try:                      # a malformed tool call must not abort the run
-                                # privacy: placeholders the model emitted ({{SECRET:…}}) are swapped
-                                # back to real values ONLY here, at the execution boundary — the
-                                # model uses secrets it has never seen. EXCEPTION: the `remember`
-                                # tool WRITES its args into durable memory.db (plaintext, and it
-                                # reaches every future prompt via prefetch), so restoring here would
-                                # persist a real credential the model only ever saw as a placeholder.
-                                # For memory writes we keep the placeholder unrestored — this is the SOLE
-                                # protection (RememberTool.run does no redaction of its own), so if this
-                                # skip ever regressed, a real credential would persist to memory.db.
-                                _skip_restore = tc.name == "remember"
-                                _run_args = (_redact.restore(tc.args, self._secret_vault)
-                                             if (_redact_on and not _skip_restore) else tc.args)
-                                journal_state = "executing_tool"
-                                checkpointed = self._session_checkpoint(
-                                    session["messages"], rid, turn, journal_state,
-                                    {"tool_name": tc.name, "tool_call_id": tc.id})
-                                if checkpointed is False:
-                                    out = ("ERROR: durability checkpoint failed; tool was not "
-                                           "executed because crash recovery could not be fenced")
-                                else:
-                                    out = (tool.run(_run_args, ctx) if tool
-                                           else "ERROR: no such tool %s" % tc.name)
-                            except Exception as e:
-                                out = "ERROR: tool %s failed: %s" % (tc.name, e)
-                        if _redact_on and isinstance(out, str):
-                            # privacy: credentials in tool OUTPUT (env files, key greps, tracebacks)
-                            # never enter the conversation — any cloud provider sees placeholders.
-                            out = _redact.redact(out, self._secret_vault)
-                        failed_tool = isinstance(out, str) and (
-                            out.startswith("ERROR") or out.startswith("DENIED"))
-                        post = self._hook(
-                            "PostToolUseFailure" if failed_tool else "PostToolUse", {
-                                "run_id": rid, "task_id": task_id, "turn": turn,
-                                "tool_name": tc.name, "tool_input": tc.args,
-                                "tool_response": out,
-                            }, subject=tc.name)
-                        if post is not None and post.additional_context:
-                            hook_contexts.extend(post.additional_context)
-                        res.tool_calls += 1
-                        # Append the tool RESULT immediately, so every tool_use is ALWAYS paired even
-                        # if the bookkeeping below throws on a malformed arg — an orphaned tool_use
-                        # 400s the provider on the next turn AND on --continue of the saved thread.
-                        _tmsg = {"role": "tool", "tool_call_id": tc.id,
-                                 "name": tc.name, "content": out}
-                        if repairs:
-                            _tmsg["repairs"] = repairs   # zero-token; rides session JSON for post-hoc grep
-                        session["messages"].append(_tmsg)
-                        journal_state = "tool_complete"
-                        self._session_checkpoint(
-                            session["messages"], rid, turn, journal_state,
-                            {"tool_name": tc.name, "tool_call_id": tc.id,
-                             "ok": not failed_tool})
-                        # Images a tool produced (screenshot) ride ctx, and become a real image block
-                        # on the conversation HERE rather than inside the tool_result. Two reasons:
-                        # OpenAI's tool-role messages cannot carry images at all, and every provider
-                        # already reshapes images on a user message (Anthropic source blocks, OpenAI
-                        # image_url, Ollama images[], claude-cli degrades to a marker). So one seam
-                        # works everywhere and providers.py needs no change. Drained immediately so
-                        # nothing leaks into the next tool call.
-                        if getattr(ctx, "images", None):
-                            for _img in ctx.images:
-                                _lbl = _img.get("label") or "screen"
-                                session["messages"].append({"role": "user", "content": [
-                                    {"type": "text", "text": "[screenshot: %s]" % _lbl},
-                                    {"type": "image", "media_type": _img.get("media_type", "image/png"),
-                                     "data": _img["data"]}]})
-                            ctx.images.clear()
-                        # a compact result preview (first non-empty line + a "more" marker) so the
-                        # UI can show a cc-style `⎿ result` under each tool call, not just the action.
-                        _rprev = ""
-                        if isinstance(out, str) and out.strip():
-                            _first = next((ln for ln in out.splitlines() if ln.strip()), "")
-                            _rprev = _first[:160] + (" …" if len(out) > len(_first) + 2 else "")
-                        self._emit("tool", name=tc.name, args=tc.args,
-                                   ok=not (isinstance(out, str) and out.startswith("ERROR")),
-                                   result=_rprev)
-                        try:            # edit-accounting + repro detection: best-effort bookkeeping
-                            if os.environ.get("COLLIE_DEBUG"):
-                                import json as _j
-                                a = _j.dumps(tc.args, ensure_ascii=False)
-                                print("  T%d %s(%s) -> %s" % (
-                                    turn, tc.name, a[:90], str(out)[:120].replace("\n", " ")), flush=True)
-                            # count an edit ONLY if it actually landed. edit_file/write_file
-                            # return "ERROR: old_string not found/appears N times" WITHOUT writing —
-                            # DeepSeek mis-quotes constantly, and treating that as success flipped
-                            # did_edit=True and disabled every convergence guard.
-                            edit_ok = (tc.name in ("write_file", "edit_file")
-                                       and isinstance(out, str) and not out.startswith("ERROR"))
-                            if edit_ok:
-                                did_edit = True
-                                last_edit_turn = turn
-                                # A landed edit INVALIDATES any prior reproduction: tool calls in one
-                                # turn are processed in order, so a pass+assert repro that ran BEFORE a
-                                # same-turn breaking edit would otherwise share this turn's key and read
-                                # as fresh (last_repro_turn >= last_edit_turn), stamping a broken edit
-                                # VERIFIED. Reset so only a repro that runs AFTER this edit can clear
-                                # the gate. (audit: same-turn repro-then-edit false-verify.)
-                                last_repro_turn, last_repro_failed, last_repro_asserted = -100, False, False
-                                p = tc.args.get("path", "")
-                                if p:
-                                    p = p if isinstance(p, str) else str(p)   # malformed non-str path
-                                    rp = (os.path.relpath(p, self.cwd)
-                                          if os.path.isabs(p) else p)
-                                    edited_files.add(rp)
-                                    last_edit_path = rp
-                                last_edit_text = (tc.args.get("new_string")
-                                                  or tc.args.get("content") or last_edit_text)
-                                self._emit("edit", path=last_edit_path,
-                                           old=tc.args.get("old_string", ""),
-                                           new=tc.args.get("new_string") or tc.args.get("content", ""))
-                                if self.force_edit:
-                                    # snapshot the net tree state after every landed edit — the
-                                    # white-flag guard restores the LAST non-empty one if the
-                                    # model later reverts itself into an empty patch
-                                    best_diff = _tree_diff(self.cwd) or best_diff
-                            # reproduction evidence: a post-edit `python -c` we can gate finish on
-                            if did_edit and _is_repro_cmd(tc.name, tc.args):
-                                last_repro_turn = turn
-                                o = out if isinstance(out, str) else str(out)
-                                last_repro_failed = _repro_failed(o)
-                                # \bassert\b (not a bare substring) so "reassert"/print("assert")
-                                # don't satisfy the assert-mode gate without a real assertion.
-                                last_repro_asserted = _is_asserting_cmd(
-                                    tc.args.get("command") or "")
-                                self._emit("repro", passed=not last_repro_failed,
-                                           asserted=last_repro_asserted,
-                                           cmd=(tc.args.get("command") or "")[:200])
-                        except Exception as _acc_e:
-                            if os.environ.get("COLLIE_DEBUG"):
-                                print("  [accounting error, continuing] %s" % _acc_e, flush=True)
+                        _execute_prepared_tool(tc, tool, repairs, _denied)
+                        if journal_state == "external_action":
+                            break
                     if hook_contexts and not canceled:
                         session["messages"].append({
                             "role": "user",
                             "content": "[Trusted lifecycle context]\n" + "\n".join(hook_contexts),
                         })
                     if canceled:
+                        res.turns = turn + 1
+                        break
+                    if journal_state == "external_action":
                         res.turns = turn + 1
                         break
                     res.turns = turn + 1
@@ -1639,16 +1838,35 @@ class Harness:
                     answer = (answer.rstrip() + "\n\n" + marker).lstrip()
 
             res.answer = answer
-            # never consolidate MOCK runs — their canned "Based on the tool output: …" answers are
+            # Never consolidate MOCK runs — their canned "Based on the tool output: …" answers are
             # test plumbing, not durable facts, and were polluting memory.db on every selftest.
             # Also skip a length-stopped answer: an incomplete "fact" shouldn't enter durable memory.
+            # A model-authored summary is a CLAIM, not ground truth.  It stays outside recall until
+            # the host verification boundary promotes it.  This is deliberately fail-closed for
+            # older/custom memory adapters: lacking a proposal lifecycle means no durable write.
             if (not canceled and not res.error and consolidate and answer
                     and getattr(self.provider, "name", "") != "mock"
                     and last_stop != "length"):
-                # self-cleaning write: distill task+answer into a durable fact
-                self.memory.remember(
-                    text="Task '%s' -> %s" % (task_id, answer[:200]),
-                    keys=task_id, project=self.project)
+                propose = getattr(self.memory, "propose", None)
+                if callable(propose):
+                    claim_id = propose(
+                        text="Task '%s' -> %s" % (task_id, answer[:200]),
+                        keys=task_id, project=self.project,
+                        source="run_consolidation",
+                        provenance={"run_id": rid, "task_id": task_id,
+                                    "provider": getattr(self.provider, "name", ""),
+                                    "model": getattr(self.provider, "model", "")},
+                        scope=self.project)
+                    if claim_id is not None and int(claim_id) >= 0:
+                        res.memory_claim_ids.append(int(claim_id))
+                        # The in-loop gate is evidence too: edits followed by a fresh passing repro
+                        # can be learned immediately. External checks settle remaining proposals.
+                        if res.verified and not self.defer_memory_promotion:
+                            self.memory.promote(
+                                claim_id, status="verified",
+                                evidence={"kind": "post_edit_repro", "run_id": rid},
+                                source="verification_gate",
+                                provenance={"run_id": rid, "task_id": task_id})
         except Exception as e:
             res.error = "%s: %s" % (type(e).__name__, e)
 
@@ -1680,11 +1898,13 @@ class Harness:
             m.append({"role": "assistant", "content": answer})
         res.messages = m                      # expose the thread so a session can be saved/continued
         self.recorder.finish_run(res)
-        if journal_state == "executing_tool":
+        if journal_state in ("executing_tool", "external_action"):
             # The tool may have committed its effect before the process/host code
             # failed. Preserve the fence for explicit reconciliation.
+            recovery_detail = dict(journal_detail)
+            recovery_detail["error"] = res.error
             self._session_checkpoint(m, rid, res.turns, "external_action",
-                                     {"error": res.error}, terminal=False)
+                                     recovery_detail, terminal=False)
         else:
             self._session_checkpoint(m, rid, res.turns, "terminal",
                                      {"error": res.error, "verified": res.verified},
@@ -1722,3 +1942,47 @@ class Harness:
             except Exception:
                 pass
         return res
+
+    def settle_run_memory(self, res: RunResult, passed: bool, evidence=None,
+                          source: str = "external_verification") -> dict:
+        """Accept/reject pending run claims after a host-side verification command.
+
+        CLI/web checks run outside ``run()``, so proposal ids travel on RunResult. Repeated
+        settlement is safe because memory lifecycle methods only transition pending proposals.
+        """
+        promoted = rejected = 0
+        evidence = self._safe_memory_evidence(evidence)
+        provenance = {"run_id": int(getattr(res, "run_id", 0) or 0),
+                      "task_id": str(getattr(res, "task_id", "") or "")}
+        for claim_id in list(getattr(res, "memory_claim_ids", None) or []):
+            if passed:
+                promoted += int(bool(self.memory.promote(
+                    claim_id, status="verified", evidence=evidence, source=source,
+                    provenance=provenance)))
+            else:
+                changed = self.memory.reject(
+                    claim_id, evidence=evidence, source=source, provenance=provenance)
+                if not changed:
+                    invalidate = getattr(self.memory, "invalidate", None)
+                    changed = bool(invalidate and invalidate(
+                        claim_id, evidence=evidence, source=source,
+                        provenance=provenance))
+                rejected += int(bool(changed))
+        return {"promoted": promoted, "rejected": rejected}
+
+    @staticmethod
+    def _safe_memory_evidence(evidence):
+        """Keep verification receipts useful without persisting stdout, paths, or secrets."""
+        if not isinstance(evidence, dict):
+            return str(evidence or "")[:500]
+        allowed = (
+            "kind", "passed", "command_passed", "exit_code", "timestamp", "duration_ms",
+            "ran_after_last_edit", "freshness", "source", "snapshot_kind", "executed",
+            "working_tree_changed_during_check", "run_id",
+        )
+        safe = {key: evidence.get(key) for key in allowed if key in evidence}
+        command = str(evidence.get("command") or "")
+        if command:
+            safe["command_sha256"] = hashlib.sha256(command.encode(
+                "utf-8", "replace")).hexdigest()
+        return safe

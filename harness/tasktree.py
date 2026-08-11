@@ -8,6 +8,7 @@ one process.  Specialist authority is always a deterministic subset of its paren
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import secrets
@@ -31,6 +32,12 @@ WORKSPACE_REQUIRED = "workspace_required"
 _TERMINAL = {COMPLETED, FAILED, CANCELLED}
 
 
+_ARTIFACT_REF_KEYS = (
+    "kind", "name", "uri", "path", "digest", "media_type", "receipt_id",
+    "revision", "size",
+)
+
+
 def _js(value):
     return json.dumps(value if value is not None else {}, ensure_ascii=False,
                       sort_keys=True, default=str)
@@ -41,6 +48,39 @@ def _jl(value, default=None):
         return json.loads(value) if value else ({} if default is None else default)
     except (TypeError, ValueError):
         return {} if default is None else default
+
+
+def normalize_artifact_refs(values):
+    """Keep only bounded references; child output content never rides the mailbox.
+
+    Artifact references are observations, not grants.  In particular, returning a
+    path does not add it to the parent's resource ownership.  The parent must still
+    pass ``can_access``/its Mission leash before using a tool against that path.
+    """
+    if values in (None, ""):
+        return []
+    if isinstance(values, (str, dict)):
+        values = [values]
+    if not isinstance(values, (list, tuple)):
+        return []
+    out = []
+    for value in values[:12]:
+        value = {"uri": value} if isinstance(value, str) else value
+        if not isinstance(value, dict):
+            continue
+        ref = {}
+        for key in _ARTIFACT_REF_KEYS:
+            item = value.get(key)
+            if item in (None, ""):
+                continue
+            if key in ("revision", "size") and isinstance(item, (int, float)) \
+                    and not isinstance(item, bool):
+                ref[key] = item
+            else:
+                ref[key] = str(item)[:2000 if key in ("uri", "path") else 300]
+        if ref and any(ref.get(key) for key in ("uri", "path", "receipt_id", "digest")):
+            out.append(ref)
+    return out
 
 
 def _covered_capability(name, parent_patterns):
@@ -251,6 +291,49 @@ class TaskTreeStore:
             "VALUES(?,?,?,'queued',?)",
             (run_id, kind, _js(payload or {}), int(now if now is not None else time.time())))
 
+    def _queue_child_result_locked(self, run_id, state, result, now, *,
+                                   artifacts=None, observation=None):
+        """Publish one terminal child outcome to its parent exactly once."""
+        row = self.db.execute(
+            "SELECT parent_run_id,role,mission_id,workspace FROM agent_runs WHERE run_id=?",
+            (run_id,)).fetchone()
+        if not row or not row["parent_run_id"]:
+            return None
+        parent = self.db.execute(
+            "SELECT status,cancel_requested FROM agent_runs WHERE run_id=?",
+            (row["parent_run_id"],)).fetchone()
+        if (not parent or parent["status"] in _TERMINAL or
+                parent["status"] == CANCEL_REQUESTED or parent["cancel_requested"]):
+            return None
+        existing = self.db.execute(
+            "SELECT message_id FROM agent_mailbox WHERE run_id=? AND sender_run_id=? "
+            "AND kind='child_result' LIMIT 1",
+            (row["parent_run_id"], run_id)).fetchone()
+        if existing:
+            return existing["message_id"]
+        observed = observation if isinstance(observation, dict) else {}
+        observed_raw = _js(observed)
+        if len(observed_raw) > 4000:
+            observed = {"summary": observed_raw[:3900], "truncated": True}
+        payload = {
+            "run_id": run_id,
+            "mission_id": row["mission_id"],
+            "role": row["role"],
+            "state": state,
+            "result": str(result or "")[:4000],
+            "artifacts": normalize_artifact_refs(artifacts),
+            "observation": observed,
+        }
+        cur = self.db.execute(
+            "INSERT INTO agent_mailbox(run_id,sender_run_id,kind,payload_json,state,created_at) "
+            "VALUES(?,?, 'child_result',?,'queued',?)",
+            (row["parent_run_id"], run_id, _js(payload), now))
+        self._event_locked(
+            row["parent_run_id"], "child_result_queued",
+            {"message_id": cur.lastrowid, "run_id": run_id,
+             "state": state, "role": row["role"]}, now)
+        return cur.lastrowid
+
     def _row(self, run_id):
         with self.lock:
             row = self.db.execute("SELECT * FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -271,18 +354,45 @@ class TaskTreeStore:
                     workspace="", workspace_mode="worktree"):
         run_id = run_id or "run_" + secrets.token_hex(8)
         now = int(time.time())
+        task = str(task)[:4000]
+        leash = dict(leash or {})
         resources = normalize_resources(resources)
         workspace = os.path.realpath(os.path.abspath(workspace)) if workspace else ""
         status = QUEUED if workspace or workspace_mode != "worktree" else WORKSPACE_REQUIRED
         with self.lock:
-            self.db.execute(
-                "INSERT INTO agent_runs(run_id,parent_run_id,root_run_id,mission_id,depth,role,"
-                "task,status,leash_json,resources_json,workspace_mode,workspace,created_at,updated_at,"
-                "progress_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run_id, "", run_id, mission_id, 0, "orchestrator", str(task)[:4000], status,
-                 _js(leash or {}), _js(resources), workspace_mode, workspace, now, now, now))
-            self._event_locked(run_id, "created", {"status": status}, now)
-            self.db.commit()
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self.db.execute(
+                    "SELECT * FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+                if existing:
+                    decoded = self._decode(existing)
+                    matches = (
+                        not decoded["parent_run_id"] and
+                        decoded["mission_id"] == mission_id and
+                        decoded["task"] == task and
+                        decoded["leash"] == leash and
+                        decoded["resources"] == resources and
+                        decoded["workspace_mode"] == workspace_mode and
+                        decoded["workspace"] == workspace
+                    )
+                    if not matches:
+                        self.db.rollback()
+                        raise ValueError(
+                            "root run id is already bound to a different operation")
+                    self.db.commit()
+                    return decoded
+                self.db.execute(
+                    "INSERT INTO agent_runs(run_id,parent_run_id,root_run_id,mission_id,depth,role,"
+                    "task,status,leash_json,resources_json,workspace_mode,workspace,created_at,updated_at,"
+                    "progress_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (run_id, "", run_id, mission_id, 0, "orchestrator", task, status,
+                     _js(leash), _js(resources), workspace_mode, workspace, now, now, now))
+                self._event_locked(run_id, "created", {"status": status}, now)
+                self.db.commit()
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.rollback()
+                raise
         run = self.get(run_id)
         self._hook("TaskCreated", {"run_id": run_id, "parent_run_id": "",
                                     "task": run["task"], "role": run["role"],
@@ -312,6 +422,23 @@ class TaskTreeStore:
         status = QUEUED if workspace or workspace_mode != "worktree" else WORKSPACE_REQUIRED
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
+            existing = self.db.execute(
+                "SELECT * FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if existing:
+                decoded = self._decode(existing)
+                matches = (
+                    decoded["parent_run_id"] == parent_run_id and
+                    decoded["role"] == str(role or "specialist")[:80] and
+                    decoded["task"] == str(task)[:4000] and
+                    decoded["leash"] == child_leash and
+                    decoded["resources"] == child_resources and
+                    decoded["workspace_mode"] == workspace_mode
+                )
+                if not matches:
+                    self.db.rollback()
+                    raise ValueError("specialist run id is already bound to different authority")
+                self.db.commit()
+                return decoded
             current_parent = self.db.execute(
                 "SELECT status,cancel_requested FROM agent_runs WHERE run_id=?",
                 (parent_run_id,)).fetchone()
@@ -366,22 +493,78 @@ class TaskTreeStore:
             cur = self.db.execute(
                 "UPDATE agent_runs SET workspace=?,owns_workspace=?,status=CASE WHEN status=? "
                 "THEN ? ELSE status END,updated_at=? WHERE run_id=? AND status NOT IN (?,?,?) "
-                "AND owner_token=''",
+                "AND owner_token='' AND (workspace='' OR workspace=?)",
                 (canonical, int(bool(owns_workspace)), WORKSPACE_REQUIRED, QUEUED, now, run_id,
-                 COMPLETED, FAILED, CANCELLED))
+                 COMPLETED, FAILED, CANCELLED, canonical))
             if cur.rowcount:
                 self._event_locked(run_id, "workspace_bound",
                                    {"workspace": canonical, "owned": bool(owns_workspace)}, now)
             self.db.commit()
         return self.get(run_id) if cur.rowcount else None
 
+    def initialize_root_workspace_authority(self, run_id, path, mode="read"):
+        """One-time host binding for an authority-empty lazy Mission root.
+
+        This is intentionally narrower than a general resource mutation API: it
+        accepts only a root whose workspace/resources are both empty and whose
+        tree has no active descendants.  An identical replay is idempotent; all
+        other attempts to move or expand an established grant fail closed.
+        """
+        canonical = os.path.realpath(os.path.abspath(str(path or "")))
+        mode = str(mode or "read").lower()
+        if not path or not os.path.isdir(canonical):
+            raise ValueError("root workspace does not exist")
+        if mode not in ("read", "write"):
+            raise ValueError("root workspace authority must be read or write")
+        resource = {"kind": "file", "id": os.path.normcase(canonical), "mode": mode}
+        now = int(time.time())
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT * FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if not row:
+                self.db.rollback()
+                raise ValueError("root run is missing")
+            run = self._decode(row)
+            if run["parent_run_id"]:
+                self.db.rollback()
+                raise ValueError("workspace authority can only initialize a root run")
+            if (os.path.normcase(run["workspace"]) == os.path.normcase(canonical) and
+                    run["resources"] == [resource] and
+                    run["status"] not in _TERMINAL and not run["cancel_requested"]):
+                self.db.commit()
+                return run
+            if (run["workspace"] or run["resources"] or run["status"] != WORKSPACE_REQUIRED or
+                    run["owner_token"] or run["cancel_requested"]):
+                self.db.rollback()
+                raise ValueError("root workspace authority is already initialized or unavailable")
+            active = self.db.execute(
+                "SELECT 1 FROM agent_runs WHERE root_run_id=? AND run_id<>? "
+                "AND status NOT IN (?,?,?) LIMIT 1",
+                (run_id, run_id, COMPLETED, FAILED, CANCELLED)).fetchone()
+            if active:
+                self.db.rollback()
+                raise ValueError(
+                    "root workspace authority cannot initialize while specialists are active")
+            self.db.execute(
+                "UPDATE agent_runs SET workspace=?,resources_json=?,status=?,updated_at=? "
+                "WHERE run_id=? AND workspace='' AND resources_json='[]' "
+                "AND status=? AND owner_token='' AND cancel_requested=0",
+                (canonical, _js([resource]), QUEUED, now, run_id, WORKSPACE_REQUIRED))
+            self._event_locked(
+                run_id, "root_workspace_authority_initialized",
+                {"workspace": canonical, "mode": mode}, now)
+            self.db.commit()
+        return self.get(run_id)
+
     def bind_mission(self, run_id, mission_id):
         with self.lock:
             cur = self.db.execute(
                 "UPDATE agent_runs SET mission_id=?,updated_at=? WHERE run_id=? "
-                "AND status NOT IN (?,?,?) AND owner_token=''",
+                "AND status NOT IN (?,?,?) AND owner_token='' "
+                "AND (mission_id='' OR mission_id=?)",
                 (str(mission_id)[:100], int(time.time()), run_id,
-                 COMPLETED, FAILED, CANCELLED))
+                 COMPLETED, FAILED, CANCELLED, str(mission_id)[:100]))
             self.db.commit()
         return cur.rowcount == 1
 
@@ -393,15 +576,118 @@ class TaskTreeStore:
         work.  Callers own review/merge/release as an explicit later workflow.
         """
         run = self.get(run_id)
-        if not run or run["workspace_mode"] != "worktree" or run["workspace"]:
+        if run and run["workspace_mode"] == "worktree" and run["workspace"]:
+            return {"ok": True, "kind": "worktree", "dir": run["workspace"],
+                    "run": run, "replayed": True}
+        if not run or run["workspace_mode"] != "worktree":
             return {"ok": False, "error": "run does not need a worktree", "run": run}
-        if prepare_fn is None:
-            from .worktree import prepare as prepare_fn
-        prepared = prepare_fn(parent_cwd, run_id, "%s-%s" % (run["role"], run_id[-6:]))
-        if not prepared.get("ok") or prepared.get("kind") != "worktree":
-            return {**prepared, "run": self.get(run_id)}
-        bound = self.bind_workspace(run_id, prepared["dir"], owns_workspace=True)
-        return {**prepared, "run": bound}
+        token = secrets.token_hex(16)
+        now = int(time.time())
+        with self.lock:
+            cur = self.db.execute(
+                "UPDATE agent_runs SET owner_token=?,lease_until=?,updated_at=? "
+                "WHERE run_id=? AND status=? AND workspace='' AND cancel_requested=0 "
+                "AND (owner_token='' OR lease_until<?)",
+                (token, now + 300, now, run_id, WORKSPACE_REQUIRED, now))
+            if cur.rowcount:
+                self._event_locked(run_id, "workspace_provision_claimed",
+                                   {"lease_until": now + 300}, now)
+            self.db.commit()
+        if not cur.rowcount:
+            current = self.get(run_id)
+            if current and current.get("workspace"):
+                return {"ok": True, "kind": "worktree", "dir": current["workspace"],
+                        "run": current, "replayed": True}
+            return {"ok": False, "busy": True,
+                    "error": "specialist workspace provisioning is already claimed",
+                    "run": current}
+        # Recovery keys must identify the whole durable run.  A six-hex suffix
+        # reaches birthday-collision territory in ordinary long-lived installs
+        # and could rebind a new run to an unrelated abandoned worktree.
+        run_hash = hashlib.sha256(run_id.encode("utf-8", "replace")).hexdigest()[:16]
+        label = "%s-%s" % (str(run["role"] or "specialist")[:24], run_hash)
+        try:
+            if prepare_fn is None:
+                from .worktree import find_prepared, prepare
+                # Crash recovery: git may have completed worktree creation before SQLite recorded
+                # its path. The deterministic branch label re-binds that exact checkout.
+                prepared = find_prepared(parent_cwd, run_id, label) or \
+                    prepare(parent_cwd, run_id, label)
+            else:
+                prepared = prepare_fn(parent_cwd, run_id, label)
+            if not prepared.get("ok") or prepared.get("kind") != "worktree":
+                with self.lock:
+                    self.db.execute(
+                        "UPDATE agent_runs SET owner_token='',lease_until=0,updated_at=? "
+                        "WHERE run_id=? AND status=? AND owner_token=? AND workspace=''",
+                        (int(time.time()), run_id, WORKSPACE_REQUIRED, token))
+                    self.db.commit()
+                return {**prepared, "run": self.get(run_id)}
+            canonical = os.path.realpath(os.path.abspath(str(prepared.get("dir") or "")))
+            if not canonical or not os.path.isdir(canonical):
+                raise ValueError("provisioned worktree does not exist")
+            with self.lock:
+                bound = self.db.execute(
+                    "UPDATE agent_runs SET workspace=?,owns_workspace=1,status=?,"
+                    "owner_token='',lease_until=0,updated_at=? WHERE run_id=? AND status=? "
+                    "AND workspace='' AND owner_token=? AND cancel_requested=0",
+                    (canonical, QUEUED, int(time.time()), run_id,
+                     WORKSPACE_REQUIRED, token))
+                if bound.rowcount:
+                    self._event_locked(run_id, "workspace_bound",
+                                       {"workspace": canonical, "owned": True})
+                self.db.commit()
+            current = self.get(run_id)
+            if not bound.rowcount:
+                if current and current.get("workspace"):
+                    return {**prepared, "run": current, "replayed": True}
+                return {**prepared, "ok": False, "busy": True,
+                        "error": "workspace provisioning ownership changed", "run": current}
+            return {**prepared, "run": current}
+        except Exception:
+            with self.lock:
+                self.db.execute(
+                    "UPDATE agent_runs SET owner_token='',lease_until=0,updated_at=? "
+                    "WHERE run_id=? AND status=? AND owner_token=? AND workspace=''",
+                    (int(time.time()), run_id, WORKSPACE_REQUIRED, token))
+                self.db.commit()
+            raise
+
+    def mark_orphan_needs_you(self, run_id, reason, phase=""):
+        """Surface an unclaimed specialist repair failure instead of stranding it."""
+        now = int(time.time())
+        result = str(reason or "specialist reconciliation failed")[:4000]
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT status,workspace,mission_id,owner_token,cancel_requested "
+                "FROM agent_runs WHERE run_id=? AND parent_run_id<>''", (run_id,)).fetchone()
+            workspace_failure = bool(
+                row and row["status"] == WORKSPACE_REQUIRED and not row["workspace"])
+            mission_failure = bool(
+                row and row["status"] in (QUEUED, RECOVERY_REQUIRED) and
+                row["workspace"])
+            eligible = ((phase == "workspace" and workspace_failure) or
+                        (phase == "mission" and mission_failure) or
+                        (not phase and (workspace_failure or mission_failure)))
+            if (not eligible or row["owner_token"] or row["cancel_requested"]):
+                self.db.rollback()
+                return False
+            cur = self.db.execute(
+                "UPDATE agent_runs SET status=?,result=?,updated_at=? WHERE run_id=? "
+                "AND parent_run_id<>'' AND status=? AND workspace=? AND mission_id=? "
+                "AND owner_token='' AND cancel_requested=0",
+                (NEEDS_YOU, result, now, run_id, row["status"], row["workspace"],
+                 row["mission_id"]))
+            if cur.rowcount:
+                self._event_locked(
+                    run_id, "orphan_reconciliation_failed", {"reason": result[:1000]}, now)
+                self._notify_locked(run_id, "needs_you", {"reason": result[:1000]}, now)
+            self.db.commit()
+        if cur.rowcount:
+            self._hook("Notification", {"run_id": run_id, "kind": "needs_you",
+                                         "state": NEEDS_YOU}, subject="needs_you")
+        return cur.rowcount == 1
 
     def claim(self, run_id, lease_s=300):
         token, now = secrets.token_hex(16), int(time.time())
@@ -512,7 +798,63 @@ class TaskTreeStore:
             self.db.commit()
         return cur.rowcount == 1
 
-    def _stop_owned(self, run_id, token, state, result, notify):
+    def _cancel_descendants_locked(self, run_id, now, reason):
+        """Fence every active descendant after an ancestor terminal failure."""
+        rows = self.db.execute(
+            "WITH RECURSIVE descendants(run_id) AS ("
+            "SELECT run_id FROM agent_runs WHERE parent_run_id=? UNION ALL "
+            "SELECT child.run_id FROM agent_runs child JOIN descendants parent "
+            "ON child.parent_run_id=parent.run_id) "
+            "SELECT run_id,status,owner_token FROM agent_runs "
+            "WHERE run_id IN (SELECT run_id FROM descendants) "
+            "ORDER BY depth DESC,run_id",
+            (run_id,)).fetchall()
+        cancelled = 0
+        for row in rows:
+            child_id = row["run_id"]
+            if row["status"] in _TERMINAL:
+                continue
+            if row["status"] in (RUNNING, CANCEL_REQUESTED) and row["owner_token"]:
+                transitioned = row["status"] != CANCEL_REQUESTED
+                self.db.execute(
+                    "UPDATE agent_runs SET status=?,cancel_requested=1,updated_at=? "
+                    "WHERE run_id=? AND status IN (?,?) AND owner_token=?",
+                    (CANCEL_REQUESTED, now, child_id, RUNNING, CANCEL_REQUESTED,
+                     row["owner_token"]))
+                pending = self.db.execute(
+                    "SELECT 1 FROM agent_mailbox WHERE run_id=? AND kind='cancel' "
+                    "AND state IN ('queued','delivered') AND acked_at=0 LIMIT 1",
+                    (child_id,)).fetchone()
+                if not pending:
+                    self.db.execute(
+                        "INSERT INTO agent_mailbox(run_id,sender_run_id,kind,payload_json,"
+                        "state,created_at) VALUES(?,?,'cancel','{}','queued',?)",
+                        (child_id, run_id, now))
+                if transitioned:
+                    self._event_locked(
+                        child_id, "cancel_requested",
+                        {"cascade_from": run_id, "reason": str(reason)[:500]}, now)
+                cancelled += 1
+                continue
+            cur = self.db.execute(
+                "UPDATE agent_runs SET status=?,result=?,owner_token='',lease_until=0,"
+                "cancel_requested=1,cancel_ack_at=?,updated_at=? WHERE run_id=? "
+                "AND status NOT IN (?,?,?) AND owner_token=''",
+                (CANCELLED, str(reason or "ancestor failed")[:4000], now, now, child_id,
+                 COMPLETED, FAILED, CANCELLED))
+            if cur.rowcount:
+                self._event_locked(
+                    child_id, "cancel_acknowledged",
+                    {"without_worker": True, "cascade_from": run_id,
+                     "reason": str(reason)[:500]}, now)
+                self._notify_locked(
+                    child_id, "cancelled",
+                    {"acknowledged": True, "cascade_from": run_id}, now)
+                cancelled += 1
+        return cancelled
+
+    def _stop_owned(self, run_id, token, state, result, notify, *,
+                    artifacts=None, observation=None):
         if state in (COMPLETED, FAILED):
             hook = self._hook(
                 "TaskCompleted", {"run_id": run_id, "state": state,
@@ -536,15 +878,13 @@ class TaskTreeStore:
                 if notify:
                     self._notify_locked(run_id, notify,
                                         {"state": state, "result": str(result or "")[:1000]}, now)
-                row = self.db.execute(
-                    "SELECT parent_run_id FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
-                if row and row["parent_run_id"] and state in _TERMINAL:
-                    self.db.execute(
-                        "INSERT INTO agent_mailbox(run_id,sender_run_id,kind,payload_json,state,created_at) "
-                        "VALUES(?,?, 'child_result',?,'queued',?)",
-                        (row["parent_run_id"], run_id,
-                         _js({"run_id": run_id, "state": state,
-                              "result": str(result or "")[:4000]}), now))
+                if state == FAILED:
+                    self._cancel_descendants_locked(
+                        run_id, now, "cancelled because ancestor %s failed" % run_id)
+                if state in _TERMINAL:
+                    self._queue_child_result_locked(
+                        run_id, state, result, now, artifacts=artifacts,
+                        observation=observation)
             self.db.commit()
         if cur.rowcount and notify:
             self._hook("Notification", {"run_id": run_id, "kind": notify,
@@ -555,11 +895,113 @@ class TaskTreeStore:
         return self._stop_owned(run_id, token, NEEDS_YOU if needs_you else BLOCKED,
                                 reason, "needs_you" if needs_you else "blocked")
 
-    def complete(self, run_id, token, result=""):
-        return self._stop_owned(run_id, token, COMPLETED, result, "completed")
+    def complete(self, run_id, token, result="", *, artifacts=None, observation=None):
+        return self._stop_owned(
+            run_id, token, COMPLETED, result, "completed",
+            artifacts=artifacts, observation=observation)
 
     def fail(self, run_id, token, result=""):
         return self._stop_owned(run_id, token, FAILED, result, "failed")
+
+    def fail_mission_root(self, run_id, mission_id, result=""):
+        """Mirror a terminal root Mission failure and fence its whole subtree."""
+        reason = str(result or "root Mission failed")[:4000]
+        now = int(time.time())
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT parent_run_id,mission_id,status,owner_token FROM agent_runs "
+                "WHERE run_id=?", (run_id,)).fetchone()
+            if (not row or row["parent_run_id"] or row["mission_id"] != str(mission_id) or
+                    row["owner_token"]):
+                self.db.rollback()
+                return False
+            if row["status"] == FAILED:
+                # Idempotent reconciliation also repairs an impossible-looking
+                # but durable partial/corrupt projection where the root marker is
+                # present yet a descendant was not fenced.
+                self._cancel_descendants_locked(
+                    run_id, now, "cancelled because ancestor %s failed" % run_id)
+                self.db.commit()
+                return True
+            if row["status"] in _TERMINAL:
+                self.db.commit()
+                return False
+            cur = self.db.execute(
+                "UPDATE agent_runs SET status=?,result=?,owner_token='',lease_until=0,"
+                "updated_at=? WHERE run_id=? AND parent_run_id='' AND mission_id=? "
+                "AND status NOT IN (?,?,?) AND owner_token=''",
+                (FAILED, reason, now, run_id, str(mission_id),
+                 COMPLETED, FAILED, CANCELLED))
+            if cur.rowcount:
+                self._event_locked(run_id, FAILED, {"result": reason[:1000]}, now)
+                self._notify_locked(
+                    run_id, "failed", {"state": FAILED, "result": reason[:1000]}, now)
+                self._cancel_descendants_locked(
+                    run_id, now, "cancelled because ancestor %s failed" % run_id)
+            self.db.commit()
+        if cur.rowcount:
+            self._hook(
+                "TaskCompleted", {"run_id": run_id, "state": FAILED, "result": reason},
+                subject=FAILED)
+            self._hook("Notification", {"run_id": run_id, "kind": "failed",
+                                         "state": FAILED}, subject="failed")
+        return cur.rowcount == 1
+
+    def complete_mission_root(self, run_id, mission_id, result=""):
+        """Mirror a successful root Mission once its delegated subtree is terminal.
+
+        Root Mission execution is leased by MissionStore, not by TaskTree, so the
+        root run normally remains ownerless.  This narrow projection CAS keeps the
+        two durable views coherent without making an ownerless root claimable as a
+        specialist or bypassing the descendant completion fence.
+        """
+        outcome = str(result or "")[:4000]
+        now = int(time.time())
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT parent_run_id,root_run_id,mission_id,status,owner_token,"
+                "cancel_requested FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if (not row or row["parent_run_id"] or row["root_run_id"] != run_id or
+                    row["mission_id"] != str(mission_id) or row["owner_token"] or
+                    row["cancel_requested"]):
+                self.db.rollback()
+                return False
+            if row["status"] == COMPLETED:
+                self.db.commit()
+                return True
+            if row["status"] in _TERMINAL or row["status"] == CANCEL_REQUESTED:
+                self.db.commit()
+                return False
+            active = self.db.execute(
+                "SELECT 1 FROM agent_runs WHERE root_run_id=? AND run_id<>? "
+                "AND status NOT IN (?,?,?) LIMIT 1",
+                (run_id, run_id, COMPLETED, FAILED, CANCELLED)).fetchone()
+            if active:
+                self.db.rollback()
+                return False
+            cur = self.db.execute(
+                "UPDATE agent_runs SET status=?,result=?,owner_token='',lease_until=0,"
+                "updated_at=? WHERE run_id=? AND parent_run_id='' AND root_run_id=? "
+                "AND mission_id=? AND status NOT IN (?,?,?) AND status<>? "
+                "AND owner_token='' AND cancel_requested=0",
+                (COMPLETED, outcome, now, run_id, run_id, str(mission_id),
+                 COMPLETED, FAILED, CANCELLED, CANCEL_REQUESTED))
+            if cur.rowcount:
+                self._event_locked(run_id, COMPLETED, {"result": outcome[:1000]}, now)
+                self._notify_locked(
+                    run_id, "completed", {"state": COMPLETED, "result": outcome[:1000]}, now)
+            self.db.commit()
+        if cur.rowcount:
+            # Mission completion is already authoritative at this point.  The
+            # TaskTree hook is an audit/lifecycle projection, not a second veto.
+            self._hook(
+                "TaskCompleted", {"run_id": run_id, "state": COMPLETED,
+                                  "result": outcome}, subject=COMPLETED)
+            self._hook("Notification", {"run_id": run_id, "kind": "completed",
+                                         "state": COMPLETED}, subject="completed")
+        return cur.rowcount == 1
 
     def cancel_owned(self, run_id, token, result="cancelled"):
         now = int(time.time())
@@ -576,6 +1018,7 @@ class TaskTreeStore:
                     "AND kind='cancel' AND state IN ('queued','delivered')", (now, run_id))
                 self._event_locked(run_id, "cancel_acknowledged", {}, now)
                 self._notify_locked(run_id, "cancelled", {"acknowledged": True}, now)
+                self._queue_child_result_locked(run_id, CANCELLED, result, now)
             self.db.commit()
         return cur.rowcount == 1
 
@@ -640,13 +1083,20 @@ class TaskTreeStore:
             raise ValueError("steer text is empty")
         now = int(time.time())
         with self.lock:
-            row = self.db.execute("SELECT status FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
-            if not row or row["status"] in _TERMINAL:
+            row = self.db.execute(
+                "SELECT status,cancel_requested FROM agent_runs WHERE run_id=?",
+                (run_id,)).fetchone()
+            if (not row or row["status"] in _TERMINAL or
+                    row["status"] == CANCEL_REQUESTED or row["cancel_requested"]):
                 return None
             cur = self.db.execute(
                 "INSERT INTO agent_mailbox(run_id,sender_run_id,kind,payload_json,state,created_at) "
                 "VALUES(?,?,'steer',?,'queued',?)",
                 (run_id, sender_run_id, _js({"text": str(text)[:4000]}), now))
+            self.db.execute(
+                "UPDATE agent_runs SET status=?,result='',updated_at=? WHERE run_id=? "
+                "AND status=? AND owner_token='' AND cancel_requested=0",
+                (QUEUED, now, run_id, WAITING))
             self._event_locked(run_id, "steer_queued", {"message_id": cur.lastrowid}, now)
             self.db.commit()
         return cur.lastrowid
@@ -711,6 +1161,12 @@ class TaskTreeStore:
                     self._notify_locked(child_id, "cancelled", {
                         "acknowledged": True,
                         "cascade_from": run_id if child_id != run_id else ""}, now)
+                    # Only the subtree root reports cancellation to authority
+                    # outside the subtree. Descendant parents are themselves
+                    # stopping and cannot act on intermediate outcomes.
+                    if child_id == run_id:
+                        self._queue_child_result_locked(
+                            child_id, CANCELLED, "cancelled before execution", now)
             self.db.commit()
         return True
 
@@ -735,6 +1191,136 @@ class TaskTreeStore:
                     "WHERE message_id IN (%s) AND state='queued'" % marks, (now, *ids))
             self.db.commit()
         return [{**dict(row), "payload": _jl(row["payload_json"])} for row in rows]
+
+    def claim_child_results(self, run_id, consumer_mission_id, limit=20):
+        """Deliver terminal child outcomes to the Mission bound to ``run_id``.
+
+        Unlike a worker mailbox claim, the parent Mission and TaskTree run use
+        different lease tokens.  The durable Mission binding is therefore the
+        authority check.  Delivered-but-unacked rows are replayed so a crash after
+        folding into Mission case cannot lose the outcome.
+        """
+        now = int(time.time())
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            owner = self.db.execute(
+                "SELECT status,cancel_requested FROM agent_runs "
+                "WHERE run_id=? AND mission_id=?",
+                (run_id, str(consumer_mission_id or ""))).fetchone()
+            if (not owner or owner["status"] in _TERMINAL or
+                    owner["status"] == CANCEL_REQUESTED or owner["cancel_requested"]):
+                self.db.rollback()
+                return []
+            rows = self.db.execute(
+                "SELECT * FROM agent_mailbox WHERE run_id=? AND kind='child_result' "
+                "AND state IN ('queued','delivered') ORDER BY message_id LIMIT ?",
+                (run_id, max(1, int(limit)))).fetchall()
+            queued = [row["message_id"] for row in rows if row["state"] == "queued"]
+            if queued:
+                marks = ",".join("?" for _ in queued)
+                self.db.execute(
+                    "UPDATE agent_mailbox SET state='delivered',delivered_at=? "
+                    "WHERE message_id IN (%s) AND state='queued'" % marks,
+                    (now, *queued))
+            self.db.commit()
+        return [{**dict(row), "state": "delivered",
+                 "payload": _jl(row["payload_json"])} for row in rows]
+
+    def completion_blocker(self, run_id, consumer_mission_id):
+        """Atomically find delegated work/results that must precede Mission success.
+
+        Child terminalization and its child_result enqueue share one TaskTree
+        transaction.  Taking an immediate transaction here therefore closes the
+        race where a child finishes after Mission control polled but before its
+        model reports done: this sees either the active child or its queued result.
+        """
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            owner = self.db.execute(
+                "SELECT status,cancel_requested FROM agent_runs "
+                "WHERE run_id=? AND mission_id=?",
+                (run_id, str(consumer_mission_id or ""))).fetchone()
+            if (not owner or owner["status"] in _TERMINAL or
+                    owner["status"] == CANCEL_REQUESTED or owner["cancel_requested"]):
+                self.db.commit()
+                return {"reason": "calling run is stopping, terminal, or unbound",
+                        "seconds": 60}
+            pending = self.db.execute(
+                "SELECT COUNT(*) n FROM agent_mailbox WHERE run_id=? "
+                "AND kind='child_result' AND state IN ('queued','delivered')",
+                (run_id,)).fetchone()["n"]
+            active = self.db.execute(
+                "WITH RECURSIVE descendants(run_id,role,status) AS ("
+                "SELECT run_id,role,status FROM agent_runs WHERE parent_run_id=? UNION ALL "
+                "SELECT child.run_id,child.role,child.status FROM agent_runs child "
+                "JOIN descendants parent ON child.parent_run_id=parent.run_id) "
+                "SELECT role,status FROM descendants WHERE status NOT IN (?,?,?) "
+                "ORDER BY run_id LIMIT 6",
+                (run_id, COMPLETED, FAILED, CANCELLED)).fetchall()
+            self.db.commit()
+        if pending:
+            return {
+                "reason": "%d delegated specialist result(s) await durable folding" % pending,
+                "seconds": 1,
+            }
+        if active:
+            roles = ", ".join("%s:%s" % (row["role"] or "specialist", row["status"])
+                              for row in active)
+            return {
+                "reason": "%d+ delegated specialist(s) still active (%s)" %
+                          (len(active), roles),
+                "seconds": 60,
+            }
+        return {}
+
+    def has_child_results(self, run_id, consumer_mission_id):
+        """Check the bound parent inbox without changing delivery state."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT 1 FROM agent_mailbox m JOIN agent_runs r ON r.run_id=m.run_id "
+                "WHERE m.run_id=? AND r.mission_id=? AND m.kind='child_result' "
+                "AND m.state IN ('queued','delivered') LIMIT 1",
+                (run_id, str(consumer_mission_id or ""))).fetchone()
+        return bool(row)
+
+    def has_messages(self, run_id, kinds):
+        """Read-only signal used to event-wake a specialist Mission wait."""
+        kinds = (kinds,) if isinstance(kinds, str) else tuple(kinds or ())
+        if not kinds:
+            return False
+        marks = ",".join("?" for _ in kinds)
+        with self.lock:
+            row = self.db.execute(
+                "SELECT 1 FROM agent_mailbox WHERE run_id=? AND kind IN (%s) "
+                "AND state IN ('queued','delivered') LIMIT 1" % marks,
+                (run_id, *kinds)).fetchone()
+        return bool(row)
+
+    def ack_child_result(self, run_id, consumer_mission_id, message_id):
+        """Idempotently acknowledge one outcome after it is folded into Mission case."""
+        now = int(time.time())
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT m.state FROM agent_mailbox m JOIN agent_runs r ON r.run_id=m.run_id "
+                "WHERE m.message_id=? AND m.run_id=? AND m.kind='child_result' "
+                "AND r.mission_id=?",
+                (int(message_id), run_id, str(consumer_mission_id or ""))).fetchone()
+            if not row:
+                self.db.rollback()
+                return False
+            if row["state"] == "acked":
+                self.db.commit()
+                return True
+            cur = self.db.execute(
+                "UPDATE agent_mailbox SET state='acked',acked_at=? WHERE message_id=? "
+                "AND run_id=? AND kind='child_result' AND state='delivered'",
+                (now, int(message_id), run_id))
+            if cur.rowcount:
+                self._event_locked(
+                    run_id, "child_result_acknowledged", {"message_id": message_id}, now)
+            self.db.commit()
+        return cur.rowcount == 1
 
     def ack_message(self, run_id, token, message_id):
         now = int(time.time())
@@ -762,8 +1348,35 @@ class TaskTreeStore:
                     "AND kind='cancel' AND state IN ('queued','delivered')", (now, run_id))
                 self._event_locked(run_id, "cancel_acknowledged", {}, now)
                 self._notify_locked(run_id, "cancelled", {"acknowledged": True}, now)
+                self._queue_child_result_locked(run_id, CANCELLED, result, now)
             self.db.commit()
         return cur.rowcount == 1
+
+    def is_descendant(self, parent_run_id, target_run_id):
+        """Return true only when target is below parent in the immutable run tree."""
+        if not parent_run_id or not target_run_id or parent_run_id == target_run_id:
+            return False
+        with self.lock:
+            row = self.db.execute(
+                "WITH RECURSIVE descendants(run_id) AS ("
+                "SELECT run_id FROM agent_runs WHERE parent_run_id=? UNION ALL "
+                "SELECT child.run_id FROM agent_runs child JOIN descendants parent "
+                "ON child.parent_run_id=parent.run_id) "
+                "SELECT 1 FROM descendants WHERE run_id=? LIMIT 1",
+                (parent_run_id, target_run_id)).fetchone()
+        return bool(row)
+
+    def send_to_descendant(self, sender_run_id, target_run_id, text):
+        """Queue a steer without allowing a model to address peers or ancestors."""
+        if not self.is_descendant(sender_run_id, target_run_id):
+            raise ValueError("specialist target is outside caller descendant scope")
+        return self.steer(target_run_id, text, sender_run_id)
+
+    def cancel_descendant(self, sender_run_id, target_run_id):
+        """Cancel only authority delegated below the calling run."""
+        if not self.is_descendant(sender_run_id, target_run_id):
+            raise ValueError("specialist target is outside caller descendant scope")
+        return self.request_cancel(target_run_id, sender_run_id)
 
     def account_usage(self, run_id, token, *, input_tokens=0, output_tokens=0,
                       cost_usd=0.0, wall_ms=0, retries=0):

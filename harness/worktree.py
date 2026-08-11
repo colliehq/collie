@@ -109,6 +109,19 @@ def prepare(cwd, session, label=""):
     return {"ok": True, "dir": dst, "branch": branch, "root": root, "kind": "worktree", "error": ""}
 
 
+def find_prepared(cwd, session, label=""):
+    """Find the deterministic worktree from an interrupted prepare-before-bind window."""
+    root = repo_root(cwd)
+    if not root:
+        return None
+    branch = PREFIX + _slug(label or session, fallback=_slug(session))
+    for item in listing(root):
+        if item.get("branch") == branch and os.path.isdir(item.get("dir") or ""):
+            return {"ok": True, "dir": item["dir"], "branch": branch, "root": root,
+                    "kind": "worktree", "error": "", "recovered": True}
+    return None
+
+
 def status(wt_dir):
     """What a run left behind: {"dirty", "files", "commits", "branch"}."""
     ok, out = _git(["status", "--porcelain"], wt_dir)

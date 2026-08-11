@@ -390,6 +390,30 @@ def test_loop_command_accumulates_failures_across_iterations(monkeypatch, tmp_pa
     assert cli.cmd_loop(args) == 1
 
 
+def test_loop_passing_until_does_not_promote_a_failed_run(monkeypatch, tmp_path):
+    from harness import cli, plat
+
+    result = types.SimpleNamespace(answer="partial", error="provider failed",
+                                   messages=[], verified=False)
+    settlements = []
+    closer = types.SimpleNamespace(close=lambda: None, set_block=lambda *a, **k: None,
+                                   finish_run=lambda *_a, **_k: None)
+    harness = types.SimpleNamespace(
+        run=lambda *a, **k: result, memory=closer, recorder=closer,
+        settle_run_memory=lambda res, passed, evidence, source="":
+            settlements.append((passed, evidence, source)))
+    monkeypatch.setattr(cli, "make_harness", lambda *a, **k: harness)
+    monkeypatch.setattr(
+        plat, "shell_argv",
+        lambda cmd: ([sys.executable, "-c", "raise SystemExit(0)"], False))
+    args = types.SimpleNamespace(cwd=str(tmp_path), provider="mock", model=None, project="p",
+                                 goal=None, task="work", max=1, until="passes")
+
+    assert cli.cmd_loop(args) == 0
+    assert settlements and settlements[0][0] is False
+    assert result.verified is False
+
+
 def test_cmd_run_returns_nonzero_and_scopes_undo_to_session(monkeypatch, tmp_path):
     from harness import cli, sessions
 

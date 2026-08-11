@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — Evidence-gated agent foundations
+
+- **Missions can delegate through a durable agent graph.** Model-facing `agent.spawn`,
+  `agent.send`, `agent.poll`, and `agent.cancel` create descendant-scoped specialist Missions.
+  Structured child results use replayable fold-then-ack delivery, wake waiting parents, and prevent
+  a parent from declaring completion while delegated work is still live. File-writing specialists
+  run in isolated Git worktrees and require authority covering the complete source workspace.
+- **Fan-out shares one Mission budget.** Durable parent lineage makes model tokens, cost, active
+  wall time, retries, storage, model turns, irreversible-action count, and action rate cumulative
+  across the entire descendant tree. Sibling model-turn and irreversible-action/rate reservations
+  are checked atomically in SQLite; other usage is charged when each in-flight boundary returns.
+- **Agent memory is a claim before it is a fact.** `remember` and automatic run consolidation now
+  create quarantined proposals. Normal recall sees only legacy, attested, or verified claims;
+  executed host checks promote or reject proposals while preserving evidence and provenance.
+- **`execute_code` no longer bypasses the host boundary.** Every executable inner tool call now
+  traverses the normal argument repair, permission gate, audit, lifecycle hooks, secret handling,
+  checkpoint, and verification accounting path; invariant-violating calls are denied and recorded
+  there. Timeout revocation blocks late approvals and preserves an explicit recovery fence when an
+  inner external effect may still be running.
+
 ## v0.21.23 — Continue across branch waits and remember completed work
 
 - **A timer can pause one workstream without pausing the Mission.** A named follow-up is recorded

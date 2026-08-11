@@ -487,10 +487,15 @@ def cmd_loop(args):
     task = args.task or ("Make progress toward the goal above. Do one concrete step this turn.")
     stopped = False
     run_failed = False
+    history = None
+    h.defer_memory_promotion = bool(args.until)
     try:
         for i in range(args.max):
             print("\n── collie loop · iteration %d/%d ──" % (i + 1, args.max), flush=True)
-            res = h.run("loop", task, consolidate=True)   # consolidate -> memory carries forward
+            res = h.run("loop", task, consolidate=True, history=history)
+            # Pending/rejected durable claims stay outside global recall, but the current loop must
+            # still remember its concrete progress. Carry the bounded/elided transcript directly.
+            history = getattr(res, "messages", None) or history
             print(res.answer or res.error or "(no output)", flush=True)
             # A later successful iteration must not erase an earlier model/provider failure.
             run_failed = run_failed or bool(res.error)
@@ -499,6 +504,16 @@ def cmd_loop(args):
                 _uargs, _ush = plat.shell_argv(args.until)   # POSIX --until predicate on every OS
                 rc = _sp.run(_uargs, shell=_ush, cwd=cwd).returncode
                 print("  [until] `%s` → exit %d" % (args.until, rc), flush=True)
+                until_evidence = {"kind": "loop_until", "command": args.until,
+                                  "exit_code": rc, "passed": rc == 0}
+                res.verified = bool(rc == 0 and not res.error)
+                settle = getattr(h, "settle_run_memory", None)
+                if callable(settle):
+                    settle(res, bool(res.verified), until_evidence, source="loop_until")
+                # run() persisted the in-loop verdict before this out-of-process predicate.
+                finish = getattr(h.recorder, "finish_run", None)
+                if callable(finish):
+                    finish(res)
                 if rc == 0:
                     print("✓ goal condition met — stopping."); stopped = True; break
         if not stopped and args.until:
@@ -1518,21 +1533,28 @@ def cmd_run(args):
         h.emit = lambda kind, d: print(_json.dumps({"type": kind, **d}, ensure_ascii=False),
                                        file=_sys.stderr, flush=True)
         h.emit("decision", decision_payload)
+    will_verify = bool(
+        (decision.intent == "test" or decision.verification == "required") and
+        verify_command)
+    h.defer_memory_promotion = will_verify
     res = h.run("adhoc", args.task, history=history)
     verification_evidence = None
-    if (decision.intent == "test" or decision.verification == "required") and verify_command:
+    if will_verify:
         from .verification import run_verification_command
         verification_evidence = run_verification_command(
             verify_command, cwd, source=verify_source or "detected", after_last_edit=True)
         if callable(getattr(h, "emit", None)):
             h.emit("verification_evidence", {"evidence": verification_evidence})
-        if decision.intent == "test":
-            res.verified = bool(verification_evidence["passed"])
-        elif not verification_evidence["passed"]:
-            res.verified = False
+        res.verified = bool(verification_evidence["passed"] and not res.error)
+        if not verification_evidence["passed"]:
             check_error = "required check failed: %s (exit %s)" % (
                 verify_command, verification_evidence.get("exit_code"))
             res.error = ((res.error + "; ") if res.error else "") + check_error
+        h.settle_run_memory(
+            res, bool(res.verified), verification_evidence,
+            source="cli_verification")
+        # Persist the final host-side verdict; run() could only record its in-loop evidence.
+        h.recorder.finish_run(res)
     sess.save(sid, res.messages, project=args.project, cwd=cwd, answer=res.answer or "")
     actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
     try:
@@ -2104,8 +2126,73 @@ def cmd_mem(args):
                 e.get("mrr", 0), e.get("n", 0)))
         print("  -> %s" % out)
         return 0
-    m = SqliteMemory(mem_db, embedder=_embedder(args.embed))
-    print("  [embed] %s (dim=%d)" % (m.embedder.name, m.embedder.dim))
+    review_actions = {"pending", "list", "approve", "attest", "reject", "invalidate"}
+    # Reviewing an exact local row needs no embedding model (and must not start
+    # a download just to approve a proposal).
+    embedder = None if args.action in review_actions else _embedder(args.embed)
+    m = SqliteMemory(mem_db, embedder=embedder)
+    if args.action not in review_actions:
+        print("  [embed] %s%s" % (
+            m.embedder.name if m.embedder else "bm25-only",
+            " (dim=%d)" % m.embedder.dim if m.embedder else ""))
+    project = args.project or "demo"
+
+    if args.action in ("pending", "list"):
+        status = "proposed" if args.action == "pending" else (args.status or None)
+        rows = m.list_claims(status=status, project=args.project or None, limit=args.limit)
+        for row in rows:
+            review = (" review=%s" % row["review_source"]
+                      if row.get("review_source") else "")
+            print("#%d [%-11s] project=%s source=%s%s\n  %s" % (
+                row["id"], row["status"], row["project"], row["source"], review,
+                (row["text"] or "")[:240]))
+        if not rows:
+            print("(no pending memory proposals)" if args.action == "pending"
+                  else "(no memory claims)")
+        m.close()
+        return 0
+
+    if args.action in ("approve", "attest", "reject", "invalidate"):
+        try:
+            memory_id = int(args.text)
+            if memory_id <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            print("memory id must be a positive integer")
+            m.close()
+            return 2
+        claim = m.get_claim(memory_id)
+        if claim is None:
+            print("no memory claim #%d" % memory_id)
+            m.close()
+            return 1
+        provenance = "collie mem %s" % args.action
+        if args.action in ("approve", "attest"):
+            ok = m.promote(
+                memory_id, status="attested",
+                evidence=args.note or "local user attestation",
+                review_source="local_user", review_provenance=provenance)
+            message = "attested memory #%d as the local user" % memory_id
+        elif args.action == "reject":
+            ok = m.reject(
+                memory_id, evidence=args.note or "local user rejected proposal",
+                review_source="local_user", review_provenance=provenance)
+            message = "rejected memory proposal #%d as the local user" % memory_id
+        else:
+            ok = m.invalidate(
+                memory_id, evidence=args.note or "local user invalidated memory",
+                review_source="local_user", review_provenance=provenance)
+            message = "invalidated memory #%d as the local user" % memory_id
+        if not ok:
+            expected = "proposed" if args.action != "invalidate" else "recallable"
+            print("memory #%d is %s, not %s; nothing changed" %
+                  (memory_id, claim["status"], expected))
+            m.close()
+            return 1
+        print(message)
+        m.close()
+        return 0
+
     if args.action == "import":
         from .mem_import import run_import
         run_import(m, source=args.source, limit=args.limit, dry_run=args.dry_run,
@@ -2116,11 +2203,11 @@ def cmd_mem(args):
         from .mem_import import purge
         print("purged %d imported facts" % purge(m))
     elif args.action == "add":
-        print("remembered #%d" % m.remember(args.text, project=args.project))
+        print("remembered #%d" % m.remember(args.text, project=project))
     elif args.action == "reembed":
-        print("re-embedded %d facts with %s" % (m.reembed_all(), m.embedder.name))
+        print("re-embedded %d facts with %s" % (m.reembed_all(), m.embed_model))
     else:
-        hits = m.recall(args.text, project=args.project, k=8)
+        hits = m.recall(args.text, project=project, k=8)
         for h in (hits or []):
             print("[%.3f] %s" % (h["score"], h["text"][:120]))
         if not hits:
@@ -3322,13 +3409,23 @@ def main(argv=None):
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
 
     pm = sub.add_parser("mem")
-    pm.add_argument("action", choices=["search", "add", "reembed", "eval", "import", "purge-imported"])
+    pm.add_argument("action", choices=[
+        "search", "add", "reembed", "eval", "import", "purge-imported",
+        "pending", "list", "approve", "attest", "reject", "invalidate"])
     pm.add_argument("text", nargs="?", default="")
-    pm.add_argument("--project", default="demo"); pm.add_argument("--embed", default="auto")
+    pm.add_argument("--project", default="",
+                    help="project filter (search/add default to demo; review defaults to all)")
+    pm.add_argument("--embed", default="auto")
+    pm.add_argument("--status", default=None, choices=[
+        "proposed", "active", "attested", "verified", "rejected", "invalidated"],
+        help="filter `mem list` by lifecycle status")
+    pm.add_argument("--note", default="",
+                    help="review evidence recorded with approve/attest/reject/invalidate")
     # mem import: distill past Claude Code / Codex sessions into memory (see mem_import.py)
     pm.add_argument("--source", choices=["cc", "codex", "all"], default="all",
                     help="which local agent history to import")
-    pm.add_argument("--limit", type=int, default=100, help="max sessions this run (newest first)")
+    pm.add_argument("--limit", type=int, default=100,
+                    help="max sessions/claims this run (newest first)")
     pm.add_argument("--dry-run", action="store_true", help="show extracted facts, store nothing")
     pm.add_argument("--no-llm", action="store_true", help="heuristic extraction only (no distiller calls)")
     pm.add_argument("--force", action="store_true", help="re-import sessions already in the state file")

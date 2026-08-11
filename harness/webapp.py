@@ -3427,6 +3427,9 @@ class Handler(BaseHTTPRequestHandler):
                         break                  # socket gone — stop pinging (the run's own writes will end it)
             hb = threading.Thread(target=_heartbeat, daemon=True)
             hb.start()
+            should_check = (run_opts["intent"] == "test" or
+                            run_opts["verification"] == "required")
+            h.defer_memory_promotion = bool(should_check and verify_command)
             try:
                 res = h.run("web", user_msg, consolidate=True, history=history)
             finally:
@@ -3434,8 +3437,6 @@ class Handler(BaseHTTPRequestHandler):
             canceled = bool(getattr(res, "canceled", False)
                             or Handler._run_cancelled(sid, run_id))
             verification_evidence = None
-            should_check = (run_opts["intent"] == "test" or
-                            run_opts["verification"] == "required")
             if should_check and verify_command and not canceled:
                 from .verification import run_verification_command
                 verification_evidence = run_verification_command(
@@ -3446,13 +3447,16 @@ class Handler(BaseHTTPRequestHandler):
                 _tx("verification_evidence", evidence_event)
                 Handler._live_pub("verification_evidence", evidence_event)
                 Handler._mirror_pub(sid, "verification_evidence", evidence_event)
-                if run_opts["intent"] == "test":
-                    res.verified = bool(verification_evidence["passed"])
-                elif not verification_evidence["passed"]:
-                    res.verified = False
+                res.verified = bool(verification_evidence["passed"] and not res.error)
+                if not verification_evidence["passed"]:
                     check_error = "required check failed: %s (exit %s)" % (
                         verify_command, verification_evidence.get("exit_code"))
                     res.error = ((res.error + "; ") if res.error else "") + check_error
+                h.settle_run_memory(
+                    res, bool(res.verified), verification_evidence,
+                    source="web_verification")
+                # run() records its own gate before this outer check; update the durable receipt.
+                h.recorder.finish_run(res)
             sessions.save(sid, res.messages, project="web", cwd=cwd, answer=res.answer or "")
             Handler._live_pub("done", {"session": sid, "run": run_id,
                                         "turns": res.turns, "canceled": canceled})

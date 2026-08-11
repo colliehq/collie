@@ -319,17 +319,38 @@ def test_no_tool_name_reserved_by_the_api():
     assert not bad, "tool names the API refuses (rename off the mcp_ prefix): %s" % bad
 
 # ------------------------------------------------------------------ execute_code RPC (progtool)
-def test_execute_code_recursion_guard():
+def test_execute_code_routes_recursion_guard_through_broker():
     from harness.tools import default_registry
     from harness.progtool import register_execute_code
     reg = default_registry(web_search=False)
     register_execute_code(reg)
     ec = reg.get("execute_code")
     ctx = _ctx(os.getcwd())
+    brokered = []
+    ctx.tool_broker = lambda name, args: (
+        brokered.append((name, args)) or
+        "DENIED: %s cannot be called from inside execute_code" % name)
     out = ec.run({"code": 'print("EC:", tool("execute_code", code="print(1)")[:60])\n'
                           'print("DG:", tool("delegate", task="x")[:60])', "timeout": 20}, ctx)
     assert "cannot be called" in out.split("DG:")[0], "execute_code reentrancy must be refused"
     assert "cannot be called" in out.split("DG:")[1], "delegate-via-RPC must be refused"
+    assert [name for name, _args in brokered] == ["execute_code", "delegate"], (
+        "nested amplification denials must traverse the auditable host broker")
+
+def test_execute_code_inner_calls_fail_closed_without_harness_broker():
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_") as work:
+        open(os.path.join(work, "visible.txt"), "w").write(
+            "must not be read by registry bypass")
+        reg = default_registry(web_search=False)
+        register_execute_code(reg)
+
+        out = reg.get("execute_code").run(
+            {"code": 'print(read_file("visible.txt"))', "timeout": 20}, _ctx(work))
+
+        assert "inner tool broker is unavailable" in out, out
+        assert "must not be read by registry bypass" not in out, out
 
 def test_execute_code_no_fd_leak():
     from harness.tools import default_registry
@@ -615,10 +636,20 @@ def test_web_fetch_ssrf_and_registration():
     assert "web_fetch" not in off.registry.names(), "web_fetch must be off when web tools are off"
 
 # ------------------------------------------------------------------ every tool graceful on bad args
-def test_all_tools_graceful_on_bad_args():
+def test_all_tools_graceful_on_bad_args(tmp_path, monkeypatch):
     from harness.cli import make_harness
+    from harness import mcpclient, native
     from harness.progtool import register_execute_code
-    h = make_harness(tempfile.mkdtemp(), provider="mock", project="fuzz", embed="hash", web_search=True)
+    # This is a bad-argument unit test, not permission to exercise the developer's live browser,
+    # desktop session, MCP servers, or the network.  Keep its registry hermetic on machines where
+    # those integrations happen to be configured.
+    missing_mcp = str(tmp_path / "no-mcp.json")
+    monkeypatch.setenv("COLLIE_MCP_CONFIG", missing_mcp)
+    monkeypatch.setenv("COLLIE_BROWSER_BRIDGE", "0")
+    monkeypatch.setattr(mcpclient, "_CONFIG", missing_mcp)
+    monkeypatch.setattr(native, "backend", lambda: None)
+    h = make_harness(tempfile.mkdtemp(), provider="mock", project="fuzz", embed="hash",
+                     web_search=False)
     try: register_execute_code(h.registry)
     except Exception: pass
     ctx = types.SimpleNamespace(cwd=h.cwd, project="fuzz", memory=h.memory)

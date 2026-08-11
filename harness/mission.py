@@ -70,8 +70,6 @@ _PERSON_REQUIRED_AUTH = {
     "captcha", "biometric", "kyc", "identity_proof", "legal_signature",
     "payment", "spending", "person_required_mfa", "security_key",
 }
-
-
 def _setting_on(value) -> bool:
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -511,6 +509,7 @@ class MissionStore:
         # lifecycle rows, and operators can inspect progress/budget state directly.
         self.db.execute("""CREATE TABLE IF NOT EXISTS mission_runtime(
             mission_id TEXT PRIMARY KEY,
+            parent_mission_id TEXT NOT NULL DEFAULT '',
             progress_seq INTEGER NOT NULL DEFAULT 0,
             progress_at INTEGER NOT NULL DEFAULT 0,
             active_phase TEXT NOT NULL DEFAULT '',
@@ -533,9 +532,13 @@ class MissionStore:
             external_run_id TEXT NOT NULL DEFAULT '')""")
         runtime_cols = {r[1] for r in self.db.execute("PRAGMA table_info(mission_runtime)")}
         for col, decl in (("lane", "TEXT NOT NULL DEFAULT 'mission'"),
-                          ("external_run_id", "TEXT NOT NULL DEFAULT ''")):
+                          ("external_run_id", "TEXT NOT NULL DEFAULT ''"),
+                          ("parent_mission_id", "TEXT NOT NULL DEFAULT ''")):
             if col not in runtime_cols:
                 self.db.execute("ALTER TABLE mission_runtime ADD COLUMN %s %s" % (col, decl))
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS mission_runtime_parent "
+            "ON mission_runtime(parent_mission_id)")
         self.db.execute("""CREATE TABLE IF NOT EXISTS mission_checkpoints(
             checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
             mission_id TEXT NOT NULL, seq INTEGER NOT NULL, phase TEXT NOT NULL,
@@ -547,6 +550,37 @@ class MissionStore:
         self.db.execute(
             "INSERT OR IGNORE INTO mission_runtime(mission_id,progress_at) "
             "SELECT mission_id,updated_at FROM missions")
+        # Specialist ancestry is budget authority, not mutable conversational
+        # context.  New rows persist it directly below.  Existing databases from
+        # before that column existed get one conservative migration from the
+        # creation-time case snapshot; later set_case() calls never rewrite it.
+        legacy_specialists = self.db.execute(
+            "SELECT r.mission_id,r.lane,r.external_run_id,m.case_json "
+            "FROM mission_runtime r JOIN missions m ON m.mission_id=r.mission_id "
+            "WHERE COALESCE(r.parent_mission_id,'')='' AND (r.lane='specialist' "
+            "OR COALESCE(r.external_run_id,'')<>'' "
+            "OR INSTR(m.case_json,'\"_specialist_run_id\"')>0)"
+        ).fetchall()
+        for row in legacy_specialists:
+            legacy_case = _jl(row["case_json"])
+            parent_mid = str(legacy_case.get("_parent_mission_id") or "")
+            specialist_hint = (row["lane"] == "specialist" or
+                               bool(row["external_run_id"]) or
+                               bool(legacy_case.get("_specialist_run_id")))
+            if not specialist_hint:
+                continue
+            # Mark a hinted legacy row as delegated even when its parent is
+            # missing. _lineage_locked() will then fail closed instead of
+            # silently granting it a fresh root budget.
+            self.db.execute(
+                "UPDATE mission_runtime SET lane='specialist' WHERE mission_id=?",
+                (row["mission_id"],))
+            if parent_mid and self.db.execute(
+                    "SELECT 1 FROM missions WHERE mission_id=?", (parent_mid,)).fetchone():
+                self.db.execute(
+                    "UPDATE mission_runtime SET parent_mission_id=? WHERE mission_id=? "
+                    "AND COALESCE(parent_mission_id,'')=''",
+                    (parent_mid, row["mission_id"]))
         self.db.commit()
 
     def create(self, mission_id, goal, leash=None, case=None, *, lane="mission",
@@ -557,6 +591,8 @@ class MissionStore:
             try:
                 parent_mid = str(case.get("_parent_mission_id") or "") \
                     if str(lane or "mission") == "specialist" else ""
+                if str(lane or "mission") == "specialist" and not parent_mid:
+                    raise ValueError("specialist Mission requires a durable parent Mission")
                 if parent_mid:
                     parent = self.db.execute(
                         "SELECT state FROM missions WHERE mission_id=?", (parent_mid,)).fetchone()
@@ -571,9 +607,10 @@ class MissionStore:
                      now, now, "", "", 0))
                 self.db.execute(
                     "INSERT INTO mission_runtime(mission_id,progress_at,active_phase,storage_bytes,"
-                    "lane,external_run_id) VALUES(?,?,?,?,?,?)",
+                    "lane,external_run_id,parent_mission_id) VALUES(?,?,?,?,?,?,?)",
                     (mission_id, now, "created", len(_js(case).encode("utf-8")),
-                     str(lane or "mission")[:40], str(external_run_id or "")[:100]))
+                     str(lane or "mission")[:40], str(external_run_id or "")[:100],
+                     parent_mid))
                 self.db.commit()
             except Exception:
                 self.db.rollback()
@@ -602,6 +639,105 @@ class MissionStore:
         out["model_cost_usd"] = out.get("model_cost_microusd", 0) / 1_000_000.0
         return out
 
+    def _lineage_locked(self, mission_id):
+        """Return actor -> root budget rows, or a fail-closed lineage error.
+
+        ``parent_mission_id`` is immutable authority metadata.  The recursive
+        query deliberately joins both runtime and Mission rows so a missing
+        ancestor, a corrupt cycle, or a legacy specialist with no parent cannot
+        silently turn a delegated Mission into a fresh budget root.
+        """
+        rows = self.db.execute(
+            "WITH RECURSIVE lineage(mission_id,parent_mission_id,lane,depth) AS ("
+            "SELECT mission_id,parent_mission_id,lane,0 FROM mission_runtime "
+            "WHERE mission_id=? UNION ALL "
+            "SELECT r.mission_id,r.parent_mission_id,r.lane,lineage.depth+1 "
+            "FROM mission_runtime r JOIN lineage "
+            "ON r.mission_id=lineage.parent_mission_id WHERE lineage.depth<63) "
+            "SELECT lineage.mission_id,lineage.parent_mission_id,lineage.lane,"
+            "lineage.depth,m.leash_json,m.created_at FROM lineage JOIN missions m "
+            "ON m.mission_id=lineage.mission_id ORDER BY lineage.depth",
+            (mission_id,)).fetchall()
+        if not rows:
+            return [], "mission no longer exists"
+        ids = [row["mission_id"] for row in rows]
+        if len(ids) != len(set(ids)) or rows[-1]["parent_mission_id"]:
+            return [], "mission budget lineage is corrupt or incomplete"
+        for row in rows:
+            if row["lane"] == "specialist" and not row["parent_mission_id"]:
+                return [], "specialist budget lineage is missing its parent"
+        return rows, ""
+
+    def _aggregate_runtime_locked(self, mission_id):
+        row = self.db.execute(
+            "WITH RECURSIVE subtree(mission_id) AS (SELECT ? UNION "
+            "SELECT r.mission_id FROM mission_runtime r JOIN subtree "
+            "ON r.parent_mission_id=subtree.mission_id) "
+            "SELECT COALESCE(SUM(r.active_wall_ms),0) active_wall_ms,"
+            "COALESCE(SUM(r.input_tokens),0) input_tokens,"
+            "COALESCE(SUM(r.output_tokens),0) output_tokens,"
+            "COALESCE(SUM(r.cache_tokens),0) cache_tokens,"
+            "COALESCE(SUM(r.model_cost_microusd),0) model_cost_microusd,"
+            "COALESCE(SUM(r.retry_count),0) retry_count,"
+            "COALESCE(SUM(r.storage_bytes),0) storage_bytes "
+            "FROM mission_runtime r JOIN subtree ON subtree.mission_id=r.mission_id",
+            (mission_id,)).fetchone()
+        out = dict(row) if row else {}
+        out["model_cost_usd"] = out.get("model_cost_microusd", 0) / 1_000_000.0
+        return out
+
+    def aggregate_runtime(self, mission_id):
+        """Return usage for this Mission plus every durable descendant."""
+        with self._lock:
+            lineage, error = self._lineage_locked(mission_id)
+            if error:
+                return {}
+            return self._aggregate_runtime_locked(lineage[0]["mission_id"])
+
+    @staticmethod
+    def _runtime_budget_reason(leash, rt, created_at, now):
+        total_tokens = (int(rt.get("input_tokens", 0)) +
+                        int(rt.get("output_tokens", 0)) +
+                        int(rt.get("cache_tokens", 0)))
+        checks = (
+            (int(leash.get("max_model_tokens", 2_000_000)) > 0 and
+             total_tokens >= int(leash.get("max_model_tokens", 2_000_000)),
+             "mission model-token budget exhausted"),
+            (float(leash.get("max_model_cost_usd", 25.0)) > 0 and
+             float(rt.get("model_cost_usd", 0.0)) >=
+             float(leash.get("max_model_cost_usd", 25.0)),
+             "mission model-cost budget exhausted"),
+            (int(leash.get("max_active_wall_seconds", 21600)) > 0 and
+             int(rt.get("active_wall_ms", 0)) >=
+             int(leash.get("max_active_wall_seconds", 21600)) * 1000,
+             "mission active wall-time budget exhausted"),
+            (int(leash.get("max_elapsed_seconds", 2592000)) > 0 and
+             now - int(created_at or now) >=
+             int(leash.get("max_elapsed_seconds", 2592000)),
+             "mission elapsed-time budget exhausted"),
+            (int(leash.get("max_retries", 32)) > 0 and
+             int(rt.get("retry_count", 0)) >= int(leash.get("max_retries", 32)),
+             "mission retry budget exhausted"),
+            (int(leash.get("max_storage_bytes", 5_000_000)) > 0 and
+             int(rt.get("storage_bytes", 0)) >=
+             int(leash.get("max_storage_bytes", 5_000_000)),
+             "mission durable-storage budget exhausted"),
+        )
+        return next((reason for hit, reason in checks if hit), "")
+
+    def _budget_reason_locked(self, mission_id, now):
+        lineage, error = self._lineage_locked(mission_id)
+        if error:
+            return error
+        for row in lineage:
+            aggregate = self._aggregate_runtime_locked(row["mission_id"])
+            reason = self._runtime_budget_reason(
+                _jl(row["leash_json"]), aggregate, row["created_at"], now)
+            if reason:
+                return reason if row["mission_id"] == mission_id else \
+                    "ancestor %s: %s" % (row["mission_id"], reason)
+        return ""
+
     def _storage_bytes_locked(self, mission_id):
         mission = self.db.execute(
             "SELECT LENGTH(CAST(COALESCE(case_json,'') AS BLOB))+"
@@ -627,37 +763,10 @@ class MissionStore:
         return n
 
     def budget_reason(self, mission_id, now=None):
-        """Return the first cumulative Mission budget that is exhausted."""
+        """Return the first self-or-ancestor subtree budget that is exhausted."""
         now = int(now if now is not None else time.time())
-        m, rt = self.get(mission_id), self.runtime(mission_id)
-        if not m:
-            return "mission no longer exists"
-        leash = m.leash or {}
-        total_tokens = (int(rt.get("input_tokens", 0)) + int(rt.get("output_tokens", 0)) +
-                        int(rt.get("cache_tokens", 0)))
-        checks = (
-            (int(leash.get("max_model_tokens", 2_000_000)) > 0 and
-             total_tokens >= int(leash.get("max_model_tokens", 2_000_000)),
-             "mission model-token budget exhausted"),
-            (float(leash.get("max_model_cost_usd", 25.0)) > 0 and
-             float(rt.get("model_cost_usd", 0.0)) >=
-             float(leash.get("max_model_cost_usd", 25.0)),
-             "mission model-cost budget exhausted"),
-            (int(leash.get("max_active_wall_seconds", 21600)) > 0 and
-             int(rt.get("active_wall_ms", 0)) >=
-             int(leash.get("max_active_wall_seconds", 21600)) * 1000,
-             "mission active wall-time budget exhausted"),
-            (int(leash.get("max_elapsed_seconds", 2592000)) > 0 and
-             now - int(m.created_at or now) >= int(leash.get("max_elapsed_seconds", 2592000)),
-             "mission elapsed-time budget exhausted"),
-            (int(leash.get("max_retries", 32)) > 0 and
-             int(rt.get("retry_count", 0)) >= int(leash.get("max_retries", 32)),
-             "mission retry budget exhausted"),
-            (int(leash.get("max_storage_bytes", 5_000_000)) > 0 and
-             int(rt.get("storage_bytes", 0)) >= int(leash.get("max_storage_bytes", 5_000_000)),
-             "mission durable-storage budget exhausted"),
-        )
-        return next((reason for hit, reason in checks if hit), "")
+        with self._lock:
+            return self._budget_reason_locked(mission_id, now)
 
     def account_runtime(self, mission_id, token="", *, input_tokens=0, output_tokens=0,
                         cache_tokens=0, cost_usd=0.0, wall_ms=0, retries=0):
@@ -1599,72 +1708,122 @@ class MissionStore:
 
     def reserve_action(self, mission_id, action_key, irreversible, leash, name,
                        payload, run_token):
-        """Atomically fence ownership and enforce totals/rates/idempotency."""
+        """Atomically fence ownership and every ancestor's subtree quotas."""
         now = int(time.time())
-        max_irrev = int((leash or {}).get("max_irreversible_actions", 100))
-        hourly = int((leash or {}).get("actions_per_hour", 12))
         reservation_id = secrets.token_hex(16)
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
-            owner = self.db.execute(
-                "SELECT 1 FROM missions WHERE mission_id=? AND state=? AND run_token=?",
-                (mission_id, RUNNING, run_token)).fetchone()
-            if not owner:
-                self.db.commit()
-                return False, "mission run ownership lost before action reservation", 0
-            if irreversible:
-                irrev = self.db.execute(
-                    "SELECT COUNT(*) n FROM mission_events p WHERE p.mission_id=? "
-                    "AND p.kind='proposed_irreversible' AND NOT EXISTS ("
-                    "SELECT 1 FROM mission_events r WHERE r.mission_id=p.mission_id "
-                    "AND r.kind='retracted_irreversible' AND r.nonce=p.nonce)",
-                    (mission_id,)).fetchone()["n"]
-                if irrev >= max_irrev:
+            try:
+                owner = self.db.execute(
+                    "SELECT 1 FROM missions WHERE mission_id=? AND state=? AND run_token=?",
+                    (mission_id, RUNNING, run_token)).fetchone()
+                if not owner:
                     self.db.commit()
-                    return False, "mission irreversible-action budget exhausted", 0
-                recent = self.db.execute(
-                    "SELECT p.at FROM mission_events p WHERE p.mission_id=? "
-                    "AND p.kind='proposed_irreversible' AND p.at>? AND NOT EXISTS ("
-                    "SELECT 1 FROM mission_events r WHERE r.mission_id=p.mission_id "
-                    "AND r.kind='retracted_irreversible' AND r.nonce=p.nonce) ORDER BY p.at",
-                    (mission_id, now - 3600)).fetchall()
-                if len(recent) >= hourly:
+                    return False, "mission run ownership lost before action reservation", 0
+                lineage, lineage_error = self._lineage_locked(mission_id)
+                if lineage_error:
                     self.db.commit()
-                    return False, "mission external-action rate limit reached", recent[0]["at"] + 3600
-            if action_key:
-                old = self.db.execute(
-                    "SELECT state FROM mission_action_keys WHERE mission_id=? AND action_key=?",
-                    (mission_id, action_key)).fetchone()
-                if old:
+                    return False, lineage_error, 0
+                runtime_reason = self._budget_reason_locked(mission_id, now)
+                if runtime_reason:
                     self.db.commit()
-                    return False, "duplicate external action blocked (%s)" % old["state"], 0
+                    return False, runtime_reason, 0
+                if irreversible:
+                    for budget in lineage:
+                        budget_mid = budget["mission_id"]
+                        budget_leash = _jl(budget["leash_json"])
+                        max_irrev = int(budget_leash.get(
+                            "max_irreversible_actions", 100))
+                        hourly = int(budget_leash.get("actions_per_hour", 12))
+                        base = (
+                            "WITH RECURSIVE subtree(mission_id) AS (SELECT ? UNION "
+                            "SELECT r.mission_id FROM mission_runtime r JOIN subtree "
+                            "ON r.parent_mission_id=subtree.mission_id) ")
+                        irrev = self.db.execute(
+                            base +
+                            "SELECT COUNT(*) n FROM mission_events p JOIN subtree "
+                            "ON subtree.mission_id=p.mission_id "
+                            "WHERE p.kind='proposed_irreversible' AND NOT EXISTS ("
+                            "SELECT 1 FROM mission_events r WHERE r.mission_id=p.mission_id "
+                            "AND r.kind='retracted_irreversible' AND r.nonce=p.nonce)",
+                            (budget_mid,)).fetchone()["n"]
+                        prefix = "" if budget_mid == mission_id else \
+                            "ancestor %s: " % budget_mid
+                        if irrev >= max_irrev:
+                            self.db.commit()
+                            return False, prefix + \
+                                "mission irreversible-action budget exhausted", 0
+                        recent = self.db.execute(
+                            base +
+                            "SELECT p.at FROM mission_events p JOIN subtree "
+                            "ON subtree.mission_id=p.mission_id "
+                            "WHERE p.kind='proposed_irreversible' AND p.at>? "
+                            "AND NOT EXISTS (SELECT 1 FROM mission_events r "
+                            "WHERE r.mission_id=p.mission_id "
+                            "AND r.kind='retracted_irreversible' AND r.nonce=p.nonce) "
+                            "ORDER BY p.at",
+                            (budget_mid, now - 3600)).fetchall()
+                        if hourly <= 0:
+                            self.db.commit()
+                            return False, prefix + \
+                                "mission external-action rate limit reached", 0
+                        if len(recent) >= hourly:
+                            self.db.commit()
+                            return False, prefix + \
+                                "mission external-action rate limit reached", \
+                                recent[0]["at"] + 3600
+                if action_key:
+                    old = self.db.execute(
+                        "SELECT state FROM mission_action_keys WHERE mission_id=? "
+                        "AND action_key=?", (mission_id, action_key)).fetchone()
+                    if old:
+                        self.db.commit()
+                        return False, "duplicate external action blocked (%s)" % old["state"], 0
+                    self.db.execute(
+                        "INSERT INTO mission_action_keys(mission_id,action_key,state,at,"
+                        "owner_token,reservation_id) VALUES(?,?,?,?,?,?)",
+                        (mission_id, action_key, "reserved", now,
+                         run_token, reservation_id))
+                kind = "proposed_irreversible" if irreversible else "proposed"
                 self.db.execute(
-                    "INSERT INTO mission_action_keys(mission_id,action_key,state,at,"
-                    "owner_token,reservation_id) VALUES(?,?,?,?,?,?)",
-                    (mission_id, action_key, "reserved", now,
-                     run_token, reservation_id))
-            kind = "proposed_irreversible" if irreversible else "proposed"
-            self.db.execute(
-                "INSERT INTO mission_events(mission_id,kind,name,nonce,payload_json,at) "
-                "VALUES(?,?,?,?,?,?)", (mission_id, kind, name, reservation_id,
-                                          _js(_compact_event(payload or {})), now))
-            self.db.commit()
+                    "INSERT INTO mission_events(mission_id,kind,name,nonce,payload_json,at) "
+                    "VALUES(?,?,?,?,?,?)", (mission_id, kind, name, reservation_id,
+                                              _js(_compact_event(payload or {})), now))
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return True, "", 0
 
     def reserve_decision(self, mission_id, leash):
-        """Durable model-turn ceiling (persists across every wait/restart)."""
+        """Reserve one model turn against this Mission and every ancestor."""
         now = int(time.time())
-        cap = int((leash or {}).get("max_total_steps", 1000))
         with self._lock:
-            total = self.db.execute(
-                "SELECT COUNT(*) n FROM mission_events WHERE mission_id=? AND kind='decision'",
-                (mission_id,)).fetchone()["n"]
-            if total >= cap:
-                return False
-            self.db.execute(
-                "INSERT INTO mission_events(mission_id,kind,name,payload_json,at) "
-                "VALUES(?,?,?,?,?)", (mission_id, "decision", "model", "{}", now))
-            self.db.commit()
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                lineage, lineage_error = self._lineage_locked(mission_id)
+                if lineage_error or self._budget_reason_locked(mission_id, now):
+                    self.db.commit()
+                    return False
+                for budget in lineage:
+                    cap = int(_jl(budget["leash_json"]).get("max_total_steps", 1000))
+                    total = self.db.execute(
+                        "WITH RECURSIVE subtree(mission_id) AS (SELECT ? UNION "
+                        "SELECT r.mission_id FROM mission_runtime r JOIN subtree "
+                        "ON r.parent_mission_id=subtree.mission_id) "
+                        "SELECT COUNT(*) n FROM mission_events e JOIN subtree "
+                        "ON subtree.mission_id=e.mission_id WHERE e.kind='decision'",
+                        (budget["mission_id"],)).fetchone()["n"]
+                    if total >= cap:
+                        self.db.commit()
+                        return False
+                self.db.execute(
+                    "INSERT INTO mission_events(mission_id,kind,name,payload_json,at) "
+                    "VALUES(?,?,?,?,?)", (mission_id, "decision", "model", "{}", now))
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return True
 
     def bind_action_key(self, mission_id, action_key, nonce, run_token):
@@ -1859,7 +2018,7 @@ class MissionDriver:
 
     def __init__(self, store: MissionStore, actions: ActionStore, decider,
                  capabilities=None, goal_verifier=None, *, lane="mission",
-                 control=None, hooks=None):
+                 control=None, hooks=None, completion_guard=None):
         self.store = store
         self.actions = actions
         self.decider = decider
@@ -1867,6 +2026,7 @@ class MissionDriver:
         self.lane = str(lane or "mission")
         self.control = control
         self.hooks = hooks
+        self.completion_guard = completion_guard
         self.capabilities = ({c.name: c for c in capabilities}
                              if capabilities is not None else None)
 
@@ -2639,6 +2799,31 @@ class MissionDriver:
                     return self._finish(mission_id, token, NEEDS_YOU,
                                         "driver returned no next action")
                 if action == DONE:
+                    if self.completion_guard is not None:
+                        try:
+                            blocked = self.completion_guard(mission_id, m) or {}
+                        except Exception as exc:
+                            blocked = {
+                                "reason": "completion guard failed closed: %s: %s" %
+                                          (type(exc).__name__, exc),
+                                "seconds": 60,
+                            }
+                        if blocked:
+                            blocked = blocked if isinstance(blocked, dict) else {
+                                "reason": str(blocked)}
+                            try:
+                                seconds = int(blocked.get("seconds") or 60)
+                            except (TypeError, ValueError):
+                                seconds = 60
+                            seconds = max(1, min(3600, seconds))
+                            reason = str(blocked.get("reason") or
+                                         "unfinished delegated work remains")[:500]
+                            self.store.schedule_wait(
+                                mission_id, int(time.time()) + seconds)
+                            self.store.record_event(
+                                mission_id, "agent", "completion_blocked",
+                                payload={"reason": reason, "seconds": seconds})
+                            return self._finish(mission_id, token, WAITING, reason)
                     pending_auth = [x for x in (m.case.get("pending_authorizations") or [])
                                     if isinstance(x, dict)]
                     if pending_auth:
@@ -2779,8 +2964,10 @@ class MissionDriver:
                 # This delay prevents tight inbox polling. It must not throttle
                 # local reversible work such as composing several channel-ready
                 # deliverables before the first external action.
-                is_poll_read = cap.name == "observe"
-                next_read_target = self._observe_target(args) if is_poll_read else None
+                is_poll_read = cap.name in ("observe", "agent.poll")
+                next_read_target = (self._observe_target(args) if cap.name == "observe" else
+                                    ("agent", str(args.get("run_id") or "subtree"))
+                                    if cap.name == "agent.poll" else None)
                 if is_poll_read and next_read_target != read_target:
                     reads = 0
                 if is_poll_read and reads >= self.read_streak_cap:
@@ -2799,17 +2986,29 @@ class MissionDriver:
                             "_isolated_workspace before continuing")
                     specialist_scope = m.case.get("_resource_scope")
                     if specialist_scope is not None:
+                        source_workspace = os.path.normcase(os.path.realpath(
+                            str(m.case.get("_resource_source_workspace") or "")))
                         writable_roots = [
                             item.get("id") or item.get("path")
                             for item in specialist_scope if isinstance(item, dict) and
                             item.get("kind") == "file" and item.get("mode") == "write" and
                             os.path.isdir(str(item.get("id") or item.get("path") or ""))]
-                        if not writable_roots:
+                        full_workspace_grant = False
+                        for root in writable_roots:
+                            try:
+                                canonical = os.path.normcase(os.path.realpath(str(root)))
+                                full_workspace_grant = bool(source_workspace) and (
+                                    os.path.commonpath([canonical, source_workspace]) == canonical)
+                            except (OSError, ValueError):
+                                full_workspace_grant = False
+                            if full_workspace_grant:
+                                break
+                        if not full_workspace_grant:
                             return self._finish(
                                 mission_id, token, NEEDS_YOU,
-                                "specialist code needs a directory-level write resource; "
-                                "the current file-level/read-only scope cannot be enforced by "
-                                "the code child without expanding authority")
+                                "specialist code needs a directory write resource covering its "
+                                "full source workspace; narrower/read-only scope cannot be "
+                                "enforced by the isolated code child without expanding authority")
                     # The provisioner owns creation/cleanup; the Mission owns only
                     # the explicit path and cannot steer the child back to cwd.
                     call_args.pop("cwd", None)
@@ -3085,6 +3284,13 @@ class MissionDriver:
         if controlled:
             return controlled
         m = self.store.get(mission_id)
+        # Confirmation authorizes this exact payload; it does not mint fresh
+        # campaign budget. A sibling may have exhausted a shared ancestor while
+        # this action was parked, so re-check the aggregate ledger at the final
+        # pre-fire boundary.
+        exhausted = self.store.budget_reason(mission_id)
+        if exhausted:
+            return self._finish(mission_id, token, NEEDS_YOU, exhausted)
         rec = self.actions.get(nonce)
         step_timeout = max(0.05, float(m.leash.get("max_step_seconds", 600)))
         self.store.record_checkpoint(
@@ -3262,7 +3468,7 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
     `autonomous=True` pre-authorizes the irreversible primitives (still within the
     other bounds); otherwise they park for confirm. Only bounds enforced by
     deterministic host checks should be supplied; opaque metadata is not authority."""
-    default_may = ["research", "compose", "observe", "web.*",
+    default_may = ["research", "compose", "observe", "agent.*", "web.*",
                    "browse", "browse.*", "verification.*"]
     known = {"spend_max_usd", "allowed_domains", "max_total_steps",
              "max_irreversible_actions", "actions_per_hour", "max_model_tokens",
@@ -3350,7 +3556,12 @@ _SYS = (
     "SINGLE next action. Reply with STRICT JSON and nothing else:\n"
     '{"action": <a primitive name | "wait" | "needs_authorization" | "needs_human" | "done">, '
     '"args": {..}, "reason": "<one short clause>"}\n'
-    "Rules: use only a listed primitive. To let only one workstream wait, pick 'wait' "
+    "Rules: use only a listed primitive. CASE.human_updates are durable user/operator "
+    "steering in chronological order: the newest explicit instruction overrides conflicting "
+    "older GOAL wording, but never expands the Leash or bypasses a security boundary. If a newer "
+    "update authorizes ordinary account creation, being signed out by itself is not a terminal "
+    "blocker: attempt the normal signup/sign-in path before recording the exact remaining blocker. "
+    "To let only one workstream wait, pick 'wait' "
     "with args.seconds plus a stable args.branch name; Collie schedules that branch and "
     "continues other independent work. Immediately repeat that same wait only when no "
     "independent work remains. Set args.blocking=true only for a whole-Mission wait. "

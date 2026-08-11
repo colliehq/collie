@@ -57,6 +57,14 @@ def redact(text: str, vault: dict) -> str:
     """Replace secret material in `text` with placeholders; remember values in `vault`."""
     if not isinstance(text, str) or len(text) < 16:
         return text
+    # A restored placeholder can return through execute_code RPC (or another tool output) as a
+    # bare opaque value that no vendor-shaped regex recognizes. Values already admitted to the
+    # run-local vault are secrets by construction, so replace them longest-first before discovery.
+    for tag, value in sorted(list((vault or {}).items()),
+                             key=lambda item: len(str(item[1] or "")), reverse=True):
+        value = str(value or "")
+        if value:
+            text = text.replace(value, _PLACEHOLDER % tag)
     for kind, pat in _PATTERNS:
         def _sub(m, kind=kind):
             val = m.group(1) if m.groups() else m.group(0)
@@ -67,6 +75,20 @@ def redact(text: str, vault: dict) -> str:
             return m.group(0).replace(val, _PLACEHOLDER % tag)
         text = pat.sub(_sub, text)
     return text
+
+
+def redact_obj(obj, vault: dict):
+    """Recursively redact string keys and values before policy/audit sees them."""
+    if isinstance(obj, str):
+        return redact(obj, vault)
+    if isinstance(obj, dict):
+        return {(redact(k, vault) if isinstance(k, str) else k): redact_obj(v, vault)
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_obj(v, vault) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(redact_obj(v, vault) for v in obj)
+    return obj
 
 
 def restore(obj, vault: dict):
@@ -87,7 +109,8 @@ def restore(obj, vault: dict):
             return vault.get(m.group(1), m.group(0))
         return _PLACE_RE.sub(_sub, obj)
     if isinstance(obj, dict):
-        return {k: restore(v, vault) for k, v in obj.items()}
+        return {(restore(k, vault) if isinstance(k, str) else k): restore(v, vault)
+                for k, v in obj.items()}
     if isinstance(obj, list):
         return [restore(v, vault) for v in obj]
     return obj

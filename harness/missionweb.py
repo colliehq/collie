@@ -18,20 +18,25 @@ ModelDecider(make_provider(<the configured provider>)).
 from __future__ import annotations
 
 import json
+import fnmatch
+import hashlib
 import os
 import secrets
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 
 from .actions import (APPROVED, EXECUTED, EXECUTING, EXPIRED, PENDING, REFUSED,
                       ActionStore, RefusedError)
 from .jobs import (CANCELLED, DONE_ACCEPTED, DONE_VERIFIED, FAILED_S, NEEDS_YOU,
                    PAUSED, PAUSING, QUEUED, RECONCILING, RECOVERY_REQUIRED,
-                   RUNNING, WAITING)
-from .mission import (MissionDriver, MissionStore, ModelDecider, create_mission,
-                      world_leash)
+                   RUNNING, WAITING, Capability)
+from .mission import (MissionDriver, MissionStore, ModelDecider, ResourceBusy,
+                      create_mission, world_leash)
 from .primitives import register_primitives
+from .verifier import FAILED as VERIFY_FAILED, VERIFIED as VERIFY_VERIFIED, Verdict
 
 
 def _hook_manager(cwd: str, state_dir: str):
@@ -180,20 +185,528 @@ class MissionService:
             from .webact import get_actuator
             self._capabilities = register_primitives(
                 stub=False, actuator=get_actuator(), provider=self._prov)
+        # These capabilities are service-bound rather than globally registered:
+        # their executor must address this exact durable TaskTree/MissionStore.
+        self._capabilities = self._tasktree_guarded_capabilities(
+            self._capabilities) + self._agent_capabilities()
         self._runtime_ready = True
 
     def _driver(self, *, lane="mission", control=None) -> MissionDriver:
         self._ensure_runtime()
         dec = self._decider or ModelDecider(self._prov)
+        if control is None:
+            control = self._mission_control
         return MissionDriver(self.store, self.actions, dec,
                              capabilities=self._capabilities,
                              goal_verifier=self._goal_verifier, lane=lane,
-                             control=control, hooks=self._hooks)
+                             control=control, hooks=self._hooks,
+                             completion_guard=self._agent_completion_guard)
 
     def _specialist_run(self, mid):
         runtime = self.store.runtime(mid)
         run_id = runtime.get("external_run_id") if runtime.get("lane") == "specialist" else ""
         return self._run_tree.get(run_id) if self._run_tree is not None and run_id else None
+
+    def _mission_run_id(self, mission):
+        """Resolve the TaskTree identity for either a root or specialist Mission."""
+        if not mission or self._run_tree is None:
+            return ""
+        runtime = self.store.runtime(mission.mission_id)
+        if runtime.get("lane") == "specialist":
+            return str(runtime.get("external_run_id") or
+                       (mission.case or {}).get("_specialist_run_id") or "")
+        return str((mission.case or {}).get("_run_id") or "")
+
+    def _tasktree_guarded_capabilities(self, capabilities):
+        """Bind code workspace ownership to this service's durable run tree.
+
+        TaskTree resources are scheduling/delegation authority.  They are not a
+        generic sandbox for research, browser, messaging, or other capabilities;
+        those tools keep their own leash and capability-specific containment.
+        Code is the one current primitive whose entire writable workspace can be
+        checked here, before the action latch or code runner is entered.
+        """
+        guarded = []
+        for capability in capabilities:
+            if capability.name != "code":
+                guarded.append(capability)
+                continue
+            resource = capability.resource
+
+            def guarded_resource(record, original=resource):
+                self._assert_tasktree_code_access(record)
+                return original(record) if callable(original) else original
+
+            guarded.append(replace(capability, resource=guarded_resource))
+        return guarded
+
+    def _assert_tasktree_code_access(self, record):
+        """Fail closed unless the bound run still owns its source workspace."""
+        if self._run_tree is None:
+            raise RefusedError("code authority denied: durable run tree is unavailable")
+        mission = self.store.get(record.job_id)
+        if not mission:
+            raise RefusedError("code authority denied: Mission is missing")
+        run_id = self._mission_run_id(mission)
+        if not run_id:
+            # A code-only Mission may not have used agent.spawn yet. Attach the
+            # same least-authority root so every MissionService code action has a
+            # caller identity for can_access(), not an unguarded legacy path.
+            run_id = self._ensure_agent_root(mission)
+            mission = self.store.get(record.job_id) or mission
+        run = self._run_tree.get(run_id) if run_id else None
+        if not run or run.get("mission_id") != record.job_id:
+            raise RefusedError("code authority denied: Mission has no bound run")
+        if (run.get("status") in ("completed", "failed", "cancelled", "cancel_requested") or
+                run.get("cancel_requested")):
+            raise RefusedError("code authority denied: bound run is stopping or terminal")
+        if run.get("parent_run_id") and (
+                run.get("status") != "running" or not run.get("owner_token")):
+            raise RefusedError("code authority denied: specialist run is not the active owner")
+
+        case = mission.case or {}
+        if run.get("parent_run_id"):
+            parent = self._run_tree.get(run.get("parent_run_id") or "") or {}
+            source_workspace = (case.get("_resource_source_workspace") or
+                                parent.get("workspace") or "")
+        else:
+            source_workspace = run.get("workspace") or case.get("_isolated_workspace") or ""
+        if not source_workspace:
+            raise RefusedError("code authority denied: source workspace is not bound")
+        allowed, reason = self._run_tree.can_access(
+            run_id, {"kind": "file", "id": source_workspace}, "write")
+        if allowed:
+            return
+        if str(reason).startswith("write ownership delegated to "):
+            raise ResourceBusy("delegated code workspace busy: %s" % reason)
+        raise RefusedError("code authority denied: %s" % reason)
+
+    def _agent_caller(self, mid):
+        mission = self.store.get(mid)
+        if not mission:
+            return None, None, "unknown mission"
+        if mission.state in (DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+            return mission, None, "terminal Mission cannot control specialists"
+        run_id = self._mission_run_id(mission)
+        if self._run_tree is not None and not run_id:
+            run_id = self._ensure_agent_root(mission)
+            mission = self.store.get(mid) or mission
+        run = self._run_tree.get(run_id) if self._run_tree is not None and run_id else None
+        if not run or run.get("mission_id") != mid:
+            return mission, None, "mission has no bound durable run tree"
+        if run.get("status") in ("completed", "failed", "cancelled", "cancel_requested") or \
+                run.get("cancel_requested"):
+            return mission, None, "calling run is stopping or terminal"
+        return mission, run, ""
+
+    @staticmethod
+    def _agent_root_id(mission_id):
+        return "run_root_" + hashlib.sha256(
+            str(mission_id).encode("utf-8", "replace")).hexdigest()[:16]
+
+    def _ensure_agent_root(self, mission):
+        """Lazily attach the least authority justified by a bound Mission workspace."""
+        if not mission or self._run_tree is None:
+            return ""
+        case = dict(mission.case or {})
+        current = str(case.get("_run_id") or "")
+        if current and self._run_tree.get(current):
+            return current
+        run_id = self._agent_root_id(mission.mission_id)
+        bound_workspace = str(case.get("_isolated_workspace") or "")
+        if bound_workspace:
+            bound_workspace = os.path.realpath(os.path.abspath(bound_workspace))
+        is_bound = bool(bound_workspace and os.path.isdir(bound_workspace))
+        workspace = bound_workspace if is_bound else ""
+        workspace_mode = self._workspace_authority_mode(mission)
+        resources = ([{"kind": "file", "id": workspace, "mode": workspace_mode}]
+                     if is_bound else [])
+        run = self._run_tree.get(run_id)
+        if run:
+            if (run.get("parent_run_id") or run.get("mission_id") != mission.mission_id or
+                    run.get("task") != str(mission.goal)[:4000] or
+                    run.get("leash") != dict(mission.leash or {}) or
+                    run.get("workspace_mode") != "worktree"):
+                raise ValueError("deterministic Mission root is bound to different authority")
+            if is_bound and not run.get("workspace"):
+                if run.get("resources"):
+                    run = self._run_tree.bind_workspace(
+                        run_id, workspace, owns_workspace=False)
+                    if not run:
+                        raise ValueError("deterministic Mission root workspace binding raced")
+                else:
+                    run = self._run_tree.initialize_root_workspace_authority(
+                        run_id, workspace, workspace_mode)
+            elif is_bound and (
+                    os.path.normcase(os.path.realpath(run.get("workspace") or "")) !=
+                    os.path.normcase(workspace)):
+                raise ValueError("deterministic Mission root workspace conflicts with binding")
+            elif not is_bound and run.get("workspace"):
+                # Recover a host-created root whose TaskTree commit won before
+                # the Mission case attachment committed.
+                case["_isolated_workspace"] = run["workspace"]
+        else:
+            run = self._run_tree.create_root(
+                mission.goal, mission.leash, resources, run_id=run_id,
+                mission_id=mission.mission_id, workspace=workspace,
+                workspace_mode="worktree")
+        case["_run_id"] = run_id
+        saved = (self.store.set_case_owned(mission.mission_id, mission.run_token, case)
+                 if mission.run_token else self.store.set_case(mission.mission_id, case))
+        if not saved:
+            return ""
+        self.store.record_checkpoint(
+            mission.mission_id, mission.run_token, "run_tree_lazily_attached",
+            {"run_id": run_id, "resources": run.get("resources") or []}, case=case,
+            allow_unowned=not bool(mission.run_token))
+        return run_id
+
+    @staticmethod
+    def _workspace_authority_mode(mission):
+        may = list(((mission.leash if mission else {}) or {}).get("may") or [])
+        return "write" if any(
+            fnmatch.fnmatchcase("code", str(pattern)) for pattern in may) else "read"
+
+    @staticmethod
+    def _agent_verify(_record, result):
+        if isinstance(result, dict) and result.get("ok"):
+            return Verdict(VERIFY_VERIFIED, "scoped durable agent operation recorded")
+        error = (result or {}).get("error") if isinstance(result, dict) else result
+        return Verdict(VERIFY_FAILED, str(error or "agent operation was refused")[:500])
+
+    def _agent_capabilities(self):
+        """Model-facing graph primitives; every mutation is descendant-scoped."""
+        def execute_spawn(record):
+            args = _clean(record.args)
+            if args.get("provider") or args.get("model"):
+                return {"ok": False,
+                        "error": "specialist provider/model is inherited and cannot be overridden"}
+            if args.get("workspace"):
+                return {"ok": False,
+                        "error": "specialist workspace is provisioned by the container"}
+            return self.agent_spawn(
+                record.job_id, args.get("role") or "specialist", args.get("task") or "",
+                leash=args.get("leash"), resources=args.get("resources"),
+                operation_id=record.nonce)
+
+        def execute_send(record):
+            args = _clean(record.args)
+            return self.agent_send(
+                record.job_id, str(args.get("run_id") or ""),
+                str(args.get("text") or ""))
+
+        def execute_poll(record):
+            args = _clean(record.args)
+            return self.agent_poll(record.job_id, str(args.get("run_id") or ""))
+
+        def execute_cancel(record):
+            args = _clean(record.args)
+            return self.agent_cancel(record.job_id, str(args.get("run_id") or ""))
+
+        return [
+            Capability(
+                name="agent.spawn", execute=execute_spawn, verify=self._agent_verify,
+                reversible=True, risk="read",
+                description=("Delegate one scoped task to a durable specialist. Its leash, "
+                             "resources, budgets, provider and depth can only inherit or narrow; "
+                             "resources are scheduling authority (not a universal tool sandbox), "
+                             "and after spawning, wait rather than polling in a tight loop."),
+                args_hint='{"role","task","resources":[{"kind":"file","id":"...",'
+                          '"mode":"read"}],"leash":{"may":["research"]}}'),
+            Capability(
+                name="agent.send", execute=execute_send, verify=self._agent_verify,
+                reversible=True, risk="read",
+                description="Send durable steering text to one descendant specialist.",
+                args_hint='{"run_id","text"}'),
+            Capability(
+                name="agent.poll", execute=execute_poll, verify=self._agent_verify,
+                reversible=True, risk="read",
+                description=("Inspect descendant status and consume structured completed results; "
+                             "completed children also wake a waiting parent automatically."),
+                args_hint='{"run_id":"optional descendant; omit for whole subtree"}'),
+            Capability(
+                name="agent.cancel", execute=execute_cancel, verify=self._agent_verify,
+                reversible=True, risk="read",
+                description="Cancel one descendant specialist and all authority below it.",
+                args_hint='{"run_id"}'),
+        ]
+
+    def _fold_child_results(self, mid, run_id, mission_token):
+        """Fold, then ack: replay after a cross-database crash is harmless."""
+        mission = self.store.get(mid)
+        if (not mission or not mission_token or mission.run_token != mission_token or
+                mission.state not in (RUNNING, PAUSING)):
+            return 0
+        messages = self._run_tree.claim_child_results(run_id, mid)
+        if not messages:
+            return 0
+        case = dict(mission.case or {})
+        stored_results = case.get("specialist_results")
+        stored_results = stored_results if isinstance(stored_results, list) else []
+        results = [dict(item) for item in stored_results if isinstance(item, dict)]
+        known_at_entry = {int(item.get("message_id")) for item in results
+                          if str(item.get("message_id") or "").isdigit()}
+        known = set(known_at_entry)
+        added = []
+        for message in messages:
+            message_id = int(message["message_id"])
+            if message_id in known:
+                continue
+            payload = message.get("payload") or {}
+            entry = {
+                "message_id": message_id,
+                "run_id": str(payload.get("run_id") or message.get("sender_run_id") or "")[:100],
+                "mission_id": str(payload.get("mission_id") or "")[:100],
+                "role": str(payload.get("role") or "specialist")[:80],
+                "state": str(payload.get("state") or "")[:40],
+                "result": str(payload.get("result") or "")[:4000],
+                "artifacts": list(payload.get("artifacts") or [])[:12],
+                "observation": payload.get("observation")
+                               if isinstance(payload.get("observation"), dict) else {},
+                "received_at": int(message.get("created_at") or time.time()),
+            }
+            results.append(entry)
+            added.append(entry)
+            known.add(message_id)
+        if added:
+            case["specialist_results"] = results[-20:]
+            if not self.store.set_case_owned(mid, mission_token, case):
+                return 0
+        # If an id was present on entry, a prior case write already committed it.
+        # Every newly added id is also safe once this call's set_case_owned
+        # succeeds. Do not derive safety from the bounded results[-20:] view: a
+        # replayed old id can be deliberately trimmed when it arrives alongside
+        # newer outcomes and must still be acknowledged.
+        safe_to_ack = known_at_entry | {item["message_id"] for item in added}
+        for message in messages:
+            if int(message["message_id"]) in safe_to_ack:
+                self._run_tree.ack_child_result(
+                    run_id, mid, int(message["message_id"]))
+        if added:
+            self.store.record_event(
+                mid, "agent", "child_result",
+                payload={"count": len(added),
+                         "run_ids": [item["run_id"] for item in added]})
+            self.store.record_checkpoint(
+                mid, mission_token, "child_results_folded",
+                {"message_ids": [item["message_id"] for item in added]}, case=case)
+        return len(added)
+
+    def _mission_control(self, mid):
+        mission = self.store.get(mid)
+        run_id = self._mission_run_id(mission)
+        if mission and run_id and mission.run_token:
+            self._fold_child_results(mid, run_id, mission.run_token)
+        return {}
+
+    def _wake_parents_with_child_results(self):
+        """Wake event-driven waits; do not disturb pause, human or terminal gates."""
+        if self._run_tree is None:
+            return {"normal": 0, "specialists": 0}
+        normal, specialists = 0, 0
+        for run in self._run_tree.list_runs():
+            mid = str(run.get("mission_id") or "")
+            if not mid or not self._run_tree.has_child_results(run["run_id"], mid):
+                continue
+            mission = self.store.get(mid)
+            if not mission or mission.state != WAITING:
+                continue
+            runtime = self.store.runtime(mid)
+            if runtime.get("lane") == "specialist":
+                if self._run_tree.requeue_waiting(run["run_id"]):
+                    specialists += 1
+            else:
+                self._driver().wake(mid, force=True)
+                normal += 1
+        return {"normal": normal, "specialists": specialists}
+
+    def _agent_completion_guard(self, mid, mission):
+        """A parent cannot declare victory while delegated authority is still live."""
+        if self._run_tree is None:
+            return {}
+        run_id = self._mission_run_id(mission)
+        if not run_id:
+            return {}
+        return self._run_tree.completion_blocker(run_id, mid)
+
+    def _linked_descendant_mission_ids(self, parent_mid, run_id):
+        descendants = set()
+        if self._run_tree is not None and run_id:
+            for row in self._run_tree.tree(run_id).get("flat", []):
+                child_mid = str(row.get("mission_id") or "")
+                if child_mid and child_mid != parent_mid:
+                    descendants.add(child_mid)
+        known = {parent_mid}
+        candidates = self.store.list()
+        changed = True
+        while changed:
+            changed = False
+            for child in candidates:
+                linked_parent = str((child.case or {}).get("_parent_mission_id") or "")
+                if linked_parent in known and child.mission_id not in known:
+                    known.add(child.mission_id)
+                    descendants.add(child.mission_id)
+                    changed = True
+        return descendants
+
+    def _cancel_linked_descendant_missions(self, parent_mid, run_id, reason):
+        """Mirror a failed TaskTree subtree fence into durable Mission rows."""
+        descendants = self._linked_descendant_mission_ids(parent_mid, run_id)
+        for child_mid in sorted(descendants):
+            child = self.store.get(child_mid)
+            if not child or child.state in (
+                    DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+                continue
+            self._cancel_record(
+                child_mid, str(reason or "cancelled because ancestor Mission failed")[:4000],
+                user_requested=False, parent_mission_id=parent_mid)
+        return len(descendants)
+
+    def _fence_failed_mission_tree(self, mid):
+        mission = self.store.get(mid)
+        if not mission or mission.state != FAILED_S or self._run_tree is None:
+            return False
+        run_id = self._mission_run_id(mission)
+        run = self._run_tree.get(run_id) if run_id else None
+        if run and not run.get("parent_run_id"):
+            self._run_tree.fail_mission_root(
+                run_id, mid, mission.result or "Mission failed")
+        elif run:
+            # A specialist Mission can commit FAILED just before its dispatcher
+            # projects that outcome through the still-owned TaskTree lease.  A
+            # restart has no safe owner token, so fence the whole subtree through
+            # the durable cancellation protocol and require any live worker to ack.
+            self._run_tree.request_cancel(run_id, run.get("parent_run_id") or "")
+        linked = self._cancel_linked_descendant_missions(
+            mid, run_id, "cancelled because ancestor Mission %s failed" % mid)
+        return bool(run or linked)
+
+    def _failed_mission_tree_needs_fence(self, mission):
+        """Return true only when another reconciliation pass can change state."""
+        if not mission or mission.state != FAILED_S or self._run_tree is None:
+            return False
+        run_id = self._mission_run_id(mission)
+        run = self._run_tree.get(run_id) if run_id else None
+        if run:
+            for row in self._run_tree.tree(run_id).get("flat", []):
+                status = row.get("status")
+                if status not in ("completed", "failed", "cancelled", "cancel_requested"):
+                    return True
+        for child_mid in self._linked_descendant_mission_ids(
+                mission.mission_id, run_id):
+            child = self.store.get(child_mid)
+            if child and child.state not in (
+                    DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+                return True
+        return False
+
+    def _fence_failed_mission_trees(self, limit=64):
+        fenced = 0
+        for mission in self.store.list(state=FAILED_S):
+            if not self._failed_mission_tree_needs_fence(mission):
+                continue
+            fenced += int(self._fence_failed_mission_tree(mission.mission_id))
+            if fenced >= max(1, int(limit)):
+                break
+        return fenced
+
+    def _complete_successful_mission_tree(self, mid):
+        """Project an authoritative successful root Mission into TaskTree."""
+        mission = self.store.get(mid)
+        if (not mission or mission.state not in (DONE_VERIFIED, DONE_ACCEPTED) or
+                self._run_tree is None):
+            return False
+        run_id = self._mission_run_id(mission)
+        if not run_id:
+            return False
+        run = self._run_tree.get(run_id)
+        if not run or run.get("parent_run_id"):
+            # Specialist runs are completed by their scoped dispatcher while it
+            # still owns the TaskTree lease.  This is only the ownerless root seam.
+            return False
+        return self._run_tree.complete_mission_root(
+            run_id, mid, mission.result or "Mission completed")
+
+    def _sync_terminal_mission_tree(self, mid):
+        mission = self.store.get(mid)
+        if not mission:
+            return False
+        if mission.state == FAILED_S:
+            return self._fence_failed_mission_tree(mid)
+        if mission.state in (DONE_VERIFIED, DONE_ACCEPTED):
+            return self._complete_successful_mission_tree(mid)
+        return False
+
+    def _complete_successful_mission_trees(self, limit=64):
+        """Repair the crash window after Mission success but before root projection."""
+        if self._run_tree is None:
+            return 0
+        completed = 0
+        examined = 0
+        for run in self._run_tree.list_runs():
+            if (run.get("parent_run_id") or
+                    run.get("status") in ("completed", "failed", "cancelled")):
+                continue
+            mid = str(run.get("mission_id") or "")
+            mission = self.store.get(mid) if mid else None
+            if not mission or mission.state not in (DONE_VERIFIED, DONE_ACCEPTED):
+                continue
+            examined += 1
+            completed += int(self._complete_successful_mission_tree(mid))
+            if examined >= max(1, int(limit)):
+                break
+        return completed
+
+    def _sync_terminal_mission_trees(self, limit=64):
+        return {
+            "failed": self._fence_failed_mission_trees(limit),
+            "completed": self._complete_successful_mission_trees(limit),
+        }
+
+    def _specialist_artifacts(self, run, child_mission):
+        """Return references only, restricted to declared resources/workspace."""
+        from .tasktree import normalize_artifact_refs
+        case = child_mission.case or {}
+        raw = []
+        for value in (case.get("artifact_refs"), case.get("artifacts")):
+            if isinstance(value, (list, tuple)):
+                raw.extend(value)
+            elif isinstance(value, (str, dict)):
+                raw.append(value)
+        refs = normalize_artifact_refs(raw)
+        roots = []
+        if run.get("workspace") and run.get("owns_workspace"):
+            roots.append(os.path.realpath(run["workspace"]))
+        for resource in run.get("resources") or []:
+            if resource.get("kind") == "file":
+                roots.append(os.path.realpath(str(resource.get("id") or "")))
+        safe = []
+        for ref in refs:
+            uri = str(ref.get("uri") or "")
+            if uri and not uri.lower().startswith(
+                    ("collie://", "https://", "http://", "urn:")):
+                continue
+            if ref.get("path"):
+                path = os.path.realpath(os.path.abspath(ref["path"]))
+                try:
+                    if not any(os.path.commonpath([root, path]) == root for root in roots):
+                        continue
+                except ValueError:
+                    continue
+                ref = dict(ref, path=path)
+            safe.append(ref)
+        safe.insert(0, {
+            "kind": "specialist_result",
+            "name": "%s result" % run.get("role", "specialist"),
+            "uri": "collie://runs/%s" % run["run_id"],
+        })
+        if run.get("workspace") and run.get("owns_workspace"):
+            safe.insert(0, {
+                "kind": "workspace", "name": "%s output" % run.get("role", "specialist"),
+                "uri": "collie://runs/%s/workspace" % run["run_id"],
+                "path": os.path.realpath(run["workspace"]),
+            })
+        return normalize_artifact_refs(safe)
 
     # ── commands ──
     def start(self, goal: str, autonomous: bool | None = None,
@@ -229,15 +742,41 @@ class MissionService:
         canonical = os.path.realpath(os.path.abspath(str(path or "")))
         if not path or not os.path.isdir(canonical):
             return {**self.status(mid), "error": "isolated workspace does not exist"}
+        run_id = str((m.case or {}).get("_run_id") or "")
+        if self._run_tree is not None and not run_id:
+            candidate_id = self._agent_root_id(mid)
+            candidate = self._run_tree.get(candidate_id)
+            if candidate:
+                if (candidate.get("parent_run_id") or candidate.get("mission_id") != mid or
+                        candidate.get("task") != str(m.goal)[:4000] or
+                        candidate.get("leash") != dict(m.leash or {}) or
+                        candidate.get("workspace_mode") != "worktree"):
+                    return {**self.status(mid),
+                            "error": "workspace authority refused: orphan root identity conflicts"}
+                run_id = candidate_id
+        if self._run_tree is not None and run_id:
+            try:
+                run = self._run_tree.get(run_id) or {}
+                if run.get("resources"):
+                    bound = self._run_tree.bind_workspace(
+                        run_id, canonical, owns_workspace=False)
+                    if not bound:
+                        raise ValueError("declared root workspace is already bound elsewhere")
+                else:
+                    self._run_tree.initialize_root_workspace_authority(
+                        run_id, canonical, self._workspace_authority_mode(m))
+            except ValueError as exc:
+                return {**self.status(mid), "error": "workspace authority refused: %s" % exc}
         case = dict(m.case)
         case["_isolated_workspace"] = canonical
-        self.store.set_case(mid, case)
+        if run_id:
+            case["_run_id"] = run_id
+        if not self.store.set_case(mid, case):
+            return {**self.status(mid),
+                    "error": "workspace authority initialized but Mission binding raced"}
         self.store.record_checkpoint(
             mid, "", "workspace_bound", {"workspace": canonical},
             case=case, allow_unowned=True)
-        if self._run_tree and case.get("_run_id"):
-            self._run_tree.bind_workspace(case["_run_id"], canonical,
-                                          owns_workspace=False)
         return self.status(mid)
 
     def create_run_tree(self, mid: str, resources, workspace: str = "") -> dict:
@@ -249,9 +788,14 @@ class MissionService:
             return {**self.status(mid), "error": "no durable run-tree store configured"}
         if m.case.get("_run_id"):
             return self._run_tree.tree(m.case["_run_id"])
-        run = self._run_tree.create_root(
-            m.goal, m.leash, resources, mission_id=mid, workspace=workspace,
-            workspace_mode="worktree")
+        run_id = self._agent_root_id(mid)
+        try:
+            run = self._run_tree.create_root(
+                m.goal, m.leash, resources, run_id=run_id,
+                mission_id=mid, workspace=workspace,
+                workspace_mode="worktree")
+        except ValueError as exc:
+            return {**self.status(mid), "error": "run-tree creation refused: %s" % exc}
         case = dict(m.case)
         case["_run_id"] = run["run_id"]
         if workspace:
@@ -265,9 +809,12 @@ class MissionService:
     def spawn_specialist(self, mid: str, role: str, task: str, *, leash=None,
                          resources=None, workspace: str = "") -> dict:
         m = self.store.get(mid)
-        run_id = m.case.get("_run_id") if m else ""
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
+        if m.state in (DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+            return {**self.status(mid),
+                    "error": "terminal Mission cannot spawn a specialist"}
+        run_id = self._mission_run_id(m)
         if self._run_tree is None or not run_id:
             return {**self.status(mid), "error": "mission has no durable run tree"}
         try:
@@ -280,27 +827,259 @@ class MissionService:
         except ValueError as exc:
             return {**self.status(mid), "error": str(exc)}
 
+    def agent_spawn(self, mid: str, role: str, task: str, *, leash=None,
+                    resources=None, operation_id: str = "") -> dict:
+        """Container-provisioned model entry for ``agent.spawn``."""
+        mission, parent, error = self._agent_caller(mid)
+        if error:
+            return {"ok": False, "error": error, "mission_id": mid}
+        task = str(task or "").strip()[:4000]
+        if not task:
+            return {"ok": False, "error": "specialist task is empty", "mission_id": mid}
+        if resources is None or not isinstance(resources, (list, tuple)):
+            return {"ok": False,
+                    "error": "agent.spawn requires an explicit resources list",
+                    "mission_id": mid}
+        try:
+            from .tasktree import narrow_leash, normalize_resources
+            scoped = normalize_resources(resources)
+            effective_leash = narrow_leash(parent.get("leash") or {}, leash)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "mission_id": mid}
+        physical_workspace = str(parent.get("workspace") or "")
+        if not physical_workspace and not scoped:
+            # Resource-free specialists may use cwd as an execution directory;
+            # it is deliberately not persisted as root filesystem authority.
+            physical_workspace = os.getcwd()
+        if not physical_workspace:
+            return {"ok": False,
+                    "error": "calling run has no container-bound workspace",
+                    "mission_id": mid}
+        file_write = any(item.get("kind") == "file" and item.get("mode") == "write"
+                         for item in scoped)
+        if file_write:
+            # The current code child is rooted at the whole isolated worktree. Until it can bind
+            # several independent path roots, claiming that a subdirectory-only grant confines it
+            # would be false authority. Require a write root that covers the source workspace.
+            source_workspace = str(
+                (mission.case or {}).get("_resource_source_workspace") or
+                parent.get("workspace") or "")
+            if not source_workspace:
+                return {"ok": False,
+                        "error": "file-writing specialist has no logical source workspace",
+                        "mission_id": mid}
+            workspace_root = os.path.normcase(os.path.realpath(source_workspace))
+            covers_workspace = False
+            for item in scoped:
+                if item.get("kind") != "file" or item.get("mode") != "write":
+                    continue
+                try:
+                    item_root = os.path.normcase(os.path.realpath(item.get("id") or ""))
+                    covers_workspace = (os.path.commonpath(
+                        [item_root, workspace_root]) == item_root)
+                except (OSError, ValueError):
+                    covers_workspace = False
+                if covers_workspace:
+                    break
+            if not covers_workspace:
+                return {
+                    "ok": False,
+                    "error": ("file-writing specialist needs a directory write resource "
+                              "covering its full parent workspace; narrower scopes are not "
+                              "yet enforceable by the isolated code runner"),
+                    "mission_id": mid,
+                }
+        try:
+            # Read-only specialists may share the stable parent checkout.  A file
+            # writer starts unbound and can run only after the container provisions
+            # an isolated git worktree.
+            semantic = json.dumps({
+                "parent": parent["run_id"], "role": str(role or "specialist")[:80],
+                "task": task, "resources": scoped, "leash": effective_leash,
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            # An action nonce identifies one intentional model operation. Semantic
+            # content remains TaskTree's replay/collision check, but must not merge
+            # two deliberate identical delegations. Direct host calls have no
+            # action nonce, so retain semantic idempotency for that legacy seam.
+            identity = (json.dumps({"parent": parent["run_id"],
+                                    "operation_id": str(operation_id)},
+                                   ensure_ascii=False, sort_keys=True,
+                                   separators=(",", ":"))
+                        if operation_id else semantic)
+            stable_run_id = "run_agent_" + hashlib.sha256(
+                identity.encode("utf-8", "replace")).hexdigest()[:16]
+            child = self._run_tree.spawn_specialist(
+                parent["run_id"], role, task, leash=leash, resources=scoped,
+                workspace="" if file_write else physical_workspace,
+                workspace_mode="worktree", run_id=stable_run_id)
+            if child.get("status") in ("completed", "failed", "cancelled"):
+                return {
+                    "ok": child.get("status") == "completed",
+                    "run_id": child["run_id"], "mission_id": child.get("mission_id") or "",
+                    "parent_run_id": child["parent_run_id"], "role": child["role"],
+                    "status": child["status"], "result": child.get("result") or "",
+                    "replayed": True,
+                }
+            if file_write and not child.get("workspace"):
+                prepared = self._run_tree.provision_worktree(
+                    child["run_id"], physical_workspace)
+                if prepared.get("busy"):
+                    current = self._run_tree.get(child["run_id"]) or child
+                    if current.get("status") in ("completed", "failed", "cancelled"):
+                        return {
+                            "ok": current.get("status") == "completed",
+                            "run_id": current["run_id"],
+                            "mission_id": current.get("mission_id") or "",
+                            "parent_run_id": current["parent_run_id"],
+                            "role": current["role"], "status": current["status"],
+                            "result": current.get("result") or "", "replayed": True,
+                        }
+                    return {
+                        "ok": True, "run_id": child["run_id"], "mission_id": "",
+                        "parent_run_id": child["parent_run_id"], "role": child["role"],
+                        "status": child["status"], "provisioning": True,
+                        "resources": child.get("resources") or [],
+                        "authority": {
+                            "may": list((child.get("leash") or {}).get("may") or []),
+                            "provider": "inherited"},
+                    }
+                if not prepared.get("ok"):
+                    self._run_tree.cancel_descendant(parent["run_id"], child["run_id"])
+                    return {"ok": False,
+                            "error": str(prepared.get("error") or
+                                         "isolated specialist worktree could not be provisioned")[:500],
+                            "run_id": child["run_id"], "mission_id": mid}
+                child = prepared.get("run") or self._run_tree.get(child["run_id"])
+                if not child or not child.get("workspace"):
+                    raise ValueError("isolated specialist workspace binding raced or was lost")
+            child = self._create_specialist_mission(mid, child)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "mission_id": mid}
+        return {
+            "ok": True,
+            "run_id": child["run_id"],
+            "mission_id": child.get("mission_id") or "",
+            "parent_run_id": child["parent_run_id"],
+            "role": child["role"],
+            "status": child["status"],
+            "resources": child.get("resources") or [],
+            "authority": {"may": list((child.get("leash") or {}).get("may") or []),
+                          "provider": "inherited"},
+        }
+
+    def agent_send(self, mid: str, run_id: str, text: str) -> dict:
+        mission, caller, error = self._agent_caller(mid)
+        if error:
+            return {"ok": False, "error": error, "mission_id": mid}
+        if not run_id:
+            return {"ok": False, "error": "agent.send requires run_id", "mission_id": mid}
+        try:
+            message_id = self._run_tree.send_to_descendant(
+                caller["run_id"], run_id, text)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "mission_id": mid}
+        if message_id is None:
+            return {"ok": False, "error": "target specialist is terminal",
+                    "run_id": run_id, "mission_id": mid}
+        return {"ok": True, "run_id": run_id, "message_id": message_id,
+                "queued": True}
+
+    def agent_poll(self, mid: str, run_id: str = "") -> dict:
+        mission, caller, error = self._agent_caller(mid)
+        if error:
+            return {"ok": False, "error": error, "mission_id": mid}
+        target = run_id or caller["run_id"]
+        if target != caller["run_id"] and not self._run_tree.is_descendant(
+                caller["run_id"], target):
+            return {"ok": False,
+                    "error": "specialist target is outside caller descendant scope",
+                    "mission_id": mid, "run_id": target}
+        if mission.run_token:
+            self._fold_child_results(mid, caller["run_id"], mission.run_token)
+            mission = self.store.get(mid)
+        tree = self._run_tree.tree(target)
+        runs = [{
+            "run_id": row["run_id"], "parent_run_id": row["parent_run_id"],
+            "role": row["role"], "status": row["status"],
+            "progress_seq": row["progress_seq"], "progress_at": row["progress_at"],
+            "result": str(row.get("result") or "")[:1000],
+        } for row in tree.get("flat", [])]
+        visible = {row["run_id"] for row in runs}
+        stored_results = (mission.case or {}).get("specialist_results")
+        stored_results = stored_results if isinstance(stored_results, list) else []
+        results = [item for item in stored_results
+                   if isinstance(item, dict) and item.get("run_id") in visible]
+        return {"ok": True, "run_id": target, "runs": runs,
+                "results": results[-20:]}
+
+    def agent_cancel(self, mid: str, run_id: str) -> dict:
+        mission, caller, error = self._agent_caller(mid)
+        if error:
+            return {"ok": False, "error": error, "mission_id": mid}
+        if not run_id:
+            return {"ok": False, "error": "agent.cancel requires run_id", "mission_id": mid}
+        if not self._run_tree.is_descendant(caller["run_id"], run_id):
+            return {"ok": False,
+                    "error": "specialist target is outside caller descendant scope",
+                    "mission_id": mid, "run_id": run_id}
+        target = self._run_tree.get(run_id)
+        if target and target.get("status") in ("completed", "failed", "cancelled"):
+            return {"ok": True, "run_id": run_id, "status": target["status"],
+                    "already_terminal": True}
+        try:
+            changed = self._run_tree.cancel_descendant(caller["run_id"], run_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "mission_id": mid}
+        current = self._run_tree.get(run_id)
+        return {"ok": bool(changed), "run_id": run_id,
+                "status": current.get("status") if current else "missing",
+                **({} if changed else {"error": "target specialist is unavailable"})}
+
     def _create_specialist_mission(self, parent_mid, run):
         """Materialize a scoped specialist as a real Mission lane, not a TODO row."""
-        if run.get("mission_id"):
-            return run
         workspace = run.get("workspace") or ""
         if not workspace:
             return run
         child_mid = "spc_" + run["run_id"].replace("run_", "")
-        if not self.store.get(child_mid):
+        if run.get("mission_id") and run.get("mission_id") != child_mid:
+            raise ValueError("specialist run is bound to a different Mission")
+        # Reserve the deterministic cross-database identity first. A crash now
+        # leaves a TaskTree row that the orphan pass can materialize, rather than
+        # an unaddressable Mission row or an ambiguous second child.
+        if not run.get("mission_id"):
+            if not self._run_tree.bind_mission(run["run_id"], child_mid):
+                current = self._run_tree.get(run["run_id"])
+                if not current or current.get("mission_id") != child_mid:
+                    raise ValueError("specialist Mission binding raced with another owner")
+            run = self._run_tree.get(run["run_id"]) or run
+        parent_run = self._run_tree.get(run.get("parent_run_id") or "") or {}
+        parent_mid = str(parent_mid or parent_run.get("mission_id") or "")
+        parent_mission = self.store.get(parent_mid)
+        source_workspace = str(
+            ((parent_mission.case or {}).get("_resource_source_workspace")
+             if parent_mission else "") or parent_run.get("workspace") or "")
+        existing = self.store.get(child_mid)
+        if not existing:
             case = {
                 "_isolated_workspace": workspace,
                 "_specialist_run_id": run["run_id"],
                 "_parent_mission_id": parent_mid,
                 "_resource_scope": run.get("resources") or [],
+                "_resource_source_workspace": source_workspace,
                 "role": run.get("role") or "specialist",
             }
-            create_mission(
-                self.store, child_mid, run["task"], case=case, leash=run["leash"],
-                lane="specialist", external_run_id=run["run_id"])
-        if not self._run_tree.bind_mission(run["run_id"], child_mid):
-            raise ValueError("specialist Mission binding raced with another owner")
+            try:
+                create_mission(
+                    self.store, child_mid, run["task"], case=case, leash=run["leash"],
+                    lane="specialist", external_run_id=run["run_id"])
+            except sqlite3.IntegrityError:
+                # Another dispatcher may have repaired the same crash window.
+                if not self.store.get(child_mid):
+                    raise
+        runtime = self.store.runtime(child_mid)
+        if (str(runtime.get("external_run_id") or "") != run["run_id"] or
+                str(runtime.get("parent_mission_id") or "") != str(parent_mid or "")):
+            raise ValueError("specialist Mission id is bound to different authority")
         return self._run_tree.get(run["run_id"])
 
     def bind_specialist_workspace(self, run_id: str, path: str) -> dict:
@@ -376,11 +1155,13 @@ class MissionService:
         if m.state != QUEUED:
             # Idempotent for the common Web-vs-daemon claim race: if somebody else
             # already advanced it, return the live state instead of a false failure.
+            self._sync_terminal_mission_tree(mid)
             return self.status(mid)
         try:
             self._driver().advance(mid)
         except Exception as e:
             return {**self.status(mid), "error": f"run unavailable: {e}"}
+        self._sync_terminal_mission_tree(mid)
         return self.status(mid)
 
     def confirm(self, mid: str, nonce: str) -> dict:
@@ -405,6 +1186,7 @@ class MissionService:
                 self._driver().confirm_and_resume(mid, nonce)
         except (RefusedError, RuntimeError) as e:
             return {**self.status(mid), "error": f"confirm refused: {e}"}
+        self._sync_terminal_mission_tree(mid)
         return self.status(mid)
 
     def resume(self, mid: str) -> dict:
@@ -433,6 +1215,23 @@ class MissionService:
             return {"error": "unknown mission", "mission_id": mid}
         if m.state != FAILED_S:
             return {**self.status(mid), "error": f"cannot retry from {m.state}"}
+        # Repair the cross-store crash window before even considering a successor.
+        # Once the failed root is fenced, no new descendants can be added; running
+        # workers must durably acknowledge cancellation before retry is safe.
+        self._fence_failed_mission_tree(mid)
+        predecessor_run_id = self._mission_run_id(m)
+        if predecessor_run_id and self._run_tree is not None:
+            unsettled = [row for row in self._run_tree.tree(predecessor_run_id).get("flat", [])
+                         if row.get("status") not in
+                         ("completed", "failed", "cancelled")]
+            if unsettled:
+                summary = ", ".join("%s:%s" % (
+                    row.get("role") or "specialist", row.get("status") or "unknown")
+                                    for row in unsettled[:6])
+                return {
+                    **self.status(mid),
+                    "error": "cannot retry until predecessor specialists settle (%s)" % summary,
+                }
         active_resources = self.store.active_resources(mid)
         live_actions = [r for r in self.actions.list()
                         if r.get("job_id") == mid and r.get("state") == EXECUTING]
@@ -677,7 +1476,17 @@ class MissionService:
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
         _name, nonce = self.store.last_parked(mid)
-        if m.state != NEEDS_YOU or nonce or not self.store.accept_handoff(mid):
+        if m.state != NEEDS_YOU or nonce:
+            return {**self.status(mid), "error": f"cannot accept from {m.state}"}
+        blocked = self._agent_completion_guard(mid, m)
+        if blocked:
+            reason = (blocked.get("reason") if isinstance(blocked, dict) else str(blocked))
+            return {
+                **self.status(mid),
+                "error": "cannot accept while delegated work is unsettled: %s" %
+                         str(reason or "unfinished delegated work remains")[:500],
+            }
+        if not self.store.accept_handoff(mid):
             return {**self.status(mid), "error": f"cannot accept from {m.state}"}
         specialist = self._specialist_run(mid)
         if specialist:
@@ -691,6 +1500,7 @@ class MissionService:
                     subject=DONE_ACCEPTED)
             except Exception:
                 pass
+        self._sync_terminal_mission_tree(mid)
         return self.status(mid)
 
     def continue_after_human(self, mid: str, note: str = "") -> dict:
@@ -768,6 +1578,7 @@ class MissionService:
                 self._driver().wake(mid, force=True)
         except Exception as e:
             return {**self.status(mid), "error": f"check unavailable: {e}"}
+        self._sync_terminal_mission_tree(mid)
         return self.status(mid)
 
     def tick(self, mid: str = None, now=None) -> dict:
@@ -777,23 +1588,42 @@ class MissionService:
         at = int(now if now is not None else time.time())
         recovered = self.store.recover_stale_runs(at)
         escalations = self.store.escalate_human_waits(at)
-        specialists = self._tick_specialists(at)
+        specialists = 0
+        parent_wakes = {"normal": 0, "specialists": 0}
+        # One child can wake a waiting specialist which then completes and wakes
+        # its own parent. Depth is leash-bounded; four passes cover the default
+        # graph while retaining a hard dispatcher bound.
+        for _ in range(4):
+            specialists += self._tick_specialists(at)
+            woke = self._wake_parents_with_child_results()
+            parent_wakes["normal"] += woke["normal"]
+            parent_wakes["specialists"] += woke["specialists"]
+            if not woke["specialists"]:
+                break
+        self._sync_terminal_mission_trees()
         if not self.store.list(state=QUEUED) and not self.store.due_waits(at):
             if mid:
                 return {**self.status(mid), "escalations": [e for e in escalations
                                                              if e["mission_id"] == mid]}
             return {"advanced": 0, "specialists_advanced": specialists,
+                    "parents_resumed": parent_wakes,
                     "recovered": recovered,
                     "escalations": escalations}
         n = self._driver().tick_missions(at, max_workers=self._mission_workers)
+        self._sync_terminal_mission_trees()
         if mid:
             return {**self.status(mid), "escalations": [e for e in escalations
                                                          if e["mission_id"] == mid]}
         return {"advanced": n, "specialists_advanced": specialists,
+                "parents_resumed": parent_wakes,
                 "recovered": recovered, "escalations": escalations}
 
     def _specialist_control(self, run_id, token):
         run = self._run_tree.get(run_id)
+        child_mid = str((run or {}).get("mission_id") or "")
+        child = self.store.get(child_mid) if child_mid else None
+        if child and child.run_token:
+            self._fold_child_results(child_mid, run_id, child.run_token)
         messages = self._run_tree.claim_messages(run_id, token)
         steers = []
         for message in messages:
@@ -833,7 +1663,10 @@ class MissionService:
             if child.state == QUEUED:
                 state = driver.advance(child_mid)
             elif child.state == WAITING:
-                state = driver.wake(child_mid, force=False)
+                state = driver.wake(
+                    child_mid,
+                    force=(self._run_tree.has_child_results(run_id, child_mid) or
+                           self._run_tree.has_messages(run_id, "steer")))
             elif child.state == NEEDS_YOU:
                 _name, nonce = self.store.last_parked(child_mid)
                 record = self.actions.get(nonce) if nonce else None
@@ -854,18 +1687,38 @@ class MissionService:
                             int(before.get("active_wall_ms", 0))),
                 retries=max(0, int(after.get("retry_count", 0)) -
                             int(before.get("retry_count", 0))))
+            current_run = self._run_tree.get(run_id) or {}
+            if (current_run.get("status") == "cancel_requested" or
+                    current_run.get("cancel_requested")):
+                self._cancel_record(
+                    child_mid,
+                    "cancelled at specialist execution boundary; no new code action started",
+                    user_requested=False,
+                    parent_mission_id=str((self.store.get(child_mid).case or {}).get(
+                        "_parent_mission_id") or ""))
+                self._run_tree.cancel_owned(
+                    run_id, token, "cancelled at specialist execution boundary")
+                return
             if exhausted and state not in (DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
                 self._run_tree.block(
                     run_id, token,
                     "; ".join("%s: %s" % item for item in exhausted), needs_you=True)
             elif state in (DONE_VERIFIED, DONE_ACCEPTED):
+                child_record = self.store.get(child_mid)
                 if not self._run_tree.complete(
-                        run_id, token, self.store.get(child_mid).result):
+                        run_id, token, child_record.result,
+                        artifacts=self._specialist_artifacts(run, child_record),
+                        observation={"mission_state": state,
+                                     "verified": state == DONE_VERIFIED,
+                                     "accepted": state == DONE_ACCEPTED}):
                     self._run_tree.block(
                         run_id, token, "TaskCompleted hook blocked specialist completion",
                         needs_you=True)
             elif state == FAILED_S:
                 self._run_tree.fail(run_id, token, self.store.get(child_mid).result)
+                self._cancel_linked_descendant_missions(
+                    child_mid, run_id,
+                    "cancelled because ancestor Mission %s failed" % child_mid)
             elif state == CANCELLED:
                 self._run_tree.cancel_owned(run_id, token, self.store.get(child_mid).result)
             elif state == WAITING:
@@ -891,6 +1744,63 @@ class MissionService:
             stop.set()
             beat.join(timeout=2)
 
+    def _reconcile_specialist_orphans(self, limit):
+        """Repair bounded spawn crash windows before any specialist claim."""
+        if self._run_tree is None:
+            return 0
+        from .tasktree import (CANCEL_REQUESTED as T_CANCEL_REQUESTED,
+                               CANCELLED as T_CANCELLED, COMPLETED as T_COMPLETED,
+                               FAILED as T_FAILED, WORKSPACE_REQUIRED)
+        repaired = 0
+        candidates = []
+        for run in self._run_tree.list_runs(specialists_only=True):
+            if (run.get("status") in (T_COMPLETED, T_FAILED, T_CANCELLED,
+                                      T_CANCEL_REQUESTED) or
+                    run.get("cancel_requested")):
+                continue
+            if (run.get("status") == WORKSPACE_REQUIRED or
+                    (run.get("workspace") and
+                     (not run.get("mission_id") or
+                      not self.store.get(run.get("mission_id") or "")))):
+                candidates.append(run)
+            if len(candidates) >= max(1, int(limit)):
+                break
+        for candidate in candidates:
+            run_id = candidate["run_id"]
+            phase = "workspace" if candidate.get("status") == WORKSPACE_REQUIRED \
+                else "mission"
+            try:
+                run = self._run_tree.get(run_id) or candidate
+                parent = self._run_tree.get(run.get("parent_run_id") or "") or {}
+                parent_mid = str(parent.get("mission_id") or "")
+                if run.get("status") == WORKSPACE_REQUIRED:
+                    parent_workspace = str(parent.get("workspace") or "")
+                    if not parent_workspace:
+                        raise ValueError("parent workspace is unavailable for worktree recovery")
+                    prepared = self._run_tree.provision_worktree(
+                        run_id, parent_workspace)
+                    if prepared.get("busy"):
+                        continue
+                    if not prepared.get("ok"):
+                        raise ValueError(str(
+                            prepared.get("error") or
+                            "isolated specialist worktree could not be recovered"))
+                    run = prepared.get("run") or self._run_tree.get(run_id)
+                    phase = "mission"
+                if not run or not run.get("workspace"):
+                    raise ValueError("specialist workspace recovery did not bind a workspace")
+                if (not run.get("mission_id") or
+                        not self.store.get(run.get("mission_id") or "")):
+                    run = self._create_specialist_mission(parent_mid, run)
+                if not run or not run.get("mission_id"):
+                    raise ValueError("specialist Mission recovery did not bind a Mission")
+                repaired += 1
+            except Exception as exc:
+                self._run_tree.mark_orphan_needs_you(
+                    run_id, "specialist orphan recovery failed: %s: %s" %
+                    (type(exc).__name__, exc), phase=phase)
+        return repaired
+
     def _tick_specialists(self, now):
         """Claim and actually execute scoped child Missions; never strand queued rows."""
         if self._run_tree is None:
@@ -898,6 +1808,10 @@ class MissionService:
         from .tasktree import (BLOCKED as T_BLOCKED, NEEDS_YOU as T_NEEDS_YOU,
                                PAUSED as T_PAUSED, QUEUED as T_QUEUED,
                                RECOVERY_REQUIRED as T_RECOVERY, WAITING as T_WAITING)
+        workers = self._specialist_workers if self._specialist_workers is not None else \
+            int(os.environ.get("COLLIE_SPECIALIST_WORKERS", "4"))
+        workers = max(1, min(8, int(workers)))
+        self._reconcile_specialist_orphans(workers)
         # Mirror explicit child-Mission recovery/continue commands back into the
         # run tree, and wake only when the child's durable timer is due.
         for run in self._run_tree.list_runs(
@@ -916,9 +1830,6 @@ class MissionService:
                 else:
                     self._run_tree.resume(run["run_id"])
         queued = self._run_tree.list_runs(T_QUEUED, specialists_only=True)
-        workers = self._specialist_workers if self._specialist_workers is not None else \
-            int(os.environ.get("COLLIE_SPECIALIST_WORKERS", "4"))
-        workers = max(1, min(8, int(workers)))
         claimed = []
         for run in queued[:workers]:
             lease = max(300, int(float(run["leash"].get("max_step_seconds", 600))) + 60)

@@ -311,8 +311,14 @@ def reconcile_recovery(sid, resolution, note="", confirmed=False, directory=None
                            "the user inspected the external system and confirmed the action did not fire")
                 if note:
                     outcome += ": " + str(note)[:1000]
-                messages.append({"role": "tool", "tool_call_id": call_id,
-                                 "name": name, "content": "RECOVERY: " + outcome})
+                already_paired = any(
+                    msg.get("role") == "tool" and msg.get("tool_call_id") == call_id
+                    for msg in messages if isinstance(msg, dict))
+                if already_paired:
+                    messages.append({"role": "user", "content": "RECOVERY: " + outcome})
+                else:
+                    messages.append({"role": "tool", "tool_call_id": call_id,
+                                     "name": name, "content": "RECOVERY: " + outcome})
                 raw["messages"] = messages
             active = dict(active)
             active.update(state="turn_boundary", updated=time.time(),

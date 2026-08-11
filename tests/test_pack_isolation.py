@@ -59,6 +59,32 @@ def test_scratch_reads_still_see_the_shared_baseline():
         mem.close()
 
 
+def test_scratch_claim_lifecycle_never_reaches_the_shared_store():
+    """New proposal/review APIs must not fall through __getattr__ to the base DB."""
+    with tempfile.TemporaryDirectory() as root:
+        base = SqliteMemory(os.path.join(root, "memory.db"))
+        before = base.count()
+        mem = ScratchMemory(base, read_project="repo")
+
+        rid = mem.propose("candidate-only deployment conclusion", project="agent-3",
+                          source="agent_tool")
+        assert mem.get_claim(rid)["status"] == "proposed"
+        assert mem.list_claims("proposed", "agent-3")[0]["id"] == rid
+        assert base.count() == before
+        assert not base.list_claims(status="proposed")
+
+        assert mem.promote(rid, status="verified", evidence="candidate-local check")
+        assert mem.recall("deployment conclusion", project="agent-3")
+        assert not base.recall("deployment conclusion", project="repo")
+        assert base.count() == before
+
+        rejected = mem.propose("another candidate-only assertion", project="agent-3")
+        assert mem.reject(rejected, evidence="losing candidate")
+        assert mem.get_claim(rejected)["status"] == "rejected"
+        assert not base.list_claims(status="rejected")
+        mem.close()
+
+
 def test_two_agents_on_one_task_do_not_see_each_other(monkeypatch):
     with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as cwd:
         monkeypatch.setattr(cli, "DATA", data)

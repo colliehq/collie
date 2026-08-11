@@ -37,6 +37,9 @@ class RunResult:
     wall_ms: int = 0
     success: bool = False
     verified: bool = False   # edited + a repro ran on the fixed code & passed (the gate's verdict)
+    # Claims distilled from this run begin as proposals.  An outer host can use these ids to
+    # promote/reject them after a verification command that necessarily runs after Harness.run().
+    memory_claim_ids: list[int] = field(default_factory=list)
     quality: float = 0.0     # LLM-judge 0-10 (task completion quality)
     cost_usd: float = 0.0    # estimated $ from tokens x model price
     checkpoint_ref: str = ""  # tree snapshot taken before this run; "" when one could not be taken
@@ -71,7 +74,8 @@ class Recorder:
             prefix_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
             total_tokens INTEGER, cache_read INTEGER, turns INTEGER,
             tool_calls INTEGER, mem_recalls INTEGER, wall_ms INTEGER,
-            success INTEGER, quality REAL DEFAULT 0, cost_usd REAL DEFAULT 0,
+            success INTEGER, verified INTEGER DEFAULT 0,
+            quality REAL DEFAULT 0, cost_usd REAL DEFAULT 0,
             answer TEXT, error TEXT, note TEXT)""")
         c.execute("""CREATE TABLE IF NOT EXISTS turns(
             run_id INTEGER, idx INTEGER, kind TEXT, detail TEXT,
@@ -85,6 +89,7 @@ class Recorder:
             ("runs", "cache_creation", "INTEGER"),   # RunResult had this field but it was never persisted
             ("runs", "cache_miss_tokens", "INTEGER"), ("runs", "cache_waste_usd", "REAL"),
             ("runs", "prefix_measured", "INTEGER"),
+            ("runs", "verified", "INTEGER DEFAULT 0"),
         ]:
             try:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, decl))
@@ -129,11 +134,12 @@ class Recorder:
                     """UPDATE runs SET prefix_tokens=?,input_tokens=?,output_tokens=?,
                          total_tokens=?,cache_read=?,cache_creation=?,cache_miss_tokens=?,
                          cache_waste_usd=?,prefix_measured=?,turns=?,tool_calls=?,mem_recalls=?,
-                         wall_ms=?,success=?,quality=?,cost_usd=?,answer=?,error=? WHERE run_id=?""",
+                         wall_ms=?,success=?,verified=?,quality=?,cost_usd=?,answer=?,error=?
+                         WHERE run_id=?""",
                     (res.prefix_tokens, res.input_tokens, res.output_tokens, res.total_tokens,
                      res.cache_read, res.cache_creation, res.cache_miss_tokens, res.cache_waste_usd,
                      res.prefix_measured, res.turns, res.tool_calls, res.mem_recalls, res.wall_ms,
-                     int(res.success), res.quality, res.cost_usd,
+                     int(res.success), int(res.verified), res.quality, res.cost_usd,
                      (res.answer or "")[:2000], (res.error or "")[:500], res.run_id))
                 self.db.commit()
             except sqlite3.OperationalError as e:

@@ -250,7 +250,7 @@ should always print nothing.
 | `ModelProvider` | **OpenAICompat** (DeepSeek/Qwen/GLM/OpenRouter…) · Anthropic · Ollama · subscription-OAuth |
 | `ToolRegistry` | read/write/**edit** (syntax-gated) · bash · grep · glob · **`code_search`** · **`web_search`** + **`web_fetch`** (keyless) · **`plan`** · **`undo`** · browser · **MCP** (deferred tier + `load_tools`) |
 | `EmbeddingProvider` | **OnnxEmbedding** granite-107m (Apache, 55MB, multilingual) · bge-m3 / e5 · jina-v3 opt-in · **BM25-only** when no model |
-| `SqliteMemory` | CORE + facts + FTS5 + cosine, hybrid RRF + optional rerank + consolidation |
+| `SqliteMemory` | CORE + evidence-gated claims + FTS5 + cosine, hybrid RRF + optional rerank |
 | `ContextComposer` | STABLE/CONTEXT/VOLATILE + auto-prefetch · a ~1K-token fixed prefix (kept deliberately lean) |
 
 **`code_search`** extracts the identifiers from a natural-language query and greps the repo (ripgrep,
@@ -260,6 +260,15 @@ exact-match, whitespace-tolerant, and **rejects any edit that would break Python
 Untrusted web/page content is **fenced as data** (prompt-injection defense), and the browser bridge
 refuses any request missing its CSRF header. A token/cost **budget**
 (`COLLIE_MAX_COST` / `COLLIE_MAX_TOTAL_TOKENS`) stops a run at a ceiling.
+
+Agent-authored memories are quarantined as proposals: they enter normal recall only after user
+attestation or an executed host check. Review them with `collie mem pending`, then
+`collie mem approve <id>`, `collie mem attest <id>`, or `collie mem reject <id>` (and use
+`collie mem invalidate <id>` on an accepted claim).
+`execute_code` is a
+batching surface, not an authority shortcut—executable inner calls pass through the same
+permission, audit, secret-redaction, checkpoint, and verification-accounting path as ordinary tool
+calls; invariant-violating calls are denied and recorded at that boundary.
 
 ## Platforms
 

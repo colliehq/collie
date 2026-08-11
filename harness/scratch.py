@@ -49,14 +49,44 @@ class ScratchMemory:
         # Anything not overridden below is a read of the real store (embed_model, rebuild_fts, …).
         return getattr(self.base, name)
 
-    def recall(self, query: str, project: str = "global", k: int = 8, pool: int = 50) -> list:
-        mine = self._own.recall(query, project=_SCRATCH, k=k, pool=pool)
-        shared = self.base.recall(query, project=self.read_project, k=k, pool=pool)
+    def recall(self, query: str, project: str = "global", k: int = 8, pool: int = 50,
+               statuses=None) -> list:
+        mine = self._own.recall(query, project=_SCRATCH, k=k, pool=pool, statuses=statuses)
+        shared = self.base.recall(query, project=self.read_project, k=k, pool=pool,
+                                  statuses=statuses)
         seen = {hit.get("text") for hit in mine}
         return (mine + [h for h in shared if h.get("text") not in seen])[:k]
 
     def remember(self, text: str, keys: str = "", project: str = "global", **kw):
         return self._own.remember(text, keys=keys, project=_SCRATCH, **kw)
+
+    # Lifecycle methods must be explicit.  Letting __getattr__ forward them to
+    # ``base`` would turn a Pack candidate's proposal (or promotion of its local
+    # integer id) into a write against shared durable memory — exactly the
+    # cross-candidate contamination this adapter exists to prevent.
+    def propose(self, text: str, keys: str = "", project: str = "global", **kw):
+        kw.setdefault("scope", project)
+        return self._own.propose(text, keys=keys, project=_SCRATCH, **kw)
+
+    def promote(self, memory_id: int, status: str = "active", **kw) -> bool:
+        return self._own.promote(memory_id, status=status, **kw)
+
+    def reject(self, memory_id: int, **kw) -> bool:
+        return self._own.reject(memory_id, **kw)
+
+    def invalidate(self, memory_id: int, **kw) -> bool:
+        return self._own.invalidate(memory_id, **kw)
+
+    promote_memory = promote
+    reject_memory = reject
+    invalidate_memory = invalidate
+
+    def get_claim(self, memory_id: int):
+        return self._own.get_claim(memory_id)
+
+    def list_claims(self, status: str | None = None, project: str | None = None,
+                    limit: int = 100) -> list[dict]:
+        return self._own.list_claims(status=status, project=_SCRATCH, limit=limit)
 
     def core_blocks(self, scopes: list) -> list:
         # The composer builds scopes as [f"project:{project}", "global"]; rewrite the project scope

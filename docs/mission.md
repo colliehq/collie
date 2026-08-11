@@ -167,10 +167,14 @@ late worker may write its Action receipt, but it cannot fold stale case state or
 action.
 
 The leash also enforces cumulative model tokens, estimated model dollars, active wall time,
-elapsed time, retries, and durable storage. These totals survive waits and restarts. Long cases
-retain a compact rolling summary, recent results, recent events, human updates, and recovery
-metadata; old bulk results remain auditable in the event/receipt/checkpoint ledgers rather than
-crowding out the newest facts in the model prompt.
+elapsed time, retries, durable storage, model turns, irreversible actions, and action rate. A
+specialist's immutable `parent_mission_id` makes these budgets cumulative over the complete
+descendant tree, so parallel fan-out cannot mint a fresh budget. Sibling turn/action reservations
+are serialized in SQLite; token, cost, and wall usage are charged when each in-flight boundary
+returns. These totals survive waits and restarts. Long cases retain a compact rolling summary,
+recent results, recent events, human updates, and recovery metadata; old bulk results remain
+auditable in the event/receipt/checkpoint ledgers rather than crowding out the newest facts in the
+model prompt.
 
 `needs_you` has two durable deadlines. The first emits an escalation record for notification
 wiring. The hard deadline fail-closes to `paused` while preserving the exact confirmation inbox;
@@ -186,11 +190,13 @@ canonical workspace resource lease.
 `harness.tasktree.TaskTreeStore` is the durable orchestration backend. It stores a parent/child run
 tree, explicit resource ownership, progress/history, background state, a steer/cancel mailbox with
 delivery acknowledgement, notification outbox, crash leases, and cumulative budgets. Child leash
-and resource declarations are checked as deterministic subsets of the parent. Child usage is
-charged to every ancestor, so fan-out cannot escape the root budget. Write scopes cannot overlap
-between live siblings, and `can_access()` tells a parent when a file has been delegated. Worktree
-provisioning is the default; missing provisioning is `workspace_required`, not a silently shared
-checkout.
+and resource declarations are checked as deterministic subsets of the parent. Write scopes cannot
+overlap between live siblings, and `can_access()` prevents a parent from writing a file range
+currently delegated to an active descendant. Worktree provisioning is the default; missing
+provisioning is `workspace_required`, not a silently shared checkout. Today this is a hard execution
+boundary for Mission `code` and file resources. Other resource kinds remain durable
+scheduling/ownership declarations until their capability adapter explicitly enforces them; they
+must not be treated as a general operating-system sandbox.
 
 This is an executable path, not only a task record. A production `MissionService()` now creates a
 `TaskTreeStore` at `<state_dir>/tasktree.db` automatically and loads a `HookManager` for the current
@@ -198,10 +204,24 @@ working directory. Unreviewed or changed hook definitions remain visible as `hoo
 status and are not executed. Injected stores/hooks are still supported for embeddings and tests;
 the service closes only resources it created itself.
 
-Root creation remains explicit: choosing the resources and isolated worktree is an authority
-decision that should not be guessed by `start()`. Before a root is attached, `status.tasktree`
-reports the available durable backend and `inspect_run_tree()` returns an empty tree. After
-`create_run_tree()`, `MissionService.spawn_specialist()` creates a child Mission in the
+Explicit `create_run_tree()` remains available when a host needs to provide a custom resource set.
+For ordinary production Missions, the first model-facing delegation lazily creates a deterministic
+root. A Mission with a bound isolated workspace receives file authority for that workspace (write
+when its leash permits `code`, otherwise read); without a bound workspace, file delegation fails
+closed while resource-free research can still be delegated.
+
+The planner-facing primitives are `agent.spawn`, `agent.send`, `agent.poll`, and `agent.cancel`.
+Spawn does not permit a per-call provider/model override: the child uses the current owning
+`MissionService` configuration and can only narrow leash and resources. Replaying the same already
+persisted Action nonce finds the same child; semantic equality or a newly proposed Action after an
+uncertain crash does not reuse it. Thus two intentional, identical delegations remain distinct.
+Terminal children publish bounded structured results, artifact references, and verification
+observations to a durable mailbox. The parent folds those results into case state before
+acknowledging delivery; an interruption between those operations replays safely. Waiting parents
+wake on arrival, and the completion guard refuses success while a descendant remains active or a
+child result remains unconsumed.
+
+After a root is attached, `MissionService.spawn_specialist()` creates a child Mission in the
 `specialist` scheduler lane.
 `MissionService.tick()` claims and runs those child Missions through the normal model, leash,
 ActionStore, watchdog, and verifier gates, then durably completes/blocks/fails the run-tree node.
@@ -230,9 +250,11 @@ service.tick()  # daemon catch-up drives both ordinary Missions and specialists
 ```
 
 Trusted lifecycle hooks receive `TaskCreated`, `TaskCompleted`, `Notification`, and Mission `Stop`
-events. A denying `TaskCompleted`/`Stop` hook prevents an automated success transition and routes
-the work to human review. Explicit user cancellation remains authoritative and is still dispatched
-for audit.
+events. A denying `TaskCompleted` hook can stop specialist-owned completion before commit, while a
+denying Mission `Stop` hook prevents an automated Mission success transition and routes the work to
+human review. Projecting an already-terminal root Mission into its TaskTree row emits
+`TaskCompleted` as post-commit audit only; it cannot reopen the Mission. Explicit user cancellation
+remains authoritative and is still dispatched for audit.
 
 ## What “24×7” means here
 
@@ -250,5 +272,5 @@ Focused verification commands:
 
 ```text
 python -m pytest -q tests/test_mission_autonomy.py tests/test_tasktree.py
-python -m pytest -q tests/test_mission.py tests/test_missionweb.py tests/test_scheduler.py tests/test_actions.py tests/test_verifier.py
+python -m pytest -q tests/test_mission.py tests/test_missionweb.py tests/test_mission_aggregate_budget.py tests/test_scheduler.py tests/test_actions.py tests/test_verifier.py
 ```
