@@ -651,7 +651,12 @@ def _browse_verify(rec, result):
     # needs independent evidence: the bridge re-read of the live page identity.
     # Without the explicit flag, an empty form remains inconclusive so a failed
     # fill cannot disguise itself as successful browsing.
-    if read_only and not expect:
+    # ``expect`` has form-fill semantics.  A planner can still attach semantic
+    # inspection goals such as {account: "authenticated identity"}; those are
+    # not labels/values that should suddenly turn an explicit no-write read
+    # into a failed form submission.  Explicit read-only intent wins, and the
+    # independent evidence remains the freshly reread page origin below.
+    if read_only:
         page = r.get("page") or {}
         host = str(page.get("host") or "").strip().lower()
         title = str(page.get("title") or "").strip()

@@ -251,6 +251,12 @@ def test_browse_and_submit_real():
     check(inspected_verdict.status == VERIFIED and inspected_verdict.evidence and
           inspected_verdict.evidence[0].channel == "browser-page-reread",
           "explicit read-only browsing verifies against the independently reread live page")
+    semantic_inspection = _Rec({"read_only": True,
+                                "goal": "Inspect the account; do not create or edit anything.",
+                                "expect": {"account": "authenticated identity",
+                                           "company_page": "availability"}})
+    check(_browse_verify(semantic_inspection, inspected).status == VERIFIED,
+          "semantic read-only expectations are not misclassified as form fields")
     check(_browse_verify(_Rec({}), inspected).status == INCONCLUSIVE,
           "an empty-form fill cannot masquerade as read-only success without the explicit flag")
     inferred = _Rec({"goal": "Inspect available signed-in sessions; do not register, change, or submit anything."})

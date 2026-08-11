@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.21.8 — Read-only browser verification precedence
+
+- **Semantic inspection hints no longer become imaginary form fields.** An explicit no-write
+  browser inspection now verifies against the independently reread live page even when a planner
+  also supplies semantic expectations such as account identity or Company Page availability.
+  Those hints can no longer turn a successful authenticated-account read into a terminal
+  “form fields not filled” failure.
+
 ## v0.21.7 — Deliverable-aware Mission composition
 
 - **Writing requests can no longer masquerade as finished copy.** If a Mission planner mistakenly
