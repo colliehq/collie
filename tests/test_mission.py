@@ -336,6 +336,20 @@ def test_pause_preserves_due_wait_and_cancel_is_terminal():
     store.close(); actions.close()
 
 
+def test_browse_submit_requires_latest_verified_preparation():
+    print("test_browse_submit_requires_latest_verified_preparation")
+    failed = [{"kind": "result", "name": "browse",
+               "payload": {"verdict": "failed", "reason": "body did not match"}}]
+    ok = [{"kind": "result", "name": "browse",
+           "payload": {"verdict": "verified", "reason": "exact form reread"}}]
+    check(MissionDriver._browse_submit_ready(failed)[0] is False,
+          "a failed fill deterministically blocks the final browser click")
+    check(MissionDriver._browse_submit_ready(ok)[0] is True,
+          "an independently verified fill permits the final browser click")
+    check(MissionDriver._browse_submit_ready([])[0] is False,
+          "submit without any preparation evidence fails closed")
+
+
 def test_cancel_revokes_a_parked_action():
     print("test_cancel_revokes_a_parked_action")
     clear_registry(); register_primitives(stub=True)
@@ -717,6 +731,8 @@ def test_browser_target_change_refuses_confirmed_click():
     drv, store, actions = _driver([
         {"action": "browse.submit", "args": {"button": "Publish"}}])
     create_mission(store, "target", "publish one post", leash=world_leash())
+    store.record_event("target", "result", "browse",
+                       payload={"verdict": VERIFIED, "reason": "exact form reread"})
     check(drv.advance("target") == NEEDS_YOU, "snapshotted publish parked")
     _name, nonce = store.last_parked("target")
     rec = actions.get(nonce)
@@ -920,6 +936,7 @@ def main():
     test_model_context_keeps_newest_results_and_per_site_browse_facts()
     test_model_context_preserves_complete_latest_human_update()
     test_local_compose_work_is_not_treated_as_polling()
+    test_browse_submit_requires_latest_verified_preparation()
     test_browse_mission_gates_publish()
     test_code_step_in_a_mission()
     test_pause_preserves_due_wait_and_cancel_is_terminal()

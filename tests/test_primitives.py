@@ -291,6 +291,12 @@ def test_browse_and_submit_real():
     check(_browse_verify(_Rec({"expect": {"post_text": "Try VocalCode today"}}),
                          enabled_social).status == VERIFIED,
           "an enabled final Post action preserves the verified form verdict")
+    extended_social = dict(social,
+                           form=[{"label": "tweetTextarea_0",
+                                  "value": "Try VocalCode today at https://wrong.example"}])
+    check(_browse_verify(_Rec({"expect": {"post_text": "Try VocalCode today"}}),
+                         extended_social).status == FAILED,
+          "a matching prefix cannot verify an invented rich-text tail or link")
     wrong_site = dict(social, page={"host": "facebook.com", "title": "Marketplace"})
     check(_browse_verify(_Rec({"expect": {"platform": "Twitter/X",
                                           "tweet_text": "Try VocalCode today"}}), wrong_site).status
@@ -499,6 +505,18 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
         crossed = _live_browse("prepare one site's form")
         check("social.test -> oauth.test" in crossed.get("_scope_error", ""),
               "the live child reports a final OAuth redirect outside its action boundary")
+
+    from harness.primitives import _real_browse, _browse_verify
+    called = []
+    execute = _real_browse(runner=lambda goal: called.append(goal) or "should not run",
+                           form_reader=lambda: [])
+    incomplete = _Rec({"read_only": False,
+                       "goal": "Fill Post text with the prepared copy from the case draft.",
+                       "expect": {"Post text": "Complete external copy"}})
+    rejected = execute(incomplete)
+    check(not called and rejected.get("contract_error") and
+          _browse_verify(incomplete, rejected).status == FAILED,
+          "a browser child cannot invent content referenced only from the outer case")
 
 
 def test_code_primitive():

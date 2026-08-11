@@ -1582,6 +1582,24 @@ class MissionDriver:
             target = str(a.get("inbox") or a.get("channel") or "default").strip().lower()
         return (bool(a.get("authed") or a.get("inbox")), target)
 
+    @staticmethod
+    def _browse_submit_ready(events):
+        """A final browser write may follow only the newest independently verified preparation.
+
+        This is a deterministic sequencing invariant, not planner advice: a model may optimistically
+        choose Submit after a failed fill, but the container must never materialize that click.
+        """
+        for event in reversed(list(events or [])):
+            if event.get("kind") == "result" and event.get("name") == "browse":
+                payload = event.get("payload") or {}
+                verdict = str(payload.get("verdict") or "")
+                if verdict == VERIFIED:
+                    return True, "latest browser preparation independently verified"
+                return False, ("latest browser preparation was %s: %s" %
+                               (verdict or "not verified",
+                                str(payload.get("reason") or "no verification evidence")[:300]))
+        return False, "no independently verified browser preparation exists"
+
     def __init__(self, store: MissionStore, actions: ActionStore, decider,
                  capabilities=None, goal_verifier=None, *, lane="mission",
                  control=None, hooks=None):
@@ -2185,6 +2203,25 @@ class MissionDriver:
                 if not cap:
                     return self._finish(mission_id, token, FAILED_S,
                                         f"unknown action {action!r}")
+                if cap.name == "browse.submit":
+                    ready, gate_reason = self._browse_submit_ready(
+                        self.store.events(mission_id, 40))
+                    if not ready:
+                        current = self.store.get(mission_id)
+                        case = dict(current.case if current else {})
+                        case["signal"] = ("Verification Gate refused browse.submit: " +
+                                          gate_reason +
+                                          ". Repair and verify the reversible browse step first.")[:800]
+                        if not self.store.set_case_owned(mission_id, token, case):
+                            return self._lost_state(mission_id, token)
+                        self.store.record_event(
+                            mission_id, "gate", "browse.submit",
+                            payload={"verdict": "refused", "reason": gate_reason})
+                        self.store.record_checkpoint(
+                            mission_id, token, "submit_precondition_refused",
+                            {"reason": gate_reason}, case=case)
+                        self.store.account_runtime(mission_id, token, retries=1)
+                        continue
                 spend = args.get("spend_usd", args.get("amount_usd", 0))
                 try:
                     spend = float(spend or 0)
@@ -2761,6 +2798,11 @@ _SYS = (
     "When using 'browse' only to inspect or navigate without changing a form, set "
     "args.read_only=true. For a fill/draft operation leave it false and provide args.expect so the "
     "fresh form/editor re-read can verify the intended values.\n"
+    "A restricted browse child CANNOT see the Mission case, prior draft, or messages. For every "
+    "write, embed each COMPLETE exact field value directly in args.goal and repeat the complete "
+    "value in args.expect; never say 'use the case draft', 'prepared copy', 'above', or equivalent. "
+    "Rich text/body expectations are exact, not prefix checks. Choose browse.submit only when the "
+    "newest browse result is verified; after any failed/inconclusive browse, repair it first.\n"
     "For 'compose', put the writing request in args.instruction and supporting material in "
     "args.facts. Use args.text ONLY when it already contains the complete, final, ready-to-use "
     "copy. Never put an instruction such as 'write/create/draft a post' in args.text.\n"

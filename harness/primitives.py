@@ -642,9 +642,30 @@ def _actuator_form(act, space):
 def _real_browse(runner=None, form_reader=None):
     def execute(rec):
         from .browserbridge import space_identity
-        goal = (rec.args or {}).get("goal") or (rec.args or {}).get("task") or ""
+        args = rec.args or {}
+        goal = args.get("goal") or args.get("task") or ""
         space = _mission_space(getattr(rec, "job_id", ""))
-        domains = ((rec.args or {}).get("_leash") or {}).get("allowed_domains") or []
+        domains = (args.get("_leash") or {}).get("allowed_domains") or []
+        # The restricted browser child receives only this goal, never the outer Mission case.  A
+        # planner instruction such as "use the prepared copy from the case" therefore forces the
+        # child to invent the missing body.  Refuse before touching the browser unless every
+        # expected value is literally embedded in the self-contained payload.
+        if not _explicit_read_only_browse(args):
+            expect = args.get("expect") or {}
+            flat_goal = re.sub(r"\s+", " ", str(goal)).strip().casefold()
+            missing = [str(k) for k, v in expect.items()
+                       if re.sub(r"\s+", " ", str(v)).strip().casefold() not in flat_goal]
+            case_ref = re.search(
+                r"(?i)\b(?:from|in|use)\s+(?:the\s+)?(?:case(?:\s+draft)?|draft|context|"
+                r"previous\s+(?:message|result)|above)\b|"
+                r"(?:case|草稿|上下文|上文).{0,20}(?:copy|text|body|文案|正文)", str(goal))
+            if missing or case_ref:
+                reason = ("browse payload is not self-contained: embed the complete exact value for "
+                          + (", ".join(missing) if missing else "every referenced case/draft field")
+                          + " in args.goal and args.expect")
+                return {"case": {"browsed": False, "browse_result": reason[:600]},
+                        "result": reason, "form": [], "form_actions": [], "page": {},
+                        "contract_error": reason}
         raw_out = runner(goal) if runner else _live_browse(goal, space, domains)
         scope_error = ""
         if isinstance(raw_out, dict) and "_browse_answer" in raw_out:
@@ -715,6 +736,8 @@ def _browse_verify(rec, result):
     read_only = _explicit_read_only_browse(rec.args or {})
     if r.get("scope_error"):
         return Verdict(FAILED, str(r.get("scope_error"))[:300])
+    if r.get("contract_error"):
+        return Verdict(FAILED, str(r.get("contract_error"))[:300])
     if not r.get("result") and not form:
         return Verdict(FAILED, "browse produced no result")
 
@@ -750,6 +773,10 @@ def _browse_verify(rec, result):
         v = _norm(val)
         return bool(v) and any(v in _norm(f.get("value", "")) for f in form)
 
+    def _value_exact(val):
+        v = _norm(val)
+        return bool(v) and any(v == _norm(f.get("value", "")) for f in form)
+
     def _page_present(val):
         page = r.get("page") or {}
         wanted = _norm(val)
@@ -770,8 +797,11 @@ def _browse_verify(rec, result):
         # (e.g. tweetTextarea_0).  Semantic *_text/body/content expectations are
         # verified against the fresh value of every filled editor, not a guessed
         # label, while ordinary form fields retain strict label+value matching.
-        if key in ("text", "body", "content", "message", "tweet_text", "post_text") or key.endswith("_text"):
-            return _value_present(val)
+        if key in ("text", "title", "body", "content", "message", "tweet_text", "post_text") or key.endswith("_text"):
+            # A prefix proves only that the child started the requested copy.  It does not prove the
+            # rest was preserved rather than invented (including links).  Rich/social payloads are
+            # externally consequential, so verify the complete normalized value exactly.
+            return _value_exact(val)
         return _present(label, val)
 
     if expect:
@@ -1148,12 +1178,14 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         resource=browser_resource,
         description="Do a task on a website by driving the real browser adaptively (fill a form, "
         "navigate, act) — handles dynamic/obfuscated sites like Facebook Marketplace. Fills up to the "
-        "final submit then STOPS (reversible). Pass `expect` using exact visible field labels. For a "
-        "rich-text editor use content/body/post_text; platform/site is checked against the live page "
+        "final submit then STOPS (reversible). The browser child cannot see the Mission case: embed "
+        "every complete exact field value in goal AND expect; never reference a prior/case draft. "
+        "Pass `expect` using exact visible field labels. For a "
+        "rich-text editor use content/body/post_text and provide its entire final value; platform/site is checked against the live page "
         "origin. For inspection/navigation with no form changes pass read_only=true (an explicit "
         "inspect + do-not-change/submit goal is also recognized fail-closed). The outcome is verified "
         "by an INDEPENDENT re-read, not the agent's say-so.",
-        args_hint='{"goal": "fill a Marketplace vehicle listing for a 2015 Corolla, $9500", '
+        args_hint='{"goal": "fill Make exactly Toyota, Model exactly Corolla, Year exactly 2015, Price exactly 9500", '
                   '"expect": {"Make":"Toyota","Model":"Corolla","Year":"2015","Price":"9500"}, '
                   '"read_only": false}'))
     register(Capability(

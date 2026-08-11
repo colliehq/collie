@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.21.16 — Self-contained browser payloads and submit sequencing
+
+- **A failed form preparation can no longer be followed by `browse.submit`.** The Mission container
+  deterministically requires the newest browse result to be independently verified before it will
+  materialize a final browser click.
+- **Browser children may not invent content hidden in the outer case.** Mutating browse payloads
+  must embed every complete expected value directly; references such as “use the case draft” fail
+  before the browser is touched.
+- **Rich-editor verification is exact instead of prefix-based.** A correct opening sentence can no
+  longer hide an invented tail or wrong link in the actual post body.
+
 ## v0.21.15 — Bounded browser-agent latency
 
 - **Routine browser execution no longer inherits open-ended deep reasoning.** Mission browse
