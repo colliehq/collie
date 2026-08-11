@@ -16,6 +16,7 @@ mission.ModelDecider(provider). Proven here:
   - an out-of-leash action fails closed (never runs unauthorized)
 """
 import os
+import json
 import sqlite3
 import sys
 import tempfile
@@ -33,6 +34,7 @@ from harness.jobs import (  # noqa: E402
 from harness.primitives import register_primitives  # noqa: E402
 from harness.mission import (  # noqa: E402
     MissionStore, MissionDriver, ModelDecider, create_mission, world_leash,
+    _model_case_json,
 )
 from harness.providers import Completion  # noqa: E402
 from harness.verifier import Verdict, VERIFIED  # noqa: E402
@@ -195,6 +197,33 @@ def test_distinct_observe_targets_are_not_poll_backoff():
     check(state == NEEDS_YOU and len(completed) == 5 and
           store.next_wait("multi-site-read") is None,
           "different observe targets proceed without the one-hour polling delay")
+    store.close()
+    actions.close()
+
+
+def test_model_context_keeps_newest_results_and_per_site_browse_facts():
+    print("test_model_context_keeps_newest_results_and_per_site_browse_facts")
+    recent = [{"marker": f"result-{i}", "body": "x" * 900} for i in range(8)]
+    encoded = _model_case_json({"_recent_results": recent}, 1800)
+    check("result-7" in encoded and "result-0" not in encoded,
+          "bounded model context keeps newest timeline evidence, not the oldest prefix")
+
+    drv, store, actions = _driver([])
+    create_mission(store, "site-facts", "inspect several platforms",
+                   leash=world_leash(autonomous=True))
+    mission = store.get("site-facts")
+    for host, summary in (("x.com", "authenticated; composer available"),
+                          ("www.reddit.com", "u/nestlyze; r/SideProject available")):
+        drv._fold(mission, "browse", {"result": summary, "form": [],
+                                      "page": {"host": host, "title": host},
+                                      "case": {"browsed": True, "browse_result": summary}})
+    case = store.get("site-facts").case
+    check(set(case.get("browse_sites", {})) == {"x.com", "www.reddit.com"},
+          "browse facts accumulate by domain rather than overwriting the prior site")
+    model_case = json.loads(_model_case_json(case, 5000))
+    check("x.com" in model_case.get("browse_sites", {}) and
+          "www.reddit.com" in model_case.get("browse_sites", {}),
+          "per-site browser facts survive model-context compaction")
     store.close()
     actions.close()
 
@@ -877,6 +906,7 @@ def main():
     test_leash_denies_out_of_scope()
     test_anti_poll_spin()
     test_distinct_observe_targets_are_not_poll_backoff()
+    test_model_context_keeps_newest_results_and_per_site_browse_facts()
     test_local_compose_work_is_not_treated_as_polling()
     test_browse_mission_gates_publish()
     test_code_step_in_a_mission()

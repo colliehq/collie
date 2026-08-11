@@ -2431,7 +2431,7 @@ def cmd_mission(args):
             elif action == "accept":
                 out = svc.accept(mid)
             elif action == "continue":
-                out = svc.continue_after_human(mid)
+                out = svc.continue_after_human(mid, args.note or "")
             elif action == "reconcile":
                 out = svc.reconcile(mid, args.note or "")
             elif action == "check":

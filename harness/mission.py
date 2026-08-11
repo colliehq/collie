@@ -98,6 +98,32 @@ def _bounded_json(value, limit=12000):
     return {"summary": raw[:max(0, int(limit) - 64)], "truncated": True}
 
 
+def _bounded_sequence_tail(value, limit=1800):
+    """Bound a timeline while retaining its newest items, in chronological order."""
+    if not isinstance(value, list):
+        return _bounded_json(value, limit)
+    kept = []
+    per_item = min(700, max(240, int(limit) // 3))
+    for item in reversed(value):
+        bounded = _bounded_json(item, per_item)
+        candidate = [bounded] + kept
+        if len(json.dumps(candidate, ensure_ascii=False, default=str)) > int(limit):
+            break
+        kept = candidate
+    if not kept and value:
+        kept = [_bounded_json(value[-1], max(160, int(limit) - 32))]
+    return kept
+
+
+def _bounded_mapping_values(value, limit=3600, max_items=12):
+    """Keep several named facts instead of truncating the first mapping value."""
+    if not isinstance(value, dict):
+        return _bounded_json(value, limit)
+    items = list(value.items())[-max(1, int(max_items)):]
+    per_item = max(240, min(900, (int(limit) - 128) // max(1, len(items))))
+    return {str(key)[:253]: _bounded_json(item, per_item) for key, item in items}
+
+
 def _compact_case_storage(case, max_chars=64000):
     """Deterministically compact old case material while preserving newest facts.
 
@@ -117,7 +143,7 @@ def _compact_case_storage(case, max_chars=64000):
         return case
 
     priority_names = {
-        "_mission_summary", "_recent_results", "human_updates", "signal",
+        "_mission_summary", "_recent_results", "human_updates", "browse_sites", "signal",
         "observe_count", "submitted", "published", "sent", "url", "draft",
         "code_verified", "coded", "last_sent_to", "_isolated_workspace",
         "_workspace", "_run_id", "_specialist_run_id", "_parent_mission_id",
@@ -153,7 +179,7 @@ def _model_case_json(case, limit=12000):
     makes truncation deterministic and retains the information needed to resume.
     """
     case = dict(case or {})
-    priority = ("_authority", "_mission_summary", "human_updates",
+    priority = ("_authority", "_mission_summary", "human_updates", "browse_sites",
                 "_recent_results", "_recent_events", "_checkpoint")
     ordered = {key: case[key] for key in priority if key in case}
     ordered.update({key: value for key, value in case.items() if key not in ordered})
@@ -163,7 +189,19 @@ def _model_case_json(case, limit=12000):
         return raw
     # Preserve every priority field in bounded form, then spend the remainder on
     # older context.  The explicit marker prevents the model treating it as full.
-    head = {key: _bounded_json(ordered[key], 1800) for key in priority if key in ordered}
+    budgets = {"_authority": 1200, "_mission_summary": 1000, "human_updates": 900,
+               "browse_sites": 3500, "_recent_results": 2200,
+               "_recent_events": 1500, "_checkpoint": 400}
+    head = {}
+    for key in priority:
+        if key not in ordered:
+            continue
+        if key == "browse_sites":
+            head[key] = _bounded_mapping_values(ordered[key], budgets[key])
+        elif key in ("human_updates", "_recent_results", "_recent_events"):
+            head[key] = _bounded_sequence_tail(ordered[key], budgets[key])
+        else:
+            head[key] = _bounded_json(ordered[key], budgets[key])
     head["_context_truncated"] = True
     for key, value in ordered.items():
         if key in head:
@@ -1629,6 +1667,25 @@ class MissionDriver:
             case[name] = {k: v for k, v in result.items() if k != "case"} or result
             if isinstance(result.get("case"), dict):
                 case.update(result["case"])
+            if name == "browse":
+                page = result.get("page") or {}
+                host = str(page.get("host") or "").strip().lower()
+                if re.fullmatch(r"[a-z0-9.-]{1,253}", host):
+                    summary = result.get("result")
+                    if not isinstance(summary, str):
+                        summary = (result.get("case") or {}).get("browse_result") or summary
+                    if not isinstance(summary, str):
+                        summary = json.dumps(summary, ensure_ascii=False, default=str)
+                    sites = dict(case.get("browse_sites") or {})
+                    previous = sites.get(host) if isinstance(sites.get(host), dict) else {}
+                    observations = list(previous.get("observations") or [])
+                    observation = {"at": int(time.time()),
+                                   "title": str(page.get("title") or "")[:160],
+                                   "summary": summary[:1400]}
+                    observations.append(observation)
+                    sites[host] = {"latest": observation,
+                                   "observations": observations[-2:]}
+                    case["browse_sites"] = sites
         elif result is not None:
             case[name] = result
         recent = list(case.get("_recent_results") or [])

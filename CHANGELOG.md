@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.21.5 — Durable multi-site Mission context
+
+- **Recent Mission evidence now keeps the newest entries.** When the model context is bounded, the
+  driver retains the tail of result/event timelines instead of the oldest prefix. A newly verified
+  account or page state therefore informs the very next decision instead of being silently cut off.
+
+- **Browser discoveries accumulate by domain.** Read-only results for VocalCode, X, Reddit,
+  LinkedIn, Product Hunt, and other sites remain in a compact per-site map (including the two latest
+  observations), so inspecting one platform no longer erases the others or causes discovery loops.
+
+- **CLI human-assist notes are durable.** `mission continue --note ...` now passes the operator's
+  actual recovery guidance into the Mission case instead of replacing it with a generic message.
+
 ## v0.21.4 — Multi-platform Mission discovery
 
 - **Different sites no longer trigger polling backoff.** The Mission anti-spin guard now tracks the
