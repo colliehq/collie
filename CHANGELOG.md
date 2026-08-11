@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.21.7 — Deliverable-aware Mission composition
+
+- **Writing requests can no longer masquerade as finished copy.** If a Mission planner mistakenly
+  puts an unmistakable “write/create/draft a post” request in the final-text field, the compose
+  primitive repairs it into an actual model-generation request. The Verification Gate also rejects
+  both an exact prompt echo and any returned text that is still another writing instruction, while
+  preserving legitimate imperative slogans as literal copy.
+
 ## v0.21.6 — Exact settings preservation during upgrades
 
 - **Upgrades snapshot and restore the complete settings file.** In addition to skipping the

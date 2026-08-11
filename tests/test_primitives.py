@@ -143,6 +143,22 @@ def test_compose_instruction_produces_deliverable_instead_of_echoing_request():
     check(cap.verify(rec, echoed).status == FAILED,
           "an echoed writing instruction cannot be recorded as composed copy")
 
+    # Mission planners are fallible: if they place a clear writing request in
+    # ``text`` despite the schema, recover at the primitive boundary instead of
+    # persisting the request itself as if it were the finished post.
+    misplaced = _Rec({"facts": "VocalCode uses local speech recognition.",
+                      "text": "Create final, publication-ready copy for an X post."})
+    recovered = cap.execute(misplaced)
+    check(len(provider.calls) == 2 and recovered.get("text", "").startswith("VocalCode keeps"),
+          "compose repairs a writing request misplaced in the final-literal field")
+    check(cap.verify(misplaced, {"text": misplaced.args["text"]}).status == FAILED,
+          "a misplaced writing-request echo cannot pass the compose gate")
+
+    literal = _Rec({"facts": "unused", "text": "Create faster with VocalCode."})
+    literal_result = cap.execute(literal)
+    check(len(provider.calls) == 2 and literal_result.get("text") == literal.args["text"],
+          "an imperative marketing slogan remains literal final copy")
+
 
 def test_observe_loggedout_real():
     print("test_observe_loggedout_real")

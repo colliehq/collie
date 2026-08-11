@@ -141,6 +141,37 @@ def _real_research_verify(rec, result):
     return _research_verify(rec, result)
 
 
+_COMPOSE_REQUEST_OPEN = re.compile(
+    r"^\s*(?:please\s+)?(?:write|create|draft|produce|generate|compose|prepare|rewrite)\b",
+    re.I,
+)
+_COMPOSE_REQUEST_CUE = re.compile(
+    r"\b(?:copy|post|email|message|reply|caption|title|body|platform[- ]specific|"
+    r"publication[- ]ready|ready[- ]to[- ](?:use|publish)|must include|should be|"
+    r"do not (?:claim|invent|include))\b",
+    re.I,
+)
+_COMPOSE_REQUEST_ZH = re.compile(
+    r"^\s*(?:请|帮我)?(?:写|撰写|起草|生成|创作|准备).{0,80}"
+    r"(?:文案|帖子|邮件|消息|回复|标题|正文|可直接发布)",
+)
+
+
+def _compose_request_like(text):
+    """Recognise a writing request misplaced in ``args.text``.
+
+    ``text`` is normally a final literal, but a model can ignore the schema and
+    put "Write/Create ... copy" there.  The predicate intentionally requires a
+    writing verb *and* a meta-writing cue so legitimate slogans such as
+    "Create faster with VocalCode" remain literal copy.
+    """
+    value = str(text or "").strip()
+    return bool(
+        (_COMPOSE_REQUEST_OPEN.search(value) and _COMPOSE_REQUEST_CUE.search(value))
+        or _COMPOSE_REQUEST_ZH.search(value)
+    )
+
+
 def _real_compose(provider=None):
     def execute(rec):
         a = rec.args or {}
@@ -150,6 +181,8 @@ def _real_compose(provider=None):
         # ``text`` is already-final copy. Generation requests belong in
         # ``instruction`` so the result cannot silently echo a writing request.
         text = str(a.get("text") or "").strip()
+        if not instruction and _compose_request_like(text):
+            instruction, text = text, ""
         should_generate = bool(instruction) or not text
         if should_generate and prov is not None:
             sys = ("Create the final, ready-to-use text for the user's errand. Follow the "
@@ -180,9 +213,15 @@ def _real_compose(provider=None):
 
 def _compose_verify(rec, result):
     text = str((result or {}).get("text") or "").strip()
-    instruction = str(((rec.args or {}).get("instruction") or "")).strip()
+    args = rec.args or {}
+    instruction = str((args.get("instruction") or "")).strip()
+    misplaced = str((args.get("text") or "")).strip()
+    if not instruction and _compose_request_like(misplaced):
+        instruction = misplaced
     if instruction and text == instruction:
         return Verdict(FAILED, "composer echoed the instruction instead of producing final text")
+    if instruction and _compose_request_like(text):
+        return Verdict(FAILED, "composer returned another writing request instead of final text")
     if text:
         return Verdict(VERIFIED, "text composed")
     return Verdict(FAILED, "nothing composed")
