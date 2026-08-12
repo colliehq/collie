@@ -4325,7 +4325,7 @@
       area.remove(); return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
     };
     var copy = navigator.clipboard && navigator.clipboard.writeText ?
-      navigator.clipboard.writeText(text) : fallback();
+      navigator.clipboard.writeText(text).catch(fallback) : fallback();
     return Promise.resolve(copy).then(function () {
       if (!button) return; var old = button.textContent; button.textContent = t("copied");
       setTimeout(function () { button.textContent = old; }, 1400);
