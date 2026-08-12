@@ -33,7 +33,7 @@ def test_current_schedule_has_admission_then_counterbalanced_configurable_rankin
     plan = canonical_plan(3)
 
     assert [(row["arm"], row["position"]) for row in admission] == [
-        ("collie", 1), ("codex", 2)]
+        ("codex", 1), ("collie", 2)]
     assert len(plan) == 12
     assert len({row["run_id"] for row in plan}) == 12
     assert all(row["attempt"] == 1 and row["phase"] == "ranking" for row in plan)
@@ -56,6 +56,22 @@ def test_container_uses_subreaper_for_sdk_watchdog(monkeypatch, tmp_path):
 
     assert command[:5] == ["docker", "run", "--rm", "--init", "--network"]
     assert command[command.index("--security-opt") + 1] == "seccomp=unconfined"
+
+
+def test_admission_requires_observed_local_tool_and_patch():
+    from bench.current_product_rank import _admission_capability_proven
+
+    codex = {"arm": "codex"}
+    assert not _admission_capability_proven(codex, {
+        "tool_evidence": {"shell_calls_observed": 0}}, "")
+    assert not _admission_capability_proven(codex, {
+        "tool_evidence": {"shell_calls_observed": 1}}, "")
+    assert _admission_capability_proven(codex, {
+        "tool_evidence": {"shell_calls_observed": 1}}, "diff --git a/x b/x\n")
+
+    collie = {"arm": "collie"}
+    assert _admission_capability_proven(
+        collie, {"request_evidence": [{"outcome": "completed"}]}, "patch")
 
 
 def test_shared_prompt_is_byte_identical_for_both_workers(monkeypatch, tmp_path):
@@ -186,7 +202,15 @@ def test_codex_predictor_freezes_capability_surface_and_high_effort(monkeypatch,
     assert "--ephemeral" in seen["cmd"]
     assert "--ignore-user-config" in seen["cmd"]
     assert "--ignore-rules" in seen["cmd"]
-    assert seen["cmd"].count("--disable") >= 20
+    assert seen["cmd"].count("--disable") >= 18
+    enabled = {seen["cmd"][index + 1] for index, value in enumerate(seen["cmd"][:-1])
+               if value == "--enable"}
+    disabled = {seen["cmd"][index + 1] for index, value in enumerate(seen["cmd"][:-1])
+                if value == "--disable"}
+    for local_feature in (
+            "code_mode_host", "shell_snapshot", "shell_tool", "unified_exec"):
+        assert local_feature in enabled
+        assert local_feature not in disabled
     for expected in (
             'web_search="disabled"', "tools.web_search=false",
             'cli_auth_credentials_store="file"', 'model_reasoning_effort="high"'):

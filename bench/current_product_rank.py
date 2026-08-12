@@ -121,7 +121,14 @@ def canonical_plan(repetitions: int = DEFAULT_REPETITIONS,
     reps = range(1, 2) if admission else range(1, repetitions + 1)
     for task_index, task in enumerate(tasks):
         for repetition in reps:
-            order = ARMS if (task_index + repetition - 1) % 2 == 0 else tuple(reversed(ARMS))
+            if admission:
+                # Exercise the opaque native CLI/tool surface first.  If its
+                # local edit capability is unavailable, do not spend a Collie
+                # admission request or any ranking requests.
+                order = tuple(reversed(ARMS))
+            else:
+                order = (ARMS if (task_index + repetition - 1) % 2 == 0
+                         else tuple(reversed(ARMS)))
             for position, arm in enumerate(order, 1):
                 slot = len(plan) + 1
                 prefix = "admit" if admission else "rank"
@@ -415,6 +422,20 @@ def _worker_codex_evidence(guard: Mapping[str, Any]) -> dict[str, Any]:
             for key in ("credits_remaining", "auto_reload", "observed_at_utc")}
 
 
+def _admission_capability_proven(row: Mapping[str, Any], worker: Mapping[str, Any],
+                                 patch: str) -> bool:
+    if not patch:
+        return False
+    if row.get("arm") == "codex":
+        evidence = (worker.get("tool_evidence")
+                    if isinstance(worker.get("tool_evidence"), dict) else {})
+        return sum(int(evidence.get(key) or 0) for key in (
+            "shell_calls_observed", "apply_patch_calls_observed")) >= 1
+    if row.get("arm") == "collie":
+        return bool(worker.get("request_evidence"))
+    return False
+
+
 def _run_one(image: str, suite_sha: str, row: Mapping[str, Any],
              guard: Mapping[str, Any], codex_version: str,
              claude_credential: Path, codex_auth: Path, suite_temp: Path,
@@ -497,6 +518,11 @@ def _run_one(image: str, suite_sha: str, row: Mapping[str, Any],
     elif worker.get("worker_outcome") == "candidate" and grader.get("outcome") == "graded":
         status = "valid_resolved" if grader.get("resolved") is True else "valid_unresolved"
         error_code = "" if status == "valid_resolved" else "hidden_contract_failed"
+    if row.get("phase") == "admission" and status in (
+            "valid_resolved", "valid_unresolved"):
+        if not _admission_capability_proven(row, worker, patch):
+            status = "invalid_infrastructure"
+            error_code = "admission_local_edit_capability_unproven"
     _atomic_json(run_dir / "grader.json", grader)
     _atomic_json(run_dir / "usage.json", {
         "schema_version": 1, "suite_sha256": suite_sha, "run_id": row["run_id"],

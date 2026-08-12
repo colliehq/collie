@@ -775,15 +775,21 @@ def predict_codex(workdir: str, problem_statement: str, model="", timeout=1800,
     """
     disabled_features = (
         "apps", "auth_elicitation", "browser_use", "browser_use_external",
-        "browser_use_full_cdp_access", "code_mode_host", "computer_use",
+        "browser_use_full_cdp_access", "computer_use",
         "fast_mode", "goals", "hooks", "image_generation", "in_app_browser",
         "memories", "multi_agent", "plugin_sharing", "plugins", "remote_compaction_v2",
-        "remote_plugin", "shell_snapshot", "skill_mcp_dependency_install", "skill_search",
+        "remote_plugin", "skill_mcp_dependency_install", "skill_search",
         "tool_call_mcp_elicitation", "tool_suggest", "workspace_dependencies",
     )
+    # These are Codex's native local-repository execution surfaces, not foreign
+    # tools.  Keep them on so the product arm remains capable of inspecting and
+    # editing its isolated checkout.
+    local_features = ("code_mode_host", "shell_snapshot", "shell_tool", "unified_exec")
     cmd = ["codex", "--sandbox", "workspace-write", "--ask-for-approval", "never"]
     for feature in disabled_features:
         cmd += ["--disable", feature]
+    for feature in local_features:
+        cmd += ["--enable", feature]
     for override in ('web_search="disabled"', "tools.web_search=false",
                      'cli_auth_credentials_store="file"',
                      'model_reasoning_effort="high"'):
