@@ -433,6 +433,81 @@ def test_ranking_allows_zero_tool_and_empty_patch_as_valid_unresolved(monkeypatc
     assert result["tool_evidence"]["native_tool_calls"] == 0
 
 
+def test_product_failure_workspace_is_still_graded(monkeypatch, tmp_path):
+    from bench import normalized_harness_rank as rank
+
+    task = rank.task_by_id(rank.TASKS[0]["task_id"])
+    row = rank.canonical_plan(1)[0]
+    suite = "c" * 64
+    result_root = tmp_path / "results"
+    suite_temp = tmp_path / "temp"
+    result_root.mkdir()
+    suite_temp.mkdir()
+    credential = tmp_path / "credential"
+    credential.write_text("opaque", encoding="utf-8")
+
+    monkeypatch.setattr(rank, "_run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout="2\n", stderr=""))
+    monkeypatch.setattr(rank, "_attest_sidecar", lambda *args: {})
+    monkeypatch.setattr(rank, "_attest_agent", lambda *args: {})
+    monkeypatch.setattr(rank, "_attest_internal_network", lambda *args: {
+        "driver": "bridge", "internal": True})
+    monkeypatch.setattr(rank, "_attest_egress_network", lambda *args: {
+        "driver": "bridge", "internal": False, "attempt_scoped": True})
+    monkeypatch.setattr(rank, "_wait_sidecar", lambda *args: None)
+    monkeypatch.setattr(rank, "_remove_container", lambda *args: True)
+    monkeypatch.setattr(rank, "_remove_network", lambda *args: True)
+    monkeypatch.setattr(rank, "_docker_inspect", lambda *args: {
+        "State": {"Running": True}})
+    monkeypatch.setattr(rank, "_external_patch", lambda *args: "a patch")
+    monkeypatch.setattr(rank, "_validate_sidecar_ledger", lambda directory: {
+        "model": rank.MODEL, "physical_requests": 1,
+        "reserved_requests": 1, "settled_requests": 1,
+        "outcomes": {"completed": 1}, "usage": {},
+        "ledger_sha256": "a" * 64,
+    })
+    monkeypatch.setattr(rank, "_prepare_git_fixture", lambda *args: (
+        "a" * 40, "b" * 40))
+    grade_calls = []
+
+    def fake_grade(task_value, workspace, patch_sha):
+        grade_calls.append((task_value, workspace, patch_sha))
+        return {"outcome": "graded", "resolved": True,
+                "patch_sha256": patch_sha}
+
+    monkeypatch.setattr(rank, "_grade", fake_grade)
+    monkeypatch.setattr(rank, "_validate_worker_receipt", lambda *args: {
+        "native_tool_calls": 1, "native_edit_calls": 1,
+        "terminal_observed": True})
+    original_load = rank._load_json
+
+    def fake_load(path):
+        if path.name == "worker.json":
+            return {
+                "worker_outcome": "product_failure",
+                "error_code": "model_or_tool_error",
+                "duration_ms": 1, "usage": {}, "patch": "a patch",
+                "runtime": {"product": row["arm"], "model": rank.MODEL},
+                "tool_evidence": {"terminal_observed": True},
+            }
+        return original_load(path)
+
+    monkeypatch.setattr(rank, "_load_json", fake_load)
+    monkeypatch.setattr(Path, "is_file", lambda self: (
+        True if self.name == "worker.json" else Path.exists(self)))
+
+    result = rank._run_one(
+        "sidecar", "agent", suite, row, credential, suite_temp,
+        result_root, 30)
+
+    assert len(grade_calls) == 1
+    assert result["status"] == "valid_resolved"
+    assert result["resolved"] is True
+    assert result["worker_outcome"] == "product_failure"
+    assert result["worker_error_code"] == "model_or_tool_error"
+    assert result["error_code"] == ""
+
+
 def test_summary_is_adapted_nonpublishable_four_arm_ranking():
     from bench.normalized_harness_rank import ARMS, canonical_plan, summarize
 
@@ -470,6 +545,21 @@ def test_summary_withholds_ranking_until_claude_post_run_check():
     assert result["ranking_withheld"] is True
     assert result["ranking_withheld_reason"] == (
         "post_run_claude_billing_ui_recheck_pending")
+
+
+def test_admission_summary_is_validation_only():
+    from bench.normalized_harness_rank import canonical_plan, summarize_admission
+
+    plan = canonical_plan(1, admission=True)
+    suite = "b" * 64
+    rows = [{**row, "suite_sha256": suite, "status": "valid_unresolved",
+             "resolved": False, "duration_ms": 10} for row in plan]
+    result = summarize_admission(plan, rows, suite)
+
+    assert result["admitted"] is True
+    assert result["scores"] is None
+    assert result["ranking"] is None
+    assert result["ranking_withheld_reason"] == "admission_is_not_scored"
 
 
 def test_billing_requires_only_safe_claude_ui_evidence():

@@ -916,23 +916,20 @@ def _run_one(sidecar_image: str, harness_image: str, suite_sha: str,
             tool_evidence, patch):
         error_code = "admission_native_edit_capability_unproven"
     else:
-        if worker.get("worker_outcome") == "product_failure":
-            grader = {
-                "outcome": "product_failure", "resolved": False,
-                "patch_sha256": patch_sha,
-            }
-            status = "valid_unresolved"
-            error_code = str(worker.get("error_code") or "product_failure")
+        # Once transport, receipt, exit, and isolation evidence are valid, the
+        # evaluator grades the resulting workspace regardless of how the
+        # harness described its own terminal state.  A harness may report a
+        # final model/tool error after already writing a correct solution.
+        grader = _grade(task, workspace, patch_sha)
+        if grader.get("outcome") == "graded":
+            status = ("valid_resolved" if grader.get("resolved") is True
+                      else "valid_unresolved")
+            error_code = ("" if status == "valid_resolved" else
+                          str(grader.get("failure_detail") or
+                              worker.get("error_code") or
+                              "hidden_contract_failed"))
         else:
-            grader = _grade(task, workspace, patch_sha)
-            if grader.get("outcome") == "graded":
-                status = ("valid_resolved" if grader.get("resolved") is True
-                          else "valid_unresolved")
-                error_code = ("" if status == "valid_resolved" else
-                              str(grader.get("failure_detail") or
-                                  "hidden_contract_failed"))
-            else:
-                error_code = "hidden_grader_infrastructure_failure"
+            error_code = "hidden_grader_infrastructure_failure"
 
     _atomic_json(run_dir / "grader.json", grader)
     terminal = {
@@ -942,6 +939,10 @@ def _run_one(sidecar_image: str, harness_image: str, suite_sha: str,
         "status": status,
         "resolved": status == "valid_resolved",
         "error_code": error_code,
+        "worker_outcome": worker.get("worker_outcome"),
+        "worker_error_code": (
+            _safe_worker_error(worker)
+            if worker.get("worker_outcome") == "product_failure" else ""),
         "reservation_sha256": reservation_sha,
         "baseline_commit": baseline_commit,
         "baseline_tree": baseline_tree,
@@ -1042,11 +1043,27 @@ def summarize(plan: list[dict[str, Any]], rows: list[dict[str, Any]],
             "two synthetic tasks are insufficient for a general capability claim",
             "all four harnesses are adapted to an evaluator-owned compatibility sidecar",
             "system prompts, loop policies, context handling, and local tool surfaces differ",
+            "only the initial evaluator-owned user message is byte-identical; model-visible prompts differ",
+            "native tool and edit counts are diagnostic and not comparable across harnesses",
             "this does not measure each product's default or native deployment",
             "subscription quota consumption is not a metered billing receipt",
         ],
         "generated_at_utc": _utc_now(),
     }
+
+
+def summarize_admission(plan: list[dict[str, Any]], rows: list[dict[str, Any]],
+                        suite_sha: str) -> dict[str, Any]:
+    """Validate admission receipts without producing a capability table."""
+    result = summarize(plan, rows, suite_sha)
+    result.update({
+        "admitted": not result["validation_errors"],
+        "scores": None,
+        "ranking": None,
+        "ranking_withheld": True,
+        "ranking_withheld_reason": "admission_is_not_scored",
+    })
+    return result
 
 
 def _manifest(revision: str, source_hashes: Mapping[str, str],
@@ -1201,9 +1218,10 @@ def execute(*, repetitions: int, wall_seconds: int,
         summary = summarize(
             plans["ranking"], ranking_rows, suite_sha,
             require_post_run_billing=True)
-        summary["admission"] = summarize(
+        admission_summary = summarize_admission(
             plans["admission"],
             [row for row in rows if row["phase"] == "admission"], suite_sha)
+        summary["admission"] = admission_summary
         _atomic_json(result_root / "summary.json", summary)
         print("results: %s" % result_root)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
