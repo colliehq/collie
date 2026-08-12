@@ -125,7 +125,6 @@ def test_serialization_accepts_openai_text_content_parts_but_not_multimodal():
 
 
 @pytest.mark.parametrize("text", [
-    'prose {"answer":"x"}',
     '{"answer":"x","extra":true}',
     '{"tool":"missing","args":{}}',
     '{"tool":"read","args":[]}',
@@ -135,6 +134,25 @@ def test_worker_output_contract_is_strict(text):
     with pytest.raises(RuntimeError, match="response contract"):
         sidecar._strict_result({"text": text, "usage": {},
                                 "api_key_source": "none"}, {"read"})
+
+
+@pytest.mark.parametrize("text", [
+    'prose before {"answer":"x"}',
+    '```json\n{"answer":"x"}\n```',
+    'I will call it now: {"tool":"read","args":{"path":"a.py"}}',
+])
+def test_worker_accepts_one_unambiguous_embedded_envelope(text):
+    result = sidecar._strict_result(
+        {"text": text, "usage": {}, "api_key_source": "none"}, {"read"})
+    assert result.kind in {"answer", "tool"}
+
+
+def test_worker_rejects_two_embedded_envelopes():
+    with pytest.raises(sidecar.ResponseContractError):
+        sidecar._strict_result({
+            "text": '{"answer":"one"} then {"answer":"two"}',
+            "usage": {}, "api_key_source": "none",
+        }, set())
 
 
 def test_worker_output_requires_subscription_auth_attestation():
@@ -196,6 +214,26 @@ def test_service_timeout_is_safe_and_settled(tmp_path):
     assert rows[-1]["outcome"] == "timeout"
     assert rows[-1]["error_code"] == "request_timeout"
     assert "secret" not in json.dumps(rows)
+
+
+def test_response_contract_failure_is_a_completed_physical_request(tmp_path):
+    ledger_dir = tmp_path / "ledger"
+    transport = FakeTransport("not JSON", usage={
+        "input_tokens": 7, "output_tokens": 2,
+        "cache_read_input_tokens": 1, "cache_creation_input_tokens": 3,
+    })
+    service = sidecar.SidecarService(sidecar.ReceiptLedger(ledger_dir), transport)
+    body = _body()
+
+    with pytest.raises(sidecar.SidecarError) as caught:
+        service.complete(body, json.dumps(body).encode(), "contract-one")
+
+    assert caught.value.status == 422
+    assert caught.value.code == "response_contract_error"
+    rows = _receipts(ledger_dir)
+    assert rows[-1]["outcome"] == "completed"
+    assert rows[-1]["error_code"] == "response_contract_error"
+    assert rows[-1]["usage"]["input_tokens"] == 7
 
 
 @pytest.mark.parametrize(

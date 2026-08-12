@@ -60,6 +60,10 @@ class RequestCancelled(Exception):
     pass
 
 
+class ResponseContractError(RuntimeError):
+    """The physical model request completed but its text was not bridgeable."""
+
+
 def _transport_error_code(error: BaseException) -> str:
     """Reduce SDK failures to content-free evaluator evidence."""
     value = str(error or "").lower()
@@ -362,24 +366,58 @@ class TurnResult:
     usage: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
 
-def _strict_result(data: Mapping[str, Any], allowed_tools: set[str]) -> TurnResult:
-    if data.get("api_key_source") != "none":
-        raise RuntimeError("subscription auth attestation is missing")
-    text = data.get("text")
-    if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_RESPONSE_BYTES:
-        raise RuntimeError("SDK worker returned invalid assistant text")
-    try:
-        value = json.loads(text)
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError("assistant violated the sidecar response contract") from exc
-    usage = _safe_usage(data.get("usage"))
-    if isinstance(value, dict) and set(value) == {"answer"} and isinstance(value["answer"], str):
+def _accepted_result(value: Any, allowed_tools: set[str],
+                     usage: Mapping[str, Any]) -> TurnResult | None:
+    if isinstance(value, dict) and set(value) == {"answer"} and isinstance(
+            value["answer"], str):
         return TurnResult("answer", answer=value["answer"], usage=usage)
     if (isinstance(value, dict) and set(value) == {"tool", "args"}
             and isinstance(value["tool"], str) and isinstance(value["args"], dict)
             and value["tool"] in allowed_tools):
         return TurnResult("tool", tool=value["tool"], args=value["args"], usage=usage)
-    raise RuntimeError("assistant violated the sidecar response contract")
+    return None
+
+
+def _embedded_objects(text: str):
+    """Yield quote-aware JSON objects embedded in prose or a Markdown fence."""
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            value, _end = decoder.raw_decode(text, match.start())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            yield value
+
+
+def _strict_result(data: Mapping[str, Any], allowed_tools: set[str]) -> TurnResult:
+    if data.get("api_key_source") != "none":
+        raise RuntimeError("subscription auth attestation is missing")
+    text = data.get("text")
+    if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_RESPONSE_BYTES:
+        raise ResponseContractError("SDK worker returned invalid assistant text")
+    usage = _safe_usage(data.get("usage"))
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # Collie's existing direct SDK adapter tolerates one JSON envelope in
+        # a leading sentence or Markdown fence.  Match that compatibility at
+        # the shared transport boundary so formatting is not an artificial
+        # harness advantage, while rejecting ambiguity and extra keys.
+        candidates = [
+            result for result in (
+                _accepted_result(item, allowed_tools, usage)
+                for item in _embedded_objects(text)
+            ) if result is not None
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        raise ResponseContractError(
+            "assistant violated the sidecar response contract")
+    result = _accepted_result(value, allowed_tools, usage)
+    if result is not None:
+        return result
+    raise ResponseContractError("assistant violated the sidecar response contract")
 
 
 class SdkTransport:
@@ -480,8 +518,8 @@ class SidecarService:
                 raise RequestCancelled()
             if not isinstance(data, Mapping) or not data.get("ok"):
                 raise RuntimeError("SDK worker failed")
+            usage = _safe_usage(data.get("usage"))
             result = _strict_result(data, tools)
-            usage = result.usage
             outcome = "completed"
             error_code = ""
             return result
@@ -493,6 +531,15 @@ class SidecarService:
             outcome = "timeout"
             error_code = "request_timeout"
             raise SidecarError(504, error_code, "subscription transport timed out") from exc
+        except ResponseContractError as exc:
+            # The SDK/model request itself completed and consumed subscription
+            # usage.  Record it as such; the caller still receives an error and
+            # may count the harness attempt as unresolved rather than mistaking
+            # a model formatting miss for broken evaluator infrastructure.
+            outcome = "completed"
+            error_code = "response_contract_error"
+            raise SidecarError(422, error_code,
+                               "assistant response was not bridgeable") from exc
         except SidecarError:
             raise
         except Exception as exc:
