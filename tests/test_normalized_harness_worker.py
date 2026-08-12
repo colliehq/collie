@@ -79,6 +79,11 @@ def test_product_failures_are_scoreable_but_transport_failures_are_invalid():
         "invalid_infrastructure")
     assert worker._worker_outcome_for_error("hermes_wall_timeout") == (
         "invalid_infrastructure")
+    assert worker._safe_error(
+        "HTTP 422: assistant response was not bridgeable") == (
+        "response_contract_error")
+    assert worker._worker_outcome_for_error("response_contract_error") == (
+        "product_failure")
 
 
 def test_collie_binds_module_level_data_to_attempt_state(tmp_path, monkeypatch):

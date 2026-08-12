@@ -64,6 +64,10 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 
 def _safe_error(value: object) -> str:
     text = str(value or "").lower()
+    if any(marker in text for marker in (
+            "response_contract_error", "not bridgeable", "unprocessable entity",
+            "status 422", "http 422")):
+        return "response_contract_error"
     if "timeout" in text or "timed out" in text:
         return "harness_wall_timeout"
     if any(marker in text for marker in (

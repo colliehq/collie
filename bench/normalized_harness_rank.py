@@ -753,19 +753,16 @@ def _validate_worker_receipt(worker: Mapping[str, Any], task: Mapping[str, Any],
 
 
 def _admission_capability_proven(tool_evidence: Mapping[str, Any], patch: str) -> bool:
-    """Prove the adapted transport reaches a native harness tool boundary.
+    """Prove the adapted harness returns a completed terminal receipt.
 
     Admission is an infrastructure gate, not an unscored extra capability
-    sample.  Requiring a successful edit/patch made a model that inspected and
-    then stopped look like a broken adapter.  Resolution and editing behavior
-    belong in the formal score; admission only requires a completed terminal
-    trace with at least one harness-owned tool invocation.
+    sample.  Native tool use, editing, and task resolution are behavioral
+    outcomes and belong in the formal score.  A completed transport response
+    that terminates before a tool call must therefore remain scoreable rather
+    than looking like a broken adapter.
     """
     del patch  # retained in the signature for receipt/test compatibility
-    return bool(
-        int(tool_evidence.get("native_tool_calls") or 0) >= 1
-        and tool_evidence.get("terminal_observed") is True
-    )
+    return tool_evidence.get("terminal_observed") is True
 
 
 def _safe_worker_error(worker: Mapping[str, Any]) -> str:
@@ -1108,8 +1105,8 @@ def _manifest(revision: str, source_hashes: Mapping[str, str],
         "ranking_plan": plans["ranking"],
         "launch_policy": "one_admission_per_arm_then_four_arm_rotating_schedule",
         "admission_contract": (
-            "completed_transport_terminal_and_native_tool_boundary; "
-            "editing_and_resolution_are_scored_only_in_formal_runs"
+            "completed_transport_and_terminal_receipt; native_tool_use_editing_"
+            "and_resolution_are_scored_only_in_formal_runs"
         ),
         "network": {
             "per_attempt_evaluator_owned_internal_network": True,

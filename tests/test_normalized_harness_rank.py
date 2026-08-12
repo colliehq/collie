@@ -300,7 +300,7 @@ def test_worker_receipt_binds_arm_model_prompt_patch_and_terminal():
     }
 
 
-def test_admission_proves_native_tool_boundary_not_task_resolution():
+def test_admission_proves_completed_terminal_receipt_not_behavior():
     from bench.normalized_harness_rank import _admission_capability_proven
 
     assert _admission_capability_proven(
@@ -309,7 +309,7 @@ def test_admission_proves_native_tool_boundary_not_task_resolution():
     assert _admission_capability_proven(
         {"native_tool_calls": 2, "native_edit_calls": 0,
          "terminal_observed": True}, "")
-    assert not _admission_capability_proven(
+    assert _admission_capability_proven(
         {"native_tool_calls": 0, "native_edit_calls": 0,
          "terminal_observed": True}, "")
     assert not _admission_capability_proven(
