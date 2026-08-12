@@ -1373,6 +1373,17 @@ class MissionService:
                     "before every external action and never duplicate fired work."),
             }],
         }
+        # A failed row is immutable, but the successor must retain durable
+        # control-plane contracts at top level. Keeping these only inside the
+        # namespaced predecessor makes the planner lose campaign coverage and
+        # branch-scoped authorizations exactly when recovery is most important.
+        for key in (
+                "_campaign_coverage", "pending_authorizations",
+                "resolved_authorizations", "pending_followups",
+                "_due_followups", "resolved_followups"):
+            value = (m.case or {}).get(key)
+            if isinstance(value, (list, dict)):
+                case[key] = json.loads(json.dumps(value, ensure_ascii=False))
         successor = "msn_" + secrets.token_hex(6)
         create_mission(self.store, successor, m.goal, case=case, leash=dict(m.leash))
         inherited = self.store.inherit_completed_action_keys(mid, successor)

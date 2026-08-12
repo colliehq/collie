@@ -3234,6 +3234,11 @@ class MissionDriver:
                 if not cap:
                     return self._finish(mission_id, token, FAILED_S,
                                         f"unknown action {action!r}")
+                # Snapshot the capability's reversibility once. A MissionService
+                # can share registry-backed capability objects with concurrent
+                # dispatchers; verdict routing must use the exact classification
+                # that reserved this action, not a later mutable registry lookup.
+                action_reversible = bool(cap.reversible)
                 if cap.name == "browse.submit":
                     ready, gate_reason = self._browse_submit_ready(
                         self.store.events(mission_id, 40))
@@ -3359,7 +3364,7 @@ class MissionDriver:
                                          "leash denied: ") + bound_refusal.split(": ", 1)[-1])
                 action_key = self._action_key(cap, call_args, snapshot)
                 ok, why, retry_at = self.store.reserve_action(
-                    mission_id, action_key, not cap.reversible, m.leash, cap.name,
+                    mission_id, action_key, not action_reversible, m.leash, cap.name,
                     {"args": {k: v for k, v in call_args.items()
                               if k not in ("_case", "_leash")},
                      "target": snapshot}, token)
@@ -3453,6 +3458,7 @@ class MissionDriver:
                 self.store.record_event(
                     mission_id, "result", cap.name, nonce,
                     {"verdict": verdict.status, "reason": verdict.reason,
+                     "reversible": action_reversible,
                      "result": _compact_event(result, 2000)})
                 self.store.record_checkpoint(
                     mission_id, token, "result_recorded",
@@ -3479,7 +3485,7 @@ class MissionDriver:
                 # before any verdict routing or next model/action boundary.
                 if not self.store.owns_run(mission_id, token):
                     return self._lost_state(mission_id, token)
-                if verdict.status in (FAILED, INCONCLUSIVE) and cap.reversible:
+                if verdict.status in (FAILED, INCONCLUSIVE) and action_reversible:
                     # A reversible primitive that failed or could not be verified
                     # is actionable diagnostic evidence, not a reason to stop all
                     # independent Mission branches.  The planner may repair it or

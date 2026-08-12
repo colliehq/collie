@@ -457,6 +457,12 @@ def test_failed_retry_retires_only_stale_reversible_execution():
     print("test_failed_retry_retires_only_stale_reversible_execution")
     svc = _svc([])
     st = svc.start("recover a failed browser preparation", autonomous=True); mid = st["mission_id"]
+    original_case = dict(svc.store.get(mid).case)
+    original_case["_campaign_coverage"] = [
+        {"branch": "DEV Community launch", "status": "pending", "required": True}]
+    original_case["pending_authorizations"] = [
+        {"id": "auth_email", "kind": "missing_fact", "domain": "medium.com"}]
+    svc.store.set_case(mid, original_case)
     with svc.store._lock:
         svc.store.db.execute("UPDATE missions SET state=?,run_token='',lease_until=0 WHERE mission_id=?",
                              (FAILED_S, mid))
@@ -472,6 +478,11 @@ def test_failed_retry_retires_only_stale_reversible_execution():
     receipt = svc.actions.receipts(old)
     check(not retried.get("error") and retried.get("mission_id") != mid,
           "a stale reversible latch no longer dead-ends an ordinary failed-Mission retry")
+    successor_case = svc.store.get(retried["mission_id"]).case
+    check(successor_case.get("_campaign_coverage") == original_case["_campaign_coverage"] and
+          successor_case.get("pending_authorizations") ==
+          original_case["pending_authorizations"],
+          "failed-Mission retry preserves durable coverage and authorization contracts")
     check(svc.actions.get(old).state == "executed" and receipt and
           receipt[-1]["verdict"] == "inconclusive" and receipt[-1]["fired"],
           "retiring the stale latch leaves an honest inconclusive fired receipt")
