@@ -209,7 +209,7 @@ class CampaignReceiptGoalVerifier(GoalVerifier):
     at least one fired, independently verified receipt is required.
     """
 
-    terminal = {"completed", "blocked", "deferred", "skipped"}
+    terminal = {"completed", "exhausted", "deferred", "skipped"}
 
     def __init__(self, mission_store, action_store):
         self.missions = mission_store
@@ -257,9 +257,9 @@ class CampaignReceiptGoalVerifier(GoalVerifier):
             if status in counts:
                 counts[status] += 1
         reason = (
-            "campaign coverage closed with %d completed, %d blocked, %d deferred, "
+            "campaign coverage closed with %d completed, %d exhausted, %d deferred, "
             "and %d skipped branch(es); %d fired action receipt(s) independently verified" %
-            (counts["completed"], counts["blocked"], counts["deferred"],
+            (counts["completed"], counts["exhausted"], counts["deferred"],
              counts["skipped"], len(observations)))
         return Verdict(VERIFIED, reason, tuple(observations[:20]))
 

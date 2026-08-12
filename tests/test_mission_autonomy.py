@@ -6,8 +6,9 @@ import pytest
 from harness.actions import ActionStore
 from harness.jobs import (CANCELLED, Capability, DONE_VERIFIED, FAILED_S, NEEDS_YOU, PAUSED,
                           QUEUED, RECOVERY_REQUIRED, RUNNING, WAITING)
-from harness.mission import (_authorization_request, _model_case_json, MissionDriver,
-                             MissionStore, ModelDecider, create_mission, world_leash)
+from harness.mission import (_authorization_request, _model_case_json,
+                             _open_campaign_coverage, MissionDriver, MissionStore,
+                             ModelDecider, create_mission, world_leash)
 from harness.missionweb import MissionService
 from harness.providers import Completion, Usage
 from harness.verifier import (CampaignReceiptGoalVerifier, FAILED, INCONCLUSIVE,
@@ -309,6 +310,8 @@ def test_campaign_coverage_refuses_whole_wait_and_early_completion(tmp_path):
         {"action": "done", "reason": "campaign is done"},
         {"action": "update_coverage", "args": {
             "branch": "Indie Hackers signup", "status": "blocked",
+            "blocker_kind": "technical",
+            "alternatives_tried": ["ordinary signed-in signup flow"],
             "summary": "Sign-in is unavailable in the connected browser."}},
         {"action": "update_coverage", "args": {
             "branch": "Medium", "status": "completed",
@@ -360,6 +363,109 @@ def test_campaign_slice_finishes_goal_instead_of_requesting_fake_input(tmp_path)
     actions.close()
 
 
+def test_blocked_campaign_branch_remains_open_for_workarounds(tmp_path):
+    store, actions = _stores(tmp_path)
+    create_mission(
+        store, "blocked-open", "find a compliant route",
+        case={"_campaign_coverage": [
+            {"branch": "community launch", "status": "pending", "required": True}]},
+        leash=world_leash())
+    driver = MissionDriver(
+        store, actions, lambda *_: {"action": "update_coverage", "args": {
+            "branch": "community launch", "status": "blocked",
+            "blocker_kind": "technical",
+            "alternatives_tried": ["ordinary signed-in composer"],
+            "summary": "The current composer did not expose a submit control."}}, [])
+    driver.max_steps = 1
+
+    assert driver.advance("blocked-open") == WAITING
+    case = store.get("blocked-open").case
+    assert _open_campaign_coverage(case)[0]["status"] == "blocked"
+    assert "remains open" in case["signal"]
+    store.close()
+    actions.close()
+
+
+def test_exhausted_campaign_branch_requires_auditable_alternatives(tmp_path):
+    store, actions = _stores(tmp_path)
+    create_mission(
+        store, "exhaustion-gate", "exhaust compliant alternatives",
+        case={"_campaign_coverage": [
+            {"branch": "account setup", "status": "pending", "required": True}]},
+        leash=world_leash())
+    decisions = iter([
+        {"action": "update_coverage", "args": {
+            "branch": "account setup", "status": "exhausted",
+            "blocker_kind": "missing_authority",
+            "alternatives_tried": ["ordinary email sign-in"],
+            "summary": "One route failed."}},
+        {"action": "needs_human", "args": {"summary": "test boundary"}},
+    ])
+    driver = MissionDriver(store, actions, lambda *_: next(decisions), [])
+
+    assert driver.advance("exhaustion-gate") == NEEDS_YOU
+    assert store.get("exhaustion-gate").case["_campaign_coverage"][0]["status"] == "pending"
+    refused = [e for e in store.events("exhaustion-gate", 20)
+               if e["kind"] == "coverage" and e["name"] == "update_refused"]
+    assert refused and "alternatives_tried" in refused[-1]["payload"]["reason"]
+    store.close()
+    actions.close()
+
+
+def test_repeated_blocker_must_add_a_distinct_workaround(tmp_path):
+    store, actions = _stores(tmp_path)
+    create_mission(
+        store, "blocked-repeat", "try another compliant route",
+        case={"_campaign_coverage": [{
+            "branch": "community launch", "status": "blocked", "required": True,
+            "summary": "The ordinary composer was unavailable.",
+            "blocker_kind": "technical",
+            "alternatives_tried": ["ordinary signed-in composer"]}]},
+        leash=world_leash())
+    decisions = iter([
+        {"action": "update_coverage", "args": {
+            "branch": "community launch", "status": "blocked",
+            "blocker_kind": "technical",
+            "alternatives_tried": ["ordinary signed-in composer"],
+            "summary": "The same route remains unavailable."}},
+        {"action": "needs_human", "args": {"summary": "test boundary"}},
+    ])
+    driver = MissionDriver(store, actions, lambda *_: next(decisions), [])
+
+    assert driver.advance("blocked-repeat") == NEEDS_YOU
+    row = store.get("blocked-repeat").case["_campaign_coverage"][0]
+    assert row["status"] == "blocked"
+    assert row["alternatives_tried"] == ["ordinary signed-in composer"]
+    refused = [e for e in store.events("blocked-repeat", 20)
+               if e["kind"] == "coverage" and e["name"] == "update_refused"]
+    assert refused and "distinct new route" in refused[-1]["payload"]["reason"]
+    store.close()
+    actions.close()
+
+
+def test_exhausted_campaign_branch_accepts_distinct_compliant_routes(tmp_path):
+    store, actions = _stores(tmp_path)
+    create_mission(
+        store, "exhausted", "record proven exhaustion",
+        case={"_campaign_coverage": [
+            {"branch": "account setup", "status": "pending", "required": True}]},
+        leash=world_leash())
+    driver = MissionDriver(
+        store, actions, lambda *_: {"action": "update_coverage", "args": {
+            "branch": "account setup", "status": "exhausted",
+            "blocker_kind": "missing_authority",
+            "alternatives_tried": ["ordinary email sign-in", "authorized OAuth sign-in"],
+            "summary": "Both compliant sign-in routes require an unavailable account fact."}}, [])
+    driver.max_steps = 1
+
+    assert driver.advance("exhausted") == NEEDS_YOU
+    row = store.get("exhausted").case["_campaign_coverage"][0]
+    assert row["status"] == "exhausted"
+    assert not _open_campaign_coverage(store.get("exhausted").case)
+    store.close()
+    actions.close()
+
+
 def test_campaign_slice_keeps_scheduled_followup_waiting(tmp_path):
     store, actions = _stores(tmp_path)
     now = int(time.time())
@@ -393,8 +499,14 @@ def test_campaign_slice_keeps_scheduled_followup_waiting(tmp_path):
 def test_hard_deadline_closes_followups_and_runs_final_verification(tmp_path):
     store, actions = _stores(tmp_path)
     now = int(time.time())
-    coverage = [{"branch": "engagement monitor", "status": "scheduled",
-                 "required": True, "summary": "monitor published posts"}]
+    coverage = [
+        {"branch": "engagement monitor", "status": "scheduled",
+         "required": True, "summary": "monitor published posts"},
+        {"branch": "alternate community", "status": "blocked",
+         "required": True, "summary": "the first compliant route was unavailable",
+         "blocker_kind": "technical",
+         "alternatives_tried": ["ordinary community composer"]},
+    ]
     followup = {"id": "followup-deadline", "branch": "engagement monitor",
                 "summary": "monitor published posts", "seconds": 600,
                 "due_at": now + 600, "scheduled_at": now,
@@ -416,6 +528,8 @@ def test_hard_deadline_closes_followups_and_runs_final_verification(tmp_path):
     case = store.get("deadline").case
     assert case["pending_followups"] == []
     assert case["_campaign_coverage"][0]["status"] == "completed"
+    assert case["_campaign_coverage"][1]["status"] == "exhausted"
+    assert case["_campaign_coverage"][1]["blocker_kind"] == "deadline"
     assert case["resolved_followups"][-1]["status"] == "deadline_elapsed"
     assert any(e["name"] == "deadline_reached"
                for e in store.events("deadline", 20))

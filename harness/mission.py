@@ -71,7 +71,12 @@ _PERSON_REQUIRED_AUTH = {
     "captcha", "biometric", "kyc", "identity_proof", "legal_signature",
     "payment", "spending", "person_required_mfa", "security_key",
 }
-_COVERAGE_TERMINAL = {"completed", "blocked", "scheduled", "deferred", "skipped"}
+_COVERAGE_TERMINAL = {"completed", "exhausted", "scheduled", "deferred", "skipped"}
+_COVERAGE_OPEN = {"pending", "active", "attempted", "blocked"}
+_BLOCKER_KINDS = {
+    "policy", "eligibility", "missing_authority", "technical", "deadline",
+    "no_suitable_action",
+}
 
 
 def _setting_on(value) -> bool:
@@ -214,7 +219,7 @@ def _campaign_coverage(case) -> list[dict]:
         if not branch:
             continue
         status = str(raw.get("status") or "pending").strip().lower()
-        if status not in ({"pending", "active", "attempted"} | _COVERAGE_TERMINAL):
+        if status not in (_COVERAGE_OPEN | _COVERAGE_TERMINAL):
             status = "pending"
         rows.append({**raw, "branch": branch, "status": status,
                      "required": bool(raw.get("required", True))})
@@ -2489,16 +2494,29 @@ class MissionDriver:
 
         rows = _campaign_coverage(case)
         for index, item in enumerate(rows):
-            if item.get("status") != "scheduled":
+            previous_status = str(item.get("status") or "pending")
+            if previous_status == "scheduled":
+                closed = dict(item)
+                closed.update({
+                    "status": "completed",
+                    "updated_at": now,
+                    "summary": (str(item.get("summary") or "").rstrip(". ") +
+                                ". Monitoring window ended at the authorized hard deadline.").lstrip(". "),
+                })
+                rows[index] = closed
                 continue
-            closed = dict(item)
-            closed.update({
-                "status": "completed",
-                "updated_at": now,
-                "summary": (str(item.get("summary") or "").rstrip(". ") +
-                            ". Monitoring window ended at the authorized hard deadline.").lstrip(". "),
-            })
-            rows[index] = closed
+            if previous_status in _COVERAGE_OPEN:
+                closed = dict(item)
+                closed.update({
+                    "status": "exhausted",
+                    "updated_at": now,
+                    "blocker_kind": "deadline",
+                    "alternatives_tried": list(item.get("alternatives_tried") or []) + [
+                        "The authorized Mission window ended before another route could complete."],
+                    "summary": (str(item.get("summary") or "").rstrip(". ") +
+                                ". Unresolved when the authorized hard deadline elapsed.").lstrip(". "),
+                })
+                rows[index] = closed
         if rows:
             case["_campaign_coverage"] = rows
         case["signal"] = "Hard deadline reached; no new external action may start."
@@ -2790,7 +2808,7 @@ class MissionDriver:
         branch = re.sub(r"\s+", " ", str(args.get("branch") or "").strip())[:180]
         status = str(args.get("status") or "").strip().lower()
         detail = str(args.get("summary") or args.get("evidence") or reason or "").strip()[:1000]
-        allowed = {"pending", "active", "attempted"} | _COVERAGE_TERMINAL
+        allowed = _COVERAGE_OPEN | _COVERAGE_TERMINAL
         case = dict(mission.case)
         rows = _campaign_coverage(case)
         index = _coverage_branch_index(rows, branch)
@@ -2801,6 +2819,37 @@ class MissionDriver:
             invalid = "coverage status must be one of %s" % ", ".join(sorted(allowed))
         elif status in _COVERAGE_TERMINAL and not detail:
             invalid = "terminal coverage status requires a concise reason or evidence"
+        elif status == "blocked":
+            blocker_kind = str(args.get("blocker_kind") or "").strip().lower()
+            alternatives = [str(x).strip()[:300]
+                            for x in (args.get("alternatives_tried") or [])
+                            if str(x).strip()]
+            prior = rows[index] if index is not None else {}
+            prior_alternatives = {str(x).strip() for x in
+                                  (prior.get("alternatives_tried") or [])
+                                  if str(x).strip()}
+            if blocker_kind not in (_BLOCKER_KINDS - {"deadline"}):
+                invalid = ("blocked coverage requires blocker_kind: " +
+                           ", ".join(sorted(_BLOCKER_KINDS - {"deadline"})))
+            elif not alternatives:
+                invalid = "blocked coverage requires the attempted route in alternatives_tried"
+            elif str(prior.get("status") or "") == "blocked" and not (
+                    set(alternatives) - prior_alternatives):
+                invalid = ("repeated blocked coverage requires a distinct new route in "
+                           "alternatives_tried, or a durable scheduled retry")
+        elif status == "exhausted":
+            blocker_kind = str(args.get("blocker_kind") or "").strip().lower()
+            alternatives = [str(x).strip()[:300]
+                            for x in (args.get("alternatives_tried") or [])
+                            if str(x).strip()]
+            permanent = blocker_kind in {"policy", "eligibility", "deadline"}
+            if blocker_kind not in _BLOCKER_KINDS:
+                invalid = ("exhausted coverage requires blocker_kind: " +
+                           ", ".join(sorted(_BLOCKER_KINDS)))
+            elif len(set(alternatives)) < (1 if permanent else 2):
+                invalid = ("exhausted coverage requires auditable alternatives_tried "
+                           "(%d distinct route(s) for %s)" %
+                           (1 if permanent else 2, blocker_kind))
         elif status == "scheduled":
             followups = [dict(x) for x in (case.get("pending_followups") or [])
                          if isinstance(x, dict)]
@@ -2824,16 +2873,39 @@ class MissionDriver:
         item.update({"status": status, "updated_at": now})
         if detail:
             item["summary"] = detail
+        if status == "blocked":
+            item["blocker_kind"] = str(args.get("blocker_kind") or
+                                       item.get("blocker_kind") or "technical")[:80]
+            attempts = [str(x).strip()[:300]
+                        for x in (item.get("alternatives_tried") or [])
+                        if str(x).strip()]
+            attempts.extend(str(x).strip()[:300]
+                            for x in (args.get("alternatives_tried") or [])
+                            if str(x).strip())
+            item["alternatives_tried"] = list(dict.fromkeys(attempts))[-12:]
+            item["blocked_attempts"] = int(item.get("blocked_attempts") or 0) + 1
+            case["signal"] = (
+                "Coverage branch %s is temporarily blocked and remains open. "
+                "Try a distinct compliant route, schedule a retry, or provide "
+                "auditable exhaustion evidence." % branch)[:800]
+        elif status == "exhausted":
+            item["blocker_kind"] = str(args.get("blocker_kind") or "")[:80]
+            item["alternatives_tried"] = list(dict.fromkeys(
+                str(x).strip()[:300] for x in (args.get("alternatives_tried") or [])
+                if str(x).strip()))[-12:]
         rows[index] = item
         case["_campaign_coverage"] = rows[-40:]
-        case.pop("signal", None)
+        if status != "blocked":
+            case.pop("signal", None)
         if not self.store.set_case_owned(mission_id, token, case):
             return self._lost_state(mission_id, token)
         self.store.record_step(mission_id, UPDATE_COVERAGE, branch, status)
         self.store.record_event(
             mission_id, "coverage", "updated", branch,
             {"branch": branch, "requested_branch": requested_branch,
-             "status": status, "summary": detail})
+             "status": status, "summary": detail,
+             "blocker_kind": item.get("blocker_kind"),
+             "alternatives_tried": item.get("alternatives_tried")})
         self.store.record_checkpoint(
             mission_id, token, "coverage_updated",
             {"branch": branch, "status": status}, case=case)
@@ -4055,8 +4127,14 @@ _SYS = (
     "required open branch in that list so the durable priority order is honored. "
     "Include args.campaign_branch with the exact branch name on research/compose/browse actions. "
     "After a branch has a concrete outcome, choose update_coverage with args.branch, args.status "
-    "(completed, blocked, scheduled, deferred, skipped, pending, active, or attempted), and a "
-    "concise args.summary explaining the evidence. scheduled is valid only after a matching named "
+    "(completed, blocked, exhausted, scheduled, deferred, skipped, pending, active, or attempted), "
+    "and a concise args.summary explaining the evidence. blocked means the current route failed "
+    "but the branch REMAINS OPEN: try a distinct compliant route, alternate sign-in/account setup, "
+    "another suitable venue, a different reversible tool, or schedule a retry. Include "
+    "args.blocker_kind and args.alternatives_tried. Use exhausted only when compliant alternatives "
+    "are genuinely exhausted: the host requires blocker_kind plus auditable alternatives_tried. "
+    "Never treat CAPTCHA bypass, impersonation, deceptive account creation, policy evasion, or "
+    "duplicate posting as a workaround. scheduled is valid only after a matching named "
     "wait was durably created. The host refuses wait/done while required coverage remains open. "
     "When CASE contains _due_followups, perform the oldest due check before unrelated "
     "work and copy its branch exactly into that action's args.followup_branch; do not "
