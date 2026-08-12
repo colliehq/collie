@@ -2,9 +2,25 @@
 
 import json
 
-from harness import cli
+from harness import cli, settings
 from harness.mission import MissionStore
 from harness.jobs import FAILED_S
+
+
+def _allow_claude_subscription(provider, *, account_evidence=None, environ=None,
+                               model="", require_direct_probe=True,
+                               minimum_token_validity_seconds=0):
+    if provider != "claude-direct" or account_evidence is not None:
+        raise RuntimeError("unreviewed subscription route")
+    assert isinstance(environ, dict)
+    assert not any(name.upper().startswith(
+        ("ANTHROPIC_", "OPENAI_", "CLAUDE_", "CODEX_")) for name in environ)
+    return {
+        "format": "collie-subscription-guard-v1",
+        "schema_version": 1,
+        "provider": provider,
+        "verdict": "allow",
+    }
 
 
 def _run(capsys, argv):
@@ -30,6 +46,90 @@ def test_cli_can_create_pause_resume_and_cancel(monkeypatch, tmp_path, capsys):
     assert rc == 0 and listed["missions"][0]["mission_id"] == mid
 
 
+def test_cli_starts_atomic_subscription_only_overnight_code_mission(
+        monkeypatch, tmp_path, capsys):
+    state = tmp_path / "state"
+    repo = tmp_path / "existing-repo"
+    repo.mkdir()
+    marker = repo / "owned-by-user.txt"
+    marker.write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(state))
+    monkeypatch.setenv("COLLIE_PROVIDER", "anthropic-oauth")
+    monkeypatch.setenv("COLLIE_MODEL", "claude-opus-4-8")
+    monkeypatch.setattr(
+        settings, "_HARD_ENV", settings._HARD_ENV | {"COLLIE_PROVIDER", "COLLIE_MODEL"})
+    monkeypatch.setattr(
+        "harness.subscription_guard.check_subscription_guard",
+        _allow_claude_subscription)
+
+    rc, created = _run(capsys, [
+        "mission", "start", "finish the refactor and prove it green",
+        "--code", "--workspace", str(repo), "--overnight",
+        "--provider", "anthropic-oauth", "--model", "claude-opus-4-8",
+        "--verify-command", "python -m pytest -q", "--no-paid-overage", "--json",
+    ])
+
+    assert rc == 0 and created["state"] == "queued"
+    assert created["workspace_request"] is False
+    assert created["tasktree"]["attached"] is True
+    assert created["run_tree"]["root"]["owns_workspace"] is False
+    assert created["run_tree"]["root"]["workspace"] == str(repo.resolve())
+    assert created["case"]["_isolated_workspace"] == str(repo.resolve())
+    assert created["case"]["execution_profile"] == {
+        "version": 1,
+        "profile": "overnight",
+        "provider": "anthropic-oauth",
+        "model": "claude-opus-4-8",
+        "billing_mode": "subscription",
+        "subscription_only": True,
+        "allow_provider_fallback": False,
+    }
+    assert created["case"]["code_profile"]["verify_command"] == "python -m pytest -q"
+    store = MissionStore(str(state / "jobs.db"))
+    try:
+        mission = store.get(created["mission_id"])
+        assert "code" in mission.leash["may"]
+        assert mission.leash["max_active_wall_seconds"] == 43_200
+        assert mission.leash["max_elapsed_seconds"] == 604_800
+        assert mission.leash["max_model_calls"] == 4_000
+        assert mission.leash["max_model_tokens"] == 8_000_000
+        assert mission.leash["max_model_cost_usd"] == 0.01
+        assert len(mission.leash["execution_profile_sha256"]) == 64
+    finally:
+        store.close()
+    rc, cancelled = _run(
+        capsys, ["mission", "cancel", created["mission_id"], "--json"])
+    assert rc == 0 and cancelled["state"] == "cancelled"
+    assert repo.is_dir(), "cancelling must not delete a user-owned workspace"
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_cli_reports_direct_subscription_preflight_denial_without_traceback(
+        monkeypatch, tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("COLLIE_PROVIDER", "anthropic-oauth")
+    monkeypatch.setenv("COLLIE_MODEL", "claude-opus-4-8")
+    monkeypatch.setattr(
+        settings, "_HARD_ENV", settings._HARD_ENV | {"COLLIE_PROVIDER", "COLLIE_MODEL"})
+
+    def deny(*_args, **_kwargs):
+        raise RuntimeError("direct inference unavailable")
+
+    monkeypatch.setattr("harness.subscription_guard.check_subscription_guard", deny)
+    rc = cli.main([
+        "mission", "start", "work overnight", "--code", "--workspace", str(repo),
+        "--overnight", "--no-paid-overage", "--provider", "anthropic-oauth",
+        "--model", "claude-opus-4-8", "--json",
+    ])
+    output = capsys.readouterr().out
+
+    assert rc == 1
+    assert "subscription preflight denied: RuntimeError" in output
+    assert "Traceback" not in output
+
+
 def test_cli_exports_redacted_progress_report(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
     rc, created = _run(capsys, ["mission", "start", "report progress", "--json"])
@@ -38,6 +138,9 @@ def test_cli_exports_redacted_progress_report(monkeypatch, tmp_path, capsys):
     assert rc == 0 and report["format_version"] == 1
     assert report["mission_id"] == mid and "case" not in report
     assert report["markdown"].startswith("# Mission progress:")
+    assert report["runtime"]["model_cost_usd"] == 0.0
+    assert report["runtime"]["equivalent_model_cost_usd"] == 0.0
+    assert "API-equivalent" in report["markdown"]
 
 
 def test_mission_is_a_real_cli_command():

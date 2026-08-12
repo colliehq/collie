@@ -156,7 +156,7 @@ def test_provider_error_contract_matrix():
     os.environ["_CT_KEY"] = "k"
     oc = OpenAICompatProvider("http://x", "_CT_KEY", "m", name="deepseek")
     provs = [an, ol, oc]
-    with patch("harness.providers._read_oauth_token", lambda: "tok"):
+    with patch("harness.providers._read_oauth_token", lambda **_kwargs: "tok"):
         provs.append(oa)
         for p in provs:
             for f in faults:
@@ -186,6 +186,171 @@ def test_claude_cli_provider_fails_closed_on_process_and_envelope_errors():
                 "system", [{"role": "user", "content": "do the work"}], [])
         assert completion.stop_reason == "error", process
         assert completion.text.startswith("ERROR(claude-cli):"), completion.text
+
+
+def test_claude_cli_format_repair_reports_both_physical_requests(monkeypatch):
+    from harness.providers import ClaudeCliProvider, Usage
+
+    provider = ClaudeCliProvider("opus")
+    replies = iter([("plain prose", Usage(input_tokens=2)),
+                    ('{"answer":"done"}', Usage(input_tokens=3))])
+    monkeypatch.setattr(provider, "_call", lambda *_args: next(replies))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.text == "done"
+    assert completion.request_count == 2
+    assert completion.usage.input_tokens == 5
+
+
+def test_direct_oauth_overnight_uses_only_collie_system_and_official_proxy_free_route(
+        monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {}, "stop_reason": "end_turn",
+            }).encode()
+
+    class Opener:
+        def open(self, request, timeout):
+            seen["request"] = request
+            seen["timeout"] = timeout
+            return Response()
+
+    def build_opener(*handlers):
+        seen["handlers"] = handlers
+        return Opener()
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = True
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+    monkeypatch.setattr("harness.providers.urllib.request.build_opener", build_opener)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("direct overnight must not use ambient-proxy urlopen")))
+
+    completion = provider.complete(
+        "COLLIE SYSTEM ONLY", [{"role": "user", "content": "work"}], [])
+
+    request = seen["request"]
+    body = json.loads(request.data)
+    assert completion.text == "ok"
+    assert body["system"] == [{
+        "type": "text", "text": "COLLIE SYSTEM ONLY",
+        "cache_control": {"type": "ephemeral"},
+    }]
+    assert "Claude Code" not in json.dumps(body)
+    assert request.full_url == provider.OFFICIAL_API
+    assert request.headers["User-agent"] == "collie/overnight-direct"
+    assert request.headers["X-app"] == "collie"
+    assert request.headers["Anthropic-beta"] == "oauth-2025-04-20"
+    assert "claude-code" not in request.headers["Anthropic-beta"]
+    assert len(seen["handlers"]) == 2
+    redirect = next(h for h in seen["handlers"]
+                    if type(h).__name__ == "_NoRedirectHandler")
+    assert redirect.redirect_request(
+        request, None, 302, "Found", {}, "https://redirect.invalid/steal") is None
+
+
+def test_direct_oauth_overnight_refuses_endpoint_or_fast_route_drift(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = "https://example.invalid/messages"
+    provider.subscription_only = True
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert "route is invalid" in completion.error_detail
+
+
+def test_direct_oauth_never_falls_back_to_ambient_oauth_token(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = True
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.build_opener",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("missing direct token must fail before HTTP")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert "login-store token is unavailable" in completion.error_detail
+
+
+def test_direct_oauth_request_reservation_failure_stops_before_http(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = True
+    provider.request_gate = lambda _purpose: (_ for _ in ()).throw(
+        RuntimeError("sqlite unavailable and must not leak"))
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.build_opener",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("failed reservation must stop before HTTP")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.error_detail == "model request reservation failed"
 
 def test_claude_cli_text_protocol_handles_braces_inside_json_strings():
     from harness.providers import _parse_answer_json, _parse_tool_json

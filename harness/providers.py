@@ -79,6 +79,9 @@ class Completion:
     stop_reason: str = "end_turn"   # "end_turn" | "tool_use" | "error" | "length"
     error_status: int = 0           # HTTP status on an error completion (0 = none/unknown)
     error_detail: str = ""          # raw error body/text — classify_error reads THIS, not prose
+    # Physical provider/CLI requests consumed to produce this logical completion.
+    # Most adapters issue exactly one; format-repairing adapters must report more.
+    request_count: int = 1
     # Extended-thinking blocks ({"type":"thinking","thinking":..,"signature":..} /
     # {"type":"redacted_thinking","data":..}) returned this turn. When thinking is enabled with
     # tool use, the API REQUIRES the signed thinking block to be replayed as the first block of
@@ -581,18 +584,22 @@ class AnthropicProvider(ModelProvider):
 
 
 # --------------------------------------------------------------------------- #
-#  AnthropicOAuthProvider — direct /v1/messages using the Max/Pro SUBSCRIPTION OAuth token
-#  (from ~/.claude or CLAUDE_CODE_OAUTH_TOKEN) instead of a per-token API key. Same wire
-#  format as AnthropicProvider (native tool_use, streaming-free, prompt caching) — the FAST,
-#  clean path, unlike the claude -p subprocess. To be accepted, the request must carry
-#  Claude Code's identity (Anthropic routes subscription-OAuth by user-agent/headers): Bearer
-#  auth + the claude-code betas + a `claude-code/<version>` UA + a Claude-Code system prefix.
-#  This is the SAME mechanism Hermes uses (impersonation) — chosen deliberately so collie and
-#  Hermes sit on identical footing. Personal use of your own subscription.
+#  AnthropicOAuthProvider — experimental direct /v1/messages using a credential
+#  from the official Claude login store instead of an API key. Anthropic does not
+#  document this raw third-party route as a supported plan interface. Mission
+#  ``subscription_only`` is stricter: fixed endpoint, proxy/redirect-free transport,
+#  Collie's own system/tools, and no API/CLI fallback.
 _CC_BETAS = ("claude-code-20250219,oauth-2025-04-20,"
              "fine-grained-tool-streaming-2025-05-14,prompt-caching-2024-07-31")
-_CC_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
+_DIRECT_OAUTH_BETAS = "oauth-2025-04-20"
 _cc_ver = None
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Fail closed on 30x so a bearer token never follows the fixed endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _claude_version():
@@ -638,8 +645,8 @@ def claude_credentials():
         return {}
 
 
-def _read_oauth_token():
-    t = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+def _read_oauth_token(*, login_store_only=False):
+    t = "" if login_store_only else os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
     if t:
         return t
     return (claude_credentials().get("claudeAiOauth") or {}).get("accessToken", "")
@@ -659,14 +666,14 @@ OAUTH_EXPIRED_HINT = (
     "it, then retry — or set CLAUDE_CODE_OAUTH_TOKEN.")
 
 
-def _oauth_expiry_ms() -> int:
+def _oauth_expiry_ms(*, login_store_only=False) -> int:
     """Claude Code's ``expiresAt`` in epoch milliseconds, or 0 for "no opinion".
 
     0 is returned for an env-supplied token (it carries no expiry) and for a credential blob that
     has no such field. Only a value that has demonstrably passed may block a request; a missing one
     never may, or an older credential format would lock a working login out.
     """
-    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    if not login_store_only and os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         return 0
     raw = (claude_credentials().get("claudeAiOauth") or {}).get("expiresAt")
     try:
@@ -675,14 +682,19 @@ def _oauth_expiry_ms() -> int:
         return 0
 
 
-def claude_oauth_expired(skew_s: int = 60) -> bool:
+def claude_oauth_expired(skew_s: int = 60, *, login_store_only=False) -> bool:
     """Whether the subscription token is past (or within ``skew_s`` of) its stated expiry."""
-    expires_at = _oauth_expiry_ms()
+    expires_at = _oauth_expiry_ms(login_store_only=login_store_only)
     return bool(expires_at) and (time.time() + skew_s) * 1000 >= expires_at
 
 
 class AnthropicOAuthProvider(AnthropicProvider):
     name = "anthropic-oauth"
+    OFFICIAL_API = "https://api.anthropic.com/v1/messages"
+    # Mission may reserve each physical transport attempt atomically immediately
+    # before this provider opens the socket. Providers without this marker keep
+    # the older one-logical-call reservation path.
+    supports_request_gate = True
 
     def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 0,
                  effort: str | None = None, speed: str = "standard"):
@@ -707,12 +719,18 @@ class AnthropicOAuthProvider(AnthropicProvider):
         # Re-read per call so a refresh Claude Code performs mid-run is picked up without a restart
         # — and re-check expiry for the same reason, since a long run can outlive the token it
         # started with. Naming the real cause beats letting the request come back a bare 401.
-        if claude_oauth_expired():
+        direct = bool(getattr(self, "subscription_only", False))
+        if claude_oauth_expired(login_store_only=direct):
             raise RuntimeError(OAUTH_EXPIRED_HINT)
-        token = _read_oauth_token()
+        token = _read_oauth_token(login_store_only=direct)
+        if direct and not token:
+            return Completion(
+                text="ERROR(anthropic-oauth): direct login-store token is unavailable",
+                stop_reason="error",
+                error_detail="direct login-store token is unavailable")
         anthropic_msgs = self._to_anthropic(messages)
-        # cache the conversation prefix too (3rd breakpoint here: _CC_SYSTEM chains into the collie
-        # system block which carries the 1st, and the history gets one — see _apply_history_cache).
+        # Cache the conversation prefix too; the outer Harness remains the sole
+        # owner of the system/tool contract.
         _apply_history_cache(anthropic_msgs, getattr(self, "cache_stable_upto", 0))
         # Extended thinking (COLLIE_THINKING=budget_tokens, e.g. 8000): run Opus "thick" like the
         # real Claude Code does, instead of collie's default no-thinking path. Gap-closer hypothesis
@@ -724,14 +742,17 @@ class AnthropicOAuthProvider(AnthropicProvider):
         _think = (os.environ.get("COLLIE_THINKING", "") or "").strip().lower() \
             not in ("", "0", "off", "false", "no")
         eff_max = max(self.max_tokens, 32000) if _think else self.max_tokens
+        if direct and (getattr(self, "speed", "standard") != "standard" or
+                       self.API != self.OFFICIAL_API):
+            return Completion(
+                text="ERROR(anthropic-oauth): frozen direct subscription route is invalid",
+                stop_reason="error",
+                error_detail="frozen direct subscription route is invalid")
         body = {
             "model": self.model,
             "max_tokens": eff_max,
-            # first system block MUST be the Claude Code identity (subscription-OAuth is
-            # validated against it); collie's real instructions follow as a second block.
-            "system": [{"type": "text", "text": _CC_SYSTEM},
-                       {"type": "text", "text": system,
-                        "cache_control": {"type": "ephemeral"}}],
+            "system": [{"type": "text", "text": system,
+                       "cache_control": {"type": "ephemeral"}}],
             "messages": anthropic_msgs,
         }
         effort = getattr(self, "effort", "default")
@@ -745,21 +766,49 @@ class AnthropicOAuthProvider(AnthropicProvider):
             body["tools"] = tool_schemas
         if on_text:
             body["stream"] = True                # real token streaming (interactive only)
-        betas = _CC_BETAS   # adaptive thinking needs no beta header on Opus 4.8
-        req = urllib.request.Request(
-            self.API, data=json.dumps(body).encode(),
-            headers={
+        # Native overnight must not masquerade as Claude Code.  It uses only
+        # the OAuth transport beta; no Claude-Code beta, identity header, or
+        # system block is added to Collie's request.
+        betas = _DIRECT_OAUTH_BETAS if direct else _CC_BETAS
+        api = self.OFFICIAL_API if direct else self.API
+        headers = {
                 "content-type": "application/json",
                 "authorization": "Bearer " + token,
                 "anthropic-version": "2023-06-01",
                 "anthropic-beta": betas,
-                "user-agent": "claude-code/%s (external, cli)" % _claude_version(),
-                "x-app": "cli",
-            }, method="POST")
+                "user-agent": ("collie/overnight-direct" if direct else
+                               "claude-code/%s (external, cli)" % _claude_version()),
+                "x-app": "collie" if direct else "cli",
+            }
+        req = urllib.request.Request(
+            api, data=json.dumps(body).encode(), headers=headers, method="POST")
+        request_id = ""
+        request_gate = getattr(self, "request_gate", None)
+        if callable(request_gate):
+            try:
+                request_id = request_gate("anthropic_messages")
+            except Exception:
+                return Completion(
+                    text="ERROR(anthropic-oauth): model request reservation failed",
+                    stop_reason="error",
+                    error_detail="model request reservation failed")
+            if not request_id:
+                return Completion(
+                    text="ERROR(anthropic-oauth): model request reservation denied",
+                    stop_reason="error",
+                    error_detail="model request reservation denied")
         try:
-            with urllib.request.urlopen(req, timeout=180) as r:
+            open_request = (urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), _NoRedirectHandler()).open if direct else
+                urllib.request.urlopen)
+            with open_request(req, timeout=180) as r:
                 if on_text:
                     text, calls, u, sr, edetail = _parse_anthropic_stream(r, on_text)
+                    if request_id and callable(getattr(self, "request_complete", None)):
+                        try:
+                            self.request_complete(request_id, "completed")
+                        except Exception:
+                            pass
                     return Completion(
                         text=text, tool_calls=calls, stop_reason=_norm_stop(sr),
                         error_detail=edetail, usage=Usage(
@@ -768,7 +817,17 @@ class AnthropicOAuthProvider(AnthropicProvider):
                             cache_creation=u.get("cache_creation_input_tokens", 0)))
                 data = json.loads(r.read())
         except Exception as e:
+            if request_id and callable(getattr(self, "request_complete", None)):
+                try:
+                    self.request_complete(request_id, "error")
+                except Exception:
+                    pass
             return _error_completion(self.name, e)
+        if request_id and callable(getattr(self, "request_complete", None)):
+            try:
+                self.request_complete(request_id, "completed")
+            except Exception:
+                pass
         text, calls, thinks = "", [], []
         for blk in data.get("content", []):
             bt = blk.get("type")
@@ -882,12 +941,20 @@ class ClaudeCliProvider(ModelProvider):
         # never a spoofing proxy.
         env = dict(os.environ)
         if getattr(self, "subscription_only", False):
-            for name in (
-                    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-                    "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL",
-                    "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
-                    "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_VERTEX"):
-                env.pop(name, None)
+            # A zero-extra-use route needs more than dropping ANTHROPIC_API_KEY:
+            # proxy/TLS/Node injection and future provider-prefixed overrides can
+            # redirect the official client too.  Give Claude Code only ordinary
+            # process-location/locale variables so it must use its first-party
+            # stored login and endpoint.
+            allowed = {
+                "APPDATA", "COMSPEC", "HOME", "HOMEDRIVE", "HOMEPATH",
+                "LANG", "LC_ALL", "LC_CTYPE", "LOCALAPPDATA", "LOGNAME",
+                "PATH", "PATHEXT", "SHELL", "SYSTEMROOT", "TEMP", "TMP",
+                "TMPDIR", "USER", "USERPROFILE", "WINDIR",
+            }
+            env = {name: value for name, value in env.items()
+                   if name.upper() in allowed}
+            env["NO_COLOR"] = "1"
         elif env.get("CLAUDE_CODE_OAUTH_TOKEN"):
             env.pop("ANTHROPIC_API_KEY", None)
         executable = shutil.which(cmd[0], path=env.get("PATH"))
@@ -901,13 +968,23 @@ class ClaudeCliProvider(ModelProvider):
             full_cmd = [executable] + cmd[1:] + ["--system-prompt-file", system_path]
             r = subprocess.run(full_cmd, capture_output=True, text=True, input=prompt,
                                timeout=self.timeout, env=env, **_plat.no_window_kwargs())
+        def safe_failure(value):
+            from .redact import redact
+            text = redact(str(value or ""), {})
+            text = " ".join(text.replace("\x00", " ").split())
+            return text[:1000]
+
         if r.returncode != 0:
-            raise RuntimeError("claude CLI exited %d" % r.returncode)
+            detail = safe_failure(r.stderr or r.stdout)
+            raise RuntimeError("claude CLI exited %d%s" % (
+                r.returncode, (": " + detail) if detail else ""))
         data = _cc_json(r.stdout)
         if not isinstance(data, dict):
             raise RuntimeError("claude CLI returned invalid JSON")
         if "is_error" in data and data.get("is_error") is not False:
-            raise RuntimeError("claude CLI reported an error")
+            detail = safe_failure(data.get("result") or data.get("error") or "")
+            raise RuntimeError("claude CLI reported an error%s" %
+                               ((": " + detail) if detail else ""))
         if not isinstance(data.get("result"), str):
             raise RuntimeError("claude CLI JSON response is missing a string result")
         u = data.get("usage", {}) or {}
@@ -929,18 +1006,24 @@ class ClaudeCliProvider(ModelProvider):
             try:
                 text, u = self._call(prompt, system)
             except Exception as e:
-                return Completion(text="ERROR(claude-cli): %s" % e, stop_reason="error")
+                detail = str(e)[:1200]
+                return Completion(text="ERROR(claude-cli): %s" % detail,
+                                  stop_reason="error", error_detail=detail,
+                                  request_count=attempt + 1)
             total.add(u)
             tc = _parse_tool_json(text)
             if tc:
-                return Completion(tool_calls=[tc], usage=total, stop_reason="tool_use")
+                return Completion(tool_calls=[tc], usage=total, stop_reason="tool_use",
+                                  request_count=attempt + 1)
             ans = _parse_answer_json(text)
             if ans is not None:
-                return Completion(text=ans, usage=total, stop_reason="end_turn")
+                return Completion(text=ans, usage=total, stop_reason="end_turn",
+                                  request_count=attempt + 1)
             prompt = (prompt + "\n\n# Your previous reply was NOT a single JSON object "
                       "(you wrote prose). Reply again with ONLY one JSON object — "
                       '{"tool":...} to act, or {"answer":...} to finish. Nothing else.')
-        return Completion(text=text, usage=total, stop_reason="end_turn")  # fallback: prose
+        return Completion(text=text, usage=total, stop_reason="end_turn",
+                          request_count=2)  # fallback: prose
 
 
 def _cc_json(stdout: str) -> dict | None:

@@ -69,14 +69,14 @@ SCHEMA = [
          {"value": "zh-tw", "label": "繁體中文"}],
      "hint": "Language of every web surface. English and Chinese are currently complete; auto follows those browser languages and otherwise uses English.",
      "hint_zh": "所有 Web 界面的显示语言。目前英文和中文已完整覆盖；auto 在其他浏览器语言下使用英文。"},
-    # API key is the default; anthropic-oauth (Claude-Code header impersonation) is OPT-IN — it is
-    # unsanctioned upstream (see CHANGELOG "BANNED"), so the user selects it deliberately, per run
-    # or via this panel, never by silent default.
+    # API key is the default. anthropic-oauth is an experimental raw Collie request using the
+    # official login store, not a documented third-party Claude-plan surface, so it is OPT-IN and
+    # must never be described as guaranteed-free or silently selected.
     {"group": "Model", "key": "PROVIDER", "label": "Provider", "label_zh": "模型提供方", "type": "select", "default": "anthropic",
      "options": [
          {"value": "anthropic", "label": "Anthropic API (API key, metered)"},
-         {"value": "anthropic-oauth", "label": "Claude subscription (OAuth, $0/token)"},
-         {"value": "codex-oauth", "label": "ChatGPT Codex subscription (OAuth, $0/token)"},
+         {"value": "anthropic-oauth", "label": "Claude direct (experimental; billing unverified)"},
+         {"value": "codex-oauth", "label": "ChatGPT Codex subscription (OAuth)"},
          {"value": "claude-cli", "label": "Claude CLI (your logged-in CLI)"},
          {"value": "gemini", "label": "Google Gemini (GEMINI_API_KEY) ☁"},
          {"value": "openai", "label": "OpenAI (OPENAI_API_KEY) ☁"},
@@ -89,7 +89,7 @@ SCHEMA = [
          {"value": "ollama", "label": "Ollama (local models — nothing leaves this machine)"},
          {"value": "openai-compat", "label": "OpenAI-compatible endpoint"},
          {"value": "mock", "label": "Mock (offline, canned — testing only)"}],
-     "hint": "Where completions come from. ☁ = third-party cloud: your prompt, code excerpts and tool output are sent to that vendor under its data policy (keys are read from the named env var, never stored by collie; secret redaction below keeps credentials out of what any vendor sees). The two Claude-subscription options draw your flat plan; Ollama/mock stay fully local."},
+     "hint": "Where completions come from. ☁ = third-party cloud: your prompt, code excerpts and tool output are sent to that vendor under its data policy (keys are read from the named env var, never stored by collie; secret redaction below keeps credentials out of what any vendor sees). Claude CLI uses the logged-in client; Claude direct is experimental and its availability/billing are not guaranteed. Ollama/mock stay fully local."},
     {"group": "Model", "key": "MODEL", "label": "Model", "type": "text", "default": "",
      "list": ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5",
               "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna",
@@ -197,7 +197,7 @@ SCHEMA = [
                 "该授权时，整个 Mission 才暂停。"},
 
     {"group": "Limits", "key": "MAX_TURNS", "label": "Max turns", "type": "number", "default": "50", "min": "1", "max": "120",
-     "hint": "Hard cap on tool/response turns for one message before collie stops and reports back. Info-hunt + build tasks routinely need 20-30; on a flat subscription extra turns cost $0, so high is safe."},
+     "hint": "Hard cap on tool/response turns for one message before collie stops and reports back. Info-hunt + build tasks routinely need 20-30; subscription routes still have plan limits and may have separate billing rules."},
     {"group": "Limits", "key": "MAX_COST", "label": "Budget: stop past $", "type": "number", "default": "0", "min": "0", "step": "0.01",
      "hint": "Abort a run once metered spend crosses this many dollars. 0 = no budget cap. (Subscription providers cost $0 regardless.)"},
     {"group": "Limits", "key": "MAX_TOTAL_TOKENS", "label": "Budget: stop past tokens", "type": "number", "default": "0", "min": "0",
@@ -226,9 +226,9 @@ SCHEMA = [
 # entry (e.g. LANG/PROVIDER above) wins over this table.
 _ZH = {
     "PROVIDER": {"label": "模型提供方",
-                 "hint": "补全来自哪里。☁ = 第三方云:你的提示词、代码片段和工具输出会按该厂商的数据政策发送给它(密钥只从对应环境变量读取,collie 不存储;下方的密钥脱敏会把凭据挡在任何厂商可见内容之外)。两个 Claude 订阅选项走包月;Ollama/mock 完全本地。",
+                 "hint": "补全来自哪里。☁ = 第三方云:你的提示词、代码片段和工具输出会按该厂商的数据政策发送给它(密钥只从对应环境变量读取,collie 不存储;下方的密钥脱敏会把凭据挡在任何厂商可见内容之外)。订阅路由仍受套餐限额和各自计费政策约束;Ollama/mock 完全本地。",
                  "options": {"anthropic": "Anthropic API(API key,按量计费)",
-                             "anthropic-oauth": "Claude 订阅(OAuth,$0/token)",
+                             "anthropic-oauth": "Claude 直连(实验性,计费未验证)",
                              "claude-cli": "Claude CLI(你已登录的 CLI)",
                              "ollama": "Ollama(本地模型 — 数据不出本机)",
                              "openai-compat": "OpenAI 兼容端点",

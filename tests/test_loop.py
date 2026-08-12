@@ -68,8 +68,35 @@ def test_loop_retry_transient_then_success():
     with patch("time.sleep", lambda s: slept.append(s)):
         res = h.run("retry_ok", "go")
     assert res.error == "" and res.answer == "all good", (res.error, res.answer)
+    assert res.model_calls == 3, "physical retry attempts must be budget-visible"
     assert len(slept) == 2, "two retries -> two backoff sleeps: %s" % slept
     assert not any("ERROR(" in m.get("content", "") for m in res.messages if isinstance(m.get("content"), str))
+
+
+def test_loop_model_call_cap_stops_before_retry_or_synthesis():
+    """A nested overnight slice must never send request N+1 after N was reserved."""
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    h = make_harness(os.getcwd(), provider="mock", project="call_cap", embed="hash")
+    h.max_turns = 5
+    h.max_model_calls = 1
+    h.max_retries = 3
+    h.retry_base = 1
+    p = _ScriptProvider([
+        Completion(text="overloaded", stop_reason="error", error_status=529,
+                   error_detail="overloaded_error"),
+        Completion(text="must not be sent", stop_reason="end_turn"),
+    ])
+    h.provider = p
+
+    with patch("time.sleep") as sleep:
+        res = h.run("call_cap", "go")
+
+    assert p.calls == 1
+    assert res.model_calls == 1
+    assert not res.answer
+    sleep.assert_not_called()
 
 def test_loop_terminal_fails_fast():
     from harness.cli import make_harness
@@ -507,6 +534,23 @@ def test_budget_off_by_default():
     class T:  # minimal total-usage stand-in
         input_tokens = 10**9; output_tokens = 10**9
     assert L._budget_exceeded("claude-opus-4-8", T()) is False, "no ceiling set -> never exceeded"
+
+def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap(monkeypatch):
+    from harness import loop as L
+
+    class T:
+        input_tokens = 1_000_000
+        output_tokens = 0
+        cache_read = 0
+        cache_creation = 0
+
+    monkeypatch.setenv("COLLIE_MAX_COST", "0.01")
+    monkeypatch.delenv("COLLIE_MAX_TOTAL_TOKENS", raising=False)
+    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=False) is True
+    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is False
+
+    monkeypatch.setenv("COLLIE_MAX_TOTAL_TOKENS", "100")
+    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is True
 
 def test_loop_whiteflag_rescue_and_restore():
     """sphinx-10435 regression lock: a model that edits, REVERTS itself, then insists on

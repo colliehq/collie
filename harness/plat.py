@@ -20,6 +20,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 
 
 # ── detection ────────────────────────────────────────────────────────────────
@@ -111,6 +113,298 @@ def no_window_kwargs() -> dict:
     fails quietly".
     """
     return {"creationflags": 0x08000000} if is_windows() else {}
+
+
+class _KillOnCloseJob:
+    """Windows kernel owner for a process and every descendant it creates."""
+
+    def __init__(self, proc, name=None):
+        import ctypes
+        from ctypes import wintypes
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class BASIC_LIMITS(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class EXTENDED_LIMITS(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BASIC_LIMITS),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class BASIC_ACCOUNTING(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        kernel = ctypes.windll.kernel32
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateJobObject.restype = wintypes.BOOL
+        kernel.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.c_void_p]
+        kernel.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel.CreateJobObjectW(None, str(name) if name else None)
+        if not handle:
+            raise ctypes.WinError()
+        try:
+            info = EXTENDED_LIMITS()
+            # Closing the last job handle atomically terminates all processes still owned by it.
+            info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+            if not kernel.SetInformationJobObject(
+                    handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError()
+            if not kernel.AssignProcessToJobObject(
+                    handle, wintypes.HANDLE(int(proc._handle))):
+                raise ctypes.WinError()
+        except Exception:
+            kernel.CloseHandle(handle)
+            raise
+        self._kernel = kernel
+        self._handle = handle
+        self._accounting_type = BASIC_ACCOUNTING
+        self._lock = threading.RLock()
+        self._extinct = False
+
+    def _active_processes_locked(self) -> int:
+        import ctypes
+        handle = self._handle
+        if handle is None:
+            if self._extinct:
+                return 0
+            raise RuntimeError("Windows Job handle closed before extinction was confirmed")
+        info = self._accounting_type()
+        if not self._kernel.QueryInformationJobObject(
+                handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            raise ctypes.WinError()
+        active = max(0, int(info.ActiveProcesses))
+        if active == 0:
+            self._extinct = True
+        return active
+
+    def active_processes(self) -> int:
+        """Return the kernel's live-process count for this owned tree."""
+        with self._lock:
+            return self._active_processes_locked()
+
+    def wait_extinct(self, timeout_s: float = 5.0) -> bool:
+        """Poll until the kernel proves this Job has no active processes."""
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        with self._lock:
+            while True:
+                try:
+                    if self._active_processes_locked() == 0:
+                        return True
+                except Exception:
+                    return False
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(.01)
+
+    def terminate(self, exit_code: int = 1) -> bool:
+        with self._lock:
+            handle = self._handle
+            if handle is None:
+                return bool(self._extinct)
+            return bool(self._kernel.TerminateJobObject(
+                handle, max(1, int(exit_code))))
+
+    def terminate_and_wait(self, exit_code: int = 1,
+                           timeout_s: float = 5.0) -> bool:
+        """Terminate the Job and return True only after ActiveProcesses is zero."""
+        with self._lock:
+            try:
+                if self._active_processes_locked() == 0:
+                    return True
+            except Exception:
+                return False
+            handle = self._handle
+            if handle is None or not self._kernel.TerminateJobObject(
+                    handle, max(1, int(exit_code))):
+                # Termination can race a natural final exit.  Query once more;
+                # only the accounting result, never API delivery, is evidence.
+                try:
+                    return self._active_processes_locked() == 0
+                except Exception:
+                    return False
+            deadline = time.monotonic() + max(0.0, float(timeout_s))
+            while True:
+                try:
+                    if self._active_processes_locked() == 0:
+                        return True
+                except Exception:
+                    return False
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(.01)
+
+    def close(self, timeout_s: float = 5.0) -> None:
+        # KILL_ON_JOB_CLOSE is a useful last resort, but CloseHandle succeeding
+        # says nothing about when descendants actually stop.  Preserve the query
+        # handle until extinction is observed, then close it.
+        with self._lock:
+            handle = self._handle
+            if handle is None:
+                if not self._extinct:
+                    raise RuntimeError(
+                        "Windows Job closed without confirmed process extinction")
+                return
+            if not self.terminate_and_wait(timeout_s=timeout_s):
+                raise RuntimeError(
+                    "Windows Job process-tree extinction could not be confirmed")
+            self._handle = None
+            if not self._kernel.CloseHandle(handle):
+                raise OSError("Windows Job handle could not be closed")
+
+
+def attach_kill_on_close_job(proc, name=None):
+    """Immediately bind a new child to a kernel-owned process tree on Windows.
+
+    POSIX callers already own the complete tree through ``start_new_session`` and
+    ``killpg``, so this returns ``None`` there.  On Windows an assignment failure is
+    raised to the caller: continuing without the Job would be unsafe because MSYS
+    shells can re-parent native descendants before ``taskkill /T`` observes them.
+    The caller must kill the just-created process when that happens (fail closed).
+    """
+    if not is_windows():
+        return None
+    return _KillOnCloseJob(proc, name=name)
+
+
+def terminate_named_job(name: str, exit_code: int = 1) -> bool:
+    """Terminate a Windows Job Object from another Collie process.
+
+    This is the cross-process half of Mission cancellation: the Web process can
+    stop a code tree owned by ``colliejobd`` without trusting a reusable PID.
+    Other platforms use the process-group receipt maintained by codeworker.
+    """
+    if not is_windows() or not isinstance(name, str) or not name:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.windll.kernel32
+    kernel.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.OpenJobObjectW.restype = wintypes.HANDLE
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenJobObjectW(0x0008, False, name)  # JOB_OBJECT_TERMINATE
+    if not handle:
+        return False
+    try:
+        return bool(kernel.TerminateJobObject(handle, max(1, int(exit_code))))
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def terminate_named_job_and_wait(name: str, exit_code: int = 1,
+                                 timeout_s: float = 5.0) -> bool:
+    """Terminate a named Windows Job and prove its process tree is extinct.
+
+    Durable Mission receipts outlive their owning daemon.  Delivery from
+    :func:`terminate_named_job` is therefore insufficient: a crashed owner
+    cannot later remove the receipt.  This cross-process helper opens the Job
+    with query authority and waits for ``ActiveProcesses == 0``.  A genuinely
+    absent generation-scoped Job is already extinct; access/query failures are
+    not and fail closed.
+    """
+    if not is_windows() or not isinstance(name, str) or not name:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class BASIC_ACCOUNTING(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_longlong),
+            ("TotalKernelTime", ctypes.c_longlong),
+            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
+
+    kernel = ctypes.windll.kernel32
+    kernel.SetLastError(0)
+    kernel.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.OpenJobObjectW.restype = wintypes.HANDLE
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateJobObject.restype = wintypes.BOOL
+    kernel.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.c_void_p]
+    kernel.QueryInformationJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE
+    handle = kernel.OpenJobObjectW(0x0004 | 0x0008, False, name)
+    if not handle:
+        # ERROR_FILE_NOT_FOUND is proof that this unique named Job generation
+        # no longer exists. Any other error (especially access denied) is not.
+        return int(kernel.GetLastError()) == 2
+    try:
+        def active_processes():
+            info = BASIC_ACCOUNTING()
+            if not kernel.QueryInformationJobObject(
+                    handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+                raise ctypes.WinError()
+            return max(0, int(info.ActiveProcesses))
+
+        try:
+            if active_processes() == 0:
+                return True
+            delivered = bool(kernel.TerminateJobObject(
+                handle, max(1, int(exit_code))))
+            if not delivered and active_processes() != 0:
+                return False
+            deadline = time.monotonic() + max(0.0, float(timeout_s))
+            while True:
+                if active_processes() == 0:
+                    return True
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(.01)
+        except Exception:
+            return False
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def kill_tree(proc) -> None:

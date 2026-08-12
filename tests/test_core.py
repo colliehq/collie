@@ -56,12 +56,23 @@ def test_cost_cache_creation():
     from harness.costs import cost_usd
     base = cost_usd("claude-opus-4-8", 1000, 500, cache_read=2000)
     withc = cost_usd("claude-opus-4-8", 1000, 500, cache_read=2000, cache_creation=1000)
-    assert abs((withc - base) - (1000 * 15 * 1.25 / 1e6)) < 1e-9, "cache-creation must bill at 1.25x input"
+    assert abs((withc - base) - (1000 * 5 * 1.25 / 1e6)) < 1e-9, "cache-creation must bill at 1.25x input"
 
 def test_cost_unknown_model_zero():
     from harness.costs import cost_usd
     assert cost_usd("some-unlisted-model", 1000, 500) == 0.0
-    assert cost_usd("claude-opus-4-8", 1_000_000, 0) == 15.0   # opus input $15/M
+    assert cost_usd("claude-opus-4-8", 1_000_000, 0) == 5.0
+
+def test_cost_price_match_prefers_exact_then_longest(monkeypatch):
+    from harness import costs
+    # Keep the generic fallback first to prove lookup does not depend on registration order.
+    monkeypatch.setattr(costs, "PRICES", {
+        "opus": (15.0, 1.5, 75.0),
+        "claude-opus-4-8": (5.0, 0.5, 25.0),
+    })
+    assert costs.price_for("claude-opus-4-8") == (5.0, 0.5, 25.0)
+    assert costs.price_for("anthropic:claude-opus-4-8-20260801") == (5.0, 0.5, 25.0)
+    assert costs.price_for("opus") == (15.0, 1.5, 75.0)
 
 # ------------------------------------------------------------------ embeddings cache
 def test_embedder_singleton():

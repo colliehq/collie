@@ -30,6 +30,9 @@ round — it is `failed` plus optional compensation. `repairable()` encodes that
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import os
+import time
 from typing import Iterable, Sequence
 
 
@@ -262,6 +265,80 @@ class CampaignReceiptGoalVerifier(GoalVerifier):
             (counts["completed"], counts["exhausted"], counts["deferred"],
              counts["skipped"], len(observations)))
         return Verdict(VERIFIED, reason, tuple(observations[:20]))
+
+
+class CodeWorkspaceGoalVerifier(GoalVerifier):
+    """Close a code Mission only from a fresh host-side verification receipt."""
+
+    @staticmethod
+    def _epoch(value) -> float:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        try:
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return time.time()
+
+    def verify_mission(self, mission, events=(), steps=()) -> Verdict:
+        case = dict(getattr(mission, "case", {}) or {})
+        if not isinstance(case.get("code_profile"), dict):
+            return Verdict(INCONCLUSIVE, "Mission is not configured as durable code")
+        verification = case.get("code_verification")
+        if not case.get("code_verified") or not isinstance(verification, dict):
+            return Verdict(INCONCLUSIVE,
+                           "durable code has no successful host verification receipt")
+        evidence = verification.get("evidence")
+        if not isinstance(evidence, dict):
+            return Verdict(INCONCLUSIVE,
+                           "durable code verification has no independent command evidence")
+        workspace = str(case.get("_isolated_workspace") or "")
+        if not workspace or not os.path.isdir(workspace):
+            return Verdict(INCONCLUSIVE, "durable code workspace is unavailable")
+        from .verification import workspace_snapshot
+        current = workspace_snapshot(workspace)
+        current_digest = str(current.get("tree_digest") or "")
+        receipt_digest = str(evidence.get("post_tree_digest") or "")
+        baseline_digest = str(case.get("code_baseline_tree_digest") or "")
+        complete = bool(current.get("snapshot_complete") and
+                        evidence.get("post_snapshot_complete"))
+        fresh = bool(current_digest and receipt_digest and
+                     current_digest == receipt_digest and complete)
+        changed = bool(baseline_digest and receipt_digest and
+                       baseline_digest != receipt_digest)
+        passed = bool(evidence.get("passed") and
+                      evidence.get("command_passed") and
+                      evidence.get("ran_after_last_edit"))
+        configured_command = str(
+            (case.get("code_profile") or {}).get("verify_command") or "").strip()
+        receipt_command = str(evidence.get("command") or "").strip()
+        command_bound = bool(configured_command and receipt_command == configured_command and
+                             evidence.get("source") == "mission_code_profile")
+        observation = Observation(
+            "host-verification-command", self._epoch(evidence.get("timestamp")),
+            bool(passed and fresh and changed and command_bound), asserted=True,
+            detail=("configured host check passed against the current Mission patch" if
+                    passed and fresh and changed and command_bound else
+                    "verification receipt is failed, stale, incomplete, or not bound "
+                    "to the exact configured command and Mission patch"))
+        if observation.ok:
+            return Verdict(VERIFIED, observation.detail, (observation,))
+        return Verdict(INCONCLUSIVE, observation.detail, (observation,))
+
+
+class MissionGoalVerifier(GoalVerifier):
+    """Route goal verification by the durable Mission's declared profile."""
+
+    def __init__(self, mission_store, action_store):
+        self.code = CodeWorkspaceGoalVerifier()
+        self.campaign = CampaignReceiptGoalVerifier(mission_store, action_store)
+
+    def verify_mission(self, mission, events=(), steps=()) -> Verdict:
+        case = dict(getattr(mission, "case", {}) or {})
+        verifier = self.code if isinstance(case.get("code_profile"), dict) else self.campaign
+        return verifier.verify_mission(mission, events, steps)
 
 
 # ── the code gate, re-expressed (proves the abstraction is faithful) ────────

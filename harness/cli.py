@@ -2483,7 +2483,8 @@ def cmd_mission(args):
         elif action == "start":
             goal = (args.text or "").strip()
             if not goal:
-                print('usage: collie mission start "<goal>" [--review]'); return 1
+                print('usage: collie mission start "<goal>" [--review] '
+                      '[--code --workspace PATH] [--overnight]'); return 1
             bounds = {}
             if args.domains:
                 bounds["allowed_domains"] = [x.strip() for x in args.domains.split(",")
@@ -2496,9 +2497,21 @@ def cmd_mission(args):
                 bounds["max_total_steps"] = args.max_steps
             try:
                 autonomy = True if args.auto else (False if args.review else None)
-                out = svc.start(goal, autonomous=autonomy, **bounds)
-            except ValueError as e:
-                print("invalid Mission leash: %s" % e); return 1
+                billing_evidence = None
+                if args.billing_evidence:
+                    billing_evidence = _json.loads(args.billing_evidence)
+                    if not isinstance(billing_evidence, dict):
+                        raise ValueError("--billing-evidence must decode to a JSON object")
+                out = svc.start(
+                    goal, autonomous=autonomy, code=bool(args.code),
+                    workspace=args.workspace or "", overnight=bool(args.overnight),
+                    verify_command=args.verify_command or "",
+                    no_paid_overage=bool(args.no_paid_overage),
+                    billing_evidence=billing_evidence,
+                    provider=args.mission_provider or "",
+                    model=args.mission_model or "", **bounds)
+            except (ValueError, RuntimeError, _json.JSONDecodeError) as e:
+                print("invalid Mission: %s" % e); return 1
             if args.run and not out.get("error"):
                 out = svc.run(out["mission_id"])
         else:
@@ -2524,7 +2537,8 @@ def cmd_mission(args):
             elif action == "continue":
                 out = svc.continue_after_human(mid, args.note or "")
             elif action == "reconcile":
-                out = svc.reconcile(mid, args.note or "")
+                out = svc.reconcile(
+                    mid, args.note or "", args.code_resolution or "")
             elif action == "check":
                 out = svc.check(mid)
             else:  # confirm
@@ -2948,7 +2962,7 @@ def _setup_wizard(force=False):
         print("Where should completions come from? (Enter keeps the current choice)\n")
     else:
         opts = [
-            ("anthropic-oauth", "Claude subscription (Pro/Max — $0/token, reuses your Claude Code login)"),
+            ("anthropic-oauth", "Claude direct (experimental; reuses login, availability/billing unverified)"),
             ("anthropic",       "Anthropic API key (metered — needs ANTHROPIC_API_KEY exported)"),
             ("ollama",          "Ollama (local models — nothing leaves this machine)"),
             ("mock",            "Mock (offline demo — try the harness before connecting anything)"),
@@ -3476,11 +3490,32 @@ def main(argv=None):
                       help="durable campaign total for irreversible actions")
     pmis.add_argument("--max-steps", type=int, default=None,
                       help="durable campaign model-decision ceiling")
+    pmis.add_argument("--code", action="store_true",
+                      help="enable durable code authority for this Mission")
+    pmis.add_argument("--workspace", default="",
+                      help="existing code workspace to bind (Collie never creates or deletes it)")
+    pmis.add_argument("--overnight", action="store_true",
+                      help="12-active-hour unattended subscription-only execution profile")
+    pmis.add_argument(
+        "--no-paid-overage", action="store_true",
+        help="attest that paid usage credits/overage and auto-reload are disabled")
+    pmis.add_argument(
+        "--billing-evidence", default="",
+        help="optional redacted account evidence for compatible non-native routes")
+    pmis.add_argument("--verify-command", default="",
+                      help="code completion check to run before reporting success")
+    pmis.add_argument("--provider", dest="mission_provider", default="",
+                      help="freeze this Mission to an explicit provider route")
+    pmis.add_argument("--model", dest="mission_model", default="",
+                      help="freeze this Mission to an explicit provider model/alias")
     pmis.add_argument("--run", action="store_true",
                       help="for start: run synchronously instead of leaving it queued")
     pmis.add_argument("--json", action="store_true")
     pmis.add_argument("--note", default="",
                       help="inspection note for recovery reconciliation or failed retry")
+    pmis.add_argument(
+        "--code-resolution", choices=("completed", "not_fired", "cancel"), default="",
+        help="for reconcile: inspected outcome of an interrupted code-session tool")
     pmis.set_defaults(fn=cmd_mission)
 
     # init: front-load the lazy first-use costs (embedder download + code index) and optionally

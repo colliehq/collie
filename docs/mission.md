@@ -44,6 +44,80 @@ CAPTCHA, person-required MFA, biometric/KYC, legal signatures, security keys, or
 spending. Codes readable from an authorized Google Voice/mail connection are
 ordinary connected work; the code itself stays outside Mission case/history.
 
+The experimental native unattended coding profile is invoked with:
+
+```text
+collie mission start "finish the refactor and make the suite green" \
+  --code --workspace C:\path\to\repo --overnight \
+  --provider anthropic-oauth --model claude-opus-4-8 \
+  --no-paid-overage \
+  --verify-command "python -m pytest -q"
+```
+
+`--overnight` is a bounded profile, not an infinite turn. When admitted, it permits at most 12
+hours of active execution inside a seven-day elapsed window, so laptop sleep or a
+reboot does not consume the active-work budget, while an abandoned Mission still
+expires. It freezes the provider/model/billing route, runs resumable three-turn
+code slices under one durable Mission session, persists each slice before yielding,
+and lets the job daemon re-enter it.
+
+Active model/worker boundaries are serialized across a root Mission and all of its
+descendants. Collie durably charges elapsed active time before releasing that slot;
+after a crash, any provisional recovery charge is bounded by the last durable
+heartbeat plus one heartbeat interval, so lease, sleep, and reboot gaps are not
+mistaken for active work.
+
+Overnight code requires an existing `--workspace`. Collie snapshots a complete
+baseline before the first edit and refuses to start if it cannot obtain a stable
+tree digest. `--verify-command` may be supplied explicitly; if omitted, Collie may
+use a detected project check, but it fails closed when none is available. Only the
+exact fresh host-side check against the current, changed workspace can complete the
+Mission.
+
+The native overnight profile accepts only `anthropic-oauth` with an explicit model,
+such as `claude-opus-4-8`. This is Collie's own harness and agent loop: it sends
+Collie's system/tool contract directly to Anthropic's official Messages endpoint.
+It does not invoke `claude -p`, so Claude Code's system prompt is not inserted into
+the Mission. `claude -p` remains useful only as a benchmark and compatibility
+comparison, not as Collie's overnight runtime.
+
+This route is currently **blocked by its live preflight** on the tested Max account:
+the Collie-owned direct request returns HTTP 429 while the official Claude Code
+client succeeds. Anthropic documents subscription use through Claude Code / Agent
+SDK, but does not document arbitrary raw Messages API access as included with a
+paid Claude plan; a paid Claude plan also does not include ordinary Console API
+usage. Collie therefore does not claim that the raw OAuth route is supported or
+available, and it will not start the Mission unless that exact direct request
+succeeds. There is no fallback to `claude -p` because that would introduce Claude
+Code's system prompt and change the harness being evaluated.
+
+There is a second independent admission blocker for a genuine overnight run:
+Collie does not implement or write Claude Code's private refresh-token flow. At
+creation it therefore requires the login-store access token itself to cover the
+full 12-hour active window. The tested token was much shorter-lived. Depending
+on Claude Code to refresh that shared credential in the background would not be
+an unattended Collie-owned direct route, so a short or unknown expiry is denied
+before work starts.
+
+Per-Mission `--provider` and `--model` freeze the exact route without changing
+global Settings. `--no-paid-overage` is an explicit user attestation that paid
+usage credits/overage and auto-reload are disabled in the provider account. At
+creation Collie performs a real direct inference probe. At every later runnable
+boundary it revalidates the official login credential, scope, plan metadata, and
+expiry locally without spending subscription quota; the next actual provider call
+still fails closed if authority has changed. The request path is pinned to
+`https://api.anthropic.com/v1/messages`, ignores ambient HTTP proxies, and permits
+no API-key, provider, model, CLI, or paid fallback. A saved receipt is audit
+evidence, not permanent authorization; any mismatch fails closed before the next
+model call.
+
+As of 2026-08-12, Anthropic says its planned June 15 credit change is paused and
+Claude Agent SDK, `claude -p`, and third-party app usage still draw from plan usage
+limits. This is a current policy snapshot, not a promise about future routing or an
+invoice guarantee. Collie refuses a route it cannot prove and never enables paid
+fallback, but the user remains responsible for the provider-side overage setting.
+[Anthropic: use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan); [paid Claude plans and API billing](https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console)
+
 Missing authorization is branch-scoped by default. It is recorded in
 `case.pending_authorizations`, surfaced as Needs You, and the decider receives
 another turn to pursue independent work. The whole Mission enters `needs_you` only
@@ -135,11 +209,19 @@ outer gate. Browser snapshots mask password, token, payment, email, phone, and
 signup identity fields. Credential-bearing action args stop for a human browser
 handoff instead of being written to Mission/Action SQLite.
 
-`code` is not in the default world leash. When explicitly granted, its child has
-no shell or arbitrary executor; path-bearing tools are canonicalized beneath an
-approved `COLLIE_MISSION_CODE_ROOTS` workspace and same-workspace Missions share a
-cross-process resource lease. Without separately sandboxed execution evidence, an
-edit remains inconclusive for human review.
+`code` is not in the default world leash. When explicitly granted, each bounded
+slice runs in a killable child process, reuses one Mission-scoped transcript, and
+persists its checkpoint before the daemon schedules the next slice. Its editing
+tools have no shell or arbitrary executor; path-bearing tools are canonicalized
+beneath the TaskTree-bound workspace and same-workspace Missions share a
+cross-process resource lease. The exact pre-authorized verification command runs
+host-side after each slice. Completion requires a passing, fresh command receipt
+whose content digest still matches the workspace and differs from the Mission's
+baseline; a model answer or a green pre-existing tree is not success.
+
+This is lifecycle/process isolation, not an OS security sandbox. The verification
+command is user-authorized project code and runs with the Collie daemon's host
+permissions. Use a disposable worktree plus a container/VM for untrusted repos.
 
 ## Recovery boundary
 
@@ -166,7 +248,7 @@ the Mission enters `recovery_required`, because the late worker may still finish
 late worker may write its Action receipt, but it cannot fold stale case state or start another
 action.
 
-The leash also enforces cumulative model tokens, estimated model dollars, active wall time,
+The leash also enforces cumulative model tokens, marginal model charges, active wall time,
 elapsed time, retries, durable storage, model turns, irreversible actions, and action rate. A
 specialist's immutable `parent_mission_id` makes these budgets cumulative over the complete
 descendant tree, so parallel fan-out cannot mint a fresh budget. Sibling turn/action reservations
@@ -174,7 +256,11 @@ are serialized in SQLite; token, cost, and wall usage are charged when each in-f
 returns. These totals survive waits and restarts. Long cases retain a compact rolling summary,
 recent results, recent events, human updates, and recovery metadata; old bulk results remain
 auditable in the event/receipt/checkpoint ledgers rather than crowding out the newest facts in the
-model prompt.
+model prompt. Subscription routes retain equivalent API list-price in a separate
+observability counter. For the experimental direct route, that split is a
+conservative control-plane classification rather than proof of the provider's
+actual bill; the overnight marginal-charge leash remains at $0.01 as a routing
+regression tripwire.
 
 `needs_you` has two durable deadlines. The first emits an escalation record for notification
 wiring. The hard deadline fail-closes to `paused` while preserving the exact confirmation inbox;

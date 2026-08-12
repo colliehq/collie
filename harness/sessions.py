@@ -194,14 +194,27 @@ def save(sid, messages, project="demo", cwd="", answer=""):
     return sid
 
 
-def append_run_receipt(sid, receipt, limit=40):
+def append_run_receipt(sid, receipt, limit=40, directory=None):
     """Persist a compact, structured execution/verification receipt on a thread."""
-    p = _path(sid)
+    p = _path(sid, directory)
     if not p or not isinstance(receipt, dict):
         return False
     with _locked(p):
-        obj = _load_raw(p) or {"id": sid, "messages": []}
-        rows = list(obj.get("run_receipts") or [])
+        if os.path.exists(p):
+            # Never turn an unreadable/torn journal into a fresh-looking one.
+            # Recovery callers use this return value as a publication fence.
+            obj = _load_raw(p)
+            if not isinstance(obj, dict):
+                return False
+        else:
+            obj = {"id": sid, "messages": []}
+        if obj.get("id") not in (None, sid):
+            return False
+        existing = obj.get("run_receipts", [])
+        if not isinstance(existing, list) or not all(
+                isinstance(row, dict) for row in existing):
+            return False
+        rows = list(existing)
         rows.append(dict(receipt))
         obj["run_receipts"] = rows[-max(1, int(limit or 40)):]
         obj["updated"] = time.time()
@@ -402,6 +415,74 @@ def load(sid):
     if s is not None:
         s["messages"] = _msgs_in(s.get("messages"))
     return s
+
+
+def load_checked(sid, directory=None):
+    """Load a durable session while distinguishing missing from corrupt state.
+
+    The legacy ``load`` API intentionally returns ``None`` for both.  Mission
+    workers need a fail-closed answer: treating a truncated later-slice journal
+    as a new conversation can repeat edits against an already-mutated tree.
+    """
+    p = _path(sid, directory)
+    if not p or not os.path.exists(p):
+        return {"status": "missing", "session": None}
+    try:
+        with _locked(p):
+            with open(p, encoding="utf-8") as fh:
+                raw = json.load(fh)
+        if not isinstance(raw, dict):
+            raise ValueError("session root is not an object")
+        if raw.get("id") not in (None, sid):
+            raise ValueError("session identity does not match its filename")
+        messages = raw.get("messages", [])
+        if not isinstance(messages, list) or not all(
+                isinstance(item, dict) for item in messages):
+            raise ValueError("session messages are malformed")
+        # A syntactically valid JSON file can still be semantically torn.  In
+        # particular, treating a malformed active_run as if no run were active
+        # would erase the only fence that says an edit/tool may have been in
+        # flight.  Mission callers must distinguish that from a clean session.
+        if "active_run" in raw:
+            active = raw.get("active_run")
+            if not isinstance(active, dict):
+                raise ValueError("session active_run is malformed")
+            state = active.get("state")
+            valid_states = {
+                "turn_boundary", "calling_model", "model_complete",
+                "executing_tool", "tool_complete", "external_action",
+                "terminal", "canceled",
+            }
+            if not isinstance(state, str) or state not in valid_states:
+                raise ValueError("session active_run state is malformed")
+            if not isinstance(active.get("detail", {}), dict):
+                raise ValueError("session active_run detail is malformed")
+            if not isinstance(active.get("run_id", ""), str):
+                raise ValueError("session active_run identity is malformed")
+            turn = active.get("turn", 0)
+            if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
+                raise ValueError("session active_run turn is malformed")
+        if "run_receipts" in raw:
+            receipts = raw.get("run_receipts")
+            if not isinstance(receipts, list) or not all(
+                    isinstance(item, dict) for item in receipts):
+                raise ValueError("session run_receipts are malformed")
+        raw["messages"] = _msgs_in(messages)
+        return {"status": "ok", "session": raw}
+    except Exception as exc:
+        return {"status": "invalid", "session": None,
+                "reason": "%s: %s" % (type(exc).__name__, exc)}
+
+
+def storage_bytes(sid, directory=None):
+    """Return the exact durable session-file size without exposing its path."""
+    p = _path(sid, directory)
+    if not p:
+        return 0
+    try:
+        return max(0, int(os.path.getsize(p)))
+    except OSError:
+        return 0
 
 
 def delete(sid):

@@ -74,6 +74,8 @@ def test_claude_cli_provider_resolves_windows_shim(monkeypatch):
     monkeypatch.setattr(providers.shutil, "which", lambda *a, **k: "C:/bin/claude.cmd")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-subscription-run")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "must-use-official-login-store")
+    monkeypatch.setenv("HTTPS_PROXY", "must-not-redirect-subscription-run")
+    monkeypatch.setenv("NODE_OPTIONS", "must-not-inject-subscription-run")
 
     def fake_run(cmd, **kwargs):
         seen["cmd"] = cmd
@@ -100,6 +102,8 @@ def test_claude_cli_provider_resolves_windows_shim(monkeypatch):
     assert "do the work" in seen["input"]
     assert "ANTHROPIC_API_KEY" not in seen["env"]
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in seen["env"]
+    assert "HTTPS_PROXY" not in seen["env"]
+    assert "NODE_OPTIONS" not in seen["env"]
     assert completion.text == "done"
 
 

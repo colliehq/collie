@@ -36,9 +36,11 @@ from __future__ import annotations
 
 import json
 import hashlib
+import inspect
 import fnmatch
 import os
 import re
+import secrets
 import time
 from urllib.parse import urlsplit
 
@@ -1234,11 +1236,41 @@ def _restrict_code_child(h, root):
             h.registry._tools["grep"], root, default_path=".")
 
 
-def _live_code(goal, workspace=None):
+def _code_session_id(mission_id, workspace):
+    material = str(mission_id or workspace or "mission-code")
+    return "mission-code-" + hashlib.sha256(
+        material.encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def _default_code_verifier(workspace, result, command="", baseline_digest="",
+                           timeout_seconds=300):
+    """Run one exact, pre-authorized host check and bind it to current bytes."""
+    command = str(command or "").strip()
+    if not command:
+        return {"verified": bool(getattr(result, "verified", False)),
+                "detail": "no host verification command configured", "evidence": None}
+    from .verification import run_verification_command
+    evidence = run_verification_command(
+        command, workspace, timeout=max(1, min(3600, int(timeout_seconds or 300))),
+        source="mission_code_profile", after_last_edit=True)
+    changed = bool(baseline_digest and evidence.get("post_tree_digest") and
+                   evidence.get("post_tree_digest") != baseline_digest)
+    verified = bool(evidence.get("passed") and changed)
+    detail = ("configured host check passed against the current Mission patch" if verified else
+              "check passed but the Mission produced no patch" if evidence.get("passed") else
+              "configured check failed (exit %s)" % evidence.get("exit_code"))
+    return {"verified": verified, "detail": detail, "evidence": evidence}
+
+
+def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
+               execution_profile=None, verify_command="", session_id="",
+               baseline_tree_digest="", expected_tree_digest="", slice_turns=None,
+               verify_timeout_seconds=None, max_session_storage_bytes=None,
+               max_model_calls=None, mission_store_path="", mission_run_token=""):
     import os
+    from . import sessions
     from .cli import make_harness
     from . import settings as _s
-    _s.apply()
     cwd = os.path.realpath(os.path.abspath(workspace or os.getcwd()))
     roots = [os.path.realpath(os.path.abspath(p)) for p in
              (os.environ.get("COLLIE_MISSION_CODE_ROOTS") or "").split(os.pathsep) if p]
@@ -1252,31 +1284,482 @@ def _live_code(goal, workspace=None):
                 "verified": False}
     if not os.path.isdir(cwd):
         return {"answer": "approved code workspace does not exist", "verified": False}
+    profile = dict(execution_profile or {})
+    provider = str(profile.get("provider") or _s.get("PROVIDER") or "").strip()
+    model = str(profile.get("model") or _s.get("MODEL") or "").strip() or None
+    if profile:
+        if profile.get("allow_provider_fallback") is not False:
+            return {"answer": "frozen code execution profile permits provider fallback",
+                    "verified": False}
+        subscription = provider in (
+            "anthropic-oauth", "claude-sub", "claude-cli", "cli",
+            "codex-oauth", "codex-sub", "codex")
+        if profile.get("subscription_only") and not subscription:
+            return {"answer": "frozen subscription code route is invalid", "verified": False}
+        if profile.get("subscription_only") and profile.get("billing_mode") != "subscription":
+            return {"answer": "frozen subscription billing mode is inconsistent",
+                    "verified": False, "needs_human": True}
+        if (profile.get("profile") == "overnight" and
+                provider != "anthropic-oauth"):
+            return {"answer": "overnight code requires Collie's direct Claude OAuth route",
+                    "verified": False, "needs_human": True}
     project = "mission-code-" + hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:12]
-    h = make_harness(cwd, provider=_s.get("PROVIDER"), model=_s.get("MODEL"),
-                     project=project, embed="hash", code_search=True, exec_code=False)
+    sid = str(session_id or _code_session_id(mission_id, cwd))
+    if (len(sid) > 128 or not sid or
+            not all(ch.isalnum() or ch in "-_." for ch in sid)):
+        return {"answer": "durable code session id is invalid", "verified": False,
+                "needs_human": True}
+    checked = sessions.load_checked(sid)
+    if checked.get("status") == "invalid":
+        return {
+            "answer": "durable code session is corrupt or unreadable; inspect it before retrying",
+            "verified": False, "continue_needed": False, "recovery_required": True,
+            "session_id": sid,
+        }
+    saved = checked.get("session") or {}
+    saved_cwd = str(saved.get("cwd") or "")
+    if saved_cwd and os.path.realpath(os.path.abspath(saved_cwd)) != cwd:
+        return {
+            "answer": "durable code session belongs to a different workspace",
+            "verified": False, "continue_needed": False, "recovery_required": True,
+            "session_id": sid,
+        }
+    recovery = sessions.recovery_state(sid)
+    if recovery and recovery.get("recovery_required"):
+        return {
+            "answer": recovery.get("reason") or "code session requires recovery inspection",
+            "verified": False, "continue_needed": False, "recovery_required": True,
+            "session_id": sid,
+        }
+    history = saved.get("messages") or None
+    from .verification import workspace_snapshot
+    prior_receipts = list(saved.get("run_receipts") or [])
+    for receipt in prior_receipts:
+        if not isinstance(receipt, dict):
+            return {"answer": "durable code receipt is malformed", "verified": False,
+                    "continue_needed": False, "recovery_required": True,
+                    "session_id": sid}
+        receipt_sid = str(receipt.get("session_id") or "")
+        if receipt_sid and receipt_sid != sid:
+            return {"answer": "durable code receipt identity does not match this Mission",
+                    "verified": False, "continue_needed": False,
+                    "recovery_required": True, "session_id": sid}
+        receipt_mid = str(receipt.get("mission_id") or "")
+        if mission_id and receipt_mid and receipt_mid != str(mission_id):
+            return {"answer": "durable code receipt belongs to a different Mission",
+                    "verified": False, "continue_needed": False,
+                    "recovery_required": True, "session_id": sid}
+    baseline_digest = str(baseline_tree_digest or "")
+    for receipt in prior_receipts:
+        if (not baseline_digest and isinstance(receipt, dict) and
+                receipt.get("baseline_tree_digest")):
+            baseline_digest = str(receipt["baseline_tree_digest"])
+            break
+    if not baseline_digest:
+        baseline_digest = str(workspace_snapshot(cwd).get("tree_digest") or "")
+    receipt_baselines = {
+        str(receipt.get("baseline_tree_digest") or "") for receipt in prior_receipts
+        if receipt.get("kind") in (
+            "mission_code_baseline", "mission_code_slice",
+            "mission_code_reconciled") and
+        receipt.get("baseline_tree_digest")}
+    if receipt_baselines and receipt_baselines != {baseline_digest}:
+        return {"answer": "durable code baseline does not match this Mission",
+                "verified": False, "continue_needed": False,
+                "recovery_required": True, "session_id": sid}
+    if not any(isinstance(receipt, dict) and
+               receipt.get("kind") == "mission_code_baseline"
+               for receipt in prior_receipts):
+        # Persist this before the first possible edit.  If the worker dies after
+        # changing files but before its final slice receipt, restart still knows
+        # which bytes belonged to the user and which belong to this Mission.
+        baseline_persisted = sessions.append_run_receipt(sid, {
+            "kind": "mission_code_baseline",
+            "mission_id": str(mission_id or ""),
+            "session_id": sid,
+            "baseline_tree_digest": baseline_digest,
+        }, limit=128)
+        if not baseline_persisted:
+            return {
+                "answer": "could not durably persist the pre-edit code baseline",
+                "verified": False, "continue_needed": False,
+                "recovery_required": True, "session_id": sid,
+                "baseline_tree_digest": baseline_digest,
+            }
+        reloaded = sessions.load_checked(sid)
+        if reloaded.get("status") != "ok":
+            return {
+                "answer": "durable code baseline could not be read back safely",
+                "verified": False, "continue_needed": False,
+                "recovery_required": True, "session_id": sid,
+                "baseline_tree_digest": baseline_digest,
+            }
+        prior_receipts = list(
+            (reloaded.get("session") or {}).get("run_receipts") or [])
+    # Reconstruct the last Collie-owned byte boundary from durable receipts.  A
+    # worker can finish its slice receipt and die before Mission folds the case;
+    # that completed, contiguous receipt is safe to adopt.  Any other change is
+    # external drift and must be inspected instead of silently attributed to us.
+    expected_digest = str(expected_tree_digest or baseline_digest or "")
+    for receipt in prior_receipts:
+        if not isinstance(receipt, dict) or receipt.get("kind") not in (
+                "mission_code_slice", "mission_code_reconciled"):
+            continue
+        if receipt.get("kind") == "mission_code_reconciled" and (
+                receipt.get("resolution") != "completed" or
+                receipt.get("snapshot_complete") is not True):
+            return {
+                "answer": "durable code reconciliation receipt is malformed",
+                "verified": False, "continue_needed": False,
+                "recovery_required": True, "session_id": sid,
+            }
+        before = str(receipt.get("pre_tree_digest") or "")
+        after = str(receipt.get("post_tree_digest") or "")
+        if before and after and before == expected_digest:
+            expected_digest = after
+    try:
+        session_limit = max(0, int(max_session_storage_bytes or 0))
+    except (TypeError, ValueError):
+        session_limit = 0
+    before_session_bytes = sessions.storage_bytes(sid)
+    if session_limit and before_session_bytes >= session_limit:
+        return {
+            "answer": "durable code session storage budget is exhausted",
+            "verified": False, "continue_needed": False, "needs_human": True,
+            "session_id": sid, "baseline_tree_digest": baseline_digest,
+            "_external_storage_bytes": before_session_bytes,
+        }
+    pre_slice = workspace_snapshot(cwd)
+    if (not pre_slice.get("snapshot_complete") or not expected_digest or
+            str(pre_slice.get("tree_digest") or "") != expected_digest):
+        return {
+            "answer": (
+                "workspace bytes changed outside the last completed Collie code slice; "
+                "inspect and reconcile ownership before continuing"),
+            "verified": False, "continue_needed": False,
+            "recovery_required": True, "needs_human": False,
+            "session_id": sid, "baseline_tree_digest": baseline_digest,
+            "expected_tree_digest": expected_digest,
+            "post_tree_digest": str(pre_slice.get("tree_digest") or ""),
+            "_external_storage_bytes": before_session_bytes,
+        }
+    h = make_harness(cwd, provider=provider, model=model,
+                     project=project, embed="hash", rerank="off", distill="off",
+                     web_search=False, code_search=True, exec_code=False)
+    request_store = None
+    if mission_store_path and mission_run_token:
+        from .mission import MissionStore
+        request_store = MissionStore(str(mission_store_path))
+
+        def reserve_request(purpose="code_agent"):
+            request_id = "req_" + secrets.token_hex(16)
+            ok = request_store.reserve_model_request(
+                str(mission_id or ""), str(mission_run_token), request_id,
+                provider=getattr(h.provider, "name", ""),
+                model=getattr(h.provider, "model", ""), purpose=purpose)
+            return request_id if ok else None
+
+        h.provider.request_gate = reserve_request
+        h.provider.request_complete = request_store.complete_model_request
+    elif profile.get("profile") == "overnight" and max_model_calls not in (None, ""):
+        return {"answer": "overnight code model-request authority is missing",
+                "verified": False, "needs_human": True}
+    if profile.get("subscription_only"):
+        # Claude CLI normally permits an API-key fallback.  Overnight code does
+        # not: its frozen billing route is part of Mission authority.
+        h.provider.subscription_only = True
     # Positive authority list: a capability advertised as reversible cannot load
     # browser/desktop/MCP hands or a general shell behind Mission's outer gate.
     _restrict_code_child(h, cwd)
-    h.max_turns = int(os.environ.get("COLLIE_CODE_TURNS", "30"))
-    res = h.run("code", goal)
-    verified = bool(getattr(res, "verified", False))
+    # This child intentionally has no shell capability.  Verification is an
+    # exact parent-authorized host command after every slice, so the generic
+    # loop's "use bash to verify" nudge would only waste a model turn.
+    h.self_verify = False
+    if profile.get("profile") == "overnight":
+        # Let Mission's durable wait/backoff own transport retries.  Sleeping and
+        # retrying inside a killable slice obscures the runnable-boundary auth
+        # recheck and can consume several subscription requests before the
+        # campaign call leash is folded.
+        h.max_retries = 0
+        h.critic = False
+    if slice_turns in (None, "", 0, "0"):
+        try:
+            slice_turns = int(os.environ.get(
+                "COLLIE_CODE_SLICE_TURNS", os.environ.get("COLLIE_CODE_TURNS", "24")))
+        except (TypeError, ValueError):
+            slice_turns = 24
     try:
-        h.memory.close(); h.recorder.close()
+        slice_turns = int(slice_turns)
+    except (TypeError, ValueError):
+        slice_turns = 24
+    h.max_turns = max(1, min(50, slice_turns))
+    if max_model_calls not in (None, ""):
+        try:
+            h.max_model_calls = max(0, int(max_model_calls))
+        except (TypeError, ValueError):
+            h.max_model_calls = 0
+        if h.max_model_calls:
+            h.max_turns = min(h.max_turns, h.max_model_calls)
+    h.durable_session_id = sid
+    h.checkpoint_scope = "session:" + sid
+    prompt = str(goal or "")
+    if history:
+        prompt = ("Continue the same coding task from its durable checkpoint. Inspect the "
+                  "current workspace before editing; do not repeat completed work.\n\n"
+                  "Original goal: " + prompt)
+        if prior_receipts:
+            last_check = prior_receipts[-1].get("verification") \
+                if isinstance(prior_receipts[-1], dict) else None
+            last_check = last_check if isinstance(last_check, dict) else {}
+            last_evidence = last_check.get("evidence") \
+                if isinstance(last_check.get("evidence"), dict) else {}
+            feedback = str(last_check.get("detail") or "").strip()
+            output = str(last_evidence.get("output") or "").strip()
+            if feedback or output:
+                prompt += ("\n\nHost verification after the previous slice (ground truth; "
+                           "repair this before finishing):\n" +
+                           (feedback + "\n" if feedback else "") + output[-2500:])
+    try:
+        res = h.run("code:" + str(mission_id or project), prompt, history=history)
+    except Exception:
+        # The durable baseline was written before entering the model/tool loop.
+        # Close local stores before propagating so the process wrapper can turn
+        # this outcome-uncertain boundary into Mission recovery state.
+        try:
+            h.memory.close()
+            h.recorder.close()
+            if request_store is not None:
+                request_store.close()
+        except Exception:
+            pass
+        raise
+    sessions.save(sid, res.messages, project=project, cwd=cwd, answer=res.answer or "")
+    if host_verifier is None:
+        verification = _default_code_verifier(
+            cwd, res, verify_command, baseline_digest=baseline_digest,
+            timeout_seconds=verify_timeout_seconds or 300)
+    else:
+        verification = host_verifier(cwd, res)
+    if isinstance(verification, bool):
+        verification = {"verified": verification}
+    verification = verification if isinstance(verification, dict) else {}
+    verified = bool(verification.get("verified"))
+    error_text = str(getattr(res, "error", "") or "")
+    if not error_text and str(getattr(res, "answer", "") or "").startswith("ERROR("):
+        error_text = str(getattr(res, "answer", "") or "")
+    transient = False
+    if error_text:
+        from .providers import classify_error
+        transient = classify_error(error_text) == "retryable"
+    post_slice = workspace_snapshot(cwd)
+    slice_snapshot_complete = bool(pre_slice.get("snapshot_complete") and
+                                   post_slice.get("snapshot_complete"))
+    slice_mutated = bool(slice_snapshot_complete and
+                         pre_slice.get("tree_digest") != post_slice.get("tree_digest"))
+    session_recovery = sessions.recovery_state(sid)
+    journal_uncertain = bool(session_recovery and
+                             session_recovery.get("recovery_required"))
+    recovery_required = bool(journal_uncertain or not slice_snapshot_complete)
+    needs_human = bool(error_text and not transient and not verified and
+                       not recovery_required)
+    continue_needed = bool(not verified and not recovery_required and not needs_human and
+                           (getattr(res, "turns_exhausted", False) or transient or
+                            profile.get("profile") == "overnight"))
+    marginal_cost = 0.0 if profile.get("subscription_only") else float(
+        getattr(res, "cost_usd", 0.0) or 0.0)
+    usage = {
+        "input_tokens": int(getattr(res, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(res, "output_tokens", 0) or 0),
+        "cache_tokens": int(getattr(res, "cache_read", 0) or 0) +
+                        int(getattr(res, "cache_creation", 0) or 0),
+        # Mission's cost leash is a charge leash.  Equivalent API value remains
+        # visible separately instead of falsely stopping a flat subscription.
+        "cost_usd": marginal_cost,
+        "equivalent_cost_usd": float(getattr(res, "cost_usd", 0.0) or 0.0),
+    }
+    receipt = {
+        "kind": "mission_code_slice", "mission_id": str(mission_id or ""),
+        "session_id": sid, "baseline_tree_digest": baseline_digest,
+        "pre_tree_digest": str(pre_slice.get("tree_digest") or ""),
+        "post_tree_digest": str(post_slice.get("tree_digest") or ""),
+        "snapshot_complete": slice_snapshot_complete,
+        "turns": int(getattr(res, "turns", 0) or 0),
+        "turns_exhausted": bool(getattr(res, "turns_exhausted", False)),
+        "verified": verified, "continue_needed": continue_needed,
+        "verification": verification,
+        "usage": usage,
+    }
+    receipt_persisted = sessions.append_run_receipt(sid, receipt, limit=128)
+    if not receipt_persisted:
+        # The workspace may already contain edits. Without the post-slice WAL
+        # receipt those bytes have uncertain ownership and must be reconciled;
+        # never report verification success or silently start another slice.
+        verified = False
+        continue_needed = False
+        recovery_required = True
+        needs_human = False
+    session_bytes = sessions.storage_bytes(sid)
+    try:
+        h.settle_run_memory(res, verified, verification.get("evidence"),
+                            source="mission_code_verification")
+        h.recorder.finish_run(res)
     except Exception:
         pass
-    return {"answer": res.answer or res.error or "", "verified": verified}
+    try:
+        h.memory.close(); h.recorder.close()
+        if request_store is not None:
+            request_store.close()
+    except Exception:
+        pass
+    return {
+        "answer": (
+            "code slice completed but its ownership receipt was not durably persisted"
+            if not receipt_persisted else res.answer or res.error or ""),
+        "verified": verified,
+        "continue_needed": continue_needed, "session_id": sid,
+        "turns_exhausted": bool(getattr(res, "turns_exhausted", False)),
+        "turns": int(getattr(res, "turns", 0) or 0),
+        "model_calls": int(getattr(res, "model_calls", 0) or
+                           getattr(res, "turns", 0) or 0),
+        "_model_calls_reserved": bool(request_store is not None),
+        "_usage": {key: usage[key] for key in
+                   ("input_tokens", "output_tokens", "cache_tokens", "cost_usd")},
+        "equivalent_cost_usd": usage["equivalent_cost_usd"],
+        "baseline_tree_digest": baseline_digest,
+        "expected_tree_digest": expected_digest,
+        "post_tree_digest": str(post_slice.get("tree_digest") or ""),
+        "verification": verification,
+        "error": error_text[:1000],
+        "transient": transient,
+        "retry_after_seconds": 60 if transient else 0,
+        "recovery_required": recovery_required,
+        "needs_human": needs_human,
+        "slice_mutated": slice_mutated,
+        "_external_storage_bytes": session_bytes,
+    }
 
 
 def _real_code(runner=None):
     def execute(rec):
         goal = (rec.args or {}).get("goal") or (rec.args or {}).get("task") or ""
         ws = (rec.args or {}).get("workspace") or (rec.args or {}).get("cwd")
-        out = (runner or (lambda g: _live_code(g, ws)))(goal)
+        case = (rec.args or {}).get("_case") or {}
+        execution_profile = case.get("execution_profile") or {}
+        code_profile = case.get("code_profile") or {}
+        active_runner = runner
+        if active_runner is None:
+            out = _live_code(
+                goal, ws, mission_id=getattr(rec, "job_id", ""),
+                execution_profile=execution_profile,
+                verify_command=code_profile.get("verify_command") or "",
+                session_id=(code_profile.get("session_id") or
+                            case.get("code_session_id") or ""),
+                baseline_tree_digest=(case.get("code_baseline_tree_digest") or ""),
+                expected_tree_digest=(case.get("code_expected_tree_digest") or ""),
+                slice_turns=code_profile.get("slice_turns"),
+                verify_timeout_seconds=code_profile.get("verify_timeout_seconds"),
+                max_session_storage_bytes=code_profile.get(
+                    "max_session_storage_bytes"),
+                max_model_calls=(rec.args or {}).get("_model_call_budget"))
+        else:
+            # Keep the long-standing injected ``runner(goal)`` seam while
+            # allowing Mission-aware runners to opt into durable identity.
+            try:
+                sig = inspect.signature(active_runner)
+                params = sig.parameters
+                accepts_context = (any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()) or
+                    any(name in params for name in (
+                        "workspace", "mission_id", "execution_profile",
+                        "verify_command", "max_wall_seconds", "session_id",
+                        "baseline_tree_digest", "slice_turns",
+                        "expected_tree_digest",
+                        "max_model_calls",
+                        "mission_store_path", "mission_run_token",
+                        "verify_timeout_seconds", "max_session_storage_bytes")))
+            except (TypeError, ValueError):
+                accepts_context = False
+            if accepts_context:
+                context = {
+                    "workspace": ws, "mission_id": getattr(rec, "job_id", ""),
+                    "execution_profile": execution_profile,
+                    "verify_command": code_profile.get("verify_command") or "",
+                    "session_id": (code_profile.get("session_id") or
+                                   case.get("code_session_id") or ""),
+                    "baseline_tree_digest": str(
+                        case.get("code_baseline_tree_digest") or ""),
+                    "expected_tree_digest": str(
+                        case.get("code_expected_tree_digest") or ""),
+                    "slice_turns": code_profile.get("slice_turns"),
+                    "verify_timeout_seconds": code_profile.get(
+                        "verify_timeout_seconds"),
+                    "max_session_storage_bytes": code_profile.get(
+                        "max_session_storage_bytes"),
+                    "max_model_calls": (rec.args or {}).get("_model_call_budget"),
+                    "mission_store_path": str(
+                        getattr(rec, "_mission_store_path", "") or ""),
+                    "mission_run_token": str(
+                        getattr(rec, "_mission_run_token", "") or ""),
+                    # Finish and kill inside the process runner just before the
+                    # outer watchdog only as a last-resort fallback.  The outer
+                    # owner fires first so timeout becomes recovery_required
+                    # instead of an ordinary reversible failure/retry loop.
+                    "max_wall_seconds": max(1.0, float(
+                        ((rec.args or {}).get("_leash") or {}).get(
+                            "max_step_seconds", 600)) + 30.0),
+                }
+                accepts_kwargs = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values())
+                kwargs = context if accepts_kwargs else {
+                    key: value for key, value in context.items()
+                    if key in sig.parameters}
+                out = active_runner(goal, **kwargs)
+            else:
+                out = active_runner(goal)
         if isinstance(out, str):
             out = {"answer": out, "verified": False}
-        return {"case": {"coded": True, "code_verified": bool(out.get("verified"))},
-                "result": out.get("answer", ""), "verified": bool(out.get("verified"))}
+        pending = bool(out.get("continue_needed"))
+        verification = out.get("verification") if isinstance(
+            out.get("verification"), dict) else {}
+        evidence = verification.get("evidence") if isinstance(
+            verification.get("evidence"), dict) else {}
+        case_update = {
+            "coded": True, "code_verified": bool(out.get("verified")),
+            "code_pending": pending,
+            "code_session_id": str(out.get("session_id") or ""),
+            "code_recovery_required": bool(out.get("recovery_required")),
+        }
+        if out.get("post_tree_digest") and not out.get("recovery_required"):
+            case_update["code_expected_tree_digest"] = str(
+                out.get("post_tree_digest") or "")
+        if verification:
+            # Bounded host evidence is durable Mission state.  The goal verifier
+            # rechecks its workspace digest after restart instead of trusting the
+            # coding model's final answer.
+            case_update["code_verification"] = verification
+            case_update["code_baseline_tree_digest"] = str(
+                out.get("baseline_tree_digest") or
+                evidence.get("baseline_tree_digest") or "")
+        return {
+            "case": case_update,
+            "result": out.get("answer", ""), "verified": bool(out.get("verified")),
+            "continue_needed": pending, "session_id": out.get("session_id", ""),
+            "recovery_required": bool(out.get("recovery_required")),
+            "needs_human": bool(out.get("needs_human")),
+            "transient": bool(out.get("transient")),
+            "retry_after_seconds": int(out.get("retry_after_seconds", 0) or 0),
+            "turns_exhausted": bool(out.get("turns_exhausted")),
+            "turns": int(out.get("turns", 0) or 0),
+            "model_calls": int(out.get("model_calls", 0) or 0),
+            "_model_calls_reserved": bool(out.get("_model_calls_reserved")),
+            "_usage": dict(out.get("_usage") or {}),
+            "equivalent_cost_usd": float(out.get("equivalent_cost_usd", 0.0) or 0.0),
+            "verification": out.get("verification"),
+            "error": out.get("error", ""),
+            "_external_storage_bytes": int(
+                out.get("_external_storage_bytes", 0) or 0),
+        }
     return execute
 
 
@@ -1292,8 +1775,12 @@ def _code_verify(rec, result):
     broken code, an edit that flips it, a re-run that passes). Verified only when the
     coding loop reported that gate green; an edit without it is INCONCLUSIVE, not done."""
     r = result or {}
+    if r.get("recovery_required"):
+        return Verdict(FAILED, "code worker stopped at an outcome-uncertain edit boundary")
     if r.get("verified"):
-        return Verdict(VERIFIED, "code change executed-verified (repro RED->GREEN)")
+        return Verdict(VERIFIED, "Mission patch passed the configured fresh host check")
+    if r.get("continue_needed") and r.get("session_id"):
+        return Verdict(VERIFIED, "bounded code slice durably checkpointed; continuing automatically")
     if r.get("result"):
         return Verdict(INCONCLUSIVE, "code edited but not executed-verified — a human should check")
     return Verdict(FAILED, "coding task produced no result")

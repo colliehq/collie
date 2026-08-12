@@ -312,9 +312,12 @@ nothing and refuses mutable or incomplete configurations before a paid run start
   Collie surfaces the levers that turn out **net-neutral**, not just the wins.
 - Token counts are real usage (the model's own `usage`, or `harness/apitap.py` metering for CLIs that
   report none) — apples-to-apples, same source both sides.
-- Collie draws a personal Max/Pro subscription only through the first-party OAuth path
-  (`anthropic-oauth`), the same mechanism the official CLI uses; it never scrapes or resells
-  subscription tokens. Cheap API keys and local models are the default.
+- `claude-cli` is Collie's documented Claude-plan compatibility route. The experimental
+  `anthropic-oauth` provider reads the official CLI's local login credential but makes Collie's
+  own raw Messages request; Anthropic has not documented that raw third-party route as a supported
+  Claude-plan interface. Native overnight mode therefore admits it only after a live probe and
+  otherwise stops—there is no API-key, paid-overage, provider, or `claude -p` fallback. Cheap API
+  keys and local models remain the default for ordinary runs.
 
 ## License
 

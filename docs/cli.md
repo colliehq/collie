@@ -65,6 +65,7 @@ See [The desktop app](desktop.md) for what these do and how they fit together.
 | `collie jobs ls \| inbox \| run \| confirm \| receipts` | Delegated work. |
 | `collie mission start "<goal>"` | Persist a durable campaign and return its ID immediately. |
 | `collie mission start "<goal>" --domains x.com,*.y.com --actions-per-hour 6` | Start with the saved Mission autonomy mode and named, paced boundaries. `--review` asks before irreversible actions; legacy `--auto` explicitly selects Hands-off. Also supports `--max-actions` and `--max-steps`. |
+| `collie mission start "<goal>" --code --workspace PATH --overnight --provider anthropic-oauth --model claude-opus-4-8 --no-paid-overage --verify-command "python -m pytest -q"` | Attempt to start Collie's experimental native direct-OAuth loop. Startup first runs a real Collie-owned inference probe and fails closed if the subscription route is unavailable. |
 | `collie mission ls \| status \| run \| pause \| resume \| cancel \| confirm \| continue \| accept \| check \| reconcile` | Inspect, gate, and control durable campaigns. |
 | `collie jobs daemon` | Foreground wake loop for Jobs/Missions; catches up after sleep. `collie supervisor install` keeps it available after sign-in/reboot. |
 | `collie activity [--health]` | One durable view of foreground runs, Missions, specialists, automations, recovery, and worker health. |
@@ -73,6 +74,28 @@ See [The desktop app](desktop.md) for what these do and how they fit together.
 | `collie supervisor install \| status \| uninstall` | Manage the per-user Windows 24×7 worker supervisor. |
 | `collie automations upsert \| list \| status \| tick \| daemon` | Manage durable timer/file/page/webhook automation execution. |
 | `collie acp` | Run as an ACP agent over stdio (Zed / JetBrains / neovim). |
+
+Overnight code always requires an existing workspace. `--verify-command` can be
+omitted only when Collie detects a project check; startup fails if no check is
+available or the baseline snapshot is incomplete. Per-Mission `--provider` and
+`--model` freeze the direct route without changing global Settings. Native
+overnight currently requires `anthropic-oauth` and an explicit model such as
+`claude-opus-4-8`; Codex OAuth is not an overnight route.
+`--no-paid-overage` records the
+user's provider-side attestation. Collie then locks requests to Anthropic's official
+Messages endpoint, disables ambient proxy and API/provider/CLI fallback, and reruns
+the subscription guard at creation and every later runnable boundary. It uses
+Collie's own system/tool contract; `claude -p` is benchmark/compatibility-only and
+is never the native Mission runtime. Hitting a plan limit waits or asks for the
+user; it never buys, reloads, or switches to metered billing automatically.
+On the account tested on 2026-08-12, the direct probe returns HTTP 429 while the
+official Claude Code client works, so this command is currently denied. Collie
+does not replace it with `claude -p`, copy Claude Code's system prompt, or imply
+that a paid Claude plan includes raw Messages API access.
+Collie also does not implement Claude Code's private token-refresh protocol: the
+current login-store token must already span the entire 12-hour active window, or
+startup fails closed. A short-lived token plus a refresh token is not treated as
+proof that a Collie-owned unattended route can last overnight.
 
 ## Configuration precedence
 

@@ -2320,7 +2320,10 @@ class Handler(BaseHTTPRequestHandler):
                 svc = MissionService()
                 try:
                     if path == "/api/mission":
-                        goal = (body.get("goal") or "").strip()
+                        raw_goal = body.get("goal")
+                        if raw_goal is not None and not isinstance(raw_goal, str):
+                            return self._send_json({"error": "goal must be a string"}, 400)
+                        goal = (raw_goal or "").strip()
                         if not goal:
                             return self._send_json({"error": "goal required"}, 400)
                         bounds = {k: body[k] for k in
@@ -2332,7 +2335,50 @@ class Handler(BaseHTTPRequestHandler):
                             if autonomy is not None and not isinstance(autonomy, bool):
                                 return self._send_json(
                                     {"error": "autonomous must be a boolean when supplied"}, 400)
-                            created = svc.start(goal, autonomous=autonomy, **bounds)
+                            code_mode = body.get("code", False)
+                            overnight = body.get("overnight", False)
+                            no_paid_overage = body.get("no_paid_overage", False)
+                            if not isinstance(code_mode, bool):
+                                return self._send_json(
+                                    {"error": "code must be a boolean when supplied"}, 400)
+                            if not isinstance(overnight, bool):
+                                return self._send_json(
+                                    {"error": "overnight must be a boolean when supplied"}, 400)
+                            if not isinstance(no_paid_overage, bool):
+                                return self._send_json(
+                                    {"error": "no_paid_overage must be a boolean when supplied"}, 400)
+                            billing_evidence = body.get("billing_evidence")
+                            if billing_evidence is not None and not isinstance(
+                                    billing_evidence, dict):
+                                return self._send_json(
+                                    {"error": "billing_evidence must be an object"}, 400)
+                            workspace = body.get("workspace", "")
+                            verify_command = body.get("verify_command", "")
+                            mission_provider = body.get("provider", "")
+                            mission_model = body.get("model", "")
+                            if workspace is None:
+                                workspace = ""
+                            if verify_command is None:
+                                verify_command = ""
+                            if not isinstance(workspace, str):
+                                return self._send_json({"error": "workspace must be a string"}, 400)
+                            if not isinstance(verify_command, str):
+                                return self._send_json(
+                                    {"error": "verify_command must be a string"}, 400)
+                            if not isinstance(mission_provider, str):
+                                return self._send_json(
+                                    {"error": "provider must be a string"}, 400)
+                            if not isinstance(mission_model, str):
+                                return self._send_json(
+                                    {"error": "model must be a string"}, 400)
+                            created = svc.start(
+                                goal, autonomous=autonomy, code=code_mode,
+                                workspace=workspace, overnight=overnight,
+                                verify_command=verify_command,
+                                no_paid_overage=no_paid_overage,
+                                billing_evidence=billing_evidence,
+                                provider=mission_provider, model=mission_model,
+                                **bounds)
                         except ValueError as e:
                             return self._send_json({"error": str(e)}, 400)
                         return self._send_json(created, 201)
@@ -2357,7 +2403,12 @@ class Handler(BaseHTTPRequestHandler):
                     elif path == "/api/mission/continue":
                         out = svc.continue_after_human(mid, body.get("note") or "")
                     elif path == "/api/mission/reconcile":
-                        out = svc.reconcile(mid, body.get("note") or "")
+                        code_resolution = body.get("code_resolution", "")
+                        if not isinstance(code_resolution, str):
+                            return self._send_json(
+                                {"error": "code_resolution must be a string"}, 400)
+                        out = svc.reconcile(
+                            mid, body.get("note") or "", code_resolution)
                     elif path == "/api/mission/check":
                         out = svc.check(mid)
                     else:
@@ -3487,9 +3538,9 @@ class Handler(BaseHTTPRequestHandler):
                 "effort": decision.effort, "speed": decision.speed,
                 "actual_speed": actual_speed, "decision": decision_payload,
                 "verification_evidence": verification_evidence,
-                # flat-subscription paths draw a fixed bucket, so the real charge is $0 — cost_usd is
-                # only a per-token ESTIMATE of what it'd cost on the metered API. Flag it so the UI
-                # doesn't present the estimate as a real charge.
+                # Subscription routes report an API-equivalent estimate, not a provider billing
+                # observation. Flag them so the UI neither presents that estimate as a charge nor
+                # falsely turns an unverified route into an observed $0 bill.
                 "subscription": prov in ("anthropic-oauth", "claude-cli", "codex-oauth",
                                            "codex-sub", "codex")}
             review_findings = (_review_findings(res.answer or "")

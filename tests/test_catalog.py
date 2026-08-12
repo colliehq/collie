@@ -44,7 +44,7 @@ check("mock ok", catalog.probe_auth("mock") == "ok")
 # ---- price registration into costs ---------------------------------------------------
 check("terra priced", costs.price_for("gpt-5.6-terra") == (2.5, 0.25, 15.0))
 check("luna priced", costs.price_for("gpt-5.6-luna") == (1.0, 0.10, 6.0))
-check("opus still matches via substring", costs.price_for("claude-opus-4-8") == (15.0, 1.5, 75.0))
+check("opus exact price beats generic family", costs.price_for("claude-opus-4-8") == (5.0, 0.5, 25.0))
 check("deepseek-reasoner beats deepseek", costs.price_for("deepseek-reasoner") == (0.55, 0.14, 2.19))
 
 # ---- ordering: authed-ok before un-authed; subscription kind ranks first -------------

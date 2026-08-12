@@ -3240,7 +3240,7 @@
   var OB_DEFAULT = { "anthropic-oauth": "claude-sonnet-5", "anthropic": "claude-sonnet-5",
                      "codex-oauth": "gpt-5.6-sol", "openai": "gpt-5.6-terra",
                      "gemini": "gemini-2.5-flash", "deepseek": "deepseek-chat" };
-  var OB_NAME = { "anthropic-oauth": "Claude subscription", "anthropic": "Claude · API key",
+  var OB_NAME = { "anthropic-oauth": "Claude direct · experimental", "anthropic": "Claude · API key",
                   "codex-oauth": "ChatGPT subscription", "openai": "OpenAI · API key",
                   "ollama": "Local model (Ollama)", "claude-cli": "Claude CLI",
                   "gemini": "Google Gemini", "deepseek": "DeepSeek", "groq": "Groq", "qwen": "Qwen" };
@@ -3266,7 +3266,9 @@
       if (def) pick = list.filter(function (e) { return e.model === def; })[0];   // balanced default
       if (!pick) pick = list[0];                                                  // else the best
       var rec = i === 0;
-      var extra = pick.kind === "local" ? "free" : pick.kind === "subscription" ? "$0 with your plan"
+      var extra = pick.kind === "local" ? "free"
+        : pick.provider === "anthropic-oauth" ? "experimental · billing unverified"
+        : pick.kind === "subscription" ? "$0 with your plan"
         : (pick.price_out ? ("$" + pick.price_out + " / M out") : "API");
       var card = document.createElement("button");
       card.className = "ob-brain" + (rec ? " is-rec" : "");
@@ -3572,13 +3574,14 @@
     $("rTurns").textContent  = r.turns == null ? "—" : r.turns;
     $("rTools").textContent  = r.tool_calls == null ? "—" : r.tool_calls;
     $("rWall").textContent   = fmtMs(r.wall_ms);
-    // On a flat subscription the real charge is $0; cost_usd is only a per-token API estimate —
-    // show "$0" (with the estimate on hover) instead of presenting the estimate as a charge.
-    var costTxt = r.subscription ? "$0" : fmtCost(r.cost_usd);
+    // A subscription response carries an API-equivalent estimate, not a provider billing
+    // observation. Do not present either the estimate or an unverified "$0" as the actual bill.
+    var costTxt = r.subscription ? "plan" : fmtCost(r.cost_usd);
     var costTile = $("rCost");
     costTile.textContent = costTxt;
-    costTile.title = r.subscription && r.cost_usd
-      ? "flat subscription — no per-token charge (≈" + fmtCost(r.cost_usd) + " on the metered API)"
+    costTile.title = r.subscription
+      ? "subscription route; actual marginal charge was not independently observed" +
+        (r.cost_usd ? " (API-equivalent estimate: " + fmtCost(r.cost_usd) + ")" : "")
       : "";
   }
 
@@ -4741,9 +4744,17 @@
       var qbtn = document.createElement("button"); qbtn.className = "mbtn confirm";
       qbtn.textContent = t("Reconcile uncertain run");
       qbtn.onclick = function () {
-        if (!window.confirm(t("The prior external action may already have fired. Inspect the target site and receipts before continuing."))) return;
+        var codeResolution = "";
+        if (st.code_session_recovery && st.code_session_recovery.recovery_required) {
+          codeResolution = window.prompt(t(
+            "Inspect the workspace/tool outcome, then type exactly: completed (it happened), not_fired (it did not happen), or cancel (close the interrupted code turn)."
+          ), "not_fired") || "";
+          if (["completed", "not_fired", "cancel"].indexOf(codeResolution) < 0) return;
+          if (!window.confirm(t("Confirm this inspected code outcome: ") + codeResolution + "?")) return;
+        } else if (!window.confirm(t("The prior external action may already have fired. Inspect the target site and receipts before continuing."))) return;
         missionAction(card, qbtn, missionPost("/api/mission/reconcile", {
-          id: st.mission_id, note: "user inspected uncertain external state"
+          id: st.mission_id, note: "user inspected uncertain external state",
+          code_resolution: codeResolution
         }), function (x) {
           reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
         });
@@ -6094,7 +6105,7 @@
       modelList = $("modelList"), modelStatus = $("modelStatus");
   var modelEntries = [], modelCurrentId = "", modelActiveIndex = -1, modelCatalogLoaded = false, modelBusy = false;
   var modelGroupDefinitions = [
-    { kind: "subscription", title: "Subscription", caption: "Included with your logged-in plan" },
+    { kind: "subscription", title: "Login-backed", caption: "Availability and billing depend on the selected route" },
     { kind: "metered", title: "Metered API", caption: "Billed by the connected provider" },
     { kind: "local", title: "Local", caption: "Runs on this machine" }
   ];
@@ -6110,6 +6121,7 @@
     var inputPrice = Number(entry.price_in || 0), outputPrice = Number(entry.price_out || 0);
     if (entry.kind === "local") return "Local · $0";
     if (entry.kind === "subscription") {
+      if (entry.provider === "anthropic-oauth") return "Plan login · billing unverified";
       if (!inputPrice && !outputPrice) return "$0 marginal";
       return "$0 · ≈$" + inputPrice.toFixed(2) + "/$" + outputPrice.toFixed(2) + " per M";
     }

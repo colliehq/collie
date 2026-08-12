@@ -6,7 +6,7 @@ import pytest
 
 from harness.actions import ActionStore
 from harness.jobs import Capability, NEEDS_YOU
-from harness.mission import MissionStore, create_mission, world_leash
+from harness.mission import MissionStore, StepTimedOut, create_mission, world_leash
 from harness.mission import MissionDriver
 from harness.verifier import VERIFIED, Verdict
 
@@ -16,6 +16,13 @@ def _create_child(store, mission_id, parent_id, leash):
         store, mission_id, mission_id, leash=leash,
         case={"_parent_mission_id": parent_id}, lane="specialist",
         external_run_id="run_" + mission_id)
+
+
+@pytest.mark.parametrize("field", ["max_model_cost_usd", "spend_max_usd"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_world_leash_rejects_nonfinite_money_bounds(field, value):
+    with pytest.raises(ValueError, match="finite"):
+        world_leash(**{field: value})
 
 
 @pytest.mark.parametrize(
@@ -56,6 +63,213 @@ def test_root_budget_aggregates_own_and_descendant_runtime(
         child_charge.get("cost_usd", 0))
     assert store.budget_reason("root") == reason
     assert store.budget_reason("grandchild") == "ancestor root: " + reason
+    store.close()
+
+
+def test_active_step_timeout_uses_tightest_ancestor_allowance(tmp_path):
+    store = MissionStore(str(tmp_path / "active.db"))
+    actions = ActionStore(str(tmp_path / "actions.db"))
+    root_leash = world_leash(
+        max_active_wall_seconds=1, max_step_seconds=10,
+        max_storage_bytes=10_000_000)
+    child_leash = world_leash(
+        max_active_wall_seconds=5, max_step_seconds=10,
+        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=root_leash)
+    _create_child(store, "child", "root", child_leash)
+    root_token = store.claim_run("root")
+    child_token = store.claim_run("child")
+    assert store.account_runtime("root", root_token, wall_ms=250)
+    assert store.account_runtime("child", child_token, wall_ms=500)
+
+    assert store.remaining_active_wall_seconds("child") == pytest.approx(0.25)
+    driver = MissionDriver(store, actions, lambda *_args: {})
+    assert driver._active_step_timeout("child", child_leash) == pytest.approx(0.25)
+    actions.close()
+    store.close()
+
+
+def test_stale_worker_charges_unreported_inflight_time_before_safe_requeue(tmp_path):
+    store = MissionStore(str(tmp_path / "stale-active.db"))
+    leash = world_leash(
+        max_active_wall_seconds=1, max_step_seconds=2,
+        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    token = store.claim_run("root")
+    assert token
+    with store._lock:
+        store.db.execute(
+            "UPDATE missions SET lease_until=101 WHERE mission_id='root'")
+        store.db.execute(
+            "UPDATE mission_runtime SET active_phase='deciding',active_since=100 "
+            "WHERE mission_id='root'")
+        store.db.commit()
+
+    assert store.recover_stale_runs(now=102) == 1
+    assert store.runtime("root")["active_wall_ms"] == 2000
+    assert store.get("root").state == NEEDS_YOU
+    assert "active wall-time budget exhausted" in store.get("root").result
+    store.close()
+
+
+def test_stale_worker_excludes_lease_grace_and_sleep_after_last_heartbeat(tmp_path):
+    store = MissionStore(str(tmp_path / "stale-sleep.db"))
+    leash = world_leash(
+        max_active_wall_seconds=100, max_step_seconds=90,
+        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    token = store.claim_run("root")
+    assert token
+    with store._lock:
+        store.db.execute(
+            "UPDATE missions SET lease_until=200,updated_at=105 WHERE mission_id='root'")
+        store.db.execute(
+            "UPDATE mission_runtime SET active_phase='deciding',active_since=100 "
+            "WHERE mission_id='root'")
+        store.db.commit()
+
+    assert store.recover_stale_runs(now=10_000) == 1
+    # Five observed seconds plus at most one 20-second heartbeat interval;
+    # the hours until recovery are not active work.
+    assert store.runtime("root")["active_wall_ms"] == 25_000
+    assert store.get("root").state == "queued"
+    store.close()
+
+
+def test_campaign_active_slot_is_atomic_across_sibling_missions(tmp_path):
+    path = str(tmp_path / "active-slot.db")
+    setup = MissionStore(path)
+    leash = world_leash(max_active_wall_seconds=1,
+                        max_storage_bytes=10_000_000)
+    create_mission(setup, "root", "root", leash=leash)
+    _create_child(setup, "left", "root", leash)
+    _create_child(setup, "right", "root", leash)
+    setup.close()
+
+    left, right = MissionStore(path), MissionStore(path)
+    tokens = {"left": left.claim_run("left"), "right": right.claim_run("right")}
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def claim(store, mission_id):
+        barrier.wait()
+        results[mission_id] = store.claim_active_slot(
+            mission_id, tokens[mission_id], lease_s=5)
+
+    threads = [threading.Thread(target=claim, args=(left, "left")),
+               threading.Thread(target=claim, args=(right, "right"))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    winners = [mid for mid, (_resource, token) in results.items() if token]
+    assert len(winners) == 1
+    loser = "right" if winners[0] == "left" else "left"
+    assert results[loser] == (None, None)
+    winner_store = left if winners[0] == "left" else right
+    resource, active_token = results[winners[0]]
+    assert winner_store.release_resource(resource, winners[0], active_token)
+    loser_store = right if loser == "right" else left
+    assert loser_store.claim_active_slot(loser, tokens[loser], lease_s=5)[1]
+    left.close()
+    right.close()
+
+
+def test_bounded_call_rechecks_budget_after_waiting_for_campaign_slot(tmp_path):
+    store = MissionStore(str(tmp_path / "active-recheck.db"))
+    actions = ActionStore(str(tmp_path / "actions.db"))
+    leash = world_leash(max_active_wall_seconds=1,
+                        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    _create_child(store, "left", "root", leash)
+    _create_child(store, "right", "root", leash)
+    left_token = store.claim_run("left")
+    right_token = store.claim_run("right")
+    resource, slot = store.claim_active_slot("left", left_token, lease_s=5)
+    assert slot
+    stale_timeout = store.remaining_active_wall_seconds("right")
+    assert stale_timeout == pytest.approx(1.0)
+    assert store.account_runtime("left", left_token, wall_ms=1000)
+    assert store.release_resource(resource, "left", slot)
+    called = []
+    driver = MissionDriver(store, actions, lambda *_args: {})
+
+    outcome = driver._bounded_call(
+        lambda: called.append(True), stale_timeout,
+        mission_id="right", run_token=right_token)
+
+    assert called == []
+    assert isinstance(outcome.error, StepTimedOut)
+    assert "active wall-time budget exhausted" in str(outcome.error)
+    actions.close()
+    store.close()
+
+
+def test_bounded_call_charges_by_active_slot_after_concurrent_cancel(tmp_path):
+    store = MissionStore(str(tmp_path / "cancelled-active.db"))
+    actions = ActionStore(str(tmp_path / "actions.db"))
+    leash = world_leash(max_active_wall_seconds=1,
+                        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    token = store.claim_run("root")
+    driver = MissionDriver(store, actions, lambda *_args: {})
+
+    def cancel_while_inflight():
+        assert store.cancel("root")
+        time.sleep(0.003)
+        return "finished"
+
+    outcome = driver._bounded_call(
+        cancel_while_inflight, 0.5,
+        mission_id="root", run_token=token)
+
+    assert outcome.value == "finished"
+    assert store.runtime("root")["active_wall_ms"] >= 1
+    assert not store.active_resources("root")
+    actions.close()
+    store.close()
+
+
+def test_unconfirmed_timeout_charges_once_and_retains_campaign_fence(tmp_path):
+    store = MissionStore(str(tmp_path / "timeout-active.db"))
+    actions = ActionStore(str(tmp_path / "actions.db"))
+    leash = world_leash(max_active_wall_seconds=1,
+                        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    token = store.claim_run("root")
+    driver = MissionDriver(store, actions, lambda *_args: {})
+    release = threading.Event()
+
+    outcome = driver._bounded_call(
+        lambda: release.wait(1), 0.01,
+        mission_id="root", run_token=token)
+
+    assert outcome.timed_out and not outcome.cancelled
+    charged = store.runtime("root")["active_wall_ms"]
+    assert charged >= 1
+    resources = store.active_resources("root")
+    assert len(resources) == 1
+    # The original token was rotated as part of the one-shot settlement, so a
+    # late retry cannot double-charge the same boundary.
+    assert not store.settle_active_slot(
+        resources[0]["resource"], "root", resources[0]["token"],
+        100, release=True)
+    assert store.runtime("root")["active_wall_ms"] == charged
+    store.schedule_wait("root", 1)
+    assert store.finish_run("root", token, "waiting", "retry later")
+    with store._lock:
+        store.db.execute(
+            "UPDATE mission_resource_leases SET lease_until=0 "
+            "WHERE mission_id='root' AND token LIKE 'settled:%'")
+        store.db.commit()
+    claimed = store.claim_due_wait(int(time.time()) + 1)
+    assert claimed and claimed[0] == "root"
+    resource, fresh_slot = store.claim_active_slot("root", claimed[1], lease_s=5)
+    assert fresh_slot, "an expired settled fence must not livelock the same Mission"
+    assert store.release_resource(resource, "root", fresh_slot)
+    release.set()
+    actions.close()
     store.close()
 
 
@@ -189,6 +403,47 @@ def test_model_call_counter_repairs_partial_column_migration(tmp_path):
     assert again.runtime("root")["model_calls"] == 2
     assert again.runtime("root")["turns"] == 2
     again.close()
+
+
+def test_physical_request_reservation_is_crash_safe_and_owner_fenced(tmp_path):
+    path = str(tmp_path / "physical.db")
+    store = MissionStore(path)
+    leash = world_leash(max_total_steps=10, max_model_calls=2,
+                        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    token = store.claim_run("root")
+    assert token
+    assert store.reserve_model_request(
+        "root", token, "request-1", provider="anthropic-oauth", model="opus")
+    assert store.runtime("root")["model_calls"] == 1
+    store.close()
+
+    reopened = MissionStore(path)
+    assert reopened.runtime("root")["model_calls"] == 1
+    assert reopened.reserve_model_request("root", token, "request-1")
+    assert reopened.runtime("root")["model_calls"] == 1
+    reopened.cancel("root", "stop")
+    assert reopened.reserve_model_request("root", token, "request-1") is False
+    assert reopened.reserve_model_request("root", token, "request-2") is False
+    reopened.close()
+
+
+def test_planning_turn_does_not_become_physical_call_after_reopen(tmp_path):
+    path = str(tmp_path / "planning.db")
+    store = MissionStore(path)
+    leash = world_leash(max_total_steps=10, max_model_calls=3,
+                        max_storage_bytes=10_000_000)
+    create_mission(store, "root", "root", leash=leash)
+    token = store.claim_run("root")
+    assert store.reserve_decision(
+        "root", leash, token, count_model_call=False)
+    assert store.runtime("root")["model_calls"] == 0
+    store.close()
+
+    reopened = MissionStore(path)
+    assert reopened.runtime("root")["model_calls"] == 0
+    assert reopened.runtime("root")["turns"] == 1
+    reopened.close()
 
 
 @pytest.mark.parametrize(

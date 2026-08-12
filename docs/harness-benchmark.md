@@ -69,9 +69,13 @@ credential store:
   documented subscription route with separately verified billing behavior (for example, its
   ChatGPT Plus/Pro Codex route), or enter the paid same-model controlled track under an approved
   budget.
-- Collie must delegate subscription Opus calls through the official Claude Code CLI and its
-  verified Claude.ai login. Direct bearer-token reuse or an OAuth proxy is not admissible evidence
-  for a subscription-native claim.
+- The historical Collie **product-track** arm delegates subscription Opus calls through the
+  official Claude Code CLI and its verified Claude.ai login. That is valid for comparing the
+  shipped products, but it is not evidence for Collie's native harness: Claude Code contributes
+  its own system prompt. Native Collie overnight therefore forbids this fallback. Its experimental
+  direct route is admitted only if a Collie-owned live inference probe succeeds; current HTTP 429
+  results are an admission failure, not a score. Direct bearer-token reuse or an OAuth proxy is not
+  admissible evidence for a subscription-native benchmark claim.
 
 Pin the CLI package/version and full source revision for every arm. If a CLI cannot be forced onto
 the exact model endpoint and settings required by a controlled manifest, exclude it from that

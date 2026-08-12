@@ -6,8 +6,24 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from harness import webapp
+from harness import settings, webapp
 from harness.mission import MissionStore
+
+
+def _allow_claude_subscription(provider, *, account_evidence=None, environ=None,
+                               model="", require_direct_probe=True,
+                               minimum_token_validity_seconds=0):
+    if provider != "claude-direct" or account_evidence is not None:
+        raise RuntimeError("unreviewed subscription route")
+    assert isinstance(environ, dict)
+    assert not any(name.upper().startswith(
+        ("ANTHROPIC_", "OPENAI_", "CLAUDE_", "CODEX_")) for name in environ)
+    return {
+        "format": "collie-subscription-guard-v1",
+        "schema_version": 1,
+        "provider": provider,
+        "verdict": "allow",
+    }
 
 
 def _request(url, method="GET", body=None):
@@ -115,3 +131,88 @@ def test_web_ui_keeps_mission_out_of_the_model_router():
     start_call = html.index("_startMissionCard(goal, autonomous, bounds)", malformed_guard)
     assert malformed_guard < start_call
     assert 'if (/^(?:list|ls|help)\\s+/i.test(raw))' in html
+
+
+def test_mission_api_validates_and_atomically_binds_overnight_code_profile(
+        monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(state))
+    monkeypatch.setenv("COLLIE_PROVIDER", "anthropic-oauth")
+    monkeypatch.setenv("COLLIE_MODEL", "claude-opus-4-8")
+    monkeypatch.setattr(
+        settings, "_HARD_ENV", settings._HARD_ENV | {"COLLIE_PROVIDER", "COLLIE_MODEL"})
+    monkeypatch.setattr(
+        "harness.subscription_guard.check_subscription_guard",
+        _allow_claude_subscription)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = "http://127.0.0.1:%d" % server.server_address[1]
+    token = "?token=" + webapp.TOKEN
+    try:
+        code, invalid = _request(
+            root + "/api/mission" + token, "POST",
+            {"goal": "must not persist", "code": True, "overnight": True,
+             "workspace": str(tmp_path / "missing"), "no_paid_overage": True})
+        assert code == 400 and "does not exist" in invalid["error"]
+        code, listed = _request(root + "/api/missions" + token)
+        assert code == 200 and listed["missions"] == []
+
+        code, created = _request(
+            root + "/api/mission" + token, "POST",
+            {"goal": "make the suite green", "code": True, "overnight": True,
+             "workspace": str(repo), "verify_command": "python -m pytest -q",
+             "provider": "anthropic-oauth", "model": "claude-opus-4-8",
+             "no_paid_overage": True})
+        assert code == 201 and created["state"] == "queued"
+        assert created["case"]["_isolated_workspace"] == str(repo.resolve())
+        assert created["case"]["execution_profile"]["provider"] == "anthropic-oauth"
+        assert created["case"]["execution_profile"]["model"] == "claude-opus-4-8"
+        assert created["case"]["execution_profile"]["subscription_only"] is True
+
+        code, invalid_type = _request(
+            root + "/api/mission" + token, "POST",
+            {"goal": "reject coercion", "code": "true"})
+        assert code == 400 and "boolean" in invalid_type["error"]
+        code, invalid_path_type = _request(
+            root + "/api/mission" + token, "POST",
+            {"goal": "reject empty collection coercion", "code": True,
+             "workspace": []})
+        assert code == 400 and "workspace must be a string" in invalid_path_type["error"]
+        code, invalid_provider_type = _request(
+            root + "/api/mission" + token, "POST",
+            {"goal": "reject provider coercion", "provider": []})
+        assert code == 400 and "provider must be a string" in invalid_provider_type["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
+def test_mission_api_refuses_metered_overnight_fallback(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("COLLIE_PROVIDER", "anthropic")
+    monkeypatch.setenv("COLLIE_MODEL", "claude-opus-4-8")
+    monkeypatch.setattr(
+        settings, "_HARD_ENV", settings._HARD_ENV | {"COLLIE_PROVIDER", "COLLIE_MODEL"})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = "http://127.0.0.1:%d" % server.server_address[1]
+    token = "?token=" + webapp.TOKEN
+    try:
+        code, refused = _request(
+            root + "/api/mission" + token, "POST",
+            {"goal": "never charge API usage", "code": True, "overnight": True,
+             "workspace": str(repo), "no_paid_overage": True})
+        assert code == 400 and "direct Claude subscription route" in refused["error"]
+        code, listed = _request(root + "/api/missions" + token)
+        assert code == 200 and listed["missions"] == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)

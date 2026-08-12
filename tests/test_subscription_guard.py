@@ -1,9 +1,12 @@
 import datetime as dt
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
+import bench.subscription_guard as benchmark_guard
+import harness.subscription_guard as packaged_guard
 from bench.subscription_guard import (
     CODEX_EVIDENCE_MAX_AGE_SECONDS,
     SubscriptionGuardError,
@@ -12,6 +15,12 @@ from bench.subscription_guard import (
 
 
 NOW = dt.datetime(2026, 8, 12, 12, 0, tzinfo=dt.timezone.utc)
+
+
+def test_benchmark_import_is_a_compatibility_alias_for_packaged_guard():
+    assert benchmark_guard.check_subscription_guard is packaged_guard.check_subscription_guard
+    assert benchmark_guard.SubscriptionGuardError is packaged_guard.SubscriptionGuardError
+    assert benchmark_guard.__all__ == packaged_guard.__all__
 
 
 class Runner:
@@ -69,6 +78,163 @@ def test_claude_requires_first_party_paid_plan_and_returns_redacted_receipt(repo
         "status_child_environment": "allowlist",
     }
     assert runner.calls == [("claude", "auth", "status", "--json")]
+
+
+def test_claude_direct_requires_official_login_inference_scope_without_persisting_token(
+        monkeypatch):
+    monkeypatch.setattr(
+        "harness.providers.claude_credentials",
+        lambda: {"claudeAiOauth": {
+            "accessToken": "private-access-token",
+            "scopes": ["user:profile", "user:inference"],
+            "subscriptionType": "max",
+        }})
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+
+    receipt = check_subscription_guard(
+        "claude-direct", environ={}, runner=Runner(claude_status()), now_utc=NOW,
+        direct_probe=lambda _model: SimpleNamespace(stop_reason="end_turn"))
+
+    assert receipt["verdict"] == "allow"
+    assert receipt["provider"] == "claude-direct"
+    assert receipt["direct_credentials"] == {
+        "source": "official_claude_login_store",
+        "access_token": "present",
+        "inference_scope": "present",
+        "plan": "max",
+    }
+    assert "private-access-token" not in json.dumps(receipt)
+
+
+def test_claude_direct_denies_when_own_prompt_inference_probe_is_unavailable(
+        monkeypatch):
+    monkeypatch.setattr(
+        "harness.providers.claude_credentials",
+        lambda: {"claudeAiOauth": {
+            "accessToken": "private-access-token",
+            "scopes": ["user:inference"], "subscriptionType": "max"}})
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            "claude-direct", environ={}, runner=Runner(claude_status()),
+            model="claude-opus-4-8", now_utc=NOW,
+            direct_probe=lambda _model: SimpleNamespace(
+                stop_reason="error", error_status=429))
+
+    assert caught.value.reason == "claude_direct_inference_unavailable"
+    assert caught.value.receipt["details"] == {"http_status": 429}
+
+
+def test_claude_direct_runnable_recheck_does_not_spend_an_untracked_probe(
+        monkeypatch):
+    monkeypatch.setattr(
+        "harness.providers.claude_credentials",
+        lambda: {"claudeAiOauth": {
+            "accessToken": "private-access-token", "scopes": ["user:inference"],
+            "subscriptionType": "max"}})
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+    called = []
+
+    receipt = check_subscription_guard(
+        "claude-direct", environ={}, runner=Runner(claude_status()),
+        model="claude-opus-4-8", now_utc=NOW, require_direct_probe=False,
+        direct_probe=lambda _model: called.append(True))
+
+    assert called == []
+    assert receipt["direct_inference"]["status"] == "previously_admitted_recheck"
+
+
+def test_claude_direct_overnight_requires_token_to_span_unattended_window(
+        monkeypatch):
+    monkeypatch.setattr(
+        "harness.providers.claude_credentials",
+        lambda: {"claudeAiOauth": {
+            "accessToken": "private-access-token", "scopes": ["user:inference"],
+            "subscriptionType": "max",
+            "expiresAt": int(NOW.timestamp() * 1000) + 3_600_000}})
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            "claude-direct", environ={}, runner=Runner(claude_status()),
+            now_utc=NOW, minimum_token_validity_seconds=43_200,
+            direct_probe=lambda _model: SimpleNamespace(stop_reason="end_turn"))
+
+    assert caught.value.reason == "claude_direct_token_lifetime_insufficient"
+    assert caught.value.receipt["details"] == {
+        "minimum_required_seconds": 43_200}
+    assert "private-access-token" not in json.dumps(caught.value.receipt)
+
+
+def test_claude_direct_overnight_requires_explicit_expiry(monkeypatch):
+    monkeypatch.setattr(
+        "harness.providers.claude_credentials",
+        lambda: {"claudeAiOauth": {
+            "accessToken": "private-access-token", "scopes": ["user:inference"],
+            "subscriptionType": "max"}})
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            "claude-direct", environ={}, runner=Runner(claude_status()),
+            now_utc=NOW, minimum_token_validity_seconds=43_200,
+            direct_probe=lambda _model: SimpleNamespace(stop_reason="end_turn"))
+
+    assert caught.value.reason == "claude_direct_token_expiry_required"
+
+
+def test_claude_direct_expiry_check_always_targets_login_store(monkeypatch):
+    monkeypatch.setattr(
+        "harness.providers.claude_credentials",
+        lambda: {"claudeAiOauth": {
+            "accessToken": "expired-store-token", "scopes": ["user:inference"],
+            "subscriptionType": "max"}})
+    calls = []
+
+    def expired(*, login_store_only=False):
+        calls.append(login_store_only)
+        return login_store_only
+
+    monkeypatch.setattr("harness.providers.claude_oauth_expired", expired)
+
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            "claude-direct", environ={}, runner=Runner(claude_status()),
+            now_utc=NOW, require_direct_probe=False)
+
+    assert caught.value.reason == "claude_direct_access_token_expired"
+    assert calls == [True]
+
+
+@pytest.mark.parametrize(("oauth", "expired", "reason"), [
+    ({"accessToken": "secret", "scopes": ["user:profile"],
+      "subscriptionType": "max"}, False, "claude_direct_inference_scope_missing"),
+    ({"accessToken": "secret", "scopes": ["user:inference"],
+      "subscriptionType": "free"}, False, "claude_direct_plan_not_pro_or_max"),
+    ({"accessToken": "secret", "scopes": ["user:inference"],
+      "subscriptionType": "max"}, True, "claude_direct_access_token_expired"),
+])
+def test_claude_direct_credentials_fail_closed(monkeypatch, oauth, expired, reason):
+    monkeypatch.setattr(
+        "harness.providers.claude_credentials",
+        lambda: {"claudeAiOauth": oauth})
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired",
+        lambda **_kwargs: expired)
+
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            "claude-direct", environ={}, runner=Runner(claude_status()), now_utc=NOW,
+            direct_probe=lambda _model: SimpleNamespace(stop_reason="end_turn"))
+
+    assert caught.value.reason == reason
+    assert "secret" not in json.dumps(caught.value.receipt)
 
 
 @pytest.mark.parametrize(("updates", "reason"), [

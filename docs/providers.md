@@ -3,13 +3,17 @@
 Collie is model-agnostic. Pick a provider in the first-run onboarding, the Settings panel, per run
 with `--provider`, or by setting `COLLIE_PROVIDER`. An explicit environment variable always wins.
 
-## Connect an existing subscription (no per-token cost)
+## Connect an existing subscription
 
 | Provider | Value | How |
 |---|---|---|
-| Claude subscription | `anthropic-oauth` | One-click OAuth in onboarding — uses your Claude plan. |
+| Claude direct (experimental) | `anthropic-oauth` | Reads the official Claude login store and sends Collie's own Messages request; not a documented third-party Claude-plan interface, so availability and billing must be proved at runtime. |
 | ChatGPT / Codex subscription | `codex-oauth` | One-click OAuth — uses your ChatGPT plan. |
-| Claude CLI | `claude-cli` | Routes through your already-logged-in Claude CLI. |
+| Claude CLI | `claude-cli` | Routes through your already-logged-in official Claude CLI; this includes Claude Code's harness/system context. |
+
+A subscription login is not itself proof of zero marginal charge. Provider policy and account
+settings can change; unattended `--no-paid-overage` runs use a fail-closed preflight and never
+silently switch to an API key, paid credits, or another provider.
 
 ## API-key providers
 
@@ -46,8 +50,12 @@ COLLIE_PROVIDER=deepseek collie                          # env override wins for
 ```
 
 !!! warning "About `anthropic-oauth`"
-    OAuth subscription mode impersonates the Claude-Code client and is **opt-in** — you select it
-    deliberately, per run or in Settings. It is never a silent default.
+    This experimental mode is **opt-in**. It does not invoke or impersonate Claude Code: its body
+    contains Collie's own system/tool contract and identifies the caller as Collie. It reuses a
+    credential from Claude's official login store, but Anthropic has not documented arbitrary raw
+    Messages calls as a supported Claude-plan route. A failed live probe is therefore an admission
+    failure, not a reason to fall back. `claude-cli` is separate and does carry Claude Code's own
+    harness context.
 
 ## Picking a model
 

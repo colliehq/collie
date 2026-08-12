@@ -929,6 +929,37 @@ def test_credentials_handoff_before_any_durable_action_payload():
     store.close(); actions.close()
 
 
+def test_confirmed_timeout_cancels_only_its_own_mission_worker():
+    print("test_confirmed_timeout_cancels_only_its_own_mission_worker")
+    clear_registry()
+    release = threading.Event()
+    scoped = []
+
+    cap = Capability(
+        "slow.code", execute=lambda _rec: release.wait(2) or {"done": True},
+        verify=lambda _r, _x: Verdict(VERIFIED, "done"),
+        reversible=False, risk="write", semantic_args=("target",))
+    cap.cancel_for = lambda mission_id: (
+        lambda: scoped.append(mission_id) or release.set() or True)
+    cap.cancel_current = lambda: (_ for _ in ()).throw(
+        AssertionError("unscoped cancellation must never be used"))
+    register(cap)
+    drv, store, actions = _driver([
+        {"action": "slow.code", "args": {"target": "repo"}}])
+    create_mission(
+        store, "parked-timeout", "run one bounded code action",
+        leash=world_leash(
+            may=["slow.code"], autonomous=False, max_step_seconds=1))
+    check(drv.advance("parked-timeout") == NEEDS_YOU, "action parked")
+    _name, nonce = store.last_parked("parked-timeout")
+
+    check(drv.confirm_and_resume("parked-timeout", nonce) == RECOVERY_REQUIRED,
+          "confirmed timeout enters explicit recovery")
+    check(scoped == ["parked-timeout"],
+          "timeout cancellation is scoped to this Mission")
+    store.close(); actions.close()
+
+
 def test_missing_authorization_defers_only_its_branch():
     print("test_missing_authorization_defers_only_its_branch")
     clear_registry(); register_primitives(stub=True)

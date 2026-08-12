@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import fnmatch
 import hashlib
+import math
 import os
 import secrets
 import sqlite3
@@ -33,11 +34,12 @@ from .actions import (APPROVED, EXECUTED, EXECUTING, EXPIRED, PENDING, REFUSED,
 from .jobs import (CANCELLED, DONE_ACCEPTED, DONE_VERIFIED, FAILED_S, NEEDS_YOU,
                    PAUSED, PAUSING, QUEUED, RECONCILING, RECOVERY_REQUIRED,
                    RUNNING, WAITING, Capability)
-from .mission import (_campaign_coverage, _open_campaign_coverage,
+from .mission import (_campaign_coverage, _compact_case_storage,
+                      _open_campaign_coverage,
                       _resolved_authorization, MissionDriver, MissionStore,
                       ModelDecider, ResourceBusy, create_mission, world_leash)
 from .primitives import register_primitives
-from .verifier import (CampaignReceiptGoalVerifier, FAILED as VERIFY_FAILED,
+from .verifier import (MissionGoalVerifier, FAILED as VERIFY_FAILED,
                        VERIFIED as VERIFY_VERIFIED, Verdict)
 
 
@@ -52,6 +54,117 @@ def _provider_name() -> str:
     # mirrors webapp._provider(): the Settings-panel provider is applied into the
     # env before a request, so this is the same provider the chat GUI runs on.
     return os.environ.get("COLLIE_PROVIDER", "")
+
+
+_SUBSCRIPTION_PROVIDERS = {
+    "anthropic-oauth": "anthropic-oauth",
+    "claude-sub": "anthropic-oauth",
+    "claude-cli": "claude-cli",
+    "cli": "claude-cli",
+    "codex-oauth": "codex-oauth",
+    "codex-sub": "codex-oauth",
+    "codex": "codex-oauth",
+}
+
+_LOCAL_PROVIDERS = {"mock", "ollama"}
+
+# Native overnight is deliberately narrower than the general provider catalog.
+# Collie uses its own loop/system/tools and a Claude-plan OAuth credential against
+# Anthropic's fixed Messages endpoint.  It never delegates this profile through
+# Claude Code/Codex or silently falls back to a metered API-key route.
+_OVERNIGHT_SUBSCRIPTION_PROVIDERS = {"anthropic-oauth"}
+
+# The ordinary Mission defaults remain deliberately broad and long-lived.  This
+# preset is different: it is a bounded, unattended execution window whose whole
+# authority is frozen into the Mission row before the daemon can claim it.
+_OVERNIGHT_BOUNDS = {
+    "max_total_steps": 4_000,
+    "max_model_tokens": 8_000_000,
+    "max_model_calls": 4_000,
+    # This leash is marginal charge, not equivalent list-price.  Subscription
+    # calls account $0 here and retain their equivalent value separately; a
+    # routing regression that starts recording metered spend trips almost
+    # immediately instead of silently running all night.
+    "max_model_cost_usd": 0.01,
+    "max_active_wall_seconds": 43_200,
+    # Twelve hours means active work, not "twelve hours since the laptop was
+    # closed".  Keep a seven-day catch-up window so sleep/reboot time does not
+    # consume the useful runtime budget.
+    "max_elapsed_seconds": 7 * 24 * 60 * 60,
+    # A code slice is internally capped at three model turns plus one host
+    # verification command.  This outer watchdog leaves enough room for the
+    # provider's own bounded retry while still fencing a genuinely stuck tree.
+    "max_step_seconds": 1_800,
+    "max_retries": 512,
+    "max_storage_bytes": 20_000_000,
+    "checkpoint_keep": 256,
+    "max_specialists": 8,
+}
+
+_SUBSCRIPTION_GUARD_ENV_NAMES = frozenset({
+    "APPDATA", "COMSPEC", "HOME", "HOMEDRIVE", "HOMEPATH", "LANG",
+    "LC_ALL", "LC_CTYPE", "LOCALAPPDATA", "LOGNAME", "PATH", "PATHEXT",
+    "SHELL", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "USER", "USERPROFILE",
+    "WINDIR",
+})
+
+
+def _subscription_guard_environment() -> dict:
+    """The exact non-routing environment an overnight provider will receive."""
+    return {name: value for name, value in os.environ.items()
+            if name.upper() in _SUBSCRIPTION_GUARD_ENV_NAMES}
+
+
+def _canonical_provider(name: str) -> str:
+    name = str(name or "").strip().lower()
+    return _SUBSCRIPTION_PROVIDERS.get(name, name)
+
+
+def _billing_mode(provider: str) -> str:
+    provider = _canonical_provider(provider)
+    if provider in set(_SUBSCRIPTION_PROVIDERS.values()):
+        return "subscription"
+    if provider in _LOCAL_PROVIDERS:
+        return "local"
+    return "metered" if provider else "unconfigured"
+
+
+def _execution_profile(provider: str, model: str | None, *, overnight: bool) -> dict:
+    """Return the non-secret provider/model route frozen into a durable Mission."""
+    provider = _canonical_provider(provider)
+    from .providers import provider_default_model
+    model = str(model or provider_default_model(provider) or "").strip()
+    billing = _billing_mode(provider)
+    if not provider:
+        raise ValueError("durable Mission requires a configured model provider")
+    if not model:
+        raise ValueError("durable Mission requires an explicit, frozen model")
+    if overnight and (billing != "subscription" or
+                      provider not in _OVERNIGHT_SUBSCRIPTION_PROVIDERS):
+        raise ValueError(
+            "overnight Mission requires Collie's direct Claude subscription route "
+            "(anthropic-oauth); metered, Codex OAuth, and claude -p fallback is forbidden")
+    if overnight and not model.lower().startswith("claude-opus-"):
+        raise ValueError(
+            "native overnight Mission requires an explicit Claude Opus model; "
+            "Sonnet/Haiku and rolling aliases are not silently substituted")
+    return {
+        "version": 1,
+        "profile": "overnight" if overnight else "durable-code",
+        "provider": provider,
+        "model": model,
+        "billing_mode": billing,
+        "subscription_only": billing == "subscription",
+        "allow_provider_fallback": False,
+    }
+
+
+def _execution_profile_digest(profile: dict) -> str:
+    """Canonical immutable pin stored in the Mission leash, outside mutable case state."""
+    encoded = json.dumps(
+        dict(profile or {}), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _clean(d: dict) -> dict:
@@ -219,6 +332,8 @@ def _mission_report(mission, summary, activity, receipts, runtime):
             "turns": int(runtime.get("turns") or 0),
             "retry_count": int(runtime.get("retry_count") or 0),
             "model_cost_usd": float(runtime.get("model_cost_usd") or 0.0),
+            "equivalent_model_cost_usd": float(
+                runtime.get("equivalent_model_cost_usd") or 0.0),
         },
     }
     lines = [
@@ -231,6 +346,9 @@ def _mission_report(mission, summary, activity, receipts, runtime):
         (completed, closed, len(coverage) - closed, len(coverage)),
         "- Verified receipts: %d of %d" %
         (receipt_counts["verified"], receipt_counts["total"]),
+        "- Model charge: $%.4f marginal ($%.4f API-equivalent)" %
+        (report["runtime"]["model_cost_usd"],
+         report["runtime"]["equivalent_model_cost_usd"]),
         "",
         "## Current",
         report["current"],
@@ -265,7 +383,8 @@ class MissionService:
     def __init__(self, base: str = None, decider=None, provider: str = None,
                  model: str = None, stub=None, state_dir: str = None,
                  goal_verifier=None, mission_workers: int = None, run_tree=None,
-                 hooks=None, specialist_workers: int = None):
+                 hooks=None, specialist_workers: int = None,
+                 subscription_guard=None):
         # base isolates tests; production uses the shared ~/.collie stores (so a
         # mission is visible to `collie jobs` / jobsweb too).
         # A custom ``base`` is primarily the deterministic test/embedding seam;
@@ -275,6 +394,7 @@ class MissionService:
         state_dir = state_dir or os.environ.get("COLLIE_STATE_DIR") or \
             (os.path.dirname(os.path.abspath(base)) if base else
              os.path.expanduser("~/.collie"))
+        self._state_dir = os.path.realpath(os.path.abspath(os.path.expanduser(state_dir)))
         mission_path = (base + ".missions") if base else os.path.join(state_dir, "jobs.db")
         action_path = (base + ".actions") if base else os.path.join(state_dir, "actions.db")
         self.store = MissionStore(mission_path)
@@ -284,7 +404,7 @@ class MissionService:
         self._model = model or os.environ.get("COLLIE_MODEL") or None
         self._stub = stub
         self._goal_verifier = (goal_verifier if goal_verifier is not None else
-                               CampaignReceiptGoalVerifier(self.store, self.actions))
+                               MissionGoalVerifier(self.store, self.actions))
         self._mission_workers = mission_workers
         self._owns_run_tree = run_tree is None
         self._owns_hooks = hooks is None
@@ -299,12 +419,18 @@ class MissionService:
         self._run_tree = run_tree
         self._hooks = hooks
         self._specialist_workers = specialist_workers
+        if subscription_guard is None:
+            from .subscription_guard import check_subscription_guard
+            subscription_guard = check_subscription_guard
+        self._subscription_guard = subscription_guard
         if self._run_tree is not None and self._hooks is not None and \
                 getattr(self._run_tree, "hooks", None) is None:
             self._run_tree.hooks = self._hooks
         self._prov = None
+        self._subscription_only = False
         self._runtime_ready = False
         self._capabilities = None
+        self._code_process = None
         self._closed = False
 
     def _ensure_runtime(self):
@@ -319,12 +445,20 @@ class MissionService:
                 raise RuntimeError("mock provider cannot drive a durable Mission")
             from .providers import make_provider
             self._prov = make_provider(self._provider, self._model)
+            if self._subscription_only:
+                # Providers interpret this as a hard route property, not just
+                # cost accounting.  The direct Claude OAuth provider binds the
+                # official endpoint and disables ambient proxies; no CLI/API-key
+                # fallback is permitted.
+                self._prov.subscription_only = True
         if stub:
             self._capabilities = register_primitives(stub=True)
         else:
             if self._prov is None and self._provider:
                 from .providers import make_provider
                 self._prov = make_provider(self._provider, self._model)
+                if self._subscription_only:
+                    self._prov.subscription_only = True
             from .webact import get_actuator
             self._capabilities = register_primitives(
                 stub=False, actuator=get_actuator(), provider=self._prov)
@@ -332,7 +466,169 @@ class MissionService:
         # their executor must address this exact durable TaskTree/MissionStore.
         self._capabilities = self._tasktree_guarded_capabilities(
             self._capabilities) + self._agent_capabilities()
+        if not stub:
+            # Native Mission code always crosses a killable process boundary.
+            # The generic Mission watchdog can therefore terminate the whole
+            # child tree instead of fencing an unkillable Python thread that may
+            # continue editing after ownership has moved on.
+            from .codeworker import CodeSliceProcessRunner
+            from .primitives import _code_verify, _real_code
+            code_process = CodeSliceProcessRunner(
+                session_dir=os.path.join(self._state_dir, "mission-code-sessions"))
+            self._code_process = code_process
+            wrapped = []
+            for cap in self._capabilities:
+                if cap.name != "code":
+                    wrapped.append(cap)
+                    continue
+                cap = replace(cap, execute=_real_code(code_process), verify=_code_verify)
+                # MissionDriver's watchdog asks the Capability itself for a
+                # cancellation hook.  Capability is intentionally an open
+                # dataclass, so attach the process-tree terminator here.
+                cap.cancel_current = code_process.cancel_current
+                cap.cancel_for = code_process.cancel_for
+                wrapped.append(cap)
+            self._capabilities = wrapped
         self._runtime_ready = True
+
+    def _subscription_preflight(self, profile, billing_safety=None,
+                                require_live_probe=True) -> dict:
+        """Prove the frozen direct route before unattended model work.
+
+        Auth status alone cannot expose the account-side paid-overage toggle.
+        Therefore the user must explicitly attest that it is disabled; Collie
+        then removes every API/proxy override from the effective child
+        environment, asks the official client for redacted login status, and
+        at creation separately proves the direct credential has inference
+        authority. Runnable-boundary checks are local and quota-free; the actual
+        provider request remains independently fail-closed.
+        The returned receipt contains no credential material and is safe to
+        persist with the Mission.
+        """
+        profile = dict(profile or {})
+        safety = dict(billing_safety or {})
+        if not safety.get("paid_overage_disabled"):
+            raise RuntimeError(
+                "overnight subscription mode requires an explicit confirmation "
+                "that paid usage credits/overage and auto-reload are disabled")
+        provider = _canonical_provider(profile.get("provider"))
+        if provider == "anthropic-oauth":
+            guard_provider = "claude-direct"
+            account_evidence = None
+        elif provider == "codex-oauth":
+            guard_provider = "codex-cli"
+            raw = safety.get("account_evidence")
+            if not isinstance(raw, dict):
+                raise RuntimeError(
+                    "Codex overnight mode requires fresh zero-credit/auto-reload-off "
+                    "account evidence")
+            account_evidence = {
+                key: raw.get(key) for key in
+                ("credits_remaining", "auto_reload", "observed_at_utc")
+            }
+        else:
+            raise RuntimeError("overnight subscription provider is unsupported")
+        try:
+            receipt = self._subscription_guard(
+                guard_provider, account_evidence=account_evidence,
+                environ=_subscription_guard_environment(),
+                model=str(profile.get("model") or ""),
+                require_direct_probe=bool(require_live_probe),
+                minimum_token_validity_seconds=(
+                    int(_OVERNIGHT_BOUNDS["max_active_wall_seconds"])
+                    if guard_provider == "claude-direct" and require_live_probe
+                    else 0))
+        except Exception as exc:
+            reason = str(getattr(exc, "reason", "") or type(exc).__name__)
+            raise RuntimeError("subscription preflight denied: %s" % reason) from exc
+        if not isinstance(receipt, dict) or receipt.get("verdict") != "allow":
+            raise RuntimeError("subscription preflight returned no allow receipt")
+        return {
+            "version": 1,
+            "paid_overage_disabled": True,
+            "marginal_charge_policy": "subscription-allowance-or-stop",
+            "account_evidence": account_evidence,
+            "guard_receipt": receipt,
+        }
+
+    def _activate_execution_profile(self, mission) -> None:
+        """Select a frozen Mission route before constructing its model runtime.
+
+        A settings change while Collie is asleep must not silently move an
+        unattended run from a login-backed route to a metered API. The profile
+        contains no credential; providers still read credentials from their
+        normal secure source at execution time.
+        """
+        profile = (mission.case or {}).get("execution_profile") if mission else None
+        if not isinstance(profile, dict):
+            return
+        provider = _canonical_provider(profile.get("provider"))
+        model = str(profile.get("model") or "").strip()
+        profile_kind = str(profile.get("profile") or "")
+        subscription_only = bool(profile.get("subscription_only"))
+        billing = _billing_mode(provider)
+        if profile_kind not in ("durable-code", "overnight"):
+            raise RuntimeError("frozen Mission execution profile kind is invalid")
+        try:
+            canonical = _execution_profile(
+                provider, model, overnight=(profile_kind == "overnight"))
+        except ValueError as exc:
+            raise RuntimeError(
+                "frozen Mission execution profile is invalid: %s" % exc) from exc
+        if profile != canonical:
+            raise RuntimeError("frozen Mission execution profile is not canonical")
+        pinned = str((mission.leash or {}).get("execution_profile_sha256") or "")
+        if profile_kind == "overnight" and not pinned:
+            raise RuntimeError("frozen overnight Mission has no immutable route pin")
+        if pinned and pinned != _execution_profile_digest(profile):
+            raise RuntimeError(
+                "frozen Mission execution profile failed its immutable route pin")
+        code_profile = (mission.case or {}).get("code_profile")
+        if isinstance(code_profile, dict) and \
+                bool(code_profile.get("overnight")) != (profile_kind == "overnight"):
+            raise RuntimeError("frozen Mission code and execution profiles disagree")
+        if profile.get("allow_provider_fallback") is not False:
+            raise RuntimeError("frozen Mission execution profile permits provider fallback")
+        if str(profile.get("billing_mode") or "") != billing:
+            raise RuntimeError("frozen Mission billing route does not match its provider")
+        if subscription_only and billing != "subscription":
+            raise RuntimeError("frozen Mission subscription route is invalid")
+        if billing == "subscription" and not subscription_only:
+            raise RuntimeError("frozen subscription Mission permits metered fallback")
+        if not provider:
+            raise RuntimeError("frozen Mission has no model provider")
+        if profile_kind == "overnight":
+            if provider not in _OVERNIGHT_SUBSCRIPTION_PROVIDERS:
+                raise RuntimeError(
+                    "frozen overnight Mission no longer names the admitted direct route")
+            # Re-run the official-client auth check at every runnable boundary.
+            # A durable receipt from creation is audit evidence, not permission
+            # to keep running after the user logs out or changes billing state.
+            refreshed = self._subscription_preflight(
+                profile, (mission.case or {}).get("billing_safety"),
+                require_live_probe=False)
+            if not self.store.patch_case(
+                    mission.mission_id, {"billing_safety": refreshed},
+                    allowed_states=(QUEUED, WAITING, NEEDS_YOU)):
+                raise RuntimeError("Mission left its runnable boundary during route activation")
+            mission = self.store.get(mission.mission_id) or mission
+        if self._runtime_ready:
+            from .providers import provider_default_model
+            active_provider = _canonical_provider(self._provider)
+            active = (active_provider, str(
+                self._model or provider_default_model(active_provider) or "").strip(),
+                bool(self._subscription_only))
+            wanted = (provider, model, subscription_only)
+            if active != wanted:
+                # MissionService is long-lived in colliejobd.  Rebuild only at
+                # this between-run boundary; never keep using the daemon's prior
+                # provider merely because it already initialized capabilities.
+                self._prov = None
+                self._capabilities = None
+                self._runtime_ready = False
+        self._provider = provider
+        self._model = model or None
+        self._subscription_only = subscription_only
 
     def _driver(self, *, lane="mission", control=None) -> MissionDriver:
         self._ensure_runtime()
@@ -707,6 +1003,7 @@ class MissionService:
                 if self._run_tree.requeue_waiting(run["run_id"]):
                     specialists += 1
             else:
+                self._activate_execution_profile(mission)
                 self._driver().wake(mid, force=True)
                 normal += 1
         return {"normal": normal, "specialists": specialists}
@@ -903,8 +1200,46 @@ class MissionService:
         return normalize_artifact_refs(safe)
 
     # ── commands ──
+    @staticmethod
+    def _inherit_execution_contract(source, target_case):
+        """Copy immutable code/billing authority into a fresh audit successor."""
+        source_case = dict(getattr(source, "case", {}) or {})
+        for key in ("execution_profile", "code_profile", "billing_safety"):
+            value = source_case.get(key)
+            if isinstance(value, dict):
+                target_case[key] = json.loads(json.dumps(value, ensure_ascii=False))
+        for key in ("_isolated_workspace", "code_baseline_tree_digest",
+                    "code_expected_tree_digest"):
+            value = source_case.get(key)
+            if isinstance(value, str) and value:
+                target_case[key] = value
+        code_profile = target_case.get("code_profile")
+        if isinstance(code_profile, dict):
+            session_id = str(source_case.get("code_session_id") or
+                             code_profile.get("session_id") or "")
+            if session_id:
+                code_profile["session_id"] = session_id
+        return target_case
+
+    def _bind_successor_workspace(self, mission_id):
+        mission = self.store.get(mission_id)
+        workspace = str((mission.case or {}).get("_isolated_workspace") or "") \
+            if mission else ""
+        if not workspace or self._run_tree is None:
+            return True
+        run_id = self._ensure_agent_root(mission)
+        if not run_id:
+            self.store.set_state(
+                mission_id, FAILED_S, "successor code workspace authority could not be bound")
+            return False
+        return True
+
     def start(self, goal: str, autonomous: bool | None = None,
-              case: dict = None, **bounds) -> dict:
+              case: dict = None, *, code: bool = False, workspace: str = "",
+              overnight: bool = False, verify_command: str = "",
+              no_paid_overage: bool = False, billing_evidence: dict = None,
+              provider: str = "", model: str = "",
+              **bounds) -> dict:
         """Persist first and return the id immediately; /run or the daemon claims it.
 
         ``None`` means use the user's Mission default.  Keeping this resolution at
@@ -912,16 +1247,148 @@ class MissionService:
         explicit True/False remains the per-Mission override and keeps API callers
         deterministic.
         """
+        if (not isinstance(code, bool) or not isinstance(overnight, bool) or
+                not isinstance(no_paid_overage, bool)):
+            raise ValueError("Mission code and overnight options must be booleans")
+        if billing_evidence is not None and not isinstance(billing_evidence, dict):
+            raise ValueError("Mission billing_evidence must be an object")
+        if not isinstance(provider, str) or not isinstance(model, str):
+            raise ValueError("Mission provider and model must be strings")
+        provider = provider.strip()
+        model = model.strip()
+        if ("\x00" in provider or "\x00" in model or len(provider) > 120 or
+                len(model) > 240):
+            raise ValueError("Mission provider/model override is invalid")
+        if workspace and not code:
+            raise ValueError("Mission workspace requires code mode")
+        if verify_command and not code:
+            raise ValueError("Mission verify_command requires code mode")
+        if workspace:
+            try:
+                workspace = os.fspath(workspace)
+            except TypeError:
+                raise ValueError("Mission workspace must be a filesystem path")
+            if "\x00" in workspace:
+                raise ValueError("Mission workspace contains an invalid NUL byte")
+            workspace = os.path.realpath(os.path.abspath(os.path.expanduser(workspace)))
+            if not os.path.isdir(workspace):
+                raise ValueError("Mission code workspace does not exist")
+        verify_command = str(verify_command or "").strip()
+        if "\x00" in verify_command or len(verify_command) > 2000:
+            raise ValueError("Mission verify_command must be at most 2000 characters without NUL")
+        if overnight and not no_paid_overage:
+            raise ValueError(
+                "overnight Mission requires --no-paid-overage after disabling paid "
+                "usage credits/overage and auto-reload in the provider account")
+        if overnight and code and not workspace:
+            raise ValueError("overnight code Mission requires an existing workspace")
+        if overnight:
+            for key, value in _OVERNIGHT_BOUNDS.items():
+                requested = bounds.get(key, value)
+                try:
+                    requested = (float(requested) if key == "max_model_cost_usd"
+                                 else int(requested))
+                except (TypeError, ValueError):
+                    raise ValueError("overnight Mission bound %s is invalid" % key)
+                if isinstance(requested, float) and not math.isfinite(requested):
+                    raise ValueError("overnight Mission bound %s must be finite" % key)
+                # The overnight preset is a ceiling. API/CLI callers may make a
+                # run tighter, but can never turn the preset into a larger or
+                # longer unattended authority envelope.
+                bounds[key] = min(requested, value)
         if autonomous is None:
             from . import settings
             autonomous = settings.get("MISSION_APPROVAL_MODE", "smart") == "smart"
+        case = dict(case or {})
+        may = bounds.pop("may", None)
         mid = "msn_" + secrets.token_hex(6)
+        if code:
+            default_may = ["research", "compose", "observe", "agent.*", "web.*",
+                           "browse", "browse.*", "verification.*"]
+            may = list(default_may if may is None else may)
+            if "code" not in may:
+                may.append("code")
+            profile = _execution_profile(
+                provider or self._provider, model or self._model,
+                overnight=overnight)
+            case["execution_profile"] = profile
+            if overnight:
+                try:
+                    case["billing_safety"] = self._subscription_preflight(
+                        profile, {
+                            "paid_overage_disabled": no_paid_overage,
+                            "account_evidence": dict(billing_evidence or {}),
+                        })
+                except RuntimeError as exc:
+                    raise ValueError(str(exc)) from exc
+                if not verify_command:
+                    from .verification import detect_verification_commands
+                    proposals = detect_verification_commands(workspace)
+                    verify_command = str(
+                        proposals[0].get("command") if proposals else "").strip()
+                if not verify_command:
+                    raise ValueError(
+                        "overnight code Mission requires an explicit or detected "
+                        "verification command")
+            baseline_digest = ""
+            if workspace:
+                from .verification import workspace_snapshot
+                baseline = workspace_snapshot(workspace)
+                if overnight and not baseline.get("snapshot_complete"):
+                    raise ValueError(
+                        "overnight code workspace could not be snapshotted completely")
+                baseline_digest = str(baseline.get("tree_digest") or "")
+                if overnight and not baseline_digest:
+                    raise ValueError("overnight code workspace has no stable baseline digest")
+            from .primitives import _code_session_id
+            case["code_profile"] = {
+                "durable": True,
+                "overnight": bool(overnight),
+                "verify_command": verify_command,
+                "slice_turns": 3 if overnight else 0,
+                "verify_timeout_seconds": 300,
+                "max_session_storage_bytes": 15_000_000 if overnight else 0,
+                "session_id": _code_session_id(mid, workspace) if workspace else "",
+            }
+            if baseline_digest:
+                case["code_baseline_tree_digest"] = baseline_digest
+                case["code_expected_tree_digest"] = baseline_digest
+            if workspace:
+                case["_isolated_workspace"] = workspace
+        elif overnight:
+            profile = _execution_profile(
+                provider or self._provider, model or self._model,
+                overnight=True)
+            case["execution_profile"] = profile
+            try:
+                case["billing_safety"] = self._subscription_preflight(
+                    profile, {
+                        "paid_overage_disabled": no_paid_overage,
+                        "account_evidence": dict(billing_evidence or {}),
+                    })
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
+        if isinstance(case.get("execution_profile"), dict):
+            bounds["execution_profile_sha256"] = _execution_profile_digest(
+                case["execution_profile"])
         # Durable jobs get their own worktree by default.  The Web/CLI provisioner
         # binds its canonical path later through bind_workspace(); ordinary world
         # Missions pay no cost for this until they actually choose ``code``.
         bounds.setdefault("workspace_mode", "isolated")
-        create_mission(self.store, mid, goal, case=case or {},
-                       leash=world_leash(autonomous=autonomous, **bounds))
+        create_mission(self.store, mid, goal, case=case,
+                       leash=world_leash(may=may, autonomous=autonomous, **bounds))
+        if code and workspace and self._run_tree is not None:
+            # Complete the authority binding before returning a runnable id.  The
+            # root points at the user's existing directory with owns_workspace=0;
+            # neither Mission cancellation nor TaskTree cleanup may delete it.
+            try:
+                run_id = self._ensure_agent_root(self.store.get(mid))
+                if not run_id:
+                    raise ValueError("durable code root could not be attached")
+            except Exception as exc:
+                self.store.set_state(
+                    mid, FAILED_S, "code workspace authority could not be bound: %s" % exc)
+                raise ValueError("Mission code workspace binding failed: %s" % exc)
         return self.status(mid)
 
     def bind_workspace(self, mid: str, path: str) -> dict:
@@ -1207,6 +1674,29 @@ class MissionService:
         return {"ok": True, "run_id": target, "runs": runs,
                 "results": results[-20:]}
 
+    def _cancel_bound_specialist_missions(self, run_id: str, reason: str,
+                                          parent_mission_id: str = "") -> int:
+        """Fence every Mission/process represented by a cancelled run subtree.
+
+        TaskTree cancellation revokes delegated scheduling authority, while the
+        Mission row owns the code-process lifetime.  Updating only TaskTree would
+        leave a claimed child Mission free to keep editing until its next model
+        boundary, so both durable representations are cancelled together.
+        """
+        if self._run_tree is None:
+            return 0
+        cancelled = 0
+        for row in self._run_tree.tree(run_id).get("flat", []):
+            child_mid = str(row.get("mission_id") or "")
+            child = self.store.get(child_mid) if child_mid else None
+            if not child or child.state in (
+                    DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+                continue
+            cancelled += int(self._cancel_record(
+                child_mid, reason, user_requested=False,
+                parent_mission_id=parent_mission_id))
+        return cancelled
+
     def agent_cancel(self, mid: str, run_id: str) -> dict:
         mission, caller, error = self._agent_caller(mid)
         if error:
@@ -1218,17 +1708,30 @@ class MissionService:
                     "error": "specialist target is outside caller descendant scope",
                     "mission_id": mid, "run_id": run_id}
         target = self._run_tree.get(run_id)
+        bound_cancelled = self._cancel_bound_specialist_missions(
+            run_id, "cancelled by delegating Mission", parent_mission_id=mid)
         if target and target.get("status") in ("completed", "failed", "cancelled"):
             return {"ok": True, "run_id": run_id, "status": target["status"],
-                    "already_terminal": True}
+                    "already_terminal": True,
+                    "bound_missions_cancelled": bound_cancelled}
         try:
             changed = self._run_tree.cancel_descendant(caller["run_id"], run_id)
         except ValueError as exc:
             return {"ok": False, "error": str(exc), "mission_id": mid}
+        # Close the cross-store creation race.  A concurrent spawn may have
+        # committed its Mission after the first tree snapshot but before the
+        # TaskTree cancellation transaction.  The TaskTree fence prevents any
+        # later spawn; this second sweep terminates every Mission that became
+        # visible in that window.  _create_specialist_mission performs the
+        # inverse final-state check for a Mission committing after this sweep.
+        bound_cancelled += self._cancel_bound_specialist_missions(
+            run_id, "cancelled by delegating Mission", parent_mission_id=mid)
         current = self._run_tree.get(run_id)
-        return {"ok": bool(changed), "run_id": run_id,
+        return {"ok": bool(changed or bound_cancelled), "run_id": run_id,
                 "status": current.get("status") if current else "missing",
-                **({} if changed else {"error": "target specialist is unavailable"})}
+                "bound_missions_cancelled": bound_cancelled,
+                **({} if changed or bound_cancelled else
+                   {"error": "target specialist is unavailable"})}
 
     def _create_specialist_mission(self, parent_mid, run):
         """Materialize a scoped specialist as a real Mission lane, not a TODO row."""
@@ -1263,6 +1766,40 @@ class MissionService:
                 "_resource_source_workspace": source_workspace,
                 "role": run.get("role") or "specialist",
             }
+            if parent_mission:
+                parent_case = dict(parent_mission.case or {})
+                execution_profile = parent_case.get("execution_profile")
+                if isinstance(execution_profile, dict):
+                    case["execution_profile"] = json.loads(json.dumps(
+                        execution_profile, ensure_ascii=False))
+                billing_safety = parent_case.get("billing_safety")
+                if isinstance(billing_safety, dict):
+                    case["billing_safety"] = json.loads(json.dumps(
+                        billing_safety, ensure_ascii=False))
+                    if isinstance(execution_profile, dict) and \
+                            execution_profile.get("profile") == "overnight":
+                        # A parent's allow receipt is evidence, not transferable
+                        # authority. Re-prove the route for this runnable child.
+                        case["billing_safety"] = self._subscription_preflight(
+                            execution_profile, case["billing_safety"])
+                code_profile = parent_case.get("code_profile")
+                if isinstance(code_profile, dict):
+                    child_profile = json.loads(json.dumps(
+                        code_profile, ensure_ascii=False))
+                    from .primitives import _code_session_id
+                    child_profile["session_id"] = _code_session_id(
+                        child_mid, workspace)
+                    case["code_profile"] = child_profile
+                    from .verification import workspace_snapshot
+                    baseline = workspace_snapshot(workspace)
+                    if (execution_profile or {}).get("profile") == "overnight" and \
+                            not baseline.get("snapshot_complete"):
+                        raise ValueError(
+                            "overnight specialist workspace could not be snapshotted completely")
+                    digest = str(baseline.get("tree_digest") or "")
+                    if digest:
+                        case["code_baseline_tree_digest"] = digest
+                        case["code_expected_tree_digest"] = digest
             try:
                 create_mission(
                     self.store, child_mid, run["task"], case=case, leash=run["leash"],
@@ -1275,7 +1812,38 @@ class MissionService:
         if (str(runtime.get("external_run_id") or "") != run["run_id"] or
                 str(runtime.get("parent_mission_id") or "") != str(parent_mid or "")):
             raise ValueError("specialist Mission id is bound to different authority")
-        return self._run_tree.get(run["run_id"])
+        # Complete the other half of the cancellation handshake.  The Mission
+        # insert and TaskTree cancellation live in separate SQLite databases, so
+        # cancellation can fence the run after bind_mission(), then perform its
+        # post-fence sweep just before this Mission commits.  Re-read both sides
+        # after the commit and make the new Mission terminal when its authority
+        # has already been revoked.  Conversely, if this check wins the race,
+        # the cancellation path's post-fence sweep observes and cancels it.
+        current_run = self._run_tree.get(run["run_id"])
+        current_parent = self.store.get(parent_mid) if parent_mid else None
+        run_stopping = (
+            not current_run or
+            current_run.get("status") in (
+                "completed", "failed", "cancelled", "cancel_requested") or
+            bool(current_run.get("cancel_requested")))
+        parent_stopping = (
+            not current_parent or current_parent.state in (
+                DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED))
+        if run_stopping or parent_stopping:
+            # If the parent Mission reached a terminal state before TaskTree was
+            # fenced, revoke the child run here as well.  request_cancel is
+            # idempotent when the cancellation path already won.
+            if current_run and not run_stopping:
+                self._run_tree.request_cancel(run["run_id"])
+            child = self.store.get(child_mid)
+            if child and child.state not in (
+                    DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED):
+                self._cancel_record(
+                    child_mid,
+                    "cancelled because specialist authority was revoked during creation",
+                    user_requested=False, parent_mission_id=parent_mid)
+            current_run = self._run_tree.get(run["run_id"])
+        return current_run
 
     def bind_specialist_workspace(self, run_id: str, path: str) -> dict:
         if self._run_tree is None:
@@ -1342,14 +1910,29 @@ class MissionService:
         """Request cancellation; a running worker acknowledges at a safe boundary."""
         if self._run_tree is None:
             return {"error": "no durable run-tree store configured", "run_id": run_id}
-        if not self._run_tree.request_cancel(run_id, sender_run_id):
+        if not self._run_tree.get(run_id):
             return {"error": "unknown or terminal specialist run", "run_id": run_id}
-        return self.inspect_specialist(run_id)
+        bound_cancelled = self._cancel_bound_specialist_missions(
+            run_id, "specialist cancelled by operator")
+        changed = self._run_tree.request_cancel(run_id, sender_run_id)
+        # See agent_cancel: fence first, then sweep once more for a Mission that
+        # committed between the initial TaskTree snapshot and this transaction.
+        bound_cancelled += self._cancel_bound_specialist_missions(
+            run_id, "specialist cancelled by operator")
+        if not changed and not bound_cancelled:
+            return {"error": "unknown or terminal specialist run", "run_id": run_id}
+        result = self.inspect_specialist(run_id)
+        result["bound_missions_cancelled"] = bound_cancelled
+        return result
 
     def run(self, mid: str) -> dict:
         m = self.store.get(mid)
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
+        try:
+            self._activate_execution_profile(m)
+        except RuntimeError as exc:
+            return {**self.status(mid), "error": "run unavailable: %s" % exc}
         usage = self._reconcile_tasktree_usage(mid)
         if usage["errors"]:
             return {**self.status(mid),
@@ -1383,6 +1966,7 @@ class MissionService:
             return {**self.status(mid), "error": "confirm refused: action does not belong to this mission"}
         specialist = self._specialist_run(mid)
         try:
+            self._activate_execution_profile(m)
             if specialist:
                 if rec.state == PENDING:
                     self.actions.confirm(nonce)
@@ -1505,8 +2089,11 @@ class MissionService:
             value = (m.case or {}).get(key)
             if isinstance(value, (list, dict)):
                 case[key] = json.loads(json.dumps(value, ensure_ascii=False))
+        self._inherit_execution_contract(m, case)
         successor = "msn_" + secrets.token_hex(6)
         create_mission(self.store, successor, m.goal, case=case, leash=dict(m.leash))
+        if not self._bind_successor_workspace(successor):
+            return self.status(successor)
         inherited = self.store.inherit_completed_action_keys(mid, successor)
         self.store.record_event(
             successor, "control", "retry",
@@ -1526,13 +2113,198 @@ class MissionService:
         return self.status(mid) if changed or m.state in (PAUSED, PAUSING) else {
             **self.status(mid), "error": f"cannot pause from {m.state}"}
 
-    def reconcile(self, mid: str, note: str = "") -> dict:
+    def _inspect_code_recovery(self, mission):
+        """Read the two durable code journals without granting either authority.
+
+        The Mission case is the publication boundary; session receipts are an
+        append-before-publish WAL.  A completed reconciliation receipt may
+        therefore legitimately be newer than ``code_expected_tree_digest``
+        after a crash.  ``receipt_expected`` follows only a contiguous chain so
+        that such a crash can be retried without blessing unrelated drift.
+        """
+        case = dict(mission.case or {})
+        profile = case.get("code_profile")
+        profile = profile if isinstance(profile, dict) else {}
+        session_id = str(case.get("code_session_id") or
+                         profile.get("session_id") or "")
+        workspace = str(case.get("_isolated_workspace") or "")
+        case_expected = str(case.get("code_expected_tree_digest") or
+                            case.get("code_baseline_tree_digest") or "")
+        baseline = str(case.get("code_baseline_tree_digest") or case_expected)
+        codeish = bool(profile or session_id or
+                       case.get("code_recovery_required") or case_expected)
+        if not codeish:
+            return {"is_code": False, "requires_resolution": False}
+
+        from . import sessions
+        session_dir = os.path.join(self._state_dir, "mission-code-sessions")
+        checked = (sessions.load_checked(session_id, directory=session_dir)
+                   if session_id else {"status": "missing", "session": None})
+        if checked.get("status") == "invalid":
+            return {
+                "is_code": True, "invalid": True, "session_id": session_id,
+                "session_dir": session_dir,
+                "error": "durable code session is corrupt or unreadable; inspect or cancel it",
+            }
+        saved = checked.get("session") or {}
+        receipts = list(saved.get("run_receipts") or [])
+        receipt_expected = case_expected
+        for receipt in receipts:
+            kind = receipt.get("kind")
+            receipt_sid = str(receipt.get("session_id") or "")
+            receipt_mid = str(receipt.get("mission_id") or "")
+            if ((receipt_sid and receipt_sid != session_id) or
+                    (receipt_mid and receipt_mid != mission.mission_id)):
+                return {
+                    "is_code": True, "invalid": True,
+                    "session_id": session_id, "session_dir": session_dir,
+                    "error": "durable code receipt identity does not match this Mission",
+                }
+            receipt_baseline = str(receipt.get("baseline_tree_digest") or "")
+            if (kind in ("mission_code_baseline", "mission_code_slice",
+                         "mission_code_reconciled") and
+                    baseline and receipt_baseline and
+                    receipt_baseline != baseline):
+                return {
+                    "is_code": True, "invalid": True,
+                    "session_id": session_id, "session_dir": session_dir,
+                    "error": "durable code receipt baseline does not match this Mission",
+                }
+            if kind not in ("mission_code_slice", "mission_code_reconciled"):
+                continue
+            if kind == "mission_code_reconciled" and (
+                    receipt.get("resolution") != "completed" or
+                    receipt.get("snapshot_complete") is not True):
+                return {
+                    "is_code": True, "invalid": True,
+                    "session_id": session_id, "session_dir": session_dir,
+                    "error": "durable code reconciliation receipt is malformed",
+                }
+            before = str(receipt.get("pre_tree_digest") or "")
+            after = str(receipt.get("post_tree_digest") or "")
+            if before and after and before == receipt_expected:
+                receipt_expected = after
+
+        active = saved.get("active_run")
+        session_uncertain = bool(
+            isinstance(active, dict) and
+            active.get("state") in ("executing_tool", "external_action"))
+        current = ""
+        if workspace:
+            if not os.path.isdir(workspace):
+                return {
+                    "is_code": True, "invalid": True,
+                    "session_id": session_id, "session_dir": session_dir,
+                    "error": "bound code workspace is missing; cancel or restore it before recovery",
+                }
+            from .verification import workspace_snapshot
+            snapshot = workspace_snapshot(workspace)
+            if not snapshot.get("snapshot_complete"):
+                return {
+                    "is_code": True, "invalid": True,
+                    "session_id": session_id, "session_dir": session_dir,
+                    "error": "bound code workspace could not be snapshotted completely",
+                }
+            current = str(snapshot.get("tree_digest") or "")
+        drift = bool(case_expected and current and current != case_expected)
+        required = bool(case.get("code_recovery_required") or
+                        session_uncertain or drift)
+        if required and (not workspace or not case_expected or not current):
+            return {
+                "is_code": True, "invalid": True,
+                "session_id": session_id, "session_dir": session_dir,
+                "error": "code recovery has no complete workspace byte boundary; cancel or inspect storage",
+            }
+        return {
+            "is_code": True, "invalid": False,
+            "requires_resolution": required,
+            "session_id": session_id, "session_dir": session_dir,
+            "session_uncertain": session_uncertain,
+            "session": saved, "receipts": receipts,
+            "workspace": workspace, "baseline": baseline,
+            "case_expected": case_expected,
+            "receipt_expected": receipt_expected or case_expected,
+            "current": current, "drift": drift,
+        }
+
+    def _patch_code_recovery_owned(self, mid, token, expected_before, updates):
+        """CAS code byte-boundary state under the live reconciliation token."""
+        now = int(time.time())
+        updates = dict(updates or {})
+        with self.store._lock:
+            try:
+                self.store.db.execute("BEGIN IMMEDIATE")
+                row = self.store.db.execute(
+                    "SELECT case_json FROM missions WHERE mission_id=? AND state=? "
+                    "AND run_token=? AND lease_until>?",
+                    (mid, RECONCILING, token, now)).fetchone()
+                if not row:
+                    self.store.db.rollback()
+                    return False
+                case = json.loads(row["case_json"] or "{}")
+                if not isinstance(case, dict):
+                    self.store.db.rollback()
+                    return False
+                live_expected = str(case.get("code_expected_tree_digest") or
+                                    case.get("code_baseline_tree_digest") or "")
+                if live_expected != str(expected_before or ""):
+                    self.store.db.rollback()
+                    return False
+                case.update(updates)
+                case = _compact_case_storage(case)
+                cur = self.store.db.execute(
+                    "UPDATE missions SET case_json=?,updated_at=? WHERE mission_id=? "
+                    "AND state=? AND run_token=? AND lease_until>?",
+                    (json.dumps(case, ensure_ascii=False, separators=(",", ":")),
+                     now, mid, RECONCILING, token, now))
+                self.store.db.commit()
+                return cur.rowcount == 1
+            except Exception:
+                self.store.db.rollback()
+                raise
+
+    def reconcile(self, mid: str, note: str = "",
+                  code_resolution: str = "") -> dict:
         """Acknowledge a crash-uncertain external action after manual inspection."""
         m = self.store.get(mid)
         if not m:
             return {"error": "unknown mission", "mission_id": mid}
         if m.state not in (RECOVERY_REQUIRED, RECONCILING):
             return {**self.status(mid), "error": f"cannot reconcile from {m.state}"}
+        code = self._inspect_code_recovery(m)
+        if code_resolution == "cancel":
+            # ``sessions.reconcile_recovery(..., cancel)`` only closes the
+            # transcript's uncertain tool boundary.  The user's cancellation is
+            # also a lifecycle decision: fence the Mission/process and its
+            # delegated tree instead of publishing QUEUED below.
+            if (not code.get("invalid") and code.get("session_uncertain") and
+                    code.get("session_id")):
+                from . import sessions
+                try:
+                    sessions.reconcile_recovery(
+                        code["session_id"], "cancel", note=note, confirmed=True,
+                        directory=code["session_dir"])
+                except (KeyError, ValueError):
+                    pass  # terminal Mission cancellation remains the safe outcome
+            return self.cancel(mid)
+        if code.get("invalid"):
+            return {**self.status(mid), "error": code.get("error")}
+        if (code.get("requires_resolution") and
+                code_resolution not in ("completed", "not_fired")):
+            return {
+                **self.status(mid),
+                "error": (
+                    "code workspace/session requires inspection; retry reconcile with "
+                    "code_resolution=completed, not_fired, or cancel"),
+            }
+        if (code.get("requires_resolution") and code_resolution == "not_fired" and
+                code.get("current") != code.get("case_expected")):
+            return {
+                **self.status(mid),
+                "error": (
+                    "code_resolution=not_fired is unsafe because the current workspace "
+                    "digest does not equal the original expected digest"),
+            }
         # Snapshot exact action identities while the Mission is still fenced in a
         # non-runnable recovery state.  Never use a later broad job-id update: a
         # cleanup owner can stall past its lease, another owner can finish, and a
@@ -1551,6 +2323,101 @@ class MissionService:
             if not self.store.owns_reconcile(mid, reconcile_token):
                 return {**self.status(mid),
                         "error": "reconciliation ownership expired; inspect status before retrying"}
+            # Re-read both journals after acquiring the durable Mission fence.
+            # The preflight above is diagnostic only and grants no authority.
+            owned_mission = self.store.get(mid)
+            code = self._inspect_code_recovery(owned_mission)
+            if code.get("invalid"):
+                self.store.release_reconcile(mid, reconcile_token)
+                return {**self.status(mid), "error": code.get("error")}
+            if (code.get("requires_resolution") and
+                    code_resolution not in ("completed", "not_fired")):
+                self.store.release_reconcile(mid, reconcile_token)
+                return {
+                    **self.status(mid),
+                    "error": "code recovery still requires an explicit completed/not_fired outcome",
+                }
+            if (code.get("requires_resolution") and
+                    code_resolution == "not_fired" and
+                    code.get("current") != code.get("case_expected")):
+                self.store.release_reconcile(mid, reconcile_token)
+                return {
+                    **self.status(mid),
+                    "error": "code_resolution=not_fired refused because workspace bytes drifted",
+                }
+            if code.get("requires_resolution"):
+                from . import sessions
+                if code.get("session_uncertain"):
+                    try:
+                        sessions.reconcile_recovery(
+                            code["session_id"], code_resolution, note=note,
+                            confirmed=True, directory=code["session_dir"])
+                    except (KeyError, ValueError) as exc:
+                        self.store.release_reconcile(mid, reconcile_token)
+                        return {**self.status(mid),
+                                "error": "code session reconciliation failed: %s" % exc}
+                case_updates = {"code_recovery_required": False}
+                if code.get("session_id"):
+                    case_updates["code_session_id"] = code["session_id"]
+                if code_resolution == "completed":
+                    receipt = {
+                        "kind": "mission_code_reconciled",
+                        "mission_id": mid,
+                        "session_id": code.get("session_id") or "",
+                        "baseline_tree_digest": code.get("baseline") or
+                                                code.get("case_expected") or "",
+                        "pre_tree_digest": code.get("receipt_expected") or
+                                           code.get("case_expected") or "",
+                        "post_tree_digest": code.get("current") or "",
+                        "snapshot_complete": True,
+                        "resolution": "completed",
+                        "note": str(note or "")[:1000],
+                        "at": int(time.time()),
+                    }
+                    already = any(
+                        row.get("kind") == receipt["kind"] and
+                        str(row.get("mission_id") or "") == mid and
+                        str(row.get("pre_tree_digest") or "") ==
+                        receipt["pre_tree_digest"] and
+                        str(row.get("post_tree_digest") or "") ==
+                        receipt["post_tree_digest"] and
+                        row.get("resolution") == "completed"
+                        for row in code.get("receipts") or [])
+                    if not already and not sessions.append_run_receipt(
+                            code["session_id"], receipt, limit=128,
+                            directory=code["session_dir"]):
+                        self.store.release_reconcile(mid, reconcile_token)
+                        return {**self.status(mid),
+                                "error": "could not persist the code reconciliation receipt"}
+                    confirmed_session = sessions.load_checked(
+                        code["session_id"], directory=code["session_dir"])
+                    active = ((confirmed_session.get("session") or {}).get(
+                        "active_run") if confirmed_session.get("status") == "ok"
+                              else None)
+                    if (confirmed_session.get("status") != "ok" or
+                            (isinstance(active, dict) and active.get("state") in
+                             ("executing_tool", "external_action"))):
+                        self.store.release_reconcile(mid, reconcile_token)
+                        return {**self.status(mid),
+                                "error": "code session changed during reconciliation; inspect again"}
+                    # The filesystem is not transactionally lockable with the
+                    # journals.  Detect a concurrent edit before publishing the
+                    # recorded digest into Mission state; the WAL receipt lets a
+                    # later explicit reconciliation continue from this boundary.
+                    from .verification import workspace_snapshot
+                    confirmed = workspace_snapshot(code["workspace"])
+                    if (not confirmed.get("snapshot_complete") or
+                            str(confirmed.get("tree_digest") or "") !=
+                            code.get("current")):
+                        self.store.release_reconcile(mid, reconcile_token)
+                        return {**self.status(mid),
+                                "error": "workspace changed during reconciliation; inspect again"}
+                    case_updates["code_expected_tree_digest"] = code["current"]
+                if not self._patch_code_recovery_owned(
+                        mid, reconcile_token, code.get("case_expected"), case_updates):
+                    self.store.release_reconcile(mid, reconcile_token)
+                    return {**self.status(mid),
+                            "error": "code recovery state changed concurrently; inspect before retrying"}
             # Anything in the pre-fence snapshot that is still unclaimed is safe
             # to revoke. An APPROVED row may concurrently become EXECUTING; the
             # ActionStore CAS then refuses nothing and its idempotency key stays.
@@ -1580,6 +2447,17 @@ class MissionService:
             self.store.release_reconcile(mid, reconcile_token)
             raise
 
+    def _cancel_code_worker(self, mid):
+        """Terminate one Mission's local or cross-process code worker."""
+        if self._code_process is None:
+            from .codeworker import CodeSliceProcessRunner
+            runner = CodeSliceProcessRunner(
+                session_dir=os.path.join(
+                    self._state_dir, "mission-code-sessions"))
+        else:
+            runner = self._code_process
+        return runner.cancel_current(mid)
+
     def _cancel_record(self, mid, reason, *, user_requested, parent_mission_id=""):
         """Cancel one Mission row and its pending authority; safe to repeat after a partial retry."""
         mission = self.store.get(mid)
@@ -1595,6 +2473,18 @@ class MissionService:
             except Exception:
                 pass  # cancellation is a safety boundary and cannot be vetoed by an audit hook
         self.store.cancel(mid, reason)
+        # Lifecycle fencing wins first; then terminate the owned OS tree before
+        # the cancel call returns.  A Web request may be in another process from
+        # jobd, so CodeSliceProcessRunner also consults its durable/named owner.
+        try:
+            if self._cancel_code_worker(mid):
+                self.store.record_event(
+                    mid, "control", "code_process_cancelled",
+                    payload={"cross_process": self._code_process is None})
+        except Exception as exc:
+            self.store.record_event(
+                mid, "control", "code_process_cancel_failed",
+                payload={"error": "%s: %s" % (type(exc).__name__, exc)})
         self.actions.refuse_for_job(mid, "mission cancelled")
         _name, nonce = self.store.last_parked(mid)
         if nonce:
@@ -1760,8 +2650,11 @@ class MissionService:
                 "human_updates": [{"at": now, "recovery": True,
                                    "note": continuation_note}],
             }
+            self._inherit_execution_contract(m, case)
             successor = "msn_" + secrets.token_hex(6)
             create_mission(self.store, successor, m.goal, case=case, leash=dict(m.leash))
+            if not self._bind_successor_workspace(successor):
+                return self.status(successor)
             inherited = self.store.inherit_completed_action_keys(mid, successor)
             self.store.record_event(
                 successor, "control", "return_to_collie",
@@ -1789,6 +2682,7 @@ class MissionService:
         if m.state != WAITING:
             return {**self.status(mid), "error": f"cannot check from {m.state}"}
         try:
+            self._activate_execution_profile(m)
             specialist = self._specialist_run(mid)
             if specialist:
                 self._run_tree.requeue_waiting(specialist["run_id"])
@@ -1805,8 +2699,56 @@ class MissionService:
         what colliejobd calls on wake)."""
         import time
         at = int(now if now is not None else time.time())
+        profile_target = None
+        root_profile_mission = None
+        profile_routes = 0
+        if mid:
+            selected = self.store.get(mid)
+            if selected:
+                try:
+                    self._activate_execution_profile(selected)
+                except RuntimeError as exc:
+                    return {**self.status(mid), "error": "tick unavailable: %s" % exc}
+        else:
+            # A global dispatcher may share one provider runtime across several
+            # claimed rows.  Activate a frozen route only when all ready frozen
+            # Missions agree; otherwise stop before any model call rather than
+            # running one of them on another Mission's billing route.
+            ready = list(self.store.list(state=QUEUED))
+            due_ids = {row[0] if isinstance(row, (list, tuple)) else
+                       row.get("mission_id") for row in self.store.due_waits(at)}
+            ready.extend(m for m in self.store.list() if m.mission_id in due_ids)
+            profiles = {}
+            for item in ready:
+                profile = (item.case or {}).get("execution_profile")
+                if isinstance(profile, dict):
+                    key = (_canonical_provider(profile.get("provider")),
+                           str(profile.get("model") or "").strip(),
+                           bool(profile.get("subscription_only")))
+                    profiles.setdefault(key, item)
+            if len(profiles) > 1:
+                # One MissionService owns one live provider runtime, but the
+                # daemon may supervise Missions frozen to different products.
+                # Dispatch the least-recently-updated row explicitly, then let
+                # the next daemon tick choose another route.  Never claim a
+                # mixed batch under whichever provider happened to be warm.
+                unique = {item.mission_id: item for item in ready}
+                profile_target = min(
+                    unique.values(), key=lambda item: (item.updated_at, item.mission_id))
+                profile_routes = len(profiles)
+            elif profiles:
+                try:
+                    root_profile_mission = next(iter(profiles.values()))
+                    self._activate_execution_profile(root_profile_mission)
+                except RuntimeError as exc:
+                    return {"advanced": 0, "error": "tick unavailable: %s" % exc}
         usage_reconciliation = self._reconcile_tasktree_usage()
-        recovered = self.store.recover_stale_runs(at)
+        # A code child can outlive the daemon process that owned the Mission
+        # lease (notably a POSIX process group).  Terminate it while the stale
+        # Mission row is still write-locked and owned; only then clear the token
+        # or expose a safe model-only boundary as QUEUED.
+        recovered = self.store.recover_stale_runs(
+            at, before_transition=self._cancel_code_worker)
         escalations = self.store.escalate_human_waits(at)
         specialists = 0
         parent_wakes = {"normal": 0, "specialists": 0}
@@ -1830,6 +2772,29 @@ class MissionService:
                     "recovered": recovered,
                     "usage_reconciliation": usage_reconciliation,
                     "escalations": escalations}
+        if profile_target is not None:
+            before = self.store.get(profile_target.mission_id)
+            if before and before.state == QUEUED:
+                self.run(before.mission_id)
+            elif before and before.state == WAITING:
+                self.check(before.mission_id)
+            after = self.store.get(profile_target.mission_id)
+            advanced = int(bool(after and before and
+                                (after.updated_at != before.updated_at or
+                                 after.state != before.state)))
+            self._sync_terminal_mission_trees()
+            return {"advanced": advanced, "specialists_advanced": specialists,
+                    "parents_resumed": parent_wakes, "recovered": recovered,
+                    "usage_reconciliation": self._reconcile_tasktree_usage(),
+                    "escalations": escalations,
+                    "profile_routes_ready": profile_routes,
+                    "profile_routed_mission": profile_target.mission_id}
+        if root_profile_mission is not None:
+            # Specialist batches may have selected another frozen route above.
+            # Restore the root batch route immediately before its claims/model
+            # calls; never rely on the service remaining warm in one profile.
+            self._activate_execution_profile(
+                self.store.get(root_profile_mission.mission_id) or root_profile_mission)
         n = self._driver().tick_missions(at, max_workers=self._mission_workers)
         usage_reconciliation = self._reconcile_tasktree_usage()
         self._sync_terminal_mission_trees()
@@ -1875,6 +2840,8 @@ class MissionService:
                     run_id, token,
                     "specialist runner has no bound Mission/worktree", needs_you=True)
                 return
+            self._activate_execution_profile(self.store.get(child_mid))
+            self._ensure_runtime()
             # Catch up any Mission accounting committed before an earlier process
             # died.  Reconcile the whole campaign (including the root Mission's
             # own usage) before the TaskTree ancestor budget gate.
@@ -2061,8 +3028,44 @@ class MissionService:
                 else:
                     self._run_tree.resume(run["run_id"])
         queued = self._run_tree.list_runs(T_QUEUED, specialists_only=True)
+        # A service has one live provider runtime.  Run only one frozen route per
+        # dispatch batch, but leave other specialist rows queued for the next
+        # pass; this prevents parallel children from racing provider/model/auth
+        # mutation on the shared MissionService.
+        selected_route = None
+        selected_mission = None
+        for run in queued:
+            child = self.store.get(run.get("mission_id") or "")
+            profile = (child.case or {}).get("execution_profile") if child else None
+            if isinstance(profile, dict):
+                route = (_canonical_provider(profile.get("provider")),
+                         str(profile.get("model") or "").strip(),
+                         bool(profile.get("subscription_only")))
+            else:
+                route = (_canonical_provider(self._provider), str(self._model or ""),
+                         bool(self._subscription_only))
+            if selected_route is None:
+                selected_route, selected_mission = route, child
+            if route != selected_route:
+                continue
+        if selected_mission and isinstance(
+                (selected_mission.case or {}).get("execution_profile"), dict):
+            self._activate_execution_profile(selected_mission)
+            self._ensure_runtime()
+        matching = []
+        for run in queued:
+            child = self.store.get(run.get("mission_id") or "")
+            profile = (child.case or {}).get("execution_profile") if child else None
+            route = ((_canonical_provider(profile.get("provider")),
+                      str(profile.get("model") or "").strip(),
+                      bool(profile.get("subscription_only")))
+                     if isinstance(profile, dict) else
+                     (_canonical_provider(self._provider), str(self._model or ""),
+                      bool(self._subscription_only)))
+            if route == selected_route:
+                matching.append(run)
         claimed = []
-        for run in queued[:workers]:
+        for run in matching[:workers]:
             lease = max(300, int(float(run["leash"].get("max_step_seconds", 600))) + 60)
             token = self._run_tree.claim(run["run_id"], lease_s=lease)
             if token:
@@ -2127,6 +3130,28 @@ class MissionService:
         if self._run_tree and m.case.get("_run_id"):
             run_tree = self._run_tree.tree(m.case["_run_id"])
         pending_hooks = list(getattr(self._hooks, "pending", ()) or ())
+        code_session_recovery = None
+        code_session_id = str((m.case or {}).get("code_session_id") or
+                              ((m.case or {}).get("code_profile") or {}).get(
+                                  "session_id") or "")
+        if m.state in (RECOVERY_REQUIRED, RECONCILING) and code_session_id:
+            inspected = self._inspect_code_recovery(m)
+            if inspected.get("invalid"):
+                code_session_recovery = {
+                    "recovery_required": True,
+                    "reason": str(inspected.get("error") or "")[:500],
+                    "allowed_resolutions": ["cancel"],
+                }
+            elif inspected.get("requires_resolution"):
+                reason = (
+                    "workspace bytes differ from the last published Collie boundary"
+                    if inspected.get("drift") else
+                    "the interrupted code run requires an explicit inspected outcome")
+                code_session_recovery = {
+                    "recovery_required": True,
+                    "reason": reason,
+                    "allowed_resolutions": ["completed", "not_fired", "cancel"],
+                }
         controls = []
         if m.state == QUEUED:
             controls = ["run", "pause", "cancel"]
@@ -2201,6 +3226,7 @@ class MissionService:
                 "pending": pending_hooks,
             },
             "controls": controls,
+            "code_session_recovery": code_session_recovery,
             "recovery_actions": recovery_actions,
             "receipts": receipts,
         }
@@ -2223,6 +3249,11 @@ class MissionService:
         if self._closed:
             return
         self._closed = True
+        if self._code_process is not None:
+            # A graceful daemon restart must not orphan its own editor process.
+            # Do not scan cross-process receipts here: another live service may
+            # legitimately own a different Mission in the same state directory.
+            self._code_process.cancel_current(include_persisted=False)
         self.store.close()
         self.actions.close()
         # Injected stores belong to their caller and may be shared by the Web,

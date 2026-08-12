@@ -296,7 +296,7 @@ def _is_asserting_cmd(command: str) -> bool:
     return bool(_ASSERTED_RE.search(c))
 
 
-def _budget_exceeded(model, total):
+def _budget_exceeded(model, total, subscription_only=False):
     """True once the run has spent past the configured $ or token ceiling (Settings panel /
     COLLIE_MAX_COST / COLLIE_MAX_TOTAL_TOKENS). 0/unset = no limit."""
     try:
@@ -312,7 +312,7 @@ def _budget_exceeded(model, total):
     tot = total.input_tokens + total.output_tokens + total.cache_read + total.cache_creation
     if max_tok > 0 and tot >= max_tok:
         return True
-    if max_cost > 0:
+    if max_cost > 0 and not subscription_only:
         from .costs import cost_usd
         if cost_usd(model, total.input_tokens, total.output_tokens,
                     total.cache_read, total.cache_creation) >= max_cost:
@@ -444,6 +444,10 @@ class Harness:
         self.project = project
         self.mode = mode
         self.max_turns = max_turns
+        # Optional hard ceiling for physical provider requests in this Harness
+        # run. Mission code slices set it from their outer durable budget;
+        # ordinary interactive runs leave it unlimited (zero).
+        self.max_model_calls = 0
         self.stream_cb = None            # set by interactive surfaces -> real token streaming
         self.self_verify = self_verify   # after an edit, nudge once to run tests
         self.verify_nudge = None         # override VERIFY_NUDGE (e.g. SWE: quick python -c, not pytest)
@@ -739,10 +743,13 @@ class Harness:
         msg = "ISSUE:\n%s\n\nCANDIDATE DIFF:\n%s" % (str(issue)[:6000], str(diff)[:9000])
         self._critic_usage = None
         self._critic_model = None
+        self._critic_request_count = None
         try:
             reviewer = self.critic_provider or self.provider
             comp = reviewer.complete(sysp, [{"role": "user", "content": msg}], [])
             self._critic_usage = comp.usage   # the caller folds this into the run's token/$ total —
+            self._critic_request_count = max(
+                1, int(getattr(comp, "request_count", 1) or 1))
             # Lightweight/custom providers used by embedders are only required to implement
             # ``complete``.  Accounting metadata must not turn a successfully returned objection
             # into an exception and silently approve the candidate.
@@ -842,6 +849,7 @@ class Harness:
         _redact_on = (_settings.get("REDACT_SECRETS", "on") or "on") not in ("off", "0", "false")
         self._secret_vault = getattr(self, "_secret_vault", {})
         total = Usage()
+        model_calls = 0
         # --- cache-waste ledger (point #3): the prefix SHOULD cache turn-to-turn; when it doesn't,
         # attribute the re-billed tokens to a cause (schema change / history elision / TTL) and price
         # the waste. Seed reported_cache from the provider so a 100%-from-turn-0 bust still counts
@@ -885,6 +893,11 @@ class Harness:
         turns_exhausted = False
         try:
             for turn in range(self.max_turns):
+                call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
+                if call_cap and model_calls >= call_cap:
+                    budget_hit = True
+                    res.turns = turn
+                    break
                 if self._cancel_requested():
                     canceled = True
                     res.error = "canceled by user"
@@ -893,7 +906,9 @@ class Harness:
                     break
                 shared_budget_hit = bool(self.shared_budget is not None
                                          and self.shared_budget.exceeded())
-                if shared_budget_hit or (turn > 0 and _budget_exceeded(self.provider.model, total)):
+                if shared_budget_hit or (turn > 0 and _budget_exceeded(
+                        self.provider.model, total,
+                        bool(getattr(self.provider, "subscription_only", False)))):
                     budget_hit = True         # spent past the $/token ceiling — stop before another turn
                     res.turns = turn
                     break
@@ -942,6 +957,10 @@ class Harness:
                 attempts = 0
                 overflow_now = False
                 while True:
+                    call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
+                    if call_cap and model_calls >= call_cap:
+                        budget_hit = True
+                        break
                     if self._cancel_requested():
                         canceled = True
                         res.error = "canceled by user"
@@ -962,6 +981,7 @@ class Harness:
                     # A failed streaming attempt burned real tokens too. Pack's aggregate observer
                     # sees the same record exactly once, so N candidates share one budget.
                     self._account_usage(total, comp.usage)
+                    model_calls += max(1, int(getattr(comp, "request_count", 1) or 1))
                     if comp.stop_reason != "error":
                         break
                     cls = classify_error(comp.error_detail or comp.text or "", comp.error_status)
@@ -977,9 +997,13 @@ class Harness:
                         break
                     shared_exhausted = bool(self.shared_budget is not None
                                             and self.shared_budget.exceeded())
+                    call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
                     if (cls == "retryable" and attempts < self.max_retries
+                            and (not call_cap or model_calls < call_cap)
                             and not shared_exhausted
-                            and not _budget_exceeded(self.provider.model, total)):
+                            and not _budget_exceeded(
+                                self.provider.model, total,
+                                bool(getattr(self.provider, "subscription_only", False)))):
                         delay = self.retry_base * (2 ** attempts)
                         attempts += 1
                         self.recorder.log_turn(rid, turn, "retry",
@@ -1026,6 +1050,8 @@ class Harness:
                 if canceled:
                     self._emit("canceled", at="model_boundary")
                     break
+                if budget_hit:
+                    break
                 if overflow_now:
                     continue   # rebuild context with shrunk history, then re-run this turn
                 u = comp.usage
@@ -1036,8 +1062,9 @@ class Harness:
                 # on Anthropic; DeepSeek uses the `collie prefix --measure` probe instead.
                 if turn == 0 and self.provider.name in ("anthropic", "anthropic-oauth") \
                         and comp.stop_reason != "error" and (u.cache_creation + u.cache_read) > 0:
-                    # NB anthropic-oauth's cached segment also holds the ~13-tok _CC_SYSTEM identity
-                    # block — measured prefix is inflated by that on the OAuth path.
+                    # The native overnight OAuth profile carries Collie's system
+                    # block only; the measured prefix therefore remains a harness
+                    # measurement rather than a Claude Code prompt measurement.
                     res.prefix_measured = u.cache_creation + u.cache_read
 
                 # --- cache-waste detection (point #3)
@@ -1676,9 +1703,13 @@ class Harness:
                 # self-nudge cannot. Bounded critic->repair rounds.
                 shared_exhausted = bool(self.shared_budget is not None
                                         and self.shared_budget.exceeded())
-                local_exhausted = _budget_exceeded(self.provider.model, total)
+                local_exhausted = _budget_exceeded(
+                    self.provider.model, total,
+                    bool(getattr(self.provider, "subscription_only", False)))
                 if (self.critic and did_edit and turn < self.max_turns - 1
                         and critic_rounds < self.critic_max
+                        and (not getattr(self, "max_model_calls", 0) or
+                             model_calls < int(self.max_model_calls))
                         and not shared_exhausted and not local_exhausted):
                     _cdiff = _tree_diff(self.cwd)
                     if _cdiff:
@@ -1689,6 +1720,9 @@ class Harness:
                             self._account_usage(total, self._critic_usage,
                                                 getattr(self, "_critic_model", None))
                             self._critic_usage = None; self._critic_model = None
+                            model_calls += max(1, int(getattr(
+                                self, "_critic_request_count", 1) or 1))
+                            self._critic_request_count = None
                         if not _ok:
                             session["messages"].append({"role": "assistant", "content": comp.text})
                             session["messages"].append({"role": "user", "content":
@@ -1785,13 +1819,16 @@ class Harness:
                     pass                          # keep answer empty -> `res.answer or res.error` shows the error
                 elif last_text:
                     answer = comp.text
-                elif (budget_hit or _budget_exceeded(self.provider.model, total)
+                elif (budget_hit or _budget_exceeded(
+                        self.provider.model, total,
+                        bool(getattr(self.provider, "subscription_only", False)))
                       or (self.shared_budget is not None and self.shared_budget.exceeded())):
                     # Don't spend MORE past either the local ceiling or Pack's aggregate ceiling on
                     # a cosmetic synthesis call after useful work has already happened.
                     budget_hit = True
                     answer = "(stopped at budget — see the edits/tools above)"
-                else:
+                elif (not getattr(self, "max_model_calls", 0) or
+                      model_calls < int(self.max_model_calls)):
                     # A run cut off mid-task must not fall back on the word "done". Measured: with a
                     # tight turn budget the loop ends here, the synthesis comes back empty, and every
                     # run answered "(done — see the edits/tools above)" having never run a single
@@ -1806,6 +1843,7 @@ class Harness:
                             session, user_msg, self.cwd, self.project, self.mode)
                         fin = self.provider.complete(_sys2, msgs2, [], on_text=self.stream_cb)
                         self._account_usage(total, fin.usage)
+                        model_calls += max(1, int(getattr(fin, "request_count", 1) or 1))
                         if fin.stop_reason == "error":   # don't let a failed synthesis become the answer
                             res.error = res.error or (fin.text or "provider error")[:300]
                             answer = _placeholder
@@ -1813,6 +1851,9 @@ class Harness:
                             answer = (fin.text or "").strip() or _placeholder
                     except Exception:
                         answer = _placeholder
+                else:
+                    budget_hit = True
+                    answer = "(stopped at model-call budget — see the edits/tools above)"
             if budget_hit and answer:
                 answer += "\n\n_[stopped: budget ceiling reached]_"
             if turns_exhausted and answer and "ran out of turns" not in answer:
@@ -1877,6 +1918,7 @@ class Harness:
             res.error = "%s: %s" % (type(e).__name__, e)
 
         res.input_tokens = total.input_tokens
+        res.model_calls = model_calls
         res.output_tokens = total.output_tokens
         res.cache_read = total.cache_read
         res.cache_creation = total.cache_creation

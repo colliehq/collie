@@ -37,9 +37,11 @@ _KEY_ENV = {
 }
 
 # ---- prices ($/1M tokens: input, cached_input, output) ------------------------------------
-# Subscription entries (anthropic-oauth / codex-oauth) bill at the EQUIVALENT metered rate in
-# receipts — same convention collie already uses for Claude-sub Opus — while the picker labels
-# them "$0 marginal". Registered into costs.PRICES on import (idempotent).
+# Login-backed entries bill at the EQUIVALENT metered rate in receipts so budgets stay
+# conservative.  That accounting must not be read as a billing claim: in particular,
+# anthropic-oauth is an experimental raw direct route whose availability and billing are
+# established only by runtime admission, not by this catalog.  Registered into costs.PRICES on
+# import (idempotent).
 PRICES = {
     # (input, cache-read, output) per 1M tokens. Opus 4.8 sat at the old 15/75 Opus-3-era rates,
     # which overstated every Opus receipt by 3x; both Opus 5 and 4.8 are 5/25.
@@ -97,13 +99,13 @@ class ModelEntry:
 def _static() -> list:
     P = PRICES
     return [
-        # Claude — subscription first (the recommended $0-marginal path), then metered API.
+        # Claude direct is experimental; keep its route visibly distinct from the metered API.
         ModelEntry("anthropic-oauth", "claude-opus-5", "Claude Opus 5",
-                   "Claude subscription", "subscription", ["coding", "frontier"], price=P["claude-opus-5"]),
+                   "Claude direct (experimental)", "subscription", ["coding", "frontier"], price=P["claude-opus-5"]),
         ModelEntry("anthropic-oauth", "claude-opus-4-8", "Claude Opus 4.8",
-                   "Claude subscription", "subscription", ["coding", "frontier"], price=P["claude-opus-4-8"]),
+                   "Claude direct (experimental)", "subscription", ["coding", "frontier"], price=P["claude-opus-4-8"]),
         ModelEntry("anthropic-oauth", "claude-sonnet-5", "Claude Sonnet 5",
-                   "Claude subscription", "subscription", ["coding", "fast"], price=P["claude-sonnet-5"]),
+                   "Claude direct (experimental)", "subscription", ["coding", "fast"], price=P["claude-sonnet-5"]),
         ModelEntry("anthropic", "claude-opus-5", "Claude Opus 5",
                    "Anthropic API key", "metered", ["coding", "frontier"], price=P["claude-opus-5"]),
         ModelEntry("anthropic", "claude-opus-4-8", "Claude Opus 4.8",
@@ -306,7 +308,7 @@ def _label_for(provider: str, model: str) -> str:
 
 def _via_kind(provider: str) -> tuple:
     if provider in ("anthropic-oauth", "codex-oauth", "claude-cli"):
-        return {"anthropic-oauth": "Claude subscription", "codex-oauth": "ChatGPT subscription",
+        return {"anthropic-oauth": "Claude direct (experimental)", "codex-oauth": "ChatGPT subscription",
                 "claude-cli": "your claude CLI"}[provider], "subscription"
     if provider in ("ollama", "mock"):
         return "local", "local"

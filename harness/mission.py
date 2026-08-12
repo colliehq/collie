@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import hashlib
 import fnmatch
+import math
 import os
 import queue
 import re
@@ -61,6 +62,7 @@ from .jobs import (CANCELLED, DONE_ACCEPTED, DONE_VERIFIED, FAILED_S, NEEDS_YOU,
 from .verifier import FAILED, INCONCLUSIVE, VERIFIED, Verdict
 
 _TERMINAL = {DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED}
+_HEARTBEAT_SECONDS = 20
 # control moves the decider can return instead of a primitive name
 WAIT, DONE, NEEDS_HUMAN, NEEDS_AUTHORIZATION, UPDATE_COVERAGE = (
     "wait", "done", "needs_human", "needs_authorization", "update_coverage")
@@ -379,8 +381,15 @@ def _compact_case_storage(case, max_chars=64000):
         "pending_authorizations", "resolved_authorizations",
         "pending_followups", "_due_followups", "resolved_followups",
         "_campaign_coverage",
+        # These are execution authority, not conversational context.  An overnight
+        # Mission must not forget its frozen provider/billing route or verifier
+        # merely because a long research result forced case compaction.
+        "execution_profile", "billing_safety", "code_profile", "code_verification",
         "observe_count", "submitted", "published", "sent", "url", "draft",
-        "code_verified", "coded", "last_sent_to", "_isolated_workspace",
+        "code_verified", "code_pending", "code_session_id",
+        "code_recovery_required",
+        "code_baseline_tree_digest", "code_expected_tree_digest", "coded",
+        "last_sent_to", "_isolated_workspace",
         "_workspace", "_run_id", "_specialist_run_id", "_parent_mission_id",
     }
     out = {k: case[k] for k in case if k in priority_names}
@@ -414,7 +423,10 @@ def _model_case_json(case, limit=12000):
     makes truncation deterministic and retains the information needed to resume.
     """
     case = dict(case or {})
-    priority = ("_authority", "_standing_authority", "_mission_summary", "human_updates",
+    priority = ("_authority", "execution_profile", "billing_safety", "code_profile",
+                "code_verification", "code_baseline_tree_digest",
+                "code_expected_tree_digest",
+                "_standing_authority", "_mission_summary", "human_updates",
                 "pending_authorizations", "resolved_authorizations",
                 "_campaign_coverage", "pending_followups", "_due_followups", "_activity_ledger",
                 "_do_not_repeat", "browse_sites", "_recent_results",
@@ -427,7 +439,12 @@ def _model_case_json(case, limit=12000):
         return raw
     # Preserve every priority field in bounded form, then spend the remainder on
     # older context.  The explicit marker prevents the model treating it as full.
-    budgets = {"_authority": 1000, "_standing_authority": 1000,
+    budgets = {"_authority": 1000, "execution_profile": 900,
+               "billing_safety": 1800, "code_profile": 1200,
+               "code_verification": 1800,
+               "code_baseline_tree_digest": 200,
+               "code_expected_tree_digest": 200,
+               "_standing_authority": 1000,
                "_mission_summary": 900, "human_updates": 700,
                "pending_authorizations": 1000, "resolved_authorizations": 600,
                "_campaign_coverage": 1800,
@@ -620,8 +637,10 @@ class MissionStore:
             model_calls INTEGER NOT NULL DEFAULT 0,
             turns INTEGER NOT NULL DEFAULT 0,
             model_cost_microusd INTEGER NOT NULL DEFAULT 0,
+            equivalent_model_cost_microusd INTEGER NOT NULL DEFAULT 0,
             retry_count INTEGER NOT NULL DEFAULT 0,
             storage_bytes INTEGER NOT NULL DEFAULT 0,
+            external_storage_bytes INTEGER NOT NULL DEFAULT 0,
             checkpoint_seq INTEGER NOT NULL DEFAULT 0,
             human_since INTEGER NOT NULL DEFAULT 0,
             human_escalate_at INTEGER NOT NULL DEFAULT 0,
@@ -630,12 +649,34 @@ class MissionStore:
             last_dispatch_at INTEGER NOT NULL DEFAULT 0,
             lane TEXT NOT NULL DEFAULT 'mission',
             external_run_id TEXT NOT NULL DEFAULT '')""")
+        # One row is inserted before each physical model transport attempt.  It
+        # is deliberately append-only and never refunded: a process may die
+        # after the server accepted a request but before a response/usage record
+        # returns.  Conservatively charging the reservation is what makes the
+        # aggregate call leash a crash-safe hard ceiling.
+        self.db.execute("""CREATE TABLE IF NOT EXISTS mission_model_requests(
+            request_id TEXT PRIMARY KEY,
+            mission_id TEXT NOT NULL,
+            owner_fingerprint TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            purpose TEXT NOT NULL DEFAULT '',
+            reserved_at INTEGER NOT NULL,
+            completed_at INTEGER NOT NULL DEFAULT 0,
+            outcome TEXT NOT NULL DEFAULT 'reserved')""")
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS mission_model_requests_mission "
+            "ON mission_model_requests(mission_id,reserved_at)")
         runtime_cols = {r[1] for r in self.db.execute("PRAGMA table_info(mission_runtime)")}
         for col, decl in (("lane", "TEXT NOT NULL DEFAULT 'mission'"),
                           ("external_run_id", "TEXT NOT NULL DEFAULT ''"),
                           ("parent_mission_id", "TEXT NOT NULL DEFAULT ''"),
                           ("model_calls", "INTEGER NOT NULL DEFAULT 0"),
-                          ("turns", "INTEGER NOT NULL DEFAULT 0")):
+                          ("turns", "INTEGER NOT NULL DEFAULT 0"),
+                          ("equivalent_model_cost_microusd",
+                           "INTEGER NOT NULL DEFAULT 0"),
+                          ("external_storage_bytes",
+                           "INTEGER NOT NULL DEFAULT 0")):
             if col not in runtime_cols:
                 try:
                     self.db.execute(
@@ -664,11 +705,14 @@ class MissionStore:
         # logical call/turn receipts.  MAX never rewinds a newer counter (and
         # remains valid if calls and turns later diverge), while a process dying
         # after ALTER but before this UPDATE is repaired on the next open.
-        for col in ("model_calls", "turns"):
-            self.db.execute(
-                "UPDATE mission_runtime SET %s=MAX(%s,(SELECT COUNT(*) "
-                "FROM mission_events e WHERE e.mission_id=mission_runtime.mission_id "
-                "AND e.kind='decision'))" % (col, col))
+        self.db.execute(
+            "UPDATE mission_runtime SET model_calls=MAX(model_calls,(SELECT COUNT(*) "
+            "FROM mission_events e WHERE e.mission_id=mission_runtime.mission_id "
+            "AND e.kind='decision'))")
+        self.db.execute(
+            "UPDATE mission_runtime SET turns=MAX(turns,(SELECT COUNT(*) "
+            "FROM mission_events e WHERE e.mission_id=mission_runtime.mission_id "
+            "AND e.kind IN ('decision','planning_turn')))")
         # Specialist ancestry is budget authority, not mutable conversational
         # context.  New rows persist it directly below.  Existing databases from
         # before that column existed get one conservative migration from the
@@ -756,6 +800,8 @@ class MissionStore:
             return {}
         out = dict(r)
         out["model_cost_usd"] = out.get("model_cost_microusd", 0) / 1_000_000.0
+        out["equivalent_model_cost_usd"] = (
+            out.get("equivalent_model_cost_microusd", 0) / 1_000_000.0)
         return out
 
     def _lineage_locked(self, mission_id):
@@ -799,12 +845,17 @@ class MissionStore:
             "COALESCE(SUM(r.model_calls),0) model_calls,"
             "COALESCE(SUM(r.turns),0) turns,"
             "COALESCE(SUM(r.model_cost_microusd),0) model_cost_microusd,"
+            "COALESCE(SUM(r.equivalent_model_cost_microusd),0) "
+            "equivalent_model_cost_microusd,"
             "COALESCE(SUM(r.retry_count),0) retry_count,"
-            "COALESCE(SUM(r.storage_bytes),0) storage_bytes "
+            "COALESCE(SUM(r.storage_bytes+r.external_storage_bytes),0) storage_bytes,"
+            "COALESCE(SUM(r.external_storage_bytes),0) external_storage_bytes "
             "FROM mission_runtime r JOIN subtree ON subtree.mission_id=r.mission_id",
             (mission_id,)).fetchone()
         out = dict(row) if row else {}
         out["model_cost_usd"] = out.get("model_cost_microusd", 0) / 1_000_000.0
+        out["equivalent_model_cost_usd"] = (
+            out.get("equivalent_model_cost_microusd", 0) / 1_000_000.0)
         return out
 
     def aggregate_runtime(self, mission_id):
@@ -893,17 +944,47 @@ class MissionStore:
         with self._lock:
             return self._budget_reason_locked(mission_id, now)
 
+    def remaining_active_wall_seconds(self, mission_id):
+        """Return the tightest remaining active-time allowance in the lineage.
+
+        Runtime is charged to a Mission and to every ancestor's subtree budget.
+        A child therefore has to honor the smallest allowance remaining on any
+        ancestor, not merely its own leash. ``None`` means the whole lineage is
+        unbounded; a corrupt/incomplete lineage fails closed with zero.
+        """
+        with self._lock:
+            lineage, error = self._lineage_locked(mission_id)
+            if error:
+                return 0.0
+            remaining_ms = []
+            for row in lineage:
+                leash = _jl(row["leash_json"])
+                limit_s = float(leash.get("max_active_wall_seconds", 21600) or 0)
+                if limit_s <= 0:
+                    continue
+                aggregate = self._aggregate_runtime_locked(row["mission_id"])
+                remaining_ms.append(
+                    max(0.0, limit_s * 1000.0 -
+                        float(aggregate.get("active_wall_ms", 0) or 0)))
+            return min(remaining_ms) / 1000.0 if remaining_ms else None
+
     def account_runtime(self, mission_id, token="", *, input_tokens=0, output_tokens=0,
-                        cache_tokens=0, cost_usd=0.0, wall_ms=0, retries=0):
+                        cache_tokens=0, cost_usd=0.0, equivalent_cost_usd=0.0,
+                        wall_ms=0, retries=0,
+                        model_calls=0, turns=0):
         """Atomically charge one completed/abandoned step to the campaign.
 
         A token is optional for recovery bookkeeping.  When supplied, a stale
         worker is fenced and cannot charge a fresh run's budget.
         """
-        vals = (max(0, int(wall_ms or 0)), max(0, int(input_tokens or 0)),
+        charged_wall_ms = max(0, int(wall_ms or 0))
+        vals = (charged_wall_ms, max(0, int(input_tokens or 0)),
                 max(0, int(output_tokens or 0)), max(0, int(cache_tokens or 0)),
                 max(0, int(round(float(cost_usd or 0.0) * 1_000_000))),
-                max(0, int(retries or 0)), mission_id)
+                max(0, int(round(float(equivalent_cost_usd or 0.0) * 1_000_000))),
+                max(0, int(retries or 0)), max(0, int(model_calls or 0)),
+                max(0, int(turns or 0)), charged_wall_ms, int(time.time()),
+                mission_id)
         owner = ""
         args = list(vals)
         if token:
@@ -915,7 +996,26 @@ class MissionStore:
                 "UPDATE mission_runtime SET active_wall_ms=active_wall_ms+?,"
                 "input_tokens=input_tokens+?,output_tokens=output_tokens+?,"
                 "cache_tokens=cache_tokens+?,model_cost_microusd=model_cost_microusd+?,"
-                "retry_count=retry_count+? WHERE mission_id=?" + owner, args)
+                "equivalent_model_cost_microusd=equivalent_model_cost_microusd+?,"
+                "retry_count=retry_count+?,model_calls=model_calls+?,turns=turns+?,"
+                "active_since=CASE WHEN ?>0 THEN ? ELSE active_since END "
+                "WHERE mission_id=?" + owner, args)
+            self.db.commit()
+        return cur.rowcount == 1
+
+    def set_external_storage(self, mission_id, storage_bytes, token=""):
+        """Set (not add) the current size of a Mission-owned external transcript."""
+        owner = ""
+        args = [max(0, int(storage_bytes or 0)), mission_id]
+        if token:
+            owner = (" AND EXISTS (SELECT 1 FROM missions m "
+                     "WHERE m.mission_id=mission_runtime.mission_id "
+                     "AND m.run_token=? AND m.state IN (?,?))")
+            args.extend([token, RUNNING, PAUSING])
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE mission_runtime SET external_storage_bytes=? "
+                "WHERE mission_id=?" + owner, args)
             self.db.commit()
         return cur.rowcount == 1
 
@@ -1043,6 +1143,36 @@ class MissionStore:
         self.refresh_storage(mission_id)
         return True
 
+    def patch_case(self, mission_id, updates, allowed_states=None):
+        """Atomically merge a few unowned control-plane fields into current case state.
+
+        Runnable-boundary checks (for example subscription revalidation) must not
+        write back a stale full Mission object after another owner has folded a
+        completed action.  This transaction reads and patches the current JSON
+        while holding the database write lock.
+        """
+        updates = dict(updates or {})
+        states = tuple(allowed_states or ())
+        now = int(time.time())
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT state,case_json FROM missions WHERE mission_id=?",
+                (mission_id,)).fetchone()
+            if not row or (states and row["state"] not in states):
+                self.db.rollback()
+                return False
+            case = _jl(row["case_json"])
+            case.update(updates)
+            case = _compact_case_storage(case)
+            cur = self.db.execute(
+                "UPDATE missions SET case_json=?,updated_at=? WHERE mission_id=?",
+                (_js(case), now, mission_id))
+            self.db.commit()
+        if cur.rowcount:
+            self.refresh_storage(mission_id)
+        return cur.rowcount == 1
+
     def claim_run(self, mission_id, expected=(QUEUED,), lease_s=300):
         """Atomically acquire the one active driver slot for a mission.
 
@@ -1057,6 +1187,24 @@ class MissionStore:
             return None
         marks = ",".join("?" for _ in states)
         with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            candidate = self.db.execute(
+                "SELECT 1 FROM missions WHERE mission_id=? AND state IN (%s) "
+                "AND COALESCE(run_token,'')=''" % marks,
+                (mission_id, *states)).fetchone()
+            if not candidate:
+                self.db.rollback()
+                return None
+            # A previous unconfirmed boundary keeps a settled campaign fence
+            # until its conservative lease expires. Retire it while the old
+            # lifecycle is still provably non-running; doing this after the new
+            # RUNNING transition would either deadlock the same Mission forever
+            # or make it impossible to distinguish a live owner.
+            self.db.execute(
+                "DELETE FROM mission_resource_leases WHERE mission_id=? "
+                "AND resource LIKE 'mission-active:%' AND token LIKE 'settled:%' "
+                "AND lease_until<=?",
+                (mission_id, now))
             cur = self.db.execute(
                 "UPDATE missions SET state=?,run_token=?,lease_until=?,updated_at=? "
                 "WHERE mission_id=? AND state IN (%s) AND COALESCE(run_token,'')=''" % marks,
@@ -1152,42 +1300,105 @@ class MissionStore:
         """
         return self.renew_run(mission_id, token, renew_s)
 
-    def recover_stale_runs(self, now=None):
+    def recover_stale_runs(self, now=None, before_transition=None):
         """Surface crashed workers for explicit reconciliation after their heartbeat expires.
 
         We do not blindly rerun: an external action might have fired immediately
         before process death.  RECOVERY_REQUIRED is intentionally distinct from a
         normal human hand-off, so ordinary ``continue`` cannot duplicate it.
+
+        ``before_transition`` runs for each still-stale owner while the write
+        transaction is held.  MissionService uses that seam to terminate a
+        durable code-worker process before clearing its ownership token.  Keeping
+        the callback inside the transaction prevents a late heartbeat from
+        renewing the lease between the stale check and process fencing.
         """
         now = int(now if now is not None else time.time())
         safe_phases = {"deciding", "decision_ready"}
         recovered = 0
         with self._lock:
-            self.db.execute("BEGIN IMMEDIATE")
-            rows = self.db.execute(
-                "SELECT m.mission_id,COALESCE(r.active_phase,'') phase FROM missions m "
-                "LEFT JOIN mission_runtime r ON r.mission_id=m.mission_id "
-                "WHERE m.state IN (?,?) AND COALESCE(m.run_token,'')<>'' "
-                "AND m.lease_until>0 AND m.lease_until<=?",
-                (RUNNING, PAUSING, now)).fetchall()
-            for row in rows:
-                safe = row["phase"] in safe_phases
-                state = QUEUED if safe else RECOVERY_REQUIRED
-                result = ("safe model-only boundary recovered; queued to continue" if safe else
-                          "runner heartbeat expired; inspect the external system and receipts, "
-                          "then explicitly reconcile or cancel")
-                cur = self.db.execute(
-                    "UPDATE missions SET state=?,run_token='',lease_until=0,result=?,updated_at=? "
-                    "WHERE mission_id=? AND state IN (?,?) AND lease_until<=?",
-                    (state, result, now, row["mission_id"], RUNNING, PAUSING, now))
-                if cur.rowcount:
-                    recovered += 1
-                    self.db.execute(
-                        "UPDATE mission_runtime SET progress_seq=progress_seq+1,progress_at=?,"
-                        "active_phase=?,active_since=? WHERE mission_id=?",
-                        (now, "recovered_safe" if safe else "recovery_required", now,
-                         row["mission_id"]))
-            self.db.commit()
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                rows = self.db.execute(
+                    "SELECT m.mission_id,m.leash_json,m.run_token,m.updated_at,"
+                    "COALESCE(r.active_phase,'') phase,"
+                    "COALESCE(r.active_since,0) active_since FROM missions m "
+                    "LEFT JOIN mission_runtime r ON r.mission_id=m.mission_id "
+                    "WHERE m.state IN (?,?) AND COALESCE(m.run_token,'')<>'' "
+                    "AND m.lease_until>0 AND m.lease_until<=?",
+                    (RUNNING, PAUSING, now)).fetchall()
+                for row in rows:
+                    if callable(before_transition):
+                        terminated = before_transition(row["mission_id"])
+                        if terminated is not True:
+                            # Ownership must remain fenced until the external
+                            # process tree is confirmed extinct. Clearing the
+                            # token on a best-effort/failed kill would let a new
+                            # worker edit concurrently with the stale one.
+                            self.db.execute(
+                                "INSERT INTO mission_events(mission_id,kind,name,"
+                                "payload_json,at) VALUES(?,?,?,?,?)",
+                                (row["mission_id"], "watchdog",
+                                 "stale_worker_termination_unconfirmed", "{}", now))
+                            continue
+                    # A dead process cannot report its last partial boundary.
+                    # Use the final durable heartbeat plus one heartbeat period,
+                    # never recovery time: lease grace, reboot and machine sleep
+                    # are not evidence that the worker remained active.
+                    active_since = int(row["active_since"] or 0)
+                    leash = _jl(row["leash_json"])
+                    max_step_ms = int(
+                        (max(0.05, float(leash.get("max_step_seconds", 600))) + 5.0) *
+                        1000)
+                    blocking_phase = row["phase"] in {
+                        "deciding", "action_preparing", "executing", "goal_verifying"}
+                    observed_until = min(
+                        now, int(row["updated_at"] or 0) + _HEARTBEAT_SECONDS)
+                    inflight_ms = (min(
+                        max_step_ms, max(0, observed_until - active_since) * 1000)
+                        if active_since and blocking_phase else 0)
+                    if inflight_ms:
+                        self.db.execute(
+                            "UPDATE mission_runtime SET "
+                            "active_wall_ms=active_wall_ms+?,active_since=? "
+                            "WHERE mission_id=?",
+                            (inflight_ms, now, row["mission_id"]))
+                    safe = row["phase"] in safe_phases
+                    exhausted = self._budget_reason_locked(row["mission_id"], now)
+                    if safe and exhausted:
+                        state = NEEDS_YOU
+                        result = exhausted
+                    else:
+                        state = QUEUED if safe else RECOVERY_REQUIRED
+                        result = (
+                            "safe model-only boundary recovered; queued to continue" if safe else
+                            "runner heartbeat expired; inspect the external system and receipts, "
+                            "then explicitly reconcile or cancel")
+                    cur = self.db.execute(
+                        "UPDATE missions SET state=?,run_token='',lease_until=0,result=?,updated_at=? "
+                        "WHERE mission_id=? AND state IN (?,?) AND lease_until<=? "
+                        "AND run_token=?",
+                        (state, result, now, row["mission_id"], RUNNING, PAUSING, now,
+                         row["run_token"]))
+                    if cur.rowcount:
+                        recovered += 1
+                        self.db.execute(
+                            "UPDATE mission_runtime SET progress_seq=progress_seq+1,progress_at=?,"
+                            "active_phase=?,active_since=? WHERE mission_id=?",
+                            (now, ("budget_exhausted" if state == NEEDS_YOU else
+                                   "recovered_safe" if safe else "recovery_required"), now,
+                             row["mission_id"]))
+                    elif inflight_ms:
+                        # A re-entrant recovery hook changed ownership. Undo only
+                        # this audit's provisional charge in the same transaction.
+                        self.db.execute(
+                            "UPDATE mission_runtime SET active_wall_ms="
+                            "MAX(0,active_wall_ms-?) WHERE mission_id=?",
+                            (inflight_ms, row["mission_id"]))
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return recovered
 
     def claim_resource(self, resource, mission_id, lease_s=300):
@@ -1718,6 +1929,13 @@ class MissionStore:
             if not r:
                 self.db.commit()
                 return None
+            # See claim_run(): clear only this non-running Mission's expired,
+            # already-charged fence before publishing the fresh RUNNING owner.
+            self.db.execute(
+                "DELETE FROM mission_resource_leases WHERE mission_id=? "
+                "AND resource LIKE 'mission-active:%' AND token LIKE 'settled:%' "
+                "AND lease_until<=?",
+                (r["mission_id"], now))
             mc = self.db.execute(
                 "UPDATE missions SET state=?,run_token=?,lease_until=?,updated_at=? "
                 "WHERE mission_id=? AND state=? AND COALESCE(run_token,'')=''",
@@ -1737,6 +1955,114 @@ class MissionStore:
                                {"wake_wait_id": r["wait_id"],
                                 "wake_fire_at": r["fire_at"]})
         return r["mission_id"], token
+
+    def claim_active_slot(self, mission_id, run_token, lease_s=300):
+        """Atomically serialize blocking work across one budget lineage.
+
+        Active wall time is an aggregate root-plus-descendant leash. Without a
+        campaign slot, two siblings could both observe the same final second and
+        oversell it. The slot is acquired in the same transaction that validates
+        the exact Mission owner; it is intentionally distinct from ordinary tool
+        resources and carries no credential or prompt material.
+        """
+        now = int(time.time())
+        token = secrets.token_hex(16)
+        with self._lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                owner = self.db.execute(
+                    "SELECT 1 FROM missions WHERE mission_id=? AND run_token=? "
+                    "AND state IN (?,?)",
+                    (mission_id, run_token, RUNNING, PAUSING)).fetchone()
+                if not owner:
+                    self.db.rollback()
+                    return None, None
+                lineage, error = self._lineage_locked(mission_id)
+                if error:
+                    self.db.rollback()
+                    return None, None
+                root_id = str(lineage[-1]["mission_id"])
+                resource = "mission-active:" + root_id
+                # A timed-out slot is reusable only after its prior Mission is
+                # no longer active. An uncertain RUNNING owner retains the fence.
+                self.db.execute(
+                    "DELETE FROM mission_resource_leases WHERE resource=? "
+                    "AND lease_until<=? AND mission_id NOT IN "
+                    "(SELECT mission_id FROM missions WHERE state IN (?,?))",
+                    (resource, now, RUNNING, PAUSING))
+                self.db.execute(
+                    "INSERT INTO mission_resource_leases(resource,mission_id,token,"
+                    "lease_until,updated_at) VALUES(?,?,?,?,?)",
+                    (resource, mission_id, token,
+                     now + max(1, int(lease_s)), now))
+                self.db.commit()
+                return resource, token
+            except sqlite3.IntegrityError:
+                self.db.rollback()
+                return None, None
+            except Exception:
+                self.db.rollback()
+                raise
+
+    def settle_active_slot(self, resource, mission_id, slot_token, wall_ms,
+                           *, release=True):
+        """Charge a started boundary and optionally retire its campaign slot atomically.
+
+        The lifecycle run token may disappear while an in-flight boundary is
+        being cancelled.  The active-slot token is therefore the independent
+        proof that this exact worker still owns the right—and obligation—to
+        charge its elapsed wall time.  Charging via the lifecycle token would
+        let cancellation erase work already consumed and oversell the shared
+        root budget to a sibling.
+
+        When extinction is unconfirmed, keep a one-shot ``settled`` fence in
+        place.  Rotating the token in the same transaction makes a late/double
+        settlement unable to charge the boundary twice.
+        """
+        resource = str(resource or "")
+        slot_token = str(slot_token or "")
+        if (not resource.startswith("mission-active:") or not slot_token or
+                slot_token.startswith("settled:")):
+            return False
+        charged_wall_ms = max(0, int(wall_ms or 0))
+        now = int(time.time())
+        with self._lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                slot = self.db.execute(
+                    "SELECT 1 FROM mission_resource_leases WHERE resource=? "
+                    "AND mission_id=? AND token=?",
+                    (resource, mission_id, slot_token)).fetchone()
+                if not slot:
+                    self.db.rollback()
+                    return False
+                cur = self.db.execute(
+                    "UPDATE mission_runtime SET active_wall_ms=active_wall_ms+?,"
+                    "active_since=CASE WHEN ?>0 THEN ? ELSE active_since END "
+                    "WHERE mission_id=?",
+                    (charged_wall_ms, charged_wall_ms, now, mission_id))
+                if cur.rowcount != 1:
+                    self.db.rollback()
+                    return False
+                if release:
+                    retired = self.db.execute(
+                        "DELETE FROM mission_resource_leases WHERE resource=? "
+                        "AND mission_id=? AND token=?",
+                        (resource, mission_id, slot_token))
+                else:
+                    retired = self.db.execute(
+                        "UPDATE mission_resource_leases SET token=?,updated_at=? "
+                        "WHERE resource=? AND mission_id=? AND token=?",
+                        ("settled:" + secrets.token_hex(16), now,
+                         resource, mission_id, slot_token))
+                if retired.rowcount != 1:
+                    self.db.rollback()
+                    return False
+                self.db.commit()
+                return True
+            except Exception:
+                self.db.rollback()
+                raise
 
     def record_event(self, mission_id, kind, name="", nonce="", payload=None):
         with self._lock:
@@ -1950,12 +2276,27 @@ class MissionStore:
                 raise
         return True, "", 0
 
-    def reserve_decision(self, mission_id, leash):
-        """Reserve one model turn against this Mission and every ancestor."""
+    def reserve_decision(self, mission_id, leash, run_token=None,
+                         count_model_call=True):
+        """Reserve one logical planner turn against this Mission and ancestors.
+
+        ``run_token`` is mandatory on the production path.  The optional legacy
+        form remains for migration/tests that construct budget ledgers without
+        claiming a Mission, but a token supplied by a live driver is always CAS
+        checked in the same transaction as the reservation.
+        """
         now = int(time.time())
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
             try:
+                if run_token is not None:
+                    owned = self.db.execute(
+                        "SELECT 1 FROM missions WHERE mission_id=? AND state=? "
+                        "AND run_token=? AND lease_until>?",
+                        (mission_id, RUNNING, run_token, now)).fetchone()
+                    if not owned:
+                        self.db.commit()
+                        return False
                 lineage, lineage_error = self._lineage_locked(mission_id)
                 if lineage_error or self._budget_reason_locked(mission_id, now):
                     self.db.commit()
@@ -1967,22 +2308,113 @@ class MissionStore:
                         "SELECT r.mission_id FROM mission_runtime r JOIN subtree "
                         "ON r.parent_mission_id=subtree.mission_id) "
                         "SELECT COUNT(*) n FROM mission_events e JOIN subtree "
-                        "ON subtree.mission_id=e.mission_id WHERE e.kind='decision'",
+                        "ON subtree.mission_id=e.mission_id "
+                        "WHERE e.kind IN ('decision','planning_turn')",
                         (budget["mission_id"],)).fetchone()["n"]
                     if total >= cap:
                         self.db.commit()
                         return False
+                event_kind = "decision" if count_model_call else "planning_turn"
                 self.db.execute(
                     "INSERT INTO mission_events(mission_id,kind,name,payload_json,at) "
-                    "VALUES(?,?,?,?,?)", (mission_id, "decision", "model", "{}", now))
-                self.db.execute(
-                    "UPDATE mission_runtime SET model_calls=model_calls+1,turns=turns+1 "
-                    "WHERE mission_id=?", (mission_id,))
+                    "VALUES(?,?,?,?,?)", (mission_id, event_kind, "model", "{}", now))
+                if count_model_call:
+                    self.db.execute(
+                        "UPDATE mission_runtime SET model_calls=model_calls+1,turns=turns+1 "
+                        "WHERE mission_id=?", (mission_id,))
+                else:
+                    self.db.execute(
+                        "UPDATE mission_runtime SET turns=turns+1 WHERE mission_id=?",
+                        (mission_id,))
                 self.db.commit()
             except Exception:
                 self.db.rollback()
                 raise
         return True
+
+    @staticmethod
+    def _owner_fingerprint(run_token):
+        return hashlib.sha256(str(run_token or "").encode(
+            "utf-8", "replace")).hexdigest()[:24]
+
+    def remaining_model_calls(self, mission_id):
+        """Smallest call capacity remaining on actor or any ancestor."""
+        with self._lock:
+            lineage, error = self._lineage_locked(mission_id)
+            if error:
+                return 0
+            remaining = []
+            for row in lineage:
+                leash = _jl(row["leash_json"])
+                cap = int(leash.get(
+                    "max_model_calls", leash.get("max_total_steps", 1000)) or 0)
+                if cap > 0:
+                    used = int(self._aggregate_runtime_locked(
+                        row["mission_id"]).get("model_calls", 0) or 0)
+                    remaining.append(max(0, cap - used))
+            return min(remaining) if remaining else 2 ** 31 - 1
+
+    def reserve_model_request(self, mission_id, run_token, request_id, *,
+                              provider="", model="", purpose="model"):
+        """Atomically reserve one physical request under the exact live owner."""
+        now = int(time.time())
+        request_id = str(request_id or "")
+        if not request_id or not run_token:
+            return False
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                fingerprint = self._owner_fingerprint(run_token)
+                owned = self.db.execute(
+                    "SELECT 1 FROM missions WHERE mission_id=? AND state=? "
+                    "AND run_token=? AND lease_until>?",
+                    (mission_id, RUNNING, run_token, now)).fetchone()
+                if not owned:
+                    self.db.commit()
+                    return False
+                old = self.db.execute(
+                    "SELECT mission_id,owner_fingerprint FROM mission_model_requests "
+                    "WHERE request_id=?", (request_id,)).fetchone()
+                if old:
+                    ok = (old["mission_id"] == mission_id and
+                          old["owner_fingerprint"] == fingerprint)
+                    self.db.commit()
+                    return ok
+                lineage, error = self._lineage_locked(mission_id)
+                if error:
+                    self.db.commit()
+                    return False
+                for row in lineage:
+                    leash = _jl(row["leash_json"])
+                    cap = int(leash.get(
+                        "max_model_calls", leash.get("max_total_steps", 1000)) or 0)
+                    if cap > 0 and int(self._aggregate_runtime_locked(
+                            row["mission_id"]).get("model_calls", 0) or 0) >= cap:
+                        self.db.commit()
+                        return False
+                self.db.execute(
+                    "INSERT INTO mission_model_requests(request_id,mission_id,"
+                    "owner_fingerprint,provider,model,purpose,reserved_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (request_id, mission_id, fingerprint, str(provider or "")[:80],
+                     str(model or "")[:160], str(purpose or "")[:80], now))
+                self.db.execute(
+                    "UPDATE mission_runtime SET model_calls=model_calls+1 "
+                    "WHERE mission_id=?", (mission_id,))
+                self.db.commit()
+                return True
+            except Exception:
+                self.db.rollback()
+                raise
+
+    def complete_model_request(self, request_id, outcome="completed"):
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE mission_model_requests SET completed_at=?,outcome=? "
+                "WHERE request_id=? AND completed_at=0",
+                (int(time.time()), str(outcome or "completed")[:80], str(request_id or "")))
+            self.db.commit()
+        return cur.rowcount == 1
 
     def bind_action_key(self, mission_id, action_key, nonce, run_token):
         if not action_key:
@@ -2241,6 +2673,13 @@ class MissionDriver:
             execution_resource, execution_token, "mission-execution-heartbeat")
 
         def _side(rec):
+            # Runtime ownership is intentionally attached in memory only.  It
+            # must never be serialized into ActionStore args or audit events.
+            # The code process uses it to reserve each physical model request
+            # against this exact live Mission owner.
+            if cap.name == "code":
+                rec._mission_run_token = run_token
+                rec._mission_store_path = self.store.path
             res = cap.execute(rec)
             captured["r"] = res
             return res
@@ -2304,19 +2743,27 @@ class MissionDriver:
             else self.store.set_case(m.mission_id, case)
 
     @staticmethod
-    def _cancel_call(owner):
-        """Best-effort provider/tool cancellation hook; ownership fencing is primary."""
+    def _cancel_call(owner, key=None):
+        """Request cancellation and return True only for explicit extinction proof."""
+        scoped = getattr(owner, "cancel_for", None)
+        if key is not None and callable(scoped):
+            try:
+                fn = scoped(key)
+                if callable(fn):
+                    return fn() is True
+            except Exception:
+                return False
         for name in ("cancel_current", "cancel_pending", "abort_current"):
             fn = getattr(owner, name, None)
             if callable(fn):
                 try:
-                    fn()
+                    return fn() is True
                 except Exception:
-                    pass
-                return True
+                    return False
         return False
 
-    def _bounded_call(self, fn, timeout_s, cancel_owner=None):
+    def _bounded_call(self, fn, timeout_s, cancel_owner=None, cancel_key=None,
+                      mission_id="", run_token=""):
         """Run one potentially blocking boundary without wedging the dispatcher.
 
         Python cannot safely kill an arbitrary thread.  The worker is therefore a
@@ -2324,6 +2771,25 @@ class MissionDriver:
         optional transport cancellation hook is invoked on timeout.  This lets the
         scheduler continue other Missions while a misbehaving library unwinds.
         """
+        active_resource = active_token = None
+        if mission_id and run_token:
+            active_resource, active_token = self.store.claim_active_slot(
+                mission_id, run_token,
+                lease_s=max(1, int(math.ceil(float(timeout_s)))) + 10)
+            if not active_token:
+                return _CallOutcome(error=ResourceBusy(
+                    "another Mission branch owns the campaign active-time slot"))
+            # The caller computed its timeout before acquiring the campaign
+            # slot. A sibling may have consumed that allowance while we waited;
+            # re-read only after serialization and clamp again before spawning.
+            remaining = self.store.remaining_active_wall_seconds(mission_id)
+            if remaining is not None:
+                timeout_s = min(float(timeout_s), max(0.0, float(remaining)))
+            if float(timeout_s) <= 0:
+                self.store.release_resource(
+                    active_resource, mission_id, active_token)
+                return _CallOutcome(error=StepTimedOut(
+                    "mission active wall-time budget exhausted"))
         out = queue.Queue(maxsize=1)
         started = time.monotonic()
 
@@ -2332,7 +2798,11 @@ class MissionDriver:
                 item = _CallOutcome(value=fn())
             except Exception as exc:
                 item = _CallOutcome(error=exc)
-            item.elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+            # Round every started boundary up to the ledger's 1 ms precision;
+            # otherwise thousands of sub-millisecond calls could consume real
+            # active time while remaining free in the durable budget.
+            item.elapsed_ms = max(
+                1, int(math.ceil((time.monotonic() - started) * 1000)))
             try:
                 out.put_nowait(item)
             except queue.Full:
@@ -2341,13 +2811,36 @@ class MissionDriver:
         thread = threading.Thread(target=run, name="mission-bounded-call", daemon=True)
         thread.start()
         try:
-            return out.get(timeout=max(0.01, float(timeout_s)))
+            # active_wall_ms is accounted in integer milliseconds, so 1 ms is
+            # the smallest positive allowance the durable ledger can expose.
+            # Never round a nearly exhausted campaign back up to a 10 ms call.
+            outcome = out.get(timeout=max(0.001, float(timeout_s)))
+            if active_resource and active_token:
+                if not self.store.settle_active_slot(
+                        active_resource, mission_id, active_token,
+                        outcome.elapsed_ms, release=True):
+                    raise RuntimeError(
+                        "active wall-time charge/slot retirement could not be persisted")
+            return outcome
         except queue.Empty:
-            cancelled = self._cancel_call(cancel_owner) if cancel_owner is not None else False
-            return _CallOutcome(
-                elapsed_ms=max(1, int((time.monotonic() - started) * 1000)),
+            cancelled = self._cancel_call(
+                cancel_owner, cancel_key) if cancel_owner is not None else False
+            # A proof-bearing process canceller makes the slot immediately safe.
+            # Otherwise retain it until its lease expires while the Mission is
+            # non-runnable; a daemon thread merely receiving a signal is not
+            # proof that active work stopped.
+            outcome = _CallOutcome(
+                elapsed_ms=max(
+                    1, int(math.ceil((time.monotonic() - started) * 1000))),
                 timed_out=True, cancelled=cancelled,
                 error=StepTimedOut("step exceeded %.2fs wall-clock limit" % float(timeout_s)))
+            if active_resource and active_token:
+                if not self.store.settle_active_slot(
+                        active_resource, mission_id, active_token,
+                        outcome.elapsed_ms, release=bool(cancelled)):
+                    raise RuntimeError(
+                        "active wall-time charge/slot settlement could not be persisted")
+            return outcome
 
     @staticmethod
     def _usage_from_decision(decision):
@@ -2357,7 +2850,15 @@ class MissionDriver:
             "output_tokens": int(usage.get("output_tokens", 0) or 0),
             "cache_tokens": int(usage.get("cache_tokens", 0) or 0),
             "cost_usd": float((decision or {}).get("_cost_usd", 0.0) or 0.0),
+            "equivalent_cost_usd": float(
+                (decision or {}).get("_equivalent_cost_usd", 0.0) or 0.0),
             "retries": int((decision or {}).get("_retry", 0) or 0),
+            # A transport-aware provider reserves every request immediately
+            # before opening its socket. Legacy providers precharge the first
+            # logical request in reserve_decision and report only extras here.
+            "model_calls": (0 if (decision or {}).get("_model_calls_reserved")
+                            else max(0, int(
+                                (decision or {}).get("_model_calls", 1) or 1) - 1)),
         }
 
     @staticmethod
@@ -2369,6 +2870,17 @@ class MissionDriver:
             "output_tokens": int(usage.get("output_tokens", 0) or 0),
             "cache_tokens": int(usage.get("cache_tokens", 0) or 0),
             "cost_usd": float(usage.get("cost_usd", 0.0) or 0.0),
+            "equivalent_cost_usd": float(
+                result.get("equivalent_cost_usd", 0.0) or 0.0)
+            if isinstance(result, dict) else 0.0,
+            # Nested agent loops must count against the same durable campaign
+            # envelope as the outer Mission decider.  These fields are absent on
+            # ordinary deterministic capabilities and therefore remain zero.
+            "model_calls": (0 if result.get("_model_calls_reserved") else
+                            int(result.get("model_calls", 0) or 0))
+            if isinstance(result, dict) else 0,
+            "turns": int(result.get("turns", 0) or 0)
+            if isinstance(result, dict) else 0,
         }
 
     def _goal_verdict(self, m):
@@ -2426,8 +2938,24 @@ class MissionDriver:
         except (TypeError, ValueError, OverflowError):
             return 0
 
+    def _active_step_timeout(self, mission_id, leash):
+        """Clamp one blocking boundary to the campaign's remaining active time."""
+        configured = max(0.05, float((leash or {}).get("max_step_seconds", 600)))
+        remaining = self.store.remaining_active_wall_seconds(mission_id)
+        if remaining is None:
+            return configured
+        return min(configured, max(0.0, float(remaining)))
+
     def _verify_and_finish_goal(self, mission_id, token, mission, reason, step_timeout):
         """Run the one independent goal-verification path and settle the Mission."""
+        step_timeout = min(
+            float(step_timeout),
+            self._active_step_timeout(mission_id, mission.leash))
+        if step_timeout <= 0:
+            return self._finish(
+                mission_id, token, NEEDS_YOU,
+                self.store.budget_reason(mission_id) or
+                "mission active wall-time budget exhausted")
         self.store.record_step(mission_id, DONE, "", "reported")
         self.store.record_event(mission_id, "control", DONE,
                                 payload={"reason": reason})
@@ -2435,9 +2963,18 @@ class MissionDriver:
             mission_id, token, "goal_verifying", {"reason": reason}, case=mission.case)
         goal_outcome = self._bounded_call(
             lambda: self._goal_verdict(mission), step_timeout,
-            cancel_owner=self.goal_verifier)
+            cancel_owner=self.goal_verifier,
+            mission_id=mission_id, run_token=token)
+        if isinstance(goal_outcome.error, ResourceBusy):
+            self.store.schedule_wait(mission_id, int(time.time()) + 1)
+            self.store.record_event(
+                mission_id, "watchdog", "campaign_active_slot_busy",
+                payload={"phase": "goal_verifying"})
+            return self._finish(
+                mission_id, token, WAITING,
+                "another campaign branch is active; goal verification will retry")
         self.store.account_runtime(
-            mission_id, token, wall_ms=goal_outcome.elapsed_ms,
+            mission_id, token,
             retries=1 if goal_outcome.timed_out or goal_outcome.error else 0)
         if goal_outcome.timed_out or goal_outcome.error:
             verdict = Verdict(
@@ -3176,7 +3713,7 @@ class MissionDriver:
         stop = threading.Event()
 
         def beat():
-            while not stop.wait(20):
+            while not stop.wait(_HEARTBEAT_SECONDS):
                 try:
                     if not self.store.renew_run(mission_id, token):
                         return
@@ -3242,7 +3779,16 @@ class MissionDriver:
                 exhausted = self.store.budget_reason(mission_id)
                 if exhausted:
                     return self._finish(mission_id, token, NEEDS_YOU, exhausted)
-                if not self.store.reserve_decision(mission_id, m.leash):
+                step_timeout = self._active_step_timeout(mission_id, m.leash)
+                if step_timeout <= 0:
+                    return self._finish(
+                        mission_id, token, NEEDS_YOU,
+                        "mission active wall-time budget exhausted")
+                use_transport_gate = bool(
+                    getattr(self.decider, "supports_request_gate", False))
+                if not self.store.reserve_decision(
+                        mission_id, m.leash, token,
+                        count_model_call=not use_transport_gate):
                     return self._finish(mission_id, token, NEEDS_YOU,
                                         "mission model-turn budget exhausted")
                 model_case = dict(m.case)
@@ -3262,12 +3808,32 @@ class MissionDriver:
                     mission_id, token, "deciding",
                     {"step": _, "recent_events": model_case["_recent_events"][-5:]},
                     case=m.case)
+                if use_transport_gate:
+                    def reserve_request(purpose="mission_decider"):
+                        request_id = "req_" + secrets.token_hex(16)
+                        provider = getattr(self.decider, "provider", None)
+                        ok = self.store.reserve_model_request(
+                            mission_id, token, request_id,
+                            provider=getattr(provider, "name", ""),
+                            model=getattr(provider, "model", ""), purpose=purpose)
+                        if not ok:
+                            return None
+                        return request_id
+                    decide_call = lambda: self.decider(
+                        m.goal, model_case, self._primitives(m.leash),
+                        request_gate=reserve_request,
+                        request_complete=self.store.complete_model_request)
+                else:
+                    decide_call = lambda: self.decider(
+                        m.goal, model_case, self._primitives(m.leash))
                 outcome = self._bounded_call(
-                    lambda: self.decider(m.goal, model_case, self._primitives(m.leash)),
-                    step_timeout, cancel_owner=getattr(self.decider, "provider", self.decider))
+                    decide_call,
+                    step_timeout,
+                    cancel_owner=getattr(self.decider, "provider", self.decider),
+                    mission_id=mission_id, run_token=token)
                 if outcome.timed_out:
                     self.store.account_runtime(
-                        mission_id, token, wall_ms=outcome.elapsed_ms, retries=1)
+                        mission_id, token, retries=1)
                     self.store.record_event(
                         mission_id, "watchdog", "decider_timeout",
                         payload={"timeout_seconds": step_timeout,
@@ -3281,7 +3847,7 @@ class MissionDriver:
                         "model step timed out; retry scheduled without replaying an action")
                 if outcome.error is not None:
                     self.store.account_runtime(
-                        mission_id, token, wall_ms=outcome.elapsed_ms, retries=1)
+                        mission_id, token, retries=1)
                     self.store.record_event(
                         mission_id, "watchdog", "decider_error",
                         payload={"error": "%s: %s" %
@@ -3294,7 +3860,6 @@ class MissionDriver:
                                         "model step failed; retry scheduled")
                 decision = outcome.value or {}
                 usage = self._usage_from_decision(decision)
-                usage["wall_ms"] = outcome.elapsed_ms
                 self.store.account_runtime(mission_id, token, **usage)
                 # This checkpoint exists only to prove recovery is at a safe,
                 # model-only boundary.  Persisting raw decision args here would
@@ -3518,6 +4083,16 @@ class MissionDriver:
                         f"paced: waited after {reads} reads before more {cap.name}")
 
                 call_args = dict(args, _case=m.case, _leash=m.leash)
+                if cap.name == "code":
+                    # The outer planner reservation already consumed one call.
+                    # Bound the nested loop to the smallest remaining capacity
+                    # across this Mission and every ancestor.
+                    remaining_calls = self.store.remaining_model_calls(mission_id)
+                    if remaining_calls <= 0:
+                        return self._finish(
+                            mission_id, token, NEEDS_YOU,
+                            "mission model-call budget exhausted before code slice")
+                    call_args["_model_call_budget"] = remaining_calls
                 if cap.name == "code" and m.leash.get("workspace_mode") == "isolated":
                     isolated = m.case.get("_isolated_workspace")
                     if not isolated:
@@ -3567,11 +4142,18 @@ class MissionDriver:
                      "args": {k: v for k, v in call_args.items()
                               if k not in ("_case", "_leash")}}, case=m.case)
                 if callable(snapshot_fn):
+                    step_timeout = self._active_step_timeout(mission_id, m.leash)
+                    if step_timeout <= 0:
+                        return self._finish(
+                            mission_id, token, NEEDS_YOU,
+                            self.store.budget_reason(mission_id) or
+                            "mission active wall-time budget exhausted")
                     snap_outcome = self._bounded_call(
                         lambda: snapshot_fn(call_args, mission_id), step_timeout,
-                        cancel_owner=cap)
+                        cancel_owner=cap,
+                        mission_id=mission_id, run_token=token)
                     self.store.account_runtime(
-                        mission_id, token, wall_ms=snap_outcome.elapsed_ms,
+                        mission_id, token,
                         retries=1 if snap_outcome.timed_out or snap_outcome.error else 0)
                     if snap_outcome.timed_out or snap_outcome.error:
                         self.store.record_event(
@@ -3589,6 +4171,9 @@ class MissionDriver:
                     snapshot = snap_outcome.value or {}
                 else:
                     snapshot = {}
+                exhausted = self.store.budget_reason(mission_id)
+                if exhausted:
+                    return self._finish(mission_id, token, NEEDS_YOU, exhausted)
                 bound_refusal = self._bound_refusal(m.leash, cap, call_args, snapshot)
                 if bound_refusal:
                     state = NEEDS_YOU if bound_refusal.startswith("human-required:") else FAILED_S
@@ -3639,6 +4224,15 @@ class MissionDriver:
                     self.store.release_action_key(mission_id, action_key, token)
                     return self._lost_state(mission_id, token)
 
+                step_timeout = self._active_step_timeout(mission_id, m.leash)
+                if step_timeout <= 0:
+                    self.actions.refuse(
+                        nonce, "mission active wall-time budget exhausted before execution")
+                    self.store.release_action_key(mission_id, action_key, token)
+                    return self._finish(
+                        mission_id, token, NEEDS_YOU,
+                        self.store.budget_reason(mission_id) or
+                        "mission active wall-time budget exhausted")
                 self.actions.confirm(nonce)
                 if not self.store.owns_run(mission_id, token):
                     self.actions.refuse(nonce, "mission paused or cancelled")
@@ -3649,9 +4243,8 @@ class MissionDriver:
                     {"capability": cap.name, "nonce": nonce}, case=m.case)
                 exec_outcome = self._bounded_call(
                     lambda: self._execute(nonce, cap, token), step_timeout,
-                    cancel_owner=cap)
-                self.store.account_runtime(
-                    mission_id, token, wall_ms=exec_outcome.elapsed_ms)
+                    cancel_owner=cap, cancel_key=mission_id,
+                    mission_id=mission_id, run_token=token)
                 if exec_outcome.timed_out:
                     self.store.record_event(
                         mission_id, "watchdog", "action_timeout", nonce,
@@ -3686,6 +4279,10 @@ class MissionDriver:
                 verdict, result = exec_outcome.value
                 self.store.account_runtime(mission_id, token,
                                            **self._usage_from_result(result))
+                if isinstance(result, dict) and "_external_storage_bytes" in result:
+                    if not self.store.set_external_storage(
+                            mission_id, result.get("_external_storage_bytes", 0), token):
+                        return self._lost_state(mission_id, token)
                 self.store.record_step(mission_id, cap.name, nonce, verdict.status)
                 self.store.complete_action_key(mission_id, nonce, verdict.status)
                 self.store.record_event(
@@ -3701,6 +4298,33 @@ class MissionDriver:
                 # receipt, but never let its stale worker mutate campaign state/case.
                 if not self.store.owns_claim(mission_id, token):
                     return self._lost_state(mission_id, token)
+                code_capability = cap.name == "code" or cap.name.endswith(".code")
+                recovery_needed = bool(
+                    isinstance(result, dict) and result.get("recovery_required"))
+                raised_without_result = bool(
+                    code_capability and result is None and verdict.status == FAILED)
+                if recovery_needed or raised_without_result:
+                    if isinstance(result, dict):
+                        if not self._fold(m, cap.name, result, token=token):
+                            return self._lost_state(mission_id, token)
+                    reason = (str((result or {}).get("error") or
+                                  "code worker stopped after an outcome-uncertain boundary")
+                              if isinstance(result, dict) else
+                              "code capability raised after execution began; inspect workspace")
+                    self.store.record_checkpoint(
+                        mission_id, token, "code_recovery_required",
+                        {"capability": cap.name, "reason": reason[:500]},
+                        case=self.store.get(mission_id).case)
+                    self.store.fence_timed_out(
+                        mission_id, token, "executing:%s" % cap.name, reason[:500])
+                    return self._state(mission_id, RECOVERY_REQUIRED)
+                if isinstance(result, dict) and result.get("needs_human"):
+                    if not self._fold(m, cap.name, result, token=token):
+                        return self._lost_state(mission_id, token)
+                    return self._finish(
+                        mission_id, token, NEEDS_YOU,
+                        str(result.get("error") or result.get("result") or
+                            "code worker requires human inspection")[:500])
                 if verdict.status == VERIFIED:
                     if not self._fold(m, cap.name, result, token=token):
                         return self._lost_state(mission_id, token)
@@ -3711,6 +4335,34 @@ class MissionDriver:
                         mission_id, token, "folded",
                         {"capability": cap.name, "nonce": nonce},
                         case=self.store.get(mission_id).case)
+                    if isinstance(result, dict) and result.get("continue_needed"):
+                        # A nested agent's bounded turn slice is a scheduling
+                        # yield, not task failure and not a reason to spend an
+                        # outer planning call.  The transcript is already on
+                        # disk; release this claim so the daemon can run the next
+                        # slice after a clean process boundary.
+                        retry_after = max(1, min(3600, int(
+                            result.get("retry_after_seconds", 0) or 1)))
+                        wake_at = int(time.time()) + retry_after
+                        if result.get("transient"):
+                            self.store.account_runtime(
+                                mission_id, token, retries=1)
+                        self.store.schedule_wait(mission_id, wake_at)
+                        self.store.record_event(
+                            mission_id, "control", "nested_slice_yielded", nonce,
+                            {"capability": cap.name, "session_id":
+                             str(result.get("session_id") or "")[:128],
+                             "turns": int(result.get("turns", 0) or 0),
+                             "wake_at": wake_at,
+                             "transient": bool(result.get("transient"))})
+                        self.store.record_checkpoint(
+                            mission_id, token, "nested_slice_yielded",
+                            {"capability": cap.name, "wake_at": wake_at,
+                             "session_id": str(result.get("session_id") or "")[:128]},
+                            case=self.store.get(mission_id).case)
+                        return self._finish(
+                            mission_id, token, WAITING,
+                            "%s slice checkpointed; continuing automatically" % cap.name)
                 elif not self._consume_due_followup(
                         mission_id, token, cap.name, verdict.status, args):
                     return self._lost_state(mission_id, token)
@@ -3719,6 +4371,14 @@ class MissionDriver:
                 if not self.store.owns_run(mission_id, token):
                     return self._lost_state(mission_id, token)
                 if verdict.status in (FAILED, INCONCLUSIVE) and action_reversible:
+                    if code_capability:
+                        # An unstructured code failure may have changed files even
+                        # when a legacy runner returned no recovery metadata.  Do
+                        # not spin through forty edit attempts in one claim.
+                        return self._finish(
+                            mission_id, token, NEEDS_YOU,
+                            "%s stopped without completion-grade evidence: %s" %
+                            (cap.name, str(verdict.reason or "inspect the workspace")[:350]))
                     # A reversible primitive that failed or could not be verified
                     # is actionable diagnostic evidence, not a reason to stop all
                     # independent Mission branches.  The planner may repair it or
@@ -3901,13 +4561,19 @@ class MissionDriver:
         if exhausted:
             return self._finish(mission_id, token, NEEDS_YOU, exhausted)
         rec = self.actions.get(nonce)
-        step_timeout = max(0.05, float(m.leash.get("max_step_seconds", 600)))
+        step_timeout = self._active_step_timeout(mission_id, m.leash)
+        if step_timeout <= 0:
+            return self._finish(
+                mission_id, token, NEEDS_YOU,
+                self.store.budget_reason(mission_id) or
+                "mission active wall-time budget exhausted")
         self.store.record_checkpoint(
             mission_id, token, "executing",
             {"capability": name, "nonce": nonce, "confirmed": True}, case=m.case)
         outcome = self._bounded_call(
-            lambda: self._execute(nonce, cap, token), step_timeout, cancel_owner=cap)
-        self.store.account_runtime(mission_id, token, wall_ms=outcome.elapsed_ms)
+            lambda: self._execute(nonce, cap, token), step_timeout,
+            cancel_owner=cap, cancel_key=mission_id,
+            mission_id=mission_id, run_token=token)
         if outcome.timed_out:
             self.store.record_event(
                 mission_id, "watchdog", "action_timeout", nonce,
@@ -4085,7 +4751,7 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
              "max_elapsed_seconds",
              "max_step_seconds", "max_retries", "max_storage_bytes", "checkpoint_keep",
              "human_escalate_seconds", "human_timeout_seconds", "workspace_mode",
-             "max_specialists", "max_specialist_depth"}
+             "max_specialists", "max_specialist_depth", "execution_profile_sha256"}
     unknown = sorted(set(bounds) - known)
     if unknown:
         raise ValueError("unenforced Mission leash bound(s): " + ", ".join(unknown))
@@ -4109,16 +4775,27 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
         bounds["allowed_domains"] = [x.strip().lower() for x in bounds["allowed_domains"]]
     if "spend_max_usd" in bounds:
         try:
-            bounds["spend_max_usd"] = max(0.0, float(bounds["spend_max_usd"]))
+            spend = float(bounds["spend_max_usd"])
         except (TypeError, ValueError):
             raise ValueError("Mission leash spend_max_usd must be numeric")
+        if not math.isfinite(spend):
+            raise ValueError("Mission leash spend_max_usd must be finite")
+        bounds["spend_max_usd"] = max(0.0, spend)
     if "max_model_cost_usd" in bounds:
         try:
             bounds["max_model_cost_usd"] = float(bounds["max_model_cost_usd"])
         except (TypeError, ValueError):
             raise ValueError("Mission leash max_model_cost_usd must be numeric")
-        if bounds["max_model_cost_usd"] <= 0:
-            raise ValueError("Mission leash max_model_cost_usd must be positive")
+        if (not math.isfinite(bounds["max_model_cost_usd"]) or
+                bounds["max_model_cost_usd"] <= 0):
+            raise ValueError(
+                "Mission leash max_model_cost_usd must be finite and positive")
+    if "execution_profile_sha256" in bounds:
+        digest = str(bounds["execution_profile_sha256"] or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(
+                "Mission leash execution_profile_sha256 must be a SHA-256 hex digest")
+        bounds["execution_profile_sha256"] = digest
     if bounds.get("workspace_mode", "current") not in ("current", "isolated"):
         raise ValueError("Mission leash workspace_mode must be 'current' or 'isolated'")
     if ("human_timeout_seconds" in bounds and "human_escalate_seconds" in bounds and
@@ -4266,8 +4943,11 @@ class ModelDecider:
 
     def __init__(self, provider):
         self.provider = provider
+        self.supports_request_gate = bool(
+            getattr(provider, "supports_request_gate", False))
 
-    def __call__(self, goal, case, primitives) -> dict:
+    def __call__(self, goal, case, primitives, request_gate=None,
+                 request_complete=None) -> dict:
         cat = "\n".join(
             f"- {p['name']} ({'reversible' if p['reversible'] else 'IRREVERSIBLE'}): "
             f"{p['description']}  args: {p['args'] or '{}'}" for p in primitives)
@@ -4275,7 +4955,23 @@ class ModelDecider:
         user = f"GOAL: {goal}\n\nCASE (what you know):\n{ctx}\n\nPRIMITIVES:\n{cat}"
         meta = {}
         try:
+            request_id = ""
+            if callable(request_gate):
+                request_id = request_gate("mission_decider")
+                if not request_id:
+                    return {"action": NEEDS_HUMAN, "args": {
+                        "summary": "mission model-call budget or execution ownership expired"},
+                        "reason": "model request reservation denied"}
             comp = self.provider.complete(_SYS, [{"role": "user", "content": user}], [])
+            if request_id and callable(request_complete):
+                try:
+                    request_complete(
+                        request_id, "error" if getattr(comp, "stop_reason", "") == "error"
+                        else "completed")
+                except Exception:
+                    # Completion is diagnostic only. The pre-request reservation
+                    # is append-only and already consumed the hard budget.
+                    pass
             usage = getattr(comp, "usage", None)
             model = getattr(self.provider, "model", "") or ""
             if usage is not None:
@@ -4284,13 +4980,24 @@ class ModelDecider:
                 cache_read = int(getattr(usage, "cache_read", 0) or 0)
                 cache_creation = int(getattr(usage, "cache_creation", 0) or 0)
                 from .costs import cost_usd
+                equivalent_cost = cost_usd(
+                    model, input_tokens, output_tokens, cache_read, cache_creation)
+                subscription_only = bool(
+                    getattr(self.provider, "subscription_only", False))
                 meta = {
                     "_usage": {"input_tokens": input_tokens,
                                "output_tokens": output_tokens,
                                "cache_tokens": cache_read + cache_creation},
-                    "_cost_usd": cost_usd(model, input_tokens, output_tokens,
-                                           cache_read, cache_creation),
+                    # A flat-plan Mission still tracks the equivalent list-price,
+                    # but its charge leash must use marginal spend (zero) rather
+                    # than stopping an unattended subscription run on a fictional
+                    # API bill.
+                    "_cost_usd": 0.0 if subscription_only else equivalent_cost,
+                    "_equivalent_cost_usd": equivalent_cost,
                     "_model": model,
+                    "_model_calls": max(
+                        1, int(getattr(comp, "request_count", 1) or 1)),
+                    "_model_calls_reserved": bool(callable(request_gate)),
                 }
             if getattr(comp, "stop_reason", "") == "error":
                 from .providers import classify_error
