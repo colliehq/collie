@@ -154,18 +154,25 @@ def _collie_tool_evidence(result: object) -> dict[str, Any]:
 
 def _run_collie(workspace: Path, state_dir: Path, endpoint: str,
                 prompt: str, max_turns: int) -> dict[str, Any]:
-    from harness.cli import make_harness
-
     state_dir.mkdir(parents=True, exist_ok=True)
     prior = {key: os.environ.get(key) for key in (
         "COLLIE_DATA_DIR", "COLLIE_SIDECAR_BEARER", "COLLIE_HTTP_TIMEOUT")}
     os.environ["COLLIE_DATA_DIR"] = str(state_dir / "collie-data")
     os.environ["COLLIE_SIDECAR_BEARER"] = BEARER_SENTINEL
     os.environ["COLLIE_HTTP_TIMEOUT"] = "180"
+    # harness.cli resolves DATA once, at import time.  Importing it before the
+    # evaluator-owned state path is installed makes a containerized run fall
+    # back to ~/.collie, which is both outside the attempt state mount and may
+    # be read-only.  Assign DATA explicitly as well so an earlier import by an
+    # embedder/test cannot defeat the per-attempt isolation boundary.
+    from harness import cli as harness_cli
+
+    prior_cli_data = harness_cli.DATA
+    harness_cli.DATA = str(state_dir / "collie-data")
     harness = None
     result: object | None = None
     try:
-        harness = make_harness(
+        harness = harness_cli.make_harness(
             str(workspace), provider="mock", project="normalized-benchmark",
             code_search=False, embed="hash")
         provider = OpenAICompatProvider(
@@ -230,6 +237,7 @@ def _run_collie(workspace: Path, state_dir: Path, endpoint: str,
                     resource.close()
                 except Exception:
                     pass
+        harness_cli.DATA = prior_cli_data
         for key, value in prior.items():
             if value is None:
                 os.environ.pop(key, None)

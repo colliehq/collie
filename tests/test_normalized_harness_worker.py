@@ -6,6 +6,7 @@ import json
 import pytest
 
 from bench import normalized_harness_worker as worker
+from harness.providers import Completion, Usage
 
 
 def test_endpoint_accepts_only_the_internal_sidecar_route():
@@ -78,6 +79,37 @@ def test_product_failures_are_scoreable_but_transport_failures_are_invalid():
         "invalid_infrastructure")
     assert worker._worker_outcome_for_error("hermes_wall_timeout") == (
         "invalid_infrastructure")
+
+
+def test_collie_binds_module_level_data_to_attempt_state(tmp_path, monkeypatch):
+    from harness import cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("sentinel", encoding="utf-8")
+    monkeypatch.setattr(cli, "DATA", str(blocked))
+
+    class FakeProvider:
+        name = "normalized-subscription-sidecar"
+        model = worker.MODEL
+        reports_cache = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def complete(self, *_args, **_kwargs):
+            return Completion(text="done", usage=Usage(), stop_reason="end_turn")
+
+    monkeypatch.setattr(worker, "OpenAICompatProvider", FakeProvider)
+
+    receipt = worker._run_collie(
+        workspace, state_dir, "http://inference:8765/v1", "inspect", 1)
+
+    assert receipt["worker_outcome"] == "candidate"
+    assert (state_dir / "collie-data" / "runs.db").is_file()
+    assert cli.DATA == str(blocked)
 
 
 def test_main_writes_bounded_invalid_receipt(tmp_path):
