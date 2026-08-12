@@ -2,9 +2,9 @@
 
 The guard never copies credential values into evidence. It checks override
 *names*, gives status commands a minimal environment, and asks official CLIs for
-already-redacted login state. The direct Claude route additionally inspects only
-the presence, expiry, inference scope, and plan label in Claude's login store;
-tokens are never returned or persisted in a receipt.
+already-redacted login state.  The admitted Claude overnight route also runs one
+bounded inference through Anthropic's official runtime with its default prompt
+replaced by Collie's prompt. Tokens are never returned or persisted in a receipt.
 """
 from __future__ import annotations
 
@@ -49,8 +49,12 @@ _FORBIDDEN_ENV_NAMES = frozenset({
     "SSL_CERT_DIR",
     "SSL_CERT_FILE",
 })
-_FORBIDDEN_ENV_PREFIXES = ("ANTHROPIC_", "OPENAI_", "CLAUDE_", "CODEX_",
-                           "AZURE_OPENAI_")
+_FORBIDDEN_ENV_PREFIXES = {
+    "claude-agent-sdk": ("ANTHROPIC_", "CLAUDE_"),
+    "claude-code": ("ANTHROPIC_", "CLAUDE_"),
+    "claude-direct": ("ANTHROPIC_", "CLAUDE_"),
+    "codex-cli": ("OPENAI_", "CODEX_", "AZURE_OPENAI_"),
+}
 
 # The status subprocess receives only ordinary process-location variables.  In
 # particular it never inherits unrelated cloud credentials, Node injection
@@ -103,18 +107,20 @@ def _deny(receipt: dict[str, Any], reason: str, **safe_details: Any) -> None:
     raise SubscriptionGuardError(reason, receipt)
 
 
-def _looks_like_override(name: str) -> bool:
+def _looks_like_override(name: str, provider: str) -> bool:
     upper = name.upper()
-    return upper in _FORBIDDEN_ENV_NAMES or upper.startswith(_FORBIDDEN_ENV_PREFIXES)
+    return (upper in _FORBIDDEN_ENV_NAMES or
+            upper.startswith(_FORBIDDEN_ENV_PREFIXES.get(provider, ())))
 
 
-def _check_environment(receipt: dict[str, Any], environ: Mapping[str, str]) -> None:
+def _check_environment(receipt: dict[str, Any], environ: Mapping[str, str],
+                       provider: str) -> None:
     # Iterate keys only: secret values are intentionally never fetched.
     found = 0
     for name in environ:
         if not isinstance(name, str):
             _deny(receipt, "environment_name_invalid")
-        found += int(_looks_like_override(name))
+        found += int(_looks_like_override(name, provider))
     if found:
         _deny(receipt, "billing_or_routing_override_present",
               forbidden_environment_name_count=found)
@@ -337,8 +343,7 @@ def _check_claude(receipt: dict[str, Any],
 
 
 def _check_claude_direct_credentials(
-        receipt: dict[str, Any], checked_at: _datetime.datetime,
-        minimum_token_validity_seconds: int = 0) -> None:
+        receipt: dict[str, Any], checked_at: _datetime.datetime) -> None:
     """Confirm the official login store has inference authority, without copying secrets."""
     try:
         from .providers import claude_credentials, claude_oauth_expired
@@ -351,23 +356,6 @@ def _check_claude_direct_credentials(
         _deny(receipt, "claude_direct_access_token_missing")
     if claude_oauth_expired(login_store_only=True):
         _deny(receipt, "claude_direct_access_token_expired")
-    try:
-        minimum_validity = max(0, int(minimum_token_validity_seconds or 0))
-    except (TypeError, ValueError, OverflowError):
-        _deny(receipt, "claude_direct_token_lifetime_invalid")
-    if minimum_validity:
-        # Native direct mode deliberately does not implement Claude Code's
-        # private refresh protocol. Admission must prove that the token already
-        # spans the whole unattended window; relying on another process to
-        # refresh it would no longer be Collie's own direct-call mode.
-        try:
-            expires_at_ms = int(oauth.get("expiresAt"))
-        except (TypeError, ValueError, OverflowError):
-            _deny(receipt, "claude_direct_token_expiry_required")
-        remaining = (expires_at_ms / 1000.0) - checked_at.timestamp()
-        if remaining < minimum_validity:
-            _deny(receipt, "claude_direct_token_lifetime_insufficient",
-                  minimum_required_seconds=minimum_validity)
     scopes = oauth.get("scopes")
     if (not isinstance(scopes, list) or
             not all(isinstance(scope, str) for scope in scopes) or
@@ -382,18 +370,84 @@ def _check_claude_direct_credentials(
         "inference_scope": "present",
         "plan": plan,
     }
-    if minimum_validity:
-        receipt["direct_credentials"]["minimum_validity_seconds"] = minimum_validity
+
+
+def _default_claude_agent_sdk_probe(model: str) -> Any:
+    """One official Agent SDK inference with Collie's literal system prompt."""
+    from .claude_agent_sdk import ClaudeAgentSdkProvider
+
+    provider = ClaudeAgentSdkProvider(
+        model=model or "claude-opus-4-8", timeout=180,
+        subscription_only=True)
+    used = False
+
+    def reserve_probe(_purpose="subscription_preflight"):
+        nonlocal used
+        if used:
+            return None
+        used = True
+        return "subscription-preflight-once"
+
+    with provider.request_authority(reserve_probe, lambda *_args: None):
+        return provider.complete(
+            "You are Collie's subscription-route probe. Return strict JSON only.",
+            [{"role": "user", "content":
+              'Reply exactly as {"answer":"OK"}.'}], [])
+
+
+def _check_claude_agent_sdk_inference(
+        receipt: dict[str, Any], model: str,
+        probe: Callable[[str], Any] | None) -> None:
+    """Require the official SDK to accept Collie's prompt before admission."""
+    try:
+        completion = (probe or _default_claude_agent_sdk_probe)(model)
+    except Exception:
+        _deny(receipt, "claude_agent_sdk_inference_probe_failed")
+    if getattr(completion, "stop_reason", "") == "error":
+        _deny(receipt, "claude_agent_sdk_inference_unavailable")
+    api_key_source = getattr(completion, "api_key_source", None)
+    if api_key_source != "none":
+        _deny(receipt, "claude_agent_sdk_auth_attestation_invalid")
+    receipt["inference_runtime"] = {
+        "status": "available",
+        "model": str(model or "claude-opus-4-8")[:160],
+        "runtime": "official_claude_agent_sdk",
+        "agent_loop_owner": "collie",
+        "system_prompt_owner": "collie",
+        "system_prompt_mode": "literal_custom",
+        "claude_code_prompt_preset": "not_loaded",
+        "setting_sources": "empty",
+        "builtin_tools_skills_plugins_agents": "disabled",
+        "slash_commands": "disabled",
+        "api_key_source": api_key_source,
+        "internal_retries": "disabled",
+        "request_authority": "single_use_pre_worker_spawn",
+    }
 
 
 def _default_claude_direct_probe(model: str) -> Any:
     """One Collie-owned Messages request; never invokes Claude Code/``claude -p``."""
     from .providers import AnthropicOAuthProvider
-    provider = AnthropicOAuthProvider(model=model or "claude-opus-4-8", max_tokens=1)
-    provider.subscription_only = True
-    return provider.complete(
-        "You are a subscription-route availability probe owned by Collie. Reply OK.",
-        [{"role": "user", "content": "Reply OK."}], [])
+    provider = AnthropicOAuthProvider(
+        model=model or "claude-opus-4-8", max_tokens=1,
+        subscription_only=True)
+    used = False
+
+    def reserve_probe(_purpose="subscription_preflight"):
+        nonlocal used
+        if used:
+            return None
+        used = True
+        return "subscription-preflight-once"
+
+    # Direct providers fail closed without explicit physical-request authority.
+    # The successful guard receipt is persisted in Mission billing_safety, so
+    # this one-shot creation probe remains auditable without pretending it is a
+    # Mission step that can be replayed.
+    with provider.request_authority(reserve_probe, lambda *_args: None):
+        return provider.complete(
+            "You are a subscription-route availability probe owned by Collie. Reply OK.",
+            [{"role": "user", "content": "Reply OK."}], [])
 
 
 def _check_claude_direct_inference(
@@ -413,7 +467,9 @@ def _check_claude_direct_inference(
         "status": "available",
         "model": str(model or "claude-opus-4-8")[:160],
         "system_prompt_owner": "collie",
-        "claude_code_cli_invoked": False,
+        "transport_owner": "collie",
+        "request_authority": "single_use_preflight",
+        "claude_code_inference_cli_invoked": False,
     }
 
 
@@ -481,17 +537,18 @@ def check_subscription_guard(
         model: str = "",
         direct_probe: Callable[[str], Any] | None = None,
         require_direct_probe: bool = True,
-        minimum_token_validity_seconds: int = 0,
         now_utc: _datetime.datetime | None = None) -> dict[str, Any]:
     """Authorize one subscription invocation using redacted first-party auth evidence.
 
-    ``provider`` accepts ``claude``/``claude-code``, ``claude-direct``, or
-    ``codex``/``codex-cli``.
+    ``provider`` accepts ``claude-agent-sdk``, ``claude``/``claude-code``,
+    ``claude-direct``, or ``codex``/``codex-cli``.
     Codex callers must pass freshly observed account evidence with exactly the
     required safety facts.  On denial, :class:`SubscriptionGuardError` carries
     the same redacted receipt shape that can be persisted as audit evidence.
     """
     aliases = {
+        "claude-agent-sdk": "claude-agent-sdk",
+        "claude-sdk": "claude-agent-sdk",
         "claude": "claude-code",
         "claude-code": "claude-code",
         "claude-direct": "claude-direct",
@@ -511,14 +568,32 @@ def check_subscription_guard(
     source_environ = os.environ if environ is None else environ
     if not isinstance(source_environ, Mapping):
         _deny(receipt, "environment_invalid")
-    _check_environment(receipt, source_environ)
+    _check_environment(receipt, source_environ, canonical)
     command_runner = runner or (
         lambda argv: _default_runner(argv, source_environ))
-    if canonical in ("claude-code", "claude-direct"):
+    if canonical in ("claude-agent-sdk", "claude-code", "claude-direct"):
         _check_claude(receipt, command_runner)
-        if canonical == "claude-direct":
-            _check_claude_direct_credentials(
-                receipt, checked_at, minimum_token_validity_seconds)
+        if canonical == "claude-agent-sdk":
+            if require_direct_probe:
+                _check_claude_agent_sdk_inference(receipt, model, direct_probe)
+            else:
+                receipt["inference_runtime"] = {
+                    "status": "previously_admitted_recheck",
+                    "model": str(model or "claude-opus-4-8")[:160],
+                    "runtime": "official_claude_agent_sdk",
+                    "agent_loop_owner": "collie",
+                    "system_prompt_owner": "collie",
+                    "system_prompt_mode": "literal_custom",
+                    "claude_code_prompt_preset": "not_loaded",
+                    "setting_sources": "empty",
+                    "builtin_tools_skills_plugins_agents": "disabled",
+                    "slash_commands": "disabled",
+                    "api_key_source": "not_reobserved_at_runnable_boundary",
+                    "internal_retries": "disabled",
+                    "request_authority": "runnable_boundary_auth_recheck_no_inference",
+                }
+        elif canonical == "claude-direct":
+            _check_claude_direct_credentials(receipt, checked_at)
             if require_direct_probe:
                 _check_claude_direct_inference(receipt, model, direct_probe)
             else:
@@ -526,7 +601,9 @@ def check_subscription_guard(
                     "status": "previously_admitted_recheck",
                     "model": str(model or "claude-opus-4-8")[:160],
                     "system_prompt_owner": "collie",
-                    "claude_code_cli_invoked": False,
+                    "transport_owner": "collie",
+                    "request_authority": "runnable_boundary_recheck_no_probe",
+                    "claude_code_inference_cli_invoked": False,
                 }
     else:
         _check_codex(receipt, account_evidence, checked_at, command_runner)

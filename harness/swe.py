@@ -837,28 +837,24 @@ def predict_pi(workdir: str, problem_statement: str, model="", timeout=1800):
     # (no tool-approval prompt); `-a` trusts project-local files. Install: npm i -g
     # @earendil-works/pi-coding-agent.
     #   DeepSeek (default):   reads DEEPSEEK_API_KEY from env.
-    #   SUBSCRIPTION mode:    run `pi` then `/login` -> Anthropic Claude Pro/Max ONCE (pi keeps its
-    #     OWN OAuth token store), then set SWE_PI_PROVIDER=anthropic SWE_PI_MODEL=claude-sonnet-5.
-    #     NB pi sends the IDENTICAL Claude Code identity headers collie does (anthropic-messages.ts:
-    #     54-74: claude-code beta + user-agent claude-cli + x-app cli + tool-name normalization) —
-    #     same impersonation, same flat-vs-metered fingerprint mechanism; the only difference from
-    #     collie is pi has its own /login whereas collie reuses ~/.claude's token. Its lean ~570-tok
-    #     prompt should draw the FLAT free pool like collie — verify on first run.
+    #   Other providers: run Pi's documented `/login`, then set
+    #     SWE_PI_PROVIDER/SWE_PI_MODEL. Pi remains the owner of its credentials.
     # NB pi -p (print) mode runs built-in tools without an approval prompt, so no --approve flag is
     # needed (and pi 0.74.2 rejects the old `-a`). IMPORTANT: on the Claude subscription pi draws the
     # METERED extra-usage pool, NOT the flat free plan (empirically verified: 400 "out of extra
-    # usage") — because it doesn't do collie's full flat-pool impersonation (CC system prefix + lean
-    # prompt). Fund extra-usage at claude.ai/settings/usage for a subscription pi run, or use
-    # DEEPSEEK_API_KEY (default) / an ANTHROPIC_API_KEY.
-    prov = os.environ.get("SWE_PI_PROVIDER", "deepseek")
+    # usage"). Fund extra-usage at claude.ai/settings/usage for a subscription Pi run, or use
+    # a documented provider with an approved budget.
+    prov = os.environ.get("SWE_PI_PROVIDER", "deepseek").strip()
+    if prov.lower() == "claudesub":
+        raise ValueError(
+            "SWE_PI_PROVIDER=claudesub was removed; use a documented Pi provider/login")
     mdl = model or os.environ.get("SWE_PI_MODEL", "deepseek-chat")
+    normalized_model = mdl.strip().lower()
+    if normalized_model == "claudesub" or normalized_model.startswith(
+            ("claudesub/", "claudesub:")):
+        raise ValueError(
+            "SWE_PI_MODEL cannot select removed provider 'claudesub'; use a documented Pi provider")
     cmd = ["pi", "-p", CLI_SWE_PROMPT + problem_statement, "--provider", prov, "--model", mdl]
-    if prov == "claudesub":     # flat Claude sub ($0, e.g. Opus) via collie's oauth-proxy — the proxy
-        # MUST be running (OAUTH_PROXY_PORT=8788 python -m harness.oauth_proxy) + ANTHROPIC_API_KEY set
-        # to any non-empty value. The extension registers a "claudesub" provider pointing at the proxy,
-        # which injects the CC identity + flat-pool impersonation so pi draws the free plan, not metered.
-        cmd += ["--extension", os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                            "oauth_ext", "pi-oauth-proxy.js")]
     p = _run_cli(cmd, workdir, timeout=timeout)
     return _parse_cli_usage(((p.stdout or "") + "\n" + (p.stderr or "")) if p else "")
 

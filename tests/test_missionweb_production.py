@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from harness.missionweb import MissionService
+from harness.missionweb import MissionService, _subscription_guard_environment
 from harness.tasktree import CANCEL_REQUESTED, CANCELLED, TaskTreeStore
 from harness.verification import workspace_snapshot
 
@@ -15,25 +15,54 @@ _CODEX_ZERO_CREDIT_EVIDENCE = {
 }
 
 
+def test_subscription_guard_receives_real_ambient_routing_environment(monkeypatch):
+    monkeypatch.setenv("SSL_CERT_FILE", "C:/unreviewed/root.pem")
+
+    assert _subscription_guard_environment()["SSL_CERT_FILE"] == \
+        "C:/unreviewed/root.pem"
+
+
 def _allow_test_subscription(provider, *, account_evidence=None, environ=None,
-                             model="", require_direct_probe=True,
-                             minimum_token_validity_seconds=0):
+                             model="", require_direct_probe=True):
     """Allow only the two reviewed first-party test routes, never unknown ones."""
-    if provider in ("claude-code", "claude-direct"):
+    if provider == "claude-agent-sdk":
         assert account_evidence is None
     elif provider == "codex-cli":
         assert account_evidence == _CODEX_ZERO_CREDIT_EVIDENCE
     else:
         raise RuntimeError("unreviewed subscription route")
     assert isinstance(environ, dict)
-    assert not any(name.upper().startswith(
-        ("ANTHROPIC_", "OPENAI_", "CLAUDE_", "CODEX_")) for name in environ)
     return {
         "format": "collie-subscription-guard-v1",
         "schema_version": 1,
         "provider": provider,
         "verdict": "allow",
     }
+
+
+def test_user_cancel_terminates_only_the_missions_active_model_transport(tmp_path):
+    cancelled = []
+
+    class Provider:
+        def cancel_for(self, mission_id):
+            return lambda: cancelled.append(mission_id) or True
+
+        def cancel_current(self):
+            return False
+
+    class Decider:
+        provider = Provider()
+
+        def __call__(self, *_args, **_kwargs):
+            return {"action": "needs_human", "args": {"summary": "unused"}}
+
+    service = MissionService(
+        base=str(tmp_path / "svc"), decider=Decider(), stub=True)
+    mid = service.start("cancel this model call")["mission_id"]
+
+    assert service.cancel(mid)["state"] == "cancelled"
+    assert cancelled == [mid]
+    service.close()
 
 
 def test_production_defaults_bind_durable_tasktree_and_pending_hooks(tmp_path, monkeypatch):
@@ -75,7 +104,7 @@ def test_overnight_execution_profile_survives_restart_and_forbids_cli_fallback(
     repo = tmp_path / "repo"
     repo.mkdir()
     service = MissionService(
-        base=base, provider="anthropic-oauth", model="claude-opus-4-8",
+        base=base, provider="claude-agent-sdk", model="claude-opus-4-8",
         decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
     created = service.start(
@@ -95,7 +124,7 @@ def test_overnight_execution_profile_survives_restart_and_forbids_cli_fallback(
     mission = reopened.store.get(mid)
     reopened._activate_execution_profile(mission)
     reopened._ensure_runtime()
-    assert reopened._provider == "anthropic-oauth"
+    assert reopened._provider == "claude-agent-sdk"
     assert reopened._model == "claude-opus-4-8"
     assert reopened._prov.subscription_only is True
     assert mission.case["execution_profile"]["allow_provider_fallback"] is False
@@ -108,7 +137,7 @@ def test_daemon_tick_activates_the_frozen_overnight_route(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     created_by = MissionService(
-        base=base, provider="anthropic-oauth", model="claude-opus-4-8",
+        base=base, provider="claude-agent-sdk", model="claude-opus-4-8",
         decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
     mid = created_by.start(
@@ -124,20 +153,20 @@ def test_daemon_tick_activates_the_frozen_overnight_route(tmp_path):
     ticked = daemon.tick()
 
     assert ticked["advanced"] == 1
-    assert daemon._provider == "anthropic-oauth" and daemon._model == "claude-opus-4-8"
+    assert daemon._provider == "claude-agent-sdk" and daemon._model == "claude-opus-4-8"
     assert daemon._subscription_only is True
     assert daemon.store.get(mid).state == "needs_you"
     daemon.close()
 
 
-def test_overnight_rejects_claude_cli_system_prompt_route(tmp_path):
+def test_overnight_rejects_claude_cli_route(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     service = MissionService(
         base=str(tmp_path / "svc"), provider="claude-cli",
         model="opus", decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
-    with pytest.raises(ValueError, match="direct Claude subscription route"):
+    with pytest.raises(ValueError, match="official Claude Agent SDK"):
         service.start(
             "do not risk extra usage", code=True, workspace=str(repo), overnight=True,
             no_paid_overage=True)
@@ -149,7 +178,7 @@ def test_overnight_rejects_non_opus_model_substitution(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     service = MissionService(
-        base=str(tmp_path / "svc"), provider="anthropic-oauth",
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
         model="claude-sonnet-5", decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
     with pytest.raises(ValueError, match="explicit Claude Opus model"):
@@ -164,7 +193,7 @@ def test_overnight_caller_cannot_raise_hard_preset_bounds(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     service = MissionService(
-        base=str(tmp_path / "svc"), provider="anthropic-oauth",
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
         model="claude-opus-4-8", decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
     created = service.start(
@@ -192,7 +221,7 @@ def test_overnight_rejects_nonfinite_cost_bound(tmp_path, invalid):
     repo.mkdir()
     service = MissionService(
         base=str(tmp_path / ("svc-" + str(invalid).replace("-", "neg"))),
-        provider="anthropic-oauth", model="claude-opus-4-8",
+        provider="claude-agent-sdk", model="claude-opus-4-8",
         decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
 
@@ -210,7 +239,7 @@ def test_overnight_route_pin_rejects_durable_case_tampering(tmp_path, mutation):
     repo = tmp_path / mutation
     repo.mkdir()
     service = MissionService(
-        base=str(tmp_path / ("svc-" + mutation)), provider="anthropic-oauth",
+        base=str(tmp_path / ("svc-" + mutation)), provider="claude-agent-sdk",
         model="claude-opus-4-8", decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
     created = service.start(
@@ -237,7 +266,7 @@ def test_global_tick_advances_multiple_frozen_overnight_profiles(tmp_path):
     one.mkdir()
     two.mkdir()
     service = MissionService(
-        base=str(tmp_path / "svc"), provider="anthropic-oauth",
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
         model="claude-opus-4-8",
         decider=lambda *_: {"action": "needs_human", "args": {"summary": "stop"}},
         stub=True, subscription_guard=_allow_test_subscription)
@@ -274,7 +303,7 @@ def test_same_provider_warm_runtime_is_rebuilt_for_subscription_only_profile(
     repo = tmp_path / "repo"
     repo.mkdir()
     service = MissionService(
-        base=str(tmp_path / "svc"), provider="anthropic-oauth",
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
         model="claude-opus-4-8",
         decider=lambda *_: {}, stub=False,
         subscription_guard=_allow_test_subscription)
@@ -296,7 +325,7 @@ def test_same_provider_warm_runtime_is_rebuilt_for_subscription_only_profile(
 
 def test_overnight_code_fails_closed_without_workspace_or_verification(tmp_path):
     service = MissionService(
-        base=str(tmp_path / "svc"), provider="anthropic-oauth",
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
         model="claude-opus-4-8",
         decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
@@ -327,7 +356,7 @@ def test_subscription_guard_is_rechecked_at_the_runnable_boundary(tmp_path):
     calls = []
 
     def guard(provider, *, account_evidence=None, environ=None, model="",
-              require_direct_probe=True, minimum_token_validity_seconds=0):
+              require_direct_probe=True):
         calls.append((provider, account_evidence, dict(environ or {})))
         return {
             "format": "collie-subscription-guard-v1",
@@ -335,6 +364,11 @@ def test_subscription_guard_is_rechecked_at_the_runnable_boundary(tmp_path):
             "provider": provider,
             "verdict": "allow",
             "serial": len(calls),
+            "inference_runtime": {
+                "api_key_source": (
+                    "none" if require_direct_probe else
+                    "not_reobserved_at_runnable_boundary"),
+            },
         }
 
     repo = tmp_path / "repo"
@@ -347,7 +381,7 @@ def test_subscription_guard_is_rechecked_at_the_runnable_boundary(tmp_path):
     created = service.start(
         "prove route twice", code=True, workspace=str(repo), overnight=True,
         verify_command="python verify.py", no_paid_overage=True,
-        provider="anthropic-oauth", model="claude-opus-4-8")
+        provider="claude-agent-sdk", model="claude-opus-4-8")
     assert len(calls) == 1
 
     result = service.run(created["mission_id"])
@@ -356,7 +390,51 @@ def test_subscription_guard_is_rechecked_at_the_runnable_boundary(tmp_path):
     assert len(calls) == 2
     refreshed = service.store.get(created["mission_id"]).case["billing_safety"]
     assert refreshed["guard_receipt"]["serial"] == 2
-    assert all(provider == "claude-direct" for provider, _evidence, _env in calls)
+    assert refreshed["guard_receipt"]["inference_runtime"][
+        "api_key_source"] == "not_reobserved_at_runnable_boundary"
+    assert refreshed["creation_guard_receipt"]["serial"] == 1
+    assert refreshed["creation_guard_receipt"]["inference_runtime"][
+        "api_key_source"] == "none"
+    assert all(provider == "claude-agent-sdk"
+               for provider, _evidence, _env in calls)
+    service.close()
+
+
+def test_new_billing_schema_refuses_to_promote_a_boundary_receipt_to_creation(
+        tmp_path):
+    calls = []
+
+    def guard(provider, *, account_evidence=None, environ=None, model="",
+              require_direct_probe=True):
+        calls.append(require_direct_probe)
+        return {
+            "format": "collie-subscription-guard-v1",
+            "schema_version": 1,
+            "provider": provider,
+            "verdict": "allow",
+            "serial": len(calls),
+        }
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    service = MissionService(
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
+        model="claude-opus-4-8", decider=lambda *_: {}, stub=True,
+        subscription_guard=guard)
+    created = service.start(
+        "preserve the observed source", code=True, workspace=str(repo),
+        overnight=True, verify_command="python verify.py",
+        no_paid_overage=True)
+    mid = created["mission_id"]
+    safety = dict(service.store.get(mid).case["billing_safety"])
+    assert safety["version"] == 2
+    safety.pop("creation_guard_receipt")
+    assert service.store.patch_case(mid, {"billing_safety": safety})
+
+    with pytest.raises(RuntimeError, match="no preserved creation allow receipt"):
+        service._activate_execution_profile(service.store.get(mid))
+
+    assert calls == [True, False]
     service.close()
 
 
@@ -364,7 +442,7 @@ def test_failed_overnight_retry_preserves_frozen_contract_and_workspace_binding(
     repo = tmp_path / "repo"
     repo.mkdir()
     service = MissionService(
-        base=str(tmp_path / "svc"), provider="anthropic-oauth",
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
         model="claude-opus-4-8",
         decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
@@ -398,7 +476,7 @@ def test_code_session_recovery_requires_and_applies_an_explicit_outcome(
     repo = tmp_path / "repo"
     repo.mkdir()
     service = MissionService(
-        state_dir=str(state), provider="anthropic-oauth",
+        state_dir=str(state), provider="claude-agent-sdk",
         model="claude-opus-4-8", decider=lambda *_: {}, stub=True,
         subscription_guard=_allow_test_subscription)
     created = service.start(
@@ -497,7 +575,7 @@ def test_overnight_specialist_gets_own_session_baseline_and_fresh_billing_receip
     calls = []
 
     def guard(provider, *, account_evidence=None, environ=None, model="",
-              require_direct_probe=True, minimum_token_validity_seconds=0):
+              require_direct_probe=True):
         calls.append(provider)
         return {"format": "collie-subscription-guard-v1", "schema_version": 1,
                 "provider": provider, "verdict": "allow", "serial": len(calls)}
@@ -506,7 +584,7 @@ def test_overnight_specialist_gets_own_session_baseline_and_fresh_billing_receip
     repo.mkdir()
     (repo / "base.py").write_text("value = 1\n", encoding="utf-8")
     service = MissionService(
-        base=str(tmp_path / "svc"), provider="anthropic-oauth",
+        base=str(tmp_path / "svc"), provider="claude-agent-sdk",
         model="claude-opus-4-8", decider=lambda *_: {}, stub=True,
         subscription_guard=guard)
     parent = service.start(
@@ -522,7 +600,9 @@ def test_overnight_specialist_gets_own_session_baseline_and_fresh_billing_receip
     child_case = service.store.get(child["mission_id"]).case
     parent_case = service.store.get(parent["mission_id"]).case
 
-    assert calls == ["claude-direct", "claude-direct"]
+    assert calls == ["claude-agent-sdk", "claude-agent-sdk"]
+    assert parent_case["billing_safety"]["creation_guard_receipt"]["serial"] == 1
+    assert child_case["billing_safety"]["creation_guard_receipt"]["serial"] == 2
     assert child_case["billing_safety"]["guard_receipt"]["serial"] == 2
     assert child_case["code_profile"]["session_id"] != \
         parent_case["code_profile"]["session_id"]

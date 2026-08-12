@@ -80,6 +80,96 @@ def test_claude_requires_first_party_paid_plan_and_returns_redacted_receipt(repo
     assert runner.calls == [("claude", "auth", "status", "--json")]
 
 
+def test_claude_agent_sdk_admission_requires_auth_and_live_probe_receipt():
+    runner = Runner(claude_status())
+    probed = []
+
+    def probe(model):
+        probed.append(model)
+        return SimpleNamespace(stop_reason="end_turn", api_key_source="none")
+
+    receipt = check_subscription_guard(
+        "claude-agent-sdk", environ={}, runner=runner,
+        model="claude-opus-4-8", direct_probe=probe, now_utc=NOW)
+
+    assert receipt["verdict"] == "allow"
+    assert receipt["provider"] == "claude-agent-sdk"
+    assert receipt["auth"] == {
+        "status": "authenticated", "method": "claude.ai",
+        "api_provider": "firstParty", "plan": "max",
+    }
+    assert receipt["inference_runtime"] == {
+        "status": "available",
+        "model": "claude-opus-4-8",
+        "runtime": "official_claude_agent_sdk",
+        "agent_loop_owner": "collie",
+        "system_prompt_owner": "collie",
+        "system_prompt_mode": "literal_custom",
+        "claude_code_prompt_preset": "not_loaded",
+        "setting_sources": "empty",
+        "builtin_tools_skills_plugins_agents": "disabled",
+        "slash_commands": "disabled",
+        "api_key_source": "none",
+        "internal_retries": "disabled",
+        "request_authority": "single_use_pre_worker_spawn",
+    }
+    assert runner.calls == [("claude", "auth", "status", "--json")]
+    assert probed == ["claude-opus-4-8"]
+
+
+def test_claude_agent_sdk_denies_when_live_probe_is_unavailable():
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            "claude-agent-sdk", environ={}, runner=Runner(claude_status()),
+            model="claude-opus-4-8", now_utc=NOW,
+            direct_probe=lambda _model: SimpleNamespace(stop_reason="error"))
+
+    assert caught.value.reason == "claude_agent_sdk_inference_unavailable"
+    assert caught.value.receipt["provider"] == "claude-agent-sdk"
+    assert caught.value.receipt["auth"]["plan"] == "max"
+
+
+@pytest.mark.parametrize("source", [None, "", "oauth", "subscription", "pro", "max"])
+def test_claude_agent_sdk_denies_missing_or_unreviewed_probe_auth_source(source):
+    completion = SimpleNamespace(stop_reason="end_turn")
+    if source is not None:
+        completion.api_key_source = source
+
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            "claude-agent-sdk", environ={}, runner=Runner(claude_status()),
+            model="claude-opus-4-8", now_utc=NOW,
+            direct_probe=lambda _model: completion)
+
+    assert caught.value.reason == "claude_agent_sdk_auth_attestation_invalid"
+
+
+def test_claude_agent_sdk_runnable_recheck_does_not_spend_an_untracked_probe():
+    called = []
+
+    receipt = check_subscription_guard(
+        "claude-agent-sdk", environ={}, runner=Runner(claude_status()),
+        model="claude-opus-4-8", now_utc=NOW, require_direct_probe=False,
+        direct_probe=lambda _model: called.append(True))
+
+    assert called == []
+    assert receipt["inference_runtime"] == {
+        "status": "previously_admitted_recheck",
+        "model": "claude-opus-4-8",
+        "runtime": "official_claude_agent_sdk",
+        "agent_loop_owner": "collie",
+        "system_prompt_owner": "collie",
+        "system_prompt_mode": "literal_custom",
+        "claude_code_prompt_preset": "not_loaded",
+        "setting_sources": "empty",
+        "builtin_tools_skills_plugins_agents": "disabled",
+        "slash_commands": "disabled",
+        "api_key_source": "not_reobserved_at_runnable_boundary",
+        "internal_retries": "disabled",
+        "request_authority": "runnable_boundary_auth_recheck_no_inference",
+    }
+
+
 def test_claude_direct_requires_official_login_inference_scope_without_persisting_token(
         monkeypatch):
     monkeypatch.setattr(
@@ -146,47 +236,6 @@ def test_claude_direct_runnable_recheck_does_not_spend_an_untracked_probe(
 
     assert called == []
     assert receipt["direct_inference"]["status"] == "previously_admitted_recheck"
-
-
-def test_claude_direct_overnight_requires_token_to_span_unattended_window(
-        monkeypatch):
-    monkeypatch.setattr(
-        "harness.providers.claude_credentials",
-        lambda: {"claudeAiOauth": {
-            "accessToken": "private-access-token", "scopes": ["user:inference"],
-            "subscriptionType": "max",
-            "expiresAt": int(NOW.timestamp() * 1000) + 3_600_000}})
-    monkeypatch.setattr(
-        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
-
-    with pytest.raises(SubscriptionGuardError) as caught:
-        check_subscription_guard(
-            "claude-direct", environ={}, runner=Runner(claude_status()),
-            now_utc=NOW, minimum_token_validity_seconds=43_200,
-            direct_probe=lambda _model: SimpleNamespace(stop_reason="end_turn"))
-
-    assert caught.value.reason == "claude_direct_token_lifetime_insufficient"
-    assert caught.value.receipt["details"] == {
-        "minimum_required_seconds": 43_200}
-    assert "private-access-token" not in json.dumps(caught.value.receipt)
-
-
-def test_claude_direct_overnight_requires_explicit_expiry(monkeypatch):
-    monkeypatch.setattr(
-        "harness.providers.claude_credentials",
-        lambda: {"claudeAiOauth": {
-            "accessToken": "private-access-token", "scopes": ["user:inference"],
-            "subscriptionType": "max"}})
-    monkeypatch.setattr(
-        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
-
-    with pytest.raises(SubscriptionGuardError) as caught:
-        check_subscription_guard(
-            "claude-direct", environ={}, runner=Runner(claude_status()),
-            now_utc=NOW, minimum_token_validity_seconds=43_200,
-            direct_probe=lambda _model: SimpleNamespace(stop_reason="end_turn"))
-
-    assert caught.value.reason == "claude_direct_token_expiry_required"
 
 
 def test_claude_direct_expiry_check_always_targets_login_store(monkeypatch):
@@ -319,36 +368,37 @@ def test_unknown_claude_status_fields_fail_closed_without_echoing_values():
     assert secret not in json.dumps(caught.value.receipt)
 
 
-@pytest.mark.parametrize("name", [
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CONFIG_DIR",
-    "ANTHROPIC_CUSTOM_HEADERS",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "OPENAI_API_KEY",
-    "OPENAI_AUTH_TOKEN",
-    "OPENAI_BASE_URL",
-    "OPENAI_ORG_ID",
-    "OPENAI_MODEL",
-    "CODEX_API_KEY",
-    "CODEX_HOME",
-    "CODEX_PERMISSION_PROFILE",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_DEPLOYMENT",
-    "ANTHROPIC_EXPERIMENTAL_ENDPOINT",
-    "HTTP_PROXY",
-    "https_proxy",
-    "ALL_PROXY",
-    "NPM_CONFIG_HTTPS_PROXY",
-    "GLOBAL_AGENT_HTTP_PROXY",
-    "NODE_EXTRA_CA_CERTS",
-    "NODE_TLS_REJECT_UNAUTHORIZED",
-    "SSL_CERT_FILE",
+@pytest.mark.parametrize("provider,name", [
+    ("claude", "ANTHROPIC_API_KEY"),
+    ("claude", "ANTHROPIC_AUTH_TOKEN"),
+    ("claude", "ANTHROPIC_BASE_URL"),
+    ("claude", "CLAUDE_CODE_OAUTH_TOKEN"),
+    ("claude", "CLAUDE_CODE_USE_BEDROCK"),
+    ("claude", "CLAUDE_CONFIG_DIR"),
+    ("claude", "ANTHROPIC_CUSTOM_HEADERS"),
+    ("claude", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+    ("codex", "OPENAI_API_KEY"),
+    ("codex", "OPENAI_AUTH_TOKEN"),
+    ("codex", "OPENAI_BASE_URL"),
+    ("codex", "OPENAI_ORG_ID"),
+    ("codex", "OPENAI_MODEL"),
+    ("codex", "CODEX_API_KEY"),
+    ("codex", "CODEX_HOME"),
+    ("codex", "CODEX_PERMISSION_PROFILE"),
+    ("codex", "AZURE_OPENAI_ENDPOINT"),
+    ("codex", "AZURE_OPENAI_DEPLOYMENT"),
+    ("claude", "ANTHROPIC_EXPERIMENTAL_ENDPOINT"),
+    ("claude", "HTTP_PROXY"),
+    ("claude", "https_proxy"),
+    ("claude", "ALL_PROXY"),
+    ("claude", "NPM_CONFIG_HTTPS_PROXY"),
+    ("claude", "GLOBAL_AGENT_HTTP_PROXY"),
+    ("claude", "NODE_EXTRA_CA_CERTS"),
+    ("claude", "NODE_TLS_REJECT_UNAUTHORIZED"),
+    ("claude", "SSL_CERT_FILE"),
 ])
-def test_any_billing_or_routing_override_name_denies_without_reading_values(name):
+def test_any_billing_or_routing_override_name_denies_without_reading_values(
+        provider, name):
     secret = "do-not-copy-this-value"
 
     class KeysOnly(dict):
@@ -362,7 +412,7 @@ def test_any_billing_or_routing_override_name_denies_without_reading_values(name
     runner = Runner(claude_status())
 
     with pytest.raises(SubscriptionGuardError) as caught:
-        check_subscription_guard("claude", environ=environ, runner=runner, now_utc=NOW)
+        check_subscription_guard(provider, environ=environ, runner=runner, now_utc=NOW)
 
     assert caught.value.reason == "billing_or_routing_override_present"
     assert caught.value.receipt["details"]["forbidden_environment_name_count"] == 1
@@ -377,6 +427,14 @@ def test_empty_override_value_is_still_ambiguous_and_denied():
         check_subscription_guard(
             "claude", environ={"ANTHROPIC_API_KEY": ""},
             runner=Runner(claude_status()), now_utc=NOW)
+
+
+def test_unrelated_provider_environment_does_not_block_selected_route():
+    receipt = check_subscription_guard(
+        "claude", environ={"CODEX_PERMISSION_PROFILE": "sandbox"},
+        runner=Runner(claude_status()), now_utc=NOW)
+
+    assert receipt["verdict"] == "allow"
 
 
 def test_codex_requires_chatgpt_and_fresh_zero_credit_non_reload_evidence():

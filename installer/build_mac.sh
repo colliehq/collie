@@ -6,7 +6,7 @@
 #   bash installer/build_mac.sh --sign --dmg    # …and wrap it in Collie-<ver>.dmg
 #   bash installer/build_mac.sh --sign --dmg --notarize collie   # …and notarise via a stored profile
 #   bash installer/build_mac.sh --bundle-python --sign --dmg      # standalone: no Python required
-#        --arch arm64|x86_64   --extras local,tui,desktop
+#        --arch arm64|x86_64   --extras local,tui,desktop,remote,claude
 #
 # WHY a bundle at all, when `pip install collie-harness` already works: identity. macOS attaches
 # TCC permissions (Screen Recording, Camera, Microphone) to the *application*, so a pip install
@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 
 VERSION=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"',open('harness/__init__.py').read()).group(1))")
 APP="installer/Output/Collie.app"
-SIGN=0; DMG=0; ALLOW_DEV=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop,remote"
+SIGN=0; DMG=0; ALLOW_DEV=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop,remote,claude"
 while [ $# -gt 0 ]; do
   case "$1" in
     --sign) SIGN=1 ;;
@@ -281,8 +281,9 @@ if [ "$BUNDLE_PY" = "1" ]; then
   env -i PYTHONDONTWRITEBYTECODE=1 "$PYBIN" -B - "$EXTRAS" <<'SMOKE' || { echo "  payload is broken — not shipping it" >&2; exit 1; }
 import sys
 WANTED = {"local": ["onnxruntime", "tokenizers", "huggingface_hub", "numpy"],
-          "tui": ["rich"], "desktop": ["objc", "Cocoa", "WebKit", "Quartz"],
-          "remote": ["cryptography"], "browser": ["playwright"], "search": ["ddgs"]}
+           "tui": ["rich"], "desktop": ["objc", "Cocoa", "WebKit", "Quartz"],
+           "remote": ["cryptography"], "claude": ["claude_agent_sdk"],
+           "browser": ["playwright"], "search": ["ddgs"]}
 mods = ["harness"]
 for extra in (sys.argv[1] or "").split(","):
     mods += WANTED.get(extra.strip(), [])

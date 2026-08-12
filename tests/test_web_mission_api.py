@@ -11,13 +11,10 @@ from harness.mission import MissionStore
 
 
 def _allow_claude_subscription(provider, *, account_evidence=None, environ=None,
-                               model="", require_direct_probe=True,
-                               minimum_token_validity_seconds=0):
-    if provider != "claude-direct" or account_evidence is not None:
+                               model="", require_direct_probe=True):
+    if provider != "claude-agent-sdk" or account_evidence is not None:
         raise RuntimeError("unreviewed subscription route")
     assert isinstance(environ, dict)
-    assert not any(name.upper().startswith(
-        ("ANTHROPIC_", "OPENAI_", "CLAUDE_", "CODEX_")) for name in environ)
     return {
         "format": "collie-subscription-guard-v1",
         "schema_version": 1,
@@ -139,7 +136,7 @@ def test_mission_api_validates_and_atomically_binds_overnight_code_profile(
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.setenv("COLLIE_STATE_DIR", str(state))
-    monkeypatch.setenv("COLLIE_PROVIDER", "anthropic-oauth")
+    monkeypatch.setenv("COLLIE_PROVIDER", "claude-agent-sdk")
     monkeypatch.setenv("COLLIE_MODEL", "claude-opus-4-8")
     monkeypatch.setattr(
         settings, "_HARD_ENV", settings._HARD_ENV | {"COLLIE_PROVIDER", "COLLIE_MODEL"})
@@ -164,11 +161,11 @@ def test_mission_api_validates_and_atomically_binds_overnight_code_profile(
             root + "/api/mission" + token, "POST",
             {"goal": "make the suite green", "code": True, "overnight": True,
              "workspace": str(repo), "verify_command": "python -m pytest -q",
-             "provider": "anthropic-oauth", "model": "claude-opus-4-8",
+             "provider": "claude-agent-sdk", "model": "claude-opus-4-8",
              "no_paid_overage": True})
         assert code == 201 and created["state"] == "queued"
         assert created["case"]["_isolated_workspace"] == str(repo.resolve())
-        assert created["case"]["execution_profile"]["provider"] == "anthropic-oauth"
+        assert created["case"]["execution_profile"]["provider"] == "claude-agent-sdk"
         assert created["case"]["execution_profile"]["model"] == "claude-opus-4-8"
         assert created["case"]["execution_profile"]["subscription_only"] is True
 
@@ -209,7 +206,7 @@ def test_mission_api_refuses_metered_overnight_fallback(monkeypatch, tmp_path):
             root + "/api/mission" + token, "POST",
             {"goal": "never charge API usage", "code": True, "overnight": True,
              "workspace": str(repo), "no_paid_overage": True})
-        assert code == 400 and "direct Claude subscription route" in refused["error"]
+        assert code == 400 and "official Claude Agent SDK" in refused["error"]
         code, listed = _request(root + "/api/missions" + token)
         assert code == 200 and listed["missions"] == []
     finally:

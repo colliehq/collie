@@ -77,6 +77,9 @@ meadow_assets/*_raw/
 # ── scratch / experiments / vendored deps — NOT for release ──────────────────
 vendor/
 bench/*
+!bench/results/
+bench/results/*
+!bench/results/claude-agent-sdk-overnight-e2e-2026-08-12.json
 !bench/subscription_guard.py
 !bench/subscription_smoke.py
 !bench/subscription_rank.py

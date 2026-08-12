@@ -197,17 +197,18 @@ class OpenCodeAdapter(HarnessAdapter):
 
 
 class PiAdapter(HarnessAdapter):
-    # pi (@earendil-works/pi-coding-agent). On the flat Claude subscription via collie's oauth-proxy:
-    # register a proxy-backed provider (the extension) + point pi at it. Needs `python -m
-    # harness.oauth_proxy` running and ANTHROPIC_API_KEY set to any non-empty value (proxy ignores it).
+    # Pi owns provider selection and login state. Configure those through Pi's
+    # documented `/login` and `/model` flow; Collie only invokes print mode.
     key, label, cli, usage_supported = "pi", "Pi", "pi", False
-    extra_env = {"ANTHROPIC_API_KEY": "dummy-proxy-ignores-this"}
-    _EXT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oauth_ext", "pi-oauth-proxy.js")
 
     def build_cmd(self, prompt, model):
-        # model like "claude-opus-4-8"; the extension registers provider "claudesub" with it
-        prov = "claudesub" if not model or model.startswith("claude") else "claudesub"
-        cmd = ["pi", "-p", "--no-session", "--provider", prov, "--extension", self._EXT]
+        selected_provider = os.environ.get("PI_PROVIDER", "").strip().lower()
+        normalized_model = model.strip().lower() if model else ""
+        if (selected_provider == "claudesub" or normalized_model == "claudesub" or
+                normalized_model.startswith(("claudesub/", "claudesub:"))):
+            raise ValueError(
+                "Pi provider 'claudesub' was removed; use Pi's documented provider/login flow")
+        cmd = ["pi", "-p", "--no-session"]
         if model:
             cmd += ["--model", model]
         return cmd + [prompt]

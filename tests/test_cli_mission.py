@@ -8,13 +8,10 @@ from harness.jobs import FAILED_S
 
 
 def _allow_claude_subscription(provider, *, account_evidence=None, environ=None,
-                               model="", require_direct_probe=True,
-                               minimum_token_validity_seconds=0):
-    if provider != "claude-direct" or account_evidence is not None:
+                               model="", require_direct_probe=True):
+    if provider != "claude-agent-sdk" or account_evidence is not None:
         raise RuntimeError("unreviewed subscription route")
     assert isinstance(environ, dict)
-    assert not any(name.upper().startswith(
-        ("ANTHROPIC_", "OPENAI_", "CLAUDE_", "CODEX_")) for name in environ)
     return {
         "format": "collie-subscription-guard-v1",
         "schema_version": 1,
@@ -54,7 +51,7 @@ def test_cli_starts_atomic_subscription_only_overnight_code_mission(
     marker = repo / "owned-by-user.txt"
     marker.write_text("keep", encoding="utf-8")
     monkeypatch.setenv("COLLIE_STATE_DIR", str(state))
-    monkeypatch.setenv("COLLIE_PROVIDER", "anthropic-oauth")
+    monkeypatch.setenv("COLLIE_PROVIDER", "claude-agent-sdk")
     monkeypatch.setenv("COLLIE_MODEL", "claude-opus-4-8")
     monkeypatch.setattr(
         settings, "_HARD_ENV", settings._HARD_ENV | {"COLLIE_PROVIDER", "COLLIE_MODEL"})
@@ -65,7 +62,7 @@ def test_cli_starts_atomic_subscription_only_overnight_code_mission(
     rc, created = _run(capsys, [
         "mission", "start", "finish the refactor and prove it green",
         "--code", "--workspace", str(repo), "--overnight",
-        "--provider", "anthropic-oauth", "--model", "claude-opus-4-8",
+        "--provider", "claude-agent-sdk", "--model", "claude-opus-4-8",
         "--verify-command", "python -m pytest -q", "--no-paid-overage", "--json",
     ])
 
@@ -78,7 +75,7 @@ def test_cli_starts_atomic_subscription_only_overnight_code_mission(
     assert created["case"]["execution_profile"] == {
         "version": 1,
         "profile": "overnight",
-        "provider": "anthropic-oauth",
+        "provider": "claude-agent-sdk",
         "model": "claude-opus-4-8",
         "billing_mode": "subscription",
         "subscription_only": True,
@@ -104,23 +101,23 @@ def test_cli_starts_atomic_subscription_only_overnight_code_mission(
     assert marker.read_text(encoding="utf-8") == "keep"
 
 
-def test_cli_reports_direct_subscription_preflight_denial_without_traceback(
+def test_cli_reports_sdk_subscription_preflight_denial_without_traceback(
         monkeypatch, tmp_path, capsys):
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("COLLIE_PROVIDER", "anthropic-oauth")
+    monkeypatch.setenv("COLLIE_PROVIDER", "claude-agent-sdk")
     monkeypatch.setenv("COLLIE_MODEL", "claude-opus-4-8")
     monkeypatch.setattr(
         settings, "_HARD_ENV", settings._HARD_ENV | {"COLLIE_PROVIDER", "COLLIE_MODEL"})
 
     def deny(*_args, **_kwargs):
-        raise RuntimeError("direct inference unavailable")
+        raise RuntimeError("Agent SDK inference unavailable")
 
     monkeypatch.setattr("harness.subscription_guard.check_subscription_guard", deny)
     rc = cli.main([
         "mission", "start", "work overnight", "--code", "--workspace", str(repo),
-        "--overnight", "--no-paid-overage", "--provider", "anthropic-oauth",
+        "--overnight", "--no-paid-overage", "--provider", "claude-agent-sdk",
         "--model", "claude-opus-4-8", "--json",
     ])
     output = capsys.readouterr().out

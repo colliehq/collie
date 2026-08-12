@@ -2854,7 +2854,7 @@ class MissionDriver:
                 (decision or {}).get("_equivalent_cost_usd", 0.0) or 0.0),
             "retries": int((decision or {}).get("_retry", 0) or 0),
             # A transport-aware provider reserves every request immediately
-            # before opening its socket. Legacy providers precharge the first
+            # before starting its physical transport. Legacy providers precharge the first
             # logical request in reserve_decision and report only extras here.
             "model_calls": (0 if (decision or {}).get("_model_calls_reserved")
                             else max(0, int(
@@ -3822,7 +3822,8 @@ class MissionDriver:
                     decide_call = lambda: self.decider(
                         m.goal, model_case, self._primitives(m.leash),
                         request_gate=reserve_request,
-                        request_complete=self.store.complete_model_request)
+                        request_complete=self.store.complete_model_request,
+                        request_scope=mission_id)
                 else:
                     decide_call = lambda: self.decider(
                         m.goal, model_case, self._primitives(m.leash))
@@ -3830,6 +3831,7 @@ class MissionDriver:
                     decide_call,
                     step_timeout,
                     cancel_owner=getattr(self.decider, "provider", self.decider),
+                    cancel_key=mission_id,
                     mission_id=mission_id, run_token=token)
                 if outcome.timed_out:
                     self.store.account_runtime(
@@ -4947,7 +4949,7 @@ class ModelDecider:
             getattr(provider, "supports_request_gate", False))
 
     def __call__(self, goal, case, primitives, request_gate=None,
-                 request_complete=None) -> dict:
+                 request_complete=None, request_scope=None) -> dict:
         cat = "\n".join(
             f"- {p['name']} ({'reversible' if p['reversible'] else 'IRREVERSIBLE'}): "
             f"{p['description']}  args: {p['args'] or '{}'}" for p in primitives)
@@ -4956,13 +4958,26 @@ class ModelDecider:
         meta = {}
         try:
             request_id = ""
-            if callable(request_gate):
+            provider_owned_reservation = bool(
+                callable(request_gate) and self.supports_request_gate and
+                callable(getattr(self.provider, "request_authority", None)))
+            if callable(request_gate) and not provider_owned_reservation:
                 request_id = request_gate("mission_decider")
                 if not request_id:
                     return {"action": NEEDS_HUMAN, "args": {
                         "summary": "mission model-call budget or execution ownership expired"},
                         "reason": "model request reservation denied"}
-            comp = self.provider.complete(_SYS, [{"role": "user", "content": user}], [])
+            if provider_owned_reservation:
+                # The transport reserves immediately before starting its physical request.
+                # Context-local binding keeps concurrent Missions on a shared
+                # provider from consuming one another's run tokens.
+                with self.provider.request_authority(
+                        request_gate, request_complete, request_scope=request_scope):
+                    comp = self.provider.complete(
+                        _SYS, [{"role": "user", "content": user}], [])
+            else:
+                comp = self.provider.complete(
+                    _SYS, [{"role": "user", "content": user}], [])
             if request_id and callable(request_complete):
                 try:
                     request_complete(

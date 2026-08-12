@@ -348,6 +348,20 @@ def test_codeindex_ripgrep_fresh():
     assert idx.search("find_widget_by_name", k=3) == [] or \
         all("find_widget_by_name" not in h for h in idx.search("find_widget_by_name", k=3))
 
+
+def test_codeindex_normalizes_windows_paths_without_stripping_dot_directories(monkeypatch):
+    from harness import codeindex as C
+
+    output = (".\\mod.py:1:def hidden_setting():\n"
+              ".\\.config\\settings.py:7:hidden_setting = True\n")
+    monkeypatch.setattr(
+        C.subprocess, "run",
+        lambda *_args, **_kwargs: type("Result", (), {"stdout": output})())
+
+    matches = C._grep_matches("unused", ["hidden_setting"])
+
+    assert set(matches) == {"mod.py", ".config/settings.py"}
+
 def test_every_agent_cli_is_resolved_on_path_before_exec():
     """A competitor that cannot start must be an error, not a loss.
 

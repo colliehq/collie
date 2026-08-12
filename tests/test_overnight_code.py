@@ -22,7 +22,7 @@ from harness.jobs import (Capability, DONE_VERIFIED, NEEDS_YOU,
 from harness.mission import (_compact_case_storage, MissionDriver, MissionStore,
                              ModelDecider, create_mission, world_leash)
 from harness.missionweb import MissionService
-from harness.providers import Completion, Usage
+from harness.providers import Completion, ModelProvider, Usage
 from harness.primitives import _code_verify, _live_code, _real_code
 from harness.recorder import RunResult
 from harness.verification import workspace_snapshot
@@ -197,6 +197,205 @@ def test_exhausted_last_turn_finishes_when_host_verification_passes(tmp_path, mo
     assert out["continue_needed"] is False
 
 
+def test_verifier_side_effects_never_become_agent_patch_provenance(
+        tmp_path, monkeypatch):
+    """A stable verifier artifact on slice two is not a Mission code patch.
+
+    ``py_compile`` creates ``__pycache__`` on its first run. That cache is
+    ignored as an untracked verifier artifact and can never be laundered into
+    proof that the coding agent edited the project.
+    """
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "sample.py").write_text("VALUE = 1\n", encoding="utf-8")
+    baseline = workspace_snapshot(str(workspace))["tree_digest"]
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    _install_fake_harnesses(monkeypatch, [
+        _result(answer="inspected", messages=[{
+            "role": "assistant", "content": "no edit needed"}], exhausted=True),
+        _result(answer="inspected again", messages=[{
+            "role": "assistant", "content": "still no edit"}], exhausted=True),
+    ])
+    profile = {
+        "profile": "overnight", "provider": "claude-agent-sdk",
+        "model": "claude-opus-4-8", "subscription_only": True,
+        "billing_mode": "subscription", "allow_provider_fallback": False,
+    }
+
+    first = _live_code(
+        "inspect without editing", str(workspace), mission_id="verifier-provenance",
+        execution_profile=profile, verify_command="python -m py_compile sample.py",
+        baseline_tree_digest=baseline, expected_tree_digest=baseline)
+    second = _live_code(
+        "inspect without editing", str(workspace), mission_id="verifier-provenance",
+        execution_profile=profile, verify_command="python -m py_compile sample.py",
+        baseline_tree_digest=baseline,
+        expected_tree_digest=first["post_tree_digest"])
+
+    assert (workspace / "__pycache__").is_dir()
+    assert first["verified"] is False
+    assert second["verified"] is False
+    assert first["agent_post_tree_digest"] == baseline
+    assert first["post_tree_digest"] == baseline
+    assert first["slice_mutated"] is False
+    assert first["verifier_mutated"] is False
+    assert second["slice_mutated"] is False
+    assert second["patch_attributed"] is False
+    assert second["verification"]["evidence"]["passed"] is True
+    assert second["verification"]["evidence"]["patch_attributed"] is False
+
+    saved = sessions.load(first["session_id"])
+    slices = [row for row in saved["run_receipts"]
+              if row.get("kind") == "mission_code_slice"]
+    assert len(slices) == 2
+    assert slices[0]["agent_post_tree_digest"] == baseline
+    assert slices[0]["post_tree_digest"] == baseline
+    assert slices[0]["agent_mutated"] is False
+    assert slices[0]["verifier_mutated"] is False
+    assert all(row["patch_attributed"] is False for row in slices)
+
+
+def test_verifier_overwrite_cannot_be_laundered_as_agent_provenance(
+        tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    target = workspace / "sample.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    (workspace / "verify.py").write_text(
+        "from pathlib import Path\n"
+        "p = Path('sample.py')\n"
+        "p.write_text('VALUE = 3\\n', encoding='utf-8')\n"
+        "assert p.read_text(encoding='utf-8') == 'VALUE = 3\\n'\n",
+        encoding="utf-8")
+    baseline = workspace_snapshot(str(workspace))["tree_digest"]
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+
+    results = [
+        _result(answer="patched", messages=[{
+            "role": "assistant", "content": "set value to two"}], exhausted=True),
+        _result(answer="checked", messages=[{
+            "role": "assistant", "content": "made no change"}], exhausted=False),
+    ]
+    mutations = [
+        lambda: target.write_text("VALUE = 2\n", encoding="utf-8"),
+        lambda: None,
+    ]
+
+    def make_harness(*_args, **_kwargs):
+        harness = _FakeHarness(results.pop(0), [])
+        mutation = mutations.pop(0)
+        original_run = harness.run
+
+        def run(*args, **kwargs):
+            mutation()
+            return original_run(*args, **kwargs)
+
+        harness.run = run
+        return harness
+
+    monkeypatch.setattr("harness.cli.make_harness", make_harness)
+    first = _live_code(
+        "set the value to two", str(workspace), mission_id="verifier-overwrite",
+        baseline_tree_digest=baseline, expected_tree_digest=baseline,
+        verify_command="python verify.py")
+    second = _live_code(
+        "set the value to two", str(workspace), mission_id="verifier-overwrite",
+        baseline_tree_digest=baseline,
+        expected_tree_digest=first["post_tree_digest"],
+        verify_command="python verify.py")
+
+    assert first["verified"] is False
+    assert first["verifier_mutated"] is True
+    assert first["patch_attributed"] is False
+    assert second["verification"]["evidence"]["passed"] is True
+    assert second["patch_attributed"] is False
+    assert second["verified"] is False
+    assert target.read_text(encoding="utf-8") == "VALUE = 3\n"
+
+
+def test_later_agent_revert_clears_historical_patch_before_verifier_artifact(
+        tmp_path, monkeypatch):
+    """A reverted historical edit cannot be revived by verifier-owned bytes."""
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    target = workspace / "sample.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    (workspace / "verify.py").write_text(
+        "from pathlib import Path\n"
+        "assert Path('sample.py').read_text(encoding='utf-8') == 'VALUE = 1\\n'\n"
+        "Path('build-artifact.txt').write_text('generated', encoding='utf-8')\n",
+        encoding="utf-8")
+    baseline = workspace_snapshot(str(workspace))["tree_digest"]
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+
+    results = [
+        _result(answer="patched", messages=[{
+            "role": "assistant", "content": "set value to two"}], exhausted=True),
+        _result(answer="reverted", messages=[{
+            "role": "assistant", "content": "restored original value"}], exhausted=False),
+        _result(answer="checked again", messages=[{
+            "role": "assistant", "content": "original value remains"}], exhausted=False),
+    ]
+    mutations = [
+        lambda: target.write_text("VALUE = 2\n", encoding="utf-8"),
+        lambda: target.write_text("VALUE = 1\n", encoding="utf-8"),
+        lambda: None,
+    ]
+
+    def make_harness(*_args, **_kwargs):
+        result = results.pop(0)
+        mutation = mutations.pop(0)
+        harness = _FakeHarness(result, [])
+        original_run = harness.run
+
+        def run(*args, **kwargs):
+            mutation()
+            return original_run(*args, **kwargs)
+
+        harness.run = run
+        return harness
+
+    monkeypatch.setattr("harness.cli.make_harness", make_harness)
+    first = _live_code(
+        "change then reconsider", str(workspace), mission_id="reverted-patch",
+        baseline_tree_digest=baseline, expected_tree_digest=baseline,
+        host_verifier=lambda *_args: {"verified": False})
+
+    assert first["patch_attributed"] is True
+    assert first["agent_post_tree_digest"] != baseline
+
+    second = _live_code(
+        "restore the original", str(workspace), mission_id="reverted-patch",
+        baseline_tree_digest=baseline,
+        expected_tree_digest=first["post_tree_digest"],
+        verify_command="python verify.py")
+
+    assert second["agent_post_tree_digest"] == baseline
+    assert second["post_tree_digest"] != baseline
+    assert (workspace / "build-artifact.txt").is_file()
+    assert second["verifier_mutated"] is True
+    assert second["patch_attributed"] is False
+    assert second["verification"]["evidence"]["patch_attributed"] is False
+    assert second["verified"] is False
+
+    # On the next slice the same verifier leaves its existing artifact
+    # unchanged, so its host evidence is fresh and passing.  Replaying the first
+    # slice's historical mutation must still not resurrect patch provenance.
+    third = _live_code(
+        "confirm the original", str(workspace), mission_id="reverted-patch",
+        baseline_tree_digest=baseline,
+        expected_tree_digest=second["post_tree_digest"],
+        verify_command="python verify.py")
+
+    assert third["verification"]["evidence"]["passed"] is True
+    assert third["patch_attributed"] is False
+    assert third["verification"]["evidence"]["patch_attributed"] is False
+    assert third["verified"] is False
+
+
 def test_code_verify_accepts_a_durably_checkpointed_yield():
     verdict = _code_verify(None, {
         "result": "slice stopped at its bounded turn budget",
@@ -275,7 +474,7 @@ def test_overnight_voluntary_answer_keeps_running_until_host_gate_is_green(
 
     out = _live_code(
         "finish it", str(workspace), mission_id="voluntary-stop",
-        execution_profile={"profile": "overnight", "provider": "anthropic-oauth",
+        execution_profile={"profile": "overnight", "provider": "claude-agent-sdk",
                            "model": "claude-opus-4-8", "subscription_only": True,
                            "billing_mode": "subscription",
                            "allow_provider_fallback": False},
@@ -357,7 +556,7 @@ def test_transient_provider_error_after_safe_edit_continues_from_checkpoint(
     out = _live_code(
         "finish safely", str(workspace), mission_id="transient-edit",
         baseline_tree_digest=baseline, expected_tree_digest=baseline,
-        execution_profile={"profile": "overnight", "provider": "anthropic-oauth",
+        execution_profile={"profile": "overnight", "provider": "claude-agent-sdk",
                            "model": "claude-opus-4-8", "subscription_only": True,
                            "billing_mode": "subscription",
                            "allow_provider_fallback": False},
@@ -366,6 +565,35 @@ def test_transient_provider_error_after_safe_edit_continues_from_checkpoint(
     assert out["transient"] is True
     assert out["slice_mutated"] is True
     assert out["recovery_required"] is False
+    assert out["continue_needed"] is True
+
+
+def test_overnight_code_constructs_agent_sdk_provider_as_subscription_only(
+        tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    captured = {}
+    result = _result(
+        answer="waiting", messages=[{"role": "assistant", "content": "waiting"}],
+        exhausted=True)
+
+    def make_harness(*_args, **kwargs):
+        captured.update(kwargs)
+        return _FakeHarness(result, [])
+
+    monkeypatch.setattr("harness.cli.make_harness", make_harness)
+
+    out = _live_code(
+        "continue", str(workspace), mission_id="subscription-constructor",
+        execution_profile={"profile": "overnight", "provider": "claude-agent-sdk",
+                           "model": "claude-opus-4-8", "subscription_only": True,
+                           "billing_mode": "subscription",
+                           "allow_provider_fallback": False},
+        host_verifier=lambda *_: False)
+
+    assert captured["subscription_only"] is True
     assert out["continue_needed"] is True
 
 
@@ -588,6 +816,35 @@ def test_transport_reserved_decision_is_not_postcharged_again():
     assert MissionDriver._usage_from_decision(decision)["model_calls"] == 0
 
 
+def test_transport_reservation_is_context_bound_at_the_physical_provider_call():
+    calls = []
+
+    class Provider(ModelProvider):
+        model = "claude-opus-4-8"
+        subscription_only = True
+        supports_request_gate = True
+
+        def complete(self, *_args, **_kwargs):
+            gate, complete = self.current_request_authority()
+            calls.append(("scope", self.current_request_scope()))
+            request_id = gate("physical_transport")
+            calls.append(request_id)
+            complete(request_id, "completed")
+            return Completion(
+                text='{"action":"needs_human","args":{"summary":"done"}}',
+                usage=Usage(input_tokens=3))
+
+    completed = []
+    decision = ModelDecider(Provider())(
+        "goal", {}, [], request_gate=lambda purpose: calls.append(purpose) or "r1",
+        request_complete=lambda *args: completed.append(args),
+        request_scope="mission-one")
+
+    assert calls == [("scope", "mission-one"), "physical_transport", "r1"]
+    assert completed == [("r1", "completed")]
+    assert decision["_model_calls_reserved"] is True
+
+
 def test_durable_code_mission_closes_from_host_evidence_not_campaign_receipts(tmp_path):
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -734,6 +991,38 @@ def test_code_slice_process_runs_from_an_uninstalled_source_checkout(tmp_path, m
     assert out["session_id"].startswith("mission-code-")
     assert isinstance(out["verified"], bool)
     assert out["turns"] >= 1
+
+
+def test_code_slice_process_searches_its_bound_workspace(tmp_path):
+    """The real worker must retain enough non-secret OS context for grep.
+
+    On Windows this covers the sanitized child environment locating Git Bash;
+    without ProgramFiles the POSIX-quoted pattern ran under cmd.exe and silently
+    reported no matches even though every cwd/workspace binding was correct.
+    """
+    if os.name == "nt":
+        from harness import plat
+        if not plat.has_posix_shell():
+            pytest.skip("Windows cross-process search requires an installed POSIX shell")
+    workspace = tmp_path / "isolated-search-repo"
+    workspace.mkdir()
+    (workspace / "marker.py").write_text(
+        "# TODO: cross_process_workspace_marker\n", encoding="utf-8")
+    runner = CodeSliceProcessRunner(
+        session_dir=str(tmp_path / "sessions"),
+        worker_dir=str(tmp_path / "workers"))
+
+    out = runner(
+        "Find the TODO in the bound workspace and report it.",
+        workspace=str(workspace), mission_id="process-search-boundary",
+        execution_profile={
+            "provider": "mock", "model": "mock-planner-v1",
+            "billing_mode": "local", "subscription_only": False,
+            "allow_provider_fallback": False,
+        }, max_wall_seconds=30)
+
+    assert "marker.py" in out["answer"], out["answer"]
+    assert "cross_process_workspace_marker" in out["answer"], out["answer"]
 
 
 def test_code_process_cancellation_is_scoped_to_the_target_mission(tmp_path, monkeypatch):

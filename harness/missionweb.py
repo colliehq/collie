@@ -57,6 +57,8 @@ def _provider_name() -> str:
 
 
 _SUBSCRIPTION_PROVIDERS = {
+    "claude-agent-sdk": "claude-agent-sdk",
+    "claude-sdk": "claude-agent-sdk",
     "anthropic-oauth": "anthropic-oauth",
     "claude-sub": "anthropic-oauth",
     "claude-cli": "claude-cli",
@@ -68,11 +70,12 @@ _SUBSCRIPTION_PROVIDERS = {
 
 _LOCAL_PROVIDERS = {"mock", "ollama"}
 
-# Native overnight is deliberately narrower than the general provider catalog.
-# Collie uses its own loop/system/tools and a Claude-plan OAuth credential against
-# Anthropic's fixed Messages endpoint.  It never delegates this profile through
-# Claude Code/Codex or silently falls back to a metered API-key route.
-_OVERNIGHT_SUBSCRIPTION_PROVIDERS = {"anthropic-oauth"}
+# Overnight is deliberately narrower than the general provider catalog.  The
+# admitted route is Anthropic's official Claude Agent SDK with a literal Collie
+# system prompt and every SDK tool/config/plugin surface disabled. Collie still
+# owns the loop, tools, durable leash, and verification; the worker owns one
+# model inference. Raw OAuth and metered/API/CLI fallback are never admitted.
+_OVERNIGHT_SUBSCRIPTION_PROVIDERS = {"claude-agent-sdk"}
 
 # The ordinary Mission defaults remain deliberately broad and long-lived.  This
 # preset is different: it is a bounded, unattended execution window whose whole
@@ -101,18 +104,14 @@ _OVERNIGHT_BOUNDS = {
     "max_specialists": 8,
 }
 
-_SUBSCRIPTION_GUARD_ENV_NAMES = frozenset({
-    "APPDATA", "COMSPEC", "HOME", "HOMEDRIVE", "HOMEPATH", "LANG",
-    "LC_ALL", "LC_CTYPE", "LOCALAPPDATA", "LOGNAME", "PATH", "PATHEXT",
-    "SHELL", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "USER", "USERPROFILE",
-    "WINDIR",
-})
-
-
 def _subscription_guard_environment() -> dict:
-    """The exact non-routing environment an overnight provider will receive."""
-    return {name: value for name, value in os.environ.items()
-            if name.upper() in _SUBSCRIPTION_GUARD_ENV_NAMES}
+    """Return the real parent environment so routing/TLS overrides cannot hide.
+
+    The guard itself gives auth-status subprocesses a small allowlist. Filtering
+    here used to make every forbidden-variable check vacuous while direct urllib
+    inference still inherited ambient TLS trust configuration.
+    """
+    return dict(os.environ)
 
 
 def _canonical_provider(name: str) -> str:
@@ -142,8 +141,9 @@ def _execution_profile(provider: str, model: str | None, *, overnight: bool) -> 
     if overnight and (billing != "subscription" or
                       provider not in _OVERNIGHT_SUBSCRIPTION_PROVIDERS):
         raise ValueError(
-            "overnight Mission requires Collie's direct Claude subscription route "
-            "(anthropic-oauth); metered, Codex OAuth, and claude -p fallback is forbidden")
+            "overnight Mission requires the official Claude Agent SDK "
+            "(claude-agent-sdk) with Collie's system prompt; raw OAuth, claude -p, "
+            "metered, and provider fallback routes are forbidden")
     if overnight and not model.lower().startswith("claude-opus-"):
         raise ValueError(
             "native overnight Mission requires an explicit Claude Opus model; "
@@ -444,7 +444,9 @@ class MissionService:
             if self._provider == "mock":
                 raise RuntimeError("mock provider cannot drive a durable Mission")
             from .providers import make_provider
-            self._prov = make_provider(self._provider, self._model)
+            self._prov = make_provider(
+                self._provider, self._model,
+                subscription_only=self._subscription_only)
             if self._subscription_only:
                 # Providers interpret this as a hard route property, not just
                 # cost accounting.  The direct Claude OAuth provider binds the
@@ -456,7 +458,9 @@ class MissionService:
         else:
             if self._prov is None and self._provider:
                 from .providers import make_provider
-                self._prov = make_provider(self._provider, self._model)
+                self._prov = make_provider(
+                    self._provider, self._model,
+                    subscription_only=self._subscription_only)
                 if self._subscription_only:
                     self._prov.subscription_only = True
             from .webact import get_actuator
@@ -493,15 +497,15 @@ class MissionService:
 
     def _subscription_preflight(self, profile, billing_safety=None,
                                 require_live_probe=True) -> dict:
-        """Prove the frozen direct route before unattended model work.
+        """Prove the frozen official subscription route before unattended work.
 
         Auth status alone cannot expose the account-side paid-overage toggle.
         Therefore the user must explicitly attest that it is disabled; Collie
         then removes every API/proxy override from the effective child
         environment, asks the official client for redacted login status, and
-        at creation separately proves the direct credential has inference
-        authority. Runnable-boundary checks are local and quota-free; the actual
-        provider request remains independently fail-closed.
+        at creation separately proves that the official runtime accepts Opus
+        with Collie's replacement prompt. Runnable-boundary checks are local and
+        quota-free; every actual inference still needs durable request authority.
         The returned receipt contains no credential material and is safe to
         persist with the Mission.
         """
@@ -512,8 +516,8 @@ class MissionService:
                 "overnight subscription mode requires an explicit confirmation "
                 "that paid usage credits/overage and auto-reload are disabled")
         provider = _canonical_provider(profile.get("provider"))
-        if provider == "anthropic-oauth":
-            guard_provider = "claude-direct"
+        if provider == "claude-agent-sdk":
+            guard_provider = "claude-agent-sdk"
             account_evidence = None
         elif provider == "codex-oauth":
             guard_provider = "codex-cli"
@@ -533,21 +537,41 @@ class MissionService:
                 guard_provider, account_evidence=account_evidence,
                 environ=_subscription_guard_environment(),
                 model=str(profile.get("model") or ""),
-                require_direct_probe=bool(require_live_probe),
-                minimum_token_validity_seconds=(
-                    int(_OVERNIGHT_BOUNDS["max_active_wall_seconds"])
-                    if guard_provider == "claude-direct" and require_live_probe
-                    else 0))
+                require_direct_probe=bool(require_live_probe))
         except Exception as exc:
             reason = str(getattr(exc, "reason", "") or type(exc).__name__)
             raise RuntimeError("subscription preflight denied: %s" % reason) from exc
         if not isinstance(receipt, dict) or receipt.get("verdict") != "allow":
             raise RuntimeError("subscription preflight returned no allow receipt")
+        if require_live_probe:
+            # This receipt includes the one live inference that established the
+            # SDK init/auth attestation for this Mission.  A specialist is a new
+            # Mission and therefore gets its own creation receipt.
+            creation_receipt = receipt
+        else:
+            # Runnable-boundary checks intentionally do not spend another
+            # inference.  Preserve the original observed attestation instead
+            # of overwriting it with a no-probe status receipt.  ``guard_receipt``
+            # is the legacy fallback for Missions created before this field was
+            # introduced.
+            try:
+                safety_version = int(safety.get("version", 1) or 1)
+            except (TypeError, ValueError, OverflowError):
+                raise RuntimeError("subscription billing safety version is invalid")
+            creation_receipt = safety.get("creation_guard_receipt")
+            if safety_version < 2 and creation_receipt is None:
+                creation_receipt = safety.get("guard_receipt")
+            if (not isinstance(creation_receipt, dict) or
+                    creation_receipt.get("verdict") != "allow"):
+                raise RuntimeError(
+                    "subscription preflight has no preserved creation allow receipt")
         return {
-            "version": 1,
+            "version": 2,
             "paid_overage_disabled": True,
             "marginal_charge_policy": "subscription-allowance-or-stop",
             "account_evidence": account_evidence,
+            "creation_guard_receipt": json.loads(json.dumps(
+                creation_receipt, ensure_ascii=False)),
             "guard_receipt": receipt,
         }
 
@@ -600,7 +624,7 @@ class MissionService:
         if profile_kind == "overnight":
             if provider not in _OVERNIGHT_SUBSCRIPTION_PROVIDERS:
                 raise RuntimeError(
-                    "frozen overnight Mission no longer names the admitted direct route")
+                    "frozen overnight Mission no longer names the admitted official route")
             # Re-run the official-client auth check at every runnable boundary.
             # A durable receipt from creation is audit evidence, not permission
             # to keep running after the user logs out or changes billing state.
@@ -2458,6 +2482,12 @@ class MissionService:
             runner = self._code_process
         return runner.cancel_current(mid)
 
+    def _cancel_model_worker(self, mid):
+        """Terminate this Mission's active provider transport, when supported."""
+        owner = getattr(self._decider, "provider", None) if self._decider else None
+        owner = owner or self._prov
+        return MissionDriver._cancel_call(owner, mid) if owner is not None else False
+
     def _cancel_record(self, mid, reason, *, user_requested, parent_mission_id=""):
         """Cancel one Mission row and its pending authority; safe to repeat after a partial retry."""
         mission = self.store.get(mid)
@@ -2476,6 +2506,15 @@ class MissionService:
         # Lifecycle fencing wins first; then terminate the owned OS tree before
         # the cancel call returns.  A Web request may be in another process from
         # jobd, so CodeSliceProcessRunner also consults its durable/named owner.
+        try:
+            if self._cancel_model_worker(mid):
+                self.store.record_event(
+                    mid, "control", "model_process_cancelled",
+                    payload={"scope": "mission"})
+        except Exception as exc:
+            self.store.record_event(
+                mid, "control", "model_process_cancel_failed",
+                payload={"error": "%s: %s" % (type(exc).__name__, exc)})
         try:
             if self._cancel_code_worker(mid):
                 self.store.record_event(
@@ -3254,6 +3293,11 @@ class MissionService:
             # Do not scan cross-process receipts here: another live service may
             # legitimately own a different Mission in the same state directory.
             self._code_process.cancel_current(include_persisted=False)
+        provider = getattr(self._decider, "provider", None) if self._decider else None
+        provider = provider or self._prov
+        cancel_model = getattr(provider, "cancel_current", None)
+        if callable(cancel_model):
+            cancel_model()
         self.store.close()
         self.actions.close()
         # Injected stores belong to their caller and may be shared by the Web,

@@ -90,8 +90,12 @@ def test_claude_cli_provider_resolves_windows_shim(monkeypatch):
     monkeypatch.setattr(providers.subprocess, "run", fake_run)
     provider = providers.ClaudeCliProvider("opus")
     provider.subscription_only = True
-    completion = provider.complete(
-        "system contract", [{"role": "user", "content": "do the work"}], [])
+    completed = []
+    with provider.request_authority(
+            lambda purpose: "shim-request" if purpose == "claude_cli" else None,
+            lambda request_id, status: completed.append((request_id, status))):
+        completion = provider.complete(
+            "system contract", [{"role": "user", "content": "do the work"}], [])
 
     assert seen["cmd"][0] == "C:/bin/claude.cmd"
     assert "system contract" not in seen["cmd"]
@@ -105,6 +109,7 @@ def test_claude_cli_provider_resolves_windows_shim(monkeypatch):
     assert "HTTPS_PROXY" not in seen["env"]
     assert "NODE_OPTIONS" not in seen["env"]
     assert completion.text == "done"
+    assert completed == [("shim-request", "completed")]
 
 
 def test_registry_retain_removes_irrelevant_and_activated_tools():

@@ -49,7 +49,7 @@ The experimental native unattended coding profile is invoked with:
 ```text
 collie mission start "finish the refactor and make the suite green" \
   --code --workspace C:\path\to\repo --overnight \
-  --provider anthropic-oauth --model claude-opus-4-8 \
+  --provider claude-agent-sdk --model claude-opus-4-8 \
   --no-paid-overage \
   --verify-command "python -m pytest -q"
 ```
@@ -74,48 +74,41 @@ use a detected project check, but it fails closed when none is available. Only t
 exact fresh host-side check against the current, changed workspace can complete the
 Mission.
 
-The native overnight profile accepts only `anthropic-oauth` with an explicit model,
-such as `claude-opus-4-8`. This is Collie's own harness and agent loop: it sends
-Collie's system/tool contract directly to Anthropic's official Messages endpoint.
-It does not invoke `claude -p`, so Claude Code's system prompt is not inserted into
-the Mission. `claude -p` remains useful only as a benchmark and compatibility
-comparison, not as Collie's overnight runtime.
+The native overnight profile accepts only `claude-agent-sdk` with an explicit Opus
+model such as `claude-opus-4-8`. It uses Anthropic's official Claude Agent SDK as a
+one-message reasoner inside Collie's own harness and agent loop. Collie supplies a
+replacement custom system prompt; it does not invoke `claude -p`, inherit Claude
+Code's default system prompt, or make a raw OAuth Messages request.
 
-This route is currently **blocked by its live preflight** on the tested Max account:
-the Collie-owned direct request returns HTTP 429 while the official Claude Code
-client succeeds. Anthropic documents subscription use through Claude Code / Agent
-SDK, but does not document arbitrary raw Messages API access as included with a
-paid Claude plan; a paid Claude plan also does not include ordinary Console API
-usage. Collie therefore does not claim that the raw OAuth route is supported or
-available, and it will not start the Mission unless that exact direct request
-succeeds. There is no fallback to `claude -p` because that would introduce Claude
-Code's system prompt and change the harness being evaluated.
-
-There is a second independent admission blocker for a genuine overnight run:
-Collie does not implement or write Claude Code's private refresh-token flow. At
-creation it therefore requires the login-store access token itself to cover the
-full 12-hour active window. The tested token was much shorter-lived. Depending
-on Claude Code to refresh that shared credential in the background would not be
-an unattended Collie-owned direct route, so a short or unknown expiry is denied
-before work starts.
+The SDK worker is intentionally empty of foreign harness surfaces:
+`setting_sources=[]`; tools and allowed tools are empty; MCP servers are empty and
+strictly configured; skills, plugins, and agents are empty; slash commands and
+built-in agents are disabled; no fallback model is configured; and a call is
+limited to one SDK turn. Collie accepts assistant output only after the SDK init
+event attests that tools, skills, plugins, agents, and slash commands are empty.
+Collie's own system prompt, JSON tool protocol, durable loop, permissions, budgets,
+workspace ownership, and host verification remain authoritative.
 
 Per-Mission `--provider` and `--model` freeze the exact route without changing
 global Settings. `--no-paid-overage` is an explicit user attestation that paid
 usage credits/overage and auto-reload are disabled in the provider account. At
-creation Collie performs a real direct inference probe. At every later runnable
-boundary it revalidates the official login credential, scope, plan metadata, and
-expiry locally without spending subscription quota; the next actual provider call
-still fails closed if authority has changed. The request path is pinned to
-`https://api.anthropic.com/v1/messages`, ignores ambient HTTP proxies, and permits
-no API-key, provider, model, CLI, or paid fallback. A saved receipt is audit
+creation Collie performs a real inference probe through the same isolated Agent SDK
+route. At every later runnable boundary it revalidates the signed-in Claude plan;
+the next actual SDK call still fails closed if authority has changed. The worker
+receives a minimal environment without API keys, proxy/base-URL overrides, or
+provider routing overrides, and the frozen profile permits no API-key, paid-credit,
+provider, model, raw-OAuth, or `claude -p` fallback. A saved receipt is audit
 evidence, not permanent authorization; any mismatch fails closed before the next
 model call.
 
-As of 2026-08-12, Anthropic says its planned June 15 credit change is paused and
-Claude Agent SDK, `claude -p`, and third-party app usage still draw from plan usage
-limits. This is a current policy snapshot, not a promise about future routing or an
-invoice guarantee. Collie refuses a route it cannot prove and never enables paid
-fallback, but the user remains responsible for the provider-side overage setting.
+As of 2026-08-12, Anthropic says Claude Agent SDK usage can draw from a paid Claude
+plan. Collie's native route accepts an eligible signed-in Pro/Max plan and was live-tested on Max; it is
+still subject to plan limits. This is a current policy snapshot, not a promise of
+unlimited use, future routing, or an invoice guarantee. Collie refuses a route it
+cannot prove and never enables paid fallback, but the user remains responsible for
+the provider-side overage setting. The current validation is a short end-to-end
+test of this bounded route, not a 12-hour soak; the 12-active-hour leash is a maximum
+authority envelope, not evidence that a full-night run has already completed.
 [Anthropic: use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan); [paid Claude plans and API billing](https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console)
 
 Missing authorization is branch-scoped by default. It is recorded in
@@ -257,10 +250,10 @@ returns. These totals survive waits and restarts. Long cases retain a compact ro
 recent results, recent events, human updates, and recovery metadata; old bulk results remain
 auditable in the event/receipt/checkpoint ledgers rather than crowding out the newest facts in the
 model prompt. Subscription routes retain equivalent API list-price in a separate
-observability counter. For the experimental direct route, that split is a
-conservative control-plane classification rather than proof of the provider's
-actual bill; the overnight marginal-charge leash remains at $0.01 as a routing
-regression tripwire.
+observability counter. For the Agent SDK route, that split is a conservative
+control-plane classification rather than proof of the provider's actual bill;
+the overnight marginal-charge leash remains at $0.01 as a routing-regression
+tripwire.
 
 `needs_you` has two durable deadlines. The first emits an escalation record for notification
 wiring. The hard deadline fail-closes to `paused` while preserving the exact confirmation inbox;

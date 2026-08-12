@@ -16,6 +16,7 @@ Prices are registered into costs.PRICES so $/instance receipts are correct for e
 catalog model (fixes the "no price for gpt-5.6-terra" $0 misprice).
 """
 from __future__ import annotations
+import importlib.util
 import json
 import os
 import shutil
@@ -99,6 +100,9 @@ class ModelEntry:
 def _static() -> list:
     P = PRICES
     return [
+        ModelEntry("claude-agent-sdk", "claude-opus-4-8", "Claude Opus 4.8",
+                   "Claude plan · official Agent SDK", "subscription",
+                   ["coding", "frontier", "overnight"], price=P["claude-opus-4-8"]),
         # Claude direct is experimental; keep its route visibly distinct from the metered API.
         ModelEntry("anthropic-oauth", "claude-opus-5", "Claude Opus 5",
                    "Claude direct (experimental)", "subscription", ["coding", "frontier"], price=P["claude-opus-5"]),
@@ -172,6 +176,12 @@ def probe_auth(provider: str) -> str:
         return "ok" if os.path.exists(
             os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"),
                          "auth.json")) else "not-logged-in"
+    if provider == "claude-agent-sdk":
+        try:
+            sdk_available = importlib.util.find_spec("claude_agent_sdk") is not None
+        except (ImportError, ValueError):
+            sdk_available = False
+        return "ok" if sdk_available and shutil.which("claude") else "not-logged-in"
     if provider == "claude-cli":
         return "ok" if shutil.which("claude") else "not-logged-in"
     if provider == "ollama":
@@ -190,6 +200,7 @@ def probe_auth(provider: str) -> str:
 
 
 _LOGIN_HINT = {
+    "claude-agent-sdk": "install `collie-harness[claude]` and log in with `claude`",
     "anthropic-oauth": "run `claude` once to log in",
     "codex-oauth": "run `codex login` (ChatGPT account)",
     "claude-cli": "install the claude CLI and log in",
@@ -274,19 +285,16 @@ def discover(provider: str) -> list:
                                {"x-api-key": key, "anthropic-version": "2023-06-01"})
                 ids = [m["id"] for m in d.get("data", []) if m.get("id")]
         elif provider == "anthropic-oauth":
-            # The subscription path had NO discovery branch at all — only the API-key one existed,
-            # and it needs ANTHROPIC_API_KEY, which a subscription user does not have. So the picker
-            # showed the hand-written list forever: Opus 5 shipped and Collie went on offering 4.8,
-            # with no way to notice. The same endpoint answers a Bearer token.
+            # Experimental raw bearer discovery. Keep Collie's identity explicit;
+            # this must never be presented to Anthropic as a Claude Code request.
             from . import providers as _p
             tok = _p._read_oauth_token()
             if tok:
                 d = _http_json("https://api.anthropic.com/v1/models?limit=40",
                                {"authorization": "Bearer " + tok,
                                 "anthropic-version": "2023-06-01",
-                                "anthropic-beta": _p._CC_BETAS,
-                                "user-agent": "claude-code/%s (external, cli)" % _p._claude_version(),
-                                "x-app": "cli"})
+                                "anthropic-beta": _p._RAW_OAUTH_BETAS,
+                                "user-agent": _p._RAW_OAUTH_USER_AGENT})
                 ids = [m["id"] for m in d.get("data", []) if m.get("id")]
         elif provider in OPENAI_COMPAT_PRESETS or provider in _KEY_ENV:
             base, keyenv, _d = OPENAI_COMPAT_PRESETS.get(
@@ -307,8 +315,10 @@ def _label_for(provider: str, model: str) -> str:
 
 
 def _via_kind(provider: str) -> tuple:
-    if provider in ("anthropic-oauth", "codex-oauth", "claude-cli"):
-        return {"anthropic-oauth": "Claude direct (experimental)", "codex-oauth": "ChatGPT subscription",
+    if provider in ("claude-agent-sdk", "anthropic-oauth", "codex-oauth", "claude-cli"):
+        return {"claude-agent-sdk": "Claude plan · official Agent SDK",
+                "anthropic-oauth": "Claude direct (experimental)",
+                "codex-oauth": "ChatGPT subscription",
                 "claude-cli": "your claude CLI"}[provider], "subscription"
     if provider in ("ollama", "mock"):
         return "local", "local"

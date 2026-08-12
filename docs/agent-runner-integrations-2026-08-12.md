@@ -1,19 +1,43 @@
 # Collie Agent Runner 集成决策
 
 日期：2026-08-12
-状态：Collie 原生 overnight control plane 已实现，但 direct Claude-plan 数据面被真实预检阻断；Codex `exec` runner POC 已验证；其他 adapter 仍是集成计划
+状态：Collie 原生 overnight control plane 与官方 Claude Agent SDK 路线已实现并通过短 E2E；12 小时 soak 尚未执行；Codex `exec` runner POC 已验证；其他 adapter 仍是集成计划
 
 ## 结论
 
 Collie 应继续是长任务的控制面，Prime Agent、Codex、Pi、Hermes 只能作为可替换的执行 worker。不要把 Mission、预算、调度、重试、审批和完成判断下放给外部 harness；否则会出现两个控制面同时续跑、压缩、重试或宣告完成，故障恢复也无法判定哪一方是事实来源。
 
-当前原生 control plane 已具备 12 小时 active wall budget、7 天 elapsed window、持久会话、进程树取消、workspace baseline 和 fresh host verifier。实验性数据面用 `--provider anthropic-oauth --model claude-opus-4-8` 冻结路由，并由 Collie 自有 harness/loop 直接向 Anthropic Messages endpoint 发请求；body 只有 Collie 自己的 system/tool contract，不调用 `claude -p`，也不引入 Claude Code system prompt。但它在测试账号上的真实最小请求返回 HTTP 429，而官方 Claude Code 同时可用；Anthropic 也没有把任意 raw Messages OAuth 调用文档化为 Claude plan 的支持接口。因此当前状态是 **实现但不 admitted**：startup live probe 会 fail closed，不能宣称已经可以跑一夜。
+当前原生 control plane 已具备 12 小时 active wall budget、7 天 elapsed window、持久会话、进程树取消、workspace baseline 和 fresh host verifier。最终数据面用 `--provider claude-agent-sdk --model claude-opus-4-8` 冻结到 Anthropic 官方 Claude Agent SDK，并把 SDK 限定成 Collie loop 内的一次 model inference：Collie 提供 replacement custom system prompt，`setting_sources=[]`，SDK built-in tools、skills、plugins、agents、slash commands、MCP servers 和 fallback model 均关闭。它不是 `claude -p`，也不是复制 login token 后自行发 raw OAuth Messages 请求。
 
-另有一个独立的 12 小时阻断条件：Collie 不实现、也不写入 Claude Code 的私有 refresh-token 流程，因此创建 overnight Mission 时必须证明 login-store access token 本身覆盖完整 12 小时 active window。测试令牌的有效期明显短于该窗口；依赖后台另起 Claude Code 进程刷新共享 credential 不再是 Collie 自己的 direct-call 模式。短有效期或没有明确 expiry 都会在启动时 fail closed。
+SDK worker 使用最小环境，不继承 API key、proxy/base-URL 或 provider override；init 必须显式报告经审核的 `apiKeySource=none`，外层 guard 同时要求 `claude.ai`、`firstParty`、Pro/Max 登录。worker 在收到 prompt 前先绑定 POSIX process group 或 Windows Job Object；planner timeout 和用户 cancel 按 Mission ID 终止并确认整棵进程树消失。`--no-paid-overage` 路线只使用符合条件的 Claude Pro/Max plan allowance（本次实测账号为 Max），不能回退到 API key、paid credits、其他 provider 或其他 model。当前证据是一次短 E2E 路线测试，不是 12 小时 soak；12-hour active leash 只表示最大授权边界，不能写成已经连续跑完一夜，也不能写成无限量或未来计费政策保证。
+
+### 真实短 E2E 验证（2026-08-12）
+
+当前加固代码的 release-diff 验证 Mission `msn_291f93fdd653` 在全新独立 workspace 中把 `value.py` 的
+`VALUE = 1` 改为 `VALUE = 2`，且没有修改 `verify.py`。fresh host check 以 exit 0 输出
+`FINAL3_E2E_VALUE_2_VERIFIED`；verifier 自身 SHA-256 前后不变，check 前后的 workspace
+digest 一致，`agent_boundary_matches`、`agent_differs_from_baseline` 和 `patch_attributed` 均为
+true，Mission 进入 `done_verified`。4 次物理模型请求全部先持久化 reservation，随后以
+`completed` 结算；最终账本记录 4 model calls、4 turns、8 uncached input tokens、430 output
+tokens、18,540 cache tokens、0 retry。创建期 `billing_safety` v2 receipt 永久保留 live SDK
+init 的 `api_key_source=none`，未被后续 runnable-boundary recheck 覆盖。Collie 的
+subscription route 分类为 `$0.000000` marginal、`$0.091601` API-equivalent。这里的
+marginal 数字是 Collie 对已证明为实测 Max allowance 且无 API-key source/fallback 路线的
+控制面记账，不是 provider 账单截图或“无限免费”承诺。脱敏证据保存在
+`bench/results/claude-agent-sdk-overnight-e2e-2026-08-12.json`。
+
+同一 release diff 还执行了真实取消测试：SDK worker 完成进程所有权发布后，按
+`msn_final3_live_cancel` scope 取消；本机 Windows Job Object 观察值为 5.923 ms，返回整棵树
+已灭绝，调用线程退出，已消费的 reservation 以 `error` 结算而不退款；该观察值与源文件
+SHA-256 一并保存在上述脱敏证据中。确定性单测另外覆盖 reserve 后、worker 登记前的取消
+竞态，保证取消返回后不会再启动物理 worker。这个测试验证的是取消/回收边界，不是模型
+质量或额度。
+
+**历史、已被取代：**早期 branch 的 `anthropic-oauth` 实验曾由 Collie 直接向 Messages endpoint 发 raw OAuth 请求；测试账号的最小 probe 返回 HTTP 429，并且 login-store token 不覆盖 12 小时。这个事实保留用于解释为何放弃 raw direct 路线，但它不再描述当前 native overnight provider，也不能用来否定或证明 Agent SDK 路线。
 
 外部集成建议保持统一 `AgentRunner` contract。已有的 `CodexExecRunner` POC 验证了 JSONL 事件、usage 和同一 thread resume；下一步优先用 Codex SDK 做自动化 worker，需要完整 approval/event/live-control 时再接 App Server。Prime RPC 和 Pi RPC 可共用严格 LF-JSONL transport，但 adapter 必须分开。Hermes 则同时提供 Gateway worker 协议和可借鉴的 durable goal/Kanban claim 语义。ACP 保留为编辑器互操作层，不作为 Collie 的首选 worker 控制协议。
 
-计费口径必须以当前官方政策为准。截至 2026-08-12，Anthropic 已暂停原定 6 月 15 日启用的独立月度 credit 变更；Claude Agent SDK、`claude -p` 和第三方 app 当前仍从 Claude 订阅用量中扣除。因此不应再断言这些路径“现在必须用 monthly credits”或“一定按 token 额外收费”。`claude -p` 在本项目中只用于 benchmark/compatibility comparison，不是原生 overnight runtime。另一方面，一个 adapter 的实际认证方式、环境覆盖和未来政策仍可能改变路由；Collie 仍需在每个可运行边界重做 guard、锁定官方 endpoint、禁止环境代理与 paid/API/provider fallback，无法证明时 fail closed。[Anthropic：use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+计费口径必须以当前官方政策为准。截至 2026-08-12，Anthropic 的说明允许 Claude Agent SDK 使用 paid Claude plan allowance。Collie 当前把它归类为 Max subscription allowance，同时仍检查实际 auth/billing route 并禁止 API/paid fallback；这不代表 plan 无速率或用量上限，也不保证未来政策不变。`claude -p` 在本项目中只用于 benchmark/compatibility comparison，不是原生 overnight runtime。[Anthropic：use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
 
 ## 架构边界
 
@@ -76,7 +100,7 @@ Runtime
 | Hermes Gateway + durable controls | JSON-RPC over stdio/WebSocket；SQLite Kanban/SessionDB | session resume/branch、steer/interrupt、approval；persistent goal、atomic claim/TTL、heartbeat、stale reclaim、retry/circuit breaker、explicit complete/block | Gateway 作 worker adapter；goal/Kanban 语义用于对照 Collie 持久性，不与 Mission 双重续跑 |
 | Hermes ACP | ACP JSON-RPC over stdio | session、prompt、stream、tool、permission、fork、cancel、auth | 适合 IDE/通用客户端兼容；编排和统计能力取决于 capability，P2 |
 
-## 当前工程排名（不是模型质量榜）
+## 集成优先级（基于公开文档，不是实测能力排名）
 
 这里排的是“作为 Collie 外部 worker 的集成优先级”，不是回答质量或 SWE-bench
 名次；后者需要同模型、同 runtime、外部隐藏 grader 的受控实验，现有两类合成任务
@@ -91,18 +115,21 @@ Runtime
 
 把 Collie 放进同一张“产品成熟度”表时，结论要分层：Mission 的 lease、ancestor
 aggregate budget、显式 uncertain recovery、fresh host verifier 已经接近一个真正的
-overnight control plane；但这个 branch 仍是实验实现，而且原生 Opus 数据面未获准。
-Codex、Prime、Hermes 已有可用的长期/常驻产品 surface，工程成熟度领先；Pi 更像一个
-优秀的 agent loop/RPC worker。Collie 当前的优势是控制面边界和 fail-closed 预算语义，
-短板是 adapter 覆盖、跨平台 process ownership 的实战时间，以及最关键的 direct Opus
-subscription 可用性。
+overnight control plane；原生 Opus 数据面现在通过官方 Agent SDK 接入，并通过了短 E2E，
+但尚未积累 12 小时 soak 与跨重启、限额恢复的长期运行证据。
+Codex、Prime、Hermes 的公开文档展示了更广的长期/常驻产品 surface，但 Prime/Hermes
+尚未通过本项目的 adapter conformance，因此这里不据此宣称实测成熟度领先；Pi 更像一个
+聚焦 agent loop/RPC 的 worker。Collie 当前的优势是控制面边界和 fail-closed 预算语义，
+短板是 adapter 覆盖、跨平台 process ownership 的实战时间，以及 native Opus
+subscription 路线仍缺少整夜 soak。
 
 在用户要求的最窄赛道——“Collie 自己发请求、只带 Collie system prompt、Opus
-subscription、不能额外计费”——当前没有一个已证明可用的冠军：Collie raw direct
-probe 返回 429 且 token 不覆盖 12 小时；`claude -p`/Agent SDK 虽有文档化订阅路径，
-却会引入 Claude Code harness；Pi 当前明确走 extra usage；Prime/Hermes 也没有一条已
-由我们证明同时满足这四个条件的官方 route。因此本分支正确的产品状态是
-`blocked/fail-closed`，不是把第二名路径偷偷当第一名。
+subscription、不能 fallback 到额外计费”——Collie 当前选择官方 Claude Agent SDK，
+用 replacement system prompt，并关闭 SDK 的 settings/tools/skills/plugins/agents/slash
+commands 等 harness surface。它满足的是“当前短 E2E 已验证的官方 subscription route”，
+而不是“已证明可无限运行一夜”。Pi 当前明确走 extra usage；Prime/Hermes 也没有一条已
+由我们证明同时满足这些条件的官方 route。旧 raw OAuth probe 的 429 结论已经被这条
+SDK 路线取代，不能继续当作当前产品状态。
 
 ### Prime Agent
 
@@ -245,31 +272,34 @@ Native raw event 可以作为压缩诊断附件保存，但必须做 secret reda
 
 ```text
 collie mission start "<goal>" --code --workspace PATH --overnight \
-  --provider anthropic-oauth --model claude-opus-4-8 --no-paid-overage \
+  --provider claude-agent-sdk --model claude-opus-4-8 --no-paid-overage \
   --verify-command "python -m pytest -q"
 ```
 
 1. 用户先在 provider 账户中关闭 paid usage credits/overage 和 auto-reload，再给出显式 attestation。
-2. 只允许冻结的 `anthropic-oauth` + 显式 model 路由；当前原生命令使用 `claude-opus-4-8`。Codex OAuth 和 `claude -p` 均不是 overnight route。
-3. guard 检查官方 Claude login store 中的 Pro/Max plan、`user:inference` scope，以及 access token 是否足以覆盖完整 12 小时 active window；Collie 不实现 Claude Code 私有 refresh flow，也不持久化 token。实际 request 只发往 `https://api.anthropic.com/v1/messages`，显式禁用 ambient proxy，不得退回 API key、CLI、其他 provider 或 model。
-4. 创建时做一次真实 inference preflight；之后每个可运行边界只做本地、零调用的 login/scope/plan/expiry revalidation，旧 receipt 只用于审计；下一次真实 provider request 仍会独立 fail closed。
+2. 只允许冻结的 `claude-agent-sdk` + 显式 Opus model 路由；当前命令使用 `claude-opus-4-8`。Codex OAuth、`anthropic-oauth` 和 `claude -p` 均不是 native overnight route。
+3. Collie 直接调用官方 Agent SDK，并用 custom replacement system prompt；`setting_sources=[]`，tools/allowed tools、MCP servers、skills、plugins、agents、slash commands、built-in agents 和 fallback model 全部关闭。SDK init 不能证明这些 surface 为空时，结果被拒绝。
+4. SDK worker 只收到最小环境，不带 API key、proxy/base URL 或 provider override。创建时做一次同路线的真实 inference preflight；之后每个可运行边界重新检查登录/plan authority，旧 receipt 只用于审计；下一次真实 SDK request 仍会独立 fail closed。
 5. 订阅限额、auth 失效或证据不足只能进入 `WAITING`/`NEEDS_YOU` 或拒绝运行；绝不自动购买、充值、打开 paid overage、注入 API key 或切换 provider。
 6. control plane 将已 admitted 的 login-backed request 记为 `marginal_charge_usd=0`，并单独保留 equivalent API list-price 供容量分析；这是为了阻止 metered fallback 的预算分类，不是对 provider 实际账单的观测或保证。
 
 对未来的外部 `AgentRunner`，运行时计费分类至少要区分
 `subscription_allowance`、`paid_overage`、`api_metered`、`local` 和 `unknown`。
 `--no-paid-overage` 下只放行有当前证据的 `subscription_allowance` 或 `local`；
-其他类别均 fail closed。Anthropic 目前说 Agent SDK、`claude -p` 和第三方
-app 消耗 plan limits，但这不替代对 Collie direct OAuth route 的认证、endpoint 和账户开关
-做实时预检，也不保证未来政策不变。
+其他类别均 fail closed。Anthropic 目前说 Agent SDK 可以消耗 paid Claude plan limits，
+但这不替代对 Collie SDK route 的认证、隔离设置和账户开关做实时预检，也不保证
+无限量、未来政策不变或最终账单一定为零。
 
 Collie 可以保证的是“无付费 fallback，证据不足即停”，不是对 provider 最终账单的事后证明。产品文案应同时显示当前 route、preflight 时间、限额耗尽后的行为和这一不确定性。
+
+当前只完成短 E2E 路线验证，并未完成 12 小时 soak。以下长期故障、睡眠/唤醒、
+daemon restart、auth refresh 和限额重置测试仍属于验收工作。
 
 ## 路线图
 
 ### 当前已完成
 
-- Collie native overnight control plane：自有 loop + 实验性 direct Anthropic OAuth，冻结官方 endpoint/model，禁用 proxy/CLI/API/provider fallback，每个 runnable boundary重做 guard，并具有可恢复 session、process-tree cancellation、workspace baseline/fresh verifier 和 12-active-hour/7-day-elapsed leash；当前 direct inference probe 为 429，故数据面 fail closed、不可用。
+- Collie native overnight control plane：自有 loop + 官方 Claude Agent SDK，冻结显式 Opus model，使用 Collie replacement system prompt，清空 SDK settings/tools/skills/plugins/agents/slash commands，禁用 API/paid/provider/model fallback，并具有可恢复 session、process-tree cancellation、workspace baseline/fresh verifier 和 12-active-hour/7-day-elapsed leash；短 E2E 已通过，12 小时 soak 未完成。
 - `AgentRunner`/snapshot/event 原型与 `CodexExecRunner`：使用 stdin prompt、`workspace-write` sandbox、JSONL 事件、usage/cursor 持久化、start→resume、超时/取消和保守 recovery 标记。
 
 ### P0：把外部 runner 接入 Mission
@@ -356,4 +386,4 @@ P1 验收：一次 overnight mission 经至少两次 supervisor restart 和一�
 
 每个试验产出：capability snapshot、原始 event fixture、normalized trace、crash timeline、billing classification、最终 host-verification receipt。只有这六项齐全，adapter 才能从“可启动”进入“可用于 overnight”。
 
-最终推荐顺序是：**先保持 Collie native overnight control plane 作可验证基线，同时把 direct Claude-plan 数据面留在 fail-closed；把已有 Codex `exec` POC 接入 Mission，再升级到 Codex SDK；并行做 Prime/Pi LF-JSONL conformance；随后补 Codex App Server 和 Hermes Gateway/goal/Kanban 语义；最后做 ACP 和远端 runtime。** 这样 Collie 获得的是可持续扩展的 agent control plane，而不是四套彼此不兼容的 CLI wrapper。
+最终推荐顺序是：**先用官方 Claude Agent SDK 的短 E2E 结果作为 Collie native overnight 基线，再完成 12 小时 soak 与重启/限额恢复验收；把已有 Codex `exec` POC 接入 Mission，再升级到 Codex SDK；并行做 Prime/Pi LF-JSONL conformance；随后补 Codex App Server 和 Hermes Gateway/goal/Kanban 语义；最后做 ACP 和远端 runtime。** 这样 Collie 获得的是可持续扩展的 agent control plane，而不是四套彼此不兼容的 CLI wrapper。

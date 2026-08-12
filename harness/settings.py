@@ -69,12 +69,13 @@ SCHEMA = [
          {"value": "zh-tw", "label": "繁體中文"}],
      "hint": "Language of every web surface. English and Chinese are currently complete; auto follows those browser languages and otherwise uses English.",
      "hint_zh": "所有 Web 界面的显示语言。目前英文和中文已完整覆盖；auto 在其他浏览器语言下使用英文。"},
-    # API key is the default. anthropic-oauth is an experimental raw Collie request using the
-    # official login store, not a documented third-party Claude-plan surface, so it is OPT-IN and
-    # must never be described as guaranteed-free or silently selected.
+    # API key is the default.  The official Agent SDK is the supported Claude-plan route for
+    # Collie's own harness; anthropic-oauth remains an experimental raw request and must never be
+    # described as guaranteed-free or silently selected.
     {"group": "Model", "key": "PROVIDER", "label": "Provider", "label_zh": "模型提供方", "type": "select", "default": "anthropic",
      "options": [
          {"value": "anthropic", "label": "Anthropic API (API key, metered)"},
+         {"value": "claude-agent-sdk", "label": "Claude Agent SDK (your Claude plan; Collie harness)"},
          {"value": "anthropic-oauth", "label": "Claude direct (experimental; billing unverified)"},
          {"value": "codex-oauth", "label": "ChatGPT Codex subscription (OAuth)"},
          {"value": "claude-cli", "label": "Claude CLI (your logged-in CLI)"},
@@ -89,7 +90,7 @@ SCHEMA = [
          {"value": "ollama", "label": "Ollama (local models — nothing leaves this machine)"},
          {"value": "openai-compat", "label": "OpenAI-compatible endpoint"},
          {"value": "mock", "label": "Mock (offline, canned — testing only)"}],
-     "hint": "Where completions come from. ☁ = third-party cloud: your prompt, code excerpts and tool output are sent to that vendor under its data policy (keys are read from the named env var, never stored by collie; secret redaction below keeps credentials out of what any vendor sees). Claude CLI uses the logged-in client; Claude direct is experimental and its availability/billing are not guaranteed. Ollama/mock stay fully local."},
+     "hint": "Where completions come from. ☁ = third-party cloud: your prompt, code excerpts and tool output are sent to that vendor under its data policy (keys are read from the named env var, never stored by collie; secret redaction below keeps credentials out of what any vendor sees). Claude Agent SDK uses your logged-in Claude plan with Collie's harness; plan limits and current provider policy still apply. Claude direct is experimental and its availability/billing are not guaranteed. Ollama/mock stay fully local."},
     {"group": "Model", "key": "MODEL", "label": "Model", "type": "text", "default": "",
      "list": ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5",
               "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna",
@@ -228,6 +229,7 @@ _ZH = {
     "PROVIDER": {"label": "模型提供方",
                  "hint": "补全来自哪里。☁ = 第三方云:你的提示词、代码片段和工具输出会按该厂商的数据政策发送给它(密钥只从对应环境变量读取,collie 不存储;下方的密钥脱敏会把凭据挡在任何厂商可见内容之外)。订阅路由仍受套餐限额和各自计费政策约束;Ollama/mock 完全本地。",
                  "options": {"anthropic": "Anthropic API(API key,按量计费)",
+                             "claude-agent-sdk": "Claude Agent SDK(你的 Claude 套餐,Collie harness)",
                              "anthropic-oauth": "Claude 直连(实验性,计费未验证)",
                              "claude-cli": "Claude CLI(你已登录的 CLI)",
                              "ollama": "Ollama(本地模型 — 数据不出本机)",

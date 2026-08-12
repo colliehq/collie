@@ -82,6 +82,31 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade build
       - run: python -m build                       # dist/*.whl + dist/*.tar.gz (version is dynamic)
+      - name: Verify wheel excludes retired OAuth proxy assets
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              raise SystemExit("expected exactly one release wheel")
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = set(archive.namelist())
+          required = {
+              "harness/claude_agent_sdk.py",
+              "harness/claude_agent_worker.py",
+          }
+          missing = sorted(required - names)
+          retired = sorted(
+              name for name in names
+              if "oauth_proxy" in name or "/oauth_ext/" in name
+          )
+          if missing or retired:
+              raise SystemExit(
+                  "wheel content rejected: missing=%r retired=%r" %
+                  (missing, retired))
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: python-dist

@@ -7,9 +7,10 @@ with `--provider`, or by setting `COLLIE_PROVIDER`. An explicit environment vari
 
 | Provider | Value | How |
 |---|---|---|
-| Claude direct (experimental) | `anthropic-oauth` | Reads the official Claude login store and sends Collie's own Messages request; not a documented third-party Claude-plan interface, so availability and billing must be proved at runtime. |
+| Claude Agent SDK | `claude-agent-sdk` | Native Opus overnight route through Anthropic's official SDK and an eligible signed-in Claude Pro/Max plan; Collie supplies the system prompt and owns the loop. The live route was tested on Max. |
 | ChatGPT / Codex subscription | `codex-oauth` | One-click OAuth — uses your ChatGPT plan. |
-| Claude CLI | `claude-cli` | Routes through your already-logged-in official Claude CLI; this includes Claude Code's harness/system context. |
+| Claude CLI | `claude-cli` | Compatibility route through `claude -p`; Collie's prompt replaces the default prompt and built-in tools are disabled, but this subprocess surface is not native overnight. |
+| Claude raw OAuth (legacy experimental) | `anthropic-oauth` | Collie-owned raw Messages request using the local login credential. This is not the native overnight route and is not treated as a documented Claude-plan interface. |
 
 A subscription login is not itself proof of zero marginal charge. Provider policy and account
 settings can change; unattended `--no-paid-overage` runs use a fail-closed preflight and never
@@ -45,17 +46,31 @@ collie run "summarize app.py" --provider ollama --model qwen2.5-coder:7b
 DEEPSEEK_API_KEY=... collie -p "fix the bug"            # provider inferred from the key
 
 # persist a choice
-collie config PROVIDER anthropic-oauth
+collie config PROVIDER claude-agent-sdk
 COLLIE_PROVIDER=deepseek collie                          # env override wins for this session
 ```
 
-!!! warning "About `anthropic-oauth`"
-    This experimental mode is **opt-in**. It does not invoke or impersonate Claude Code: its body
-    contains Collie's own system/tool contract and identifies the caller as Collie. It reuses a
-    credential from Claude's official login store, but Anthropic has not documented arbitrary raw
-    Messages calls as a supported Claude-plan route. A failed live probe is therefore an admission
-    failure, not a reason to fall back. `claude-cli` is separate and does carry Claude Code's own
-    harness context.
+!!! note "Native Opus overnight isolation"
+    `claude-agent-sdk` invokes the official Claude Agent SDK directly; it does not shell out to
+    `claude -p` and does not copy a bearer token into a raw Messages request. Collie passes its own
+    replacement system prompt and sets `setting_sources=[]`. SDK built-in tools, skills, plugins,
+    agents, slash commands, and fallback model are disabled; the SDK init event must attest that
+    those foreign surfaces are empty before its answer is accepted. The SDK is a one-message
+    reasoner inside Collie's own tool loop.
+
+    In `--no-paid-overage` mode, API keys and provider/routing overrides are removed from the worker
+    environment, and there is no API-key, paid-credit, provider, or model fallback. The route uses
+    an eligible signed-in Pro/Max plan (tested on Max) and therefore remains subject to plan limits. A short
+    end-to-end test proves the configured route can complete a bounded call; it is not a 12-hour
+    soak, an unlimited-usage promise, or a guarantee that future provider policy will not change.
+    See [Anthropic's current Claude Agent SDK plan guidance](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+
+!!! warning "Legacy routes"
+    `anthropic-oauth` remains an explicit experimental provider for a Collie-owned raw Messages
+    request, but it is not eligible for native overnight. `claude-cli` is a compatibility and
+    benchmark route through the official `claude -p` subprocess; its replacement prompt and empty
+    tool set do not make it the SDK-native route requested for overnight. Neither is a fallback for
+    `claude-agent-sdk`.
 
 ## Picking a model
 

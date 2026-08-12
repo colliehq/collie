@@ -3234,13 +3234,15 @@
       try { console.error("obUse", e); } catch (_) {}
     });
   }
-  // Onboarding connects the SUBSCRIPTION/account, not a specific top model — and defaults to a
-  // balanced mid model (change any time in the model picker). Picking "Claude Opus" up front was
-  // both presumptuous and expensive.
-  var OB_DEFAULT = { "anthropic-oauth": "claude-sonnet-5", "anthropic": "claude-sonnet-5",
+  // Onboarding connects the SUBSCRIPTION/account and uses each route's backend default (change it
+  // any time in the model picker).  The dedicated overnight SDK route intentionally defaults to
+  // Opus 4.8; interactive API-key routes keep their balanced defaults.
+  var OB_DEFAULT = { "claude-agent-sdk": "claude-opus-4-8",
+                     "anthropic-oauth": "claude-sonnet-5", "anthropic": "claude-sonnet-5",
                      "codex-oauth": "gpt-5.6-sol", "openai": "gpt-5.6-terra",
                      "gemini": "gemini-2.5-flash", "deepseek": "deepseek-chat" };
-  var OB_NAME = { "anthropic-oauth": "Claude direct · experimental", "anthropic": "Claude · API key",
+  var OB_NAME = { "claude-agent-sdk": "Claude plan · Collie harness",
+                  "anthropic-oauth": "Claude direct · experimental", "anthropic": "Claude · API key",
                   "codex-oauth": "ChatGPT subscription", "openai": "OpenAI · API key",
                   "ollama": "Local model (Ollama)", "claude-cli": "Claude CLI",
                   "gemini": "Google Gemini", "deepseek": "DeepSeek", "groq": "Groq", "qwen": "Qwen" };

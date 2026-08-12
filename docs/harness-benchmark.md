@@ -13,7 +13,7 @@ Collie keeps two completely separate leaderboards because they answer different 
 | Track | What must be frozen | Authentication and billing | Claim allowed |
 | --- | --- | --- | --- |
 | **Same-model controlled** (`track: controlled`) | One immutable model snapshot and endpoint, reasoning/sampling settings, task list, grader, prompt, tool contract, dependency lock, runtime image, sandbox, context window, retry/concurrency/network policy, and aggregate root-plus-descendant budget | A metered API or evaluation gateway is normally required. Obtain an explicit spend budget before launch. | An estimate of the **harness effect** under the frozen controls. |
-| **Subscription-native product** (`track: product`) | Each product's pinned official CLI, documented native subscription route, native model configuration, and the shared task/runtime/grading controls | No copied OAuth tokens, spoofed client identity, or hidden API-key fallback. Record subscription-plan evidence, billing overrides, and actual versus API-equivalent cost separately. | A comparison of the **products as available to a subscriber**, not an isolated harness effect. |
+| **Subscription-native product** (`track: product`) | Each product's pinned official automation surface (CLI or SDK), documented native subscription route, native model configuration, and the shared task/runtime/grading controls | No copied OAuth tokens, spoofed client identity, or hidden API-key fallback. Record subscription-plan evidence, billing overrides, and actual versus API-equivalent cost separately. | A comparison of the **products as available to a subscriber**, not an isolated harness effect. |
 
 Never merge these tracks into one table, headline, or statistical test. A same-model claim is
 invalid if one arm uses a nearby model, a different snapshot, a different reasoning setting, or a
@@ -44,6 +44,11 @@ assertion set provide no meaningful coverage of planning, repository search, tes
 long-context behavior, recovery, or autonomy. Its rows must never be converted into a capability
 score or ranking. The runner currently supports Collie, Claude Code, and Codex, but the saved
 artifact contains rows for Collie and Claude Code only; neither Codex nor Pi is validated by it.
+It also predates Collie's `claude-agent-sdk` native route and is superseded for claims about current
+Collie overnight behavior. A later short Agent SDK end-to-end check validates route plumbing only;
+it is neither a publishable capability benchmark nor a 12-hour soak. Its redacted route,
+request-ledger, verifier, source-hash, and live-cancellation evidence is stored in
+`bench/results/claude-agent-sdk-overnight-e2e-2026-08-12.json`.
 
 The exploratory artifact `bench/results/paired-subscription-product.json` is also invalid for
 ranking. It contains one SWE-bench Pro instance and no arm produced a patch: Collie hit a Windows
@@ -58,6 +63,13 @@ the same isolated repository-write conformance test.
 The product track invokes each product through its documented automation surface and its own
 credential store:
 
+- Current native Collie overnight uses `claude-agent-sdk`, Anthropic's official Claude Agent SDK,
+  with an explicit Opus model and an eligible signed-in Claude Pro/Max plan (live-tested on Max). Collie supplies its
+  replacement system prompt and owns the tool loop. It sets `setting_sources=[]` and disables SDK
+  built-in tools, skills, plugins, agents, slash commands, MCP servers, and fallback model; the SDK
+  init event must attest that those surfaces are empty. The worker receives no API key or routing
+  overrides, and there is no paid-credit, provider, model, raw-OAuth, or `claude -p` fallback.
+  Current evidence is a short E2E route test, not an endurance result or unlimited-usage claim.
 - Claude Code uses `claude -p` with JSON or stream-JSON output. The preflight must prove that the
   selected credential is the Claude.ai subscription login; environment API keys and routing
   overrides take precedence in non-interactive mode and therefore fail the subscription guard.
@@ -69,13 +81,13 @@ credential store:
   documented subscription route with separately verified billing behavior (for example, its
   ChatGPT Plus/Pro Codex route), or enter the paid same-model controlled track under an approved
   budget.
-- The historical Collie **product-track** arm delegates subscription Opus calls through the
+- **Superseded historical fact:** the earlier Collie **product-track** arm delegated subscription Opus calls through the
   official Claude Code CLI and its verified Claude.ai login. That is valid for comparing the
-  shipped products, but it is not evidence for Collie's native harness: Claude Code contributes
-  its own system prompt. Native Collie overnight therefore forbids this fallback. Its experimental
-  direct route is admitted only if a Collie-owned live inference probe succeeds; current HTTP 429
-  results are an admission failure, not a score. Direct bearer-token reuse or an OAuth proxy is not
-  admissible evidence for a subscription-native benchmark claim.
+  products represented by that artifact, but it is not evidence for the current SDK-native
+  transport: it exercises a different official subprocess surface. The still earlier raw-OAuth experiment
+  returned HTTP 429 on the tested account. Both routes are superseded by `claude-agent-sdk` for
+  native overnight; neither can be silently substituted into a current arm. Direct bearer-token
+  reuse or an OAuth proxy remains inadmissible evidence for a subscription-native benchmark claim.
 
 Pin the CLI package/version and full source revision for every arm. If a CLI cannot be forced onto
 the exact model endpoint and settings required by a controlled manifest, exclude it from that
@@ -331,6 +343,7 @@ files, plan, results, artifacts, and report together.
   [Prime Agent repository and external-sandbox warning](https://github.com/PrimeIntellect-ai/prime-agent)
 - Claude Code: [non-interactive/headless execution](https://code.claude.com/docs/en/headless),
   [authentication and credential precedence](https://code.claude.com/docs/en/authentication)
+- Claude Agent SDK subscription route: [use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
 - Codex CLI: [non-interactive mode, ephemeral sessions, and sandbox flags](https://learn.chatgpt.com/docs/non-interactive-mode),
   [authentication](https://learn.chatgpt.com/docs/auth)
 - Pi: [coding-agent modes, project trust, and security model](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md),

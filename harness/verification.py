@@ -17,6 +17,25 @@ import time
 _KIND_ORDER = {"test": 0, "typecheck": 1, "lint": 2, "build": 3}
 _SNAPSHOT_FILE_CAP = 20_000
 _SNAPSHOT_BYTE_CAP = 64 * 1024 * 1024
+_GENERATED_CACHE_DIRS = frozenset({
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+})
+
+
+def _is_untracked_generated_cache(rel: str) -> bool:
+    """Transient Python verifier caches are not project/source ownership.
+
+    These paths are ignored only as untracked/filesystem artifacts. A tracked
+    cache file remains represented by Git's diff, so a repository that
+    intentionally versions one still gets exact freshness semantics.
+    """
+    normalized = str(rel or "").replace("\\", "/").strip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in _GENERATED_CACHE_DIRS for part in parts):
+        return True
+    name = parts[-1] if parts else ""
+    return (name == ".coverage" or name.startswith(".coverage.") or
+            name.endswith((".pyc", ".pyo")))
 
 
 # The repository command must not receive even one instruction byte until its
@@ -127,7 +146,9 @@ def _filesystem_snapshot(cwd: str) -> dict:
             # the digest.  Otherwise swapping an unversioned source tree symlink
             # could leave a verification receipt looking fresh.
             descend = []
-            for name in sorted(name for name in dirs if name != ".git"):
+            for name in sorted(name for name in dirs
+                               if name != ".git" and
+                               not _is_untracked_generated_cache(name)):
                 path = os.path.join(root, name)
                 rel = os.path.relpath(path, cwd).replace(os.sep, "/")
                 info = os.lstat(path)
@@ -145,6 +166,9 @@ def _filesystem_snapshot(cwd: str) -> dict:
                     complete = False
             dirs[:] = descend if complete else []
             for name in sorted(files):
+                rel = os.path.relpath(os.path.join(root, name), cwd).replace(os.sep, "/")
+                if _is_untracked_generated_cache(rel):
+                    continue
                 count += 1
                 if count > _SNAPSHOT_FILE_CAP:
                     complete = False
@@ -207,16 +231,22 @@ def _git_snapshot(cwd: str) -> dict:
             out.update(_filesystem_snapshot(cwd))
             return out
         raw_status = status.stdout or b""
-        entries = [entry for entry in raw_status.split(b"\0") if entry]
+        raw_entries = [entry for entry in raw_status.split(b"\0") if entry]
+        entries = []
         dirty = []
         untracked = []
-        for entry in entries:
+        for entry in raw_entries:
             if len(entry) < 3 or entry[2:3] != b" ":
+                entries.append(entry)
                 continue
             path = entry[3:].decode("utf-8", "replace")
+            if entry[:2] == b"??" and _is_untracked_generated_cache(path):
+                continue
+            entries.append(entry)
             dirty.append(path)
             if entry[:2] == b"??":
                 untracked.append(path)
+        filtered_status = b"\0".join(entries) + (b"\0" if entries else b"")
         out["dirty_files"] = dirty[:200]
         out["working_tree"] = "dirty" if entries else "clean"
 
@@ -229,7 +259,7 @@ def _git_snapshot(cwd: str) -> dict:
             return out
         digest = hashlib.sha256()
         digest.update(out["commit"].encode("ascii", "replace"))
-        digest.update(raw_status)
+        digest.update(filtered_status)
         digest.update(diff.stdout or b"")
         remaining = _SNAPSHOT_BYTE_CAP
         complete = True
@@ -270,6 +300,8 @@ def workspace_snapshot(cwd: str) -> dict:
     The digest is intentionally content-derived and contains no file contents.  A
     durable code worker uses it to distinguish "the existing suite was already
     green" from "this Mission produced a patch and the suite is green now".
+    Untracked Python cache artifacts are excluded because a verifier owns those
+    bytes; tracked files remain bound through Git's diff.
     """
     snap = _git_snapshot(os.path.realpath(os.path.abspath(cwd)))
     return {key: snap.get(key) for key in (

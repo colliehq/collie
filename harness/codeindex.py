@@ -98,7 +98,15 @@ def _grep_matches(root, terms, timeout=25):
         parts = line.split(":", 2)
         if len(parts) < 3:
             continue
-        rel, no, text = parts[0].lstrip("./").replace("\\", "/"), parts[1], parts[2]
+        # Native Windows rg emits ``.\\path`` while POSIX rg emits ``./path``.
+        # Normalize separators first, then remove only actual ``./`` path
+        # components.  ``lstrip("./")`` treated its argument as a character set:
+        # it turned ``.\\mod.py`` into ``/mod.py`` and ``./.config/x.py`` into
+        # ``config/x.py``.
+        rel = parts[0].replace("\\", "/")
+        while rel.startswith("./"):
+            rel = rel[2:]
+        no, text = parts[1], parts[2]
         if os.path.splitext(rel)[1] not in SRC_EXT or _is_test_file(os.path.basename(rel)):
             continue
         tl = text.lower()

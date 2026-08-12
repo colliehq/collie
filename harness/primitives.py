@@ -1243,7 +1243,8 @@ def _code_session_id(mission_id, workspace):
 
 
 def _default_code_verifier(workspace, result, command="", baseline_digest="",
-                           timeout_seconds=300):
+                           timeout_seconds=300, *, patch_attributed=False,
+                           agent_post_tree_digest=""):
     """Run one exact, pre-authorized host check and bind it to current bytes."""
     command = str(command or "").strip()
     if not command:
@@ -1253,11 +1254,34 @@ def _default_code_verifier(workspace, result, command="", baseline_digest="",
     evidence = run_verification_command(
         command, workspace, timeout=max(1, min(3600, int(timeout_seconds or 300))),
         source="mission_code_profile", after_last_edit=True)
-    changed = bool(baseline_digest and evidence.get("post_tree_digest") and
-                   evidence.get("post_tree_digest") != baseline_digest)
-    verified = bool(evidence.get("passed") and changed)
+    # The verifier is allowed to execute repository code and can therefore
+    # create files of its own (for example __pycache__, coverage data, or build
+    # output).  Those bytes are part of the physical workspace boundary, but
+    # they are not evidence that the coding agent produced a patch.  Bind the
+    # check to the snapshot captured immediately after the agent loop, and use
+    # only durable agent/reconciliation provenance for patch attribution.
+    agent_boundary = str(agent_post_tree_digest or "")
+    boundary_matches = bool(
+        agent_boundary and str(evidence.get("tree_digest") or "") == agent_boundary)
+    evidence["agent_post_tree_digest"] = agent_boundary
+    evidence["agent_boundary_matches"] = boundary_matches
+    # Provenance is about bytes that still exist, not whether an agent changed
+    # something at any earlier point in the Mission.  A later slice may cleanly
+    # revert the prior patch to the original baseline; verifier/build artifacts
+    # created after this boundary must not keep that historical mutation alive.
+    agent_differs_from_baseline = bool(
+        baseline_digest and agent_boundary and agent_boundary != baseline_digest)
+    current_patch_attributed = bool(
+        patch_attributed and agent_differs_from_baseline)
+    evidence["agent_differs_from_baseline"] = agent_differs_from_baseline
+    evidence["patch_attributed"] = current_patch_attributed
+    verified = bool(
+        evidence.get("passed") and boundary_matches and current_patch_attributed)
     detail = ("configured host check passed against the current Mission patch" if verified else
-              "check passed but the Mission produced no patch" if evidence.get("passed") else
+              "check passed but the Mission produced no attributed patch"
+              if evidence.get("passed") and boundary_matches else
+              "workspace changed between the agent boundary and host verification"
+              if evidence.get("passed") and not boundary_matches else
               "configured check failed (exit %s)" % evidence.get("exit_code"))
     return {"verified": verified, "detail": detail, "evidence": evidence}
 
@@ -1293,6 +1317,7 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
                     "verified": False}
         subscription = provider in (
             "anthropic-oauth", "claude-sub", "claude-cli", "cli",
+            "claude-agent-sdk", "claude-sdk",
             "codex-oauth", "codex-sub", "codex")
         if profile.get("subscription_only") and not subscription:
             return {"answer": "frozen subscription code route is invalid", "verified": False}
@@ -1300,8 +1325,10 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
             return {"answer": "frozen subscription billing mode is inconsistent",
                     "verified": False, "needs_human": True}
         if (profile.get("profile") == "overnight" and
-                provider != "anthropic-oauth"):
-            return {"answer": "overnight code requires Collie's direct Claude OAuth route",
+                provider != "claude-agent-sdk"):
+            return {"answer": (
+                        "overnight code requires the official Claude Agent SDK "
+                        "with Collie's system prompt"),
                     "verified": False, "needs_human": True}
     project = "mission-code-" + hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:12]
     sid = str(session_id or _code_session_id(mission_id, cwd))
@@ -1400,6 +1427,47 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     # worker can finish its slice receipt and die before Mission folds the case;
     # that completed, contiguous receipt is safe to adopt.  Any other change is
     # external drift and must be inspected instead of silently attributed to us.
+    #
+    # Physical ownership and patch provenance are deliberately separate.  A
+    # host verifier may create cache/build files which must be included in the
+    # next slice's expected byte boundary, but those files must never become
+    # evidence that the coding agent changed the project.  Only new-format
+    # slice receipts with an explicit pre-verifier mutation, or a human-approved
+    # completed reconciliation, establish patch provenance.  Legacy receipts
+    # are physically replayable but provenance-ambiguous and therefore fail
+    # closed for completion.
+    patch_attributed = False
+    provenance_expected = str(baseline_digest or "")
+    for receipt in prior_receipts:
+        if not isinstance(receipt, dict) or receipt.get("kind") not in (
+                "mission_code_slice", "mission_code_reconciled"):
+            continue
+        before = str(receipt.get("pre_tree_digest") or "")
+        after = str(receipt.get("post_tree_digest") or "")
+        if not before or not after or before != provenance_expected:
+            continue
+        if receipt.get("kind") == "mission_code_slice":
+            agent_after = str(receipt.get("agent_post_tree_digest") or "")
+            if (receipt.get("snapshot_complete") is True and
+                    receipt.get("agent_snapshot_complete") is True and
+                    agent_after):
+                # This is state, not an ever-fired event.  In particular, a
+                # later receipt with ``patch_attributed: false`` records that
+                # its agent restored the original baseline.  Replaying older
+                # ``agent_mutated`` events must not resurrect that patch after
+                # a verifier artifact advances the physical receipt chain.
+                patch_attributed = bool(
+                    receipt.get("patch_attributed") is True and
+                    receipt.get("verifier_mutated") is False and
+                    agent_after != baseline_digest)
+            else:
+                # Legacy/partial receipts are physically replayable below but
+                # cannot establish completion-grade patch provenance.
+                patch_attributed = False
+        elif (receipt.get("kind") == "mission_code_reconciled" and
+              receipt.get("resolution") == "completed" and before != after):
+            patch_attributed = True
+        provenance_expected = after
     expected_digest = str(expected_tree_digest or baseline_digest or "")
     for receipt in prior_receipts:
         if not isinstance(receipt, dict) or receipt.get("kind") not in (
@@ -1445,7 +1513,8 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         }
     h = make_harness(cwd, provider=provider, model=model,
                      project=project, embed="hash", rerank="off", distill="off",
-                     web_search=False, code_search=True, exec_code=False)
+                     web_search=False, code_search=True, exec_code=False,
+                     subscription_only=bool(profile.get("subscription_only")))
     request_store = None
     if mission_store_path and mission_run_token:
         from .mission import MissionStore
@@ -1533,11 +1602,33 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         except Exception:
             pass
         raise
+    # Freeze the exact agent-owned boundary before transcript persistence or
+    # the host verifier can touch the workspace.  The final post-slice snapshot
+    # below remains the physical continuation boundary; this one alone decides
+    # whether this slice contributed patch provenance.
+    agent_post_slice = workspace_snapshot(cwd)
+    agent_snapshot_complete = bool(
+        pre_slice.get("snapshot_complete") and
+        agent_post_slice.get("snapshot_complete"))
+    agent_mutated = bool(
+        agent_snapshot_complete and
+        pre_slice.get("tree_digest") != agent_post_slice.get("tree_digest"))
+    # ``patch_attributed`` reconstructed above means a prior slice introduced
+    # agent-owned bytes.  It must not remain sticky after a later agent slice
+    # restores the exact original baseline.  This check deliberately uses the
+    # pre-verifier boundary: build/test artifacts created next may change the
+    # physical continuation digest, but can never resurrect a reverted patch.
+    agent_post_digest = str(agent_post_slice.get("tree_digest") or "")
+    patch_attributed = bool(
+        (patch_attributed or agent_mutated) and agent_snapshot_complete and
+        baseline_digest and agent_post_digest != baseline_digest)
     sessions.save(sid, res.messages, project=project, cwd=cwd, answer=res.answer or "")
     if host_verifier is None:
         verification = _default_code_verifier(
             cwd, res, verify_command, baseline_digest=baseline_digest,
-            timeout_seconds=verify_timeout_seconds or 300)
+            timeout_seconds=verify_timeout_seconds or 300,
+            patch_attributed=patch_attributed,
+            agent_post_tree_digest=str(agent_post_slice.get("tree_digest") or ""))
     else:
         verification = host_verifier(cwd, res)
     if isinstance(verification, bool):
@@ -1552,10 +1643,22 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         from .providers import classify_error
         transient = classify_error(error_text) == "retryable"
     post_slice = workspace_snapshot(cwd)
-    slice_snapshot_complete = bool(pre_slice.get("snapshot_complete") and
+    slice_snapshot_complete = bool(agent_snapshot_complete and
                                    post_slice.get("snapshot_complete"))
-    slice_mutated = bool(slice_snapshot_complete and
-                         pre_slice.get("tree_digest") != post_slice.get("tree_digest"))
+    verifier_mutated = bool(
+        slice_snapshot_complete and
+        agent_post_slice.get("tree_digest") != post_slice.get("tree_digest"))
+    # A verifier that changes any represented project byte invalidates prior
+    # agent ownership for continuation. Without per-path provenance, retaining
+    # the bool would let a verifier overwrite the agent's source in slice N and
+    # have that replacement laundered as an agent patch in slice N+1. Common
+    # untracked Python cache artifacts are excluded by workspace_snapshot, so
+    # ordinary py_compile/pytest startup does not cause a false taint.
+    patch_attributed = bool(patch_attributed and not verifier_mutated)
+    # Public/receipt mutation attribution is the agent-side delta only.  The
+    # physical post_tree_digest still includes verifier bytes so restart/drift
+    # checks bind the exact workspace that actually exists.
+    slice_mutated = agent_mutated
     session_recovery = sessions.recovery_state(sid)
     journal_uncertain = bool(session_recovery and
                              session_recovery.get("recovery_required"))
@@ -1581,8 +1684,13 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "kind": "mission_code_slice", "mission_id": str(mission_id or ""),
         "session_id": sid, "baseline_tree_digest": baseline_digest,
         "pre_tree_digest": str(pre_slice.get("tree_digest") or ""),
+        "agent_post_tree_digest": str(agent_post_slice.get("tree_digest") or ""),
         "post_tree_digest": str(post_slice.get("tree_digest") or ""),
         "snapshot_complete": slice_snapshot_complete,
+        "agent_snapshot_complete": agent_snapshot_complete,
+        "agent_mutated": agent_mutated,
+        "verifier_mutated": verifier_mutated,
+        "patch_attributed": patch_attributed,
         "turns": int(getattr(res, "turns", 0) or 0),
         "turns_exhausted": bool(getattr(res, "turns_exhausted", False)),
         "verified": verified, "continue_needed": continue_needed,
@@ -1627,6 +1735,7 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "equivalent_cost_usd": usage["equivalent_cost_usd"],
         "baseline_tree_digest": baseline_digest,
         "expected_tree_digest": expected_digest,
+        "agent_post_tree_digest": str(agent_post_slice.get("tree_digest") or ""),
         "post_tree_digest": str(post_slice.get("tree_digest") or ""),
         "verification": verification,
         "error": error_text[:1000],
@@ -1635,6 +1744,8 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "recovery_required": recovery_required,
         "needs_human": needs_human,
         "slice_mutated": slice_mutated,
+        "verifier_mutated": verifier_mutated,
+        "patch_attributed": patch_attributed,
         "_external_storage_bytes": session_bytes,
     }
 

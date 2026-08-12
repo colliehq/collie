@@ -89,7 +89,7 @@ bash installer/build_mac.sh --sign --dmg --notarize <profile>
 # standalone — bundles a private CPython, so it runs on a Mac with no Python at all
 bash installer/build_mac.sh --bundle-python --sign --dmg
 #   --arch arm64|x86_64      (defaults to this machine; see below)
-#   --extras local,tui,desktop
+#   --extras local,tui,desktop,remote,claude
 ```
 
 `--bundle-python` calls `build_mac_payload.sh`, the counterpart of `build_payload.ps1`: it stages a

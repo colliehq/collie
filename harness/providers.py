@@ -11,6 +11,7 @@ Internal message shape (provider-neutral):
     {"role": "tool", "tool_call_id": str, "name": str, "content": str}
 """
 from __future__ import annotations
+import contextvars
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import time
 import urllib.request
 import urllib.error
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 
@@ -283,11 +285,44 @@ class ModelProvider:
                             # reports zero cache fields, so inferring "reports cache" from a nonzero
                             # field would never fire for the worst regression)
 
+    @contextmanager
+    def request_authority(self, request_gate, request_complete=None,
+                          request_scope=None):
+        """Bind one Mission's physical-request authority to this execution context.
+
+        MissionService can run multiple Missions through one provider instance. A
+        ContextVar keeps their durable budget reservations from crossing threads,
+        unlike temporarily assigning ``provider.request_gate`` on the shared object.
+        Isolated code workers retain the attribute seam for backwards compatibility.
+        """
+        token = _REQUEST_AUTHORITY.set(
+            (self, request_gate, request_complete, str(request_scope or "")))
+        try:
+            yield
+        finally:
+            _REQUEST_AUTHORITY.reset(token)
+
+    def current_request_authority(self):
+        owner, request_gate, request_complete, _request_scope = _REQUEST_AUTHORITY.get()
+        if owner is not self:
+            return None, None
+        return request_gate, request_complete
+
+    def current_request_scope(self) -> str:
+        """Return the caller's cancellation scope for this execution context."""
+        owner, _request_gate, _request_complete, request_scope = \
+            _REQUEST_AUTHORITY.get()
+        return request_scope if owner is self else ""
+
     def complete(self, system: str, messages: list, tool_schemas: list, on_text=None) -> Completion:
         """CONTRACT: never raise for a transport / HTTP / JSON-decode failure — return an error
         Completion (stop_reason='error') via _error_completion so the loop has ONE failure path.
         Constructor config errors (missing key) still raise, to fail fast."""
         raise NotImplementedError
+
+
+_REQUEST_AUTHORITY = contextvars.ContextVar(
+    "collie_model_request_authority", default=(None, None, None, ""))
 
 
 def measure_prefix(provider: "ModelProvider", system: str, tool_schemas: list) -> int:
@@ -588,11 +623,11 @@ class AnthropicProvider(ModelProvider):
 #  from the official Claude login store instead of an API key. Anthropic does not
 #  document this raw third-party route as a supported plan interface. Mission
 #  ``subscription_only`` is stricter: fixed endpoint, proxy/redirect-free transport,
-#  Collie's own system/tools, and no API/CLI fallback.
-_CC_BETAS = ("claude-code-20250219,oauth-2025-04-20,"
-             "fine-grained-tool-streaming-2025-05-14,prompt-caching-2024-07-31")
-_DIRECT_OAUTH_BETAS = "oauth-2025-04-20"
-_cc_ver = None
+#  Collie's own loop/tools, and no API/CLI fallback. This raw route is not admitted
+#  for overnight Missions because Anthropic does not document it as a third-party
+#  Claude-plan interface; the official Agent SDK provider is used instead.
+_RAW_OAUTH_BETAS = "oauth-2025-04-20"
+_RAW_OAUTH_USER_AGENT = "collie/anthropic-oauth-experimental"
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -600,18 +635,6 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
-
-
-def _claude_version():
-    global _cc_ver
-    if _cc_ver is None:
-        try:
-            import subprocess as _sp
-            out = _sp.run(["claude", "--version"], capture_output=True, text=True, timeout=5).stdout
-            _cc_ver = out.strip().split()[0] if out.strip() else "2.1.138"
-        except Exception:
-            _cc_ver = "2.1.138"
-    return _cc_ver
 
 
 def claude_credentials():
@@ -697,7 +720,8 @@ class AnthropicOAuthProvider(AnthropicProvider):
     supports_request_gate = True
 
     def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 0,
-                 effort: str | None = None, speed: str = "standard"):
+                 effort: str | None = None, speed: str = "standard",
+                 subscription_only: bool = False):
         self.model = model
         # honour the shared COLLIE_MAX_TOKENS knob (Settings "Max output tokens/turn"), like the parent
         # and every sibling provider — pinning 4096 here made big write_file edits truncate on the
@@ -708,11 +732,15 @@ class AnthropicOAuthProvider(AnthropicProvider):
         self.effort, _ = resolve_reasoning_effort(self.name, self.model, requested_effort)
         self.speed, _ = resolve_speed_tier(self.name, self.model, speed)
         self.actual_speed = self.speed
+        # Set before credential validation.  Mission used to flip this only after
+        # construction, which let an ambient CLAUDE_CODE_OAUTH_TOKEN satisfy the
+        # constructor even though the frozen direct route would later reject it.
+        self.subscription_only = bool(subscription_only)
         self.api_key = ""                       # not used; OAuth token read per-call (stays fresh)
-        if not _read_oauth_token():
+        if not _read_oauth_token(login_store_only=self.subscription_only):
             raise RuntimeError("no Claude OAuth token (run `claude` login or set "
                                "CLAUDE_CODE_OAUTH_TOKEN) — needed for --provider anthropic-oauth")
-        if claude_oauth_expired():
+        if claude_oauth_expired(login_store_only=self.subscription_only):
             raise RuntimeError(OAUTH_EXPIRED_HINT)
 
     def complete(self, system: str, messages: list, tool_schemas: list, on_text=None) -> Completion:
@@ -720,6 +748,16 @@ class AnthropicOAuthProvider(AnthropicProvider):
         # — and re-check expiry for the same reason, since a long run can outlive the token it
         # started with. Naming the real cause beats letting the request come back a bare 401.
         direct = bool(getattr(self, "subscription_only", False))
+        contextual_gate, contextual_complete = self.current_request_authority()
+        request_gate = contextual_gate or getattr(self, "request_gate", None)
+        request_complete = contextual_complete or getattr(self, "request_complete", None)
+        # A strict subscription request without an outer durable reservation is
+        # a wiring error, not permission to bypass the Mission's physical-call leash.
+        if direct and not callable(request_gate):
+            return Completion(
+                text="ERROR(anthropic-oauth): direct model request authority is missing",
+                stop_reason="error",
+                error_detail="direct model request authority is missing")
         if claude_oauth_expired(login_store_only=direct):
             raise RuntimeError(OAUTH_EXPIRED_HINT)
         token = _read_oauth_token(login_store_only=direct)
@@ -766,24 +804,19 @@ class AnthropicOAuthProvider(AnthropicProvider):
             body["tools"] = tool_schemas
         if on_text:
             body["stream"] = True                # real token streaming (interactive only)
-        # Native overnight must not masquerade as Claude Code.  It uses only
-        # the OAuth transport beta; no Claude-Code beta, identity header, or
-        # system block is added to Collie's request.
-        betas = _DIRECT_OAUTH_BETAS if direct else _CC_BETAS
-        api = self.OFFICIAL_API if direct else self.API
+        # This is an explicit, experimental raw bearer request. All modes use
+        # Collie's identity and the fixed Anthropic endpoint; never borrow the
+        # Claude Code beta, user-agent, x-app header, or system prompt.
         headers = {
                 "content-type": "application/json",
                 "authorization": "Bearer " + token,
                 "anthropic-version": "2023-06-01",
-                "anthropic-beta": betas,
-                "user-agent": ("collie/overnight-direct" if direct else
-                               "claude-code/%s (external, cli)" % _claude_version()),
-                "x-app": "collie" if direct else "cli",
+                "anthropic-beta": _RAW_OAUTH_BETAS,
+                "user-agent": _RAW_OAUTH_USER_AGENT,
             }
         req = urllib.request.Request(
-            api, data=json.dumps(body).encode(), headers=headers, method="POST")
+            self.OFFICIAL_API, data=json.dumps(body).encode(), headers=headers, method="POST")
         request_id = ""
-        request_gate = getattr(self, "request_gate", None)
         if callable(request_gate):
             try:
                 request_id = request_gate("anthropic_messages")
@@ -804,9 +837,9 @@ class AnthropicOAuthProvider(AnthropicProvider):
             with open_request(req, timeout=180) as r:
                 if on_text:
                     text, calls, u, sr, edetail = _parse_anthropic_stream(r, on_text)
-                    if request_id and callable(getattr(self, "request_complete", None)):
+                    if request_id and callable(request_complete):
                         try:
-                            self.request_complete(request_id, "completed")
+                            request_complete(request_id, "completed")
                         except Exception:
                             pass
                     return Completion(
@@ -817,15 +850,15 @@ class AnthropicOAuthProvider(AnthropicProvider):
                             cache_creation=u.get("cache_creation_input_tokens", 0)))
                 data = json.loads(r.read())
         except Exception as e:
-            if request_id and callable(getattr(self, "request_complete", None)):
+            if request_id and callable(request_complete):
                 try:
-                    self.request_complete(request_id, "error")
+                    request_complete(request_id, "error")
                 except Exception:
                     pass
             return _error_completion(self.name, e)
-        if request_id and callable(getattr(self, "request_complete", None)):
+        if request_id and callable(request_complete):
             try:
-                self.request_complete(request_id, "completed")
+                request_complete(request_id, "completed")
             except Exception:
                 pass
         text, calls, thinks = "", [], []
@@ -861,21 +894,22 @@ class AnthropicOAuthProvider(AnthropicProvider):
 #  it delegates only "produce the next step" to `claude -p` with Claude Code's tools disabled
 #  (pure reasoner), and a text tool-protocol lets the model drive collie's tools.
 #
-#  HONEST CAVEAT: `claude -p` always carries Claude Code's own ~11-18K system
-#  prefix (you can't strip it via the CLI), so collie-via-CLI *inherits* that prefix —
-#  this backend is for "real model, free, no key", NOT for showing collie's lean
-#  prefix. For that, use --provider anthropic (raw API) or a local model.
+#  `--system-prompt-file` is a complete replacement for Claude Code's default system
+#  prompt. Together with safe mode and an empty built-in tool set, this leaves Collie
+#  in charge of the agent loop and gives the CLI only Collie's explicit contract.
 # --------------------------------------------------------------------------- #
 class ClaudeCliProvider(ModelProvider):
     name = "claude-cli"
+    supports_request_gate = True
     _OFF = ["Bash", "Read", "Edit", "Write", "Grep", "Glob", "WebFetch",
             "WebSearch", "Task", "TodoWrite", "NotebookEdit"]
 
     def __init__(self, model: str = "sonnet", timeout: int = 180,
-                 effort: str | None = None):
+                 effort: str | None = None, subscription_only: bool = False):
         self.model = "claude-cli:" + model
         self._model = model
         self.timeout = timeout
+        self.subscription_only = bool(subscription_only)
         requested_effort = effort if effort is not None else (
             os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
         self.effort, _ = resolve_reasoning_effort(self.name, model, requested_effort)
@@ -921,8 +955,9 @@ class ClaudeCliProvider(ModelProvider):
     def _call(self, prompt, system):
         # `--tools ""` disables ALL of Claude Code's built-in tools (the CLI-documented way),
         # so it can't agentic tool-use (which --max-turns 1 would truncate to an error) — it
-        # becomes a pure reasoner that emits collie's JSON as TEXT. collie's system goes via
-        # --system-prompt (full replacement); NOT --bare (bare never reads the OAuth token).
+        # becomes a pure reasoner that emits collie's JSON as TEXT. Collie's system goes via
+        # --system-prompt-file, which fully replaces the default Claude Code prompt; NOT --bare
+        # (bare never reads the OAuth token).
         # Both the accumulated conversation and Collie's system/tool contract can exceed
         # Windows' ~32K command-line limit.  Keep the conversation on stdin and the system prompt
         # in Claude's documented file input; neither belongs in argv or a process listing.
@@ -957,6 +992,12 @@ class ClaudeCliProvider(ModelProvider):
             env["NO_COLOR"] = "1"
         elif env.get("CLAUDE_CODE_OAUTH_TOKEN"):
             env.pop("ANTHROPIC_API_KEY", None)
+        request_gate, request_complete = self.current_request_authority()
+        request_gate = request_gate or getattr(self, "request_gate", None)
+        request_complete = request_complete or getattr(self, "request_complete", None)
+        if self.subscription_only and not callable(request_gate):
+            raise RuntimeError("claude CLI model request authority is missing")
+
         executable = shutil.which(cmd[0], path=env.get("PATH"))
         if not executable:
             raise FileNotFoundError("claude CLI is not on PATH")
@@ -966,34 +1007,63 @@ class ClaudeCliProvider(ModelProvider):
             with open(system_path, "w", encoding="utf-8", newline="\n") as system_file:
                 system_file.write(system)
             full_cmd = [executable] + cmd[1:] + ["--system-prompt-file", system_path]
-            r = subprocess.run(full_cmd, capture_output=True, text=True, input=prompt,
-                               timeout=self.timeout, env=env, **_plat.no_window_kwargs())
+            request_id = ""
+            if callable(request_gate):
+                try:
+                    request_id = request_gate("claude_cli")
+                except Exception as exc:
+                    raise RuntimeError("claude CLI model request reservation failed") from exc
+                if not request_id:
+                    raise RuntimeError("claude CLI model request reservation denied")
+            try:
+                r = subprocess.run(full_cmd, capture_output=True, text=True, input=prompt,
+                                   timeout=self.timeout, env=env, **_plat.no_window_kwargs())
+            except Exception:
+                if request_id and callable(request_complete):
+                    try:
+                        request_complete(request_id, "error")
+                    except Exception:
+                        pass
+                raise
         def safe_failure(value):
             from .redact import redact
             text = redact(str(value or ""), {})
             text = " ".join(text.replace("\x00", " ").split())
             return text[:1000]
 
-        if r.returncode != 0:
-            detail = safe_failure(r.stderr or r.stdout)
-            raise RuntimeError("claude CLI exited %d%s" % (
-                r.returncode, (": " + detail) if detail else ""))
-        data = _cc_json(r.stdout)
-        if not isinstance(data, dict):
-            raise RuntimeError("claude CLI returned invalid JSON")
-        if "is_error" in data and data.get("is_error") is not False:
-            detail = safe_failure(data.get("result") or data.get("error") or "")
-            raise RuntimeError("claude CLI reported an error%s" %
-                               ((": " + detail) if detail else ""))
-        if not isinstance(data.get("result"), str):
-            raise RuntimeError("claude CLI JSON response is missing a string result")
-        u = data.get("usage", {}) or {}
-        if not isinstance(u, dict):
-            raise RuntimeError("claude CLI JSON response has invalid usage")
-        usage = Usage(input_tokens=u.get("input_tokens", 0),
-                      output_tokens=u.get("output_tokens", 0),
-                      cache_read=u.get("cache_read_input_tokens", 0),
-                      cache_creation=u.get("cache_creation_input_tokens", 0))
+        try:
+            if r.returncode != 0:
+                detail = safe_failure(r.stderr or r.stdout)
+                raise RuntimeError("claude CLI exited %d%s" % (
+                    r.returncode, (": " + detail) if detail else ""))
+            data = _cc_json(r.stdout)
+            if not isinstance(data, dict):
+                raise RuntimeError("claude CLI returned invalid JSON")
+            if "is_error" in data and data.get("is_error") is not False:
+                detail = safe_failure(data.get("result") or data.get("error") or "")
+                raise RuntimeError("claude CLI reported an error%s" %
+                                   ((": " + detail) if detail else ""))
+            if not isinstance(data.get("result"), str):
+                raise RuntimeError("claude CLI JSON response is missing a string result")
+            u = data.get("usage", {}) or {}
+            if not isinstance(u, dict):
+                raise RuntimeError("claude CLI JSON response has invalid usage")
+            usage = Usage(input_tokens=u.get("input_tokens", 0),
+                          output_tokens=u.get("output_tokens", 0),
+                          cache_read=u.get("cache_read_input_tokens", 0),
+                          cache_creation=u.get("cache_creation_input_tokens", 0))
+        except Exception:
+            if request_id and callable(request_complete):
+                try:
+                    request_complete(request_id, "error")
+                except Exception:
+                    pass
+            raise
+        if request_id and callable(request_complete):
+            try:
+                request_complete(request_id, "completed")
+            except Exception:
+                pass
         return str(data.get("result", "")).strip(), usage
 
     def complete(self, system, messages, tool_schemas, on_text=None):
@@ -1378,6 +1448,8 @@ def provider_default_model(name: str) -> str:
         return "gpt-5.6-terra"
     if name in ("claude-cli", "cli"):
         return "sonnet"
+    if name in ("claude-agent-sdk", "claude-sdk"):
+        return "claude-opus-4-8"
     if name == "ollama":
         return "qwen2.5-coder:7b"
     if name in OPENAI_COMPAT_PRESETS:
@@ -1430,7 +1502,7 @@ def provider_capabilities(name: str, model: str | None = None) -> dict:
             speed_tiers.append("fast")
             fast_multiplier = 6.0
             fast_note = "same eligible Opus model via speed=fast; extra-usage billing may be required"
-    elif name in ("claude-cli", "cli"):
+    elif name in ("claude-cli", "cli", "claude-agent-sdk", "claude-sdk"):
         reasoning = ["low", "medium", "high", "max"]
 
     return {
@@ -1473,7 +1545,8 @@ def resolve_speed_tier(name: str, model: str | None, requested: str | None) -> t
 
 
 def make_provider(name: str, model: str | None = None, effort: str | None = None,
-                  speed: str = "standard") -> ModelProvider:
+                  speed: str = "standard", *,
+                  subscription_only: bool = False) -> ModelProvider:
     chosen_model = model or provider_default_model(name)
     resolved_speed, _caps = resolve_speed_tier(name, chosen_model, speed)
     if name == "mock":
@@ -1481,12 +1554,23 @@ def make_provider(name: str, model: str | None = None, effort: str | None = None
     if name == "anthropic":
         return AnthropicProvider(model=chosen_model, effort=effort, speed=resolved_speed)
     if name in ("anthropic-oauth", "claude-sub"):
-        return AnthropicOAuthProvider(model=chosen_model, effort=effort, speed=resolved_speed)
+        return AnthropicOAuthProvider(
+            model=chosen_model, effort=effort, speed=resolved_speed,
+            subscription_only=subscription_only)
     if name in ("codex-oauth", "codex-sub", "codex"):     # ChatGPT Codex subscription (gpt-5.6-terra)
         from .codex_oauth import CodexOAuthProvider
         return CodexOAuthProvider(model=chosen_model, effort=effort, speed=resolved_speed)
     if name in ("claude-cli", "cli"):
-        return ClaudeCliProvider(model=chosen_model, effort=effort)
+        return ClaudeCliProvider(
+            model=chosen_model, effort=effort,
+            subscription_only=subscription_only)
+    if name in ("claude-agent-sdk", "claude-sdk"):
+        # Optional dependency remains worker-only/lazy: importing core providers
+        # must continue to work in a stdlib-only Collie installation.
+        from .claude_agent_sdk import ClaudeAgentSdkProvider
+        return ClaudeAgentSdkProvider(
+            model=chosen_model, effort=effort,
+            subscription_only=subscription_only)
     if name == "ollama":
         return OllamaProvider(model=chosen_model)
     if name in OPENAI_COMPAT_PRESETS:
@@ -1500,7 +1584,7 @@ def make_provider(name: str, model: str | None = None, effort: str | None = None
         return plugins[name](model)
     known = sorted(set(list(plugins) + list(OPENAI_COMPAT_PRESETS)
                        + ["mock", "anthropic", "anthropic-oauth", "codex-oauth",
-                          "claude-cli", "ollama"]))
+                          "claude-cli", "claude-agent-sdk", "ollama"]))
     msg = "unknown provider: %s (known: %s)" % (name, ", ".join(known))
     if errors:
         # The likely case when a plugin-provided name is missing is that the plugin failed to load.

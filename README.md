@@ -137,7 +137,7 @@ collie pack "fix the failing test" -n 3 --check "pytest -q" --apply
 collie acp                 # serve as an ACP agent (an editor spawns this over stdio)
 ```
 
-Providers: `mock`, `ollama`, `anthropic`, `anthropic-oauth`, and OpenAI-compatible presets
+Providers: `mock`, `ollama`, `anthropic`, `claude-agent-sdk`, `anthropic-oauth`, and OpenAI-compatible presets
 `deepseek` · `qwen`/`dashscope` · `openrouter` · `moonshot` · `groq` · `zhipu` · `openai`.
 
 ---
@@ -239,7 +239,7 @@ should always print nothing.
      ▼                                  ▼                                  ▼
  ContextComposer                  ModelProvider                     ToolRegistry
  STABLE/CONTEXT/VOLATILE          OpenAI-compat · Anthropic ·       read/write/edit/bash/
- + token budgeter                 Ollama · subscription-OAuth       grep/glob + code_search
+ + token budgeter                 Ollama · Claude Agent SDK/OAuth   grep/glob + code_search
      ▼                                  │                                  │
  memory.SqliteMemory                    ▼                            recorder.Recorder
  hybrid recall (BM25+dense+RRF)   emit → stream-json / ACP          runs.db (+ dashboard)
@@ -247,7 +247,7 @@ should always print nothing.
 
 | Seam (abstract base) | shipped impl |
 |---|---|
-| `ModelProvider` | **OpenAICompat** (DeepSeek/Qwen/GLM/OpenRouter…) · Anthropic · Ollama · subscription-OAuth |
+| `ModelProvider` | **OpenAICompat** (DeepSeek/Qwen/GLM/OpenRouter…) · Anthropic · Ollama · Claude Agent SDK · subscription-OAuth |
 | `ToolRegistry` | read/write/**edit** (syntax-gated) · bash · grep · glob · **`code_search`** · **`web_search`** + **`web_fetch`** (keyless) · **`plan`** · **`undo`** · browser · **MCP** (deferred tier + `load_tools`) |
 | `EmbeddingProvider` | **OnnxEmbedding** granite-107m (Apache, 55MB, multilingual) · bge-m3 / e5 · jina-v3 opt-in · **BM25-only** when no model |
 | `SqliteMemory` | CORE + evidence-gated claims + FTS5 + cosine, hybrid RRF + optional rerank |
@@ -312,12 +312,15 @@ nothing and refuses mutable or incomplete configurations before a paid run start
   Collie surfaces the levers that turn out **net-neutral**, not just the wins.
 - Token counts are real usage (the model's own `usage`, or `harness/apitap.py` metering for CLIs that
   report none) — apples-to-apples, same source both sides.
-- `claude-cli` is Collie's documented Claude-plan compatibility route. The experimental
-  `anthropic-oauth` provider reads the official CLI's local login credential but makes Collie's
-  own raw Messages request; Anthropic has not documented that raw third-party route as a supported
-  Claude-plan interface. Native overnight mode therefore admits it only after a live probe and
-  otherwise stops—there is no API-key, paid-overage, provider, or `claude -p` fallback. Cheap API
-  keys and local models remain the default for ordinary runs.
+- Native Opus overnight uses `claude-agent-sdk`, Anthropic's official Claude Agent SDK, against an
+  eligible signed-in Claude Pro/Max plan (the live route was tested on Max). Collie invokes the SDK directly—not `claude -p` and not a
+  raw OAuth Messages call—and supplies its own replacement system prompt. SDK settings sources,
+  built-in tools, skills, plugins, agents, and slash commands are disabled so Collie remains the
+  harness and tool loop. The route has no API-key, paid-credit, provider, or model fallback.
+- Subscription allowance is bounded by the plan and provider policy. The current evidence is a
+  short end-to-end route test, not a 12-hour soak, and neither Collie nor the SDK promises unlimited
+  use or unchanged future billing policy. Cheap API keys and local models remain the default for
+  ordinary runs.
 
 ## License
 

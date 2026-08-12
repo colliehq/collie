@@ -92,6 +92,9 @@ def _execute_request(request: dict) -> dict:
     # request file is owner-private and was produced only after TaskTree checked
     # this same canonical workspace.
     os.environ["COLLIE_MISSION_CODE_ROOTS"] = workspace
+    # Nested model transports inherit the worker's kernel-owned process tree.
+    # They must not create a new POSIX session that could escape Mission cancel.
+    os.environ["COLLIE_PROCESS_OWNER"] = "mission-code-worker"
     session_dir = str(request.get("session_dir") or "")
     if session_dir:
         os.environ["COLLIE_SESSIONS_DIR"] = session_dir
@@ -480,6 +483,12 @@ class CodeSliceProcessRunner:
             allowed = {
                 "APPDATA", "COMSPEC", "HOME", "HOMEDRIVE", "HOMEPATH", "LANG",
                 "LC_ALL", "LC_CTYPE", "LOCALAPPDATA", "LOGNAME", "PATH", "PATHEXT",
+                # ``plat.posix_shell`` locates a system Git Bash from these
+                # standard installation roots.  They contain no credentials;
+                # dropping them made an otherwise isolated Windows worker fall
+                # back to cmd.exe, which cannot interpret the POSIX quoting used
+                # by the grep-backed code tools.
+                "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
                 "SHELL", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "USER", "USERPROFILE",
                 "WINDIR",
             }

@@ -27,6 +27,7 @@ Issues = "https://github.com/colliehq/collie/issues"
 local = ["onnxruntime", "tokenizers", "huggingface-hub", "numpy"]
 fastembed = ["fastembed"]               # opt-in: jina-v3 / other fastembed models (jina is CC-BY-NC)
 browser = ["playwright"]
+claude = ["claude-agent-sdk>=0.2.136,<0.3"] # official Claude-plan runtime for overnight Missions
 remote = ["cryptography"]               # Collie Remote E2E. QR codes need nothing: harness/qr.py is stdlib
 desktop = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real behind-the-icons
            "pyobjc-framework-WebKit; sys_platform == 'darwin'",     # desktop on macOS (window
@@ -41,9 +42,9 @@ docs = ["mkdocs-material"]               # the user docs site (mkdocs serve / bu
 collie = "harness.cli:main"             # `collie -p "task"` one-liner
 
 [tool.setuptools]
-# These four data-only directories are explicit packages so setuptools never has to guess whether
+# These three data-only directories are explicit packages so setuptools never has to guess whether
 # their shipped HTML/JS/native assets are accidental namespace packages.
-packages = ["harness", "harness.browser_ext", "harness.oauth_ext", "harness.wallpaper", "harness.webui"]
+packages = ["harness", "harness.browser_ext", "harness.wallpaper", "harness.webui"]
 
 [tool.setuptools.dynamic]
 version = { attr = "harness.__version__" }
@@ -58,8 +59,6 @@ harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png",
            # Keep this list explicit: browser_ext/token.txt is per-device authentication state and
            # must never enter a wheel/installer merely because a maintainer built from a live tree.
            "browser_ext/*.html", "browser_ext/*.js", "browser_ext/*.json", "browser_ext/*.png",
-           # Runtime adapters resolve these files relative to harness.__file__.
-           "oauth_ext/*.js", "oauth_ext/*.jsonc",
            "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico"]
 
 [tool.setuptools.exclude-package-data]

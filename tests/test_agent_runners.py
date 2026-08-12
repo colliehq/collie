@@ -289,7 +289,10 @@ def test_default_process_transport_enforces_wall_timeout_without_duplicate_outpu
     started = time.monotonic()
     outcome = SubprocessRunner().run(
         [sys.executable, "-c", "import time; print('ONE', flush=True); time.sleep(10)"],
-        cwd=str(tmp_path), stdin_text="not on argv", timeout_s=0.15,
+        # The transport starts a trusted ownership gate and then the target.
+        # Leave enough time for both interpreters to initialize on cold Windows
+        # hosts before testing timeout capture/deduplication itself.
+        cwd=str(tmp_path), stdin_text="not on argv", timeout_s=1.0,
         on_process=lambda _proc: None)
 
     assert time.monotonic() - started < 5

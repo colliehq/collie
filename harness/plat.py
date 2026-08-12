@@ -93,12 +93,13 @@ def new_group_kwargs() -> dict:
     walks the PID tree directly, so no special flag is needed (and
     CREATE_NEW_PROCESS_GROUP would change Ctrl-C semantics), so return nothing.
 
-    A Slack executor is already a dedicated process group whose lifetime is
-    guarded externally.  Its descendants must inherit that group; starting a
-    second session here would let an ordinary shell tool survive cancellation.
-    A tool timeout in that mode intentionally ends the whole guarded task.
+    A Slack executor or Mission code worker is already a dedicated process group
+    whose lifetime is guarded externally. Its descendants must inherit that
+    group; starting a second session there would let a nested model/tool process
+    survive cancellation. A nested timeout intentionally ends the owned task.
     """
-    return {} if (is_windows() or os.environ.get("COLLIE_PROCESS_OWNER") == "slackexec") \
+    return {} if (is_windows() or os.environ.get("COLLIE_PROCESS_OWNER") in {
+        "slackexec", "mission-code-worker"}) \
         else {"start_new_session": True}
 
 

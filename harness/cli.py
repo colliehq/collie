@@ -210,7 +210,7 @@ def default_gate(cwd, mode=None, commands=None):
 def make_harness(cwd, provider="mock", model=None, project="demo",
                  embed="auto", prefix_ceiling=6000, code_search=False,
                  rerank=None, distill=None, web_search=None, exec_code=False, delegate=False,
-                 gate=None, effort=None, speed="standard"):
+                 gate=None, effort=None, speed="standard", subscription_only=False):
     from .embeddings import make_reranker
     from .distill import make_distiller
     mem_db, runs_db, _, _ = _paths()
@@ -230,7 +230,9 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     composer = ContextComposer(memory, registry, TokenBudgeter(prefix_ceiling),
                                identity=os.environ.get("COLLIE_IDENTITY", ""))
     recorder = Recorder(runs_db)
-    prov = make_provider(provider, model, effort=effort, speed=speed)
+    prov = make_provider(
+        provider, model, effort=effort, speed=speed,
+        subscription_only=bool(subscription_only))
     h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project)
     # Run presets may choose a lower everyday/deep-work target, but this value is a user-owned
     # HARD ceiling.  Keep it separately from ``max_turns`` so selecting Thorough can never turn a

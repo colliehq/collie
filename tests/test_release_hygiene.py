@@ -82,8 +82,9 @@ def test_python_release_metadata_is_current_and_data_packages_are_explicit():
     config = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'requires = ["setuptools>=77"]' in config
     assert 'license = "MIT"' in config and 'license-files = ["LICENSE"]' in config
-    for package in ("harness.browser_ext", "harness.oauth_ext", "harness.wallpaper", "harness.webui"):
+    for package in ("harness.browser_ext", "harness.wallpaper", "harness.webui"):
         assert f'"{package}"' in config, f"data package {package} must be explicit"
+    assert '"harness.oauth_ext"' not in config
 
 
 def test_release_workflow_packages_and_publishes_vscode_vsix():
@@ -127,8 +128,19 @@ def test_release_workflow_packages_and_publishes_vscode_vsix():
     ), "the GitHub release files must publish Collie-VSCode.vsix from its artifact"
 
 
-def test_package_data_never_captures_browser_auth_and_ships_oauth_adapters():
+def test_release_wheel_gate_requires_sdk_and_rejects_retired_oauth_proxy():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    wheel_job = _workflow_job(workflow, "wheel")
+    assert "harness/claude_agent_sdk.py" in wheel_job
+    assert "harness/claude_agent_worker.py" in wheel_job
+    assert '"oauth_proxy" in name' in wheel_job
+    assert '"/oauth_ext/" in name' in wheel_job
+
+
+def test_package_data_never_captures_credentials_or_removed_oauth_proxy():
     config = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    payload_builder = (ROOT / "installer" / "build_payload.ps1").read_text(encoding="utf-8")
     patterns = _table_strings(config, "[tool.setuptools.package-data]")
     excluded = _table_strings(config, "[tool.setuptools.exclude-package-data]")
 
@@ -140,12 +152,20 @@ def test_package_data_never_captures_browser_auth_and_ships_oauth_adapters():
         "browser_ext/background.js",
         "browser_ext/manifest.json",
         "browser_ext/icon128.png",
-        "oauth_ext/pi-oauth-proxy.js",
-        "oauth_ext/opencode.jsonc",
     )
     for relative in required:
         assert (ROOT / "harness" / relative).is_file(), relative
         assert any(fnmatchcase(relative, pattern) for pattern in patterns), relative
+
+    assert not any(pattern.startswith("oauth_ext/") for pattern in patterns)
+    removed = (
+        "oauth_proxy.py",
+        "oauth_ext/pi-oauth-proxy.js",
+        "oauth_ext/opencode.jsonc",
+    )
+    for relative in removed:
+        assert not (ROOT / "harness" / relative).exists(), relative
+        assert relative not in payload_builder
 
 
 def test_installer_upgrade_cleanup_is_targeted_to_owned_runtime_packages():
@@ -226,6 +246,20 @@ def test_payload_build_fails_closed_and_verifies_code_metadata_and_assets():
             '"Python Software Foundation"') in script
     assert 'Assert-AuthenticodePublisher $wv "Microsoft Corporation"' in script
     assert 'pip install --upgrade --no-build-isolation --no-warn-script-location' in script
+
+
+def test_formal_installer_payloads_include_claude_agent_sdk_by_default():
+    windows = (ROOT / "installer" / "build_payload.ps1").read_text(encoding="utf-8")
+    mac_payload = (ROOT / "installer" / "build_mac_payload.sh").read_text(
+        encoding="utf-8")
+    mac = (ROOT / "installer" / "build_mac.sh").read_text(encoding="utf-8")
+
+    assert '"$repo[local,remote,claude]"' in windows
+    assert '"claude_agent_sdk"' in windows
+    assert 'EXTRAS="${3:-local,tui,desktop,remote,claude}"' in mac_payload
+    assert 'EXTRAS="local,tui,desktop,remote,claude"' in mac
+    assert '"claude": ["claude_agent_sdk"]' in mac
+    assert 'build_mac_payload.sh "$APP" "$ARCH" "$EXTRAS"' in mac
 
 
 def test_top_level_installer_build_checks_every_native_generator():

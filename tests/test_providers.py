@@ -204,6 +204,144 @@ def test_claude_cli_format_repair_reports_both_physical_requests(monkeypatch):
     assert completion.usage.input_tokens == 5
 
 
+def test_request_authority_is_bound_to_one_provider_instance():
+    from harness.providers import ClaudeCliProvider
+
+    first = ClaudeCliProvider("opus")
+    second = ClaudeCliProvider("opus")
+    gate = lambda _purpose: "request-1"
+    complete = lambda *_args: None
+
+    with first.request_authority(gate, complete, request_scope="mission-one"):
+        assert first.current_request_authority() == (gate, complete)
+        assert first.current_request_scope() == "mission-one"
+        assert second.current_request_authority() == (None, None)
+        assert second.current_request_scope() == ""
+    assert first.current_request_authority() == (None, None)
+    assert first.current_request_scope() == ""
+
+
+def test_claude_cli_subscription_only_requires_authority_before_subprocess(monkeypatch):
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing authority must stop before subprocess")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.error_detail == "claude CLI model request authority is missing"
+
+
+def test_claude_cli_reserves_and_completes_each_format_repair_process(monkeypatch):
+    import subprocess
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    replies = iter([
+        subprocess.CompletedProcess(
+            ["claude"], 0, json.dumps({"result": "plain prose", "usage": {}}), ""),
+        subprocess.CompletedProcess(
+            ["claude"], 0,
+            json.dumps({"result": '{"answer":"done"}', "usage": {}}), ""),
+    ])
+    launched = []
+    reserved = []
+    completed = []
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *args, **kwargs: launched.append((args, kwargs)) or next(replies))
+
+    def reserve(purpose):
+        reserved.append(purpose)
+        return "request-%d" % len(reserved)
+
+    with provider.request_authority(
+            reserve, lambda *args: completed.append(args)):
+        completion = provider.complete(
+            "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.text == "done"
+    assert completion.request_count == 2
+    assert len(launched) == 2
+    assert reserved == ["claude_cli", "claude_cli"]
+    assert completed == [
+        ("request-1", "completed"),
+        ("request-2", "completed"),
+    ]
+
+
+def test_claude_cli_second_reservation_failure_does_not_launch_repair(monkeypatch):
+    import subprocess
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    launched = []
+    completed = []
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *args, **kwargs: launched.append((args, kwargs)) or subprocess.CompletedProcess(
+            ["claude"], 0, json.dumps({"result": "plain prose", "usage": {}}), ""))
+    reservations = iter(["request-1", RuntimeError("budget exhausted")])
+
+    def reserve(_purpose):
+        result = next(reservations)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with provider.request_authority(
+            reserve, lambda *args: completed.append(args)):
+        completion = provider.complete(
+            "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.error_detail == "claude CLI model request reservation failed"
+    assert len(launched) == 1
+    assert completed == [("request-1", "completed")]
+
+
+def test_claude_cli_process_error_completes_reserved_request(monkeypatch):
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    completed = []
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("launch failed")))
+
+    with provider.request_authority(
+            lambda _purpose: "request-1", lambda *args: completed.append(args)):
+        completion = provider.complete(
+            "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completed == [("request-1", "error")]
+
+
+def test_make_provider_passes_subscription_only_to_claude_cli():
+    from harness.providers import make_provider
+
+    provider = make_provider("claude-cli", "opus", subscription_only=True)
+
+    assert provider.supports_request_gate is True
+    assert provider.subscription_only is True
+
+
+def _authorize_direct(provider):
+    provider.request_gate = lambda _purpose: "test-request-1"
+    provider.request_complete = lambda *_args: None
+    return provider
+
+
 def test_direct_oauth_overnight_uses_only_collie_system_and_official_proxy_free_route(
         monkeypatch):
     from harness.providers import AnthropicOAuthProvider
@@ -241,6 +379,7 @@ def test_direct_oauth_overnight_uses_only_collie_system_and_official_proxy_free_
     provider.speed = "standard"
     provider.API = provider.OFFICIAL_API
     provider.subscription_only = True
+    _authorize_direct(provider)
     monkeypatch.setattr(
         "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
     monkeypatch.setattr(
@@ -263,8 +402,8 @@ def test_direct_oauth_overnight_uses_only_collie_system_and_official_proxy_free_
     }]
     assert "Claude Code" not in json.dumps(body)
     assert request.full_url == provider.OFFICIAL_API
-    assert request.headers["User-agent"] == "collie/overnight-direct"
-    assert request.headers["X-app"] == "collie"
+    assert request.headers["User-agent"] == "collie/anthropic-oauth-experimental"
+    assert "X-app" not in request.headers
     assert request.headers["Anthropic-beta"] == "oauth-2025-04-20"
     assert "claude-code" not in request.headers["Anthropic-beta"]
     assert len(seen["handlers"]) == 2
@@ -285,6 +424,7 @@ def test_direct_oauth_overnight_refuses_endpoint_or_fast_route_drift(monkeypatch
     provider.speed = "standard"
     provider.API = "https://example.invalid/messages"
     provider.subscription_only = True
+    _authorize_direct(provider)
     monkeypatch.setattr(
         "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
     monkeypatch.setattr(
@@ -308,6 +448,7 @@ def test_direct_oauth_never_falls_back_to_ambient_oauth_token(monkeypatch):
     provider.speed = "standard"
     provider.API = provider.OFFICIAL_API
     provider.subscription_only = True
+    _authorize_direct(provider)
     monkeypatch.setattr(
         "harness.providers._read_oauth_token", lambda **_kwargs: "")
     monkeypatch.setattr(
@@ -351,6 +492,17 @@ def test_direct_oauth_request_reservation_failure_stops_before_http(monkeypatch)
 
     assert completion.stop_reason == "error"
     assert completion.error_detail == "model request reservation failed"
+
+
+def test_direct_oauth_constructor_cannot_be_admitted_by_ambient_token(monkeypatch):
+    import pytest
+    from harness.providers import AnthropicOAuthProvider
+
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-token-must-be-ignored")
+    monkeypatch.setattr("harness.providers.claude_credentials", lambda: {})
+
+    with pytest.raises(RuntimeError, match="no Claude OAuth token"):
+        AnthropicOAuthProvider(subscription_only=True)
 
 def test_claude_cli_text_protocol_handles_braces_inside_json_strings():
     from harness.providers import _parse_answer_json, _parse_tool_json

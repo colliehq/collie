@@ -1,7 +1,8 @@
 # Build the installer payload — the self-contained runtime that ships inside Collie-Setup.exe.
 #
 # Recreates installer\payload\ from reviewed bootstrap inputs: an embeddable CPython with
-# collie-harness[local,remote] + its ONNX semantic-memory deps already installed, plus WebView2.
+# collie-harness[local,remote,claude] + its ONNX semantic-memory and Claude Agent SDK deps already
+# installed, plus WebView2.
 # The Python/get-pip inputs are pinned below; transitive PyPI wheels are not yet hash-locked, so this
 # is not a claim of bit-for-bit reproducibility across dates. Idempotent; pass -Clean to rebuild.
 #
@@ -174,11 +175,11 @@ Remove-PayloadItem (Join-Path $site "harness")
 foreach ($info in @(Get-ChildItem -LiteralPath $site -Directory -Filter "collie_harness-*.dist-info" -ErrorAction SilentlyContinue)) {
   Remove-PayloadItem $info.FullName
 }
-Step "pip install collie-harness[local,remote] from the repo"
+Step "pip install collie-harness[local,remote,claude] from the repo"
 # [remote] = cryptography, for the phone-remote E2E handshake. WITHOUT it the packaged app reports
 # e2e.available()=False and the desktop refuses every pairing — the whole Collie Remote feature is
 # dead in a release build. It's a compiled wheel, but pip pulls the matching cp/win_amd64 wheel here.
-& (Join-Path $py "python.exe") -m pip install --upgrade --no-build-isolation --no-warn-script-location "$repo[local,remote]"
+& (Join-Path $py "python.exe") -m pip install --upgrade --no-build-isolation --no-warn-script-location "$repo[local,remote,claude]"
 Assert-NativeExit "install Collie into payload" $LASTEXITCODE
 
 # 5) WebView2 Evergreen bootstrapper (tiny; installs the runtime only if the machine lacks it) ---
@@ -210,10 +211,10 @@ if code != expected or dist != expected:
                      (expected, code, dist))
 if len(infos) != 1:
     raise SystemExit("payload needs exactly one Collie dist-info, found %d" % len(infos))
-for name in ("harness.supervisor", "harness.automations", "harness.ops"):
+for name in ("harness.supervisor", "harness.automations", "harness.ops",
+             "claude_agent_sdk"):
     importlib.import_module(name)
-for rel in ("oauth_ext/pi-oauth-proxy.js", "oauth_ext/opencode.jsonc",
-            "browser_ext/manifest.json", "webui/index.html"):
+for rel in ("browser_ext/manifest.json", "webui/index.html"):
     if not (root / rel).is_file():
         raise SystemExit("payload asset missing: " + rel)
 for private in ("browser_ext/token.txt", "browser_ext/auth.js"):
