@@ -746,6 +746,16 @@ def execute(*, repetitions: int, wall_seconds: int,
                 _atomic_json(result_root / "summary.json", summary)
                 print("admission failed; ranking launches were not consumed")
                 return 2
+            if phase == "ranking" and terminal["status"] not in (
+                    "valid_resolved", "valid_unresolved"):
+                ranking_rows = [item for item in rows if item["phase"] == "ranking"]
+                summary = summarize(plans["ranking"], ranking_rows, suite_sha)
+                summary["billing_post_run_verified"] = False
+                summary["ranking_withheld"] = True
+                summary["ranking_withheld_reason"] = "validation_errors"
+                _atomic_json(result_root / "summary.json", summary)
+                print("ranking stopped after infrastructure-invalid slot")
+                return 2
     ranking_rows = [row for row in rows if row["phase"] == "ranking"]
     summary = summarize(
         plans["ranking"], ranking_rows, suite_sha, require_post_run_billing=True)

@@ -188,6 +188,31 @@ def test_codex_zero_exit_with_read_only_write_denial_is_adapter_error(monkeypatc
     assert row["error"] == "codex workspace was read-only"
 
 
+def test_codex_path_alias_warning_does_not_poison_successful_patch_event():
+    from bench.paired_eval import _codex_adapter_error
+
+    stdout = "\n".join([
+        json.dumps({"type": "item.completed", "item": {
+            "type": "file_change", "status": "completed"}}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": "Implemented the requested patch."}}),
+        json.dumps({"type": "turn.completed"}),
+    ])
+    stderr = "WARNING: could not create PATH aliases: Permission denied"
+
+    assert _codex_adapter_error(stdout, stderr) == ""
+
+
+def test_codex_failed_write_command_permission_denial_is_adapter_error():
+    from bench.paired_eval import _codex_adapter_error
+
+    stdout = json.dumps({"type": "item.completed", "item": {
+        "type": "command_execution", "command": "apply_patch < change.diff",
+        "exit_code": 1, "aggregated_output": "Permission denied"}})
+
+    assert _codex_adapter_error(stdout, "") == "codex workspace edit was denied"
+
+
 def test_claude_zero_exit_permission_refusal_is_adapter_error(monkeypatch, tmp_path):
     from bench import paired_eval
     from harness import swe

@@ -263,7 +263,9 @@ def _codex_usage(stdout: str) -> dict:
 
 def _codex_adapter_error(stdout: str, stderr: str) -> str:
     """Return a stable error code for JSONL/diagnostic failures even when Codex exits zero."""
-    messages = []
+    readonly_markers = ("writing is blocked by read-only sandbox", "read-only sandbox")
+    permission_markers = (
+        "rejected by user approval", "permission denied", "operation not permitted")
     for line in (stdout or "").splitlines():
         try:
             event = json.loads(line)
@@ -272,16 +274,27 @@ def _codex_adapter_error(stdout: str, stderr: str) -> str:
         event_type = str(event.get("type") or "").lower()
         if event_type in {"error", "turn.failed", "item.failed"} or event_type.endswith(".error"):
             return "codex emitted an error event"
-        # Search structured text only for known permission failures; never echo arbitrary model or
-        # server output into the public result.
-        messages.append(json.dumps(event, ensure_ascii=False).lower())
-    messages.append((stderr or "").lower())
-    combined = "\n".join(messages)
-    if "writing is blocked by read-only sandbox" in combined or "read-only sandbox" in combined:
-        return "codex workspace was read-only"
-    if ("write" in combined or "patch" in combined) and any(marker in combined for marker in (
-            "rejected by user approval", "permission denied", "operation not permitted")):
-        return "codex workspace edit was denied"
+        item = event.get("item")
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").lower()
+        if item_type == "agent_message":
+            text = str(item.get("text") or "").lower()
+            if any(marker in text for marker in readonly_markers):
+                return "codex workspace was read-only"
+        if item_type == "command_execution" and item.get("exit_code") not in (None, 0):
+            command = str(item.get("command") or "").lower()
+            output = str(item.get("aggregated_output") or item.get("output") or "").lower()
+            if any(marker in output for marker in readonly_markers):
+                return "codex workspace was read-only"
+            if (("write" in command or "patch" in command)
+                    and any(marker in output for marker in permission_markers)):
+                return "codex workspace edit was denied"
+    diagnostics = (stderr or "").lower()
+    if any(marker in diagnostics for marker in (
+            "no permissions to create a new namespace",
+            "unshare: unshare failed: operation not permitted")):
+        return "codex workspace sandbox was unavailable"
     return ""
 
 
