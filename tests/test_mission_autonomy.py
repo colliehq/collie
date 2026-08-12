@@ -10,7 +10,8 @@ from harness.mission import (_authorization_request, _model_case_json, MissionDr
                              MissionStore, ModelDecider, create_mission, world_leash)
 from harness.missionweb import MissionService
 from harness.providers import Completion, Usage
-from harness.verifier import FAILED, INCONCLUSIVE, VERIFIED, Observation, Verdict
+from harness.verifier import (CampaignReceiptGoalVerifier, FAILED, INCONCLUSIVE,
+                              VERIFIED, Observation, Verdict)
 
 
 def _stores(tmp_path):
@@ -327,6 +328,133 @@ def test_campaign_coverage_refuses_whole_wait_and_early_completion(tmp_path):
     events = store.events("coverage", 100)
     assert any(e["kind"] == "coverage" and e["name"] == "wait_refused" for e in events)
     assert any(e["kind"] == "coverage" and e["name"] == "completion_refused" for e in events)
+    store.close()
+    actions.close()
+
+
+def test_campaign_slice_finishes_goal_instead_of_requesting_fake_input(tmp_path):
+    store, actions = _stores(tmp_path)
+    coverage = [{"branch": "GitHub discovery", "status": "completed",
+                 "required": True, "summary": "Official repository verified."}]
+    cap = Capability(
+        "research", lambda _r: {"case": {"final_research": True}},
+        lambda _r, _v: Verdict(VERIFIED, "final research verified"),
+        reversible=True, risk="read")
+    create_mission(
+        store, "slice-finish", "complete a bounded campaign",
+        case={"_campaign_coverage": coverage},
+        leash=world_leash(may=["research"], autonomous=True))
+    driver = MissionDriver(
+        store, actions, lambda *_: {"action": "research", "args": {}}, [cap],
+        goal_verifier=lambda *_: Verdict(
+            VERIFIED, "campaign evidence verified", (
+                Observation("campaign-receipts", time.time(), True,
+                            asserted=True, detail="verified channel evidence"),)))
+    driver.max_steps = 1
+
+    assert driver.advance("slice-finish") == DONE_VERIFIED
+    assert "step budget exhausted" not in store.get("slice-finish").result
+    assert any(e["kind"] == "goal_verification"
+               for e in store.events("slice-finish", 20))
+    store.close()
+    actions.close()
+
+
+def test_campaign_slice_keeps_scheduled_followup_waiting(tmp_path):
+    store, actions = _stores(tmp_path)
+    now = int(time.time())
+    coverage = [{"branch": "engagement monitor", "status": "scheduled",
+                 "required": True, "summary": "check once at the deadline"}]
+    followup = {"id": "followup-1", "branch": "engagement monitor",
+                "summary": "check once at the deadline", "seconds": 600,
+                "due_at": now + 600, "scheduled_at": now,
+                "status": "scheduled", "attempts": 1}
+    cap = Capability(
+        "research", lambda _r: {"case": {"prepared": True}},
+        lambda _r, _v: Verdict(VERIFIED, "preparation verified"),
+        reversible=True, risk="read")
+    create_mission(
+        store, "slice-followup", "monitor without stopping",
+        case={"_campaign_coverage": coverage, "pending_followups": [followup]},
+        leash=world_leash(may=["research"], autonomous=True,
+                          expires=now + 120))
+    driver = MissionDriver(
+        store, actions, lambda *_: {"action": "research", "args": {}}, [cap])
+    driver.max_steps = 1
+
+    assert driver.advance("slice-followup") == WAITING
+    wake = store.next_wait("slice-followup")
+    assert wake and wake["fire_at"] <= now + 120
+    assert "scheduled follow-up" in store.get("slice-followup").result
+    store.close()
+    actions.close()
+
+
+def test_hard_deadline_closes_followups_and_runs_final_verification(tmp_path):
+    store, actions = _stores(tmp_path)
+    now = int(time.time())
+    coverage = [{"branch": "engagement monitor", "status": "scheduled",
+                 "required": True, "summary": "monitor published posts"}]
+    followup = {"id": "followup-deadline", "branch": "engagement monitor",
+                "summary": "monitor published posts", "seconds": 600,
+                "due_at": now + 600, "scheduled_at": now,
+                "status": "scheduled", "attempts": 1}
+    create_mission(
+        store, "deadline", "stop and verify at the deadline",
+        case={"_campaign_coverage": coverage, "pending_followups": [followup]},
+        leash=world_leash(expires=now - 1))
+    calls = []
+    driver = MissionDriver(
+        store, actions, lambda *_: calls.append(True) or {"action": "needs_human"}, [],
+        goal_verifier=lambda *_: Verdict(
+            VERIFIED, "deadline campaign evidence verified", (
+                Observation("campaign-receipts", time.time(), True,
+                            asserted=True, detail="published actions verified"),)))
+
+    assert driver.advance("deadline") == DONE_VERIFIED
+    assert calls == []
+    case = store.get("deadline").case
+    assert case["pending_followups"] == []
+    assert case["_campaign_coverage"][0]["status"] == "completed"
+    assert case["resolved_followups"][-1]["status"] == "deadline_elapsed"
+    assert any(e["name"] == "deadline_reached"
+               for e in store.events("deadline", 20))
+    store.close()
+    actions.close()
+
+
+def test_campaign_goal_verifier_follows_inherited_verified_receipts(tmp_path):
+    store, actions = _stores(tmp_path)
+    cap = Capability(
+        "social.publish", lambda _r: {"url": "https://example.test/post"},
+        lambda _r, _v: Verdict(VERIFIED, "public post observed"),
+        reversible=False, risk="publish", semantic_args=("target",))
+    decisions = iter([
+        {"action": "social.publish", "args": {"target": "launch"}},
+        {"action": "needs_human", "args": {"summary": "recovery boundary"}},
+    ])
+    create_mission(
+        store, "predecessor", "publish a campaign post",
+        leash=world_leash(may=["social.publish"], autonomous=True))
+    assert MissionDriver(store, actions, lambda *_: next(decisions), [cap]).advance(
+        "predecessor") == NEEDS_YOU
+
+    coverage = [{"branch": "launch", "status": "completed", "required": True,
+                 "summary": "Public post independently observed."}]
+    create_mission(
+        store, "successor", "complete the campaign",
+        case={"_campaign_coverage": coverage}, leash=world_leash())
+    assert store.inherit_completed_action_keys("predecessor", "successor") == 1
+    verifier = CampaignReceiptGoalVerifier(store, actions)
+    driver = MissionDriver(
+        store, actions, lambda *_: {"action": "done"}, [],
+        goal_verifier=verifier)
+
+    assert driver.advance("successor") == DONE_VERIFIED
+    event = [e for e in store.events("successor", 20)
+             if e["kind"] == "goal_verification"][-1]
+    assert event["payload"]["evidence"][0]["channel"] == \
+        "action-receipt:social.publish"
     store.close()
     actions.close()
 

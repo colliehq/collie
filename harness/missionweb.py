@@ -37,7 +37,8 @@ from .mission import (_campaign_coverage, _open_campaign_coverage,
                       _resolved_authorization, MissionDriver, MissionStore,
                       ModelDecider, ResourceBusy, create_mission, world_leash)
 from .primitives import register_primitives
-from .verifier import FAILED as VERIFY_FAILED, VERIFIED as VERIFY_VERIFIED, Verdict
+from .verifier import (CampaignReceiptGoalVerifier, FAILED as VERIFY_FAILED,
+                       VERIFIED as VERIFY_VERIFIED, Verdict)
 
 
 def _hook_manager(cwd: str, state_dir: str):
@@ -163,7 +164,8 @@ class MissionService:
         self._provider = provider or _provider_name()
         self._model = model or os.environ.get("COLLIE_MODEL") or None
         self._stub = stub
-        self._goal_verifier = goal_verifier
+        self._goal_verifier = (goal_verifier if goal_verifier is not None else
+                               CampaignReceiptGoalVerifier(self.store, self.actions))
         self._mission_workers = mission_workers
         self._owns_run_tree = run_tree is None
         self._owns_hooks = hooks is None

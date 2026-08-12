@@ -200,6 +200,70 @@ class CallableGoalVerifier(GoalVerifier):
             INCONCLUSIVE, "goal verifier returned no typed evidence verdict")
 
 
+class CampaignReceiptGoalVerifier(GoalVerifier):
+    """Verify an exhausted campaign from its coverage contract and action receipts.
+
+    The coverage table proves that every required branch was addressed; inherited
+    semantic action keys connect a recovery successor to the predecessor's exact
+    receipts.  A completed coverage table alone is still only campaign state, so
+    at least one fired, independently verified receipt is required.
+    """
+
+    terminal = {"completed", "blocked", "deferred", "skipped"}
+
+    def __init__(self, mission_store, action_store):
+        self.missions = mission_store
+        self.actions = action_store
+
+    def verify_mission(self, mission, events=(), steps=()) -> Verdict:
+        case = dict(getattr(mission, "case", {}) or {})
+        coverage = [dict(x) for x in (case.get("_campaign_coverage") or [])
+                    if isinstance(x, dict) and x.get("branch")]
+        required = [x for x in coverage if x.get("required", True)]
+        if not required:
+            return Verdict(INCONCLUSIVE,
+                           "no required campaign coverage contract is available")
+        open_rows = [x for x in required
+                     if str(x.get("status") or "pending").lower() not in self.terminal]
+        if open_rows:
+            return Verdict(
+                INCONCLUSIVE,
+                "%d required campaign branch(es) remain open" % len(open_rows))
+
+        observations = []
+        seen = set()
+        for nonce in self.missions.completed_action_nonces(mission.mission_id, 200):
+            nonce = str(nonce or "")
+            if not nonce or nonce in seen:
+                continue
+            seen.add(nonce)
+            for receipt in self.actions.receipts(nonce):
+                if not receipt.get("fired") or receipt.get("verdict") != VERIFIED:
+                    continue
+                capability = str(receipt.get("capability") or "world-action")[:80]
+                observations.append(Observation(
+                    "action-receipt:%s" % capability,
+                    float(receipt.get("created_at") or 0), True, asserted=True,
+                    detail=str(receipt.get("verdict_reason") or
+                               "external action independently verified")[:500]))
+        if not observations:
+            return Verdict(
+                INCONCLUSIVE,
+                "campaign coverage is closed but no fired verified action receipt is linked")
+
+        counts = {status: 0 for status in self.terminal}
+        for item in required:
+            status = str(item.get("status") or "").lower()
+            if status in counts:
+                counts[status] += 1
+        reason = (
+            "campaign coverage closed with %d completed, %d blocked, %d deferred, "
+            "and %d skipped branch(es); %d fired action receipt(s) independently verified" %
+            (counts["completed"], counts["blocked"], counts["deferred"],
+             counts["skipped"], len(observations)))
+        return Verdict(VERIFIED, reason, tuple(observations[:20]))
+
+
 # ── the code gate, re-expressed (proves the abstraction is faithful) ────────
 class CodeReproVerifier(Verifier):
     """collie's existing assert-verify gate as a Verifier. Channel = the process

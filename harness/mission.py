@@ -48,6 +48,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 
@@ -1771,6 +1772,19 @@ class MissionStore:
                  "instruction": "Do not repeat this external action."}
                 for r in reversed(rows)]
 
+    def completed_action_nonces(self, mission_id, limit=200):
+        """Return exact receipt identities for terminal semantic action keys.
+
+        Unlike :meth:`do_not_repeat`, this is an internal verifier seam: opaque
+        nonces never enter model context or the UI.
+        """
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT nonce FROM mission_action_keys WHERE mission_id=? AND "
+                "state NOT IN ('reserved','materialized') AND COALESCE(nonce,'')<>'' "
+                "ORDER BY at DESC LIMIT ?", (mission_id, int(limit))).fetchall()
+        return [str(r["nonce"]) for r in rows]
+
     def activity_ledger(self, mission_id, limit=24):
         """Return a compact human/model-readable view of the append-only audit log."""
         protected = set()
@@ -2104,9 +2118,9 @@ class MissionDriver:
     'needs_authorization' (structured args), 'needs_human' (args.summary), 'done'.
     """
 
-    # a runaway decider (loops forever choosing reversible actions) must not spin;
-    # after this many actions in one advance, park for the human. A durable errand
-    # makes progress in a few actions then waits — it does not need dozens per wake.
+    # A runaway decider (loops forever choosing reversible actions) must not spin.
+    # This is a per-dispatch planning slice, not a human-intervention threshold:
+    # the durable driver yields and automatically resumes within campaign bounds.
     max_steps = 40
     # anti-poll-spin: after this many CONSECUTIVE reversible reads of the SAME
     # target (e.g. observe one inbox again and again), force a durable wait instead
@@ -2357,6 +2371,12 @@ class MissionDriver:
         if verifier is None:
             return Verdict(INCONCLUSIVE,
                            "no independent mission-level goal verifier configured")
+        mission_fn = getattr(verifier, "verify_mission", None)
+        if callable(mission_fn):
+            result = mission_fn(m, self.store.events(m.mission_id, 50),
+                                self.store.steps(m.mission_id))
+            return result if isinstance(result, Verdict) else Verdict(
+                INCONCLUSIVE, "goal verifier returned no typed evidence verdict")
         fn = getattr(verifier, "verify", verifier)
         result = fn(m.goal, dict(m.case), self.store.events(m.mission_id, 50),
                     self.store.steps(m.mission_id))
@@ -2384,6 +2404,114 @@ class MissionDriver:
             evidence.append({"channel": channel[:120], "at": float(at), "ok": ok,
                              "asserted": bool(asserted), "detail": str(detail or "")[:1000]})
         return evidence
+
+    @staticmethod
+    def _deadline_epoch(leash):
+        """Return the leash's hard UTC deadline as epoch seconds, when present."""
+        raw = (leash or {}).get("expires")
+        if raw in (None, ""):
+            return 0
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return int(raw)
+        try:
+            parsed = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp())
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    def _verify_and_finish_goal(self, mission_id, token, mission, reason, step_timeout):
+        """Run the one independent goal-verification path and settle the Mission."""
+        self.store.record_step(mission_id, DONE, "", "reported")
+        self.store.record_event(mission_id, "control", DONE,
+                                payload={"reason": reason})
+        self.store.record_checkpoint(
+            mission_id, token, "goal_verifying", {"reason": reason}, case=mission.case)
+        goal_outcome = self._bounded_call(
+            lambda: self._goal_verdict(mission), step_timeout,
+            cancel_owner=self.goal_verifier)
+        self.store.account_runtime(
+            mission_id, token, wall_ms=goal_outcome.elapsed_ms,
+            retries=1 if goal_outcome.timed_out or goal_outcome.error else 0)
+        if goal_outcome.timed_out or goal_outcome.error:
+            verdict = Verdict(
+                INCONCLUSIVE, "mission goal verification timed out" if
+                goal_outcome.timed_out else
+                "mission goal verifier failed: %s" % goal_outcome.error)
+        else:
+            verdict = goal_outcome.value
+        if not isinstance(verdict, Verdict):
+            verdict = Verdict(INCONCLUSIVE,
+                              "mission goal verifier returned no typed verdict")
+        evidence = self._goal_evidence(verdict)
+        if verdict.status == VERIFIED and (
+                not str(verdict.reason or "").strip() or
+                not any(item["ok"] for item in evidence)):
+            verdict = Verdict(
+                INCONCLUSIVE,
+                "goal verifier reported verified without scoped independent evidence")
+            evidence = []
+        self.store.record_event(
+            mission_id, "goal_verification", DONE,
+            payload={"verdict": verdict.status, "reason": verdict.reason,
+                     "evidence": evidence})
+        self.store.record_checkpoint(
+            mission_id, token, "goal_verdict",
+            {"verdict": verdict.status, "reason": verdict.reason,
+             "evidence": evidence}, case=mission.case)
+        if verdict.status == VERIFIED:
+            return self._finish(mission_id, token, DONE_VERIFIED,
+                                verdict.reason or "goal independently verified")
+        if verdict.status == FAILED:
+            return self._finish(mission_id, token, FAILED_S,
+                                verdict.reason or "goal verification failed")
+        return self._finish(
+            mission_id, token, NEEDS_YOU,
+            verdict.reason or reason or
+            "model reports done; no independent goal evidence")
+
+    def _finish_at_deadline(self, mission_id, token, mission, step_timeout):
+        """Close timers at the hard deadline, then verify without another action."""
+        now = int(time.time())
+        case = dict(mission.case)
+        pending = [dict(x) for x in (case.get("pending_followups") or [])
+                   if isinstance(x, dict)]
+        due = [dict(x) for x in (case.get("_due_followups") or [])
+               if isinstance(x, dict)]
+        resolved = list(case.get("resolved_followups") or [])
+        for item in pending + due:
+            item.update({"status": "deadline_elapsed", "checked_at": now})
+            resolved.append(item)
+        case["pending_followups"] = []
+        case["_due_followups"] = []
+        case["resolved_followups"] = resolved[-20:]
+
+        rows = _campaign_coverage(case)
+        for index, item in enumerate(rows):
+            if item.get("status") != "scheduled":
+                continue
+            closed = dict(item)
+            closed.update({
+                "status": "completed",
+                "updated_at": now,
+                "summary": (str(item.get("summary") or "").rstrip(". ") +
+                            ". Monitoring window ended at the authorized hard deadline.").lstrip(". "),
+            })
+            rows[index] = closed
+        if rows:
+            case["_campaign_coverage"] = rows
+        case["signal"] = "Hard deadline reached; no new external action may start."
+        if not self.store.set_case_owned(mission_id, token, case):
+            return self._lost_state(mission_id, token)
+        self.store.record_event(
+            mission_id, "control", "deadline_reached",
+            payload={"expires": (mission.leash or {}).get("expires"),
+                     "closed_followups": len(pending) + len(due)})
+        current = self.store.get(mission_id)
+        return self._verify_and_finish_goal(
+            mission_id, token, current,
+            "hard deadline reached; final goal verification", step_timeout)
 
     def _dispatch_hook(self, event, payload, subject=""):
         if self.hooks is None:
@@ -2560,7 +2688,14 @@ class MissionDriver:
             secs = max(1, min(int(args.get("seconds", 3600)), 31536000))
         except (TypeError, ValueError):
             secs = 3600
+        now = int(time.time())
+        deadline = self._deadline_epoch(mission.leash)
+        if deadline:
+            secs = max(1, min(secs, max(1, deadline - now)))
+        args["seconds"] = secs
         request = _followup_request(args, reason)
+        if request and deadline:
+            request["due_at"] = min(int(request.get("due_at") or deadline), deadline)
         open_coverage = _open_campaign_coverage(mission.case)
         if not request or args.get("blocking") or args.get("transient"):
             if open_coverage and not args.get("transient"):
@@ -2576,7 +2711,7 @@ class MissionDriver:
                     payload={"open": len(open_coverage), "branches": names,
                              "requested_blocking": bool(args.get("blocking"))})
                 return "_continue"
-            self.store.schedule_wait(mission_id, int(time.time()) + secs)
+            self.store.schedule_wait(mission_id, now + secs)
             self.store.record_event(
                 mission_id, "control", WAIT,
                 payload={"seconds": secs, "reason": reason,
@@ -2637,7 +2772,9 @@ class MissionDriver:
                  "branches": [str(x.get("branch") or "") for x in open_coverage[:6]],
                  "scheduled_branch": request["branch"]})
             return "_continue"
-        wake_at = min(int(x.get("due_at") or time.time() + 60) for x in pending)
+        wake_at = min(int(x.get("due_at") or now + 60) for x in pending)
+        if deadline:
+            wake_at = min(wake_at, deadline)
         self.store.schedule_wait(mission_id, wake_at)
         self.store.record_event(
             mission_id, "control", WAIT,
@@ -2972,6 +3109,11 @@ class MissionDriver:
                 m = self._refresh_followups(mission_id, token, m)
                 if m is None:
                     return self._lost_state(mission_id, token)
+                step_timeout = max(0.05, float(m.leash.get("max_step_seconds", 600)))
+                deadline = self._deadline_epoch(m.leash)
+                if deadline and int(time.time()) >= deadline:
+                    return self._finish_at_deadline(
+                        mission_id, token, m, step_timeout)
                 exhausted = self.store.budget_reason(mission_id)
                 if exhausted:
                     return self._finish(mission_id, token, NEEDS_YOU, exhausted)
@@ -2995,7 +3137,6 @@ class MissionDriver:
                     mission_id, token, "deciding",
                     {"step": _, "recent_events": model_case["_recent_events"][-5:]},
                     case=m.case)
-                step_timeout = max(0.05, float(m.leash.get("max_step_seconds", 600)))
                 outcome = self._bounded_call(
                     lambda: self.decider(m.goal, model_case, self._primitives(m.leash)),
                     step_timeout, cancel_owner=getattr(self.decider, "provider", self.decider))
@@ -3100,24 +3241,28 @@ class MissionDriver:
                                 mission_id, "agent", "completion_blocked",
                                 payload={"reason": reason, "seconds": seconds})
                             return self._finish(mission_id, token, WAITING, reason)
-                    pending_auth = [x for x in (m.case.get("pending_authorizations") or [])
-                                    if isinstance(x, dict)]
-                    if pending_auth:
-                        summary = str(pending_auth[0].get("summary") or
+                    blocking_auth = [
+                        x for x in (m.case.get("pending_authorizations") or [])
+                        if isinstance(x, dict) and x.get("blocking")]
+                    if blocking_auth:
+                        summary = str(blocking_auth[0].get("summary") or
                                       "authorization required")[:500]
                         self.store.record_event(
                             mission_id, "authorization", "all_remaining_blocked",
-                            payload={"count": len(pending_auth), "summary": summary})
+                            payload={"count": len(blocking_auth), "summary": summary})
                         return self._finish(
                             mission_id, token, NEEDS_YOU,
                             "%d authorization request(s) remain; next: %s" %
-                            (len(pending_auth), summary))
+                            (len(blocking_auth), summary))
                     pending_followups = [
                         x for x in (m.case.get("pending_followups") or [])
                         if isinstance(x, dict)]
                     if pending_followups:
                         wake_at = min(int(x.get("due_at") or time.time() + 60)
                                       for x in pending_followups)
+                        deadline = self._deadline_epoch(m.leash)
+                        if deadline:
+                            wake_at = min(wake_at, deadline)
                         self.store.schedule_wait(mission_id, wake_at)
                         self.store.record_event(
                             mission_id, "control", WAIT,
@@ -3131,59 +3276,14 @@ class MissionDriver:
                         x for x in (m.case.get("_due_followups") or [])
                         if isinstance(x, dict)]
                     if due_followups:
+                        self.store.schedule_wait(mission_id, int(time.time()) + 1)
                         return self._finish(
-                            mission_id, token, NEEDS_YOU,
-                            "driver reported done before checking %d due follow-up(s)" %
+                            mission_id, token, WAITING,
+                            "driver reported done before checking %d due follow-up(s); "
+                            "continuing automatically" %
                             len(due_followups))
-                    self.store.record_step(mission_id, DONE, "", "reported")
-                    self.store.record_event(mission_id, "control", DONE,
-                                            payload={"reason": reason})
-                    self.store.record_checkpoint(
-                        mission_id, token, "goal_verifying", {"reason": reason}, case=m.case)
-                    goal_outcome = self._bounded_call(
-                        lambda: self._goal_verdict(m), step_timeout,
-                        cancel_owner=self.goal_verifier)
-                    self.store.account_runtime(
-                        mission_id, token, wall_ms=goal_outcome.elapsed_ms,
-                        retries=1 if goal_outcome.timed_out or goal_outcome.error else 0)
-                    if goal_outcome.timed_out or goal_outcome.error:
-                        verdict = Verdict(
-                            INCONCLUSIVE, "mission goal verification timed out" if
-                            goal_outcome.timed_out else
-                            "mission goal verifier failed: %s" % goal_outcome.error)
-                    else:
-                        verdict = goal_outcome.value
-                    if not isinstance(verdict, Verdict):
-                        verdict = Verdict(INCONCLUSIVE,
-                                          "mission goal verifier returned no typed verdict")
-                    evidence = self._goal_evidence(verdict)
-                    if verdict.status == VERIFIED and (
-                            not str(verdict.reason or "").strip() or
-                            not any(item["ok"] for item in evidence)):
-                        verdict = Verdict(
-                            INCONCLUSIVE,
-                            "goal verifier reported verified without scoped independent evidence")
-                        evidence = []
-                    self.store.record_event(
-                        mission_id, "goal_verification", DONE,
-                        payload={"verdict": verdict.status, "reason": verdict.reason,
-                                 "evidence": evidence})
-                    self.store.record_checkpoint(
-                        mission_id, token, "goal_verdict",
-                        {"verdict": verdict.status, "reason": verdict.reason,
-                         "evidence": evidence}, case=m.case)
-                    if verdict.status == VERIFIED:
-                        return self._finish(mission_id, token, DONE_VERIFIED,
-                                            verdict.reason or "goal independently verified")
-                    if verdict.status == FAILED:
-                        return self._finish(mission_id, token, FAILED_S,
-                                            verdict.reason or "goal verification failed")
-                    # A model report by itself remains neither evidence nor human
-                    # acceptance.  Inconclusive/not-armed therefore fail closed.
-                    return self._finish(
-                        mission_id, token, NEEDS_YOU,
-                        verdict.reason or reason or
-                        "model reports done; no independent goal evidence")
+                    return self._verify_and_finish_goal(
+                        mission_id, token, m, reason, step_timeout)
                 if action == NEEDS_HUMAN:
                     summary = str(args.get("summary") or reason or "")
                     planner_unavailable = (
@@ -3527,9 +3627,20 @@ class MissionDriver:
                     read_target = None
 
             current = self.store.get(mission_id)
-            open_coverage = _open_campaign_coverage(current.case if current else {})
+            if not current:
+                return self._lost_state(mission_id, token)
+            deadline = self._deadline_epoch(current.leash)
+            now = int(time.time())
+            if deadline and now >= deadline:
+                return self._finish_at_deadline(
+                    mission_id, token, current, step_timeout)
+            coverage = _campaign_coverage(current.case)
+            open_coverage = _open_campaign_coverage(current.case)
             if open_coverage:
-                self.store.schedule_wait(mission_id, int(time.time()) + 5)
+                wake_at = now + 5
+                if deadline:
+                    wake_at = min(wake_at, deadline)
+                self.store.schedule_wait(mission_id, wake_at)
                 self.store.record_event(
                     mission_id, "coverage", "planning_slice_yielded",
                     payload={"open": len(open_coverage),
@@ -3539,8 +3650,51 @@ class MissionDriver:
                     mission_id, token, WAITING,
                     "%d campaign branch(es) remain; continuing in the next planning slice" %
                     len(open_coverage))
-            return self._finish(mission_id, token, NEEDS_YOU,
-                                "step budget exhausted — needs your input")
+            pending_followups = [
+                x for x in (current.case.get("pending_followups") or [])
+                if isinstance(x, dict)]
+            due_followups = [
+                x for x in (current.case.get("_due_followups") or [])
+                if isinstance(x, dict)]
+            if pending_followups or due_followups:
+                wake_at = (now + 1 if due_followups else
+                           min(int(x.get("due_at") or now + 60)
+                               for x in pending_followups))
+                if deadline:
+                    wake_at = min(wake_at, deadline)
+                self.store.schedule_wait(mission_id, wake_at)
+                self.store.record_event(
+                    mission_id, "control", WAIT,
+                    payload={"reason": "scheduled follow-ups remain after planning slice",
+                             "seconds": max(0, wake_at - now),
+                             "branches": len(pending_followups) + len(due_followups)})
+                return self._finish(
+                    mission_id, token, WAITING,
+                    "%d scheduled follow-up(s) remain" %
+                    (len(pending_followups) + len(due_followups)))
+            blocking_auth = [
+                x for x in (current.case.get("pending_authorizations") or [])
+                if isinstance(x, dict) and x.get("blocking")]
+            if blocking_auth:
+                return self._finish(
+                    mission_id, token, NEEDS_YOU,
+                    str(blocking_auth[0].get("summary") or
+                        "blocking authorization required")[:500])
+            if coverage:
+                return self._verify_and_finish_goal(
+                    mission_id, token, current,
+                    "required campaign coverage reached terminal states", step_timeout)
+
+            wake_at = now + 5
+            if deadline:
+                wake_at = min(wake_at, deadline)
+            self.store.schedule_wait(mission_id, wake_at)
+            self.store.record_event(
+                mission_id, "control", "planning_slice_yielded",
+                payload={"seconds": max(0, wake_at - now)})
+            return self._finish(
+                mission_id, token, WAITING,
+                "planning slice exhausted; continuing automatically")
         except Exception as e:
             return self._finish(
                 mission_id, token, FAILED_S,
