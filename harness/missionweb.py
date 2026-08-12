@@ -134,12 +134,131 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activi
         "authorization_waiting": len(pending_auth),
         "coverage": {
             "total": len(coverage),
+            "completed": sum(1 for x in coverage if x.get("status") == "completed"),
+            "closed": sum(1 for x in coverage if x.get("status") in
+                          ("completed", "exhausted", "scheduled", "deferred", "skipped")),
             "open": len(open_coverage),
             "next": [_short(x.get("branch"), 120) for x in open_coverage[:5]],
         },
         "progress": {"verified": len(completed) + verified_receipts,
                      "pending": pending, "failed": failed},
     }
+
+
+def _mission_report(mission, summary, activity, receipts, runtime):
+    """Return a stable, redacted progress feed suitable for UI and integrations.
+
+    The report deliberately derives from coverage, the compact activity ledger,
+    receipts, and runtime counters.  It never exports raw Mission case, model
+    messages, browser args, credentials, or checkpoint payloads.
+    """
+    case = mission.case or {}
+    coverage = _campaign_coverage(case)
+    resolved_auth = [x for x in case.get("resolved_authorizations", [])
+                     if isinstance(x, dict)]
+    pending_auth = [x for x in case.get("pending_authorizations", [])
+                    if isinstance(x, dict) and
+                    not _resolved_authorization(x, resolved_auth)][-8:]
+    terminal = {"completed", "exhausted", "scheduled", "deferred", "skipped"}
+    branches = []
+    for row in coverage:
+        branches.append({
+            "branch": _short(row.get("branch"), 160),
+            "status": _short(row.get("status") or "pending", 40),
+            "summary": _short(row.get("summary"), 500),
+            "blocker_kind": _short(row.get("blocker_kind"), 80),
+            "updated_at": int(row.get("updated_at") or 0),
+        })
+    log = [{
+        "at": int(item.get("at") or 0),
+        "kind": _short(item.get("kind"), 60),
+        "capability": _short(item.get("capability"), 120),
+        "status": _short(item.get("status") or "recorded", 80),
+        "summary": _short(item.get("summary"), 500),
+        "protected_from_repeat": bool(item.get("do_not_repeat")),
+    } for item in (activity or [])[-24:]]
+    receipt_counts = {
+        "total": len(receipts),
+        "verified": sum(1 for x in receipts if x.get("verdict") == "verified"),
+        "failed": sum(1 for x in receipts if x.get("verdict") == "failed"),
+        "uncertain": sum(1 for x in receipts if x.get("verdict") == "inconclusive"),
+        "execution_attempted": sum(1 for x in receipts if x.get("fired")),
+    }
+    completed = sum(1 for x in coverage if x.get("status") == "completed")
+    closed = sum(1 for x in coverage if x.get("status") in terminal)
+    revision = int(runtime.get("progress_seq") or 0)
+    updated_at = max(
+        int(mission.updated_at or 0), int(runtime.get("progress_at") or 0),
+        max((x["at"] for x in log), default=0))
+    needs_you = [{
+        "domain": _short(x.get("domain"), 160),
+        "summary": _short(x.get("summary") or x.get("operation") or x.get("kind"), 500),
+        "blocking": bool(x.get("blocking")),
+    } for x in pending_auth]
+    report = {
+        "format_version": 1,
+        "mission_id": mission.mission_id,
+        "title": summary.get("title") or _short(mission.goal, 300),
+        "state": mission.state,
+        "revision": revision,
+        "updated_at": updated_at,
+        "deadline": _short((mission.leash or {}).get("expires"), 80),
+        "current": summary.get("current") or "Ready",
+        "next": summary.get("next") or "Review the Mission state",
+        "blocker": summary.get("blocker") or "",
+        "coverage": {
+            "total": len(coverage), "completed": completed,
+            "closed": closed, "open": len(coverage) - closed,
+            "branches": branches,
+        },
+        "receipts": receipt_counts,
+        "needs_you": needs_you,
+        "log": log,
+        "runtime": {
+            "model_calls": int(runtime.get("model_calls") or 0),
+            "turns": int(runtime.get("turns") or 0),
+            "retry_count": int(runtime.get("retry_count") or 0),
+            "model_cost_usd": float(runtime.get("model_cost_usd") or 0.0),
+        },
+    }
+    lines = [
+        "# Mission progress: %s" % report["title"],
+        "",
+        "- Mission: `%s`" % mission.mission_id,
+        "- State: %s" % mission.state,
+        "- Updated: %s" % updated_at,
+        "- Coverage: %d completed, %d closed, %d open, %d total" %
+        (completed, closed, len(coverage) - closed, len(coverage)),
+        "- Verified receipts: %d of %d" %
+        (receipt_counts["verified"], receipt_counts["total"]),
+        "",
+        "## Current",
+        report["current"],
+        "",
+        "## Next",
+        report["next"],
+    ]
+    if report["blocker"]:
+        lines.extend(["", "## Blocking issue", report["blocker"]])
+    if branches:
+        lines.extend(["", "## Channel coverage"])
+        for item in branches:
+            detail = (" — " + item["summary"]) if item["summary"] else ""
+            lines.append("- [%s] %s%s" %
+                         (item["status"], item["branch"] or "Unnamed branch", detail))
+    if needs_you:
+        lines.extend(["", "## Needs you"])
+        for item in needs_you:
+            scope = (item["domain"] + ": ") if item["domain"] else ""
+            suffix = " (blocking)" if item["blocking"] else " (non-blocking)"
+            lines.append("- %s%s%s" % (scope, item["summary"], suffix))
+    if log:
+        lines.extend(["", "## Recent activity"])
+        for item in log[-12:]:
+            lines.append("- [%s] %s" % (item["status"], item["summary"] or
+                         item["capability"] or "Activity recorded"))
+    report["markdown"] = "\n".join(lines)[:32000]
+    return report
 
 
 class MissionService:
@@ -2045,12 +2164,14 @@ class MissionService:
         receipts = [{"capability": r["capability"], "verdict": r["verdict"],
                      "fired": bool(r["fired"])}
                     for r in self.actions.receipts() if r.get("job_id") == mid]
+        summary = _mission_summary(
+            m, steps, receipts, runtime, inbox, next_wait, activity)
         return {
             "mission_id": mid, "goal": m.goal, "state": m.state, "result": m.result,
             "created_at": m.created_at, "updated_at": m.updated_at,
             "case": _clean(m.case),
-            "summary": _mission_summary(
-                m, steps, receipts, runtime, inbox, next_wait, activity),
+            "summary": summary,
+            "report": _mission_report(m, summary, activity, receipts, runtime),
             "steps": steps,
             "activity": activity,
             "recent_events": self.store.events(mid, 20),
@@ -2083,6 +2204,13 @@ class MissionService:
             "recovery_actions": recovery_actions,
             "receipts": receipts,
         }
+
+    def report(self, mid: str) -> dict:
+        """Integration-safe Mission progress report without raw case or action args."""
+        status = self.status(mid)
+        if status.get("error"):
+            return status
+        return status.get("report") or {"error": "progress report unavailable"}
 
     def missions(self) -> list:
         return [{"mission_id": m.mission_id, "goal": m.goal, "state": m.state,

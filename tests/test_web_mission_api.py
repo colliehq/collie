@@ -49,6 +49,14 @@ def test_mission_api_is_authed_persistent_and_manageable(monkeypatch, tmp_path):
         code, status = _request(root + "/api/mission?id=" + mid + "&token=" + webapp.TOKEN)
         assert code == 200 and status["mission_id"] == mid
         assert set(status["controls"]) == {"run", "pause", "cancel"}
+        assert status["report"]["format_version"] == 1
+
+        code, _ = _request(root + "/api/mission/report?id=" + mid)
+        assert code == 403
+        code, report = _request(
+            root + "/api/mission/report?id=" + mid + "&token=" + webapp.TOKEN)
+        assert code == 200 and report["mission_id"] == mid
+        assert "case" not in report and "markdown" in report
 
         code, paused = _request(
             root + "/api/mission/pause" + token, "POST", {"id": mid})
@@ -98,6 +106,9 @@ def test_web_ui_keeps_mission_out_of_the_model_router():
     assert 'missionPost("/api/mission/cancel"' in html
     assert 'missionPost("/api/mission/pause"' in html
     assert 'missionPost("/api/mission/reconcile"' in html
+    assert 't("Progress report")' in html
+    assert 'missionCopyReport(report, copyReport)' in html
+    assert 'missionDownloadReport(report)' in html
     handler_pos = html.index("function handleMissionCommand")
     malformed_guard = html.index('if (/^start$/i.test(raw))', handler_pos)
     start_call = html.index("_startMissionCard(goal, autonomous, bounds)", malformed_guard)

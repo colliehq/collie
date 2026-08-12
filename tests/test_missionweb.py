@@ -5,6 +5,7 @@ confirm/resume plumbing, not the model.
 
 Run: python tests/test_missionweb.py   (exit 0 = all green)
 """
+import json
 import os
 import sys
 import tempfile
@@ -453,6 +454,49 @@ def test_terminal_takeover_can_return_to_a_deduplicated_successor():
     svc.close()
 
 
+def test_progress_report_is_structured_stable_and_redacted():
+    print("test_progress_report_is_structured_stable_and_redacted")
+    svc = _svc([])
+    started = svc.start("publish a careful product launch", autonomous=True)
+    mid = started["mission_id"]
+    case = dict(svc.store.get(mid).case)
+    case["private_token"] = "must-never-enter-report"
+    case["_campaign_coverage"] = [
+        {"branch": "X launch", "status": "completed", "required": True,
+         "summary": "Public launch receipt verified", "updated_at": 10},
+        {"branch": "Reddit launch", "status": "blocked", "required": True,
+         "summary": "Current route is ineligible", "blocker_kind": "policy",
+         "updated_at": 20},
+    ]
+    case["pending_authorizations"] = [{
+        "id": "auth_one", "domain": "example.com", "kind": "account_identity",
+        "summary": "Choose an authorized work identity", "blocking": False,
+    }]
+    svc.store.set_case(mid, case)
+    svc.store.record_event(
+        mid, "result", "browse", payload={"verdict": "verified",
+                                            "reason": "rules inspected"})
+
+    status = svc.status(mid)
+    report = status["report"]
+    encoded = json.dumps(report)
+    check(report["format_version"] == 1 and report["mission_id"] == mid,
+          "status exposes a versioned Mission progress report")
+    check(report["coverage"]["completed"] == 1 and
+          report["coverage"]["open"] == 1 and
+          report["coverage"]["branches"][1]["blocker_kind"] == "policy",
+          "the report distinguishes completed coverage from an open blocked branch")
+    check(report["needs_you"][0]["blocking"] is False and
+          report["log"][-1]["summary"] == "rules inspected",
+          "the report contains non-blocking asks and the compact activity ledger")
+    check("must-never-enter-report" not in encoded and "private_token" not in encoded and
+          "## Channel coverage" in report["markdown"],
+          "the integration report omits raw case values and includes copyable Markdown")
+    check(svc.report(mid) == report,
+          "the dedicated integration report matches the status report revision")
+    svc.close()
+
+
 def test_failed_retry_retires_only_stale_reversible_execution():
     print("test_failed_retry_retires_only_stale_reversible_execution")
     svc = _svc([])
@@ -527,6 +571,7 @@ def main():
     test_status_never_releases_an_executed_action_key()
     test_reconcile_waits_for_old_execution_latch()
     test_failed_retry_retires_only_stale_reversible_execution()
+    test_progress_report_is_structured_stable_and_redacted()
     if _fails:
         print(f"\n{len(_fails)} FAILED")
         sys.exit(1)

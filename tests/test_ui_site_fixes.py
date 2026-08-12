@@ -176,6 +176,9 @@ def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failure
     assert 'summaryRow("Current"' in desktop and 'summaryRow("Next"' in desktop
     assert 'summaryRow("Coverage"' in desktop and 'summary.coverage' in desktop
     assert 'className = "mactivity"' in desktop and 't("Activity log")' in desktop
+    assert 'className = "mreport"' in desktop and 't("Progress report")' in desktop
+    assert 't("Copy Markdown")' in desktop and 't("Download JSON")' in desktop
+    assert 'reportCoverage.branches' in desktop and 'report.log' in desktop
     assert "protected from repeat" in desktop
     assert "pending_authorizations" in desktop and "Collie is continuing independent work." in desktop
     for key in ("PROFILE_AGE_BAND", "AUTO_APPLY_PROFILE_CLAIMS",

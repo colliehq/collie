@@ -1150,6 +1150,40 @@
   .mactivity-item.failed .mactivity-dot { background: var(--coral); }
   .mactivity-text { min-width: 0; overflow-wrap: anywhere; }
   .mactivity-meta { color: var(--faint); font-size: 11px; white-space: nowrap; }
+  .mreport { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2);
+             overflow: hidden; }
+  .mreport > summary { display: flex; align-items: center; gap: 8px; cursor: pointer;
+                       padding: 9px 11px; user-select: none; font-size: 12.5px; font-weight: 650; }
+  .mreport > summary::marker { color: var(--faint); }
+  .mreport-updated { margin-left: auto; color: var(--faint); font-size: 11px; font-weight: 400; }
+  .mreport-body { display: grid; gap: 11px; padding: 0 11px 11px; border-top: 1px solid var(--line); }
+  .mreport-tools { display: flex; flex-wrap: wrap; gap: 7px; padding-top: 10px; align-items: center; }
+  .mreport-tools .mbtn { padding: 5px 9px; font-size: 11.5px; }
+  .mreport-integration { color: var(--faint); font-size: 11px; }
+  .mreport-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; }
+  .mreport-metric { padding: 8px; border: 1px solid var(--line); border-radius: 8px;
+                    background: var(--surface); min-width: 0; }
+  .mreport-metric strong { display: block; color: var(--ink); font-size: 15px; }
+  .mreport-metric span { color: var(--faint); font-size: 10.5px; }
+  .mreport-section { display: grid; gap: 6px; }
+  .mreport-section-title { color: var(--faint); font-size: 10.5px; text-transform: uppercase;
+                           letter-spacing: .05em; }
+  .mreport-branch { display: grid; grid-template-columns: minmax(120px,.7fr) auto minmax(180px,1.3fr);
+                    gap: 8px; padding: 6px 0; border-top: 1px solid var(--line);
+                    font-size: 11.5px; line-height: 1.4; }
+  .mreport-branch:first-of-type { border-top: 0; }
+  .mreport-branch-name { color: var(--ink); font-weight: 600; }
+  .mreport-branch-state { color: var(--muted); white-space: nowrap; }
+  .mreport-branch-summary { color: var(--muted); overflow-wrap: anywhere; }
+  .mreport-log { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 3px 8px;
+                 font-size: 11.5px; line-height: 1.45; }
+  .mreport-log-time { color: var(--faint); white-space: nowrap; }
+  .mreport-log-text { color: var(--muted); overflow-wrap: anywhere; }
+  @media (max-width: 680px) {
+    .mreport-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+    .mreport-branch { grid-template-columns: minmax(0,1fr) auto; }
+    .mreport-branch-summary { grid-column: 1 / -1; }
+  }
   .mauth { padding: 9px 10px; border: 1px solid color-mix(in srgb,#e8a33d 52%,var(--line));
            border-radius: 9px; background: color-mix(in srgb,#e8a33d 10%,transparent);
            font-size: 12.5px; line-height: 1.45; }
@@ -2124,6 +2158,10 @@
     "This ends the Mission without independent verification. Take over permanently?": "这会在没有独立验证的情况下结束整个任务。确定永久接管吗？",
     "Completed by user acceptance; no independent verification was recorded.": "任务由用户接管而结束，没有记录独立验证。",
     "Recorded receipts": "已记录回执", "Activity log": "活动日志",
+    "Progress report": "进展报告", "Copy Markdown": "复制 Markdown", "Download JSON": "下载 JSON",
+    "Channels": "渠道", "Recent activity": "最近活动", "Verified receipts": "已验证回执",
+    "Closed": "已关闭", "Open branches": "开放分支", "Integration-ready report": "可供集成使用的报告",
+    "copied": "已复制", "copy failed": "复制失败", "updated": "更新于",
     "completed": "已完成", "scheduled": "已安排", "uncertain": "结果待确认",
     "authorization_waiting": "等待授权", "waiting_input": "等待输入",
     "checked": "已复查", "recorded": "已记录", "protected from repeat": "已防止重复执行",
@@ -2294,6 +2332,10 @@
     "This ends the Mission without independent verification. Take over permanently?": "這會在沒有獨立驗證的情況下結束整個任務。確定永久接管嗎？",
     "Completed by user acceptance; no independent verification was recorded.": "任務由使用者接管而結束，沒有記錄獨立驗證。",
     "Recorded receipts": "已記錄回執", "Activity log": "活動日誌",
+    "Progress report": "進展報告", "Copy Markdown": "複製 Markdown", "Download JSON": "下載 JSON",
+    "Channels": "渠道", "Recent activity": "最近活動", "Verified receipts": "已驗證回執",
+    "Closed": "已關閉", "Open branches": "開放分支", "Integration-ready report": "可供整合使用的報告",
+    "copied": "已複製", "copy failed": "複製失敗", "updated": "更新於",
     "completed": "已完成", "scheduled": "已安排", "uncertain": "結果待確認",
     "authorization_waiting": "等待授權", "waiting_input": "等待輸入",
     "checked": "已複查", "recorded": "已記錄", "protected from repeat": "已防止重複執行",
@@ -4273,6 +4315,33 @@
     return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT))
       .then(missionResponse);
   }
+  function missionCopyReport(report, button) {
+    var text = (report && report.markdown) || "";
+    var fallback = function () {
+      var area = document.createElement("textarea"); area.value = text;
+      area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.appendChild(area); area.select();
+      var ok = false; try { ok = document.execCommand("copy"); } catch (_) {}
+      area.remove(); return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+    };
+    var copy = navigator.clipboard && navigator.clipboard.writeText ?
+      navigator.clipboard.writeText(text) : fallback();
+    return Promise.resolve(copy).then(function () {
+      if (!button) return; var old = button.textContent; button.textContent = t("copied");
+      setTimeout(function () { button.textContent = old; }, 1400);
+    }).catch(function () {
+      if (!button) return; var old = button.textContent; button.textContent = t("copy failed");
+      setTimeout(function () { button.textContent = old; }, 1800);
+    });
+  }
+  function missionDownloadReport(report) {
+    var blob = new Blob([JSON.stringify(report || {}, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob), link = document.createElement("a");
+    link.href = url; link.download = "collie-mission-" +
+      String((report && report.mission_id) || "report").replace(/[^A-Za-z0-9_.-]/g, "_") + ".json";
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+  }
   function missionStateLabel(state) {
     return t({
       draft:"Draft", queued:"Queued", running:"Running", waiting:"Waiting",
@@ -4456,12 +4525,74 @@
     summaryRow("Completed", summary.completed || []);
     var coverage = summary.coverage || {};
     var coverageValue = coverage.total ?
-      ((coverage.total - coverage.open) + " / " + coverage.total + " " + t("complete") +
+      ((coverage.completed || 0) + " / " + coverage.total + " " + t("complete") +
+       ((coverage.closed || 0) > (coverage.completed || 0) ?
+        " · " + ((coverage.closed || 0) - (coverage.completed || 0)) + " " + t("Closed") : "") +
        " · " + coverage.open + " " + t("open")) : "";
     summaryRow("Coverage", coverageValue);
     summaryRow("Next", summary.next);
     summaryRow("Blocked by", summary.blocker, "blocked");
     b.appendChild(sb);
+    if (st.report && !st.report.error) {
+      var report = st.report, reportCoverage = report.coverage || {}, reportReceipts = report.receipts || {};
+      var reportBox = document.createElement("details"); reportBox.className = "mreport";
+      var reportHead = document.createElement("summary");
+      var reportName = document.createElement("span"); reportName.textContent = t("Progress report");
+      var reportUpdated = document.createElement("span"); reportUpdated.className = "mreport-updated";
+      reportUpdated.textContent = t("updated") + " " + (report.updated_at ?
+        new Date(report.updated_at * 1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "—");
+      reportHead.appendChild(reportName); reportHead.appendChild(reportUpdated); reportBox.appendChild(reportHead);
+      var reportBody = document.createElement("div"); reportBody.className = "mreport-body";
+      var reportTools = document.createElement("div"); reportTools.className = "mreport-tools";
+      var copyReport = document.createElement("button"); copyReport.type = "button"; copyReport.className = "mbtn";
+      copyReport.textContent = t("Copy Markdown");
+      copyReport.onclick = function () { missionCopyReport(report, copyReport); };
+      var downloadReport = document.createElement("button"); downloadReport.type = "button"; downloadReport.className = "mbtn";
+      downloadReport.textContent = t("Download JSON");
+      downloadReport.onclick = function () { missionDownloadReport(report); };
+      var integration = document.createElement("span"); integration.className = "mreport-integration";
+      integration.textContent = t("Integration-ready report") + " · revision " + (report.revision || 0);
+      reportTools.appendChild(copyReport); reportTools.appendChild(downloadReport); reportTools.appendChild(integration);
+      reportBody.appendChild(reportTools);
+      var metrics = document.createElement("div"); metrics.className = "mreport-metrics";
+      [[reportCoverage.completed || 0, "Completed"], [reportCoverage.closed || 0, "Closed"],
+       [reportCoverage.open || 0, "Open branches"], [reportReceipts.verified || 0, "Verified receipts"]]
+        .forEach(function (metric) {
+          var box = document.createElement("div"); box.className = "mreport-metric";
+          var value = document.createElement("strong"); value.textContent = metric[0];
+          var label = document.createElement("span"); label.textContent = t(metric[1]);
+          box.appendChild(value); box.appendChild(label); metrics.appendChild(box);
+        });
+      reportBody.appendChild(metrics);
+      if ((reportCoverage.branches || []).length) {
+        var channels = document.createElement("div"); channels.className = "mreport-section";
+        var channelTitle = document.createElement("div"); channelTitle.className = "mreport-section-title";
+        channelTitle.textContent = t("Channels"); channels.appendChild(channelTitle);
+        reportCoverage.branches.forEach(function (branch) {
+          var row = document.createElement("div"); row.className = "mreport-branch";
+          var name = document.createElement("div"); name.className = "mreport-branch-name"; name.textContent = branch.branch || "—";
+          var state = document.createElement("div"); state.className = "mreport-branch-state"; state.textContent = t(branch.status || "pending");
+          var detail = document.createElement("div"); detail.className = "mreport-branch-summary"; detail.textContent = branch.summary || "";
+          row.appendChild(name); row.appendChild(state); row.appendChild(detail); channels.appendChild(row);
+        });
+        reportBody.appendChild(channels);
+      }
+      if ((report.log || []).length) {
+        var recent = document.createElement("div"); recent.className = "mreport-section";
+        var recentTitle = document.createElement("div"); recentTitle.className = "mreport-section-title";
+        recentTitle.textContent = t("Recent activity"); recent.appendChild(recentTitle);
+        var recentGrid = document.createElement("div"); recentGrid.className = "mreport-log";
+        (report.log || []).slice(-12).reverse().forEach(function (item) {
+          var when = document.createElement("div"); when.className = "mreport-log-time";
+          when.textContent = item.at ? new Date(item.at * 1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "—";
+          var event = document.createElement("div"); event.className = "mreport-log-text";
+          event.textContent = t(item.status || "recorded") + " · " + (item.summary || item.capability || t("Activity"));
+          recentGrid.appendChild(when); recentGrid.appendChild(event);
+        });
+        recent.appendChild(recentGrid); reportBody.appendChild(recent);
+      }
+      reportBox.appendChild(reportBody); b.appendChild(reportBox);
+    }
     if ((st.activity || []).length) {
       var activity = document.createElement("div"); activity.className = "mactivity";
       var activityTitle = document.createElement("div"); activityTitle.className = "mactivity-title";

@@ -1657,6 +1657,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": sessions.set_title(sid, title)})
             if path.startswith("/api/session/"):
                 return self._serve_session(path[len("/api/session/"):])
+            if path == "/api/mission/report":             # redacted integration/report feed
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .missionweb import MissionService
+                mid = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
+                svc = MissionService()
+                try:
+                    if not mid:
+                        return self._send_json({"error": "id required"}, 400)
+                    out = svc.report(mid)
+                    return self._send_json(out, 404 if out.get("error") else 200)
+                finally:
+                    svc.close()
             if path == "/api/mission":                    # delegate: one mission's live status
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
