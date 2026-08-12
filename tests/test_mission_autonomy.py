@@ -331,6 +331,30 @@ def test_campaign_coverage_refuses_whole_wait_and_early_completion(tmp_path):
     actions.close()
 
 
+def test_campaign_planner_unavailable_retries_without_human_handoff(tmp_path):
+    store, actions = _stores(tmp_path)
+    create_mission(
+        store, "planner-retry", "continue every campaign branch",
+        case={"_campaign_coverage": [
+            {"branch": "DEV Community launch", "status": "pending",
+             "required": True}]},
+        leash=world_leash())
+    unavailable = {
+        "action": "needs_human",
+        "args": {"summary": "could not decide the next step automatically"},
+        "reason": "decider unavailable",
+    }
+    driver = MissionDriver(store, actions, lambda *_: unavailable, [])
+
+    assert driver.advance("planner-retry") == WAITING
+    assert store.next_wait("planner-retry") is not None
+    assert any(e["kind"] == "watchdog" and e["name"] == "planner_unavailable"
+               for e in store.events("planner-retry", 20))
+    assert store.runtime("planner-retry")["retry_count"] == 1
+    store.close()
+    actions.close()
+
+
 def test_resolved_claim_reuses_equal_or_stronger_authorization(tmp_path):
     store, actions = _stores(tmp_path)
     resolved = _authorization_request({

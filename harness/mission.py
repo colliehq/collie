@@ -242,7 +242,7 @@ def _coverage_branch_index(rows, branch):
     def key(value):
         words = re.findall(r"[a-z0-9]+", str(value or "").lower())
         lifecycle = {"launch", "signup", "sign", "up", "onboarding",
-                     "presence", "account", "campaign", "branch"}
+                     "presence", "account", "campaign", "branch", "assets"}
         return " ".join(word for word in words if word not in lifecycle)
 
     wanted = key(branch)
@@ -3185,12 +3185,39 @@ class MissionDriver:
                         verdict.reason or reason or
                         "model reports done; no independent goal evidence")
                 if action == NEEDS_HUMAN:
+                    summary = str(args.get("summary") or reason or "")
+                    planner_unavailable = (
+                        str(reason).strip().lower() == "decider unavailable" and
+                        summary.strip().lower() ==
+                        "could not decide the next step automatically")
+                    open_coverage = _open_campaign_coverage(m.case)
+                    if planner_unavailable and open_coverage:
+                        recent = [e for e in self.store.events(mission_id, 20)
+                                  if e.get("kind") == "watchdog" and
+                                  e.get("name") == "planner_unavailable"]
+                        delay = min(900, 30 * (2 ** min(len(recent), 5)))
+                        if not decision.get("_retry"):
+                            self.store.account_runtime(
+                                mission_id, token, retries=1)
+                        self.store.schedule_wait(
+                            mission_id, int(time.time()) + delay)
+                        self.store.record_event(
+                            mission_id, "watchdog", "planner_unavailable",
+                            payload={
+                                "retry_seconds": delay,
+                                "open_coverage": len(open_coverage),
+                                "branches": [str(x.get("branch") or "")
+                                             for x in open_coverage[:6]],
+                            })
+                        return self._finish(
+                            mission_id, token, WAITING,
+                            "planner response unavailable; automatic retry scheduled")
                     self.store.record_step(mission_id, NEEDS_HUMAN, "", NEEDS_HUMAN)
                     self.store.record_event(mission_id, "control", NEEDS_HUMAN,
-                                            payload={"summary": args.get("summary") or reason})
+                                            payload={"summary": summary})
                     return self._finish(
                         mission_id, token, NEEDS_YOU,
-                        args.get("summary") or reason or "needs your input")
+                        summary or "needs your input")
                 if action == NEEDS_AUTHORIZATION:
                     routed = self._handle_authorization(
                         mission_id, token, m, args, reason)
