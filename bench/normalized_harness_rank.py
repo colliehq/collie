@@ -350,6 +350,11 @@ def _external_patch(workspace: Path, baseline: Path) -> str:
                 shutil.rmtree(child)
             else:
                 child.unlink()
+        # Stage the empty tree before copying the candidate back.  Otherwise a
+        # same-size file written within the filesystem timestamp granularity
+        # can match Git's cached stat tuple and be skipped without rehashing.
+        # Removing it from the index first makes every restored file explicit.
+        _run(["git", "add", "-A"], cwd=repository, check=True)
         for child in candidate.iterdir():
             target = repository / child.name
             if child.is_dir():

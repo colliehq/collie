@@ -107,6 +107,23 @@ def test_brand_neutral_serialization_preserves_caller_context_and_tools():
     assert "pi" not in lowered
 
 
+def test_serialization_accepts_openai_text_content_parts_but_not_multimodal():
+    body = _body()
+    body["messages"][1]["content"] = [
+        {"type": "text", "text": "inspect "},
+        {"type": "text", "text": "the workspace"},
+    ]
+
+    _system, prompt, _tools = sidecar.serialize_turn(body)
+
+    assert "inspect the workspace" in prompt
+    body["messages"][1]["content"] = [{
+        "type": "image_url", "image_url": {"url": "https://example.invalid/x"},
+    }]
+    with pytest.raises(sidecar.SidecarError, match="only text parts"):
+        sidecar.serialize_turn(body)
+
+
 @pytest.mark.parametrize("text", [
     'prose {"answer":"x"}',
     '{"answer":"x","extra":true}',

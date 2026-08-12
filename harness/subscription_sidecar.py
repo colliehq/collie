@@ -187,11 +187,27 @@ class ReceiptLedger:
 def _text_content(value: Any, field: str) -> str:
     if value is None:
         return ""
-    if not isinstance(value, str):
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, list):
+        # OpenAI Chat Completions permits text-only content as an array of
+        # typed parts. Prime/Pi preserve that native representation even for
+        # an ordinary string prompt, whereas Collie sends a scalar string.
+        # Normalize the two equivalent encodings without admitting image or
+        # other multimodal payloads into this text-only frozen benchmark.
+        parts: list[str] = []
+        for part in value:
+            if (not isinstance(part, Mapping) or part.get("type") != "text"
+                    or not isinstance(part.get("text"), str)):
+                raise SidecarError(
+                    400, "invalid_request", "%s must contain only text parts" % field)
+            parts.append(str(part["text"]))
+        text = "".join(parts)
+    else:
         raise SidecarError(400, "invalid_request", "%s must be text" % field)
-    if len(value.encode("utf-8")) > MAX_TEXT_BYTES:
+    if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
         raise SidecarError(413, "input_too_large", "%s is too large" % field)
-    return value
+    return text
 
 
 def _normalize_tool_call(value: Any, index: int) -> dict[str, Any]:
