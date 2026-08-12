@@ -1,0 +1,42 @@
+diff --git a/auditflow/decode.py b/auditflow/decode.py
+index cca2f83..83ef4ec 100644
+--- a/auditflow/decode.py
++++ b/auditflow/decode.py
+@@ -8,4 +8,5 @@ def decode_record(payload: Mapping[str, object]) -> AuditRecord:
+         actor=str(payload["actor"]),
+         action=str(payload["action"]),
+         secret=str(payload["secret"]),
++        request_id=payload.get("request_id"),
+     )
+diff --git a/auditflow/formatting.py b/auditflow/formatting.py
+index 583c439..0a1f44d 100644
+--- a/auditflow/formatting.py
++++ b/auditflow/formatting.py
+@@ -2,4 +2,7 @@ from .model import AuditRecord
+ 
+ 
+ def format_record(record: AuditRecord) -> str:
+-    return f"{record.actor} {record.action} secret={record.secret}"
++    base = f"{record.actor} {record.action} secret={record.secret}"
++    if record.request_id is None:
++        return base
++    return f"{base} request={record.request_id}"
+diff --git a/auditflow/model.py b/auditflow/model.py
+index f71dd87..9db19cf 100644
+--- a/auditflow/model.py
++++ b/auditflow/model.py
+@@ -6,3 +6,4 @@ class AuditRecord:
+     actor: str
+     action: str
+     secret: str
++    request_id: str | None = None
+diff --git a/auditflow/redact.py b/auditflow/redact.py
+index c376913..0ec787d 100644
+--- a/auditflow/redact.py
++++ b/auditflow/redact.py
+@@ -6,4 +6,5 @@ def redact_record(record: AuditRecord) -> AuditRecord:
+         actor=record.actor,
+         action=record.action,
+         secret="[redacted]",
++        request_id=record.request_id,
+     )
