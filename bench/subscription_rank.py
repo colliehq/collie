@@ -391,7 +391,8 @@ def _task_preflight(image: str, temp_root: Path) -> list[dict[str, Any]]:
 
 
 def _manifest_core(image_id: str, revision: str, plan: list[dict[str, Any]],
-                   task_receipts: list[dict[str, Any]]) -> dict[str, Any]:
+                   task_receipts: list[dict[str, Any]],
+                   account_evidence: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "suite_id": "collie-opus-subscription-local-v1",
@@ -430,6 +431,7 @@ def _manifest_core(image_id: str, revision: str, plan: list[dict[str, Any]],
             "expected_marginal_charge_usd": 0,
             "metered_api_fallback_disabled": True,
             "api_equivalent_cost_is_not_a_charge": True,
+            "account_evidence": dict(account_evidence),
         },
     }
 
@@ -967,7 +969,40 @@ def _suite_lock(path: Path) -> Iterator[None]:
             handle.close()
 
 
-def execute(*, preflight_only: bool = False, image_tag: str = IMAGE_TAG) -> int:
+def _account_evidence(args: argparse.Namespace) -> dict[str, Any]:
+    if not args.usage_credits_off or not args.auto_reload_off:
+        raise RuntimeError("usage credits and auto-reload must be visibly off")
+    try:
+        observed = dt.datetime.fromisoformat(
+            args.account_evidence_observed_at.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        raise RuntimeError("account evidence timestamp is invalid") from None
+    if observed.tzinfo is None or observed.utcoffset() != dt.timedelta(0):
+        raise RuntimeError("account evidence timestamp must be UTC")
+    now = dt.datetime.now(dt.timezone.utc)
+    age = (now - observed.astimezone(dt.timezone.utc)).total_seconds()
+    if age < -60 or age > 15 * 60:
+        raise RuntimeError("account evidence must be observed within fifteen minutes")
+    percentages = (args.current_session_used_percent, args.weekly_used_percent)
+    if any(value < 0 or value > 100 for value in percentages):
+        raise RuntimeError("usage percentages must be within [0, 100]")
+    if args.usage_credits_spent_usd != 0:
+        raise RuntimeError("usage credit spend must be zero before the ranking")
+    return {
+        "source": "claude.ai/settings/usage_visible_ui",
+        "observed_at_utc": observed.astimezone(dt.timezone.utc).isoformat().replace(
+            "+00:00", "Z"),
+        "usage_credits_enabled": False,
+        "auto_reload": False,
+        "usage_credits_spent_usd": 0,
+        "current_session_used_percent": args.current_session_used_percent,
+        "weekly_all_models_used_percent": args.weekly_used_percent,
+        "current_balance_usd": args.current_balance_usd,
+    }
+
+
+def execute(*, account_evidence: Mapping[str, Any], preflight_only: bool = False,
+            image_tag: str = IMAGE_TAG) -> int:
     plan = canonical_plan()
     revision = _git_revision_and_clean()
     credential = _credential_path()
@@ -978,7 +1013,7 @@ def execute(*, preflight_only: bool = False, image_tag: str = IMAGE_TAG) -> int:
         isolation = _isolation_canary(image_id, preflight_root)
         subscription = _subscription_preflight(image_id, credential, preflight_root)
         task_receipts = _task_preflight(image_id, preflight_root)
-        core = _manifest_core(image_id, revision, plan, task_receipts)
+        core = _manifest_core(image_id, revision, plan, task_receipts, account_evidence)
         suite_sha = _sha_bytes(_canonical_bytes(core))
         if preflight_only:
             print(json.dumps({
@@ -1086,10 +1121,18 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--execute", action="store_true",
                         help="consume the frozen twelve subscription attempt slots")
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--account-evidence-observed-at", required=True)
+    parser.add_argument("--usage-credits-off", action="store_true")
+    parser.add_argument("--auto-reload-off", action="store_true")
+    parser.add_argument("--usage-credits-spent-usd", type=float, required=True)
+    parser.add_argument("--current-session-used-percent", type=float, required=True)
+    parser.add_argument("--weekly-used-percent", type=float, required=True)
+    parser.add_argument("--current-balance-usd", type=float, required=True)
     args = parser.parse_args(argv)
     if args.execute == args.preflight_only:
         parser.error("choose exactly one of --execute or --preflight-only")
-    return execute(preflight_only=args.preflight_only)
+    return execute(account_evidence=_account_evidence(args),
+                   preflight_only=args.preflight_only)
 
 
 if __name__ == "__main__":

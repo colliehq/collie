@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 
 def test_frozen_rank_tasks_have_red_baselines_and_green_gold():
@@ -188,3 +189,21 @@ def test_artifact_validator_rejects_resolved_row_with_failed_grader(tmp_path):
     errors = _artifact_validation_errors(planned, result, run_dir, suite)
 
     assert "resolved_semantics_invalid" in errors
+
+
+def test_account_evidence_requires_usage_credits_and_auto_reload_off():
+    from bench.subscription_rank import _account_evidence
+
+    args = SimpleNamespace(
+        usage_credits_off=True, auto_reload_off=True,
+        account_evidence_observed_at=__import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).isoformat().replace("+00:00", "Z"),
+        current_session_used_percent=12.0, weekly_used_percent=17.0,
+        usage_credits_spent_usd=0.0, current_balance_usd=8.29,
+    )
+
+    evidence = _account_evidence(args)
+
+    assert evidence["usage_credits_enabled"] is False
+    assert evidence["auto_reload"] is False
+    assert evidence["usage_credits_spent_usd"] == 0
