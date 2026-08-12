@@ -560,3 +560,20 @@ def test_duplicate_json_keys_are_rejected_in_inputs_and_evidence(tmp_path):
     row["usage_sha256"] = sha256_file(usage_path)
     report = summarize(manifest, plan, results, tmp_path)
     assert any("strict finite JSON" in error for error in report["evidence_errors"])
+
+
+def test_manifest_rejects_non_string_harness_identity_and_unhashable_meter_fields(tmp_path):
+    manifest = _manifest(tmp_path)
+    manifest["harnesses"][0]["name"] = 1
+    verdict = validate_manifest(manifest, tmp_path)
+    assert verdict.ok is False
+    assert any("name must be a non-empty string" in error for error in verdict.errors)
+    with pytest.raises(ValueError, match="invalid benchmark manifest"):
+        build_plan(manifest, tmp_path)
+
+    manifest = _manifest(tmp_path)
+    manifest["harnesses"][0]["usage_source"] = []
+    verdict = validate_manifest(manifest, tmp_path)
+    assert verdict.ok is False
+    assert any("usage_source must be independent-meter" in error
+               for error in verdict.errors)
