@@ -54,6 +54,7 @@ AGENT_WALL_SECONDS = 300
 GRADER_WALL_SECONDS = 30
 PLANNED_LAUNCHES = len(TASKS) * REPETITIONS * len(ARMS)
 CLAIM = "observed_restricted_product_ranking_on_2_frozen_synthetic_tasks"
+SUMMARY_RULE_VERSION = 2
 VALID_STATUSES = frozenset({"valid_resolved", "valid_unresolved"})
 INVALID_STATUSES = frozenset({
     "invalid_infrastructure", "invalid_unknown", "not_admitted",
@@ -727,6 +728,12 @@ def _component_total(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> int |
     return int(sum(values))
 
 
+def _hidden_resolved(row: Mapping[str, Any]) -> bool:
+    grader = row.get("grader")
+    return (isinstance(grader, Mapping) and grader.get("outcome") == "graded"
+            and grader.get("resolved") is True)
+
+
 def _result_validation_errors(plan: list[dict[str, Any]],
                               results: list[dict[str, Any]],
                               suite_sha: str) -> list[dict[str, str]]:
@@ -876,15 +883,23 @@ def summarize(plan: list[dict[str, Any]], results: list[dict[str, Any]],
             arm_rows = [row for row in results if row["arm"] == arm]
             for task in TASKS:
                 cells = [row for row in arm_rows if row["task_id"] == task["task_id"]]
-                task_rates[task["task_id"]] = sum(bool(row["resolved"]) for row in cells) / 3
+                task_rates[task["task_id"]] = sum(_hidden_resolved(row) for row in cells) / 3
             score = sum(task_rates.values()) / len(task_rates)
             durations = [row["duration_ms"] for row in arm_rows
                          if isinstance(row.get("duration_ms"), (int, float))]
             scores[arm] = {
                 "task_solve_rates": task_rates,
                 "task_balanced_solve_rate": score,
-                "resolved": sum(bool(row["resolved"]) for row in arm_rows),
+                "resolved": sum(_hidden_resolved(row) for row in arm_rows),
+                "hidden_grader_passes": sum(_hidden_resolved(row) for row in arm_rows),
                 "attempts": len(arm_rows),
+                "execution_completed": sum(
+                    row.get("status") == "valid_resolved" for row in arm_rows),
+                "execution_completion_rate": sum(
+                    row.get("status") == "valid_resolved" for row in arm_rows
+                ) / len(arm_rows),
+                "turn_budget_exhausted": sum(
+                    row.get("error_code") == "turn_budget_exhausted" for row in arm_rows),
                 "median_duration_ms": statistics.median(durations) if durations else None,
                 "processed_tokens_total": _component_total(
                     arm_rows, ("input_tokens", "output_tokens", "cache_read", "cache_creation")),
@@ -903,7 +918,7 @@ def summarize(plan: list[dict[str, Any]], results: list[dict[str, Any]],
     if not ranking_withheld:
         for task in TASKS:
             for repetition in range(1, 4):
-                cell = {row["arm"]: bool(row["resolved"]) for row in results
+                cell = {row["arm"]: _hidden_resolved(row) for row in results
                         if row["task_id"] == task["task_id"]
                         and row["repetition"] == repetition}
                 key = ("both" if cell == {"collie": True, "claude": True}
@@ -913,10 +928,13 @@ def summarize(plan: list[dict[str, Any]], results: list[dict[str, Any]],
 
     return {
         "schema_version": 1,
+        "summary_rule_version": SUMMARY_RULE_VERSION,
         "suite_sha256": suite_sha,
         "claim": CLAIM,
         "scope": "exploratory",
         "publishable": False,
+        "ranking_metric": "external_hidden_grader_patch_pass",
+        "execution_completion_status_is_secondary": True,
         "ranking_withheld": ranking_withheld,
         "ranking": ranking,
         "scores": scores,
@@ -935,9 +953,100 @@ def summarize(plan: list[dict[str, Any]], results: list[dict[str, Any]],
             "The opus model name is a rolling alias rather than an immutable snapshot.",
             "Token accounting differs by product and is descriptive only.",
             "Latency and tokens never break a capability tie.",
+            "A patch that passes the hidden grader counts as solved even if the product exhausted "
+            "its turn budget before emitting a final completion message.",
         ],
         "generated_at_utc": _utc_now(),
     }
+
+
+def resummarize_existing(result_dir: Path) -> int:
+    """Correct a derived summary without mutating frozen execution receipts.
+
+    The original summary is retained byte-for-byte.  This path performs no model calls and
+    revalidates every reservation, patch, usage, grader, and result binding before deriving a
+    replacement from the manifest's declared hidden-test ranking rule.
+    """
+    result_dir = result_dir.resolve()
+    if result_dir.parent != RESULTS_ROOT.resolve():
+        raise RuntimeError("result directory must be a direct child of bench/results")
+    revision = _git_revision_and_clean()
+    manifest_path = result_dir / "manifest.json"
+    manifest = _load_json(manifest_path)
+    suite_sha = manifest.get("suite_sha256")
+    if not isinstance(suite_sha, str) or len(suite_sha) != 64:
+        raise RuntimeError("manifest suite digest is invalid")
+    manifest_core = {
+        key: value for key, value in manifest.items()
+        if key not in {"suite_sha256", "created_at_utc", "preflight"}
+    }
+    if _sha_bytes(_canonical_bytes(manifest_core)) != suite_sha:
+        raise RuntimeError("manifest core no longer matches the frozen suite digest")
+
+    plan = canonical_plan()
+    if manifest.get("schedule") != plan:
+        raise RuntimeError("manifest schedule does not match the canonical plan")
+    rows: list[dict[str, Any]] = []
+    result_receipt_hashes: dict[str, str] = {}
+    for planned in plan:
+        run_dir = result_dir / "runs" / planned["run_id"]
+        result_path = run_dir / "result.json"
+        terminal = _load_json(result_path)
+        errors = _artifact_validation_errors(planned, terminal, run_dir, suite_sha)
+        if errors:
+            raise RuntimeError(
+                "refusing to resummarize invalid evidence for %s: %s"
+                % (planned["run_id"], ",".join(errors)))
+        rows.append(terminal)
+        result_receipt_hashes[planned["run_id"]] = _sha_file(result_path)
+
+    validation_errors = _result_validation_errors(plan, rows, suite_sha)
+    if validation_errors:
+        raise RuntimeError("result-set validation failed before resummarization")
+
+    summary_path = result_dir / "summary.json"
+    original_path = result_dir / "summary.rule-v1-original.json"
+    if not original_path.exists():
+        if not summary_path.is_file():
+            raise RuntimeError("original summary is unavailable")
+        _atomic_text(original_path, summary_path.read_text(encoding="utf-8"))
+    original_sha = _sha_file(original_path)
+    receipts_sha = _sha_bytes(_canonical_bytes(result_receipt_hashes))
+    corrected = summarize(plan, rows, suite_sha)
+    corrected["derivation"] = {
+        "kind": "post_run_metric_correction",
+        "execution_receipts_unchanged": True,
+        "manifest_sha256": _sha_file(manifest_path),
+        "result_receipts_sha256": receipts_sha,
+        "original_summary_sha256": original_sha,
+        "summary_code_revision": revision,
+        "summary_source_sha256": _sha_file(Path(__file__)),
+    }
+    _atomic_json(summary_path, corrected)
+    corrected_sha = _sha_file(summary_path)
+    _atomic_json(result_dir / "summary-correction.json", {
+        "schema_version": 1,
+        "suite_sha256": suite_sha,
+        "reason_code": "declared_hidden_grader_metric_was_not_used",
+        "explanation": (
+            "The original summary ranked top-level completion state. The frozen manifest "
+            "declared external hidden-grader solve rate, so correct patches now count even when "
+            "the product exhausted its turn budget before emitting a completion message."
+        ),
+        "execution_receipts_unchanged": True,
+        "original_summary": original_path.name,
+        "original_summary_sha256": original_sha,
+        "corrected_summary": summary_path.name,
+        "corrected_summary_sha256": corrected_sha,
+        "manifest_sha256": _sha_file(manifest_path),
+        "result_receipts_sha256": receipts_sha,
+        "summary_code_revision": revision,
+        "summary_source_sha256": _sha_file(Path(__file__)),
+        "corrected_at_utc": _utc_now(),
+    })
+    print("corrected summary: %s" % summary_path)
+    print(json.dumps(corrected, ensure_ascii=False, indent=2))
+    return 2 if corrected["ranking_withheld"] else 0
 
 
 @contextmanager
@@ -1118,19 +1227,28 @@ def execute(*, account_evidence: Mapping[str, Any], preflight_only: bool = False
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="subscription_rank")
-    parser.add_argument("--execute", action="store_true",
-                        help="consume the frozen twelve subscription attempt slots")
-    parser.add_argument("--preflight-only", action="store_true")
-    parser.add_argument("--account-evidence-observed-at", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--execute", action="store_true",
+                      help="consume the frozen twelve subscription attempt slots")
+    mode.add_argument("--preflight-only", action="store_true")
+    mode.add_argument("--resummarize", type=Path, metavar="RESULT_DIR",
+                      help="rederive a summary from immutable completed-run evidence")
+    parser.add_argument("--account-evidence-observed-at")
     parser.add_argument("--usage-credits-off", action="store_true")
     parser.add_argument("--auto-reload-off", action="store_true")
-    parser.add_argument("--usage-credits-spent-usd", type=float, required=True)
-    parser.add_argument("--current-session-used-percent", type=float, required=True)
-    parser.add_argument("--weekly-used-percent", type=float, required=True)
-    parser.add_argument("--current-balance-usd", type=float, required=True)
+    parser.add_argument("--usage-credits-spent-usd", type=float)
+    parser.add_argument("--current-session-used-percent", type=float)
+    parser.add_argument("--weekly-used-percent", type=float)
+    parser.add_argument("--current-balance-usd", type=float)
     args = parser.parse_args(argv)
-    if args.execute == args.preflight_only:
-        parser.error("choose exactly one of --execute or --preflight-only")
+    if args.resummarize is not None:
+        return resummarize_existing(args.resummarize)
+    required_evidence = (
+        "account_evidence_observed_at", "usage_credits_spent_usd",
+        "current_session_used_percent", "weekly_used_percent", "current_balance_usd",
+    )
+    if any(getattr(args, name) is None for name in required_evidence):
+        parser.error("execution and preflight require complete account evidence")
     return execute(account_evidence=_account_evidence(args),
                    preflight_only=args.preflight_only)
 

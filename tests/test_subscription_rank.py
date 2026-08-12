@@ -74,7 +74,8 @@ def test_rank_summary_shares_rank_on_equal_hidden_solve_rate():
     plan = canonical_plan()
     suite = "a" * 64
     rows = [{**row, "suite_sha256": suite,
-             "status": "valid_resolved", "resolved": True, "grader": {},
+             "status": "valid_resolved", "resolved": True,
+             "grader": {"outcome": "graded", "resolved": True},
              "duration_ms": 10, "usage": {"input_tokens": 1, "output_tokens": 1,
                                              "cache_read": 0, "cache_creation": 0}}
             for row in plan]
@@ -107,6 +108,43 @@ def test_rank_summary_withholds_on_any_invalid_slot():
     assert summary["ranking_withheld"] is True
     assert summary["ranking"] is None
     assert summary["scores"] is None
+
+
+def test_hidden_grader_pass_counts_even_when_completion_turn_budget_exhausted():
+    from bench.subscription_rank import canonical_plan, summarize
+
+    suite = "e" * 64
+    plan = canonical_plan()
+    rows = [{**row, "suite_sha256": suite, "status": "valid_resolved",
+             "resolved": True, "error_code": "", "usage": {},
+             "grader": {"outcome": "graded", "resolved": True}}
+            for row in plan]
+    for row in rows:
+        if row["arm"] == "collie" and row["task_id"] == "local-audit-request-id-v1":
+            row.update(status="valid_unresolved", resolved=False,
+                       error_code="turn_budget_exhausted")
+
+    summary = summarize(plan, rows, suite)
+
+    assert summary["ranking_withheld"] is False
+    assert summary["ranking"] == [
+        {"rank": 1, "arm": "claude", "score": 1.0},
+        {"rank": 1, "arm": "collie", "score": 1.0},
+    ]
+    assert summary["scores"]["collie"]["turn_budget_exhausted"] == 3
+    assert summary["scores"]["collie"]["execution_completed"] == 3
+    assert summary["scores"]["collie"]["execution_completion_rate"] == 0.5
+    assert summary["scores"]["claude"]["execution_completed"] == 6
+
+
+def test_resummarize_cli_does_not_require_fresh_account_evidence(monkeypatch, tmp_path):
+    from bench import subscription_rank as rank
+
+    called = []
+    monkeypatch.setattr(rank, "resummarize_existing", lambda path: called.append(path) or 0)
+
+    assert rank.main(["--resummarize", str(tmp_path)]) == 0
+    assert called == [tmp_path]
 
 
 def test_rank_summary_rejects_identity_tampering_and_status_boolean_conflict():
