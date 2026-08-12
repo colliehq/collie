@@ -9,6 +9,7 @@ replaced by Collie's prompt. Tokens are never returned or persisted in a receipt
 from __future__ import annotations
 
 import datetime as _datetime
+import hashlib
 import json
 import math
 import os
@@ -114,12 +115,21 @@ def _looks_like_override(name: str, provider: str) -> bool:
 
 
 def _check_environment(receipt: dict[str, Any], environ: Mapping[str, str],
-                       provider: str) -> None:
+                       provider: str, expected_codex_home: str | None = None) -> None:
     # Iterate keys only: secret values are intentionally never fetched.
     found = 0
     for name in environ:
         if not isinstance(name, str):
             _deny(receipt, "environment_name_invalid")
+        if provider == "codex-cli" and name.upper() == "CODEX_HOME":
+            if not expected_codex_home:
+                found += 1
+                continue
+            supplied = environ[name]
+            if (not isinstance(supplied, str)
+                    or os.path.realpath(os.path.abspath(supplied)) != expected_codex_home):
+                _deny(receipt, "codex_home_mismatch")
+            continue
         found += int(_looks_like_override(name, provider))
     if found:
         _deny(receipt, "billing_or_routing_override_present",
@@ -129,9 +139,12 @@ def _check_environment(receipt: dict[str, Any], environ: Mapping[str, str],
         "forbidden_environment_name_count": 0,
         "status_child_environment": "allowlist",
     }
+    if provider == "codex-cli" and expected_codex_home:
+        receipt["environment"]["isolated_codex_home"] = "sha256:" + hashlib.sha256(
+            expected_codex_home.encode("utf-8")).hexdigest()
 
 
-def _status_child_environment(environ: Mapping[str, str]) -> dict[str, str]:
+def _status_child_environment(environ: Mapping[str, str], provider: str) -> dict[str, str]:
     """Copy only non-credential process-location values for the status CLI."""
     child = {"NO_COLOR": "1"}
     for name in environ:
@@ -139,6 +152,11 @@ def _status_child_environment(environ: Mapping[str, str]) -> dict[str, str]:
             raise ValueError("environment name must be a string")
         upper = name.upper()
         if upper not in _STATUS_CHILD_ENV_NAMES:
+            if provider == "codex-cli" and upper == "CODEX_HOME":
+                value = environ[name]
+                if not isinstance(value, str):
+                    raise ValueError("environment value must be a string")
+                child[upper] = value
             continue
         value = environ[name]
         if not isinstance(value, str):
@@ -147,11 +165,11 @@ def _status_child_environment(environ: Mapping[str, str]) -> dict[str, str]:
     return child
 
 
-def _default_runner(argv: tuple[str, ...], environ: Mapping[str, str]
+def _default_runner(argv: tuple[str, ...], environ: Mapping[str, str], provider: str
                     ) -> subprocess.CompletedProcess[str]:
     # npm-installed CLIs are commonly ``.cmd`` shims on Windows.  Resolve the
     # executable without invoking a shell so status checks stay non-injectable.
-    child_env = _status_child_environment(environ)
+    child_env = _status_child_environment(environ, provider)
     executable = shutil.which(argv[0], path=child_env.get("PATH", os.defpath))
     if not executable:
         raise FileNotFoundError(argv[0])
@@ -537,6 +555,8 @@ def check_subscription_guard(
         model: str = "",
         direct_probe: Callable[[str], Any] | None = None,
         require_direct_probe: bool = True,
+        expected_codex_home: str | None = None,
+        codex_launch_receipt: Mapping[str, Any] | None = None,
         now_utc: _datetime.datetime | None = None) -> dict[str, Any]:
     """Authorize one subscription invocation using redacted first-party auth evidence.
 
@@ -568,9 +588,16 @@ def check_subscription_guard(
     source_environ = os.environ if environ is None else environ
     if not isinstance(source_environ, Mapping):
         _deny(receipt, "environment_invalid")
-    _check_environment(receipt, source_environ, canonical)
+    normalized_codex_home = None
+    if expected_codex_home is not None:
+        if canonical != "codex-cli" or not isinstance(expected_codex_home, str):
+            _deny(receipt, "expected_codex_home_invalid")
+        normalized_codex_home = os.path.realpath(os.path.abspath(expected_codex_home))
+        if normalized_codex_home != expected_codex_home:
+            _deny(receipt, "expected_codex_home_not_canonical")
+    _check_environment(receipt, source_environ, canonical, normalized_codex_home)
     command_runner = runner or (
-        lambda argv: _default_runner(argv, source_environ))
+        lambda argv: _default_runner(argv, source_environ, canonical))
     if canonical in ("claude-agent-sdk", "claude-code", "claude-direct"):
         _check_claude(receipt, command_runner)
         if canonical == "claude-agent-sdk":
@@ -606,7 +633,30 @@ def check_subscription_guard(
                     "claude_code_inference_cli_invoked": False,
                 }
     else:
-        _check_codex(receipt, account_evidence, checked_at, command_runner)
+        if codex_launch_receipt is None:
+            _check_codex(receipt, account_evidence, checked_at, command_runner)
+        else:
+            # A long suite may outlive the UI evidence freshness window.  The
+            # launch guard remains immutable evidence that credits/reload were
+            # safe at suite admission; each isolated slot still re-runs the
+            # exact first-party ChatGPT login status check.  A post-run UI
+            # observation is required by the benchmark driver before claims.
+            if (not isinstance(codex_launch_receipt, Mapping)
+                    or codex_launch_receipt.get("provider") != "codex-cli"
+                    or codex_launch_receipt.get("verdict") != "allow"
+                    or (codex_launch_receipt.get("auth") or {}).get("method") != "ChatGPT"
+                    or not isinstance(codex_launch_receipt.get("account_evidence"), Mapping)):
+                _deny(receipt, "codex_launch_receipt_invalid")
+            status = _run_status(receipt, _CODEX_COMMAND, command_runner).strip()
+            if status != "Logged in using ChatGPT":
+                _deny(receipt, "codex_login_not_chatgpt")
+            launch = codex_launch_receipt["account_evidence"]
+            receipt["auth"] = {"status": "authenticated", "method": "ChatGPT"}
+            receipt["account_evidence"] = {
+                "status": "suite_launch_evidence_referenced",
+                "observed_at_utc": launch.get("observed_at_utc"),
+                "post_run_ui_recheck_required": True,
+            }
     receipt["verdict"] = "allow"
     receipt.pop("reason", None)
     receipt.pop("details", None)

@@ -352,7 +352,9 @@ def _spawn_investigative_critic(provider, model):
 
 
 def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
-                   model=None, max_turns=50, benchmark_safe=False):
+                   model=None, max_turns=50, benchmark_safe=False,
+                   request_gate=None, request_complete=None, request_scope="",
+                   complete_prompt=None, benchmark_effort="default"):
                    # 50 (was 35): the verify loop (reproduce ->
                    # edit -> re-check) needs headroom; Hermes runs to 90. Still well under.
     from .cli import make_harness
@@ -365,8 +367,9 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     #   COLLIE_PROVIDER=claude-cli COLLIE_MODEL=opus  (auth via CLAUDE_CODE_OAUTH_TOKEN or
     #   ANTHROPIC_API_KEY — see ClaudeCliProvider). Legitimate first-party CLI, no proxy.
     if benchmark_safe:
-        if provider != "claude-cli":
-            raise ValueError("benchmark_safe Collie requires the official claude-cli provider")
+        if provider not in ("claude-cli", "claude-agent-sdk"):
+            raise ValueError(
+                "benchmark_safe Collie requires an approved official Claude provider")
     else:
         provider = os.environ.get("COLLIE_PROVIDER", provider)
         model = os.environ.get("COLLIE_MODEL", model)
@@ -384,8 +387,10 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     # multi-file coverage comes from related_locations SURFACING siblings (info), not a command.
     _lean = (not benchmark_safe and
              os.environ.get("COLLIE_LEAN_PROMPT") in ("1", "true", "on"))
+    if benchmark_safe and benchmark_effort not in ("default", "high"):
+        raise ValueError("benchmark_effort must be default or high")
     h = make_harness(workdir, provider=provider, model=model, project="swe",
-                     effort="default" if benchmark_safe else None,
+                     effort=benchmark_effort if benchmark_safe else None,
                      code_search=_cs,           # semantic repo navigation (bge-small); env-gated
                      embed="hash")              # one-shot fix: skip loading jina-v3 for
                                                 # memory (unused here) -> ~2GB less peak
@@ -607,10 +612,15 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
             "the tests. Do not create a venv/ or download packages. A few quick "
             "`python3 -c \"...\"` checks to REPRODUCE the issue and verify your fix are "
             "encouraged; just don't run the suite.\n\nISSUE:\n" + problem_statement)
-        res = h.run("swe", prompt, consolidate=False)
+        if callable(request_gate):
+            with h.provider.request_authority(
+                    request_gate, request_complete, request_scope=request_scope):
+                res = h.run("swe", prompt, consolidate=False)
+        else:
+            res = h.run("swe", prompt, consolidate=False)
         h.memory.close(); h.recorder.close()
         return res
-    prompt = (
+    prompt = complete_prompt if complete_prompt is not None else (
         "Fix this GitHub issue by editing the repository's SOURCE code (never tests).\n"
         + workflow +
         "NEVER run `pip install`, `python -m venv`, `pip`, or the test suite (`pytest`) — "
@@ -636,7 +646,12 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         "THIS COMMIT'S TIME (mirror the era and conventions of the codebase, not today's best "
         "practice), and add it to the packaging metadata like a maintainer would.\n\nISSUE:\n"
         + problem_statement)
-    res = h.run("swe", prompt, consolidate=False)
+    if callable(request_gate):
+        with h.provider.request_authority(
+                request_gate, request_complete, request_scope=request_scope):
+            res = h.run("swe", prompt, consolidate=False)
+    else:
+        res = h.run("swe", prompt, consolidate=False)
     h.memory.close(); h.recorder.close()
     return res
 
@@ -748,7 +763,8 @@ def predict_claude_code(workdir: str, problem_statement: str, model="", timeout=
                     stdin_text=CLI_SWE_PROMPT + problem_statement)
 
 
-def predict_codex(workdir: str, problem_statement: str, model="", timeout=1800):
+def predict_codex(workdir: str, problem_statement: str, model="", timeout=1800,
+                  complete_prompt=None):
     """Drive the first-party Codex CLI through its existing ChatGPT subscription login.
 
     This is a *native product* arm, not a same-model harness arm.  It deliberately ignores user
@@ -757,7 +773,21 @@ def predict_codex(workdir: str, problem_statement: str, model="", timeout=1800):
     contains generated commands to the disposable checkout; callers must still use an isolated
     benchmark directory because the evaluated repository is untrusted.
     """
+    disabled_features = (
+        "apps", "auth_elicitation", "browser_use", "browser_use_external",
+        "browser_use_full_cdp_access", "code_mode_host", "computer_use",
+        "fast_mode", "goals", "hooks", "image_generation", "in_app_browser",
+        "memories", "multi_agent", "plugin_sharing", "plugins", "remote_compaction_v2",
+        "remote_plugin", "shell_snapshot", "skill_mcp_dependency_install", "skill_search",
+        "tool_call_mcp_elicitation", "tool_suggest", "workspace_dependencies",
+    )
     cmd = ["codex", "--sandbox", "workspace-write", "--ask-for-approval", "never"]
+    for feature in disabled_features:
+        cmd += ["--disable", feature]
+    for override in ('web_search="disabled"', "tools.web_search=false",
+                     'cli_auth_credentials_store="file"',
+                     'model_reasoning_effort="high"'):
+        cmd += ["-c", override]
     if model:
         cmd += ["--model", model]
     cmd += ["exec", "--json", "--ephemeral", "--ignore-user-config",
@@ -766,8 +796,10 @@ def predict_codex(workdir: str, problem_statement: str, model="", timeout=1800):
     # `-` is Codex's documented stdin sentinel.  Besides preserving multiline issue bodies on
     # Windows, stdin keeps untrusted issue text out of process listings and shell diagnostics.
     cmd.append("-")
+    prompt = (CLI_SWE_PROMPT + problem_statement
+              if complete_prompt is None else complete_prompt)
     return _run_cli(cmd, workdir, extra_env={k: None for k in _NON_CODEX_KEYS}, timeout=timeout,
-                    stdin_text=CLI_SWE_PROMPT + problem_statement)
+                    stdin_text=prompt)
 
 
 def predict_hermes(workdir: str, problem_statement: str, model="", timeout=1800):
