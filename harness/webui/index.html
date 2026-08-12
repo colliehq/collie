@@ -4503,7 +4503,9 @@
     return m;
   }
   function renderMission(card, st) {
-    var b = card.querySelector(".mbody"); b.textContent = "";
+    var b = card.querySelector(".mbody");
+    var reportWasOpen = !!(b && b.querySelector(".mreport[open]"));
+    b.textContent = "";
     if (st.error && !st.state) { b.textContent = "error: " + st.error; return; }
     var head = document.createElement("div"); head.className = "mhead";
     head.appendChild(mchip(missionStateLabel(st.state), "state-" + st.state));
@@ -4536,6 +4538,7 @@
     if (st.report && !st.report.error) {
       var report = st.report, reportCoverage = report.coverage || {}, reportReceipts = report.receipts || {};
       var reportBox = document.createElement("details"); reportBox.className = "mreport";
+      reportBox.open = reportWasOpen;
       var reportHead = document.createElement("summary");
       var reportName = document.createElement("span"); reportName.textContent = t("Progress report");
       var reportUpdated = document.createElement("span"); reportUpdated.className = "mreport-updated";
