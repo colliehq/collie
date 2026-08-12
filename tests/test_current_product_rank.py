@@ -55,6 +55,7 @@ def test_container_uses_subreaper_for_sdk_watchdog(monkeypatch, tmp_path):
         "image", row, paths[0], paths[1], paths[2], paths[3], credential)
 
     assert command[:5] == ["docker", "run", "--rm", "--init", "--network"]
+    assert command[command.index("--security-opt") + 1] == "seccomp=unconfined"
 
 
 def test_shared_prompt_is_byte_identical_for_both_workers(monkeypatch, tmp_path):
@@ -133,6 +134,25 @@ def test_codex_trace_rejects_foreign_surfaces_and_rerouting():
         json.dumps({"type": "turn.completed", "model": "gpt-5.6-sol"}),
     ]), "gpt-5.6-sol")
     assert (terminal, error) == ("completed", "")
+
+
+def test_codex_tool_evidence_counts_only_observed_local_tools():
+    from bench.current_product_worker import _codex_tool_evidence
+
+    trace = "\n".join([
+        json.dumps({"type": "item.completed", "item": {
+            "type": "command_execution", "command": "pwd"}}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "tool_call", "name": "apply_patch"}}),
+        json.dumps({"type": "turn.completed"}),
+    ])
+    assert _codex_tool_evidence(trace) == {
+        "shell_calls_observed": 1, "successful_shell_calls_observed": 0,
+        "apply_patch_calls_observed": 1}
+
+    successful = json.dumps({"type": "item.completed", "item": {
+        "type": "command_execution", "exit_code": 0}})
+    assert _codex_tool_evidence(successful)["successful_shell_calls_observed"] == 1
 
 
 def test_collie_error_classifier_is_specific_without_returning_provider_text():

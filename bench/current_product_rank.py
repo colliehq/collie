@@ -342,6 +342,12 @@ def _container_command(image: str, row: Mapping[str, Any], workspace: Path,
         # reaped after group termination.  Without a subreaper, the zombie keeps
         # killpg(..., 0) true and Collie's ownership proof correctly fails closed.
         "docker", "run", "--rm", "--init", "--network", "bridge", "--cap-drop", "ALL",
+        # Codex's Linux workspace sandbox creates an unprivileged user namespace.
+        # Docker's default seccomp profile blocks that clone/unshare operation;
+        # the outer container still drops every capability, forbids privilege
+        # escalation, mounts only the fixture/state/receipt paths, and has a
+        # read-only root filesystem.
+        "--security-opt", "seccomp=unconfined",
         "--security-opt", "no-new-privileges", "--memory", "3g", "--cpus", "2",
         "--pids-limit", "256", "--read-only",
         "--tmpfs", "/tmp:rw,noexec,nosuid,size=268435456",
@@ -363,6 +369,37 @@ def _container_command(image: str, row: Mapping[str, Any], workspace: Path,
 def _remove_container(name: str) -> bool:
     _run(["docker", "rm", "--force", name], timeout=30)
     return _run(["docker", "inspect", name], timeout=10).returncode != 0
+
+
+def _runtime_sandbox_preflight(image: str, suite_temp: Path) -> dict[str, str]:
+    """Exercise Codex's real namespace sandbox without making a model request."""
+    root = suite_temp / "codex-sandbox-preflight"
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True, exist_ok=False)
+    command = [
+        "docker", "run", "--rm", "--init", "--network", "none",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--security-opt", "seccomp=unconfined", "--read-only",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,size=16777216",
+        "--tmpfs", "/home/runner:rw,nosuid,size=16777216",
+        "--mount", _docker_mount(workspace, "/workspace"),
+        "--entrypoint", "sh", image, "-c",
+        "unshare -Ur /bin/sh -c 'printf sandbox-ok > /workspace/canary'",
+    ]
+    try:
+        _run(command, timeout=30, check=True)
+        if (workspace / "canary").read_text(encoding="utf-8") != "sandbox-ok":
+            raise RuntimeError("Codex sandbox write canary is missing")
+        return {
+            "unprivileged_user_namespace": "ok",
+            "workspace_write_canary": "ok",
+            "network": "none",
+            "capabilities": "all_dropped",
+            "no_new_privileges": "true",
+            "root_filesystem": "read_only",
+        }
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _external_patch(workspace: Path) -> str:
@@ -479,6 +516,8 @@ def _run_one(image: str, suite_sha: str, row: Mapping[str, Any],
         "runtime": worker.get("runtime") if isinstance(worker.get("runtime"), dict) else {},
         "request_evidence": (worker.get("request_evidence")
                              if isinstance(worker.get("request_evidence"), list) else []),
+        "tool_evidence": (worker.get("tool_evidence")
+                          if isinstance(worker.get("tool_evidence"), dict) else {}),
         "grader": grader, "completed_at_utc": _utc_now(),
     }
     _atomic_json(run_dir / "result.json", terminal)
@@ -625,6 +664,14 @@ def execute(*, repetitions: int, wall_seconds: int,
              "ranking": canonical_plan(repetitions)}
     image_id = _build_image(image_tag, revision)
     image_preflight = _image_preflight(image_id)
+    TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    sandbox_probe_root = Path(tempfile.mkdtemp(
+        prefix="current-rank-sandbox-", dir=TEMP_ROOT))
+    try:
+        runtime_sandbox_preflight = _runtime_sandbox_preflight(
+            image_id, sandbox_probe_root)
+    finally:
+        shutil.rmtree(sandbox_probe_root, ignore_errors=True)
     codex_version = _codex_version(image_id)
     if codex_version != "codex-cli 0.147.0":
         raise RuntimeError("unexpected Codex CLI image version")
@@ -633,6 +680,7 @@ def execute(*, repetitions: int, wall_seconds: int,
     guards = _guard_receipts(codex_evidence, codex_auth)
     core = _manifest(revision, source_hashes, image_id, repetitions, wall_seconds,
                      plans, guards, codex_version, image_preflight)
+    core["runtime_sandbox_preflight"] = runtime_sandbox_preflight
     core["billing"]["claude_suite_launch_evidence"] = normalized_claude_evidence
     core["billing"]["post_run_ui_recheck_required"] = True
     suite_sha = _sha_bytes(_canonical_bytes(core))

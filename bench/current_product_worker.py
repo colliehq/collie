@@ -307,6 +307,11 @@ def _codex_trace_verdict(stdout: str, expected_model: str) -> tuple[str, str]:
             continue
         kind = str(event.get("type") or "").lower()
         encoded = json.dumps(event, ensure_ascii=True, sort_keys=True).lower()
+        if any(marker in encoded for marker in (
+                "no permissions to create a new namespace",
+                "unshare: unshare failed: operation not permitted",
+                "writing is blocked by read-only sandbox")):
+            return terminal, "codex_workspace_sandbox_unavailable"
         if any(marker in encoded for marker in forbidden_markers):
             return terminal, "codex_forbidden_surface_observed"
         observed_model = event.get("model")
@@ -320,6 +325,33 @@ def _codex_trace_verdict(stdout: str, expected_model: str) -> tuple[str, str]:
         elif kind in ("turn.failed", "error") or kind.endswith(".error"):
             terminal = "failed"
     return terminal, ""
+
+
+def _codex_tool_evidence(stdout: str) -> dict[str, int]:
+    shell_calls = 0
+    successful_shell_calls = 0
+    apply_patch_calls = 0
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").lower()
+        if item_type == "command_execution":
+            shell_calls += 1
+            if item.get("exit_code") == 0:
+                successful_shell_calls += 1
+        if (item_type in ("file_change", "apply_patch")
+                or str(item.get("name") or "").lower() == "apply_patch"):
+            apply_patch_calls += 1
+    return {"shell_calls_observed": shell_calls,
+            "successful_shell_calls_observed": successful_shell_calls,
+            "apply_patch_calls_observed": apply_patch_calls}
 
 
 def run_codex(task: Mapping[str, Any], workspace: Path, state_dir: Path) -> dict[str, Any]:
@@ -371,6 +403,7 @@ def run_codex(task: Mapping[str, Any], workspace: Path, state_dir: Path) -> dict
         error_code = _safe_error("%s: %s" % (type(exc).__name__, exc))
 
     usage: dict[str, Any] = {}
+    tool_evidence: dict[str, int] = {}
     if cli is not None:
         if cli.returncode != 0:
             error_code = error_code or _safe_error(
@@ -381,6 +414,7 @@ def run_codex(task: Mapping[str, Any], workspace: Path, state_dir: Path) -> dict
         if not error_code and terminal != "completed":
             error_code = "codex_terminal_receipt_missing"
         usage = _codex_usage(cli.stdout or "")
+        tool_evidence = _codex_tool_evidence(cli.stdout or "")
         if usage:
             usage["scope"] = "codex_product_reported_aggregate"
             usage["internal_model_requests"] = None
@@ -395,6 +429,7 @@ def run_codex(task: Mapping[str, Any], workspace: Path, state_dir: Path) -> dict
         "patch": patch,
         "usage": usage,
         "request_evidence": [],
+        "tool_evidence": tool_evidence,
         "isolated_guard_receipt": isolated_guard if cli is not None else None,
         "turns_exhausted": False,
         "duration_ms": round((time.monotonic() - started) * 1000),
@@ -485,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             "patch": "",
             "usage": {},
             "request_evidence": [],
+            "tool_evidence": {},
             "started_at_utc": started_at,
             "finished_at_utc": _utc_now(),
         }
