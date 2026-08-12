@@ -4414,11 +4414,15 @@
       if (st && st.mission_id && !st.error) runMissionCard(card, st.mission_id);
     }).catch(function (e) { missionError(card, e, "Could not create the mission"); });
   }
-  function showMission(mid) {
+  function showMission(mid, openReport) {
     var card = newMissionCard();
     card.querySelector(".mbody").textContent = t("loading mission…");
     missionGet("/api/mission?id=" + encodeURIComponent(mid)).then(function (st) {
       renderMission(card, st);
+      if (openReport) {
+        var report = card.querySelector(".mreport");
+        if (report) report.open = true;
+      }
     }).catch(function (e) { missionError(card, e, "Could not load the mission"); });
   }
   function showMissions() {
@@ -4441,7 +4445,7 @@
     card.querySelector(".mbody").textContent =
       "/mission <goal> (uses your Autonomy setting) · /mission --review <goal> · /mission list · " +
       "advanced: /mission --domains=x.com,*.y.com --rate=6 <goal> · " +
-      "/mission status|pause|resume|cancel|check|continue|accept|reconcile <id>";
+      "/mission status|report|pause|resume|cancel|check|continue|accept|reconcile <id>";
   }
   function handleMissionCommand(text) {
     var hit = /^\/(?:mission|delegate)(?:\s+(.*))?$/i.exec(text || "");
@@ -4455,10 +4459,11 @@
     if (/^(?:list|ls|help)\s+/i.test(raw)) {
       addErr(t("This Mission command does not take arguments.")); return true;
     }
-    var ctl = /^(status|pause|resume|cancel|check|continue|accept|reconcile|run)\s+(\S+)\s*$/i.exec(raw);
+    var ctl = /^(status|report|pause|resume|cancel|check|continue|accept|reconcile|run)\s+(\S+)\s*$/i.exec(raw);
     if (ctl) {
       var action = ctl[1].toLowerCase(), mid = ctl[2];
       if (action === "status") { showMission(mid); return true; }
+      if (action === "report") { showMission(mid, true); return true; }
       var card = newMissionCard(); card.querySelector(".mbody").textContent = t("updating mission…");
       if (action === "cancel" && !window.confirm(t("Cancel this mission? Its audit history will be kept."))) {
         card.remove(); return true;
@@ -4473,7 +4478,7 @@
       });
       return true;
     }
-    if (/^(status|pause|resume|cancel|check|continue|accept|reconcile|run)(?:\s|$)/i.test(raw)) {
+    if (/^(status|report|pause|resume|cancel|check|continue|accept|reconcile|run)(?:\s|$)/i.test(raw)) {
       addErr(t("Mission command needs exactly one mission id.")); return true;
     }
     var explicit = /^start\s+([\s\S]+)$/i.exec(raw);

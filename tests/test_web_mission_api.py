@@ -109,6 +109,7 @@ def test_web_ui_keeps_mission_out_of_the_model_router():
     assert 't("Progress report")' in html
     assert 'missionCopyReport(report, copyReport)' in html
     assert 'missionDownloadReport(report)' in html
+    assert 'if (action === "report") { showMission(mid, true); return true; }' in html
     handler_pos = html.index("function handleMissionCommand")
     malformed_guard = html.index('if (/^start$/i.test(raw))', handler_pos)
     start_call = html.index("_startMissionCard(goal, autonomous, bounds)", malformed_guard)

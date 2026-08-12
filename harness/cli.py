@@ -2507,6 +2507,8 @@ def cmd_mission(args):
                 print("usage: collie mission %s <mission-id>" % action); return 1
             if action == "status":
                 out = svc.status(mid)
+            elif action == "report":
+                out = svc.report(mid)
             elif action == "run":
                 out = svc.run(mid)
             elif action == "pause":
@@ -2532,6 +2534,8 @@ def cmd_mission(args):
                 out = svc.confirm(mid, nonce)
         if args.json:
             print(_json.dumps(out, ensure_ascii=False))
+        elif action == "report":
+            print(out.get("error") or out.get("markdown") or "progress report unavailable")
         elif action == "ls":
             rows = out.get("missions", [])
             if not rows:
@@ -3452,9 +3456,9 @@ def main(argv=None):
     pj.set_defaults(fn=cmd_jobs)
 
     pmis = sub.add_parser(
-        "mission", help="durable campaigns: start/list/run/pause/resume/retry/cancel/reconcile")
+        "mission", help="durable campaigns: start/list/status/report/run/pause/resume/retry/cancel/reconcile")
     pmis.add_argument("action",
-                      choices=["start", "ls", "status", "run", "pause", "resume", "retry",
+                      choices=["start", "ls", "status", "report", "run", "pause", "resume", "retry",
                                "cancel", "confirm", "continue", "accept", "check",
                                "reconcile"])
     pmis.add_argument("text", nargs="?", default="", help="goal (start) or mission id")

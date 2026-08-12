@@ -30,6 +30,16 @@ def test_cli_can_create_pause_resume_and_cancel(monkeypatch, tmp_path, capsys):
     assert rc == 0 and listed["missions"][0]["mission_id"] == mid
 
 
+def test_cli_exports_redacted_progress_report(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    rc, created = _run(capsys, ["mission", "start", "report progress", "--json"])
+    mid = created["mission_id"]
+    rc, report = _run(capsys, ["mission", "report", mid, "--json"])
+    assert rc == 0 and report["format_version"] == 1
+    assert report["mission_id"] == mid and "case" not in report
+    assert report["markdown"].startswith("# Mission progress:")
+
+
 def test_mission_is_a_real_cli_command():
     assert "mission" in cli.CMDS
     assert callable(cli.cmd_mission)
