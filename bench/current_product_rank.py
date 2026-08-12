@@ -613,6 +613,9 @@ def execute(*, repetitions: int, wall_seconds: int,
             image_tag: str = IMAGE_TAG,
             claude_account_evidence: Mapping[str, Any] | None = None) -> int:
     task_self_check()
+    normalized_claude_evidence = dict(claude_account_evidence or {})
+    normalized_claude_evidence["observed_at_utc"] = _parse_recent_evidence_timestamp(
+        normalized_claude_evidence.get("observed_at_utc"), label="Claude launch")
     revision, source_hashes = _source_revision_and_hashes(require_clean=not preflight_only)
     plans = {"admission": canonical_plan(1, admission=True),
              "ranking": canonical_plan(repetitions)}
@@ -626,8 +629,7 @@ def execute(*, repetitions: int, wall_seconds: int,
     guards = _guard_receipts(codex_evidence, codex_auth)
     core = _manifest(revision, source_hashes, image_id, repetitions, wall_seconds,
                      plans, guards, codex_version, image_preflight)
-    core["billing"]["claude_suite_launch_evidence"] = dict(
-        claude_account_evidence or {})
+    core["billing"]["claude_suite_launch_evidence"] = normalized_claude_evidence
     core["billing"]["post_run_ui_recheck_required"] = True
     suite_sha = _sha_bytes(_canonical_bytes(core))
     if preflight_only:
@@ -661,7 +663,8 @@ def execute(*, repetitions: int, wall_seconds: int,
                 flush=True)
             if phase == "admission" and terminal["status"] not in (
                     "valid_resolved", "valid_unresolved"):
-                summary = summarize(plans["admission"], rows, suite_sha)
+                summary = summarize(
+                    plans["admission"], rows, suite_sha, require_post_run_billing=True)
                 _atomic_json(result_root / "summary.json", summary)
                 print("admission failed; ranking launches were not consumed")
                 return 2
@@ -712,10 +715,13 @@ def finalize_billing(result_root: Path, *, codex_evidence: Mapping[str, Any],
         raise RuntimeError("manifest and summary suite identities differ")
     created = dt.datetime.fromisoformat(
         str(manifest["created_at_utc"]).replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+    completed = dt.datetime.fromisoformat(
+        str(summary["generated_at_utc"]).replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+    not_before = max(created, completed)
     codex_observed = _parse_recent_evidence_timestamp(
-        codex_evidence.get("observed_at_utc"), label="Codex post-run", not_before=created)
+        codex_evidence.get("observed_at_utc"), label="Codex post-run", not_before=not_before)
     claude_observed = _parse_recent_evidence_timestamp(
-        claude_evidence.get("observed_at_utc"), label="Claude post-run", not_before=created)
+        claude_evidence.get("observed_at_utc"), label="Claude post-run", not_before=not_before)
     safe = (
         codex_evidence.get("credits_remaining") == 0
         and codex_evidence.get("auto_reload") is False

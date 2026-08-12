@@ -211,6 +211,34 @@ def test_summary_withholds_ranking_until_post_run_billing_check():
     assert result["ranking_withheld_reason"] == "post_run_billing_ui_recheck_pending"
 
 
+def test_evidence_timestamp_must_be_recent_and_after_benchmark(monkeypatch):
+    from bench import current_product_rank as rank
+
+    now = dt.datetime(2026, 8, 12, 21, 0, tzinfo=dt.timezone.utc)
+
+    class FrozenDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(rank.dt, "datetime", FrozenDateTime)
+    assert rank._parse_recent_evidence_timestamp(
+        "2026-08-12T20:59:00Z", label="launch") == "2026-08-12T20:59:00Z"
+
+    for value, not_before in (
+        ("2026-08-12T20:44:59Z", None),
+        ("2026-08-12T21:02:00Z", None),
+        ("2026-08-12T20:59:00Z", now),
+    ):
+        try:
+            rank._parse_recent_evidence_timestamp(
+                value, label="evidence", not_before=not_before)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalid evidence timestamp was accepted")
+
+
 def test_worker_input_binds_guard_and_delivered_prompt():
     from bench.current_product_worker import _validate_task
 
