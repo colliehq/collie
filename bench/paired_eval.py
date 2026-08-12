@@ -15,10 +15,10 @@ Why not "run SWE-bench Verified and report a number":
     Hermes and Pi", and there is no record left in this repo to check. Numbers with no trace are
     worse than no numbers.
 
-So this measures the thing that survives contamination: the SAME instance through BOTH harnesses,
-repeated, reported per instance rather than as a total. Contamination inflates both arms, so a
-paired result stays meaningful where an absolute score does not (it compresses the gap, which
-makes a difference we do observe a conservative one).
+So this measures the thing that survives contamination: the SAME instance through every selected
+product, repeated, reported per instance rather than as a total.  The subscription-native run is
+explicitly a PRODUCT comparison: Collie and Claude Code use Opus, while Codex uses its native Sol
+route.  It says which purchasable system solved the task; it cannot isolate a pure harness effect.
 
 MEMORY IS THE TRAP THIS FILE EXISTS TO AVOID. Collie remembers across runs and Claude Code does
 not, so a repeated instance is exactly where Collie starts answering from its own notes rather
@@ -27,10 +27,9 @@ and a store, and the agent reported "result unchanged from the previous runs" ab
 had never looked at. Every run below gets its own COLLIE_STATE_DIR and its own project name, and
 `verify_isolation()` proves it against a real fork before any quota is spent.
 
-Two conditions are worth measuring and must never be mixed:
-  cold  — fresh memory per run. Comparable to Claude Code; measures the harness.
-  warm  — memory carried across instances. Measures what the memory is worth.
-Reporting one while running the other is how a harness flatters itself.
+Only the cold condition is implemented here: every attempt gets fresh state.  A previously exposed
+``collie-warm`` arm did not consolidate or retain a memory-writing tool, so its shared directory was
+empty and the label was false; it is rejected until a real cross-task memory contract exists.
 """
 from __future__ import annotations
 
@@ -115,11 +114,10 @@ def verify_isolation() -> tuple:
 
 
 # ---------------------------------------------------------------- one run
-def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str = "") -> dict:
-    """One Collie attempt. `warm_state` shares a store across instances (the warm condition);
-    empty means a fresh store — the only condition comparable to Claude Code."""
+def run_collie(inst: dict, workdir: str, model: str, rep: int, max_turns: int = 24) -> dict:
+    """One memory-isolated, tool-restricted Collie product attempt."""
     from harness import swe
-    state = warm_state or tempfile.mkdtemp(prefix="pe-cold-")
+    state = tempfile.mkdtemp(prefix="pe-cold-")
     prev = os.environ.get("COLLIE_DATA_DIR")
     # COLLIE_DATA_DIR, not COLLIE_STATE_DIR: from a source checkout the latter is
     # silently ignored (see _paths), so it would isolate nothing.
@@ -131,8 +129,12 @@ def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str =
         # returns a RunResult (tokens/cost), predict_claude_code returns the CLI result. Reading
         # the return value as a patch is how you get a benchmark that reports plausible-looking
         # byte counts for work that never happened — take the diff from the repo, always.
+        # The official Claude CLI is the only subscription-safe Opus backend in this benchmark.
+        # The old anthropic-oauth route reused a bearer token directly and could not prove whether
+        # usage landed in the flat plan or metered extra usage.
         rr = swe.predict_collie(workdir, inst["problem_statement"],
-                                provider="anthropic-oauth", model=model)
+                                provider="claude-cli", model=model, max_turns=max_turns,
+                                benchmark_safe=True)
         # Record EVERY usage field RunResult carries, not just input/output. Cache reads are
         # billed at a tenth of input and are the bulk of an agent loop's tokens, so a cost figure
         # without them overstates spend several-fold — and the cold runs delete their store, so a
@@ -141,6 +143,10 @@ def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str =
                  ("turns", "input_tokens", "output_tokens", "total_tokens",
                   "cache_read", "cache_creation", "cache_miss_tokens", "cost_usd")
                  if getattr(rr, k, None) is not None}
+        if "cost_usd" in usage:
+            # RunResult prices tokens at the public API rate even when Claude Max paid the real
+            # bill.  Preserve that useful efficiency estimate without calling it a charge.
+            usage["api_equivalent_cost_usd"] = usage.pop("cost_usd")
         # Collie reports a provider failure (quota exhausted, HTTP error) in RunResult.error and
         # returns NORMALLY — it does not raise. Reading only exceptions therefore turned a
         # subscription outage into "collie produced no patch": two 16-second, one-turn, zero-byte
@@ -158,26 +164,35 @@ def run_collie(inst: dict, workdir: str, model: str, rep: int, warm_state: str =
             os.environ.pop("COLLIE_DATA_DIR", None)
         else:
             os.environ["COLLIE_DATA_DIR"] = prev
-        if not warm_state:
-            shutil.rmtree(state, ignore_errors=True)
+        shutil.rmtree(state, ignore_errors=True)
     return {"harness": "collie", "rep": rep, "secs": round(time.time() - t0, 1),
             "patch_bytes": len(patch or ""), "patch": patch, "error": err, "usage": usage}
 
 
-def run_claude(inst: dict, workdir: str, model: str, rep: int) -> dict:
+def run_claude(inst: dict, workdir: str, model: str, rep: int, max_turns: int = 24) -> dict:
     from harness import swe
     t0 = time.time()
     patch, err, cli = "", "", None
     try:
-        cli = swe.predict_claude_code(workdir, inst["problem_statement"], model=model)
+        cli = swe.predict_claude_code(workdir, inst["problem_statement"], model=model,
+                                      max_turns=max_turns)
     except Exception as e:
         err = "%s: %s" % (type(e).__name__, e)
+    data = {}
+    if cli is not None and (cli.stdout or "").strip().startswith("{"):
+        try:
+            parsed = json.loads(cli.stdout)
+            data = parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            data = {}
     # An empty patch with no explanation is the failure mode this whole file exists to prevent:
     # the arm "ran", scored 0, and looked like a legitimate loss. Surface why it produced nothing.
     if cli is not None and not err:
         tail = ((cli.stderr or "").strip() or (cli.stdout or "").strip())[-400:]
         if cli.returncode != 0:
             err = "claude exited %d: %s" % (cli.returncode, tail)
+        elif data.get("is_error") is True:
+            err = "claude reported an adapter error"
     try:
         patch = swe.make_patch(workdir)     # same contract as collie — diff the repo, not the return
     except Exception as e:
@@ -185,22 +200,113 @@ def run_claude(inst: dict, workdir: str, model: str, rep: int) -> dict:
     # The CLI reports its own usage/cost on stdout under --output-format json. Parse failures are
     # recorded as an empty usage dict, never as a zero — a missing measurement is not free work.
     usage = {}
-    if cli is not None and (cli.stdout or "").strip().startswith("{"):
-        try:
-            d = json.loads(cli.stdout)
-            u = d.get("usage") or {}
-            usage = {"cost_usd": d.get("total_cost_usd"), "duration_ms": d.get("duration_ms"),
-                     "input_tokens": u.get("input_tokens"),
-                     "output_tokens": u.get("output_tokens"),
-                     "cache_read": u.get("cache_read_input_tokens"),
-                     "cache_creation": u.get("cache_creation_input_tokens")}
-            usage = {k: v for k, v in usage.items() if v is not None}
-        except (ValueError, AttributeError):
-            usage = {}
+    u = data.get("usage") or {}
+    if isinstance(u, dict):
+        usage = {"api_equivalent_cost_usd": data.get("total_cost_usd"),
+                 "duration_ms": data.get("duration_ms"),
+                 "input_tokens": u.get("input_tokens"),
+                 "output_tokens": u.get("output_tokens"),
+                 "cache_read": u.get("cache_read_input_tokens"),
+                 "cache_creation": u.get("cache_creation_input_tokens")}
+        usage = {k: v for k, v in usage.items() if v is not None}
+    if not patch and not err:
+        # Headless Claude can exit zero after declining an edit because the cwd failed its
+        # permission check.  That is an adapter-invalid attempt, not a solved/unsolved sample.
+        result_text = str(data.get("result") or "").lower()
+        permission_markers = (
+            "approve the write", "permission mode", "filesystem access",
+            "access is sorted", "cannot edit", "can't edit", "unable to edit",
+        )
+        if any(marker in result_text for marker in permission_markers):
+            err = "claude adapter denied workspace editing"
     row = {"harness": "claude", "rep": rep, "secs": round(time.time() - t0, 1),
            "patch_bytes": len(patch or ""), "patch": patch, "error": err, "usage": usage}
     if not patch and cli is not None:
         # rc==0 and an empty diff still needs an explanation — keep what the CLI actually said.
+        row["cli_rc"] = cli.returncode
+        row["cli_tail"] = ((cli.stdout or "") + "\n" + (cli.stderr or "")).strip()[-800:]
+    return row
+
+
+def _codex_usage(stdout: str) -> dict:
+    """Parse the last aggregate usage receipt from `codex exec --json` JSONL.
+
+    Codex has emitted both direct `usage` objects and nested token-count objects across CLI
+    revisions.  Keep the parser conservative: missing fields stay missing rather than becoming
+    fabricated zeroes, and the last aggregate event wins instead of summing cumulative events.
+    """
+    found = {}
+    aliases = {
+        "input_tokens": "input_tokens", "cached_input_tokens": "cache_read",
+        "cache_read_input_tokens": "cache_read", "output_tokens": "output_tokens",
+        "reasoning_output_tokens": "reasoning_output_tokens", "total_tokens": "total_tokens",
+    }
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        candidates = [event.get("usage"), event.get("token_usage")]
+        result = event.get("result")
+        if isinstance(result, dict):
+            candidates += [result.get("usage"), result.get("token_usage")]
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            parsed = {dest: candidate[src] for src, dest in aliases.items()
+                      if isinstance(candidate.get(src), (int, float))
+                      and not isinstance(candidate.get(src), bool)}
+            if parsed:
+                found = parsed
+    return found
+
+
+def _codex_adapter_error(stdout: str, stderr: str) -> str:
+    """Return a stable error code for JSONL/diagnostic failures even when Codex exits zero."""
+    messages = []
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        event_type = str(event.get("type") or "").lower()
+        if event_type in {"error", "turn.failed", "item.failed"} or event_type.endswith(".error"):
+            return "codex emitted an error event"
+        # Search structured text only for known permission failures; never echo arbitrary model or
+        # server output into the public result.
+        messages.append(json.dumps(event, ensure_ascii=False).lower())
+    messages.append((stderr or "").lower())
+    combined = "\n".join(messages)
+    if "writing is blocked by read-only sandbox" in combined or "read-only sandbox" in combined:
+        return "codex workspace was read-only"
+    if ("write" in combined or "patch" in combined) and any(marker in combined for marker in (
+            "rejected by user approval", "permission denied", "operation not permitted")):
+        return "codex workspace edit was denied"
+    return ""
+
+
+def run_codex(inst: dict, workdir: str, model: str, rep: int) -> dict:
+    """One native Codex product attempt using the existing ChatGPT subscription login."""
+    from harness import swe
+    t0 = time.time()
+    patch, err, cli = "", "", None
+    try:
+        cli = swe.predict_codex(workdir, inst["problem_statement"], model=model)
+    except Exception as e:
+        err = "%s: %s" % (type(e).__name__, e)
+    if cli is not None and not err and cli.returncode != 0:
+        tail = ((cli.stderr or "").strip() or (cli.stdout or "").strip())[-400:]
+        err = "codex exited %d: %s" % (cli.returncode, tail)
+    if cli is not None and not err:
+        err = _codex_adapter_error(cli.stdout or "", cli.stderr or "")
+    try:
+        patch = swe.make_patch(workdir)
+    except Exception as e:
+        err = err or "make_patch: %s: %s" % (type(e).__name__, e)
+    usage = _codex_usage(cli.stdout if cli is not None else "")
+    row = {"harness": "codex", "rep": rep, "secs": round(time.time() - t0, 1),
+           "patch_bytes": len(patch or ""), "patch": patch, "error": err, "usage": usage}
+    if not patch and cli is not None:
         row["cli_rc"] = cli.returncode
         row["cli_tail"] = ((cli.stdout or "") + "\n" + (cli.stderr or "")).strip()[-800:]
     return row
@@ -233,11 +339,66 @@ def main(argv) -> int:
     ap = argparse.ArgumentParser(prog="paired_eval")
     ap.add_argument("--n", type=int, default=3, help="instances to sample")
     ap.add_argument("--reps", type=int, default=2, help="repeats per instance (variance)")
-    ap.add_argument("--model", default="claude-sonnet-5")
+    ap.add_argument("--model", default="opus",
+                    help="Claude model for both Collie and native Claude Code")
+    ap.add_argument("--codex-model", default="gpt-5.6-sol",
+                    help="native Codex product model (not a same-model control)")
+    ap.add_argument("--max-turns", type=int, default=24,
+                    help="per-run turn ceiling for Collie and Claude Code")
+    ap.add_argument("--arms", default="collie,claude,codex",
+                    help="comma-separated product arms: collie,claude,codex")
+    ap.add_argument("--codex-credits-remaining", type=float, default=None,
+                    help="freshly observed Codex credit balance; must be exactly 0")
+    ap.add_argument("--codex-auto-reload-off", action="store_true",
+                    help="assert the freshly observed Codex auto-reload setting is off")
+    ap.add_argument("--codex-evidence-observed-at", default="",
+                    help="UTC timestamp for the Codex account UI observation")
     ap.add_argument("--repos", default="", help="restrict to these repos")
-    ap.add_argument("--warm", action="store_true", help="ALSO run collie with memory carried over")
+    ap.add_argument("--warm", action="store_true",
+                    help="reserved; currently rejected because no valid warm-memory contract exists")
+    ap.add_argument("--external-sandboxed", action="store_true",
+                    help="assert this process already runs in a disposable external sandbox")
     ap.add_argument("--dry", action="store_true", help="load + isolate + plan only; spend nothing")
     a = ap.parse_args(argv)
+
+    arms = [value.strip() for value in a.arms.split(",") if value.strip()]
+    allowed = {"collie", "claude", "codex"}
+    if len(arms) < 2 or len(arms) != len(set(arms)) or not set(arms) <= allowed:
+        print("refusing to run: --arms needs two or more unique values from collie,claude,codex")
+        return 2
+    if a.warm:
+        print("refusing to run: collie-warm is not implemented truthfully yet")
+        return 2
+    if not 1 <= a.max_turns <= 120:
+        print("refusing to run: --max-turns must be between 1 and 120")
+        return 2
+    if not a.dry and not a.external_sandboxed:
+        print("refusing to run: real benchmark repositories require a disposable external sandbox")
+        print("use python -m bench.subscription_smoke for the trusted one-file adapter gate")
+        return 2
+
+    # Fail closed before loading a repository or sending a model request.  The guard checks the
+    # untouched parent environment, official CLI login modes, and (for Codex) a fresh account-UI
+    # observation proving there is no credit balance or auto-reload fallback.  A denial is missing
+    # authority, never a benchmark loss.
+    from bench.subscription_guard import check_subscription_guard, SubscriptionGuardError
+    guard_receipts = []
+    try:
+        if set(arms) & {"collie", "claude"}:
+            guard_receipts.append(check_subscription_guard("claude-code"))
+        if "codex" in arms:
+            guard_receipts.append(check_subscription_guard("codex-cli", account_evidence={
+                "credits_remaining": a.codex_credits_remaining,
+                "auto_reload": False if a.codex_auto_reload_off else None,
+                "observed_at_utc": a.codex_evidence_observed_at,
+            }))
+    except SubscriptionGuardError as e:
+        print("subscription guard: DENY")
+        print(json.dumps(e.receipt, ensure_ascii=False, indent=1))
+        print("refusing to run: %s" % e.reason)
+        return 2
+    print("subscription guard: ALLOW (%s)" %
+          ", ".join(receipt["provider"] for receipt in guard_receipts))
 
     ok, detail = verify_isolation()
     print("isolation: %s  %s" % ("OK" if ok else "FAILED", json.dumps(detail, ensure_ascii=False)))
@@ -251,9 +412,15 @@ def main(argv) -> int:
     for i in instances:
         print("   %-44s %-28s %s" % (i["instance_id"][:44], i["repo"], i.get("repo_language", "")))
 
-    plan = len(instances) * a.reps * (3 if a.warm else 2)
+    run_arms = arms
+    plan = len(instances) * a.reps * len(run_arms)
     print("\nplan: %d instances x %d reps x %d arms = %d runs" %
-          (len(instances), a.reps, 3 if a.warm else 2, plan))
+          (len(instances), a.reps, len(run_arms), plan))
+    print("track: subscription-native product comparison (system result, NOT harness effect)")
+    print("scope: exploratory smoke; output is deliberately non-publishable")
+    print("arms: " + ", ".join(
+        "%s=%s" % (arm, a.codex_model if arm == "codex" else a.model)
+        for arm in run_arms))
     if a.dry:
         print("dry run — nothing spent.")
         return 0
@@ -266,10 +433,10 @@ def main(argv) -> int:
     # these as an upper bound per arm, never as a score.
     from harness import swe
     os.makedirs(RESULTS, exist_ok=True)
-    rows, warm_state = [], (tempfile.mkdtemp(prefix="pe-warm-") if a.warm else "")
+    rows = []
     for inst in instances:
         for rep in range(1, a.reps + 1):
-            for arm in ("collie", "claude"):
+            for arm in run_arms:
                 wd = tempfile.mkdtemp(prefix="pe-repo-")
                 try:
                     swe.prepare_repo(inst["repo"], inst["base_commit"], wd)
@@ -279,30 +446,65 @@ def main(argv) -> int:
                                  "error": "prepare_repo: %s" % e})
                     shutil.rmtree(wd, ignore_errors=True)
                     continue
-                r = (run_collie(inst, wd, a.model, rep) if arm == "collie"
-                     else run_claude(inst, wd, a.model, rep))
+                if arm == "collie":
+                    r = run_collie(inst, wd, a.model, rep, max_turns=a.max_turns)
+                elif arm == "claude":
+                    r = run_claude(inst, wd, a.model, rep, max_turns=a.max_turns)
+                else:
+                    r = run_codex(inst, wd, a.codex_model, rep)
                 r["instance_id"] = inst["instance_id"]
+                # The preflight proves the metered fallback is disabled. It predicts zero marginal
+                # charge; without a post-run account observation it does not prove an actual bill.
+                r["expected_marginal_charge_usd"] = 0
+                r["metered_fallback_disabled"] = True
                 rows.append(r)
                 print("  %-46s %-7s rep%d  patch=%-6s %5.0fs %s" %
                       (inst["instance_id"][:46], arm, rep, r["patch_bytes"], r["secs"],
                        (r["error"] or "")[:40]), flush=True)
                 shutil.rmtree(wd, ignore_errors=True)
-                out = os.path.join(RESULTS, "paired-%s.json" % a.model)
+                out = os.path.join(RESULTS, "paired-subscription-product.json")
                 with open(out, "w", encoding="utf-8") as f:
-                    json.dump({"dataset": DATASET, "model": a.model,
+                    json.dump({"dataset": DATASET, "track": "product",
+                               "claim": "system_comparison",
+                               "scope": "exploratory_smoke", "publishable": False,
+                               "safety_profile": {
+                                   "collie": "repo rules/skills disabled; no shell or network",
+                                   "claude": "safe-mode; no persistence; no shell or network",
+                                   "codex": "workspace-write sandbox; ephemeral; user config ignored",
+                               },
+                               "subscription_guard_receipts": guard_receipts,
+                               "models": {"collie": a.model, "claude": a.model,
+                                          "codex": a.codex_model},
+                               "billing": {"mode": "subscription_only",
+                                           "expected_marginal_charge_usd": 0,
+                                           "metered_fallback_disabled": True,
+                                           "api_equivalent_cost_is_not_a_charge": True},
                                "rows": [{k: v for k, v in x.items() if k != "patch"} for x in rows],
                                "summary": summarize(rows)}, f, ensure_ascii=False, indent=1)
                 # Patches kept alongside, because grading is the only half that discriminates and
                 # a stripped result file means re-spending the whole run to get them back.
                 with open(out.replace(".json", "-patches.json"), "w", encoding="utf-8") as f:
-                    json.dump({"dataset": DATASET, "model": a.model, "rows": rows},
+                    json.dump({"dataset": DATASET, "track": "product",
+                               "claim": "system_comparison",
+                               "scope": "exploratory_smoke", "publishable": False,
+                               "safety_profile": {
+                                   "collie": "repo rules/skills disabled; no shell or network",
+                                   "claude": "safe-mode; no persistence; no shell or network",
+                                   "codex": "workspace-write sandbox; ephemeral; user config ignored",
+                               },
+                               "subscription_guard_receipts": guard_receipts,
+                               "models": {"collie": a.model, "claude": a.model,
+                                          "codex": a.codex_model},
+                               "billing": {"mode": "subscription_only",
+                                           "expected_marginal_charge_usd": 0,
+                                           "metered_fallback_disabled": True,
+                                           "api_equivalent_cost_is_not_a_charge": True},
+                               "rows": rows},
                               f, ensure_ascii=False, indent=1)
-    if warm_state:
-        shutil.rmtree(warm_state, ignore_errors=True)
     print()
     print(json.dumps(summarize(rows), ensure_ascii=False, indent=1)[:1400])
     print()
-    print("written to", os.path.join(RESULTS, "paired-%s.json" % a.model))
+    print("written to", os.path.join(RESULTS, "paired-subscription-product.json"))
     return 0
 
 

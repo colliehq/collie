@@ -165,6 +165,41 @@ def test_provider_error_contract_matrix():
                 assert c.stop_reason == "error", "%s did not return error for %r" % (p.name, f)
                 assert c.text.startswith("ERROR("), (p.name, c.text[:40])
 
+def test_claude_cli_provider_fails_closed_on_process_and_envelope_errors():
+    """A CLI launch/protocol failure must never become an empty successful end_turn."""
+    import subprocess
+    from unittest.mock import patch
+    from harness.providers import ClaudeCliProvider
+
+    failures = [
+        subprocess.CompletedProcess(["claude"], 7, "", "authentication failed"),
+        subprocess.CompletedProcess(["claude"], 0, "not JSON", ""),
+        subprocess.CompletedProcess(["claude"], 0, json.dumps({
+            "is_error": True, "result": "quota exhausted", "usage": {}}), ""),
+        subprocess.CompletedProcess(["claude"], 0, json.dumps({"usage": {}}), ""),
+    ]
+    for process in failures:
+        provider = ClaudeCliProvider("opus")
+        with patch("harness.providers.shutil.which", return_value="C:/bin/claude.cmd"), \
+             patch("harness.providers.subprocess.run", return_value=process):
+            completion = provider.complete(
+                "system", [{"role": "user", "content": "do the work"}], [])
+        assert completion.stop_reason == "error", process
+        assert completion.text.startswith("ERROR(claude-cli):"), completion.text
+
+def test_claude_cli_text_protocol_handles_braces_inside_json_strings():
+    from harness.providers import _parse_answer_json, _parse_tool_json
+
+    content = '}\nfunction f() { return {"nested": true}; }\n{'
+    encoded_tool = "prose before\n```json\n%s\n```" % json.dumps({
+        "tool": "write_file", "args": {"path": "x.js", "content": content}})
+    call = _parse_tool_json(encoded_tool)
+    assert call is not None and call.name == "write_file"
+    assert call.args == {"path": "x.js", "content": content}
+
+    answer = 'kept a closing brace } and an opening brace { inside the summary'
+    assert _parse_answer_json(json.dumps({"answer": answer})) == answer
+
 def test_openai_compat_surfaces_finish_length():
     """AUDIT #7 second half: finish_reason='length' must surface as stop_reason='length' with the
     tool_calls PRESERVED (regression that would have caught the truncation-invisible DeepSeek path)."""

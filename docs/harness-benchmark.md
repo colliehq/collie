@@ -1,18 +1,82 @@
-# Cross-harness benchmark protocol
+# Collie cross-harness benchmark protocol
 
-Collie keeps two leaderboards because they answer different questions.
+## Scope and claim boundary
 
-- **Controlled track:** every harness uses one frozen model endpoint, task list, grader,
-  container, prompt, tool contract, dependency lock, sandbox, context window, retry policy,
-  concurrency policy, network policy, and aggregate root-plus-descendant budget. This is the
-  only track allowed to estimate a harness effect.
-- **Product track:** each product uses a separately frozen native model configuration. This
-  measures the product system a user can buy, not an isolated harness effect.
+Prime Agent is a **methodological reference, not a benchmark arm**. Its useful contribution here
+is the separation of taskset, harness, and runtime, plus its emphasis on long-running agents and
+external sandboxes. The first comparison roster is Collie, Claude Code, Codex CLI, and Pi. If an
+arm cannot satisfy the authentication, isolation, metering, or reproducibility gate, report it as
+`not admitted`; do not score it as a loss and do not silently replace it with Prime Agent.
+
+Collie keeps two completely separate leaderboards because they answer different questions:
+
+| Track | What must be frozen | Authentication and billing | Claim allowed |
+| --- | --- | --- | --- |
+| **Same-model controlled** (`track: controlled`) | One immutable model snapshot and endpoint, reasoning/sampling settings, task list, grader, prompt, tool contract, dependency lock, runtime image, sandbox, context window, retry/concurrency/network policy, and aggregate root-plus-descendant budget | A metered API or evaluation gateway is normally required. Obtain an explicit spend budget before launch. | An estimate of the **harness effect** under the frozen controls. |
+| **Subscription-native product** (`track: product`) | Each product's pinned official CLI, documented native subscription route, native model configuration, and the shared task/runtime/grading controls | No copied OAuth tokens, spoofed client identity, or hidden API-key fallback. Record subscription-plan evidence, billing overrides, and actual versus API-equivalent cost separately. | A comparison of the **products as available to a subscriber**, not an isolated harness effect. |
+
+Never merge these tracks into one table, headline, or statistical test. A same-model claim is
+invalid if one arm uses a nearby model, a different snapshot, a different reasoning setting, or a
+provider-specific endpoint that changes model behavior. A subscription-native result is invalid
+if it is described as a harness-only result merely because two products happen to select the same
+model family.
+
+For subscription-native artifacts, `actual_marginal_charge_usd` is a post-run billing observation,
+`expected_marginal_charge_usd` is a preflight prediction, and `api_equivalent_cost_usd` is an
+efficiency estimate. They are not interchangeable. The current local smoke records the latter two:
+its guard proves that known metered fallbacks are disabled, but without a post-run account check it
+does not claim an observed charge of zero. A flat subscription also does not remove plan limits or
+authorize an unbounded run. In the formal manifest, `budget.cost_usd` remains a normalized
+fail-closed cap; the evidence bundle must state which accounting basis it uses.
 
 The protocol is fail-closed. A result is not publishable if the plan differs from the canonical
 manifest expansion, a run is missing, a pin is mutable, a budget is exceeded, aggregate usage is
 not independently receipted, or any trace, patch, grader, or usage artifact fails validation.
 Inferential statistics are withheld whenever any evidence error exists.
+
+## Current evidence is plumbing-only
+
+The current one-file `bench/results/subscription-smoke.json` artifact is deliberately marked
+`scope: adapter_smoke`, `claim: plumbing_only`, and `publishable: false`. It checks only that an
+official subscription route launches, an adapter can leave a patch, the patch can be collected,
+and an external deterministic check can grade it. One trivial file, one attempt, and one hidden
+assertion set provide no meaningful coverage of planning, repository search, test execution,
+long-context behavior, recovery, or autonomy. Its rows must never be converted into a capability
+score or ranking. The runner currently supports Collie, Claude Code, and Codex, but the saved
+artifact contains rows for Collie and Claude Code only; neither Codex nor Pi is validated by it.
+
+The exploratory artifact `bench/results/paired-subscription-product.json` is also invalid for
+ranking. It contains one SWE-bench Pro instance and no arm produced a patch: Collie hit a Windows
+path-length error, Claude Code stopped at an edit/permission boundary, and Codex encountered a
+read-only sandbox/tool failure. These are runner and adapter failures, not evidence of relative
+coding ability. The artifact stays `publishable: false` and must not be cited as a win, loss,
+leaderboard position, or SWE-bench score. A replacement run starts only after every arm passes
+the same isolated repository-write conformance test.
+
+## Native execution and authentication admission
+
+The product track invokes each product through its documented automation surface and its own
+credential store:
+
+- Claude Code uses `claude -p` with JSON or stream-JSON output. The preflight must prove that the
+  selected credential is the Claude.ai subscription login; environment API keys and routing
+  overrides take precedence in non-interactive mode and therefore fail the subscription guard.
+- Codex uses `codex exec --json --ephemeral` with an explicit sandbox. The preflight must prove
+  ChatGPT login and must rule out API-key/base-URL overrides and paid-credit fallback.
+- Pi uses print/JSON mode with `--no-session`, explicit project-trust behavior, and a fresh config
+  root. Pi's documented Claude Pro/Max login draws from **extra usage billed per token**, so that
+  route is not eligible for a “no additional charge” Opus product arm. Pi may enter through a
+  documented subscription route with separately verified billing behavior (for example, its
+  ChatGPT Plus/Pro Codex route), or enter the paid same-model controlled track under an approved
+  budget.
+- Collie must delegate subscription Opus calls through the official Claude Code CLI and its
+  verified Claude.ai login. Direct bearer-token reuse or an OAuth proxy is not admissible evidence
+  for a subscription-native claim.
+
+Pin the CLI package/version and full source revision for every arm. If a CLI cannot be forced onto
+the exact model endpoint and settings required by a controlled manifest, exclude it from that
+controlled run instead of substituting its native model. Missing trustworthy descendant usage is
+also an admission failure; never fill missing token or cost fields with zero.
 
 ## Freeze a controlled manifest
 
@@ -118,11 +182,11 @@ match their hashes. The task file contains one exact task ID per line and at lea
 call a sample “Verified-mini” without publishing that file and digest; several incompatible mini
 subsets exist.
 
-In a product manifest, omit the global `model`. Each harness instead supplies a complete frozen
-`model` object and sets `model_source` to `native_manifest`. Product harnesses may use different
-models, but their exact provider, ID, snapshot, endpoint, reasoning effort, temperature, and top-p
-are copied into their usage receipts. Both tracks still require measurable root-plus-descendant
-usage and the shared manifest budget.
+In a subscription-native product manifest (`track: product`), omit the global `model`. Each
+harness instead supplies a complete frozen `model` object and sets `model_source` to
+`native_manifest`. Product harnesses may use different models, but their exact provider, ID,
+snapshot, endpoint, reasoning effort, temperature, and top-p are copied into their usage receipts.
+Both tracks still require measurable root-plus-descendant usage and the shared manifest budget.
 
 Validate and expand the run matrix without spending model quota:
 
@@ -138,6 +202,35 @@ schedule. Runs are launched serially, and each result supplies `started_at_unix_
 balance auditable. The frozen concurrency policy separately governs parallelism inside each run.
 The CLI prints the maximum authorized spend as
 `tasks × repetitions × harnesses × budget.cost_usd`.
+
+## Repository benchmarks require external isolation
+
+Built-in permission modes are defense in depth, not the benchmark security boundary. Real
+repository tasks must run in a disposable environment created and supervised by the evaluator,
+outside every compared harness. This is mandatory even when a product advertises a sandbox: Pi
+deliberately has no built-in permission prompts, Codex documents broader write access as safe only
+inside a controlled environment, and Prime Agent itself warns that its worker/kernel separation is
+not a security sandbox.
+
+For every task, harness, and repetition, the evaluator must:
+
+- materialize a fresh repository from the same pinned base commit inside a per-run container, VM,
+  or equivalent OS-enforced sandbox and destroy it after collecting the patch; a clone or worktree
+  may provide the repository state but is not an isolation boundary by itself. No arm may inherit
+  another arm's filesystem, session, memory, or caches unless a separate warm-memory experiment
+  explicitly declares that condition;
+- mount only the task repository and scoped read-only credentials needed for the admitted native
+  route; do not expose the host home directory, personal configuration, unrelated credentials,
+  grader implementation, hidden tests, gold patch, another arm's trace, or prior-run artifacts;
+- enforce the network allowlist, wall clock, process-tree kill, CPU/memory/disk limits, and
+  root-plus-descendant accounting from outside the agent process;
+- run grading after the agent exits in an evaluator-owned environment, bind the verdict to the
+  harvested patch digest, and keep the compared harness unable to edit the grader or its receipt;
+- start with fresh product config/session directories, explicitly disable native resume/refine
+  behavior, and record any unavoidable product-owned cache as part of the product condition.
+
+A local temporary directory under the same host account is sufficient for the one-file plumbing
+smoke only. It is not sufficient isolation for a publishable SWE-bench or real-repository result.
 
 ## Result evidence
 
@@ -227,3 +320,14 @@ Hashes prove bundle integrity, not that an untrusted executor told the truth. Fo
 run the grader and usage meter outside the compared harnesses, preserve provider request IDs or
 equivalent audit records, sign or timestamp the evidence bundle, and publish the manifest, control
 files, plan, results, artifacts, and report together.
+
+## Official primary references
+
+- Prime methodology and trust boundary: [Verifiers v1: taskset × harness × runtime](https://www.primeintellect.ai/blog/verifiers-v1),
+  [Prime Agent repository and external-sandbox warning](https://github.com/PrimeIntellect-ai/prime-agent)
+- Claude Code: [non-interactive/headless execution](https://code.claude.com/docs/en/headless),
+  [authentication and credential precedence](https://code.claude.com/docs/en/authentication)
+- Codex CLI: [non-interactive mode, ephemeral sessions, and sandbox flags](https://learn.chatgpt.com/docs/non-interactive-mode),
+  [authentication](https://learn.chatgpt.com/docs/auth)
+- Pi: [coding-agent modes, project trust, and security model](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md),
+  [subscription providers and billing behavior](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md)

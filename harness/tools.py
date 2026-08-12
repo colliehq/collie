@@ -792,6 +792,18 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools.keys())
 
+    def retain(self, names) -> list[str]:
+        """Keep only an explicit tool subset and return the names that survived.
+
+        Evaluation presets use this to expose the same narrow contract to every coding arm.  It
+        is deliberately opt-in: normal Collie sessions keep the full registry.  Activated state is
+        intersected too, so a previously loaded deferred tool cannot leak back into the contract.
+        """
+        wanted = {str(name) for name in (names or [])}
+        self._tools = {name: tool for name, tool in self._tools.items() if name in wanted}
+        self._activated.intersection_update(self._tools)
+        return list(self._tools)
+
 
 class LoadToolsTool(Tool):
     """The deferred-tier seam: extra tools (MCP servers, opt-in extras) are advertised by NAME only

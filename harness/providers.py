@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -843,6 +845,11 @@ class ClaudeCliProvider(ModelProvider):
             t["name"], ",".join((t.get("input_schema", {}).get("properties", {}) or {}).keys()),
             t["description"]) for t in tool_schemas)
         L += ["", "# Tools the executor can run:", tools, "",
+              "You are the reasoning engine inside Collie, not a standalone chat assistant. "
+              "You cannot inspect or change the workspace except by emitting a tool JSON below. "
+              "Until the requested work has actually been performed, an answer JSON is a failure. "
+              "On the first turn of a coding task, inspect the workspace with grep, glob, or "
+              "read_file; use edit_file/write_file to make the change before answering.", "",
               "# RESPONSE FORMAT (strict):",
               "Reply with EXACTLY ONE JSON object and nothing else — no prose, no markdown "
               "fence, no explanation before or after.",
@@ -857,9 +864,12 @@ class ClaudeCliProvider(ModelProvider):
         # so it can't agentic tool-use (which --max-turns 1 would truncate to an error) — it
         # becomes a pure reasoner that emits collie's JSON as TEXT. collie's system goes via
         # --system-prompt (full replacement); NOT --bare (bare never reads the OAuth token).
-        cmd = ["claude", "-p", prompt, "--output-format", "json",
-               "--max-turns", "1", "--model", self._model, "--tools", "",
-               "--system-prompt", system]
+        # Both the accumulated conversation and Collie's system/tool contract can exceed
+        # Windows' ~32K command-line limit.  Keep the conversation on stdin and the system prompt
+        # in Claude's documented file input; neither belongs in argv or a process listing.
+        cmd = ["claude", "-p", "--output-format", "json", "--safe-mode",
+               "--no-session-persistence",
+               "--max-turns", "1", "--model", self._model, "--tools", ""]
         effort = getattr(self, "effort", "default")
         if effort != "default":
             cmd += ["--effort", effort]
@@ -871,13 +881,38 @@ class ClaudeCliProvider(ModelProvider):
         # sanctioned per-token path for unattended full runs). Either way = first-party CLI,
         # never a spoofing proxy.
         env = dict(os.environ)
-        if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        if getattr(self, "subscription_only", False):
+            for name in (
+                    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                    "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL",
+                    "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
+                    "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_VERTEX"):
+                env.pop(name, None)
+        elif env.get("CLAUDE_CODE_OAUTH_TOKEN"):
             env.pop("ANTHROPIC_API_KEY", None)
+        executable = shutil.which(cmd[0], path=env.get("PATH"))
+        if not executable:
+            raise FileNotFoundError("claude CLI is not on PATH")
         from . import plat as _plat
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, env=env,
-                           **_plat.no_window_kwargs())
+        with tempfile.TemporaryDirectory(prefix="collie-claude-cli-") as prompt_dir:
+            system_path = os.path.join(prompt_dir, "system.txt")
+            with open(system_path, "w", encoding="utf-8", newline="\n") as system_file:
+                system_file.write(system)
+            full_cmd = [executable] + cmd[1:] + ["--system-prompt-file", system_path]
+            r = subprocess.run(full_cmd, capture_output=True, text=True, input=prompt,
+                               timeout=self.timeout, env=env, **_plat.no_window_kwargs())
+        if r.returncode != 0:
+            raise RuntimeError("claude CLI exited %d" % r.returncode)
         data = _cc_json(r.stdout)
+        if not isinstance(data, dict):
+            raise RuntimeError("claude CLI returned invalid JSON")
+        if "is_error" in data and data.get("is_error") is not False:
+            raise RuntimeError("claude CLI reported an error")
+        if not isinstance(data.get("result"), str):
+            raise RuntimeError("claude CLI JSON response is missing a string result")
         u = data.get("usage", {}) or {}
+        if not isinstance(u, dict):
+            raise RuntimeError("claude CLI JSON response has invalid usage")
         usage = Usage(input_tokens=u.get("input_tokens", 0),
                       output_tokens=u.get("output_tokens", 0),
                       cache_read=u.get("cache_read_input_tokens", 0),
@@ -908,7 +943,7 @@ class ClaudeCliProvider(ModelProvider):
         return Completion(text=text, usage=total, stop_reason="end_turn")  # fallback: prose
 
 
-def _cc_json(stdout: str) -> dict:
+def _cc_json(stdout: str) -> dict | None:
     stdout = (stdout or "").strip()
     try:
         return json.loads(stdout)
@@ -919,57 +954,42 @@ def _cc_json(stdout: str) -> dict:
                     return json.loads(line)
                 except Exception:
                     continue
-    return {}
+    return None
+
+
+def _json_objects(text: str):
+    """Yield JSON objects embedded in text without hand-counting braces.
+
+    Claude is instructed to return one bare object, but the extractor remains tolerant of a
+    leading sentence or Markdown fence. ``raw_decode`` is quote-aware, so braces inside file
+    contents or a final answer cannot terminate the object early.
+    """
+    if not isinstance(text, str):
+        return
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            obj, _end = decoder.raw_decode(text, match.start())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(obj, dict):
+            yield obj
 
 
 def _parse_tool_json(text: str):
-    """Extract a {"tool":...,"args":{...}} object even with nested braces."""
-    i = text.find('"tool"')
-    if i == -1:
-        return None
-    start = text.rfind("{", 0, i)
-    if start == -1:
-        return None
-    depth = 0
-    for j in range(start, len(text)):
-        if text[j] == "{":
-            depth += 1
-        elif text[j] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    obj = json.loads(text[start:j + 1])
-                    if "tool" in obj:
-                        return ToolCall("cli_%d" % (len(text) % 100000),
-                                        obj["tool"], obj.get("args", {}))
-                except Exception:
-                    pass
-                return None
+    """Extract a {"tool":...,"args":{...}} object, including code containing braces."""
+    for obj in _json_objects(text):
+        if "tool" in obj:
+            return ToolCall("cli_%d" % (len(text) % 100000),
+                            obj["tool"], obj.get("args", {}))
     return None
 
 
 def _parse_answer_json(text: str):
     """Extract {"answer":"..."} -> the answer string, else None (a tool-JSON is not one)."""
-    i = text.find('"answer"')
-    if i == -1:
-        return None
-    start = text.rfind("{", 0, i)
-    if start == -1:
-        return None
-    depth = 0
-    for j in range(start, len(text)):
-        if text[j] == "{":
-            depth += 1
-        elif text[j] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    obj = json.loads(text[start:j + 1])
-                    if "answer" in obj and "tool" not in obj:
-                        return str(obj["answer"])
-                except Exception:
-                    pass
-                return None
+    for obj in _json_objects(text):
+        if "answer" in obj and "tool" not in obj:
+            return str(obj["answer"])
     return None
 
 

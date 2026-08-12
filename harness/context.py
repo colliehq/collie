@@ -140,6 +140,12 @@ class ContextComposer:
             "answering. Be concise and correct.")
         self.auto_prefetch = auto_prefetch
         self.prefetch_k = prefetch_k
+        # Benchmark runners can disable ambient, repository-controlled prompt inputs.  A cloned
+        # repo is untrusted: treating its AGENTS.md or local SKILL.md as system context creates a
+        # prompt-injection asymmetry against native CLIs running with their safe/ignore-rules
+        # switches.  Defaults preserve normal Collie product behaviour.
+        self.include_project_rules = True
+        self.include_skills = True
         self._prefetch_cache: dict = {}   # (project,user_msg) -> hits; embed once/msg
         self._skill_cache: dict = {}      # cwd -> (Library generation, skill index)
 
@@ -150,6 +156,8 @@ class ContextComposer:
         otherwise an already-created composer can keep advertising a capability that the user has
         explicitly withdrawn.
         """
+        if not self.include_skills:
+            return ""
         try:
             from .extensions import registry_generation
             generation = registry_generation()
@@ -168,6 +176,8 @@ class ContextComposer:
         return self._skill_cache[cwd][1]
 
     def _project_rules(self, cwd: str, cap: int = 4000) -> str:
+        if not self.include_project_rules:
+            return ""
         parts = []                       # merge ALL rule files, not just the first found
         for fn in ("CLAUDE.md", "AGENTS.md", ".collie.md", ".mh.md"):  # .mh.md kept for back-compat
             p = os.path.join(cwd, fn)

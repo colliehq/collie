@@ -76,7 +76,10 @@ meadow_assets/*_raw/
 
 # ── scratch / experiments / vendored deps — NOT for release ──────────────────
 vendor/
-bench/
+bench/*
+!bench/subscription_guard.py
+!bench/subscription_smoke.py
+.bench-tmp/
 data/rebench/
 data/swebench.json
 data/*.jsonl
