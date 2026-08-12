@@ -60,6 +60,29 @@ class RequestCancelled(Exception):
     pass
 
 
+def _transport_error_code(error: BaseException) -> str:
+    """Reduce SDK failures to content-free evaluator evidence."""
+    value = str(error or "").lower()
+    if any(marker in value for marker in (
+            "rate limit", "rate_limit", "quota", "capacity", "overloaded")):
+        return "provider_capacity_error"
+    if any(marker in value for marker in (
+            "api key source", "authentication", "unauthorized", "credential")):
+        return "subscription_auth_attestation_error"
+    if "model" in value and any(marker in value for marker in (
+            "did not match", "not found", "unavailable", "unknown model")):
+        return "model_route_error"
+    if "assistant reported an error" in value:
+        return "sdk_assistant_error"
+    if "result reported an error" in value:
+        return "sdk_result_error"
+    if "init" in value:
+        return "sdk_init_error"
+    if "worker" in value:
+        return "sdk_worker_error"
+    return "transport_error"
+
+
 def _utc_now() -> str:
     return _datetime.datetime.now(_datetime.timezone.utc).isoformat().replace(
         "+00:00", "Z")
@@ -474,7 +497,7 @@ class SidecarService:
             raise
         except Exception as exc:
             error_code = ("response_contract_error" if "response contract" in str(exc)
-                          else "transport_error")
+                          else _transport_error_code(exc))
             raise SidecarError(502, error_code, "subscription transport failed") from exc
         finally:
             duration = round((time.monotonic() - started) * 1000)

@@ -198,6 +198,35 @@ def test_service_timeout_is_safe_and_settled(tmp_path):
     assert "secret" not in json.dumps(rows)
 
 
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        ("rate limit exceeded with prompt-secret", "provider_capacity_error"),
+        ("SDK init model did not match", "model_route_error"),
+        ("SDK assistant reported an error", "sdk_assistant_error"),
+        ("SDK result reported an error", "sdk_result_error"),
+        ("raw prompt-secret", "transport_error"),
+    ],
+)
+def test_service_persists_only_safe_transport_error_categories(
+        tmp_path, detail, expected):
+    class BrokenTransport(FakeTransport):
+        def invoke(self, *_args):
+            raise RuntimeError(detail)
+
+    ledger_dir = tmp_path / "ledger"
+    service = sidecar.SidecarService(
+        sidecar.ReceiptLedger(ledger_dir), BrokenTransport())
+    body = _body()
+    with pytest.raises(sidecar.SidecarError) as caught:
+        service.complete(body, json.dumps(body).encode(), "broken-one")
+
+    assert caught.value.code == expected
+    persisted = json.dumps(_receipts(ledger_dir))
+    assert expected in persisted
+    assert "prompt-secret" not in persisted
+
+
 def test_service_enforces_physical_request_budget_before_transport(tmp_path):
     ledger_dir = tmp_path / "ledger"
     transport = FakeTransport()

@@ -69,6 +69,13 @@ def test_generates_fresh_keyless_openai_sidecar_config(tmp_path, factory, name):
     assert provider["models"][0]["cost"] == {
         "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
     }
+    settings = _read(launch.settings_path)
+    assert settings["retry"] == {
+        "enabled": False,
+        "maxRetries": 0,
+        "baseDelayMs": 0,
+        "provider": {"maxRetries": 0},
+    }
 
     assert launch.env["PATH"] == "/trusted/bin"
     assert launch.env["HOME"] == str(launch.home_dir)

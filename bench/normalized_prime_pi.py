@@ -158,6 +158,16 @@ def _settings(harness: str) -> dict:
         "defaultModel": MODEL,
         "defaultThinkingLevel": THINKING,
         "quietStartup": True,
+        # The evaluator owns the one physical-request budget for every arm.
+        # Prime/Pi otherwise retry one failed logical turn at both the agent
+        # and provider layers, multiplying the same infrastructure incident
+        # while Collie is configured with max_retries=0.
+        "retry": {
+            "enabled": False,
+            "maxRetries": 0,
+            "baseDelayMs": 0,
+            "provider": {"maxRetries": 0},
+        },
     }
     if harness == "prime":
         common["telemetry"] = {"enabled": False}
