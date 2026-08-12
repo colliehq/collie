@@ -36,6 +36,34 @@ PRIME_COMMIT = "0987c1ba7637cbcb99afe9efe1180b838a0aa958"
 PI_VERSION = "0.84.1"
 PI_COMMIT = "53fa77ccd8a279eb87e92294ef3687b03ff80112"
 
+# Pi's pinned default prompt ends with a product-documentation paragraph that
+# explicitly applies only when the user asks about Pi itself.  Passing that
+# irrelevant paragraph through Claude Agent SDK 0.2.136 produces an SDK-level
+# Assistant error before any model text is returned.  Use Pi's native
+# --system-prompt surface to retain its coding identity, tool contract, and
+# operating guidelines while omitting only that self-documentation appendix.
+PI_NORMALIZED_SYSTEM_PROMPT = """You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+
+Available tools:
+- read: Read file contents
+- bash: Execute bash commands (ls, grep, find, etc.)
+- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call
+- write: Create or overwrite files
+
+In addition to the tools above, you may have access to other custom tools depending on the project.
+
+Guidelines:
+- Use bash for file operations like ls, rg, find
+- Use read to examine files instead of cat or sed.
+- You can inspect PI_* environment variables for current model and session details.
+- Use edit for precise changes (edits[].oldText must match exactly)
+- When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls
+- Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.
+- Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.
+- Use write only for new files or complete rewrites.
+- Be concise in your responses
+- Show file paths clearly when working with files"""
+
 _SAFE_INHERITED_ENV = frozenset(
     {
         "COMSPEC", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "PATHEXT",
@@ -316,6 +344,10 @@ def prepare_normalized_harness(
         )
     else:
         program = str(executable or "pi")
+        system_prompt = (
+            PI_NORMALIZED_SYSTEM_PROMPT
+            + "\nCurrent working directory: " + str(workspace_path)
+        )
         argv = (
             program,
             "--mode", "json",
@@ -327,6 +359,7 @@ def prepare_normalized_harness(
             "--no-prompt-templates",
             "--no-themes",
             "--no-approve",
+            "--system-prompt", system_prompt,
             "--provider", PROVIDER,
             "--model", MODEL,
             "--models", f"{PROVIDER}/{MODEL}",
@@ -519,6 +552,10 @@ def run_normalized_harness(
             "model": launch.model,
             "thinking": launch.thinking,
             "surface": "openai_compatible_subscription_sidecar",
+            "system_prompt_profile": (
+                "pi-native-coding-minus-self-documentation-v1"
+                if launch.harness == "pi" else "prime-native-default"
+            ),
         },
         "raw_output_persisted": False,
         "prompt_persisted": False,
@@ -539,7 +576,8 @@ def run_pi(launch: NormalizedLaunch, **kwargs) -> dict[str, Any]:
 
 __all__ = [
     "API", "AUTH_SENTINEL", "FORBIDDEN_AUTH_ENV", "MODEL", "PINS",
-    "PI_COMMIT", "PI_VERSION", "PRIME_COMMIT", "PRIME_VERSION", "PROVIDER",
+    "PI_COMMIT", "PI_NORMALIZED_SYSTEM_PROMPT", "PI_VERSION",
+    "PRIME_COMMIT", "PRIME_VERSION", "PROVIDER",
     "THINKING", "HarnessPin", "NormalizedLaunch", "prepare_normalized_harness",
     "prepare_pi", "prepare_prime", "run_normalized_harness", "run_pi", "run_prime",
 ]

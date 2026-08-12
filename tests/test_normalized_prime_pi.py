@@ -12,6 +12,7 @@ from bench.normalized_prime_pi import (
     FORBIDDEN_AUTH_ENV,
     MODEL,
     PI_COMMIT,
+    PI_NORMALIZED_SYSTEM_PROMPT,
     PI_VERSION,
     PRIME_COMMIT,
     PRIME_VERSION,
@@ -151,6 +152,8 @@ def test_pi_pin_and_exact_isolated_argv_preserves_native_tools(tmp_path):
         "/pinned/pi", "--mode", "json", "--offline", "--no-session",
         "--no-extensions", "--no-context-files", "--no-skills",
         "--no-prompt-templates", "--no-themes", "--no-approve",
+        "--system-prompt", PI_NORMALIZED_SYSTEM_PROMPT
+        + "\nCurrent working directory: " + str(workspace.resolve()),
         "--provider", PROVIDER, "--model", MODEL,
         "--models", f"{PROVIDER}/{MODEL}", "--thinking", "high",
         "Make the requested change.",
@@ -280,6 +283,10 @@ def test_run_api_returns_prompt_free_native_tool_evidence(
     assert result["agent_end_observed"] is True
     assert result["runtime"]["expected_version"] == launch.pin.version
     assert result["runtime"]["source_commit"] == launch.pin.commit
+    assert result["runtime"]["system_prompt_profile"] == (
+        "pi-native-coding-minus-self-documentation-v1"
+        if name == "pi" else "prime-native-default"
+    )
     assert result["raw_output_persisted"] is False
     assert result["prompt_persisted"] is False
     assert "TOP SECRET" not in json.dumps(result)
