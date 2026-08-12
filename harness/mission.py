@@ -3044,15 +3044,70 @@ class MissionDriver:
                     and isinstance(child, str)
                     and bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", child)))
 
+        placeholder = re.compile(
+            r"(?:n/?a|none|null|unknown|unavailable|missing|not\s+(?:available|known|"
+            r"configured|provided|entered)|redacted|\[redacted\]|<redacted>)",
+            re.I)
+        email_value = re.compile(
+            r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![\w.-])",
+            re.I)
+
+        def phone_value(text):
+            candidate = str(text or "")
+            return (sum(ch.isdigit() for ch in candidate) >= 7 and
+                    bool(re.search(r"\+?[\d(][\d\s().-]{5,}\d", candidate)))
+
+        def keyed_sensitive_value(key, child):
+            """Require a concrete value shape, not merely a sensitive-field word."""
+            label = str(key)
+            if not sensitive_key.search(label) or public_handle(label, child):
+                return False
+            if child in (None, "", [], {}, False):
+                return False
+            if isinstance(child, str):
+                value = child.strip()
+                if not value or placeholder.fullmatch(value):
+                    return False
+                if re.search(r"e.?mail", label, re.I):
+                    return bool(email_value.search(value))
+                if re.search(r"phone|mobile", label, re.I):
+                    return phone_value(value)
+                if re.search(r"otp|one.?time|verification.?code|passcode", label, re.I):
+                    return bool(re.fullmatch(r"[A-Za-z0-9-]{4,12}", value))
+            return True
+
+        def embedded_sensitive_value(text):
+            """Recognize actual inline secret/PII values in natural-language goals."""
+            value = str(text or "")
+            if email_value.search(value):
+                return True
+            phone = re.search(
+                r"(?:phone|mobile)(?:\s+number)?\s*(?:is|=|:)\s*"
+                r"(?P<value>\+?[\d(][\d\s().-]{5,}\d)", value, re.I)
+            if phone and phone_value(phone.group("value")):
+                return True
+            if re.search(
+                    r"(?:otp|one.?time(?:\s+code)?|verification.?code|passcode)\s*"
+                    r"(?:is|=|:)\s*[A-Za-z0-9-]{4,12}\b", value, re.I):
+                return True
+            if re.search(
+                    r"(?:password|secret|api.?key|access.?token)\s*(?:is|=|:)\s*"
+                    r"(?!(?:n/?a|none|null|unknown|unavailable|missing|not\b|redacted\b))"
+                    r"\S{4,}", value, re.I):
+                return True
+            if re.search(
+                    r"(?:card(?:\s+number)?|cvv|cvc)\s*(?:is|=|:)\s*"
+                    r"(?:\d[ -]?){3,19}\d", value, re.I):
+                return True
+            return False
+
         def sensitive_path(value, path=""):
             if isinstance(value, dict):
                 for key, child in value.items():
                     if str(key).startswith("_"):
                         continue
                     child_path = (path + "." + str(key)).strip(".")
-                    if (sensitive_key.search(str(key)) and
-                            not public_handle(key, child) and
-                            child not in (None, "", [], {})):
+                    if keyed_sensitive_value(key, child):
                         return child_path
                     found = sensitive_path(child, child_path)
                     if found:
@@ -3062,9 +3117,7 @@ class MissionDriver:
                     found = sensitive_path(child, "%s[%d]" % (path, i))
                     if found:
                         return found
-            elif isinstance(value, str) and re.search(
-                    r"(?:password|passcode|email|phone|otp|card(?: number)?)\s*"
-                    r"(?:is|=|:)\s*\S+", value, re.I):
+            elif isinstance(value, str) and embedded_sensitive_value(value):
                 return path or "text"
             return ""
 
@@ -3243,8 +3296,16 @@ class MissionDriver:
                 usage = self._usage_from_decision(decision)
                 usage["wall_ms"] = outcome.elapsed_ms
                 self.store.account_runtime(mission_id, token, **usage)
-                public_decision = {k: v for k, v in decision.items()
-                                   if not str(k).startswith("_")}
+                # This checkpoint exists only to prove recovery is at a safe,
+                # model-only boundary.  Persisting raw decision args here would
+                # write a credential/PII value before _bound_refusal can reject
+                # it, so retain structure rather than values.
+                public_args = decision.get("args") or {}
+                public_decision = {
+                    "action": decision.get("action"),
+                    "arg_keys": sorted(str(k) for k in public_args)
+                    if isinstance(public_args, dict) else [],
+                }
                 self.store.record_checkpoint(
                     mission_id, token, "decision_ready", public_decision, case=m.case)
                 # A pause/cancel arriving during the model call wins before another

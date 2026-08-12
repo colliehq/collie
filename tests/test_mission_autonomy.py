@@ -640,6 +640,18 @@ def test_public_brand_handle_is_not_treated_as_secret_or_personal_pii(tmp_path):
          "expect": {"Choose a username": "VocalCode"}}, {}) == ""
     assert "credential/PII field" in driver._bound_refusal(
         {}, cap, {"expect": {"Password": "do-not-store"}}, {})
+    assert driver._bound_refusal(
+        {}, cap,
+        {"goal": "Inspect the current email: unavailable state without filling a field"},
+        {}) == ""
+    assert driver._bound_refusal(
+        {}, cap, {"expect": {"Email": "unavailable"}}, {}) == ""
+    assert "credential/PII field" in driver._bound_refusal(
+        {}, cap, {"goal": "Sign in with email: agent@example.test"}, {})
+    assert "credential/PII field" in driver._bound_refusal(
+        {}, cap, {"goal": "Enter phone: +1 (202) 555-0147"}, {})
+    assert "credential/PII field" in driver._bound_refusal(
+        {}, cap, {"goal": "Enter verification code: 123456"}, {})
     store.close()
     actions.close()
 
