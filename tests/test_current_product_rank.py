@@ -41,6 +41,22 @@ def test_current_schedule_has_admission_then_counterbalanced_configurable_rankin
             for arm in ("collie", "codex")} == {"collie": 3, "codex": 3}
 
 
+def test_container_uses_subreaper_for_sdk_watchdog(monkeypatch, tmp_path):
+    from bench.current_product_rank import _container_command
+
+    row = {"arm": "collie"}
+    paths = [tmp_path / name for name in ("work", "input", "output", "state")]
+    for path in paths:
+        path.mkdir()
+    credential = tmp_path / "credentials.json"
+    credential.write_text("opaque", encoding="utf-8")
+
+    command = _container_command(
+        "image", row, paths[0], paths[1], paths[2], paths[3], credential)
+
+    assert command[:5] == ["docker", "run", "--rm", "--init", "--network"]
+
+
 def test_shared_prompt_is_byte_identical_for_both_workers(monkeypatch, tmp_path):
     from bench import current_product_worker as worker
     from harness import swe

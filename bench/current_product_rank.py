@@ -338,7 +338,10 @@ def _container_command(image: str, row: Mapping[str, Any], workspace: Path,
     auth_destination = ("/input/claude-credentials.json" if row["arm"] == "collie"
                         else "/input/auth.json")
     return [
-        "docker", "run", "--rm", "--network", "bridge", "--cap-drop", "ALL",
+        # tini is PID 1 so the Agent SDK's deliberately orphaned watchdog is
+        # reaped after group termination.  Without a subreaper, the zombie keeps
+        # killpg(..., 0) true and Collie's ownership proof correctly fails closed.
+        "docker", "run", "--rm", "--init", "--network", "bridge", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges", "--memory", "3g", "--cpus", "2",
         "--pids-limit", "256", "--read-only",
         "--tmpfs", "/tmp:rw,noexec,nosuid,size=268435456",
@@ -599,6 +602,7 @@ def _manifest(revision: str, source_hashes: Mapping[str, str], image_id: str,
         "launch_policy": "one_rep_per_arm_admission_then_full_counterbalanced_schedule",
         "network": "bridge_for_product_inference; evaluator_hidden_grader_outside_agent",
         "fresh_git_workspace_per_attempt": True,
+        "container_subreaper": "docker_init_tini",
         "gold_and_hidden_grader_visible_to_agent": False,
         "billing": {
             "track": "subscription_native_product",
