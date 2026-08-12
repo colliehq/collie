@@ -23,7 +23,8 @@ RUN apt-get update \
        python-dotenv pyyaml requests scipy tomli tyro \
     && useradd --create-home --uid 10001 runner \
     && install -d -o runner -g runner /opt/collie/bench /opt/collie/harness /state \
-    && git config --system --add safe.directory /workspace
+    && git config --system --add safe.directory /workspace \
+    && git config --system --add safe.directory /opt/prime-agent
 
 COPY --chown=runner:runner harness /opt/collie/harness
 COPY --chown=runner:runner bench/normalized_harness_worker.py /opt/collie/bench/normalized_harness_worker.py
