@@ -211,7 +211,9 @@ def test_collie_benchmark_profile_has_no_ambient_rules_skills_shell_or_network(
     composer = SimpleNamespace(auto_prefetch=True, include_project_rules=True,
                                include_skills=True)
     harness = SimpleNamespace(registry=Registry(), composer=composer, memory=Closable(),
-                              recorder=Closable(), provider=SimpleNamespace(subscription_only=False))
+                              recorder=Closable(), provider=SimpleNamespace(subscription_only=False),
+                              hooks=object(), max_retries=3, retry_base=2.0,
+                              overflow_recovery=True)
 
     def run(project, prompt, consolidate=False):
         seen.update(project=project, prompt=prompt, consolidate=consolidate)
@@ -242,8 +244,15 @@ def test_collie_benchmark_profile_has_no_ambient_rules_skills_shell_or_network(
     assert composer.include_skills is False
     assert harness.provider.subscription_only is True
     assert harness.max_turns == 6
+    assert harness.hooks is None
+    assert harness.max_retries == 0
+    assert harness.retry_base == 0.0
+    assert harness.overflow_recovery is False
+    assert harness.force_ratio == 0.55
+    assert harness.hard_ratio == 0.76
     assert seen["make_harness"]["provider"] == "claude-cli"
     assert seen["make_harness"]["model"] == "opus"
+    assert seen["make_harness"]["effort"] == "default"
     assert "`code_search`" not in seen["prompt"]
     assert "`run_in_env`" not in seen["prompt"]
     assert "external hidden grader" in seen["prompt"]

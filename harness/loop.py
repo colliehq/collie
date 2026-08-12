@@ -870,8 +870,10 @@ class Harness:
         # Convergence thresholds scale WITH max_turns, so they must stay above the solve-turn
         # distribution (rebench: resolved median 23, so a 0.55 ratio -> force_at 27 sits just above
         # it). Env-tunable for the force_at-ratio study (COLLIE_FORCE_RATIO / COLLIE_HARD_RATIO).
-        _fr = float(os.environ.get("COLLIE_FORCE_RATIO", "0.55"))
-        _hr = float(os.environ.get("COLLIE_HARD_RATIO", "0.76"))
+        _fr = float(getattr(self, "force_ratio", None) or
+                    os.environ.get("COLLIE_FORCE_RATIO", "0.55"))
+        _hr = float(getattr(self, "hard_ratio", None) or
+                    os.environ.get("COLLIE_HARD_RATIO", "0.76"))
         force_at = max(3, int(self.max_turns * _fr))    # soft nudge to converge
         hard_at = max(force_at + 2, int(self.max_turns * _hr))  # then remove explore tools
         budget_hit = False
@@ -1818,6 +1820,10 @@ class Harness:
                 # written mid-task read as a finished report — including when no check had run.
                 answer += ("\n\n_[stopped: ran out of turns (%d) — this task was NOT finished, and "
                            "nothing above was necessarily verified]_" % self.max_turns)
+            # A turn ceiling is a normal, predeclared product outcome, not a transport/provider
+            # fault. Surface it structurally so an evaluator can classify the attempt as a valid
+            # unresolved result even if a partial patch was left behind.
+            res.turns_exhausted = turns_exhausted
             if last_stop == "length" and answer and "truncated" not in answer:
                 answer += "\n\n_[answer truncated at output-token limit]_"   # visible half of point 1
 

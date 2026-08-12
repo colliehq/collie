@@ -79,6 +79,10 @@ vendor/
 bench/*
 !bench/subscription_guard.py
 !bench/subscription_smoke.py
+!bench/subscription_rank.py
+!bench/subscription_rank_tasks.py
+!bench/subscription_rank_worker.py
+!bench/subscription-rank.Dockerfile
 .bench-tmp/
 data/rebench/
 data/swebench.json

@@ -385,6 +385,7 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     _lean = (not benchmark_safe and
              os.environ.get("COLLIE_LEAN_PROMPT") in ("1", "true", "on"))
     h = make_harness(workdir, provider=provider, model=model, project="swe",
+                     effort="default" if benchmark_safe else None,
                      code_search=_cs,           # semantic repo navigation (bge-small); env-gated
                      embed="hash")              # one-shot fix: skip loading jina-v3 for
                                                 # memory (unused here) -> ~2GB less peak
@@ -405,6 +406,17 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         h.composer.auto_prefetch = False
         h.composer.include_project_rules = False
         h.composer.include_skills = False
+        h.composer.identity = "You are Collie, a coding agent in a frozen evaluation."
+        # Freeze every loop-level behavior that normal product settings or environment variables
+        # can customize.  The ranking runner owns one total attempt budget; an ambient retry,
+        # hook, overflow retry, or forced-answer threshold would make the two product arms spend
+        # different numbers of model calls on the same cell.
+        h.max_retries = 0
+        h.retry_base = 0.0
+        h.overflow_recovery = False
+        h.hooks = None
+        h.force_ratio = 0.55
+        h.hard_ratio = 0.76
     h.max_turns = (int(max_turns) if benchmark_safe else
                    int(os.environ.get("COLLIE_MAX_TURNS", str(max_turns))))
     # VERIFY step ported from Hermes' loop (trace diff: Hermes edits once after thorough

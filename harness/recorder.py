@@ -29,6 +29,9 @@ class RunResult:
     cache_waste_usd: float = 0.0  # $ those misses cost — a prefix-busting regression shows up here
     prefix_measured: int | None = None  # provider-usage-measured prefix (None = unmeasured; est-only)
     turns: int = 0
+    # True only when the harness consumed its declared turn ceiling.  Evaluators use this to
+    # distinguish a normal unresolved attempt from a provider or adapter failure.
+    turns_exhausted: bool = False
     tool_calls: int = 0
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
     steer_count: int = 0     # mid-run user steering messages injected (point 13)
