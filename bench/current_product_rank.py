@@ -250,7 +250,7 @@ def _status_environment(**extra: str) -> dict[str, str]:
 
 
 def _guard_receipts(codex_evidence: Mapping[str, Any], codex_auth: Path
-                    ) -> dict[str, dict[str, Any]]:
+                     ) -> dict[str, dict[str, Any]]:
     TEMP_ROOT.mkdir(parents=True, exist_ok=True)
     preflight_home = Path(tempfile.mkdtemp(prefix="codex-guard-home-", dir=TEMP_ROOT)).resolve()
     try:
@@ -258,7 +258,18 @@ def _guard_receipts(codex_evidence: Mapping[str, Any], codex_auth: Path
         shutil.copyfile(codex_auth, preflight_home / "auth.json")
         if os.name != "nt":
             os.chmod(preflight_home / "auth.json", 0o600)
-        codex_environment = dict(os.environ)
+        # These values identify the trusted parent Codex session and its local
+        # permission profile.  They are not copied into the benchmark child.
+        # Keep every other ambient CODEX_/OPENAI_ key visible to the guard so
+        # routing, API-key, and billing overrides still fail closed.
+        parent_metadata = {
+            "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_PERMISSION_PROFILE",
+            "CODEX_THREAD_ID",
+        }
+        codex_environment = {
+            key: value for key, value in os.environ.items()
+            if key.upper() not in parent_metadata
+        }
         if "CODEX_HOME" in codex_environment:
             raise RuntimeError(
                 "unset ambient CODEX_HOME before benchmark launch; the suite owns an isolated one")

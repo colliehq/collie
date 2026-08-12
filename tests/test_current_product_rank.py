@@ -248,6 +248,41 @@ def test_child_codex_evidence_strips_parent_receipt_expiry_field():
     }
 
 
+def test_launch_guard_ignores_only_trusted_parent_codex_metadata(monkeypatch, tmp_path):
+    from bench import current_product_rank as rank
+
+    auth = tmp_path / "auth.json"
+    auth.write_text("opaque", encoding="utf-8")
+    observed = "2026-08-12T20:00:00Z"
+    monkeypatch.setenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "codex_desktop")
+    monkeypatch.setenv("CODEX_PERMISSION_PROFILE", "disabled")
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread")
+    seen = []
+
+    def fake_guard(provider, **kwargs):
+        seen.append((provider, dict(kwargs.get("environ") or {})))
+        return {"provider": provider, "verdict": "allow"}
+
+    monkeypatch.setattr(rank, "check_subscription_guard", fake_guard)
+    rank._guard_receipts({
+        "credits_remaining": 0, "auto_reload": False,
+        "observed_at_utc": observed,
+    }, auth)
+
+    codex_environment = next(env for provider, env in seen if provider == "codex-cli")
+    assert not any(name in codex_environment for name in (
+        "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_PERMISSION_PROFILE", "CODEX_THREAD_ID"))
+
+    monkeypatch.setenv("OPENAI_API_KEY", "must-be-seen-by-guard")
+    seen.clear()
+    rank._guard_receipts({
+        "credits_remaining": 0, "auto_reload": False,
+        "observed_at_utc": observed,
+    }, auth)
+    codex_environment = next(env for provider, env in seen if provider == "codex-cli")
+    assert "OPENAI_API_KEY" in codex_environment
+
+
 def test_slot_codex_guard_reuses_launch_billing_receipt_but_rechecks_login(tmp_path):
     from harness.subscription_guard import check_subscription_guard
 
