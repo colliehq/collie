@@ -86,6 +86,32 @@ def _safe_error(value: object) -> str:
     return "provider_or_adapter_failure"
 
 
+def _collie_error_code(value: object) -> str:
+    """Classify SDK failures without persisting provider text or credentials."""
+    lower = str(value or "").lower()
+    categories = (
+        (("not logged in", "authentication", "auth status", "login"),
+         "collie_subscription_auth_failure"),
+        (("invalid model", "unknown model", "model did not match", "model not found"),
+         "collie_model_route_failure"),
+        (("effort",), "collie_effort_option_failure"),
+        (("api key source",), "collie_auth_attestation_failure"),
+        (("sdk init", "validated init"), "collie_sdk_init_contract_failure"),
+        (("assistant message", "assistant content", "result message"),
+         "collie_sdk_message_contract_failure"),
+        (("unknown argument", "unknown option", "invalid option", "invalid value"),
+         "collie_sdk_option_failure"),
+        (("process-tree", "process group", "parent-death", "ownership"),
+         "collie_process_ownership_failure"),
+        (("worker exited", "worker failed", "worker returned"),
+         "collie_sdk_worker_failure"),
+    )
+    for markers, code in categories:
+        if any(marker in lower for marker in markers):
+            return code
+    return _safe_error(value)
+
+
 class RequestLedger:
     """Crash-safe, one-file-per-transition physical request journal."""
 
@@ -220,9 +246,9 @@ def run_collie(task: Mapping[str, Any], workspace: Path, run_dir: Path,
         )
         reported = str(getattr(result, "error", "") or "").strip()
         if reported:
-            error_code = _safe_error(reported)
+            error_code = _collie_error_code(reported)
     except Exception as exc:
-        error_code = _safe_error("%s: %s" % (type(exc).__name__, exc))
+        error_code = _collie_error_code("%s: %s" % (type(exc).__name__, exc))
     finally:
         for key, value in prior.items():
             if value is None:

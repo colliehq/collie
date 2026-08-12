@@ -119,6 +119,20 @@ def test_codex_trace_rejects_foreign_surfaces_and_rerouting():
     assert (terminal, error) == ("completed", "")
 
 
+def test_collie_error_classifier_is_specific_without_returning_provider_text():
+    from bench.current_product_worker import _collie_error_code
+
+    cases = {
+        "Claude Agent SDK worker exited 1: secret": "collie_sdk_worker_failure",
+        "SDK init model did not match the frozen route": "collie_model_route_failure",
+        "invalid effort value": "collie_effort_option_failure",
+        "API key source was unexpected": "collie_auth_attestation_failure",
+    }
+    for raw, expected in cases.items():
+        assert _collie_error_code(raw) == expected
+        assert "secret" not in _collie_error_code(raw)
+
+
 def test_codex_predictor_freezes_capability_surface_and_high_effort(monkeypatch, tmp_path):
     from harness import swe
 
