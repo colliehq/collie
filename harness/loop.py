@@ -37,6 +37,16 @@ TRUNC_MSG = ("ERROR: not executed — the response hit the output-token limit, s
 TRUNC_CONTINUE = ("Your reply was cut off at the output-token limit — continue from where it "
                   "stopped, or use tool calls.")
 
+# A response-contract miss is not a transport outage: the model request completed, but its output
+# could not safely drive the executor.  This nudge is temporary (never written to the durable
+# conversation) and the loop permits it exactly once per run, through the ordinary provider budget
+# and request-authority path.
+FORMAT_REPAIR_NUDGE = (
+    "Your previous response could not be parsed by the active structured response contract. "
+    "Retry the same next action now. Produce exactly one valid response: one tool call with an "
+    "object of arguments, or one final answer. Do not return a list or batch, multiple alternatives, "
+    "extra keys, Markdown fences, or prose outside the required response envelope.")
+
 VERIFY_NUDGE = ("Before finalizing, use the bash tool to run the project's relevant tests "
                 "(`python -m pytest -q`, `npm test`, `go test ./...`, `cargo test`, or this "
                 "repository's equivalent). If anything fails, read the error, fix it, and re-run. "
@@ -488,6 +498,10 @@ class Harness:
             self.retry_base = max(0.0, float(_settings.get("RETRY_BASE", "2")))
         except (TypeError, ValueError):
             self.retry_base = 2.0
+        # A single run-global structured-response correction.  This is intentionally separate from
+        # transport retries and fixed at one by default so malformed model output cannot double an
+        # overnight run's request budget. Tests/embedders may lower it to zero.
+        self.max_contract_repairs = 1
         # context-overflow recovery (point 9): on an input-too-long error, shrink the history once
         # and retry the turn. COLLIE_OVERFLOW_RECOVERY=0 restores the old die-on-overflow behavior.
         self.overflow_recovery = _settings.get("OVERFLOW_RECOVERY", "1") not in ("0", "false", "off")
@@ -956,6 +970,7 @@ class Harness:
                 # raising; the try is a belt for any provider not yet on that contract.
                 attempts = 0
                 overflow_now = False
+                call_messages = msgs
                 while True:
                     call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
                     if call_cap and model_calls >= call_cap:
@@ -970,7 +985,8 @@ class Harness:
                         self._session_checkpoint(
                             session["messages"], rid, turn, journal_state,
                             {"attempt": attempts + 1})
-                        comp = self.provider.complete(system, msgs, schemas, on_text=self.stream_cb)
+                        comp = self.provider.complete(
+                            system, call_messages, schemas, on_text=self.stream_cb)
                     except Exception as e:
                         comp = _error_completion(getattr(self.provider, "name", "?"), e)
                     journal_state = "model_complete"
@@ -984,7 +1000,9 @@ class Harness:
                     model_calls += max(1, int(getattr(comp, "request_count", 1) or 1))
                     if comp.stop_reason != "error":
                         break
-                    cls = classify_error(comp.error_detail or comp.text or "", comp.error_status)
+                    cls = classify_error(
+                        comp.error_detail or comp.text or "", comp.error_status,
+                        getattr(comp, "error_code", ""))
                     if (cls == "overflow" and not overflow_tried and self.overflow_recovery
                             and turn < self.max_turns - 1):
                         overflow_tried = overflow_now = True
@@ -998,6 +1016,33 @@ class Harness:
                     shared_exhausted = bool(self.shared_budget is not None
                                             and self.shared_budget.exceeded())
                     call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
+                    if (cls == "protocol"
+                            and res.contract_repairs < max(
+                                0, int(getattr(self, "max_contract_repairs", 1) or 0))
+                            and (not call_cap or model_calls < call_cap)
+                            and not shared_exhausted
+                            and not _budget_exceeded(
+                                self.provider.model, total,
+                                bool(getattr(self.provider, "subscription_only", False)))):
+                        res.contract_repairs += 1
+                        # Do not append either the rejected output or this synthetic correction to
+                        # session["messages"].  The next successful tool/answer is the only assistant
+                        # turn that becomes durable history.
+                        call_messages = list(msgs) + [{
+                            "role": "user", "content": FORMAT_REPAIR_NUDGE,
+                        }]
+                        self.recorder.log_turn(
+                            rid, turn, "format_repair",
+                            "response_contract_error; corrective request %d/%d" % (
+                                res.contract_repairs, self.max_contract_repairs),
+                            comp.usage.input_tokens, comp.usage.output_tokens,
+                            meta.prefix_tokens, 0, cache_read=comp.usage.cache_read)
+                        self._emit(
+                            "format_repair", attempt=res.contract_repairs,
+                            max=self.max_contract_repairs,
+                            error_code=(getattr(comp, "error_code", "")
+                                        or "response_contract_error"))
+                        continue
                     if (cls == "retryable" and attempts < self.max_retries
                             and (not call_cap or model_calls < call_cap)
                             and not shared_exhausted
@@ -1036,16 +1081,26 @@ class Harness:
                     # the patterns lands here too, so "we did not recognise this" and "we know this
                     # is fatal" printed identically — the mcp_ naming failure spent hours looking
                     # like a quota problem partly because nothing said the message was unrecognised.
-                    known = is_known_terminal(comp.error_detail or comp.text or "")
-                    note = ("not retried (fatal)" if known else
-                            "not retried — this error matches no known pattern, so it was treated "
-                            "as fatal rather than retried blindly; the text below is verbatim from "
-                            "the provider and may not describe the real cause")
-                    if attempts:
-                        note = "gave up after %d retries" % attempts
-                    comp.text = "%s: [%s] %s%s" % (
-                        cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
-                        comp.error_detail or comp.text or "provider error")
+                    if cls == "protocol":
+                        # Content-free terminal form: malformed assistant text must not enter the
+                        # result, recorder, session checkpoint, or memory through an error string.
+                        note = ("gave up after %d structured-response repair%s" % (
+                            res.contract_repairs, "" if res.contract_repairs == 1 else "s")
+                                if res.contract_repairs else
+                                "structured-response repair unavailable at the request budget")
+                        comp.text = "protocol: [%s] %sresponse_contract_error" % (
+                            note, ("HTTP %d " % comp.error_status) if comp.error_status else "")
+                    else:
+                        known = is_known_terminal(comp.error_detail or comp.text or "")
+                        note = ("not retried (fatal)" if known else
+                                "not retried — this error matches no known pattern, so it was treated "
+                                "as fatal rather than retried blindly; the text below is verbatim from "
+                                "the provider and may not describe the real cause")
+                        if attempts:
+                            note = "gave up after %d retries" % attempts
+                        comp.text = "%s: [%s] %s%s" % (
+                            cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
+                            comp.error_detail or comp.text or "provider error")
                     break
                 if canceled:
                     self._emit("canceled", at="model_boundary")

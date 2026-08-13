@@ -37,6 +37,7 @@ class RunResult:
     turns_exhausted: bool = False
     tool_calls: int = 0
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
+    contract_repairs: int = 0  # bounded structured-response corrections (not transport retries)
     steer_count: int = 0     # mid-run user steering messages injected (point 13)
     denied_calls: int = 0    # tool calls the gate refused (denied, or asked with nobody to answer)
     mem_recalls: int = 0
@@ -79,7 +80,8 @@ class Recorder:
             ts INTEGER, task_id TEXT, harness TEXT, model TEXT, provider TEXT,
             prefix_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
             total_tokens INTEGER, cache_read INTEGER, turns INTEGER,
-            tool_calls INTEGER, mem_recalls INTEGER, wall_ms INTEGER,
+            tool_calls INTEGER, contract_repairs INTEGER DEFAULT 0,
+            mem_recalls INTEGER, wall_ms INTEGER,
             success INTEGER, verified INTEGER DEFAULT 0,
             quality REAL DEFAULT 0, cost_usd REAL DEFAULT 0,
             answer TEXT, error TEXT, note TEXT)""")
@@ -96,6 +98,7 @@ class Recorder:
             ("runs", "cache_miss_tokens", "INTEGER"), ("runs", "cache_waste_usd", "REAL"),
             ("runs", "prefix_measured", "INTEGER"),
             ("runs", "verified", "INTEGER DEFAULT 0"),
+            ("runs", "contract_repairs", "INTEGER DEFAULT 0"),
         ]:
             try:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, decl))
@@ -139,12 +142,13 @@ class Recorder:
                 self.db.execute(
                     """UPDATE runs SET prefix_tokens=?,input_tokens=?,output_tokens=?,
                          total_tokens=?,cache_read=?,cache_creation=?,cache_miss_tokens=?,
-                         cache_waste_usd=?,prefix_measured=?,turns=?,tool_calls=?,mem_recalls=?,
+                         cache_waste_usd=?,prefix_measured=?,turns=?,tool_calls=?,contract_repairs=?,mem_recalls=?,
                          wall_ms=?,success=?,verified=?,quality=?,cost_usd=?,answer=?,error=?
                          WHERE run_id=?""",
                     (res.prefix_tokens, res.input_tokens, res.output_tokens, res.total_tokens,
                      res.cache_read, res.cache_creation, res.cache_miss_tokens, res.cache_waste_usd,
-                     res.prefix_measured, res.turns, res.tool_calls, res.mem_recalls, res.wall_ms,
+                      res.prefix_measured, res.turns, res.tool_calls, res.contract_repairs,
+                      res.mem_recalls, res.wall_ms,
                      int(res.success), int(res.verified), res.quality, res.cost_usd,
                      (res.answer or "")[:2000], (res.error or "")[:500], res.run_id))
                 self.db.commit()

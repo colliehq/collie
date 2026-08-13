@@ -128,7 +128,7 @@ def _usage_from_collie(result: object) -> dict[str, Any]:
     usage: dict[str, Any] = {}
     for key in ("turns", "model_calls", "input_tokens", "output_tokens",
                 "total_tokens", "cache_read", "cache_creation",
-                "cache_miss_tokens"):
+                "cache_miss_tokens", "contract_repairs"):
         value = getattr(result, key, None)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             usage[key] = value
@@ -192,6 +192,9 @@ def _run_collie(workspace: Path, state_dir: Path, endpoint: str,
         harness.composer.include_skills = False
         harness.composer.identity = "You are Collie, a coding agent in a frozen evaluation."
         harness.max_turns = int(max_turns)
+        # The evaluator budget is physical requests, not logical loop iterations.  A final
+        # synthesis, transport retry, or structured-response repair must fit inside the same cap.
+        harness.max_model_calls = int(max_turns)
         harness.max_retries = 0
         harness.retry_base = 0.0
         harness.overflow_recovery = False

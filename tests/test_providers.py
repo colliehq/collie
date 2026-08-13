@@ -138,7 +138,47 @@ def test_classify_error_matrix():
     assert classify_error("request_too_large", 413) == "overflow"
     assert classify_error("ThrottlingException: Too many tokens, please wait", 0) == "retryable", "throttle != overflow"
     assert classify_error("timed out", 0) == "retryable"
+    assert classify_error("", 422, "response_contract_error") == "protocol"
+    assert classify_error("assistant response was not bridgeable", 422) == "protocol"
+    assert classify_error("response_contract_error while rate limited", 429) == "retryable"
+    assert classify_error("ordinary validation failure", 422) == "terminal", \
+        "an unrelated 422 must not spend a model-format repair"
     assert classify_error("something novel", 0) == "terminal", "unknown fails fast"
+
+
+def test_http_error_preserves_content_free_code_and_completed_usage():
+    import urllib.error
+    from harness.providers import _error_completion
+
+    body = json.dumps({
+        "error": {"type": "sidecar_error", "code": "response_contract_error",
+                  "message": "assistant response was not bridgeable"},
+        "usage": {"prompt_tokens": 13, "completion_tokens": 5, "total_tokens": 18,
+                  "prompt_tokens_details": {"cached_tokens": 3},
+                  "cache_creation_input_tokens": 2},
+    }).encode()
+    error = urllib.error.HTTPError("http://inference", 422, "unprocessable", {}, io.BytesIO(body))
+
+    completion = _error_completion("normalized-subscription-sidecar", error)
+
+    assert completion.error_code == "response_contract_error"
+    assert completion.error_status == 422
+    assert completion.usage.input_tokens == 8
+    assert completion.usage.cache_read == 3
+    assert completion.usage.cache_creation == 2
+    assert completion.usage.output_tokens == 5
+
+
+def test_http_error_normalization_never_raises_on_malformed_usage():
+    import urllib.error
+    from harness.providers import _error_completion
+
+    for usage in ({"prompt_tokens_details": "not-an-object"},
+                  {"prompt_tokens": [], "completion_tokens": {}}, "not-an-object"):
+        body = json.dumps({"error": {"code": "bad_response"}, "usage": usage}).encode()
+        error = urllib.error.HTTPError("http://provider", 500, "error", {}, io.BytesIO(body))
+        completion = _error_completion("provider", error)
+        assert completion.stop_reason == "error" and completion.error_status == 500
 
 def test_provider_error_contract_matrix():
     """Every provider, every transport failure -> stop_reason=='error', text startswith 'ERROR(',
@@ -516,6 +556,51 @@ def test_claude_cli_text_protocol_handles_braces_inside_json_strings():
 
     answer = 'kept a closing brace } and an opening brace { inside the summary'
     assert _parse_answer_json(json.dumps({"answer": answer})) == answer
+
+
+def test_text_response_envelope_rejects_ambiguous_or_unsafe_shapes():
+    from harness.providers import _parse_response_envelope
+
+    parsed = _parse_response_envelope(
+        'prose before {"tool":"read_file","args":{"path":"a.py"}}',
+        allowed_tools={"read_file"})
+    assert parsed and parsed[0] == "tool" and parsed[1].args == {"path": "a.py"}
+    assert _parse_response_envelope(
+        '{"answer":"one"} then {"answer":"two"}') is None
+    assert _parse_response_envelope('{"answer":"x","extra":true}') is None
+    assert _parse_response_envelope('{"tool":"read_file","args":[]}',
+                                    allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope('{"tool":"bash","args":{}}',
+                                    allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"answer":"nested"}} suffix') is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"tool":"read_file","args":{"path":"x"}}} suffix',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"answer":"nested"} suffix') is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"tool":"read_file","args":{"path":"x"}} suffix',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        '{broken {"answer":"nested"}') is None
+    assert _parse_response_envelope(
+        '[broken {"tool":"read_file","args":{"path":"x"}}',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        'prefix [{"answer":"nested in a list"}] suffix') is None
+    assert _parse_response_envelope(
+        '{"answer":"first","answer":"second"}') is None
+    assert _parse_response_envelope(
+        '{"tool":"read_file","args":{"value":NaN}}',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        "[" * 1200 + '{"answer":"nested"}' + "]" * 1200) is None
+    nested_args = _parse_response_envelope(
+        'prefix {"tool":"write_file","args":{"path":"x","metadata":'
+        '{"answer":"data, not a final response"}}} suffix',
+        allowed_tools={"write_file"})
+    assert nested_args and nested_args[0] == "tool"
 
 def test_openai_compat_surfaces_finish_length():
     """AUDIT #7 second half: finish_reason='length' must surface as stop_reason='length' with the

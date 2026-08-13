@@ -1577,7 +1577,9 @@ def cmd_run(args):
             "output_tokens": res.output_tokens, "cache_read": res.cache_read,
             "cache_creation": res.cache_creation, "total_tokens": res.total_tokens,
             "cache_miss_tokens": res.cache_miss_tokens, "cache_waste_usd": res.cache_waste_usd,
-            "turns": res.turns, "tool_calls": res.tool_calls, "mem_recalls": res.mem_recalls,
+            "turns": res.turns, "tool_calls": res.tool_calls,
+            "contract_repairs": getattr(res, "contract_repairs", 0),
+            "mem_recalls": res.mem_recalls,
             "wall_ms": res.wall_ms, "cost_usd": res.cost_usd}, ensure_ascii=False))
     elif getattr(args, "print", False):
         print(res.answer or res.error)          # headless: answer only (like claude -p)

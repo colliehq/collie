@@ -65,12 +65,27 @@ class Usage:
 def _openai_usage(u: dict) -> Usage:
     """OpenAI-compatible `usage` dict -> normalized Usage. `prompt_tokens` INCLUDES cached
     tokens, so subtract cached_tokens to keep input_tokens UNCACHED (Anthropic convention);
-    the full input is then input + cache_read, no double count."""
-    u = u or {}
-    cached = (u.get("prompt_tokens_details", {}) or {}).get("cached_tokens", 0) or 0
-    return Usage(input_tokens=max(0, (u.get("prompt_tokens", 0) or 0) - cached),
-                 output_tokens=u.get("completion_tokens", 0) or 0,
-                 cache_read=cached)
+    the full input is then input + cache_read + cache_creation, with no double count."""
+    u = u if isinstance(u, dict) else {}
+    details = u.get("prompt_tokens_details")
+    details = details if isinstance(details, dict) else {}
+
+    def count(value) -> int:
+        if isinstance(value, bool):
+            return 0
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    cached = count(details.get("cached_tokens", 0))
+    # Content-free Collie sidecars can preserve cache-write accounting through this optional
+    # extension. Generic OpenAI-compatible providers omit it and retain their existing semantics.
+    cache_creation = count(u.get("cache_creation_input_tokens", 0))
+    prompt = count(u.get("prompt_tokens", 0))
+    return Usage(input_tokens=max(0, prompt - cached - cache_creation),
+                 output_tokens=count(u.get("completion_tokens", 0)),
+                 cache_read=cached, cache_creation=cache_creation)
 
 
 @dataclass
@@ -81,6 +96,10 @@ class Completion:
     stop_reason: str = "end_turn"   # "end_turn" | "tool_use" | "error" | "length"
     error_status: int = 0           # HTTP status on an error completion (0 = none/unknown)
     error_detail: str = ""          # raw error body/text — classify_error reads THIS, not prose
+    # Stable, content-free provider/bridge error identifier when one is available.  Keeping this
+    # separate from prose lets the host distinguish a model response-contract miss from an
+    # unrelated HTTP 422 without guessing from status text.
+    error_code: str = ""
     # Physical provider/CLI requests consumed to produce this logical completion.
     # Most adapters issue exactly one; format-repairing adapters must report more.
     request_count: int = 1
@@ -185,12 +204,29 @@ def _error_completion(name: str, err, usage=None, status: int = 0) -> Completion
     raising, so the loop has ONE failure path (point 4). Carries error_status/error_detail for the
     host's retry classifier (point 5)."""
     detail = ""
+    error_code = ""
     if isinstance(err, urllib.error.HTTPError):
         status = status or err.code
         try:
-            detail = err.read().decode("utf-8", "ignore")[:300]
+            # Error responses are bounded before parsing.  The normalized subscription sidecar
+            # includes only a content-free error code plus numeric usage here, allowing a request
+            # which physically completed but failed response bridging to remain budget-visible.
+            detail = err.read(64 * 1024).decode("utf-8", "ignore")
         except Exception:
             detail = str(err)
+        try:
+            payload = json.loads(detail)
+            error = payload.get("error") if isinstance(payload, dict) else None
+            code = error.get("code") if isinstance(error, dict) else ""
+            if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
+                error_code = code
+            if usage is None and isinstance(payload, dict) and isinstance(payload.get("usage"), dict):
+                usage = _openai_usage(payload["usage"])
+        except Exception:
+            # Error normalization must never turn a provider failure back into an exception.  A
+            # malformed optional usage object degrades to zero usage while status/detail survive.
+            pass
+        detail = detail[:1200]
         # Keep the rate-limit headers WITH the failure. "You're out of extra usage" says a request
         # was refused for want of capacity but not which bucket was full, and the answer is only
         # observable at the moment of refusal — a check afterwards reads a window that has already
@@ -211,7 +247,8 @@ def _error_completion(name: str, err, usage=None, status: int = 0) -> Completion
     # 300 was enough for a message and not for the evidence behind it: the body alone already fills
     # it, so appending the limit headers above would have written them straight into the truncation.
     return Completion(text="ERROR(%s): %s" % (name, msg), stop_reason="error",
-                      usage=usage or Usage(), error_status=status, error_detail=detail[:1200])
+                      usage=usage or Usage(), error_status=status, error_detail=detail[:1200],
+                      error_code=error_code)
 
 
 # ---- error classification (pure data — NO retry policy here; the host owns policy, pi retry.ts) --
@@ -234,6 +271,11 @@ _RETRYABLE_RE = re.compile(
     r"|eof occurred|temporarily unavailable|server.?error|internal.?error"
     r"|service.?unavailable|stream error|stream ended", re.I)
 _RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504, 522, 524, 529}
+_PROTOCOL_CODES = {"response_contract_error"}
+_PROTOCOL_RE = re.compile(
+    r"response_contract_error|assistant response was not bridgeable"
+    r"|assistant (?:violated|did not match) (?:the )?(?:sidecar )?response contract",
+    re.I)
 
 
 def is_known_terminal(text: str) -> bool:
@@ -254,13 +296,18 @@ def is_overflow(text: str) -> bool:
     return bool(_OVERFLOW_RE.search(t)) and not _NOT_OVERFLOW_RE.search(t)
 
 
-def classify_error(detail: str, status: int = 0) -> str:
-    """'retryable' | 'terminal' | 'overflow' from an error completion's detail+status (point 5).
-    Pure — no policy. Priority: overflow-text > terminal-text > retryable(status|text) > terminal
-    (unknown fails fast: never burn backoff blind, matching pi where no-match means no retry)."""
+def classify_error(detail: str, status: int = 0, code: str = "") -> str:
+    """Classify an error completion without owning retry policy.
+
+    ``protocol`` is a completed model response that could not be bridged to the active structured
+    response contract.  It is deliberately distinct from transport retryability: the host may give
+    the model one corrective turn, with no network backoff.  Unknown failures still fail fast.
+    """
     t = detail or ""
     if is_overflow(t):
         return "overflow"
+    if code in _PROTOCOL_CODES or (status == 422 and _PROTOCOL_RE.search(t)):
+        return "protocol"
     if _TERMINAL_RE.search(t):
         return "terminal"
     if status in _RETRYABLE_HTTP or _RETRYABLE_RE.search(t):
@@ -1110,6 +1157,25 @@ def _cc_json(stdout: str) -> dict | None:
     return None
 
 
+def _unique_json_object(pairs):
+    """Build a JSON object while rejecting duplicate keys as ambiguous."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON constant: %s" % value)
+
+
+def _strict_json_decoder():
+    return json.JSONDecoder(object_pairs_hook=_unique_json_object,
+                            parse_constant=_reject_json_constant)
+
+
 def _json_objects(text: str):
     """Yield JSON objects embedded in text without hand-counting braces.
 
@@ -1119,31 +1185,99 @@ def _json_objects(text: str):
     """
     if not isinstance(text, str):
         return
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"\{", text):
+    decoder = _strict_json_decoder()
+    cursor = 0
+    while True:
+        # Decode arrays as spans too, solely so an envelope nested inside a JSON list is not later
+        # promoted to a top-level candidate. Only dict values are ever yielded.
+        match = re.search(r"[\[{]", text[cursor:])
+        if not match:
+            break
+        start = cursor + match.start()
         try:
-            obj, _end = decoder.raw_decode(text, match.start())
+            obj, end = decoder.raw_decode(text, start)
+        except RecursionError:
+            # A too-deep value is hostile/invalid as a response envelope. Do not walk inward until
+            # a nested object becomes shallow enough to masquerade as the top-level instruction.
+            return
         except (TypeError, ValueError, json.JSONDecodeError):
+            # A syntactically complete but contract-invalid value (duplicate keys, NaN, etc.) may
+            # contain nested envelope-shaped data. Use the permissive decoder only to skip that
+            # entire span; never yield its value. This prevents an invalid wrapper from becoming a
+            # path to execute a nested tool call.
+            try:
+                _ignored, end = json.JSONDecoder().raw_decode(text, start)
+            except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+                # Once an opening container cannot be decoded, its extent is unknowable.  Walking
+                # inward could promote an envelope-shaped child of a truncated/malformed wrapper
+                # into an executable top-level instruction, so the whole response must fail closed.
+                return
+            else:
+                cursor = max(start + 1, end)
             continue
         if isinstance(obj, dict):
             yield obj
+        # Never reinterpret an object nested inside a successfully-decoded outer value as another
+        # top-level response candidate.  This both prevents wrapper bypasses and keeps the scan O(n).
+        cursor = max(start + 1, end)
+
+
+def _parse_response_envelope(text: str, allowed_tools=None):
+    """Return exactly one valid Collie text-protocol envelope, or ``None``.
+
+    A bare object is preferred.  For compatibility with existing subscription runs, one otherwise
+    unambiguous object embedded in prose or a Markdown fence is accepted.  Extra keys, multiple
+    valid envelopes, non-object tool arguments, and tools outside ``allowed_tools`` fail closed.
+    The returned pair is ``("answer", str)`` or ``("tool", ToolCall)``.
+    """
+    if not isinstance(text, str):
+        return None
+    allowed = None if allowed_tools is None else set(allowed_tools)
+
+    def accepted(obj):
+        if (isinstance(obj, dict) and set(obj) == {"answer"}
+                and isinstance(obj.get("answer"), str)):
+            return "answer", obj["answer"]
+        if (isinstance(obj, dict) and set(obj) == {"tool", "args"}
+                and isinstance(obj.get("tool"), str) and obj["tool"]
+                and isinstance(obj.get("args"), dict)
+                and (allowed is None or obj["tool"] in allowed)):
+            return "tool", (obj["tool"], obj["args"])
+        return None
+
+    try:
+        value = json.loads(text, object_pairs_hook=_unique_json_object,
+                           parse_constant=_reject_json_constant)
+    except RecursionError:
+        return None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        candidates = [candidate for candidate in (
+            accepted(obj) for obj in _json_objects(text)) if candidate is not None]
+        if len(candidates) != 1:
+            return None
+        candidate = candidates[0]
+    else:
+        candidate = accepted(value)
+        if candidate is None:
+            return None
+
+    kind, payload = candidate
+    if kind == "answer":
+        return kind, payload
+    name, args = payload
+    return kind, ToolCall("cli_%d" % (len(text) % 100000), name, args)
 
 
 def _parse_tool_json(text: str):
     """Extract a {"tool":...,"args":{...}} object, including code containing braces."""
-    for obj in _json_objects(text):
-        if "tool" in obj:
-            return ToolCall("cli_%d" % (len(text) % 100000),
-                            obj["tool"], obj.get("args", {}))
-    return None
+    parsed = _parse_response_envelope(text)
+    return parsed[1] if parsed and parsed[0] == "tool" else None
 
 
 def _parse_answer_json(text: str):
     """Extract {"answer":"..."} -> the answer string, else None (a tool-JSON is not one)."""
-    for obj in _json_objects(text):
-        if "answer" in obj and "tool" not in obj:
-            return str(obj["answer"])
-    return None
+    parsed = _parse_response_envelope(text)
+    return parsed[1] if parsed and parsed[0] == "answer" else None
 
 
 # --------------------------------------------------------------------------- #

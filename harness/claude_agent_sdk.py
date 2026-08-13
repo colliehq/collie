@@ -17,7 +17,7 @@ import time
 import uuid
 
 from .providers import (ClaudeCliProvider, Completion, ModelProvider, Usage,
-                        _parse_answer_json, _parse_tool_json)
+                        _parse_response_envelope)
 
 
 _MAX_STDOUT = 2 * 1024 * 1024
@@ -462,15 +462,18 @@ class ClaudeAgentSdkProvider(ModelProvider):
                 cache_read=int(usage_data.get("cache_read_input_tokens", 0) or 0),
                 cache_creation=int(usage_data.get("cache_creation_input_tokens", 0) or 0),
             )
-            tool_call = _parse_tool_json(text)
-            if tool_call:
+            allowed_tools = ({str(schema.get("name") or "") for schema in tool_schemas}
+                             if tool_schemas else None)
+            envelope = _parse_response_envelope(text, allowed_tools=allowed_tools)
+            if envelope and envelope[0] == "tool":
+                tool_call = envelope[1]
                 status = "completed"
                 completion = Completion(tool_calls=[tool_call], usage=usage,
                                         stop_reason="tool_use", request_count=1)
                 completion.api_key_source = api_key_source
                 return completion
-            answer = _parse_answer_json(text)
-            if answer is not None:
+            if envelope and envelope[0] == "answer":
+                answer = envelope[1]
                 status = "completed"
                 if on_text and answer:
                     try:
@@ -479,6 +482,21 @@ class ClaudeAgentSdkProvider(ModelProvider):
                         pass
                 completion = Completion(text=answer, usage=usage,
                                         stop_reason="end_turn", request_count=1)
+                completion.api_key_source = api_key_source
+                return completion
+            if tool_schemas:
+                # The SDK request itself succeeded and consumed quota, but the result cannot safely
+                # drive Collie's executor.  Surface a stable semantic error so Harness can spend at
+                # most one separately-authorized corrective turn.  Never stream or persist the
+                # rejected assistant text.
+                status = "completed"
+                completion = Completion(
+                    text="ERROR(claude-agent-sdk): response contract error",
+                    usage=usage, stop_reason="error", error_status=422,
+                    error_code="response_contract_error",
+                    error_detail=("response_contract_error: assistant response did not match "
+                                  "Collie's tool/answer contract"),
+                    request_count=1)
                 completion.api_key_source = api_key_source
                 return completion
             # Provider.complete is also used by Mission's planner, whose own

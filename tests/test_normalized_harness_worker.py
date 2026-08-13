@@ -108,6 +108,12 @@ def test_collie_binds_module_level_data_to_attempt_state(tmp_path, monkeypatch):
             return Completion(text="done", usage=Usage(), stop_reason="end_turn")
 
     monkeypatch.setattr(worker, "OpenAICompatProvider", FakeProvider)
+    real_make_harness = cli.make_harness
+    observed = {}
+    def capturing_make_harness(*args, **kwargs):
+        observed["harness"] = real_make_harness(*args, **kwargs)
+        return observed["harness"]
+    monkeypatch.setattr(cli, "make_harness", capturing_make_harness)
 
     receipt = worker._run_collie(
         workspace, state_dir, "http://inference:8765/v1", "inspect", 1)
@@ -115,6 +121,8 @@ def test_collie_binds_module_level_data_to_attempt_state(tmp_path, monkeypatch):
     assert receipt["worker_outcome"] == "candidate"
     assert (state_dir / "collie-data" / "runs.db").is_file()
     assert cli.DATA == str(blocked)
+    assert observed["harness"].max_turns == 1
+    assert observed["harness"].max_model_calls == 1
 
 
 def test_main_writes_bounded_invalid_receipt(tmp_path):

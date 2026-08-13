@@ -155,6 +155,27 @@ def test_worker_rejects_two_embedded_envelopes():
         }, set())
 
 
+def test_worker_does_not_promote_nested_envelopes_or_reject_nested_tool_data():
+    with pytest.raises(sidecar.ResponseContractError):
+        sidecar._strict_result({
+            "text": 'prefix {"wrapper":{"answer":"nested"}} suffix',
+            "usage": {}, "api_key_source": "none",
+        }, set())
+    for text in ('prefix [{"answer":"nested in list"}] suffix',
+                 '{"answer":"first","answer":"second"}',
+                 '{"tool":"write","args":{"value":NaN}}'):
+        with pytest.raises(sidecar.ResponseContractError):
+            sidecar._strict_result({
+                "text": text, "usage": {}, "api_key_source": "none",
+            }, {"write"})
+    result = sidecar._strict_result({
+        "text": ('prefix {"tool":"write","args":{"path":"x","metadata":'
+                 '{"answer":"ordinary data"}}} suffix'),
+        "usage": {}, "api_key_source": "none",
+    }, {"write"})
+    assert result.kind == "tool" and result.args["metadata"]["answer"] == "ordinary data"
+
+
 def test_worker_output_requires_subscription_auth_attestation():
     with pytest.raises(RuntimeError, match="auth attestation"):
         sidecar._strict_result({"text": '{"answer":"x"}', "usage": {},
@@ -230,10 +251,101 @@ def test_response_contract_failure_is_a_completed_physical_request(tmp_path):
 
     assert caught.value.status == 422
     assert caught.value.code == "response_contract_error"
+    assert caught.value.usage["input_tokens"] == 7
+    assert caught.value.usage["output_tokens"] == 2
     rows = _receipts(ledger_dir)
     assert rows[-1]["outcome"] == "completed"
     assert rows[-1]["error_code"] == "response_contract_error"
     assert rows[-1]["usage"]["input_tokens"] == 7
+
+
+def test_http_contract_error_returns_numeric_usage_without_rejected_text(tmp_path):
+    rejected = "REJECTED-ASSISTANT-CONTENT-MUST-NOT-CROSS"
+    transport = FakeTransport(rejected, usage={
+        "input_tokens": 7, "output_tokens": 2,
+        "cache_read_input_tokens": 1, "cache_creation_input_tokens": 3,
+    })
+    server, thread = _start_server(tmp_path, transport)
+    try:
+        status, _headers, data = _request(
+            server, "POST", "/v1/chat/completions", _body(),
+            headers={"X-Request-ID": "http-contract"})
+        payload = json.loads(data)
+        assert status == 422
+        assert payload["error"]["code"] == "response_contract_error"
+        assert payload["usage"] == {
+            "prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13,
+            "prompt_tokens_details": {"cached_tokens": 1},
+            "cache_creation_input_tokens": 3,
+        }
+        assert rejected not in data.decode("utf-8")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
+def test_real_sidecar_provider_loop_seam_repairs_once_and_preserves_usage(
+        tmp_path, monkeypatch):
+    from harness.cli import make_harness
+    from harness.providers import OpenAICompatProvider
+
+    class SequenceTransport(FakeTransport):
+        def __init__(self):
+            super().__init__()
+            self.responses = [
+                ("REJECTED-RAW-ASSISTANT-TEXT", {
+                    "input_tokens": 7, "output_tokens": 2,
+                    "cache_read_input_tokens": 1,
+                    "cache_creation_input_tokens": 3,
+                }),
+                ('{"answer":"done"}', {
+                    "input_tokens": 5, "output_tokens": 1,
+                    "cache_read_input_tokens": 2,
+                    "cache_creation_input_tokens": 4,
+                }),
+            ]
+        def invoke(self, system, prompt, scope, cancel_event):
+            self.calls.append((system, prompt, scope, cancel_event))
+            text, usage = self.responses[len(self.calls) - 1]
+            return {"ok": True, "text": text, "usage": usage,
+                    "api_key_source": "none"}
+
+    transport = SequenceTransport()
+    server, thread = _start_server(tmp_path, transport)
+    monkeypatch.setenv("_COLLIE_SEAM_KEY", sidecar.BEARER_SENTINEL)
+    try:
+        (tmp_path / "workspace").mkdir()
+        harness = make_harness(
+            str(tmp_path / "workspace"), provider="mock",
+            project="sidecar-seam", embed="hash")
+        harness.provider = OpenAICompatProvider(
+            "http://127.0.0.1:%d/v1" % server.server_port,
+            "_COLLIE_SEAM_KEY", sidecar.MODEL,
+            name="normalized-subscription-sidecar")
+        harness.max_turns = 1
+        harness.max_model_calls = 2
+        harness.max_retries = 0
+
+        result = harness.run("sidecar-seam", "finish safely", consolidate=False)
+
+        assert result.answer == "done" and not result.error
+        assert len(transport.calls) == result.model_calls == 2
+        assert result.contract_repairs == 1
+        assert (result.input_tokens, result.output_tokens, result.cache_read,
+                result.cache_creation) == (12, 3, 3, 7)
+        durable = json.dumps(result.messages)
+        assert "REJECTED-RAW-ASSISTANT-TEXT" not in durable
+        assert "previous response could not be parsed" not in durable
+        rows = _receipts(tmp_path / "ledger")
+        assert [row["event"] for row in rows] == [
+            "reserved", "settled", "reserved", "settled"]
+        assert all(row.get("outcome") == "completed"
+                   for row in rows if row["event"] == "settled")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
 
 
 @pytest.mark.parametrize(
@@ -358,6 +470,7 @@ def test_http_health_models_completion_and_sse_are_openai_compatible(tmp_path):
         assert completion["usage"] == {
             "prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13,
             "prompt_tokens_details": {"cached_tokens": 2},
+            "cache_creation_input_tokens": 1,
         }
 
         stream_body = _body(stream=True)

@@ -269,6 +269,58 @@ def test_provider_uses_collie_prompt_and_parses_tool_protocol():
     assert "# Tools the executor can run:" in provider.request["prompt"]
 
 
+def test_provider_accepts_one_unambiguous_fenced_tool_envelope():
+    provider = _Provider({
+        "ok": True,
+        "text": '```json\n{"tool":"grep","args":{"pattern":"x"}}\n```',
+        "usage": {}, "api_key_source": "none",
+    })
+
+    completion = provider.complete(
+        "COLLIE SYSTEM", [{"role": "user", "content": "inspect"}], [{
+            "name": "grep", "description": "search", "input_schema": {
+                "type": "object", "properties": {"pattern": {"type": "string"}}},
+        }])
+
+    assert completion.stop_reason == "tool_use"
+    assert completion.tool_calls[0].name == "grep"
+
+
+@pytest.mark.parametrize("rejected_text", [
+    "I inspected it and here are several possible edits...",
+    '{"tool":"unknown_tool","args":{}}',
+    '{"answer":"one"} then {"answer":"two"}',
+    '{"answer":"done","extra":true}',
+])
+def test_tool_mode_contract_miss_is_completed_and_usage_visible_without_streaming(
+        rejected_text):
+    provider = _Provider({
+        "ok": True, "text": rejected_text,
+        "usage": {"input_tokens": 7, "output_tokens": 41},
+        "api_key_source": "none",
+    }, subscription_only=True)
+    events = []
+    streamed = []
+    provider.request_gate = lambda kind: events.append(("reserve", kind)) or "req-1"
+    provider.request_complete = lambda request_id, status: events.append(
+        ("complete", request_id, status))
+
+    completion = provider.complete(
+        "COLLIE SYSTEM", [{"role": "user", "content": "fix it"}], [{
+            "name": "edit_file", "description": "edit", "input_schema": {
+                "type": "object", "properties": {"path": {"type": "string"}}},
+        }], on_text=streamed.append)
+
+    assert completion.stop_reason == "error"
+    assert completion.error_code == "response_contract_error"
+    assert completion.error_status == 422
+    assert completion.request_count == 1
+    assert completion.usage.input_tokens == 7 and completion.usage.output_tokens == 41
+    assert streamed == [], "rejected assistant text must not be streamed"
+    assert events == [("reserve", "claude_agent_sdk"),
+                      ("complete", "req-1", "completed")]
+
+
 def test_provider_preserves_caller_owned_json_schema_for_mission_planner():
     plan = '{"action":"code","args":{"goal":"fix it"},"reason":"next"}'
     provider = _Provider({"ok": True, "text": plan, "usage": {},

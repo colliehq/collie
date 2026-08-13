@@ -73,6 +73,187 @@ def test_loop_retry_transient_then_success():
     assert not any("ERROR(" in m.get("content", "") for m in res.messages if isinstance(m.get("content"), str))
 
 
+def _contract_error(input_tokens=7, output_tokens=2):
+    from harness.providers import Completion, Usage
+    return Completion(
+        text="ERROR(sidecar): rejected assistant text is intentionally absent",
+        stop_reason="error", error_status=422,
+        error_code="response_contract_error",
+        error_detail=("{\"error\":{\"code\":\"response_contract_error\","
+                      "\"message\":\"assistant response was not bridgeable\"}}"),
+        usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens))
+
+
+def test_loop_repairs_one_response_contract_error_without_backoff():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion, Usage
+
+    seen = {}
+    def corrected(messages):
+        seen["messages"] = messages
+        return Completion(text="fixed", stop_reason="end_turn",
+                          usage=Usage(input_tokens=5, output_tokens=1))
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_ok", embed="hash")
+    h.max_turns = 1
+    h.max_retries = 0
+    h.max_contract_repairs = 1
+    h.memory = _RecordingMemory()
+    p = _ScriptProvider([_contract_error(), corrected])
+    h.provider = p
+
+    with patch("time.sleep") as sleep:
+        res = h.run("contract_ok", "go")
+
+    assert res.error == "" and res.answer == "fixed"
+    assert p.calls == 2 and res.model_calls == 2
+    assert res.contract_repairs == 1
+    assert res.input_tokens == 12 and res.output_tokens == 3
+    assert "previous response could not be parsed" in seen["messages"][-1]["content"]
+    durable = json.dumps(res.messages)
+    assert "previous response could not be parsed" not in durable
+    assert "rejected assistant text" not in durable
+    assert not any("response_contract_error" in item for item in h.memory.remembered)
+    row = h.recorder.db.execute(
+        "SELECT COUNT(*) n FROM turns WHERE run_id=? AND kind='format_repair'",
+        (res.run_id,)).fetchone()
+    assert row["n"] == 1
+    sleep.assert_not_called()
+
+
+def test_loop_response_contract_repair_is_bounded_and_content_free():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_bounded", embed="hash")
+    h.max_turns = 3
+    h.max_retries = 3
+    h.max_contract_repairs = 1
+    p = _ScriptProvider([_contract_error(), _contract_error(),
+                         lambda _messages: (_ for _ in ()).throw(
+                             AssertionError("third request must not be sent"))])
+    h.provider = p
+
+    with patch("time.sleep") as sleep:
+        res = h.run("contract_bounded", "go")
+
+    assert p.calls == 2 and res.model_calls == 2
+    assert res.contract_repairs == 1
+    assert res.error.startswith("protocol:")
+    assert "rejected assistant text" not in res.error
+    assert not res.answer
+    sleep.assert_not_called()
+
+
+def test_loop_contract_repair_respects_model_call_cap():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_cap", embed="hash")
+    h.max_turns = 5
+    h.max_model_calls = 1
+    h.max_contract_repairs = 1
+    p = _ScriptProvider([_contract_error(),
+                         lambda _messages: (_ for _ in ()).throw(
+                             AssertionError("request beyond cap"))])
+    h.provider = p
+
+    with patch("time.sleep") as sleep:
+        res = h.run("contract_cap", "go")
+
+    assert p.calls == 1 and res.model_calls == 1
+    assert res.contract_repairs == 0
+    assert res.error.startswith("protocol:")
+    assert not res.answer
+    sleep.assert_not_called()
+
+
+def test_loop_contract_repair_respects_local_token_budget():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_token_cap", embed="hash")
+    h.max_turns = 3
+    p = _ScriptProvider([_contract_error(input_tokens=7, output_tokens=2)])
+    h.provider = p
+
+    with patch.dict(os.environ, {"COLLIE_MAX_TOTAL_TOKENS": "9"}), patch("time.sleep") as sleep:
+        res = h.run("contract_token_cap", "go")
+
+    assert p.calls == 1 and res.model_calls == 1
+    assert res.contract_repairs == 0 and res.error.startswith("protocol:")
+    sleep.assert_not_called()
+
+
+def test_loop_contract_repair_respects_shared_budget():
+    from harness.cli import make_harness
+
+    class SharedBudget:
+        def __init__(self):
+            self.spent = 0
+        def account(self, _model, usage):
+            self.spent += usage.input_tokens + usage.output_tokens
+        def exceeded(self):
+            return self.spent >= 9
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_shared_cap", embed="hash")
+    h.max_turns = 3
+    h.shared_budget = SharedBudget()
+    p = _ScriptProvider([_contract_error(input_tokens=7, output_tokens=2)])
+    h.provider = p
+
+    res = h.run("contract_shared_cap", "go")
+
+    assert p.calls == 1 and res.model_calls == 1
+    assert res.contract_repairs == 0 and res.error.startswith("protocol:")
+
+
+def test_loop_does_not_repair_an_unrelated_http_422():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="generic_422", embed="hash")
+    h.max_turns = 3
+    p = _ScriptProvider([Completion(
+        text="validation failed", stop_reason="error", error_status=422,
+        error_detail="ordinary validation failure")])
+    h.provider = p
+
+    res = h.run("generic_422", "go")
+
+    assert p.calls == 1 and res.contract_repairs == 0
+    assert res.error.startswith("terminal:")
+
+
+def test_transport_retry_and_contract_repair_use_separate_bounded_policies():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    overloaded = Completion(text="overloaded", stop_reason="error", error_status=529,
+                            error_detail="overloaded_error")
+    h = make_harness(os.getcwd(), provider="mock", project="retry_then_contract", embed="hash")
+    h.max_turns = 1
+    h.max_retries = 1
+    h.retry_base = 1
+    h.max_contract_repairs = 1
+    p = _ScriptProvider([overloaded, _contract_error(), Completion(text="done")])
+    h.provider = p
+
+    slept = []
+    with patch("time.sleep", lambda seconds: slept.append(seconds)):
+        res = h.run("retry_then_contract", "go")
+
+    assert res.answer == "done" and not res.error
+    assert p.calls == 3 and res.model_calls == 3
+    assert res.contract_repairs == 1 and slept == [1]
+    rows = h.recorder.db.execute(
+        "SELECT kind, COUNT(*) n FROM turns WHERE run_id=? "
+        "AND kind IN ('retry','format_repair') GROUP BY kind", (res.run_id,)).fetchall()
+    assert {row["kind"]: row["n"] for row in rows} == {"retry": 1, "format_repair": 1}
+
+
 def test_loop_model_call_cap_stops_before_retry_or_synthesis():
     """A nested overnight slice must never send request N+1 after N was reserved."""
     from unittest.mock import patch
