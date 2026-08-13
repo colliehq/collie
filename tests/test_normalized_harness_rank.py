@@ -1,7 +1,9 @@
 import datetime as dt
 import hashlib
 import json
+import io
 from pathlib import Path
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +16,27 @@ def _canonical_sha(value):
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
                      separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+def test_archive_source_hashes_use_exported_bytes_not_worktree_bytes():
+    from bench.normalized_harness_rank import _hash_archive_members
+
+    raw = io.BytesIO()
+    payloads = {"a.py": b"one\r\ntwo\r\n", "b.txt": b"opaque\x00bytes"}
+    with tarfile.open(fileobj=raw, mode="w:") as bundle:
+        for name, payload in payloads.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            bundle.addfile(member, io.BytesIO(payload))
+
+    hashes = _hash_archive_members(raw.getvalue(), tuple(payloads))
+
+    assert hashes == {
+        name: hashlib.sha256(payload).hexdigest()
+        for name, payload in payloads.items()
+    }
+    assert hashes["a.py"] != hashlib.sha256(
+        payloads["a.py"].replace(b"\r\n", b"\n")).hexdigest()
 
 
 def test_schedule_admits_every_arm_and_rotates_four_arm_ranking():

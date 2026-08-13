@@ -178,8 +178,38 @@ def _source_revision_and_hashes(*, require_clean: bool) -> tuple[str, dict[str, 
                      cwd=ROOT)
         if tracked.returncode or dirty.returncode:
             raise RuntimeError("commit the normalized benchmark sources before launch")
-    hashes = {relative: _sha_file(ROOT / relative) for relative in SOURCE_PATHS}
+    # Images are built from ``git archive revision``, not from the worktree.
+    # Hash those exact exported bytes as well.  On Windows, core.autocrlf can
+    # otherwise make a clean file's worktree bytes differ from both its Git
+    # blob and the Docker build context even though the committed content is
+    # the same.
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", revision, *SOURCE_PATHS],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if archive.returncode:
+        raise RuntimeError("could not hash committed benchmark image sources")
+    hashes = _hash_archive_members(archive.stdout, SOURCE_PATHS)
     return revision, hashes
+
+
+def _hash_archive_members(raw: bytes,
+                          relative_paths: tuple[str, ...]) -> dict[str, str]:
+    """Hash the exact file payloads emitted into a Git archive."""
+    hashes: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as bundle:
+        for relative in relative_paths:
+            try:
+                member = bundle.getmember(relative)
+            except KeyError as exc:
+                raise RuntimeError("committed benchmark source is missing") from exc
+            if not member.isfile():
+                raise RuntimeError("committed benchmark source is not a file")
+            handle = bundle.extractfile(member)
+            if handle is None:
+                raise RuntimeError("committed benchmark source cannot be read")
+            hashes[relative] = _sha_bytes(handle.read())
+    return hashes
 
 
 def _safe_extract_tar(raw: bytes, destination: Path) -> None:
