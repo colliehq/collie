@@ -12,6 +12,11 @@
 | 3（并列） | Collie | 5/8（62.5%） | 2/4 | 3/4 |
 | 3（并列） | Pi | 5/8（62.5%） | 1/4 | 4/4 |
 
+随后针对 Collie 的结构化响应恢复做了实现与同格回归：新鲜采样为 `7/8`
+（87.5%），相对原 Collie 8 格是 `+2 resolved / 0 regressed`。这是只重跑 Collie 的
+配对回归，其他 arm 没有同时重跑，因此**不改写上表排名**，也不能把 `7/8` 与原表其他
+arm 的点估计拼成一张新排名。
+
 这里的排名标签是
 `adapted_harness_same_transport_not_native_product_ranking`。结果明确标记为
 `exploratory`、`publishable: false`：它比较的是四套 harness loop 经适配后走同一
@@ -96,13 +101,56 @@ Prime 与 Hermes 的 8 个正式 worker terminal state 全部是 candidate，最
 支出；它不是供应商的 metered billing receipt，也不能被表述为“零成本”或“永不额外
 计费”。
 
+## Collie 结构化响应恢复与同格回归
+
+实现提交为 `3c3d4811bc01f56e5539440d9712071d7ea6efd9`。关键行为是：
+
+- provider、直接 SDK adapter 与 subscription sidecar 共用严格的单-envelope parser；
+  只接受精确的 `{tool,args}` 或 `{answer}`，拒绝额外键、重复键、未知工具、多个
+  envelope、非有限 JSON 数值、过深嵌套，以及完整或损坏 wrapper 内的嵌套指令；
+- sidecar 用稳定且不含原始 assistant 正文的 `response_contract_error` 返回 HTTP 422，
+  同时保留这次已完成物理请求的四类 usage；
+- Collie loop 对这种错误最多发出 1 次无 backoff 的格式修复请求；修复仍走正常的
+  request authority、token budget 与 physical-call cap。被拒正文和临时 repair nudge 都不
+  写入 session、memory 或最终错误正文；
+- normalized worker 将 12-turn 上限同时设为 12 个物理模型请求，避免 final synthesis、
+  transport retry 或 repair 产生第 13 次调用；recorder 另存 `contract_repairs`。
+
+回归复用了原 suite 的 2 个冻结 task × 4 个 Collie repetition，并逐格绑定历史
+Collie cell；使用同一 evaluator prompt、hidden grader、Claude Agent SDK subscription
+transport、12-request cap 和 fresh workspace。结果如下：
+
+| 采样 | 总体 | request ID 传播 | circuit breaker | 配对变化 |
+| --- | ---: | ---: | ---: | ---: |
+| 原 Collie baseline | 5/8（62.5%） | 2/4 | 3/4 | — |
+| 修复后 Collie-only regression | 7/8（87.5%） | 3/4 | 4/4 | +2 / −0 |
+
+新 suite 为
+`cf4530576464afd1272aeed89dc658753a86a35922654a4584866a4fb4fa6441`，共 65 个已
+预留并结算的物理请求，所有 attempt 都未超过 12。证据校验覆盖四类 usage parity、
+reserved/settled、patch、冻结 task/fixture/hidden-grader hash、grader success marker 和
+额外第 9 个 artifact；最终 `validation_errors: []`、`regression_evidence_complete: true`。
+该 suite 始终写入 `ranking: null`、`publishable: false`。
+
+格式恢复在 2 个 attempt 中实际触发，共出现 3 个 contract-error settlement：
+
+- circuit-breaker 第 4 次在一次 contract error 后修复成功，最终 resolved；
+- request-ID 第 4 次在修复请求上再次违反 contract，按一次上限停止，最终没有 patch、
+  unresolved。说明恢复链已真实生效且有界，但不能保证每次格式失败都能收敛。
+
+跑前 UI 观察时间为 `2026-08-13T04:15:14.562249Z`，跑后为
+`2026-08-13T04:21:49.759155Z`：Current session 从 0% 到 2%，weekly all-model 保持
+20%，Usage credits 与 Auto-reload 均关闭，额外用量仍为 `$0.00 spent`。这仍只是一项
+UI 观察，不是供应商账单保证。
+
 ## 对 Collie 的直接判断
 
-1. **当前最值得修的是结构化响应恢复。** Collie 的 3 次失败都在 bridge response
-   contract，而不是 grader 发现了错误 patch。应在自己的 provider/loop 中加入严格
-   schema 约束、单对象提取、格式修复提示和有上限的恢复 turn，并用相同任务回归。
-2. **多文件传播任务仍明显弱。** request-ID 任务只有 2/4，而 Prime/Hermes 都是
-   4/4；需要强化跨文件影响面搜索、修改后验证以及 budget 即将耗尽时的收敛策略。
+1. **结构化响应恢复的第一版已经落地并通过同格回归。** 点估计从 5/8 到 7/8，且一次
+   contract failure 被修复后成功解题；连续两次不合约时也按上限停止。下一步应在更大
+   hidden task 集上验证改善是否稳定，而不是继续从这 8 个新鲜样本外推。
+2. **多文件传播任务仍是下一优先级。** 原排名中 request-ID 只有 2/4，修复后单臂回归
+   是 3/4，仍低于 Prime/Hermes 原采样的 4/4；需要强化跨文件影响面搜索、修改后验证
+   以及 budget 即将耗尽时的收敛策略。
 3. **可借鉴 Prime 的通用执行面与 Hermes 的稳定终态。** 这不等于照搬 shell 权限，
    而是让 Collie 在受控沙箱里拥有可组合的验证动作，并保证工具结果、错误与最终状态
    始终能被 loop 消化为下一步。
@@ -133,6 +181,10 @@ Prime 与 Hermes 的 8 个正式 worker terminal state 全部是 candidate，最
   但第一题整体先于第二题。
 - 所有结果均 `publishable: false`；如需公开排名，应扩充任务集、预注册协议并用全新
   hidden tasks 重跑。
+- 修复后的 7/8 是只重跑 Collie 的新鲜随机采样，未同时重跑 Prime、Pi、Hermes，不能
+  更新跨 harness 排名，也不足以证明统计显著的因果提升。
+- Collie-only regression runner 本身不支持断点续跑；本次受监控运行完整结束，但若
+  中途进程崩溃，必须人工审计已消费格，不能用新 suite 直接从第 1 格盲目重跑。
 
 ## 证据文件
 
@@ -149,3 +201,13 @@ Git 中提交的是不含解法正文的最小证据集：
 或原始 evaluator prompt。它不提交 Git，因为 `patch.diff` 与 `worker.json` 会公开 benchmark
 解法，而 442 个 ledger shard 会制造无必要的小文件噪声。旧 suite（包括被主动中止的
 `78dda328c4e4…`）均未拼入最终结果。
+
+修复后的最小回归证据集位于：
+
+- `bench/results/normalized-collie-regression-v1-cf4530576464/manifest.json`
+- `bench/results/normalized-collie-regression-v1-cf4530576464/summary.json`
+- `bench/results/normalized-collie-regression-v1-cf4530576464/post-run-billing.json`
+- 同目录 8 个 `runs/*/result.json`
+
+完整本地目录还保留逐请求 ledger、patch、grader、worker 与 reservation；提交到 Git 的仍
+只是没有解法正文与 prompt 正文的最小证据。
