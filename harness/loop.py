@@ -614,9 +614,19 @@ class Harness:
                             "the provider and may not describe the real cause")
                     if attempts:
                         note = "gave up after %d retries" % attempts
-                    comp.text = "%s: [%s] %s%s" % (
-                        cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
-                        comp.error_detail or comp.text or "provider error")
+                    if cls == "exhausted":
+                        # A spent plan is the one failure where the provider's own words are the
+                        # least useful part: the envelope names a plan_type and never the provider,
+                        # so "which subscription ran out, and what else do I have" — the only two
+                        # questions the reader has — are answered here or nowhere.
+                        from .providers import explain_exhausted
+                        comp.text = explain_exhausted(
+                            getattr(self.provider, "name", ""),
+                            comp.error_detail or comp.text or "", comp.error_status)
+                    else:
+                        comp.text = "%s: [%s] %s%s" % (
+                            cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
+                            comp.error_detail or comp.text or "provider error")
                     break
                 if overflow_now:
                     continue   # rebuild context with shrunk history, then re-run this turn

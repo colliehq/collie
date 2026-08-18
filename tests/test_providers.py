@@ -132,13 +132,64 @@ def test_classify_error_matrix():
     from harness.providers import classify_error
     assert classify_error("overloaded_error", 529) == "retryable"
     assert classify_error("", 503) == "retryable"
-    assert classify_error("insufficient_quota", 429) == "terminal", "quota beats retryable status"
+    assert classify_error("insufficient_quota", 429) == "exhausted", "quota beats retryable status"
     assert classify_error("Insufficient Balance", 402) == "terminal"
     assert classify_error("prompt is too long: 213462 tokens > 200000 maximum", 400) == "overflow"
     assert classify_error("request_too_large", 413) == "overflow"
     assert classify_error("ThrottlingException: Too many tokens, please wait", 0) == "retryable", "throttle != overflow"
     assert classify_error("timed out", 0) == "retryable"
     assert classify_error("something novel", 0) == "terminal", "unknown fails fast"
+
+
+# The 429 a flat plan sends when it is spent, verbatim from a real ChatGPT-plan refusal.
+_SPENT = ('{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached",'
+          '"plan_type":"pro","resets_at":1787196550,"resets_in_seconds":173470}}')
+
+
+def test_a_spent_plan_is_not_a_rate_limit():
+    """Both arrive as 429 and the remedy inverts: one waits seconds, the other waits days."""
+    from harness.providers import classify_error
+    assert classify_error(_SPENT, 429) == "exhausted"
+    for transient in ("rate limit exceeded, please slow down", "Too Many Requests",
+                      "overloaded_error"):
+        assert classify_error(transient, 429) == "retryable", transient
+
+
+def test_exhaustion_wordings_every_vendor_uses():
+    from harness.providers import is_exhausted
+    for t in ("usage limit reached", "You exceeded your current quota", "quota exhausted",
+              "insufficient_quota", "credit balance is too low", "monthly limit reached"):
+        assert is_exhausted(t), t
+    for t in ("rate limit exceeded", "too many requests", "server error"):
+        assert not is_exhausted(t), t
+
+
+def test_an_unknown_provider_is_assumed_to_cost_money():
+    """The one mistake this must never make is waving a metered provider through as free."""
+    from harness.providers import provider_kind
+    assert provider_kind("anthropic-oauth") == "subscription"
+    assert provider_kind("codex-oauth") == "subscription"
+    assert provider_kind("ollama") == "local"
+    assert provider_kind("anthropic") == "metered", "an API key is metered despite the name"
+    assert provider_kind("some-provider-invented-tomorrow") == "metered"
+    assert provider_kind("") == "metered"
+
+
+def test_fallbacks_never_offer_a_metered_provider():
+    from harness.providers import subscription_fallbacks, provider_kind
+    for current in ("codex-oauth", "anthropic-oauth", ""):
+        alts = subscription_fallbacks(current)
+        assert current not in alts
+        assert all(provider_kind(a) == "subscription" for a in alts), alts
+
+
+def test_exhausted_message_answers_which_plan_and_when():
+    """The vendor envelope names a plan_type and never the provider, nor a readable reset."""
+    from harness.providers import explain_exhausted
+    msg = explain_exhausted("codex-oauth", _SPENT, 429)
+    assert "codex-oauth" in msg
+    assert "2026-" in msg, "the reset instant, not just resets_in_seconds"
+    assert "429" in msg
 
 def test_provider_error_contract_matrix():
     """Every provider, every transport failure -> stop_reason=='error', text startswith 'ERROR(',

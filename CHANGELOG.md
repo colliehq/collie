@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.20.33 — a spent plan is not a rate limit
+
+- **`usage_limit_reached` was being classified as retryable**, because it arrives as a 429 and 429 is
+  in the retryable set. A dog whose flat plan had run out therefore spent three backoffs discovering
+  that a refusal resetting in two days had not stopped resetting in two days, and then posted the
+  vendor's raw JSON at whoever asked — once per ask, for as long as the window lasted.
+  `classify_error` now returns a fourth class, `exhausted`, ranked above both terminal and retryable:
+  the same text can match either of those and neither answer is useful — one gives up without saying
+  the plan comes back, the other retries what cannot succeed until it does. Callers that only know
+  `retryable` are unaffected; every one of them already routes everything else to its terminal path,
+  which is the correct handling for a spent plan.
+
+- **The refusal now says which plan, when it returns, and what else would work.** The vendor envelope
+  carries a `plan_type` and no provider name at all, so a reader holding two subscriptions could not
+  tell which had run out, and `resets_in_seconds: 173470` is not a time anyone reads. All three
+  answers were already knowable locally; `explain_exhausted` gives them.
+
+- **`provider_kind()` and `subscription_fallbacks()` write down the rule any automatic switch has to
+  obey: a spent flat plan may hand work to another flat plan, never to a metered key.** In the moment
+  those two are indistinguishable — both are "it stopped working" — but one resolves by waiting and
+  the other resolves as a bill nobody chose. An unrecognised provider classifies as metered on
+  purpose, so a name added tomorrow cannot be spent by accident. Acting on this automatically is
+  deliberately NOT wired in yet: the message tells a human what to switch to, and a human switches.
+
+- Behaviour change worth stating plainly: `classify_error("insufficient_quota", 429)` used to return
+  `"terminal"` and now returns `"exhausted"`. Both are non-retryable, so nothing downstream changes
+  its mind about whether to retry — only about what it can say.
+
 ## v0.20.32 — a provider plugin can introduce itself
 
 - **Installed provider plugins now appear in `collie init`.** The menu was built from the settings
