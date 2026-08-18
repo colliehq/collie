@@ -1177,7 +1177,7 @@ def cmd_prefix(args):
     from .providers import measure_prefix
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-    h = make_harness(cwd, provider=provider, model=args.model, project=args.project or "demo")
+    h = make_harness(cwd, provider=provider, model=args.model, project=args.project)
     system, _msgs, meta = h.composer.build({"messages": []}, ".", cwd, h.project, h.mode)
     schemas = h.registry.active_schemas()
     measured = measure_prefix(h.provider, system, schemas)
@@ -1849,7 +1849,8 @@ def cmd_init(args):
         else:
             print("  … generating AGENTS.md with the model (one short run)")
             provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-            h = make_harness(cwd, provider=provider, project="init")
+            from .memory import project_scope
+            h = make_harness(cwd, provider=provider, project=project_scope(cwd))
             res = h.run("init", (
                 "Explore this repository briefly (README, entry points, key modules, how tests run) "
                 "and CREATE a concise AGENTS.md at the repo root with: what the project is (2-3 "
@@ -2324,7 +2325,7 @@ def main(argv=None):
     pr.add_argument("--provider", default=None,
                     help="mock|ollama|anthropic|deepseek|qwen|... (env COLLIE_PROVIDER)")
     pr.add_argument("--model", default=None)
-    pr.add_argument("--cwd", default=None); pr.add_argument("--project", default="demo")
+    pr.add_argument("--cwd", default=None); pr.add_argument("--project", default=None)
     pr.add_argument("-p", "--print", action="store_true", help="print only the answer")
     pr.add_argument("--json", action="store_true", help="print a JSON result")
     pr.add_argument("--stream-json", action="store_true", dest="stream_json",
@@ -2358,7 +2359,7 @@ def main(argv=None):
     pp.add_argument("--measure", action="store_true", help="(default action; accepted for clarity)")
     pp.add_argument("--provider", default=None, help="mock|anthropic|deepseek|... (env COLLIE_PROVIDER)")
     pp.add_argument("--model", default=None)
-    pp.add_argument("--cwd", default=None); pp.add_argument("--project", default="demo")
+    pp.add_argument("--cwd", default=None); pp.add_argument("--project", default=None)
     pp.set_defaults(fn=cmd_prefix)
 
     # pack: best-of-N with execution-based selection (run N isolated attempts, pick what passes)
@@ -2385,7 +2386,7 @@ def main(argv=None):
     # repl: lightweight interactive chat that keeps the full thread (and persists it as a session)
     prp = sub.add_parser("repl", help="interactive REPL that keeps the conversation thread")
     prp.add_argument("--provider", default=None); prp.add_argument("--model", default=None)
-    prp.add_argument("--cwd", default=None); prp.add_argument("--project", default="demo")
+    prp.add_argument("--cwd", default=None); prp.add_argument("--project", default=None)
     prp.add_argument("--goal", default=None)
     prp.add_argument("--continue", dest="cont", action="store_true", help="continue the latest session")
     prp.add_argument("--resume", default=None, metavar="ID", help="resume session by id")
@@ -2394,7 +2395,7 @@ def main(argv=None):
     # tui: rich full-experience terminal chat (live gate/diff/receipt timeline)
     pt = sub.add_parser("tui", help="rich terminal chat with a live tool/gate/diff timeline")
     pt.add_argument("--provider", default=None); pt.add_argument("--model", default=None)
-    pt.add_argument("--cwd", default=None); pt.add_argument("--project", default="demo")
+    pt.add_argument("--cwd", default=None); pt.add_argument("--project", default=None)
     pt.add_argument("--goal", default=None)
     pt.add_argument("--continue", dest="cont", action="store_true", help="continue the latest session")
     pt.add_argument("--resume", default=None, metavar="ID", help="resume session by id")
@@ -2530,7 +2531,7 @@ def main(argv=None):
                          "(e.g. --until \"pytest -q\")")
     pl.add_argument("--max", type=int, default=5, help="max iterations (default 5)")
     pl.add_argument("--provider", default=None); pl.add_argument("--model", default=None)
-    pl.add_argument("--cwd", default=None); pl.add_argument("--project", default="demo")
+    pl.add_argument("--cwd", default=None); pl.add_argument("--project", default=None)
     pl.set_defaults(fn=cmd_loop)
 
     pa = sub.add_parser("acp", help="run as an ACP agent over stdio (Zed/JetBrains/neovim/"
@@ -2587,7 +2588,7 @@ def main(argv=None):
     pm = sub.add_parser("mem")
     pm.add_argument("action", choices=["search", "add", "reembed", "eval", "import", "purge-imported"])
     pm.add_argument("text", nargs="?", default="")
-    pm.add_argument("--project", default="demo"); pm.add_argument("--embed", default="auto")
+    pm.add_argument("--project", default=None); pm.add_argument("--embed", default="auto")
     # mem import: distill past Claude Code / Codex sessions into memory (see mem_import.py)
     pm.add_argument("--source", choices=["cc", "codex", "all"], default="all",
                     help="which local agent history to import")
@@ -2704,6 +2705,11 @@ def main(argv=None):
     pmcp.set_defaults(fn=cmd_mcp)
 
     args = p.parse_args(argv)
+    # One scope per codebase, resolved once. Left to the argparse defaults this said "demo"
+    # everywhere, which is a surface's name and not a project's — see memory.project_scope.
+    if hasattr(args, "project") and getattr(args, "project", None) is None:
+        from .memory import project_scope
+        args.project = project_scope(getattr(args, "cwd", None) or os.getcwd())
     # any chat surface started interactively with nothing configured gets the one-time wizard —
     # without this, a fresh install's `collie web`/`collie tui`/`collie run` silently lands on the
     # mock provider and answers with canned "Based on the tool output" nonsense. Never prompts when:

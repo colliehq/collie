@@ -593,3 +593,36 @@ def test_checkpoints_do_not_accumulate_forever():
 
 if __name__ == "__main__":                 # LAST, always: a guard with definitions after it
     sys.exit(run_module(globals(), "CORE"))  # silently skips every one of them.
+
+
+def test_memory_scope_is_the_codebase_not_the_surface(tmp_path):
+    """One checkout, one memory — however the person reached it.
+
+    The regression this pins down: the web app scoped its facts to "web" while every CLI default
+    scoped to "demo", so a dog answering in Slack could not recall what the same dog had learned in
+    the desktop panel, on the same machine, in the same repo. Both strings name a surface; neither
+    names a project.
+    """
+    from harness.memory import project_scope
+    repo = tmp_path / "myrepo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "src" / "deep").mkdir(parents=True)
+    assert project_scope(str(repo)) == "myrepo"
+    assert project_scope(str(repo / "src")) == "myrepo", "a subdirectory is the same project"
+    assert project_scope(str(repo / "src" / "deep")) == "myrepo"
+
+
+def test_memory_scope_outside_a_checkout_is_the_directory(tmp_path):
+    from harness.memory import project_scope
+    plain = tmp_path / "NotARepo"
+    plain.mkdir()
+    assert project_scope(str(plain)) == "notarepo"
+
+
+def test_memory_scope_never_falls_back_into_the_shared_tier(tmp_path):
+    """recall() reads `project=? OR project='global'`, so a scope landing in `global` would quietly
+    publish one repo's facts to every other project on the machine."""
+    import os
+    from harness.memory import project_scope
+    assert project_scope(str(tmp_path)) != "global"
+    assert project_scope(os.path.abspath(os.sep)) != "global"

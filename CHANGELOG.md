@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.20.34 — one checkout, one memory
+
+- **Memory was scoped by the surface you spoke through, not by the project.** The web app wrote its
+  facts under `project="web"`; every argparse default wrote under `"demo"`. On one machine, in one
+  checkout, that is two memories divided by nothing but which window the person happened to type
+  into — and the dog answering in Slack could not recall a word of what the same dog had worked out
+  in the desktop panel an hour earlier. Nothing about a project changes when you move from a chat
+  panel to Slack, so nothing about its memory should. `memory.project_scope()` now derives the scope
+  from the working directory: a git checkout by its ROOT, so a subdirectory is the same project as
+  the repo above it, and the directory itself outside a checkout. `--project` still overrides.
+
+- Deliberate limitation, stated here rather than discovered later: the key is the directory
+  basename, so a fork checked out beside its upstream shares one memory. That is usually what is
+  wanted — they are the same project — and `--project` exists for when it is not.
+
+- The fallback is `"default"`, never `"global"`. `recall()` reads `project=? OR project='global'`,
+  so a scope that fell into `global` would quietly publish one repo's facts to every other project
+  on the machine.
+
+**Upgrading.** Facts already stored under `"demo"` or `"web"` stay exactly where they are and are no
+longer in scope by default. Nothing is deleted and `--project demo` still reaches them, but a
+machine with memory worth keeping should move it into the new scope.
+
 ## v0.20.33 — a spent plan is not a rate limit
 
 - **`usage_limit_reached` was being classified as retryable**, because it arrives as a 429 and 429 is

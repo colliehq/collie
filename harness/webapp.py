@@ -30,6 +30,13 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+
+
+def _scope(cwd: str) -> str:
+    """Memory/session scope for this request. Never "web": a surface is not a project, and naming
+    the scope after this one hid everything learned here from the same repo's CLI and Slack dogs."""
+    from .memory import project_scope
+    return project_scope(cwd)
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -2348,7 +2355,7 @@ class Handler(BaseHTTPRequestHandler):
             if ans:
                 sessions.save(sid, [{"role": "user", "content": q},
                                     {"role": "assistant", "content": ans}],
-                              project="web", cwd=cwd, answer=ans)
+                              project=_scope(cwd), cwd=cwd, answer=ans)
             self._sse("done", {
                 "session": sid, "answer": ans,
                 "error": None if win is not None else ("no winner — " + pr.get("reason", "nothing passed")),
@@ -2366,7 +2373,7 @@ class Handler(BaseHTTPRequestHandler):
             from .cli import default_gate
             # `prov` (not _provider()) — it is the provider this request already resolved and
             # reported in the frames above; re-reading it here could answer differently.
-            h = make_harness(cwd, provider=prov, project="web",
+            h = make_harness(cwd, provider=prov, project=_scope(cwd),
                              code_search=True, web_search=True, exec_code=True, delegate=True,
                              gate=default_gate(cwd))
             # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
@@ -2466,7 +2473,7 @@ class Handler(BaseHTTPRequestHandler):
                 res = h.run("web", user_msg, consolidate=True, history=history)
             finally:
                 stop_hb.set()                  # end the heartbeat before we send `done`
-            sessions.save(sid, res.messages, project="web", cwd=cwd, answer=res.answer or "")
+            sessions.save(sid, res.messages, project=_scope(cwd), cwd=cwd, answer=res.answer or "")
             Handler._live_pub("done", {"session": sid, "turns": res.turns})   # live map: run finished
             done_d = {
                 "session": sid, "answer": res.answer or "", "error": res.error,
