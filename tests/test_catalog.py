@@ -147,3 +147,35 @@ def test_an_unstated_plugin_kind_is_metered(monkeypatch):
     monkeypatch.setattr(catalog, "_plugin_info",
                         lambda: {"x": {"catalog": [{"model": "m"}]}})
     assert catalog._plugin_entries()[0].kind == "metered"
+
+
+def test_a_fallback_is_a_step_down_the_family_ladder(monkeypatch):
+    from harness import catalog
+    served = ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6",
+              "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]
+    monkeypatch.setattr(catalog, "discover", lambda p: served)
+    assert catalog.fallback_model("x", "claude-opus-5") == "claude-sonnet-5", \
+        "the curated current-generation id must win over a dated snapshot"
+    assert catalog.fallback_model("x", "claude-sonnet-5") == "claude-haiku-4-5-20251001"
+    assert catalog.fallback_model("x", "claude-haiku-4-5-20251001") == "", "bottom of the ladder"
+
+
+def test_no_fallback_outside_a_family_we_know_how_to_walk(monkeypatch):
+    """Guessing a step for an unfamiliar family would just be a different way to fail."""
+    from harness import catalog
+    monkeypatch.setattr(catalog, "discover", lambda p: ["gpt-5.6-terra", "gpt-5.6-luna"])
+    assert catalog.fallback_model("x", "gpt-5.6-terra") == ""
+
+
+def test_a_fallback_never_leaves_the_provider(monkeypatch):
+    """Same plan, so the only question is capacity. Crossing providers can move the bill from a
+    flat plan onto a metered key, which is not a mid-turn decision to make for someone."""
+    from harness import catalog
+    monkeypatch.setattr(catalog, "discover", lambda p: [])
+    monkeypatch.setattr(catalog, "_static", lambda: [
+        catalog.ModelEntry("mine", "claude-sonnet-5", "S", "v", "subscription"),
+        catalog.ModelEntry("other", "claude-haiku-4-5", "H", "v", "metered"),
+    ])
+    assert catalog.fallback_model("mine", "claude-opus-5") == "claude-sonnet-5"
+    assert catalog.fallback_model("mine", "claude-sonnet-5") == "", \
+        "the haiku on another provider must not be offered"

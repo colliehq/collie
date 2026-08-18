@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.20.37 — a busy model costs a rung, not the answer
+
+- **An overloaded model steps down instead of ending the turn.** Spending the whole retry budget on
+  a frontier model that is overloaded and then handing back an error throws away an answer that was
+  available one rung down the entire time — and `overloaded_error` on the popular model is the
+  commonest way a correctly configured setup stops working. When retries are spent (or the plan is),
+  the loop now steps once down a family ladder — opus → sonnet → haiku — and carries on.
+
+- **Down the same provider only.** Inside one provider the plan is already paid for and the only
+  open question is which model has capacity. Crossing providers can move the bill from a flat plan
+  onto a metered key — the difference between "wait a minute" and "a charge nobody chose" — so it
+  is never done automatically. `subscription_fallbacks()` from v0.20.33 still lays out the
+  cross-provider option for a person to choose deliberately.
+
+- **Once per run.** A cascade would slide down the whole ladder on one bad minute with nobody
+  deciding to, and by the third rung the answer is not the one anyone asked for.
+
+- **And it says so in the ANSWER, not only in an event.** A reply that came from a smaller model
+  than the one someone picked has to say so where they will actually read it; an event reaches only
+  a panel they may not have open, and silently answering from a lesser model is the one outcome
+  worse than saying the frontier one was busy. `res.model` keeps the model that was CHOSEN — the
+  record of someone's choice should not be quietly rewritten by what the day's capacity allowed.
+
 ## v0.20.36 — the classifier stops running on a frontier model, and says why when it cannot run
 
 - **The router picked its model from a hardcoded pair of provider names.** `DEFAULT_ROUTER_MODEL if

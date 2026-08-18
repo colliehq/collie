@@ -593,3 +593,70 @@ def test_verify_nudge_names_the_repos_own_toolchain():
 
 if __name__ == "__main__":                 # LAST, always: a guard with definitions after it
     sys.exit(run_module(globals(), "LOOP"))  # silently skips every one of them.
+
+
+def test_a_busy_model_steps_down_a_rung_and_says_so():
+    """An overloaded frontier model must not cost the answer, and must not hide the swap.
+
+    Spending the whole retry budget on a model that is overloaded and then handing back an error
+    throws away an answer that was available one rung down the entire time. Quietly answering from
+    that lesser model is the only outcome worse: a reply has to say when it did not come from the
+    model the person picked.
+    """
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion, Usage
+    from _util import _ScriptProvider
+    h = make_harness(os.getcwd(), provider="mock", project="stepdown", embed="hash")
+    h.max_turns = 2; h.max_retries = 1; h.retry_base = 0
+    busy = Completion(text="", stop_reason="error", error_status=529,
+                      error_detail='{"type":"overloaded_error","message":"Overloaded"}')
+    ok = Completion(text="all good", stop_reason="end_turn", usage=Usage(input_tokens=5))
+    h.provider = _ScriptProvider([busy, busy, ok], name="anthropic-relay", model="claude-opus-5")
+    with patch("harness.catalog.fallback_model", lambda p, m: "claude-sonnet-5"), \
+         patch("time.sleep", lambda s: None):
+        res = h.run("stepdown", "go")
+    assert res.error == "", res.error
+    assert "all good" in res.answer, res.answer
+    assert "claude-opus-5" in res.answer and "claude-sonnet-5" in res.answer, \
+        "the answer must name what was asked for and what actually answered: %r" % res.answer
+    assert h.provider.model == "claude-sonnet-5"
+    assert res.model == "claude-opus-5", "the record keeps the model that was CHOSEN, not the one capacity allowed"
+
+
+def test_the_step_down_happens_at_most_once():
+    """A cascade would slide down the whole ladder on one bad minute, with nobody deciding to."""
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    from _util import _ScriptProvider
+    h = make_harness(os.getcwd(), provider="mock", project="stepdown_once", embed="hash")
+    h.max_turns = 2; h.max_retries = 1; h.retry_base = 0
+    busy = Completion(text="", stop_reason="error", error_status=529, error_detail="overloaded_error")
+    h.provider = _ScriptProvider([busy], name="anthropic-relay", model="claude-opus-5")
+    calls = []
+
+    def _fallback(provider, model):
+        calls.append(model)
+        return {"claude-opus-5": "claude-sonnet-5", "claude-sonnet-5": "claude-haiku-4-5"}.get(model, "")
+
+    with patch("harness.catalog.fallback_model", _fallback), patch("time.sleep", lambda s: None):
+        h.run("stepdown_once", "go")
+    assert calls == ["claude-opus-5"], "asked for a rung more than once: %s" % calls
+    assert h.provider.model == "claude-sonnet-5"
+
+
+def test_no_rung_below_means_the_error_still_surfaces():
+    """With nothing to fall back to, the original failure must reach the caller unchanged."""
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    from _util import _ScriptProvider
+    h = make_harness(os.getcwd(), provider="mock", project="stepdown_none", embed="hash")
+    h.max_turns = 1; h.max_retries = 0; h.retry_base = 0
+    busy = Completion(text="", stop_reason="error", error_status=529, error_detail="overloaded_error")
+    h.provider = _ScriptProvider([busy], name="anthropic-relay", model="claude-haiku-4-5")
+    with patch("harness.catalog.fallback_model", lambda p, m: ""), patch("time.sleep", lambda s: None):
+        res = h.run("stepdown_none", "go")
+    assert "overloaded" in ((res.error or "") + (res.answer or "")).lower(), (res.error, res.answer)
+    assert h.provider.model == "claude-haiku-4-5", "nothing to switch to means nothing switched"

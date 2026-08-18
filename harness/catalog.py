@@ -480,6 +480,43 @@ def list_entries(discover_live: bool = False, custom: dict | None = None) -> lis
     return entries
 
 
+_FAMILY_LADDER = ("opus", "sonnet", "haiku")
+
+
+def fallback_model(provider: str, model: str) -> str:
+    """A model on the SAME provider to try when `model` cannot serve a request right now, or "".
+
+    Same provider, deliberately. Inside one provider the plan is already paid for and the only
+    question left is which model has capacity. Moving to ANOTHER provider can move the bill from a
+    flat plan onto a metered key — the difference between "wait a minute" and "a charge nobody
+    chose" — and that is not a decision to make on someone's behalf in the middle of a turn.
+
+    The step is DOWN a family ladder (opus -> sonnet -> haiku). An overloaded frontier model is the
+    commonest way a working setup stops working, the answer is usually still available a tier down,
+    and that tier is both cheaper and the likeliest to have room.
+
+    Ties inside a tier: curated ids beat discovered ones, because discovery also returns dated
+    snapshots and older generations, and the shortest id breaks the rest — which prefers
+    `claude-sonnet-5` over `claude-sonnet-4-5-20250929`. That last rule is a heuristic and worth
+    naming as one; it only ever chooses among models the provider itself just said it can serve.
+    """
+    current = (model or "").lower()
+    tier = next((i for i, name in enumerate(_FAMILY_LADDER) if name in current), -1)
+    if tier < 0:
+        return ""                       # not a ladder we know how to walk
+    available = [m for m in (discover(provider) or []) if m and m != model]
+    if not available:
+        available = [e.model for e in _static()
+                     if e.provider == provider and e.model != model]
+    curated = {e.model for e in _static()}
+    for name in _FAMILY_LADDER[tier + 1:]:
+        rung = [m for m in available if name in m.lower()]
+        if rung:
+            rung.sort(key=lambda m: (m not in curated, len(m), m))
+            return rung[0]
+    return ""
+
+
 def resolve(entry_id: str) -> tuple:
     """'provider:model' -> (provider, model). Provider names carry no ':', so split once."""
     provider, _, model = (entry_id or "").partition(":")

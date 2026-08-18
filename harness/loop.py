@@ -446,6 +446,11 @@ class Harness:
                                       self.provider.name, note="v" + __version__)
         res = RunResult(run_id=rid, task_id=task_id, harness="collie",
                         model=self.provider.model, provider=self.provider.name)
+        # (asked_model, answered_model, why) once this run has stepped down a rung, else None.
+        # res.model keeps the model that was ASKED for: the record of what someone chose should not
+        # be quietly rewritten by what the day's capacity allowed. The swap is in the log and, more
+        # importantly, in the answer.
+        fell_back = None
         ctx = ToolCtx(cwd=self.cwd, project=self.project, memory=self.memory,
                       recorder=self.recorder, registry=self.registry)
         # Snapshot the tree BEFORE anything is edited, so a run can be undone wholesale. Taken
@@ -595,6 +600,26 @@ class Harness:
                                    error=(comp.error_detail or comp.text or "")[:200])
                         time.sleep(delay)
                         continue
+                    # Retries are spent (or the plan is) and it still cannot be served. Before
+                    # giving up, step down one rung on the SAME provider. Once per run: a cascade
+                    # would turn one bad minute into a long slide down the ladder that nobody chose,
+                    # and by the third rung the answer is not the one anyone asked for.
+                    if cls in ("retryable", "exhausted") and fell_back is None:
+                        from .catalog import fallback_model
+                        _alt = fallback_model(getattr(self.provider, "name", ""),
+                                              getattr(self.provider, "model", ""))
+                        if _alt:
+                            _why = (comp.error_detail or comp.text or "unavailable")[:160]
+                            fell_back = (self.provider.model, _alt, _why)
+                            self.recorder.log_turn(rid, turn, "model_fallback",
+                                "%s -> %s: %s" % (fell_back[0], _alt, _why),
+                                comp.usage.input_tokens, comp.usage.output_tokens,
+                                meta.prefix_tokens, 0)
+                            self._emit("model_fallback", **{"from": fell_back[0], "to": _alt,
+                                                            "reason": _why})
+                            self.provider.model = _alt
+                            attempts = 0
+                            continue
                     # terminal / retries exhausted / overflow-already-tried: class-prefix res.error
                     # The HTTP status goes in too. Without it a recorded failure cannot be told
                     # apart afterwards: a 529 overload, a 429 rate limit and a 400 read identically
@@ -1130,6 +1155,13 @@ class Harness:
             if last_stop == "length" and answer and "truncated" not in answer:
                 answer += "\n\n_[answer truncated at output-token limit]_"   # visible half of point 1
 
+            if fell_back:
+                # In the ANSWER, not only in an event. Someone reading a reply has to know it came
+                # from a different model than the one they picked, and an event only reaches a
+                # panel they may not have open. Silently answering from a lesser model is the one
+                # outcome worse than saying the frontier one was busy.
+                answer = ("_[%s was unavailable (%s) — answered with %s instead]_\n\n%s"
+                          % (fell_back[0], fell_back[2], fell_back[1], answer or ""))
             res.answer = answer
             # never consolidate MOCK runs — their canned "Based on the tool output: …" answers are
             # test plumbing, not durable facts, and were polluting memory.db on every selftest.
