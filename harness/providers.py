@@ -1201,6 +1201,11 @@ def _plugin_providers() -> tuple:
     behaviour this must never have — it reads as "unknown provider" and sends people hunting the
     wrong bug.
     """
+    return _plugin_attr("COLLIE_PROVIDERS")
+
+
+def _plugin_attr(attr: str) -> tuple:
+    """(merged mapping, import_errors) for one plugin attribute, across both discovery paths."""
     found, errors = {}, []
     for mod_name in (os.environ.get("COLLIE_PROVIDER_PLUGINS") or "").split(os.pathsep):
         mod_name = mod_name.strip()
@@ -1208,7 +1213,7 @@ def _plugin_providers() -> tuple:
             continue
         try:
             import importlib
-            found.update(getattr(importlib.import_module(mod_name), "COLLIE_PROVIDERS", {}) or {})
+            found.update(getattr(importlib.import_module(mod_name), attr, {}) or {})
         except Exception as e:
             errors.append("%s: %s" % (mod_name, e))
     try:
@@ -1216,14 +1221,45 @@ def _plugin_providers() -> tuple:
         for ep in entry_points(group="collie.providers"):
             try:
                 obj = ep.load()
-                # an entry point may point at the mapping itself or at the module holding it
-                found.update(obj if isinstance(obj, dict)
-                             else (getattr(obj, "COLLIE_PROVIDERS", {}) or {}))
+                # an entry point may point at the mapping itself or at the module holding it —
+                # only meaningful for COLLIE_PROVIDERS, which is what the group is named for.
+                if attr == "COLLIE_PROVIDERS" and isinstance(obj, dict):
+                    found.update(obj)
+                else:
+                    found.update(getattr(obj, attr, {}) or {})
             except Exception as e:
                 errors.append("%s: %s" % (ep.name, e))
     except Exception as e:                                  # pragma: no cover - metadata unavailable
         errors.append("entry_points: %s" % e)
     return found, errors
+
+
+def plugin_provider_menu() -> list:
+    """[(value, label, setup)] for plugins that want to be OFFERED, not merely usable.
+
+    ``COLLIE_PROVIDERS`` makes a provider work when asked for by name — which requires already
+    knowing the name. A plugin that also declares
+
+        COLLIE_PROVIDER_INFO = {"name": {"label": str, "setup": callable}}
+
+    appears in the `collie init` menu as well, so it can be found by someone who does not.
+
+    ``setup`` is optional and runs the moment that provider is picked, returning False for "not
+    configured — do not save". It is how a provider that needs more than an exported env var (a
+    pairing code, a device enrolment) can ask at the one moment the user is holding the answer,
+    instead of failing on the first completion over a step nobody mentioned.
+
+    Metadata only — nothing here builds a provider — so a plugin with broken info costs a menu row,
+    not a broken run.
+    """
+    info, _errors = _plugin_attr("COLLIE_PROVIDER_INFO")
+    out = []
+    for name in sorted(info):
+        d = info.get(name)
+        if not isinstance(d, dict):
+            continue
+        out.append((name, d.get("label") or name, d.get("setup")))
+    return out
 
 
 def make_provider(name: str, model: str | None = None) -> ModelProvider:

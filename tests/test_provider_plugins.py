@@ -16,6 +16,19 @@ from harness import providers  # noqa: E402
 
 
 @pytest.fixture
+def env_plugins_only(monkeypatch):
+    """Ignore pip-installed plugins for the duration of a test.
+
+    Entry-point discovery finding an installed plugin is the feature, not a failure — but it makes
+    any assertion about "what discovery returns" a fact about the machine running the suite. These
+    tests are about the code, so the installed set is stubbed away and only COLLIE_PROVIDER_PLUGINS
+    speaks.
+    """
+    import importlib.metadata
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda **kw: [])
+
+
+@pytest.fixture
 def plugin_dir(tmp_path, monkeypatch):
     """A throwaway importable directory on sys.path, cleaned out of the module cache after."""
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -99,8 +112,46 @@ def test_multiple_plugin_modules_are_merged(plugin_dir, monkeypatch):
     assert providers.make_provider("relay-b").name == "relay-b"
 
 
-def test_no_plugins_configured_is_silent(monkeypatch):
+def test_no_plugins_configured_is_silent(env_plugins_only, monkeypatch):
     """The default path must not pay for, or complain about, a feature nobody is using."""
     monkeypatch.delenv("COLLIE_PROVIDER_PLUGINS", raising=False)
     found, errors = providers._plugin_providers()
     assert found == {} and errors == []
+
+
+def test_plugin_can_offer_itself_and_ask_for_setup(env_plugins_only, plugin_dir, monkeypatch):
+    """COLLIE_PROVIDER_INFO is what puts a plugin in the `collie init` list and lets it ask."""
+    mod = plugin_dir("collie_plugin_menu", """
+        def _setup():
+            return True
+        COLLIE_PROVIDERS = {"menu-relay": lambda model: type("M", (), {"name": "menu-relay"})()}
+        COLLIE_PROVIDER_INFO = {"menu-relay": {"label": "Menu relay — needs a code",
+                                               "setup": _setup}}
+    """)
+    monkeypatch.setenv("COLLIE_PROVIDER_PLUGINS", mod)
+    menu = {v: (label, setup) for v, label, setup in providers.plugin_provider_menu()}
+    assert "menu-relay" in menu
+    label, setup = menu["menu-relay"]
+    assert label == "Menu relay — needs a code"
+    assert setup() is True
+
+
+def test_a_plugin_without_info_stays_usable_but_unlisted(env_plugins_only, plugin_dir, monkeypatch):
+    """The original contract is unchanged: COLLIE_PROVIDERS alone means usable, not advertised."""
+    mod = plugin_dir("collie_plugin_quiet", """
+        COLLIE_PROVIDERS = {"quiet-relay": lambda model: type("Q", (), {"name": "quiet-relay"})()}
+    """)
+    monkeypatch.setenv("COLLIE_PROVIDER_PLUGINS", mod)
+    assert providers.make_provider("quiet-relay").name == "quiet-relay"
+    assert providers.plugin_provider_menu() == []
+
+
+def test_broken_info_costs_a_menu_row_not_a_run(env_plugins_only, plugin_dir, monkeypatch):
+    """A plugin whose info is the wrong shape must not take the provider down with it."""
+    mod = plugin_dir("collie_plugin_badinfo", """
+        COLLIE_PROVIDERS = {"odd-relay": lambda model: type("O", (), {"name": "odd-relay"})()}
+        COLLIE_PROVIDER_INFO = {"odd-relay": "not a dict"}
+    """)
+    monkeypatch.setenv("COLLIE_PROVIDER_PLUGINS", mod)
+    assert providers.plugin_provider_menu() == []
+    assert providers.make_provider("odd-relay").name == "odd-relay"

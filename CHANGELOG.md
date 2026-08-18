@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.20.32 — a provider plugin can introduce itself
+
+- **Installed provider plugins now appear in `collie init`.** The menu was built from the settings
+  schema alone, so a provider that arrived as a plugin was reachable only by someone who already
+  knew its name to type — discoverable precisely to the people who did not need it discovered. A
+  plugin that declares `COLLIE_PROVIDER_INFO = {"name": {"label": ..., "setup": ...}}` is now listed
+  beside the built-ins, in the short first-run list as well as the full menu, because a fresh
+  machine is where a provider actually gets chosen. `COLLIE_PROVIDERS` on its own still means
+  "usable when asked for by name, not advertised"; nothing about the existing hook changed.
+
+- **...and can ask for what it needs at the moment it is picked.** Some providers need more than an
+  exported env var — a pairing code, a device enrolment. With no hook for that, choosing one
+  "succeeds" and then the first completion fails over a step nobody mentioned, long after the person
+  was holding the answer. The optional `setup` callable runs on selection and returns False for "not
+  configured", and the wizard then saves nothing: a saved PROVIDER that cannot complete is worse
+  than no choice at all.
+
+- **`test_no_plugins_configured_is_silent` was measuring the machine, not the code.** It asserted
+  that discovery finds nothing, which stops being true on any box with a provider plugin pip-
+  installed — entry-point discovery finding an installed plugin is the feature working. Entry points
+  are stubbed in that test now, so it tests what its name claims, and the new menu tests borrow the
+  same fixture.
+
 ## v0.20.31 — @-able, an address of its own, and a gate on the part that leaves your machine
 
 - **A dog has a face, derived from its name.** A name, an address and an @handle wanted a picture to

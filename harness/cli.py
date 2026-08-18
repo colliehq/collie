@@ -2208,6 +2208,17 @@ def _setup_wizard(force=False):
             ("mock",            "Mock (offline demo — try the harness before connecting anything)"),
         ]
         print("Welcome to collie — one-time setup. Where should completions come from?\n")
+    # Installed provider plugins are offered in BOTH lists: someone who installed one wants it
+    # findable without already knowing its name, and the short first-run list is where a fresh
+    # machine actually gets configured. `setups` is how such a provider asks for what it needs.
+    from .providers import plugin_provider_menu
+    setups, known = {}, {v for v, _ in opts}
+    for _val, _label, _setup in plugin_provider_menu():
+        if _setup:
+            setups[_val] = _setup
+        if _val not in known:
+            opts.append((_val, _label))
+            known.add(_val)
     for i, (val, label) in enumerate(opts, 1):
         print("  %d) %s%s" % (i, label, "   ← current" if val == cur else ""))
     if not force:
@@ -2221,6 +2232,19 @@ def _setup_wizard(force=False):
         print()
         return
     pick = opts[int(c) - 1][0] if c.isdigit() and 1 <= int(c) <= len(opts) else default
+    # A plugin provider may need one more answer before it can work. Ask BEFORE saving, so a
+    # cancelled or failed enrolment never leaves PROVIDER pointing at something that cannot run.
+    if pick in setups:
+        try:
+            if setups[pick]() is False:
+                print("→ %s not configured — nothing saved." % pick)
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\n→ cancelled — nothing saved.")
+            return
+        except Exception as e:
+            print("→ %s setup failed: %s\n  nothing saved." % (pick, e))
+            return
     data = dict(st._load())            # save() replaces the whole file — merge, don't clobber
     data["PROVIDER"] = pick
     if force:                          # model id, prefilled; `-` clears back to the provider default
