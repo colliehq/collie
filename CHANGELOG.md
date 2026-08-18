@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.20.35 — the same providers on every screen, and a shorter list
+
+- **The Settings panel and the model picker never asked plugins anything.** v0.20.32 taught
+  `collie init` about provider plugins and stopped there — but three surfaces enumerate providers,
+  and a plugin reached one. A provider could therefore be installed, selectable and working from
+  the command line while being simply absent from the two screens people actually configure collie
+  on, which reads as "it was never built". Both now offer what the wizard offers: the panel merges
+  plugin providers into the PROVIDER knob, and the catalog reads `catalog` / `via` / `kind` /
+  `auth` / `auth_hint` / `discover` out of `COLLIE_PROVIDER_INFO`. The panel copies SCHEMA rather
+  than appending to it — SCHEMA is module state shared by every request, and appending would grow
+  the options once per request until the list was mostly duplicates.
+
+- **A plugin can be pinned below the everyday list with `rank`, which is compared BEFORE auth.**
+  That ordering is the point: something marked advanced belongs at the bottom whether or not it
+  currently works, and ranking auth first meant it sank only while it was broken and sprang back up
+  among the ordinary choices the moment it started working. Live-discovered rows inherit their
+  provider's rank — the first version missed that, and a pinned provider scattered back through the
+  middle of the list as soon as discovery succeeded. The ordering invariant in `tests/test_catalog.py`
+  is now per-rank rather than global: inside one rank nothing usable is ever buried under something
+  that is not, which was the original rule's real intent.
+
+- **"More models" folds the long tail behind a disclosure.** The split is CURATED vs DISCOVERED,
+  deliberately not a hand-written "these are the latest" set — a hand-written one is precisely what
+  goes stale, and this catalog had already offered three Claude models for a machine that could
+  serve ten. What the maintained list names stays outside; what only live discovery turns up —
+  older generations, dated snapshots, internal ids — folds away. Local models never fold: they are
+  on the machine because somebody deliberately pulled them. A search reaches everything, folded or
+  not, because hiding a model whose name was just typed would be a bug rather than tidiness.
+
 ## v0.20.34 — one checkout, one memory
 
 - **Memory was scoped by the surface you spoke through, not by the project.** The web app wrote its

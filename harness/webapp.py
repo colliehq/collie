@@ -32,6 +32,43 @@ import urllib.parse
 import urllib.request
 
 
+def _schema_for_panel():
+    """settings.SCHEMA, plus any provider a plugin contributes.
+
+    The panel and `collie init` have to offer the same list. When only the wizard consulted plugins,
+    an installed provider was real, selectable and working from the command line while being simply
+    absent from the screen most people configure collie on — which reads as "it was never built".
+
+    Copied, never mutated: SCHEMA is module state shared by every request, so appending to it would
+    grow the options once per request until the list was mostly duplicates.
+
+    A plugin carrying a `setup` callable needs an answer no panel can ask for — a pairing code, an
+    enrolment — so the knob's hint says where to give it. Saving such a provider from here stays
+    allowed: that is the same half-configured state as naming a provider whose API key you have not
+    exported yet, and the first completion says precisely what is missing.
+    """
+    from . import settings as _settings
+    from .providers import plugin_provider_menu
+    plugins = plugin_provider_menu()
+    if not plugins:
+        return _settings.SCHEMA
+    extra = [{"value": v, "label": label} for v, label, _setup in plugins]
+    needs_setup = [v for v, _label, setup in plugins if setup]
+    out = []
+    for knob in _settings.SCHEMA:
+        if knob.get("key") == "PROVIDER":
+            known = {o.get("value") for o in knob.get("options", [])}
+            knob = dict(knob, options=list(knob.get("options", []))
+                        + [e for e in extra if e["value"] not in known])
+            if needs_setup:
+                knob["hint"] = (knob.get("hint", "") +
+                                "  Plugin providers that need a one-time pairing or enrolment (%s) "
+                                "cannot be set up from this screen: run `collie init`, pick it "
+                                "there, and it asks for what it needs." % ", ".join(needs_setup))
+        out.append(knob)
+    return out
+
+
 def _scope(cwd: str) -> str:
     """Memory/session scope for this request. Never "web": a surface is not a project, and naming
     the scope after this one hid everything learned here from the same repo's CLI and Slack dogs."""
@@ -956,7 +993,7 @@ class Handler(BaseHTTPRequestHandler):
                         vals["WALLPAPER"] = "on" if os.path.exists(_wp._startup_vbs()) else "off"
                 except Exception:
                     pass
-                return self._send_json({"schema": settings.SCHEMA, "values": vals})
+                return self._send_json({"schema": _schema_for_panel(), "values": vals})
             if path == "/api/mcp":
                 # The MCP control plane: what is configured and what state it is really in. Read-only
                 # and deliberately out-of-band — when a bad server is what is breaking collie, you

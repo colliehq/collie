@@ -80,17 +80,76 @@ class ModelEntry:
     tags: list = field(default_factory=list)
     source: str = "static"      # static | live | custom
     price: tuple = (0.0, 0.0, 0.0)
+    rank: int = 0               # 0 = the ordinary list; higher sinks below it, whatever its auth
 
     @property
     def id(self) -> str:
         return "%s:%s" % (self.provider, self.model)
+
+    @property
+    def tier(self) -> str:
+        """'main' | 'more' — everyday choice, or the long tail folded behind a disclosure.
+
+        The split is CURATED vs DISCOVERED, deliberately not a hand-written "these are the latest"
+        set. A hand-written one is exactly what goes stale: this file already offered three Claude
+        models for a machine that could serve ten. The curated list is maintained alongside the
+        code and is what someone should see first; what only live discovery knows about is older
+        generations, dated snapshots and internal ids, which are worth reaching but not worth
+        crowding the choice with.
+
+        Local models never fold away: they are on this machine because somebody deliberately
+        pulled them, which is the opposite of a long tail.
+        """
+        return "more" if (self.source == "live" and self.kind != "local") else "main"
 
     def to_dict(self, auth: str) -> dict:
         pin, _pc, pout = self.price
         return {"id": self.id, "provider": self.provider, "model": self.model,
                 "label": self.label, "via": self.via, "kind": self.kind,
                 "tags": self.tags, "source": self.source,
-                "price_in": pin, "price_out": pout, "auth": auth}
+                "price_in": pin, "price_out": pout, "auth": auth, "rank": self.rank,
+                "tier": self.tier}
+
+
+# ---- plugin-contributed entries -----------------------------------------------------------
+def _plugin_info() -> dict:
+    """{provider: info} for plugins that describe themselves to the catalog.
+
+    The picker is a flat list of runnable (provider, model) pairs assembled from hardcoded
+    branches, so a provider arriving as a plugin stayed invisible here even after it became
+    selectable in `collie init` and in the Settings panel — three surfaces enumerate providers and
+    a plugin reached one. A plugin opts in through COLLIE_PROVIDER_INFO:
+
+        "catalog":   [{"model": ..., "label": ..., "tags": [...], "price": (in, cache, out)}, ...]
+        "via":       the human "how it is reached" line under the model name
+        "kind":      subscription | metered | local
+        "auth":      callable() -> 'ok' | 'not-logged-in' | 'expired' | 'unknown'
+        "auth_hint": what to do when auth is not ok
+    """
+    try:
+        from .providers import _plugin_attr
+        info, _errors = _plugin_attr("COLLIE_PROVIDER_INFO")
+    except Exception:                                   # noqa: BLE001 - a broken plugin costs rows
+        return {}
+    return {k: v for k, v in info.items() if isinstance(v, dict)}
+
+
+def _plugin_entries() -> list:
+    """ModelEntry rows contributed by plugins. Priced from collie's own table when the plugin does
+    not say, so a relayed `claude-opus-5` receipt matches a direct one instead of reading $0."""
+    out = []
+    for prov, info in sorted(_plugin_info().items()):
+        via = info.get("via") or prov
+        # Unknown/unstated kind is metered: the catalog must never present something as free.
+        kind = info.get("kind") or "metered"
+        for m in info.get("catalog") or []:
+            if not isinstance(m, dict) or not m.get("model"):
+                continue
+            price = m.get("price") or PRICES.get(m["model"]) or (0.0, 0.0, 0.0)
+            out.append(ModelEntry(prov, m["model"], m.get("label") or m["model"],
+                                  via, kind, list(m.get("tags") or []), price=tuple(price),
+                                  rank=int(info.get("rank") or 0)))
+    return out
 
 
 # ---- STATIC curated catalog ---------------------------------------------------------------
@@ -147,7 +206,7 @@ def _static() -> list:
         # has gone wrong, and it sat in the picker between real models where one tap would silently
         # replace every future answer with a fixture. Tests still reach it through COLLIE_PROVIDER
         # and probe_auth() still knows it; it is simply not something to offer a person.
-    ]
+    ] + _plugin_entries()
 
 
 # ---- auth probing -------------------------------------------------------------------------
@@ -156,6 +215,15 @@ def probe_auth(provider: str) -> str:
     the ollama liveness ping (which is localhost + 0.3s)."""
     if provider == "mock":
         return "ok"
+    _pi = _plugin_info().get(provider)
+    if _pi is not None:
+        fn = _pi.get("auth")
+        if not callable(fn):
+            return "unknown"
+        try:
+            return str(fn() or "unknown")
+        except Exception:                               # noqa: BLE001 - a plugin must not break the badge
+            return "unknown"
     if provider == "anthropic-oauth":
         # not os.path.exists(~/.claude/.credentials.json): macOS keeps the same credentials in the
         # Keychain and writes no file, so a file check reported every logged-in Mac as logged-out.
@@ -209,7 +277,8 @@ def auth_problem(provider: str) -> str:
             env = OPENAI_COMPAT_PRESETS[provider][1]
         return "%s: set %s" % (provider, env or "its API key")
     if status == "not-logged-in":
-        return "%s: %s" % (provider, _LOGIN_HINT.get(provider, "not logged in"))
+        hint = (_plugin_info().get(provider) or {}).get("auth_hint")
+        return "%s: %s" % (provider, hint or _LOGIN_HINT.get(provider, "not logged in"))
     return "%s: unknown provider" % provider
 
 
@@ -254,7 +323,14 @@ def discover(provider: str) -> list:
         return hit[1]
     ids = []
     try:
-        if provider == "codex-oauth":
+        _pi = _plugin_info().get(provider)
+        if _pi is not None:
+            # A plugin's own list, because only it knows what it can reach. For a relay that is a
+            # question about ANOTHER machine's subscription, so a hardcoded list here would be a
+            # guess that goes stale the moment that machine changes plan or logs out.
+            fn = _pi.get("discover")
+            ids = [str(m) for m in (fn() or [])] if callable(fn) else []
+        elif provider == "codex-oauth":
             from .codex_oauth import _fresh_access_token, BASE_URL
             access, acct = _fresh_access_token()
             d = _http_json(BASE_URL.rstrip("/") + "/models?client_version=1.0.0",
@@ -305,6 +381,9 @@ def _label_for(provider: str, model: str) -> str:
 
 
 def _via_kind(provider: str) -> tuple:
+    _pi = _plugin_info().get(provider)
+    if _pi is not None:
+        return _pi.get("via") or provider, _pi.get("kind") or "metered"
     if provider in ("anthropic-oauth", "codex-oauth", "claude-cli"):
         return {"anthropic-oauth": "Claude subscription", "codex-oauth": "ChatGPT subscription",
                 "claude-cli": "your claude CLI"}[provider], "subscription"
@@ -378,8 +457,13 @@ def list_entries(discover_live: bool = False, custom: dict | None = None) -> lis
                 if "%s:%s" % (p, mid) in seen:
                     continue
                 via, kind = _via_kind(p)
+                # Live rows inherit the plugin's rank too. Without this a provider pinned to the
+                # bottom sank only while it had nothing to offer, and scattered back up through the
+                # everyday choices the moment discovery succeeded — the opposite of what pinning it
+                # was for.
                 _add(ModelEntry(p, mid, _label_for(p, mid), via, kind,
-                                source="live", price=costs.price_for(mid)))
+                                source="live", price=costs.price_for(mid),
+                                rank=int((_plugin_info().get(p) or {}).get("rank") or 0)))
 
     if custom and custom.get("base_url") and custom.get("model"):
         _add(ModelEntry("openai-compat", custom["model"], custom["model"],
@@ -387,8 +471,12 @@ def list_entries(discover_live: bool = False, custom: dict | None = None) -> lis
                         price=costs.price_for(custom["model"])))
 
     # stable, useful order: authed first, then subscription > metered > local, then label
+    # `rank` is compared BEFORE auth on purpose. Something a plugin marks as advanced should sit
+    # at the bottom whether or not it happens to be usable — otherwise the moment it works it jumps
+    # up among the everyday choices, which is precisely where it does not belong.
     kind_rank = {"subscription": 0, "metered": 1, "local": 2}
-    entries.sort(key=lambda e: (e["auth"] != "ok", kind_rank.get(e["kind"], 3), e["label"]))
+    entries.sort(key=lambda e: (e.get("rank", 0), e["auth"] != "ok",
+                                kind_rank.get(e["kind"], 3), e["label"]))
     return entries
 
 

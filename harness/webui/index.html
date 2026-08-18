@@ -722,6 +722,10 @@
   .model-group-title { display: flex; align-items: baseline; gap: 8px; padding: 10px 9px 6px; color: var(--muted);
     font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
   .model-group-title span { color: var(--faint); font-family: var(--sans); font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .model-more > summary { cursor: pointer; list-style: none; }
+  .model-more > summary::-webkit-details-marker { display: none; }
+  .model-more > summary::before { content: "\25B8"; margin-right: 6px; display: inline-block; transition: transform .12s; }
+  .model-more[open] > summary::before { transform: rotate(90deg); }
   .model-option { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 10px; border: 1px solid transparent;
     border-radius: 11px; background: transparent; color: var(--ink); cursor: pointer; text-align: left; font: inherit; transition: background .12s, border-color .12s; }
   .model-option:hover, .model-option.is-keyboard-active { background: var(--surface-2); border-color: color-mix(in srgb,var(--pine) 32%,var(--line)); }
@@ -4034,27 +4038,11 @@
     modelTrigger.setAttribute("aria-label", "Current model " + currentEntry.label + ". Switch model.");
   }
 
-  function renderModelEntries() {
-    var query = modelSearch.value.trim().toLowerCase();
-    var visibleEntries = modelEntries.filter(function (entry) {
-      return !query || modelSearchText(entry).indexOf(query) >= 0;
-    });
-    modelList.textContent = "";
-    var optionCount = 0;
-    modelGroupDefinitions.forEach(function (group) {
-      var groupEntries = visibleEntries.filter(function (entry) { return entry.kind === group.kind; });
-      if (!groupEntries.length) return;
-      var groupElement = document.createElement("section");
-      groupElement.className = "model-group";
-      var title = document.createElement("div");
-      title.className = "model-group-title";
-      title.appendChild(document.createTextNode(group.title));
-      var caption = document.createElement("span");
-      caption.textContent = group.caption;
-      title.appendChild(caption);
-      groupElement.appendChild(title);
-
-      groupEntries.forEach(function (entry) {
+  // One option row, extracted so the everyday list and the folded tail render through the same
+  // code — a model behind the disclosure has to look and behave exactly like one outside it.
+  function modelOptionElement(entry) {
+    {
+      {
         var option = document.createElement("button");
         var current = entry.id === modelCurrentId;
         option.type = "button";
@@ -4107,11 +4095,57 @@
         option.appendChild(main);
         option.appendChild(side);
         option.addEventListener("click", function () { selectModel(entry); });
-        groupElement.appendChild(option);
+        return option;
+      }
+    }
+  }
+
+  function renderModelEntries() {
+    var query = modelSearch.value.trim().toLowerCase();
+    var visibleEntries = modelEntries.filter(function (entry) {
+      return !query || modelSearchText(entry).indexOf(query) >= 0;
+    });
+    // A search reaches everything: hiding a model someone typed the name of would be a bug, not
+    // tidiness. Only the unsearched list is folded.
+    var foldedEntries = query ? [] : visibleEntries.filter(function (e) { return e.tier === "more"; });
+    var mainEntries = query ? visibleEntries
+      : visibleEntries.filter(function (e) { return e.tier !== "more"; });
+    modelList.textContent = "";
+    var optionCount = 0;
+    modelGroupDefinitions.forEach(function (group) {
+      var groupEntries = mainEntries.filter(function (entry) { return entry.kind === group.kind; });
+      if (!groupEntries.length) return;
+      var groupElement = document.createElement("section");
+      groupElement.className = "model-group";
+      var title = document.createElement("div");
+      title.className = "model-group-title";
+      title.appendChild(document.createTextNode(group.title));
+      var caption = document.createElement("span");
+      caption.textContent = group.caption;
+      title.appendChild(caption);
+      groupElement.appendChild(title);
+      groupEntries.forEach(function (entry) {
+        groupElement.appendChild(modelOptionElement(entry));
         optionCount += 1;
       });
       modelList.appendChild(groupElement);
     });
+    if (foldedEntries.length) {
+      var moreGroup = document.createElement("details");
+      moreGroup.className = "model-group model-more";
+      var summary = document.createElement("summary");
+      summary.className = "model-group-title";
+      summary.appendChild(document.createTextNode("More models"));
+      var moreCaption = document.createElement("span");
+      moreCaption.textContent = foldedEntries.length + " older or less common, found live";
+      summary.appendChild(moreCaption);
+      moreGroup.appendChild(summary);
+      foldedEntries.forEach(function (entry) {
+        moreGroup.appendChild(modelOptionElement(entry));
+        optionCount += 1;
+      });
+      modelList.appendChild(moreGroup);
+    }
     if (!optionCount) {
       var empty = document.createElement("div");
       empty.className = "model-empty";
