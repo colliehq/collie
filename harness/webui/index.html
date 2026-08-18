@@ -3704,7 +3704,13 @@
     missionPost("/api/route", { text: q }).then(function (d) {
       if (routeHint && routeHint.remove) routeHint.remove();
       if (d && d.error === "model_unavailable") {
-        addErr(t("model unavailable — set a working provider in Settings")); return;
+        // The server already knows WHY and says so in `detail`. Throwing that away and printing
+        // "set a working provider" turned an upstream overload — nothing to do with the settings,
+        // and over in a minute — into a hunt through a configuration that was correct all along.
+        var why = ((d.detail || "") + "").trim();
+        addErr(why ? t("model unavailable") + " — " + why
+                   : t("model unavailable — set a working provider in Settings"));
+        return;
       }
       runStream(q, imgs);
     }).catch(function () {          // the local server itself is unreachable -> let the stream surface it

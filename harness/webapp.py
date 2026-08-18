@@ -1718,9 +1718,20 @@ class Handler(BaseHTTPRequestHandler):
                     if not _name:      # same rule as the run path: never route on a fixture
                         return self._send_json({"error": "model_unavailable",
                                                 "detail": "no model configured"}, 503)
+                    # Which providers take a claude model id is a question about what the
+                    # provider IS, not about its name. Matching on a hardcoded pair meant any
+                    # further Anthropic-family provider — one arriving as a plugin, say — silently
+                    # fell through to its own default, which is a frontier model, and then ran on
+                    # every single message's critical path. That is expensive on a good day and on
+                    # a bad one it is an `overloaded_error` where a cheap classifier would have
+                    # answered fine. Build first, ask the type, then re-build if it wants the
+                    # router's model: both constructions are local and touch no network.
+                    from .providers import AnthropicProvider
+                    prov = make_provider(_name, None)
                     _rmodel = os.environ.get("COLLIE_ROUTER_MODEL") or (
-                        DEFAULT_ROUTER_MODEL if _name in ("anthropic-oauth", "anthropic") else None)
-                    prov = make_provider(_name, _rmodel)
+                        DEFAULT_ROUTER_MODEL if isinstance(prov, AnthropicProvider) else None)
+                    if _rmodel and _rmodel != getattr(prov, "model", None):
+                        prov = make_provider(_name, _rmodel)
                     return self._send_json(classify(text, prov))
                 except ModelUnavailable as e:
                     return self._send_json({"error": "model_unavailable", "detail": str(e)}, 503)

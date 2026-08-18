@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.20.36 — the classifier stops running on a frontier model, and says why when it cannot run
+
+- **The router picked its model from a hardcoded pair of provider names.** `DEFAULT_ROUTER_MODEL if
+  _name in ("anthropic-oauth", "anthropic")` meant any other Anthropic-family provider — one
+  arriving as a plugin, say — fell through to its own default, which is a frontier model, and then
+  ran the classifying head on every single message's critical path. Expensive on a good day; on a
+  bad one it is an `overloaded_error` where the cheap classifier would have answered fine, and that
+  is exactly how it was found. Which providers take a claude model id is a question about what the
+  provider IS, so it is asked that way now: build it, check `isinstance(prov, AnthropicProvider)`,
+  and re-build with the router's model if it wants one. Both constructions are local.
+
+- **"model unavailable — set a working provider in Settings" was frequently a lie.** The server
+  already knows why the route failed and puts it in `detail`; the browser threw that away and
+  printed one sentence blaming the configuration. An upstream overload — nothing to do with the
+  settings, and over in a minute — therefore read as a setup error, and sent at least one person
+  auditing a configuration that had been correct the whole time. The real reason is shown when
+  there is one.
+
 ## v0.20.35 — the same providers on every screen, and a shorter list
 
 - **The Settings panel and the model picker never asked plugins anything.** v0.20.32 taught
