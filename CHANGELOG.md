@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.20.38 — the verification gate stops announcing that nothing is happening
+
+- **Idle no longer occupies the corner.** The gate has six states and only one of them —
+  `idle` — has nothing to report, yet that is the state the sidebar sat in all day: a ring, a
+  heading and two lines of copy, permanently, to say "no task yet". It now appears with a run and
+  stays afterwards as that run's evidence, including the "nothing needed verifying" outcome. What
+  it no longer does is stand there when there is nothing to stand for.
+
+  Deliberately not deleted. "Finishes only when the check goes green" is the claim the whole
+  harness is built on, and this panel is the one visible proof of it — a gate that is never seen is
+  a promise with nothing behind it. The change is to when it speaks, not whether.
+
+- **The welcome copy pointed at a corner that would now be empty.** That screen shows exactly when
+  the gate is idle, so "the verification gate keeps watch from the bottom-left corner" was about to
+  become the only untrue thing on screen. Reworded in all nine languages to say when it appears
+  rather than where it waits.
+
 ## v0.20.37 — a busy model costs a rung, not the answer
 
 - **An overloaded model steps down instead of ending the turn.** Spending the whole retry budget on

@@ -418,6 +418,12 @@
   .ring .mark svg { width: 16px; height: 16px; transform: none; overflow: visible; }
   .ring .mark path { fill: none; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round;
                      stroke-dasharray: 60; stroke-dashoffset: 60; }
+  /* Idle is the only state with nothing to report, and it was the state the sidebar sat in all
+     day: a ring, a heading and two lines of copy, permanently, to say "no task yet". The gate
+     earns that corner by speaking about a run — so it arrives with one and stays afterwards as
+     that run's evidence, including the "nothing needed verifying" outcome. What it no longer does
+     is stand there when there is nothing to stand for. */
+  .gate[data-state="idle"] { display: none; }
   .gate[data-state="idle"]      .ring .prog { stroke-dashoffset: 264; stroke: var(--faint); }
   .gate[data-state="none"]      .ring .prog { stroke-dashoffset: 0;   stroke: var(--azure); opacity: .5; }
   .gate[data-state="working"]   .ring .prog { stroke: var(--azure); animation: spin 1.7s linear infinite; }
@@ -1133,7 +1139,7 @@
         <div class="welcome" id="welcome">
           <img class="wc-logo" src="/logo.svg" alt="" />
           <div class="wc-title">Ask Collie to fix, build, or explain</div>
-          <div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>
+          <div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.</div>
           <div class="wc-examples">
             <button type="button" class="wc-card" data-fill="Run the tests, find the one that's failing, and fix it.">
               <div class="wc-ct">🔧 Fix a failing test</div><div class="wc-cd">Reproduce, patch, and re-run until it's green.</div></button>
@@ -1475,8 +1481,8 @@
     "Sign in again": "重新登录", "Sign out": "退出登录", "Remove": "删除",
     "Remove the MCP server": "删除 MCP 服务器", "Its stored sign-in is deleted too.": "保存的登录凭据也会一并删除。",
     "Ask Collie to fix, build, or explain": "让 Collie 修复、构建或解释",
-    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.":
-      "它会先写一个复现、真的跑起来,直到检查变绿才收工——只用同类 agent 的一小部分 tokens。回答在这里流式出现;工具与 diff 在下方的运行抽屉里,验证门在左下角守着。",
+    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.":
+      "它会先写一个复现、真的跑起来,直到检查变绿才收工——只用同类 agent 的一小部分 tokens。回答在这里流式出现;工具与 diff 在下方的运行抽屉里,校验一开始跑，验证门就出现在左下角。",
     "Ask Collie to fix, build, or explain something…": "让 Collie 修复、构建或解释点什么…",
     "Steer while Collie works — Enter to send": "运行中可继续输入转向 — Enter 发送",
     "New thread": "新会话",
@@ -1526,7 +1532,7 @@
   // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
   var ZHTW = {
     "Ask Collie to fix, build, or explain": "讓 Collie 修復、構建或解釋",
-    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.":
+    "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.":
       "它會先寫一個復現、真的跑起來,直到檢查變綠才收工——只用同類 agent 的一小部分 tokens。回答在這裡流式出現;工具與 diff 在下方的執行抽屜裡,驗證門在左下角守著。",
     "Ask Collie to fix, build, or explain something…": "讓 Collie 修復、構建或解釋點什麼…",
     "Steer while Collie works — Enter to send": "執行中可繼續輸入轉向 — Enter 傳送",
@@ -1574,7 +1580,7 @@
     "zh-tw": ZHTW,
     ja: {
       "Ask Collie to fix, build, or explain": "Collie に修正・構築・説明を頼む",
-      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Collie はまず再現を書いて実際に実行し、チェックが緑になって初めて完了します——同種エージェントのごく一部のトークンで。回答はここにストリーム表示され、ツールと差分は下の実行ドロワーに、検証ゲートは左下で見張っています。",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.": "Collie はまず再現を書いて実際に実行し、チェックが緑になって初めて完了します——同種エージェントのごく一部のトークンで。回答はここにストリーム表示され、ツールと差分は下の実行ドロワーに、検証ゲートはチェックが走った瞬間に左下に現れます。",
       "Ask Collie to fix, build, or explain something…": "Collie に修正・構築・説明したいことを入力…",
       "Steer while Collie works — Enter to send": "Collie の作業中も入力で誘導できます — Enter で送信",
       "New thread": "新しいスレッド", "run details": "実行の詳細", "no run yet": "実行はまだありません",
@@ -1609,7 +1615,7 @@
     },
     ko: {
       "Ask Collie to fix, build, or explain": "Collie에게 수정·구축·설명을 요청하세요",
-      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Collie는 먼저 재현을 작성해 실제로 실행하고, 검사가 초록이 될 때만 완료합니다 — 동급 에이전트의 극히 일부 토큰으로. 답변은 여기 스트리밍되고, 도구와 diff는 아래 실행 서랍에, 검증 게이트는 왼쪽 아래에서 지켜봅니다.",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.": "Collie는 먼저 재현을 작성해 실제로 실행하고, 검사가 초록이 될 때만 완료합니다 — 동급 에이전트의 극히 일부 토큰으로. 답변은 여기 스트리밍되고, 도구와 diff는 아래 실행 서랍에, 검증 게이트는 검사가 시작되면 왼쪽 아래에 나타납니다.",
       "Ask Collie to fix, build, or explain something…": "Collie에게 수정·구축·설명할 내용을 입력…",
       "Steer while Collie works — Enter to send": "Collie 작업 중에도 입력해 방향을 바꿀 수 있습니다 — Enter로 전송",
       "New thread": "새 스레드", "run details": "실행 세부정보", "no run yet": "아직 실행 없음",
@@ -1644,7 +1650,7 @@
     },
     es: {
       "Ask Collie to fix, build, or explain": "Pide a Collie que corrija, construya o explique",
-      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Escribe una reproducción, la ejecuta de verdad y solo termina cuando la comprobación se pone verde — con una fracción de los tokens. La respuesta se transmite aquí; las herramientas y los diffs están en el panel de ejecución de abajo, y la puerta de verificación vigila desde la esquina inferior izquierda.",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.": "Escribe una reproducción, la ejecuta de verdad y solo termina cuando la comprobación se pone verde — con una fracción de los tokens. La respuesta se transmite aquí; las herramientas y los diffs están en el panel de ejecución de abajo, y la puerta de verificación aparece abajo a la izquierda en cuanto se ejecuta una comprobación.",
       "Ask Collie to fix, build, or explain something…": "Pide a Collie que corrija, construya o explique algo…",
       "Steer while Collie works — Enter to send": "Guía a Collie mientras trabaja — Enter para enviar",
       "New thread": "Nuevo hilo", "run details": "detalles de ejecución", "no run yet": "aún no hay ejecución",
@@ -1679,7 +1685,7 @@
     },
     fr: {
       "Ask Collie to fix, build, or explain": "Demandez à Collie de corriger, construire ou expliquer",
-      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Il écrit une reproduction, l'exécute réellement et ne termine que lorsque la vérification passe au vert — avec une fraction des tokens. La réponse s'affiche ici en direct ; les outils et les diffs sont dans le tiroir d'exécution ci-dessous, et la porte de vérification veille depuis le coin inférieur gauche.",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.": "Il écrit une reproduction, l'exécute réellement et ne termine que lorsque la vérification passe au vert — avec une fraction des tokens. La réponse s'affiche ici en direct ; les outils et les diffs sont dans le tiroir d'exécution ci-dessous, et la porte de vérification apparaît en bas à gauche dès qu'une vérification s'exécute.",
       "Ask Collie to fix, build, or explain something…": "Demandez à Collie de corriger, construire ou expliquer quelque chose…",
       "Steer while Collie works — Enter to send": "Orientez Collie pendant qu'il travaille — Entrée pour envoyer",
       "New thread": "Nouveau fil", "run details": "détails d'exécution", "no run yet": "aucune exécution",
@@ -1714,7 +1720,7 @@
     },
     de: {
       "Ask Collie to fix, build, or explain": "Bitte Collie, etwas zu beheben, zu bauen oder zu erklären",
-      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Es schreibt eine Reproduktion, führt sie wirklich aus und ist erst fertig, wenn die Prüfung grün wird — mit einem Bruchteil der Tokens. Die Antwort erscheint hier live; Werkzeuge und Diffs liegen in der Ausführungs-Schublade unten, und das Verifizierungs-Gate wacht unten links.",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.": "Es schreibt eine Reproduktion, führt sie wirklich aus und ist erst fertig, wenn die Prüfung grün wird — mit einem Bruchteil der Tokens. Die Antwort erscheint hier live; Werkzeuge und Diffs liegen in der Ausführungs-Schublade unten, und das Verifizierungs-Gate erscheint unten links, sobald eine Prüfung läuft.",
       "Ask Collie to fix, build, or explain something…": "Bitte Collie, etwas zu beheben, zu bauen oder zu erklären…",
       "Steer while Collie works — Enter to send": "Steuere Collie während der Arbeit — Enter zum Senden",
       "New thread": "Neuer Thread", "run details": "Ausführungsdetails", "no run yet": "noch keine Ausführung",
@@ -1736,7 +1742,7 @@
     },
     pt: {
       "Ask Collie to fix, build, or explain": "Peça ao Collie para corrigir, construir ou explicar",
-      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Ele escreve uma reprodução, executa de verdade e só termina quando a verificação fica verde — com uma fração dos tokens. A resposta aparece aqui ao vivo; ferramentas e diffs ficam na gaveta de execução abaixo, e o portão de verificação vigia no canto inferior esquerdo.",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.": "Ele escreve uma reprodução, executa de verdade e só termina quando a verificação fica verde — com uma fração dos tokens. A resposta aparece aqui ao vivo; ferramentas e diffs ficam na gaveta de execução abaixo, e o portão de verificação aparece no canto inferior esquerdo assim que uma verificação roda.",
       "Ask Collie to fix, build, or explain something…": "Peça ao Collie para corrigir, construir ou explicar algo…",
       "Steer while Collie works — Enter to send": "Oriente o Collie enquanto ele trabalha — Enter para enviar",
       "New thread": "Novo tópico", "run details": "detalhes da execução", "no run yet": "ainda sem execução",
@@ -1758,7 +1764,7 @@
     },
     ru: {
       "Ask Collie to fix, build, or explain": "Попросите Collie исправить, создать или объяснить",
-      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.": "Он пишет воспроизведение, реально запускает его и завершает только когда проверка становится зелёной — тратя долю токенов. Ответ транслируется здесь; инструменты и диффы — в панели запуска ниже, а шлюз проверки следит из левого нижнего угла.",
+      "It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.": "Он пишет воспроизведение, реально запускает его и завершает только когда проверка становится зелёной — тратя долю токенов. Ответ транслируется здесь; инструменты и диффы — в панели запуска ниже, а шлюз проверки появляется в левом нижнем углу, как только идёт проверка.",
       "Ask Collie to fix, build, or explain something…": "Попросите Collie что-нибудь исправить, создать или объяснить…",
       "Steer while Collie works — Enter to send": "Направляйте Collie прямо во время работы — Enter для отправки",
       "New thread": "Новый тред", "run details": "детали запуска", "no run yet": "запусков ещё нет",
@@ -1794,7 +1800,7 @@
     // static chrome (live nodes + templates); dynamic strings route through t() at their call sites
     var wt = document.querySelector(".wc-title"), ws = document.querySelector(".wc-sub");
     if (wt) wt.textContent = t("Ask Collie to fix, build, or explain");
-    if (ws) ws.textContent = t("It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.");
+    if (ws) ws.textContent = t("It writes a reproduction, runs it, and finishes only when the check goes green — at a fraction of the tokens. The answer streams here; tools and diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.");
     var hint = document.querySelector(".hint");
     if (hint) hint.innerHTML = ((I18N[UI_LANG] || {}).__kbd)
       || "<kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · streams live over SSE";
@@ -3537,7 +3543,7 @@
     + '<div class="wc-title">Ask Collie to fix, build, or explain</div>'
     + '<div class="wc-sub">It writes a reproduction, runs it, and finishes only when the check goes '
     + 'green — at a fraction of the tokens. The answer streams here; tools and '
-    + 'diffs live in the run drawer below, and the verification gate keeps watch from the bottom-left corner.</div>'
+    + 'diffs live in the run drawer below, and the verification gate appears in the bottom-left the moment a check runs.</div>'
     + WC_EXAMPLES + '</div>';
   function newThread() {
     detachRun();                         // start a second thing while the first one runs
