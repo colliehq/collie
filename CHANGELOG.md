@@ -30,6 +30,15 @@
   trace, patch, serial-run timing, and grader evidence before reporting paired,
   task-cluster-aware results.
 
+## v0.21.24 — Release gate reliability
+
+- **The release gate is now dependency-complete and repeatable on clean runners.** The development
+  extra includes the YAML parser required by the normalized Hermes regression suite; model-picker
+  and multi-thread browser checks use unambiguous, adopted fixture state; and a failed catalog
+  check prints its diagnostic instead of disappearing behind the compact runner output.
+- **Windows child-process launches stay windowless through trusted gates.** The agent-runner,
+  verification, and subscription-status subprocess paths all carry the platform-safe flag.
+
 ## v0.21.23 — Continue across branch waits and remember completed work
 
 - **A timer can pause one workstream without pausing the Mission.** A named follow-up is recorded

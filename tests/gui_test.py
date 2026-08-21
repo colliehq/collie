@@ -234,7 +234,10 @@ def main():
             pg.wait_for_selector("#modelOverlay.open", timeout=15000)
             pg.wait_for_selector(".model-option", timeout=15000)
             check("model picker opens with catalog", len(pg.query_selector_all(".model-option")) >= 1)
-            pg.fill("#modelSearch", "Mock")
+            # "Mock" also matches the synthetic Auto row through its provider
+            # name.  Search for the mock row's unique copy so ArrowDown proves
+            # keyboard selection without accidentally choosing Auto first.
+            pg.fill("#modelSearch", "canned")
             pg.wait_for_selector('.model-option[data-model-id="mock:mock"]', timeout=15000)
             pg.keyboard.press("ArrowDown")
             pg.keyboard.press("Enter")

@@ -64,7 +64,10 @@ def main():
                PYTHONUNBUFFERED="1")
     env.pop("COLLIE_PROVIDER", None)          # the file decides, so the picker is not pinned
     with open(env["COLLIE_SETTINGS_PATH"], "w") as fh:
-        json.dump({"PROVIDER": "mock", "MODEL": "mock"}, fh)
+        # The suites exercise a working desktop, not the first-launch name
+        # dialog.  A fixed adopted name keeps that modal from intercepting the
+        # composer differently on clean CI hosts and developer machines.
+        json.dump({"PROVIDER": "mock", "MODEL": "mock", "COMPANION_NAME": "Rowan"}, fh)
 
     srv = subprocess.Popen([sys.executable, "-m", "harness.webapp", "--port", str(PORT), "--no-open"],
                            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

@@ -50,7 +50,7 @@ if $PY tests/test_desktop.py >/dev/null 2>&1; then echo "  desktop (ambient widg
 if $PY tests/test_desktopweb.py >/dev/null 2>&1; then echo "  desktop web (audio-proxy SSRF allow-list + relay CSRF-token gate) OK"; else echo "  desktop web FAIL"; rc=1; fi
 
 echo "── model catalog + codex provider (offline) ─────────────"
-if $PY tests/test_catalog.py >/dev/null 2>&1; then echo "  catalog OK"; else echo "  catalog FAIL"; rc=1; fi
+if catalog_out=$($PY tests/test_catalog.py 2>&1); then echo "  catalog OK"; else echo "  catalog FAIL"; echo "$catalog_out" | tail -30 | sed 's/^/      /'; rc=1; fi
 if $PY tests/test_codex_oauth.py >/dev/null 2>&1; then echo "  codex_oauth OK"; else echo "  codex_oauth FAIL"; rc=1; fi
 
 echo "── renderer tests (JS) ──────────────────────────────────"
