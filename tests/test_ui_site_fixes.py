@@ -183,6 +183,13 @@ def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failure
     assert "reportBox.open = reportWasOpen" in desktop
     assert "navigator.clipboard.writeText(text).catch(fallback)" in desktop
     assert "protected from repeat" in desktop
+    assert 't("Technical audit trail")' in desktop
+    assert "st.receipts.slice(-12).reverse()" in desktop
+    assert "execution attempted" not in desktop
+    assert 'className = "mactivity-detail"' in desktop
+    assert 't("in_progress")' not in desktop  # statuses are translated through t(item.status)
+    assert '"in_progress": "正在执行"' in desktop
+    assert 'summaryRow("Auto retry"' in desktop and "st.next_wake_at" in desktop
     assert "pending_authorizations" in desktop and "Collie is continuing independent work." in desktop
     for key in ("PROFILE_AGE_BAND", "AUTO_APPLY_PROFILE_CLAIMS",
                 "MAX_AUTO_AUTH_RISK", "DEFER_MISSING_AUTHORIZATIONS"):
@@ -319,6 +326,18 @@ def test_desktop_dialogs_and_dynamic_model_count_are_accessible():
     assert 'role="switch"' in page and 'aria-checked="true"' in page
     steer_catch = page.split('fetch("/api/steer?', 1)[1].split("function send()", 1)[0]
     assert 'classList.add("dropped")' in steer_catch and "Steer not delivered" in steer_catch
+
+
+def test_desktop_scrollbars_follow_explicit_and_system_themes():
+    page = read("harness/webui/index.html")
+    assert ':root[data-theme="light"]' in page and "color-scheme:light" in page
+    assert ':root[data-theme="dark"]' in page and "color-scheme:dark" in page
+    assert "--scrollbar-track:#11131A" in page
+    assert "--scrollbar-thumb:#343946" in page
+    assert "*::-webkit-scrollbar-track" in page
+    assert "*::-webkit-scrollbar-thumb:hover" in page
+    assert "*::-webkit-scrollbar-corner" in page
+    assert "*::-webkit-scrollbar-button" in page
 
 
 def test_only_complete_ui_languages_are_selectable():

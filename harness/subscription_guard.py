@@ -19,6 +19,8 @@ import subprocess
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from . import plat
+
 
 RECEIPT_FORMAT = "collie-subscription-guard-v1"
 SCHEMA_VERSION = 1
@@ -175,7 +177,8 @@ def _default_runner(argv: tuple[str, ...], environ: Mapping[str, str], provider:
         raise FileNotFoundError(argv[0])
     command = [executable, *argv[1:]]
     return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, timeout=10, check=False, env=child_env)
+                          text=True, timeout=10, check=False, env=child_env,
+                          **plat.no_window_kwargs())
 
 
 def _run_status(receipt: dict[str, Any], argv: tuple[str, ...],

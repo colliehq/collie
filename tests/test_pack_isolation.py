@@ -125,7 +125,7 @@ def test_two_agents_on_one_task_do_not_see_each_other(monkeypatch):
             stub = StubProvider(answer)
             h.provider = stub
             stubs.append(stub)
-            h.run("pack%d" % i, "why does the widget crash")
+            h.run("pack%d" % i, "why does make all fail with a widget crash")
             h.memory.close()
             h.recorder.close()      # Windows will not delete a sqlite file that is still open
 

@@ -224,6 +224,9 @@ Filename: "{cmd}"; \
 [UninstallDelete]
 ; the logon autostart launchers (Startup folder) — removed directly so we don't need to run python
 Type: files; Name: "{userstartup}\collie-wallpaper.vbs"
+; the "user turned the wallpaper autostart off" marker `collie wallpaper --uninstall` leaves for
+; install() to honour — a FULL app uninstall clears it so a later fresh install starts unencumbered
+Type: files; Name: "{userstartup}\collie-wallpaper.vbs.disabled"
 Type: files; Name: "{userstartup}\collie-bridge.vbs"
 ; Inno only removes what it INSTALLED. The app generates files afterward that it can't track — the
 ; engine .exe compiled on first run from the shipped C# source, __pycache__ (.pyc), and any runtime

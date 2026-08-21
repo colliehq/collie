@@ -1191,7 +1191,7 @@ def cmd_wallpaper(args):
     if plat.is_windows():
         from . import wallpaper as wp
         if getattr(args, "install", False):
-            return wp.install()
+            return wp.install(force=getattr(args, "force", False))
         if getattr(args, "uninstall", False):
             return wp.uninstall()
         if getattr(args, "stop", False):
@@ -3187,6 +3187,9 @@ def main(argv=None):
     pwp.add_argument("--front", action="store_true",
                      help="macOS: an ordinary interactive window instead of the behind-the-icons desktop")
     pwp.add_argument("--install", action="store_true", help="autostart the wallpaper at every logon")
+    pwp.add_argument("--force", action="store_true",
+                     help="with --install: re-enable even after --uninstall left the autostart "
+                          "marked as deliberately disabled")
     pwp.add_argument("--uninstall", action="store_true", help="remove the logon autostart")
     pwp.add_argument("--stop", action="store_true", help="cleanly stop the running wallpaper engine")
     pwp.add_argument("--boot", action="store_true", help=argparse.SUPPRESS)  # internal autostart entry

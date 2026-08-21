@@ -47,6 +47,7 @@ _USAGE_KEYS = (
 # POSIX process group or Windows Job Object.
 _START_GATE_SCRIPT = r"""
 import json
+import os
 import subprocess
 import sys
 
@@ -60,7 +61,8 @@ try:
         raise ValueError("invalid gated process request")
     child = subprocess.Popen(
         argv, stdin=subprocess.PIPE, text=True, encoding="utf-8",
-        errors="replace")
+        errors="replace",
+        **({"creationflags": 0x08000000} if os.name == "nt" else {}))
     child.communicate(input=prompt)
     raise SystemExit(child.returncode if child.returncode is not None else 125)
 except SystemExit:

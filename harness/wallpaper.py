@@ -350,12 +350,26 @@ def run_app(port_pref: int = 8787) -> int:
     return 0
 
 
-def install() -> int:
+def install(force: bool = False) -> int:
     """Register a per-machine, hidden logon autostart. Generates a .pyw launcher with THIS machine's
     resolved package path + a .vbs that runs it windowless — no hardcoded repo/python paths."""
     if not plat.is_windows():
         print("collie wallpaper --install is Windows-only.", file=sys.stderr)
         return 2
+    # A `.disabled` marker beside the .vbs means the USER turned the autostart off. Honour it: the
+    # installer re-runs `--install` on every upgrade (Inno replays remembered tasks), and that has
+    # silently re-armed the wallpaper on machines where it was deliberately disabled. Only an
+    # explicit `--install --force` overrides the marker.
+    marker = _startup_vbs() + ".disabled"
+    if os.path.exists(marker):
+        if not force:
+            print("collie wallpaper: autostart stays OFF — it was disabled by the user and %s\n"
+                  "  marks that choice. Re-enable with: collie wallpaper --install --force" % marker)
+            return 0
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
     boot_pyw = os.path.join(_collie_home(), "wallpaper-boot.pyw")
     log = os.path.join(_collie_home(), "wallpaper-boot.log")
     with open(boot_pyw, "w", encoding="utf-8") as f:
@@ -414,6 +428,16 @@ def uninstall() -> int:
     try:
         stop()
     except Exception:
+        pass
+    # Record the choice durably: install() skips while this marker exists, so an installer upgrade
+    # replaying its remembered tasks can no longer silently re-arm an autostart the user turned off.
+    try:
+        with open(vbs + ".disabled", "w", encoding="utf-8") as f:
+            f.write("The collie wallpaper logon autostart was turned OFF by `collie wallpaper --uninstall`.\n"
+                    "While this file exists, `collie wallpaper --install` (including the one the app\n"
+                    "installer re-runs on upgrades) leaves the autostart off.\n"
+                    "Re-enable with: collie wallpaper --install --force\n")
+    except OSError:
         pass
     print("collie wallpaper: autostart removed" if removed else "collie wallpaper: autostart was not installed")
     return 0

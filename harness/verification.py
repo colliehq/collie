@@ -45,6 +45,7 @@ def _is_untracked_generated_cache(rel: str) -> bool:
 # Job Object.  The real command and every descendant inherit that owner.
 _VERIFICATION_START_GATE_SCRIPT = r"""
 import json
+import os
 import subprocess
 import sys
 
@@ -59,7 +60,8 @@ try:
         raise ValueError("invalid gated verification request")
     child = subprocess.Popen(
         argv, shell=use_shell, stdin=subprocess.DEVNULL,
-        stdout=sys.stdout, stderr=subprocess.STDOUT)
+        stdout=sys.stdout, stderr=subprocess.STDOUT,
+        **({"creationflags": 0x08000000} if os.name == "nt" else {}))
     raise SystemExit(child.wait())
 except SystemExit:
     raise

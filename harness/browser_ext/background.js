@@ -484,14 +484,19 @@ function pageFormSnapshot() {
       e.getAttribute("name") || e.getAttribute("role") || e.tagName;
     const role = e.getAttribute("role");
     const rich = e.isContentEditable || e.getAttribute("contenteditable") !== null;
-    const value = role === "combobox"
+    const type = (e.type || "").toLowerCase();
+    const checkable = type === "checkbox" || type === "radio" ||
+      role === "checkbox" || role === "switch";
+    const checked = !!e.checked || e.getAttribute("aria-checked") === "true";
+    const value = checkable ? (checked ? "checked" : "") : role === "combobox"
       ? (anc ? (anc.innerText || "").replace(/\n/g, " ").trim() : "")
       : ((rich ? e.innerText : e.value) || "");
     const meta = [label, e.type, e.name, e.id, e.autocomplete,
                   e.getAttribute("aria-label")].join(" ");
     const sensitive = e.type === "password" || e.type === "email" || e.type === "tel" ||
       /(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|csrf|authenticity|oauth|session.?redirect|cancel.?redirect|redirect.?uri|login.?csrf|page.?instance|sid.?string|control.?id|referer|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);
-    return { label, value: sensitive ? "[redacted]" : String(value).slice(0, 4000),
+    return { label, kind: checkable ? (type || role) : "",
+             value: sensitive ? "[redacted]" : String(value).slice(0, 4000),
              sensitive: !!sensitive, filled: !!value };
   }).filter((x) => x.label && x.filled);
   const actions = [...document.querySelectorAll("button,input[type=submit],[role=button]")].map((e) => {

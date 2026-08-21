@@ -6,6 +6,35 @@ with no pytest can still check itself. The runner exists for the second path.
 import os
 import sys
 import types
+import inspect
+
+
+class _StandaloneMonkeyPatch:
+    """Small stdlib-only equivalent of pytest's ``monkeypatch`` fixture.
+
+    ``run_module`` deliberately lets the quick, direct test path run without
+    pytest.  A couple of those tests also need to temporarily replace a module
+    attribute, so provide exactly that fixture here and always restore it
+    between tests.
+    """
+    _MISSING = object()
+
+    def __init__(self):
+        self._changes = []
+
+    def setattr(self, target, name, value, raising=True):
+        old = getattr(target, name, self._MISSING)
+        if old is self._MISSING and raising:
+            raise AttributeError("%r has no attribute %r" % (target, name))
+        self._changes.append((target, name, old))
+        setattr(target, name, value)
+
+    def undo(self):
+        for target, name, old in reversed(self._changes):
+            if old is self._MISSING:
+                delattr(target, name)
+            else:
+                setattr(target, name, old)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -66,8 +95,15 @@ def run_module(ns, label):
     tests = [(n, f) for n, f in sorted(ns.items()) if n.startswith("test_") and callable(f)]
     passed, failed, skipped = 0, [], []
     for name, fn in tests:
+        monkeypatch = _StandaloneMonkeyPatch()
         try:
-            fn()
+            params = inspect.signature(fn).parameters
+            if not params:
+                fn()
+            elif set(params) == {"monkeypatch"}:
+                fn(monkeypatch)
+            else:
+                raise TypeError("standalone runner cannot provide fixtures: %s" % ", ".join(params))
             passed += 1
             print("  PASS %s" % name)
         except _Skip as s:
@@ -79,6 +115,8 @@ def run_module(ns, label):
             if os.environ.get("V"):
                 import traceback
                 traceback.print_exc()
+        finally:
+            monkeypatch.undo()
     tail = "" if not failed else " FAILS: " + ", ".join(failed)
     tail += "" if not skipped else " SKIPPED: " + ", ".join(skipped)
     print("\n== %s: %d/%d passed ==%s" % (label, passed, len(tests), tail))

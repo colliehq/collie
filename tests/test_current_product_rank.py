@@ -356,6 +356,11 @@ def test_launch_guard_ignores_only_trusted_parent_codex_metadata(monkeypatch, tm
     auth = tmp_path / "auth.json"
     auth.write_text("opaque", encoding="utf-8")
     observed = "2026-08-12T20:00:00Z"
+    # ``test_catalog.py`` is also executable directly and uses a temporary
+    # CODEX_HOME to prove the logged-out path.  This case is about the three
+    # trusted parent metadata keys below, so it must not inherit that separate
+    # module's process-global test fixture.
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.setenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "codex_desktop")
     monkeypatch.setenv("CODEX_PERMISSION_PROFILE", "disabled")
     monkeypatch.setenv("CODEX_THREAD_ID", "thread")

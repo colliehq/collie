@@ -335,6 +335,56 @@ def test_campaign_coverage_refuses_whole_wait_and_early_completion(tmp_path):
     actions.close()
 
 
+def test_open_coverage_hides_non_due_timer_feedback_from_planner(tmp_path):
+    store, actions = _stores(tmp_path)
+    now = int(time.time())
+    create_mission(
+        store, "timer-noise", "continue every open campaign branch",
+        case={
+            "_campaign_coverage": [
+                {"branch": "Indie Hackers launch", "status": "blocked", "required": True},
+                {"branch": "Engagement monitoring", "status": "scheduled", "required": True},
+            ],
+            "pending_followups": [{"id": "followup-monitor", "branch": "Engagement monitoring",
+                                   "due_at": now + 3600, "status": "scheduled"}],
+        }, leash=world_leash())
+    store.record_event("timer-noise", "result", "browse", payload={"verdict": "verified"})
+    store.record_event("timer-noise", "followup", "scheduled",
+                       payload={"branch": "Engagement monitoring"})
+    store.record_event("timer-noise", "coverage", "wait_refused",
+                       payload={"open": 1})
+    seen = {}
+
+    def decide(_goal, case, _primitives):
+        seen.update(case)
+        return {"action": "needs_human", "args": {"summary": "captured"}}
+
+    assert MissionDriver(store, actions, decide, []).advance("timer-noise") == NEEDS_YOU
+    assert "pending_followups" not in seen
+    assert "Indie Hackers launch" in seen["signal"]
+    assert any(event["kind"] == "result" for event in seen["_recent_events"])
+    assert not any(event["kind"] in ("followup", "coverage")
+                   for event in seen["_recent_events"])
+    store.close()
+    actions.close()
+
+
+def test_scheduler_signal_and_connected_identity_survive_large_case_compaction():
+    marker = "{{work_identity:collie_mail:account}}"
+    encoded = _model_case_json({
+        "old": "x" * 50000,
+        "signal": "Continue the first open branch now: Indie Hackers launch",
+        "_connected_work_identities": {"connections": [{
+            "id": "collie_mail", "reference": marker,
+            "scopes": ["signup.email_use"]}]},
+        "_campaign_coverage": [{
+            "branch": "Indie Hackers launch", "status": "blocked", "required": True}],
+    }, 5000)
+    case = json.loads(encoded)
+    assert "Indie Hackers launch" in case["signal"]
+    assert marker in json.dumps(case["_connected_work_identities"])
+
+
 def test_campaign_slice_finishes_goal_instead_of_requesting_fake_input(tmp_path):
     store, actions = _stores(tmp_path)
     coverage = [{"branch": "GitHub discovery", "status": "completed",
@@ -676,6 +726,42 @@ def test_activity_ledger_and_do_not_repeat_survive_context_compaction(tmp_path):
     assert ledger[-1]["do_not_repeat"] is True
     assert protected[-1]["instruction"] == "Do not repeat this external action."
     assert "post action fired" in context and "Do not repeat" in context
+    store.close()
+    actions.close()
+
+
+def test_activity_ledger_joins_intent_to_result_and_keeps_live_action(tmp_path):
+    store, actions = _stores(tmp_path)
+    create_mission(store, "readable-ledger", "launch everywhere", leash=world_leash())
+    store.record_event(
+        "readable-ledger", "proposed", "browse", "proposal-1",
+        {"args": {"campaign_branch": "Product Hunt launch",
+                  "goal": "Inspect the onboarding fields without submitting."}})
+    # Result nonces deliberately differ from proposal nonces in the production
+    # action path. The human ledger must still join these sequential boundaries.
+    store.record_event(
+        "readable-ledger", "result", "browse", "receipt-1",
+        {"verdict": VERIFIED,
+         "reason": "independently confirmed read-only browse on producthunt.com"})
+    store.record_event(
+        "readable-ledger", "followup", "scheduled",
+        payload={"summary": "await engagement recheck"})
+    store.record_event(
+        "readable-ledger", "followup", "scheduled",
+        payload={"summary": "await engagement recheck"})
+    store.record_event(
+        "readable-ledger", "proposed", "browse", "proposal-2",
+        {"args": {"campaign_branch": "Xiaohongshu launch",
+                  "goal": "Inspect the signed-in publishing route."}})
+
+    ledger = store.activity_ledger("readable-ledger")
+    assert ledger[0]["status"] == "completed"
+    assert "Product Hunt launch" in ledger[0]["summary"]
+    assert "onboarding fields" in ledger[0]["summary"]
+    assert "independently confirmed" in ledger[0]["detail"]
+    assert ledger[1]["status"] == "scheduled" and ledger[1]["count"] == 2
+    assert ledger[-1]["status"] == "in_progress"
+    assert "Xiaohongshu launch" in ledger[-1]["summary"]
     store.close()
     actions.close()
 

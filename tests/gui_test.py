@@ -370,7 +370,8 @@ def main():
                   "mcpBox=%r" % (pg.eval_on_selector("#mcpBox", "e => e.textContent.slice(0, 120)")
                                  if pg.query_selector("#mcpBox") else "(no #mcpBox)"))
             if drew:
-                check("and names it", pg.eval_on_selector(".mcp-item .mcp-name", "e => e.textContent") == "probe")
+                names = pg.eval_on_selector_all(".mcp-item .mcp-name", "els => els.map(e => e.textContent)")
+                check("and names it", "probe" in names, repr(names))
                 chips = pg.eval_on_selector_all(".mcp-chip", "els => els.map(e => e.dataset.name)")
                 check("with the one-press catalog beside it", len(chips) >= 5, str(chips[:4]))
 

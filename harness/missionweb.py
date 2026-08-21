@@ -205,7 +205,11 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activi
     verified_receipts = sum(1 for r in receipts if r.get("verdict") == "verified")
     pending = len(pending_auth) + len(open_coverage) + (1 if inbox else 0)
     phase = _short(runtime.get("active_phase"), 160)
-    if mission.state in (RUNNING, PAUSING, RECONCILING) and open_coverage:
+    active = next((item for item in reversed(activity or [])
+                   if item.get("status") == "in_progress"), None)
+    if mission.state in (RUNNING, PAUSING, RECONCILING) and active:
+        current = _short(active.get("summary") or active.get("capability"), 700)
+    elif mission.state in (RUNNING, PAUSING, RECONCILING) and open_coverage:
         current = "Working on campaign branch: %s" % _short(
             open_coverage[0].get("branch"), 180)
     elif mission.state in (RUNNING, PAUSING, RECONCILING):
@@ -288,6 +292,8 @@ def _mission_report(mission, summary, activity, receipts, runtime):
         "capability": _short(item.get("capability"), 120),
         "status": _short(item.get("status") or "recorded", 80),
         "summary": _short(item.get("summary"), 500),
+        "detail": _short(item.get("detail"), 500),
+        "count": max(1, int(item.get("count") or 1)),
         "protected_from_repeat": bool(item.get("do_not_repeat")),
     } for item in (activity or [])[-24:]]
     receipt_counts = {
@@ -3267,7 +3273,11 @@ class MissionService:
             "controls": controls,
             "code_session_recovery": code_session_recovery,
             "recovery_actions": recovery_actions,
-            "receipts": receipts,
+            # Counts in ``report.receipts`` cover the full audit ledger.  The
+            # interactive status response needs only a bounded recent tail;
+            # returning hundreds of indistinguishable historical rows made the
+            # useful progress summary both slow and visually overwhelming.
+            "receipts": receipts[-40:],
         }
 
     def report(self, mid: str) -> dict:

@@ -426,7 +426,8 @@ def _model_case_json(case, limit=12000):
     priority = ("_authority", "execution_profile", "billing_safety", "code_profile",
                 "code_verification", "code_baseline_tree_digest",
                 "code_expected_tree_digest",
-                "_standing_authority", "_mission_summary", "human_updates",
+                "_standing_authority", "_connected_work_identities", "signal",
+                "_mission_summary", "human_updates",
                 "pending_authorizations", "resolved_authorizations",
                 "_campaign_coverage", "pending_followups", "_due_followups", "_activity_ledger",
                 "_do_not_repeat", "browse_sites", "_recent_results",
@@ -445,6 +446,7 @@ def _model_case_json(case, limit=12000):
                "code_baseline_tree_digest": 200,
                "code_expected_tree_digest": 200,
                "_standing_authority": 1000,
+               "_connected_work_identities": 1200, "signal": 900,
                "_mission_summary": 900, "human_updates": 700,
                "pending_authorizations": 1000, "resolved_authorizations": 600,
                "_campaign_coverage": 1800,
@@ -2126,17 +2128,71 @@ class MissionStore:
             protected = {str(r["nonce"] or "") for r in rows if r["nonce"]}
 
         entries = []
+        # ``proposed`` carries the operator-readable intent (branch + exact goal),
+        # while ``result`` carries the evidence verdict.  They intentionally use
+        # different durable nonces, so pair each result with the latest unfinished
+        # proposal for that capability.  Without this join every surface can only
+        # say "browse verified", which is audit truth but not a useful progress log.
+        pending_by_capability = {}
+
+        def append_entry(entry):
+            # Scheduler retries used to fill the whole visible log with identical
+            # "await recheck" rows.  Collapse only adjacent equivalent entries;
+            # distinct work between them remains visible and ordered.
+            if entries and all(entries[-1].get(key) == entry.get(key) for key in
+                               ("kind", "capability", "status", "summary")):
+                entries[-1]["at"] = entry.get("at", entries[-1].get("at", 0))
+                entries[-1]["count"] = int(entries[-1].get("count", 1)) + 1
+                return len(entries) - 1
+            entries.append(entry)
+            return len(entries) - 1
+
         for event in self.events(mission_id, 240):
             kind, name = str(event.get("kind") or ""), str(event.get("name") or "")
             payload = event.get("payload") or {}
             if not isinstance(payload, dict):
                 payload = {}
             status, summary = "", ""
+            if kind in ("proposed", "proposed_irreversible"):
+                args = payload.get("args") or {}
+                args = args if isinstance(args, dict) else {}
+                branch = " ".join(str(args.get("campaign_branch") or "").split())[:160]
+                intent = " ".join(str(
+                    args.get("goal") or args.get("instruction") or
+                    args.get("query") or args.get("summary") or "").split())[:500]
+                label = branch or name or "Mission action"
+                summary = ("%s — %s" % (label, intent)) if intent else label
+                entry = {
+                    "at": int(event.get("at") or 0), "kind": kind,
+                    "capability": name[:120], "status": "in_progress",
+                    "summary": summary[:700],
+                }
+                if branch:
+                    entry["branch"] = branch
+                if intent:
+                    entry["intent"] = intent
+                index = append_entry(entry)
+                pending_by_capability.setdefault(name, []).append(index)
+                continue
             if kind == "result":
                 verdict = str(payload.get("verdict") or "").lower()
                 status = {VERIFIED: "completed", FAILED: "failed",
                           INCONCLUSIVE: "uncertain"}.get(verdict, verdict or "recorded")
-                summary = str(payload.get("reason") or "%s %s" % (name, status))
+                detail = " ".join(str(
+                    payload.get("reason") or "%s %s" % (name, status)).split())[:500]
+                pending = pending_by_capability.get(name) or []
+                if pending:
+                    index = pending.pop()
+                    entry = entries[index]
+                    entry.update({"at": int(event.get("at") or 0),
+                                  "kind": "result", "status": status[:80],
+                                  "detail": detail})
+                    if not entry.get("intent"):
+                        entry["summary"] = detail
+                    if event.get("nonce") in protected:
+                        entry["do_not_repeat"] = True
+                    continue
+                summary = detail
             elif kind == "goal_verification":
                 verdict = str(payload.get("verdict") or "").lower()
                 status = {VERIFIED: "completed", FAILED: "failed",
@@ -2159,7 +2215,12 @@ class MissionStore:
                 summary = str(payload.get("summary") or payload.get("reason") or name)
             elif kind in ("watchdog", "gate"):
                 status = "failed" if kind == "gate" else "uncertain"
-                summary = str(payload.get("reason") or payload.get("error") or name)
+                if kind == "watchdog" and name == "planner_unavailable":
+                    seconds = max(0, int(payload.get("retry_seconds") or 0))
+                    summary = ("Planning response was unusable; retrying automatically" +
+                               ((" in %d seconds" % seconds) if seconds else ""))
+                else:
+                    summary = str(payload.get("reason") or payload.get("error") or name)
             if not status:
                 continue
             entry = {"at": int(event.get("at") or 0), "kind": kind,
@@ -2167,7 +2228,7 @@ class MissionStore:
                      "summary": " ".join(summary.split())[:500]}
             if event.get("nonce") in protected:
                 entry["do_not_repeat"] = True
-            entries.append(entry)
+            append_entry(entry)
         return entries[-max(1, int(limit)):]
 
     def reserve_action(self, mission_id, action_key, irreversible, leash, name,
@@ -3605,6 +3666,12 @@ class MissionDriver:
                 value = child.strip()
                 if not value or placeholder.fullmatch(value):
                     return False
+                try:
+                    from .workidentity import is_reference
+                    if is_reference(value):
+                        return False
+                except Exception:
+                    pass
                 if re.search(r"e.?mail", label, re.I):
                     return bool(email_value.search(value))
                 if re.search(r"phone|mobile", label, re.I):
@@ -3794,11 +3861,40 @@ class MissionDriver:
                 model_case = dict(m.case)
                 model_case["_authority"] = m.leash
                 model_case["_standing_authority"] = standing
+                try:
+                    from .workidentity import connected_context
+                    model_case["_connected_work_identities"] = connected_context(
+                        os.path.dirname(self.store.path))
+                except Exception:
+                    # Identity discovery is additive context.  A corrupt optional
+                    # connection record must not take the whole Mission down.
+                    pass
                 model_case["_activity_ledger"] = self.store.activity_ledger(
                     mission_id, 24)
                 model_case["_do_not_repeat"] = self.store.do_not_repeat(
                     mission_id, 20)
-                model_case["_recent_events"] = self.store.events(mission_id, 20)
+                recent_events = self.store.events(mission_id, 20)
+                open_coverage = _open_campaign_coverage(model_case)
+                if open_coverage:
+                    # A non-due timer is durable scheduler state, not work for
+                    # the planner to reconsider every turn.  Feeding repeated
+                    # schedule/refusal events back to the model creates a
+                    # positive feedback loop that burns the Mission budget while
+                    # the host correctly refuses to sleep with open coverage.
+                    model_case.pop("pending_followups", None)
+                    recent_events = [
+                        event for event in recent_events
+                        if not ((event.get("kind") == "followup" and
+                                event.get("name") == "scheduled") or
+                               (event.get("kind") == "coverage" and
+                                event.get("name") == "wait_refused"))
+                    ]
+                    branch = str(open_coverage[0].get("branch") or "")
+                    model_case["signal"] = (
+                        "Required campaign work remains. Non-due monitoring timers are already "
+                        "durable and intentionally hidden; do not schedule them again. Continue "
+                        "the first open branch now: " + branch)[:800]
+                model_case["_recent_events"] = recent_events
                 checkpoint = self.store.latest_checkpoint(mission_id)
                 if checkpoint:
                     model_case["_checkpoint"] = {
@@ -4907,6 +5003,9 @@ _SYS = (
     "value in args.expect; never say 'use the case draft', 'prepared copy', 'above', or equivalent. "
     "Rich text/body expectations are exact, not prefix checks. Choose browse.submit only when the "
     "newest browse result is verified; after any failed/inconclusive browse, repair it first.\n"
+    "Before browse.submit, confirm that the button's real outcome advances the named campaign "
+    "branch. A newsletter or notification subscription is not account creation, product "
+    "promotion, or publication; never submit one unless the GOAL explicitly requests it.\n"
     "A reversible failed or inconclusive action is recorded in CASE._recent_failures and does not "
     "stop unrelated branches. Repair it once when useful, then pursue independent work instead of "
     "repeating the same unavailable observation.\n"
@@ -4916,6 +5015,11 @@ _SYS = (
     "Use credentials, email/phone identities, signed-in sessions, and verification-code inboxes "
     "that the user has already connected and authorized; routine signup fields, OTP retrieval, "
     "Next buttons, and authorized publish/send actions are ordinary work inside the leash. "
+    "CASE._connected_work_identities is the host-discovered source of truth. If it contains a "
+    "signup.email_use mailbox, use its exact reference token in args.goal and args.expect instead "
+    "of copying an address or creating another mailbox. The host resolves that token only inside "
+    "the browser capability; never copy the underlying account value into action args. A "
+    "missing fact on an unnecessary consumer-mail signup is an abandoned route, not needs_human. "
     "A public brand username/handle is non-secret profile data. When ordinary account setup needs "
     "one and no preference is saved, prefer the product/companion brand from GOAL/CASE; never "
     "invent a person's identity or use an inferred personal name. "
@@ -4923,7 +5027,8 @@ _SYS = (
     "voicemail, and routine provider settings within the Mission goal and Leash; releasing or "
     "transferring the number, purchases, and Google-account security changes require new authority. "
     "For an already-requested code from a connected inbox, choose 'verification.fill' with the "
-    "exact service name; it reads and fills the code internally without exposing it to you. "
+    "exact service name and channel ('email' or 'sms'); it reads and fills the code internally "
+    "without exposing it to you. "
     "Never persist a credential or OTP in the case, event log, action args, or summary. The case may contain "
     "_standing_authority: exact user-confirmed facts there are reusable up to the stated risk ceiling; "
     "perform the matching ordinary browser work instead of asking again. If the fact or permission is "
@@ -5028,10 +5133,20 @@ class ModelDecider:
                             "reason": "temporary model/provider error; retry with backoff",
                             "_retry": 1, **meta}
             else:
+                # Models commonly wrap a valid JSON decision in a Markdown fence
+                # or append a brief explanation.  The former greedy ``{.*}``
+                # capture swallowed every later brace and rejected the whole
+                # otherwise-valid response. ``raw_decode`` is quote-aware and
+                # accepts the first complete object without weakening the typed
+                # primitive/action check below.
                 import re
-                m = re.search(r"\{.*\}", getattr(comp, "text", "") or "", re.S)
-                if m:
-                    plan = json.loads(m.group(0))
+                text = getattr(comp, "text", "") or ""
+                decoder = json.JSONDecoder()
+                for start in (m.start() for m in re.finditer(r"\{", text)):
+                    try:
+                        plan, _end = decoder.raw_decode(text, start)
+                    except json.JSONDecodeError:
+                        continue
                     if isinstance(plan, dict) and plan.get("action"):
                         plan.update(meta)
                         return plan

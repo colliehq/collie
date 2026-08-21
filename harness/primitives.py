@@ -129,11 +129,14 @@ def _real_verification_fill(actuator, otp_reader=None):
             return {"filled": False, "error": "verification-code field is missing or ambiguous"}
         reader = otp_reader
         if reader is None:
-            from .workidentity import take_google_voice_code
-            reader = take_google_voice_code
+            from .workidentity import take_verification_code
+            reader = take_verification_code
         code = ""
         try:
-            code, meta = reader(service, max_age_seconds=args.get("max_age_seconds", 600))
+            reader_args = {"max_age_seconds": args.get("max_age_seconds", 600)}
+            if args.get("channel"):
+                reader_args["channel"] = args.get("channel")
+            code, meta = reader(service, **reader_args)
             act.type_ref(ref, code, submit=False)
             return {"case": {"verification_code_filled": True}, "filled": True,
                     "source": meta.get("source", "connected_verification_inbox"),
@@ -772,6 +775,14 @@ def _real_browse(runner=None, form_reader=None):
                 return {"case": {"browsed": False, "browse_result": reason[:600]},
                         "result": reason, "form": [], "form_actions": [], "page": {},
                         "contract_error": reason}
+        try:
+            from .workidentity import resolve_references
+            goal = resolve_references(goal)
+        except RuntimeError as exc:
+            reason = "connected work identity reference could not be resolved: %s" % exc
+            return {"case": {"browsed": False, "browse_result": reason[:600]},
+                    "result": reason, "form": [], "form_actions": [], "page": {},
+                    "contract_error": reason}
         raw_out = runner(goal) if runner else _live_browse(goal, space, domains)
         scope_error = ""
         if isinstance(raw_out, dict) and "_browse_answer" in raw_out:
@@ -914,6 +925,19 @@ def _browse_verify(rec, result):
 
     def _expected_present(label, val):
         key = re.sub(r"[^a-z0-9_]", "", str(label).lower())
+        try:
+            from .workidentity import is_reference
+            identity_reference = is_reference(val)
+        except Exception:
+            identity_reference = False
+        if identity_reference:
+            # The trusted capability resolved the reference before acting.  The
+            # independent DOM reread intentionally redacts the value; prove that
+            # the intended sensitive field is filled without re-exposing it.
+            lab = str(label).lower()
+            return any(lab in str(f.get("label", "")).lower() and
+                       bool(f.get("sensitive")) and f.get("value") == "[redacted]"
+                       for f in form)
         if key in ("platform", "site", "origin"):
             return _page_present(val)
         # Rich editors expose unstable accessibility labels/data-testid values
@@ -1980,7 +2004,7 @@ def register_primitives(stub: bool = True, actuator=None, provider=None,
         description=("Read one fresh service-matching code from a connected verification inbox "
                      "and fill the current code field internally. The code is never returned to "
                      "the model, Mission case, event log, or receipt."),
-        args_hint='{"service":"Product Hunt","field":"Verification code","max_age_seconds":600}'))
+        args_hint='{"service":"Product Hunt","channel":"email|sms","field":"Verification code","max_age_seconds":600}'))
     register(Capability(
         name="web.submit", execute=submit_exec, verify=submit_verify, reversible=False,
         risk="publish", resource=browser_resource,

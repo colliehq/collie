@@ -888,6 +888,23 @@ def test_transient_model_failure_becomes_durable_backoff():
           "temporary provider outage schedules durable exponential backoff")
 
 
+def test_model_decider_accepts_first_valid_json_object_without_greedy_capture():
+    print("test_model_decider_accepts_first_valid_json_object_without_greedy_capture")
+
+    class Explained:
+        def complete(self, *_a, **_kw):
+            return Completion(text=(
+                "Decision:\n```json\n"
+                '{"action":"needs_human","args":{"summary":"review"}}'
+                "\n```\nExplanation with another object: {not valid JSON}."))
+
+    decision = ModelDecider(Explained())("goal", {}, [])
+    check(decision["action"] == "needs_human" and
+          decision["args"]["summary"] == "review" and
+          decision.get("reason") != "decider unavailable",
+          "planner parses the first complete JSON decision despite trailing braces")
+
+
 def test_model_decider_exposes_unambiguous_primitive_contracts():
     print("test_model_decider_exposes_unambiguous_primitive_contracts")
 
@@ -908,7 +925,8 @@ def test_model_decider_exposes_unambiguous_primitive_contracts():
     ModelDecider(provider)("prepare a campaign", {}, [primitive])
     check("args.instruction" in provider.system and "ONLY" in provider.system and
           "LITERAL substring" in provider.system and "one separate read-only 'browse'" in
-          provider.system and "final literal only" in provider.user,
+          provider.system and "final literal only" in provider.user and
+          "newsletter" in provider.system,
           "the planner sees unambiguous compose and browser-observation contracts")
 
 
