@@ -21,11 +21,15 @@ def check(name, cond):
 # ---- static catalog + shape ----------------------------------------------------------
 ents = catalog.list_entries(discover_live=False)
 by_id = {e["id"]: e for e in ents}
+static_ids = {e.id for e in catalog._static()}
 check("static catalog non-empty", len(ents) > 10)
 check("every entry has provider+model+auth+price", all(
     e.get("provider") and e.get("model") and e.get("auth") and "price_in" in e for e in ents))
 check("codex-oauth terra present", "codex-oauth:gpt-5.6-terra" in by_id)
-check("anthropic-oauth opus present", "anthropic-oauth:claude-opus-4-8" in by_id)
+# Unauthenticated providers deliberately collapse to one visible option.  Verify
+# the curated catalog contains the route without requiring it to be visible on a
+# clean, logged-out runner.
+check("anthropic-oauth opus present", "anthropic-oauth:claude-opus-4-8" in static_ids)
 
 # ---- dedup: no duplicate ids ---------------------------------------------------------
 ids = [e["id"] for e in ents]

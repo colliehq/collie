@@ -30,7 +30,7 @@
   trace, patch, serial-run timing, and grader evidence before reporting paired,
   task-cluster-aware results.
 
-## v0.21.24 — Release gate reliability
+## v0.21.25 — Release gate reliability
 
 - **The release gate is now dependency-complete and repeatable on clean runners.** The development
   extra includes the YAML parser required by the normalized Hermes regression suite; model-picker
