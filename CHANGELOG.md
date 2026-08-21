@@ -30,6 +30,11 @@
   trace, patch, serial-run timing, and grader evidence before reporting paired,
   task-cluster-aware results.
 
+## v0.21.26 — Release gate reliability
+
+- Make the mission watchdog timing regression resilient to normal shared-CI
+  scheduling latency while continuing to prove that a hung decider is bounded.
+
 ## v0.21.25 — Release gate reliability
 
 - **The release gate is now dependency-complete and repeatable on clean runners.** The development

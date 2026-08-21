@@ -39,7 +39,7 @@ def test_hung_decider_is_bounded_and_heartbeat_cannot_fake_progress(tmp_path):
     store, actions = _stores(tmp_path)
 
     def hung(*_):
-        time.sleep(.3)
+        time.sleep(1)
         return {"action": "needs_human"}
 
     leash = world_leash()
@@ -47,7 +47,10 @@ def test_hung_decider_is_bounded_and_heartbeat_cannot_fake_progress(tmp_path):
     create_mission(store, "hung", "wait safely", leash=leash)
     started = time.monotonic()
     state = MissionDriver(store, actions, hung, capabilities=[]).advance("hung")
-    assert time.monotonic() - started < .2
+    # The watchdog must return well before the worker's one-second sleep.  Keep
+    # a practical allowance for shared CI runners, where a 50 ms timer is not a
+    # scheduling guarantee.
+    assert time.monotonic() - started < .5
     assert state == WAITING
     assert store.runtime("hung")["retry_count"] == 1
     assert store.events("hung")[-1]["name"] == "decider_timeout"
