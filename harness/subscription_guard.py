@@ -564,7 +564,8 @@ def check_subscription_guard(
     """Authorize one subscription invocation using redacted first-party auth evidence.
 
     ``provider`` accepts ``claude-agent-sdk``, ``claude``/``claude-code``,
-    ``claude-direct``, or ``codex``/``codex-cli``.
+    ``claude-direct``, or ``codex``/``codex-cli``/``codex-exec``/
+    ``codex-app-server``.
     Codex callers must pass freshly observed account evidence with exactly the
     required safety facts.  On denial, :class:`SubscriptionGuardError` carries
     the same redacted receipt shape that can be persisted as audit evidence.
@@ -577,6 +578,12 @@ def check_subscription_guard(
         "claude-direct": "claude-direct",
         "codex": "codex-cli",
         "codex-cli": "codex-cli",
+        # The harness exposes Codex through more than one runner key (one-shot
+        # `codex exec`, and the long-lived app-server).  They are the same CLI
+        # and the same ChatGPT subscription, so they share the codex check
+        # rather than each growing a near-duplicate branch.
+        "codex-exec": "codex-cli",
+        "codex-app-server": "codex-cli",
     }
     canonical = aliases.get(provider.strip().lower()) if isinstance(provider, str) else None
     try:

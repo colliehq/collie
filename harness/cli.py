@@ -1417,6 +1417,147 @@ def cmd_acp(args):
     return 0
 
 
+class _NoHarnessMemory:
+    """Stands in for `Harness.memory` when no Collie harness ran.
+
+    Only `close()` is ever reached: `--goal` (the one caller of `set_block`) is
+    refused before an external worker starts, so a memory that silently accepted
+    writes would be advertising a store nothing reads back.
+    """
+
+    def close(self) -> None:
+        return None
+
+
+class _RunnerShim:
+    """The handful of Harness attributes `cmd_run`'s tail reads, for an external worker.
+
+    `runner_slice.run_adhoc` returns the same `RunResult` a `loop.Harness` would,
+    but the twenty lines after it were written against a harness object: they emit
+    events, settle memory, persist the host verifier's verdict and close both
+    stores.  Standing in here keeps that tail — the shared, load-bearing part of
+    the command, including the verification that only the host may perform —
+    identical for both workers instead of forking it into two drifting copies.
+
+    Everything a Harness would *do* is deliberately nothing, because there is
+    nothing of ours to do it to: an external worker writes no Collie memory and
+    leaves no in-loop claims to promote.  `emit` is real enough to be replaced by
+    `--stream-json` with the same lambda the native path installs.
+
+    `recorder` is a real Recorder rather than a mock, but no runs.db row is opened
+    for an external turn in phase 1 — the session receipt is its record — so the
+    `finish_run` in the verification branch updates nothing.  That is on purpose
+    and worth knowing: the dashboard covers Collie's own runs, and a row whose
+    token columns are all NULL (which is the truth for a worker that reports no
+    usage) would render as a run that cost zero.
+
+    `provider` is None on purpose: no Brain of ours answered, so the
+    `getattr(..., "actual_speed", decision.speed)` below falls back to what the
+    router decided instead of inventing a service tier nobody observed.
+    """
+
+    def __init__(self, runs_db: str):
+        self.emit = lambda kind, payload: None
+        self.recorder = Recorder(runs_db)
+        self.memory = _NoHarnessMemory()
+        self.provider = None
+        self.checkpoint_scope = ""      # the worker owns its edits; we take no snapshot
+        self.defer_memory_promotion = False
+
+    def settle_run_memory(self, *args, **kwargs) -> None:
+        """No claims were made here — an external worker never wrote to our memory."""
+        return None
+
+
+def _runner_option_keys():
+    """The `--runner` choices: the runner keys whose phase has actually arrived.
+
+    From the registry rather than a literal list, so a key that is declared for a
+    later phase is visible in `collie runners` and still unselectable here — one
+    table, no second copy to forget to update.
+    """
+    from . import runner_registry as runner_reg
+    return list(runner_reg.option_keys())
+
+
+def _counted(value):
+    """A token/turn count for the human line — `?` when nobody measured it.
+
+    `None` is not zero: an external worker that reported no usage did not do the
+    work for free, and printing 0 there is the one number guaranteed to be wrong.
+    """
+    return "?" if value is None else value
+
+
+def _worker_label(key: str) -> str:
+    from . import runner_registry as runner_reg
+    spec = runner_reg.SPECS.get(key)
+    return spec.label if spec is not None else key
+
+
+def _worker_history_note(history):
+    """A short recap of this session's last exchange, for a worker that cannot see it.
+
+    Only matters on the first turn against a given worker (afterwards it resumes
+    its own thread and remembers). Text only, and squeezed: tool payloads out of
+    Collie's transcript mean nothing over there, and shipping them into another
+    vendor's process would export more of the run than the task needs.
+    """
+    lines = []
+    for msg in [m for m in (history or []) if isinstance(m, dict)][-4:]:
+        content = msg.get("content")
+        role = str(msg.get("role") or "")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        text = " ".join(content.split())
+        if text:
+            lines.append("%s: %s" % (role, text[:400]))
+    return "\n".join(lines) or None
+
+
+def _worker_session(sid, runner):
+    """This session's most recent locator for `runner`, from the receipt that minted it.
+
+    Collie's transcript is not the worker's conversation: what continues a
+    `claude -p` or a `codex exec` thread is the id THAT tool issued, which last
+    turn's receipt recorded. A receipt written by a different worker is skipped
+    rather than passed along — a locator means nothing outside the session that
+    created it, and offering one would resume a conversation that never happened.
+    """
+    from . import sessions as sess
+    for receipt in reversed((sess.load(sid) or {}).get("run_receipts") or []):
+        section = receipt.get("runner") if isinstance(receipt, dict) else None
+        if not isinstance(section, dict) or section.get("runner") != runner:
+            continue
+        native = section.get("native_session")
+        if isinstance(native, dict) and native.get("locator"):
+            return native
+    return None
+
+
+def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history):
+    """One turn on the external worker `hd` chose — same RunResult, someone else's process."""
+    from . import runner_registry as runner_reg
+    from . import runner_slice
+    spec = runner_reg.SPECS.get(hd.runner)
+    # A model name is a BRAIN choice, and Brains are not portable: handing
+    # "deepseek-chat" to `claude -p` would be a category error. So the routed model
+    # travels only when the worker signs in to the same vendor the router picked;
+    # an explicit --model is the user's own instruction and always travels.
+    model = (getattr(args, "model", None) or "").strip()
+    if not model and spec is not None and request.provider_family == spec.credential_family:
+        model = decision.model or ""
+    resume_from = (_worker_session(sid, hd.runner)
+                   if (getattr(args, "resume", None) or getattr(args, "cont", False))
+                   else None)
+    return runner_slice.run_adhoc(
+        hd, args.task, cwd,
+        timeout_s=(spec.default_timeout_s if spec is not None else None),
+        emit=emit, cancelled=None,
+        history_note=(None if resume_from else _worker_history_note(history)),
+        resume_from=resume_from, model=model, task_id="adhoc")
+
+
 def cmd_run(args):
     import json as _json
     _, runs_db, out_html, _ = _paths()
@@ -1484,6 +1625,27 @@ def cmd_run(args):
         explicit_axes=explicit, history=history)
     decision_payload = decision.to_dict()
 
+    # WHO carries out the task is a second axis beside which Brain answers it. The
+    # untouched configuration (RUNNER=collie, no --runner) narrows to a single
+    # candidate, so the probe map stays empty and no external CLI is executed or even
+    # inspected — this path costs exactly what it cost before the axis existed.
+    from . import runner_select
+    from . import runner_registry as runner_reg
+    has_approver = bool(sys.stdin is not None and sys.stdin.isatty())
+    runner_req = runner_select.request_from_run(
+        args, decision, settings, cwd=cwd, has_approver=has_approver)
+    runner_candidates = tuple(runner_req.candidates())
+    runner_probes = ({} if runner_candidates == ("collie",)
+                     else runner_reg.probe_all(keys=runner_candidates))
+    hd = runner_select.decide(runner_req, runner_reg.SPECS, runner_probes)
+    decision_payload["runner"] = hd.to_dict()
+    if hd.error:
+        # Fail closed, like the missing --verify-command below: quietly substituting a
+        # different worker can change which account pays for the run, so "that one is
+        # not available" has exactly one honest answer.
+        print(hd.error, file=sys.stderr)
+        return 2
+
     verify_command = (getattr(args, "verify_command", None) or "").strip()
     verify_source = "user" if verify_command else ""
     if not verify_command:
@@ -1500,46 +1662,78 @@ def cmd_run(args):
         print("Test needs a detected or explicit --verify-command", file=sys.stderr)
         return 2
 
-    gate_mode = (decision.intent if decision.intent in ("plan", "review", "test")
-                 else getattr(args, "mode", None))
-    _gate = default_gate(cwd, gate_mode,
-                         commands=[verify_command] if decision.intent == "test" else None)
-    h = make_harness(cwd, provider=provider, model=decision.model,
-                     effort=decision.effort, speed=decision.speed, project=args.project,
-                     web_search=True if getattr(args, "web_search", False) else None,
-                     exec_code=True, delegate=True, gate=_gate)
-    configure_run_options(h, intent=decision.intent, quality=decision.quality,
-                          verification=decision.verification)
-    # An approver only when there is genuinely someone there. Piped or in CI, stdin is not a
-    # person: leaving it unset means off-machine calls are refused with a reason the model can
-    # work around, rather than run because nobody objected. `--mode auto` is the explicit
-    # opt-out for a sandbox that wants the old behaviour.
-    import sys as _sys
-    if _sys.stdin is not None and _sys.stdin.isatty():
-        from .approve import tty_approver
-        h.approve = tty_approver(gate=_gate)
-    if getattr(args, "persona", None):
-        if apply_persona(h, _gate, args.persona, cwd) is None:
-            print("no persona named %r (looked in .collie/personas and ~/.collie/personas)"
-                  % args.persona)
+    will_verify = bool(
+        (decision.intent == "test" or decision.verification == "required") and
+        verify_command)
+    # The gate, the persona, the standing goal and the checkpoint scope are features
+    # OF Collie's harness. Splitting here rather than inside run() keeps that honest:
+    # the external branch builds no gate it could not enforce and pins no memory
+    # nobody over there will read.
+    if hd.runner != "collie":
+        # --persona rewrites the system prompt and --goal pins a block into CORE
+        # memory; neither reaches a worker running in someone else's process, and
+        # proceeding would silently drop instructions the user actually typed.
+        if getattr(args, "persona", None) or getattr(args, "goal", None):
+            print("--persona/--goal need collie's own harness — they cannot be sent to "
+                  "%s. Drop them, or use --runner collie." % hd.runner, file=sys.stderr)
             return 2
-    if getattr(args, "goal", None):              # pin a standing goal into CORE memory (every turn)
-        h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
-    h.checkpoint_scope = "session:" + sid
+        h = _RunnerShim(runs_db)
+    else:
+        gate_mode = (decision.intent if decision.intent in ("plan", "review", "test")
+                     else getattr(args, "mode", None))
+        _gate = default_gate(cwd, gate_mode,
+                             commands=[verify_command] if decision.intent == "test" else None)
+        h = make_harness(cwd, provider=provider, model=decision.model,
+                         effort=decision.effort, speed=decision.speed, project=args.project,
+                         web_search=True if getattr(args, "web_search", False) else None,
+                         exec_code=True, delegate=True, gate=_gate)
+        configure_run_options(h, intent=decision.intent, quality=decision.quality,
+                              verification=decision.verification)
+        # An approver only when there is genuinely someone there. Piped or in CI, stdin is not a
+        # person: leaving it unset means off-machine calls are refused with a reason the model can
+        # work around, rather than run because nobody objected. `--mode auto` is the explicit
+        # opt-out for a sandbox that wants the old behaviour.
+        if has_approver:
+            from .approve import tty_approver
+            h.approve = tty_approver(gate=_gate)
+        if getattr(args, "persona", None):
+            if apply_persona(h, _gate, args.persona, cwd) is None:
+                print("no persona named %r (looked in .collie/personas and ~/.collie/personas)"
+                      % args.persona)
+                return 2
+        if getattr(args, "goal", None):           # pin a standing goal into CORE memory (every turn)
+            h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
+        h.checkpoint_scope = "session:" + sid
     # --stream-json: emit one NDJSON event per action (tool/edit/repro/receipt) as it happens,
     # so a terminal, an editor extension, or the ACP adapter can render the run LIVE (the
     # verification gate flipping fail->pass) instead of waiting for one final blob. Progress to
     # stderr keeps stdout clean for --json consumers piping the final object.
     if getattr(args, "stream_json", False):
-        import sys as _sys
-        h.emit = lambda kind, d: print(_json.dumps({"type": kind, **d}, ensure_ascii=False),
-                                       file=_sys.stderr, flush=True)
+        # `type` is the KIND, so it is written last: a worker's replayed native event
+        # carries its own `type` (`turn.completed`), and letting the payload win would
+        # hand a stream consumer a frame kind that is not in the NDJSON contract.
+        # No payload the native harness emits has a `type` key, so this is a no-op there.
+        h.emit = lambda kind, d: print(_json.dumps({**d, "type": kind}, ensure_ascii=False),
+                                       file=sys.stderr, flush=True)
         h.emit("decision", decision_payload)
-    will_verify = bool(
-        (decision.intent == "test" or decision.verification == "required") and
-        verify_command)
     h.defer_memory_promotion = will_verify
-    res = h.run("adhoc", args.task, history=history)
+    runner_payload = None
+    if hd.runner != "collie":
+        from .runner_slice import receipt_of
+        try:
+            res = _run_on_worker(args, hd, decision, runner_req, h.emit,
+                                 cwd=cwd, sid=sid, history=history)
+        except ValueError as exc:
+            # A --cwd that is not a directory, or an empty task. The slice checks
+            # both before building a worker, so nothing was launched and nothing was
+            # billed — say what is wrong rather than unwinding a traceback over it.
+            print("cannot run on %s: %s" % (hd.runner, exc), file=sys.stderr)
+            h.memory.close(); h.recorder.close()
+            return 2
+        worker_receipt = receipt_of(res)
+        runner_payload = worker_receipt.to_dict() if worker_receipt is not None else None
+    else:
+        res = h.run("adhoc", args.task, history=history)
     verification_evidence = None
     if will_verify:
         from .verification import run_verification_command
@@ -1560,17 +1754,24 @@ def cmd_run(args):
     sess.save(sid, res.messages, project=args.project, cwd=cwd, answer=res.answer or "")
     actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
     try:
-        sess.append_run_receipt(sid, {
+        run_receipt = {
             "decision": decision_payload, "model": res.model,
             "actual_speed": actual_speed, "verified": bool(getattr(res, "verified", False)),
             "verification_evidence": verification_evidence, "error": res.error or "",
-        })
+        }
+        if runner_payload is not None:
+            # What the worker reported, beside what the host verified — the `verified`
+            # above is still ours alone, and the receipt's `settled` is still only
+            # "it stopped cleanly".
+            run_receipt["runner"] = runner_payload
+        sess.append_run_receipt(sid, run_receipt)
     except Exception:
         pass
     if getattr(args, "json", False) or getattr(args, "stream_json", False):
         print(_json.dumps({
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
             "decision": decision_payload, "actual_speed": actual_speed,
+            "runner": runner_payload,
             "verification_evidence": verification_evidence,
             "prefix_tokens": res.prefix_tokens, "prefix_measured": res.prefix_measured,
             "input_tokens": res.input_tokens,
@@ -1584,12 +1785,16 @@ def cmd_run(args):
     elif getattr(args, "print", False):
         print(res.answer or res.error)          # headless: answer only (like claude -p)
     else:
-        print("decision=%s · effort=%s · speed=%s · %s/%s/%s" % (
+        print("decision=%s · effort=%s · speed=%s · %s/%s/%s%s" % (
             res.model or decision.model, decision.effort, actual_speed,
-            decision.intent, decision.quality, decision.verification))
-        print("prefix=%d in=%d out=%d turns=%d tools=%d recall=%d %dms" % (
-            res.prefix_tokens, res.input_tokens, res.output_tokens, res.turns,
-            res.tool_calls, res.mem_recalls, res.wall_ms))
+            decision.intent, decision.quality, decision.verification,
+            "" if hd.runner == "collie" else " · worker=%s" % _worker_label(hd.runner)))
+        # A worker that reports no usage leaves these None, not 0 — a zero would read
+        # as "this run was free" (see runner_specs.snapshot_to_run_result).
+        print("prefix=%s in=%s out=%s turns=%s tools=%s recall=%s %sms" % (
+            _counted(res.prefix_tokens), _counted(res.input_tokens),
+            _counted(res.output_tokens), _counted(res.turns), _counted(res.tool_calls),
+            _counted(res.mem_recalls), _counted(res.wall_ms)))
         print("\n%s" % (res.answer or res.error))
         print("\n  session %s · continue: collie run \"…\" --continue  (or --resume %s)" % (sid, sid))
         dash.build(runs_db, out_html)
@@ -2106,6 +2311,130 @@ def cmd_harnesses(args):
             base if base else "—"))
     print("\n  run:  python -m harness.cli compare --vs all --real")
     return 0
+
+
+def cmd_runners(args):
+    """`collie runners` — who can carry out a task on this host, and on whose bill.
+
+    Deliberately not `collie harness`: `collie harnesses` above already means the
+    benchmark adapters Collie is *compared against*, and a worker Collie *delegates
+    to* is the opposite relationship. Two names, two meanings.
+
+    Three actions, all read-only except the report file `compat --report` writes:
+    `list` (the table), `probe` (one runner's row in full) and `compat` (the
+    conformance matrix from `runner_compat`). Without `--live` nothing is asked of a
+    CLI beyond `--version`; `--live` additionally runs each tool's own status command,
+    which is the only way a billing route becomes evidenced rather than assumed.
+    """
+    action = (getattr(args, "action", None) or "list").strip()
+    if action == "probe":
+        return _runners_probe(args)
+    if action == "compat":
+        return _runners_compat(args)
+    return _runners_list(args)
+
+
+def _runners_list(args):
+    from . import runner_registry as runner_reg
+    live = bool(getattr(args, "live", False))
+    probes = runner_reg.list_probes(live=live)
+    if getattr(args, "json", False):
+        print(json.dumps({"live": live, "phase": runner_reg.CURRENT_PHASE,
+                          "runners": [_runner_row(runner_reg, p) for p in probes]},
+                         ensure_ascii=False))
+        return 0
+    print("== workers (collie run --runner <key>) ==")
+    # Two lines per runner rather than nine columns on one: `2.1.221 (Claude Code)`
+    # and `unknown/unconfigured` are the interesting values, and a table narrow
+    # enough to fit a terminal would have truncated exactly those.
+    for p in probes:
+        spec = runner_reg.SPECS.get(p.key)
+        print("  %-16s %-38s phase %s · compat %s" % (
+            p.key, (spec.label if spec else p.key)[:38],
+            spec.phase if spec else "?", p.compat))
+        print("      %-9s version=%-22s login=%-14s billing=%s/%s" % (
+            "INSTALLED" if p.installed else "—", (p.version or "—")[:22], p.login,
+            p.billing_class, p.billing_mode))
+        if p.detail:
+            print("      %s" % p.detail)
+        for note in (spec.notes if spec else ()):
+            # Verbatim, not summarised: every one of these is a limit somebody hit.
+            print("      · %s" % note)
+    print("\n  probe:  collie runners probe <key> [--live]"
+          "\n  compat: collie runners compat [--runners a,b] [--live] [--report PATH]")
+    return 0
+
+
+def _runner_row(runner_reg, probe):
+    """One JSON row: what the spec declares, plus what this host observed."""
+    spec = runner_reg.SPECS.get(probe.key)
+    return {"key": probe.key, "label": spec.label if spec else probe.key,
+            "kind": spec.kind if spec else "", "phase": spec.phase if spec else 0,
+            "notes": list(spec.notes) if spec else [], "probe": probe.to_dict()}
+
+
+def _runners_probe(args):
+    from . import runner_registry as runner_reg
+    key = (getattr(args, "key", "") or "").strip()
+    if key and key not in runner_reg.SPECS:
+        # probe_all() skips a key it does not know, which is right for a list and
+        # wrong for a question about one runner: silence would read as "fine".
+        print("unknown runner %r; `collie runners` lists the keys that exist" % key,
+              file=sys.stderr)
+        return 2
+    live = bool(getattr(args, "live", False))
+    probes = list(runner_reg.probe_all(keys=[key] if key else None, live=live).values())
+    if getattr(args, "json", False):
+        print(json.dumps({"live": live, "probes": [p.to_dict() for p in probes]},
+                         ensure_ascii=False))
+        return 0
+    for p in probes:
+        print("%s  usable=%s installed=%s version=%s login=%s billing=%s/%s compat=%s" % (
+            p.key, "yes" if p.usable() else "no", "yes" if p.installed else "no",
+            p.version or "—", p.login, p.billing_class, p.billing_mode, p.compat))
+        if p.executable_path:
+            print("  path: %s" % p.executable_path)
+        if p.detail:
+            print("  %s" % p.detail)
+        if p.billing_evidence:
+            print("  billing evidence: %s" % json.dumps(p.billing_evidence, ensure_ascii=False))
+    return 0
+
+
+def _runners_compat(args):
+    from . import runner_compat
+    from . import runner_registry as runner_reg
+    keys = [k.strip() for k in (getattr(args, "runners", "") or "").split(",") if k.strip()]
+    report = runner_compat.run_matrix(keys or None, live=bool(getattr(args, "live", False)),
+                                      docker=bool(getattr(args, "docker", False)))
+    path = (getattr(args, "report", "") or "").strip()
+    if getattr(args, "json", False):
+        print(json.dumps(report, ensure_ascii=False))
+    else:
+        print(runner_compat.render_markdown(report))
+    if path:
+        json_path, md_path = runner_compat.write_report(report, path)
+        print("report -> %s\n          %s" % (json_path, md_path),
+              file=sys.stderr if getattr(args, "json", False) else sys.stdout)
+    # Also leave a copy where the registry looks on its own, so the capabilities
+    # this run just measured actually reach the selector.  Without it the loop
+    # never closes: `windows_native` stays unverified and Auto keeps refusing
+    # every external worker on this host.  `--report` remains the place to keep a
+    # dated artifact; this one is the machine's current answer.
+    if not getattr(args, "no_apply", False):
+        standing = runner_reg.default_compat_report_path()
+        try:
+            runner_compat.write_report(report, standing)
+            runner_reg.apply_compat_report(standing)
+            print("applied -> %s" % standing,
+                  file=sys.stderr if getattr(args, "json", False) else sys.stdout)
+        except Exception as exc:            # a report is evidence, not a gate
+            print("could not store the compat report at %s: %s: %s"
+                  % (standing, type(exc).__name__, exc), file=sys.stderr)
+    # A failed conformance cell is a real regression against a real CLI, so this is
+    # usable as a check. UNVERIFIED is not a failure: it means nobody looked (no
+    # --live), and conflating the two is exactly what the report exists to prevent.
+    return 1 if (report.get("totals") or {}).get(runner_compat.FAIL) else 0
 
 
 def cmd_dashboard(args):
@@ -2937,7 +3266,7 @@ def cmd_mcp(args):
     return 0
 
 
-CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
+CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "runners", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit",
         "activity", "recovery", "hooks", "supervisor", "automations", "library"}
@@ -3075,6 +3404,12 @@ def main(argv=None):
                     default=None, help="model reasoning effort (default: Auto by task)")
     pr.add_argument("--speed", choices=["standard", "fast"], default=None,
                     help="provider service tier; Fast keeps the same model and may cost more")
+    # The Worker axis: which agent carries out the task, as opposed to which Brain
+    # answers. `auto` is a request to CHOOSE from RUNNER_POOL, not a runner itself.
+    pr.add_argument("--runner", default=None,
+                    choices=[*_runner_option_keys(), "auto"],
+                    help="worker that carries out the task: collie (own harness, default) "
+                         "| auto | codex-exec | claude-code; see `collie runners`")
     pr.add_argument("--verify-command", default=None,
                     help="editable objective check for Test/Required (otherwise detect from repo)")
     pr.add_argument("--cwd", default=None); pr.add_argument("--project", default="demo")
@@ -3430,6 +3765,28 @@ def main(argv=None):
     prk.add_argument("--unset", action="store_true", help="remove the rule for --set's GLOB")
     prk.set_defaults(fn=lambda a: cmd_risk_set(a) if a.pattern else cmd_risk(a))
     ph = sub.add_parser("harnesses"); ph.set_defaults(fn=cmd_harnesses)
+
+    # `harnesses` (above) = the adapters collie is COMPARED against; `runners` = the
+    # workers collie can DELEGATE to. Same neighbourhood, opposite direction.
+    prn = sub.add_parser("runners",
+                         help="workers that can carry out a task: list | probe [KEY] | compat")
+    prn.add_argument("action", nargs="?", default="list",
+                     choices=["list", "probe", "compat"])
+    prn.add_argument("key", nargs="?", default="", help="runner key (probe)")
+    prn.add_argument("--live", action="store_true",
+                     help="also run each CLI's own status command (spends nothing, but "
+                          "it is the only evidence of which plan pays)")
+    prn.add_argument("--json", action="store_true", help="machine-readable output")
+    prn.add_argument("--runners", default="", metavar="A,B",
+                     help="compat: which runners to test (default: all)")
+    prn.add_argument("--docker", action="store_true",
+                     help="compat: declare the container runtime (arrives in phase 3)")
+    prn.add_argument("--report", default="", metavar="PATH",
+                     help="compat: write PATH.json and PATH.md")
+    prn.add_argument("--no-apply", action="store_true",
+                     help="compat: do not store the result where the selector reads it "
+                          "(by default the run updates what this host is known to support)")
+    prn.set_defaults(fn=cmd_runners)
 
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
 

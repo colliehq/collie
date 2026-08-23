@@ -556,6 +556,38 @@ def test_codex_rejects_any_login_status_other_than_exact_chatgpt(status):
     assert caught.value.reason == "codex_login_not_chatgpt"
 
 
+@pytest.mark.parametrize("alias", ["codex-exec", "codex-app-server"])
+def test_codex_exec_alias_uses_codex_cli_check(alias):
+    # The harness runner keys must land on the same ChatGPT check (and the same
+    # canonical receipt provider) as plain "codex", not on unsupported_provider.
+    runner = Runner("Logged in using ChatGPT\n")
+
+    receipt = check_subscription_guard(
+        alias, account_evidence=codex_evidence(), environ={}, runner=runner,
+        now_utc=NOW)
+
+    assert receipt["provider"] == "codex-cli"
+    assert receipt["verdict"] == "allow"
+    assert receipt["auth"] == {"status": "authenticated", "method": "ChatGPT"}
+    assert runner.calls == [("codex", "login", "status")]
+
+
+@pytest.mark.parametrize("alias", ["codex-exec", "codex-app-server"])
+def test_codex_aliases_inherit_codex_denials(alias):
+    # Aliasing must not open a laxer path: the codex evidence gate still runs,
+    # and it runs before any CLI is invoked.
+    runner = Runner("Logged in using ChatGPT\n")
+
+    with pytest.raises(SubscriptionGuardError) as caught:
+        check_subscription_guard(
+            alias, account_evidence=codex_evidence(credits_remaining=1),
+            environ={}, runner=runner, now_utc=NOW)
+
+    assert caught.value.reason == "codex_credits_remaining_must_be_zero"
+    assert caught.value.receipt["provider"] == "codex-cli"
+    assert runner.calls == []
+
+
 def test_command_failures_never_echo_stdout_or_stderr():
     secret = "secret-from-cli"
     runner = Runner(secret, returncode=2, stderr="stderr " + secret)

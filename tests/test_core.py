@@ -370,10 +370,17 @@ def test_every_agent_cli_is_resolved_on_path_before_exec():
     as "the other harness produced no patch" (a bogus 10:0, then a bogus 2:0). Fixing the call
     site in adapters.py did not fix the identical call in swe.py, so lock the CLASS: every place
     that execs an external agent CLI resolves argv[0] through shutil.which first.
+
+    The runner-selection layer widened the blast radius: `collie run --runner claude-code`
+    launches the same npm-shim CLIs from production code, not just from the benchmark
+    harness, so an unresolved argv[0] there would surface as "the worker produced nothing"
+    on a user's real run. Every module that can spawn an external agent CLI is enrolled.
     """
     import ast
-    from harness import swe, adapters
-    for mod in (swe, adapters):
+    from harness import swe, adapters, claude_code_runner, runner_registry, runner_compat
+    # runner_slice.py is deliberately absent: it drives runners through the AgentRunner
+    # interface and never spawns a process itself.
+    for mod in (swe, adapters, claude_code_runner, runner_registry, runner_compat):
         src = inspect.getsource(mod)
         assert "shutil.which" in src, "%s execs a CLI without resolving it on PATH" % mod.__name__
         tree = ast.parse(src)

@@ -24,7 +24,61 @@ onboarding when nothing is configured. Full help for any command: `collie <comma
 | `collie run "<task>" --stream-json` | Live NDJSON: tool · edit · repro-gate · receipt. |
 | `collie loop --goal "<g>" --until "<shell>"` | Iterate toward a goal; stop when the check exits 0. |
 | `collie pack "<task>" -n 3 --check "<shell>" --apply` | Best-of-N; keep only what passes. |
+| `collie run "<task>" --runner codex-exec` | Hand the task to an external coding harness as the worker. Collie still owns budget, approval, verification, the receipt, and cancellation. |
+| `collie runners` | What this machine can use as a worker: install state, version, login route, billing class, capabilities. |
 | `collie selftest` | $0 deterministic end-to-end (mock model, real tools). |
+
+## Choosing the worker (`--runner`)
+
+`--provider`/`--model` choose the **brain** — who thinks. `--runner` chooses the **worker** — who
+actually carries the task out: whose tool loop, whose sandbox, whose login. The default is
+`collie`, Collie's own harness, and it is also the only worker with the browser, desktop, MCP, and
+per-action approval tools.
+
+```bash
+collie run "add a regression test for the parser" --runner codex-exec
+collie run "tidy the docstrings in harness/ops.py" --runner claude-code
+collie run "…" --runner auto        # choose per task, but only inside RUNNER_POOL
+```
+
+| Value | Worker |
+|---|---|
+| `collie` | Collie's own harness. Default; also the fallback for every other value. |
+| `auto` | Choose per task from the members listed in `RUNNER_POOL`, and never from outside it. |
+| `codex-exec` | OpenAI Codex CLI (`codex exec --json`), under your existing `codex login`. |
+| `claude-code` | Claude Code (`claude -p`), under your existing `claude login`. |
+
+What does **not** change when you pick an external worker: the budget ceiling, the approval policy,
+the verification gate, the receipt, session persistence, and cancellation are all still Collie's.
+The worker saying it is done is not a completion signal — `verified` is written only by a host
+check that actually ran. What does change: the worker runs its own tools inside its own sandbox, so
+Collie cannot approve its individual actions, and its work is billed to *its* login.
+
+Persist a choice with `collie config RUNNER codex-exec`, and set the pool `auto` may draw from with
+`collie config RUNNER_POOL "collie,codex-exec"`. Listing an external worker in `RUNNER_POOL` is the
+consent to use its login and billing route; a worker that is not in the pool is never picked
+automatically, even when it is installed and logged in. An explicit `--runner` overrides both — and
+if the worker you named cannot run, the command exits with the reason instead of quietly using a
+different one. `--persona` and `--goal` are not supported with an external worker.
+
+## Inspecting workers (`collie runners`)
+
+| Command | What it does |
+|---|---|
+| `collie runners` | Table of every known worker: key, phase, installed, version, login, billing class, last compatibility result, caveats. |
+| `collie runners probe <key>` | One worker in detail. Read-only metadata: `shutil.which`, `--version`, whether a login file exists and when it expires. No network, no credential is read. |
+| `collie runners probe <key> --live` | Additionally ask the vendor CLI's own status command (`claude auth status --json`, `codex login status`) so the billing class is attested rather than guessed. |
+| `collie runners compat [--runners a,b] [--live] [--report PATH]` | Run the conformance matrix and write a dated JSON + Markdown report. |
+| Any of the above `--json` | Machine-readable output. |
+
+`compat` checks each worker on the same terms: probe shape, child-environment hygiene, CLI
+handshake and minimum version, frame parsing under malformed output, that the worker's own
+goal/scheduler control plane is disabled, and that its billing class is one Collie recognises.
+`--live` adds the columns that cost tokens — a real one-turn edit, a resume, a cancel, and a usage
+readback. Capabilities the latest report could not verify on this host are downgraded to unavailable
+rather than assumed, which is why the table describes your machine and not the design intent.
+
+See [Workers](runners.md) for the per-worker capability and boundary tables.
 
 ## Setup & configuration
 

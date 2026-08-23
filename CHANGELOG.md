@@ -30,6 +30,58 @@
   trace, patch, serial-run timing, and grader evidence before reporting paired,
   task-cluster-aware results.
 
+## v0.21.27 — External coding harnesses become workers Collie can hire
+
+- **Collie can now hand a task to another coding harness and stay the only control plane.**
+  `collie run "<task>" --runner codex-exec` and `--runner claude-code` carry the work out through
+  the vendor's own CLI, under that CLI's own login, while budget, approval policy, the verification
+  gate, the receipt, session persistence, and cancellation all remain Collie's. The worker's
+  natural-language "done" is not a completion signal: `verified` is still written only by an
+  executed host check, and a run whose worker declared success but whose check failed is still a
+  failed run. Process ownership goes through the same start gate and Job/process-group teardown the
+  benchmark runners already used, so a cancelled external worker leaves no surviving process tree.
+- **Worker is a separate axis from Brain, and it never moves your billing quietly.** `RUNNER`
+  chooses who carries out the task; `PROVIDER`/`MODEL` still choose who thinks. `RUNNER=auto` picks
+  only from the members you list in `RUNNER_POOL` — writing an external worker there *is* the
+  consent to use its login and billing route — and an explicit `--runner` that cannot run is an
+  error with a reason, never a silent substitution onto a different account. Every run records the
+  worker key, credential family, and billing class in its receipt. Prompts travel over stdin, the
+  child environment is stripped to an allowlist, and a run aborts before launch if an API key or
+  OAuth token in the parent environment would have redirected the worker onto metered billing.
+- **`collie runners` tells you what this machine can actually do.** The command lists every known
+  worker with its install state, version, login route, billing class, and declared capabilities;
+  `collie runners probe <key> --live` asks the vendor CLI's own status command; and
+  `collie runners compat` runs a conformance matrix (probe, environment hygiene, handshake, framing,
+  double-control, billing, plus live one-turn/resume/cancel/usage columns) and writes a dated
+  report. Capabilities a report could not verify on this host are downgraded rather than assumed,
+  so the capability table describes your machine and not the design document.
+- **The default path is unchanged, byte for byte.** With `RUNNER` left at `collie` and no
+  `--runner`, nothing probes an external CLI, no new subprocess starts, and the run takes exactly
+  the code path it took in 0.21.26.
+- **Measured against the real CLIs, which corrected three things the design got wrong.**
+  `codex exec` 0.149.0 rejects `--ask-for-approval` outright, so the policy rides on
+  `-c approval_policy="never"`; on Windows, `--ignore-user-config` also discards `[windows] sandbox`
+  and every write is then refused *while the process still exits 0*, so the launch line sets the
+  sandbox level explicitly. A worker turn that Codex refused on policy grounds and that changed
+  nothing is now reported as a failed turn instead of a clean one — silently banking it as progress
+  was the worst failure mode this layer could have had. `claude -p` reports no top-level model, so
+  the receipt names the most expensive entry of its per-model cost breakdown rather than leaving the
+  Brain line blank.
+- **The conformance matrix is believed, including when it says no.** `collie runners compat` stores
+  its result where the selector reads it back, so a capability this host failed to demonstrate is
+  downgraded for real. On this machine that immediately took `codex-exec` out of `auto`'s reach:
+  its one-turn and resume columns fail on Windows — writes are refused intermittently when it is
+  launched under Collie's process-tree owner — while `claude-code` passes all ten columns. Both are
+  still selectable explicitly; `auto` will not gamble on an unverified one.
+- **Interface in place, not yet wired (next release).** Mission, Pack, and the web GUI do not accept
+  a worker selection yet — the selection layer and the Mission code-slice entry point exist and are
+  tested, but the call sites still run Collie's own harness. `auto` currently ranks candidates on
+  pool order, declared capability fit, history, and billing preference only; live usage and quota
+  signals (rate-limit cooldowns, remaining plan allowance) are not yet fed into the choice.
+  Streaming, mid-turn steering, and routing an external worker's approval requests back to Collie's
+  gate are also not shipped: `codex exec` refuses approvals fail-closed and `claude -p` runs with an
+  allowlist that excludes Bash, which is why those two are constrained rather than trusted.
+
 ## v0.21.26 — Release gate reliability
 
 - Make the mission watchdog timing regression resilient to normal shared-CI

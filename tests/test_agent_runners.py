@@ -1,11 +1,14 @@
+import base64
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
 
 import pytest
 
+from harness import agent_runners, runner_env
 from harness.agent_runners import (
     CodexExecRunner,
     ProcessOutcome,
@@ -16,6 +19,35 @@ from harness.agent_runners import (
 
 
 THREAD = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+
+# Prefixes `assert_no_billing_override` refuses to start a Codex worker against.
+_CODEX_BILLING_PREFIXES = ("OPENAI_", "CODEX_", "AZURE_OPENAI_")
+
+
+@pytest.fixture(autouse=True)
+def _shell_without_codex_routing(monkeypatch):
+    """Run every case as if the developer's shell exported no Codex overrides.
+
+    `CodexExecRunner` refuses to start when the parent environment could re-bill
+    or re-route the turn.  That refusal is the point, and it is asserted head-on
+    by `test_billing_override_in_parent_env_refuses_to_start` — but leaving it
+    ambient would make this whole module go red on any machine that happens to
+    export OPENAI_API_KEY, which says nothing about the code under test.
+    """
+    for name in list(os.environ):
+        upper = name.upper()
+        if upper == "CODEX_HOME":  # selects the login file, not the payer
+            continue
+        if upper.startswith(_CODEX_BILLING_PREFIXES):
+            monkeypatch.delenv(name, raising=False)
+
+
+def _jwt(exp):
+    """A structurally valid JWT whose only readable claim is ``exp``."""
+    def chunk(value):
+        raw = json.dumps(value).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return "%s.%s.%s" % (chunk({"alg": "none"}), chunk({"exp": int(exp)}), "signature")
 
 
 def _jsonl(*events):
@@ -46,9 +78,9 @@ class FakeProcessRunner:
         self.outcomes = list(outcomes)
         self.calls = []
 
-    def run(self, argv, *, cwd, stdin_text, timeout_s, on_process):
+    def run(self, argv, *, cwd, stdin_text, timeout_s, on_process, env=None):
         self.calls.append({"argv": tuple(argv), "cwd": cwd, "stdin": stdin_text,
-                           "timeout": timeout_s})
+                           "timeout": timeout_s, "env": env})
         on_process(FakeProcess())
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
@@ -216,7 +248,7 @@ def test_cancel_current_kills_active_tree_and_marks_snapshot(monkeypatch, tmp_pa
     killed = []
 
     class BlockingRunner:
-        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process):
+        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process, env=None):
             proc = FakeProcess()
             on_process(proc)
             entered.set()
@@ -253,7 +285,7 @@ def test_process_exception_after_observed_mutation_requires_recovery(tmp_path):
     marker.write_text("before", encoding="utf-8")
 
     class RaisingRunner:
-        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process):
+        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process, env=None):
             on_process(FakeProcess())
             marker.write_text("after", encoding="utf-8")
             raise OSError("transport vanished")
@@ -350,7 +382,7 @@ def test_cancel_during_launch_waits_for_gate_and_prevents_release(monkeypatch, t
     killed = []
 
     class DelayedRegistrationRunner:
-        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process):
+        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process, env=None):
             from harness.agent_runners import plat
             launch_entered.set()
             assert permit_registration.wait(3)
@@ -440,3 +472,297 @@ def test_windows_job_termination_waits_for_zero_active_processes(monkeypatch):
 
     assert job.terminate_and_wait(exit_code=9, timeout_s=1) is True
     assert queries == [2, 1, 0]
+
+
+def test_run_passes_env_to_popen(tmp_path, monkeypatch):
+    """The child gets exactly the mapping we hand the transport — and only then.
+
+    The environment is set on the *ownership gate*, which spawns the target
+    without an env of its own, so proving it on the target proves it for both.
+    ``env=None`` has to keep inheriting, because that is what every caller
+    predating the selection layer relies on.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-key-must-not-leak")
+    dump = tmp_path / "env.json"
+    script = ("import json, os; "
+              "open(%r, 'w', encoding='utf-8').write(json.dumps(dict(os.environ)))"
+              % str(dump))
+
+    inherited = SubprocessRunner().run(
+        [sys.executable, "-c", script], cwd=str(tmp_path), stdin_text="ignored",
+        timeout_s=30, on_process=lambda _proc: None)
+    assert inherited.exit_code == 0
+    assert json.loads(dump.read_text(encoding="utf-8")).get(
+        "OPENAI_API_KEY") == "sk-parent-key-must-not-leak"
+
+    env, receipt = runner_env.child_env("codex", extra={"COLLIE_RUNNER_TEST": "kept"})
+    isolated = SubprocessRunner().run(
+        [sys.executable, "-c", script], cwd=str(tmp_path), stdin_text="ignored",
+        timeout_s=30, on_process=lambda _proc: None, env=env)
+
+    assert isolated.exit_code == 0
+    seen = json.loads(dump.read_text(encoding="utf-8"))
+    assert seen.get("COLLIE_RUNNER_TEST") == "kept"
+    assert "OPENAI_API_KEY" not in seen
+    assert "OPENAI_API_KEY" in receipt["stripped"]
+    # Names only: a receipt that quoted the value would be the leak it documents.
+    assert "sk-parent-key-must-not-leak" not in json.dumps(receipt)
+
+
+def test_start_argv_hardened_no_ephemeral(tmp_path):
+    """The host's ~/.codex/config.toml must not reach a delegated worker."""
+    process = FakeProcessRunner(_complete())
+    runner = CodexExecRunner(process_runner=process, snapshotter=Snapshots("a", "a"))
+
+    runner.start("harden me", str(tmp_path))
+
+    argv = process.calls[0]["argv"]
+    for flag in ("--ignore-user-config", "--ignore-rules", "--strict-config"):
+        assert flag in argv, flag
+    # Approval policy rides on -c, never on --ask-for-approval: `codex exec`
+    # 0.149.0 rejects that flag ("unexpected argument") and would exit 2 before
+    # reading the prompt.  Verified against the real CLI on 2026-08-22.
+    assert "--ask-for-approval" not in argv
+    assert 'approval_policy="never"' in argv
+    assert 'web_search="disabled"' in argv
+    assert argv[argv.index("--sandbox") + 1] == "workspace-write"
+    # --ephemeral would discard the thread that `resume` is addressed to.
+    assert "--ephemeral" not in argv
+    assert argv[-1] == "-"
+
+
+def test_start_argv_sets_windows_sandbox_level(tmp_path, monkeypatch):
+    """--ignore-user-config drops [windows] sandbox, which defaults to Disabled.
+
+    With no platform sandbox to enforce the boundary, Codex rejects every patch
+    ("writing is blocked by read-only sandbox") *and still exits 0*, so the only
+    symptom is a turn that changed nothing.  Measured on 0.149.0 / Windows 11.
+    """
+    monkeypatch.setattr(agent_runners.plat, "is_windows", lambda: True)
+    process = FakeProcessRunner(_complete())
+    runner = CodexExecRunner(process_runner=process, snapshotter=Snapshots("a", "a"))
+
+    runner.start("harden me", str(tmp_path))
+
+    argv = process.calls[0]["argv"]
+    assert 'windows.sandbox="unelevated"' in argv
+    # The private desktop cannot be created from the start gate (CREATE_NO_WINDOW,
+    # no console), and Codex degrades to refusing writes rather than erroring.
+    assert "windows.sandbox_private_desktop=false" in argv
+
+    monkeypatch.setattr(agent_runners.plat, "is_windows", lambda: False)
+    posix = FakeProcessRunner(_complete())
+    CodexExecRunner(process_runner=posix, snapshotter=Snapshots("a", "a")).start(
+        "harden me", str(tmp_path))
+    # Seatbelt/bwrap are unconditional on POSIX; forcing a Windows-only key
+    # there would trip --strict-config.
+    assert not [a for a in posix.calls[0]["argv"] if "windows.sandbox" in a]
+
+
+def test_policy_refused_turn_is_not_a_clean_settle(tmp_path):
+    """A turn that changed nothing because policy refused every write is a failure.
+
+    Codex logs the refusal on stderr and still exits 0 with `turn.completed`, so
+    a naive reading reports success for a turn that accomplished nothing -- and a
+    Mission slice would bank it as progress.  Reproduced against the real CLI on
+    Windows 11 / 0.149.0 on 2026-08-22.
+    """
+    outcome = _complete(text="I could not modify hello.py")
+    refused = ProcessOutcome(
+        stdout=outcome.stdout,
+        stderr=("2026-08-22T23:06:36Z ERROR codex_core::tools::router: error=patch "
+                "rejected: writing is blocked by read-only sandbox; rejected by "
+                "user approval settings\n"),
+        exit_code=0)
+    process = FakeProcessRunner(refused)
+    # Same digest before and after: the workspace really is untouched.
+    runner = CodexExecRunner(process_runner=process,
+                             snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("edit the file", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert snapshot.mutated is False
+    assert "refused every write" in snapshot.error
+    assert "read-only sandbox" in snapshot.error
+    # Nothing was written, so there is nothing to reconcile before a retry.
+    assert snapshot.recovery_required is False
+
+
+def test_ordinary_tool_error_still_settles(tmp_path):
+    """Only Codex's own policy wording counts; recoverable tool errors do not.
+
+    `apply_patch verification failed` is a routine miss that the model retries in
+    the same turn, so treating it as a refusal would fail healthy runs.
+    """
+    outcome = _complete(text="fixed it on the second try")
+    noisy = ProcessOutcome(
+        stdout=outcome.stdout,
+        stderr=("ERROR codex_core::tools::router: error=apply_patch verification "
+                "failed: Failed to find expected lines\n"),
+        exit_code=0)
+    runner = CodexExecRunner(process_runner=FakeProcessRunner(noisy),
+                             snapshotter=Snapshots("before", "after"))
+
+    snapshot = runner.start("edit the file", str(tmp_path))
+
+    assert snapshot.settled is True
+    assert snapshot.error == ""
+
+
+def test_resume_argv_keeps_sandbox_override(tmp_path):
+    """`exec resume` has no --sandbox flag, so both bounds ride on -c."""
+    process = FakeProcessRunner(_complete(), _complete(thread=False))
+    runner = CodexExecRunner(process_runner=process,
+                             snapshotter=Snapshots("a", "a", "a", "a"))
+
+    first = runner.start("first", str(tmp_path))
+    runner.resume(first, "second")
+
+    argv = process.calls[1]["argv"]
+    assert argv[:4] == ("codex", "exec", "resume", "--json")
+    assert 'sandbox_mode="workspace-write"' in argv
+    assert 'web_search="disabled"' in argv
+    assert 'approval_policy="never"' in argv
+    # Host-config isolation must survive the resume too, or a thread silently
+    # regains the user's MCP servers half way through.  Verified accepted by
+    # `codex exec resume` 0.149.0 on 2026-08-22.
+    assert "--ignore-user-config" in argv
+    assert "--ignore-rules" in argv
+    assert "--ephemeral" not in argv
+    assert argv[-2:] == (THREAD, "-")
+
+
+def test_start_uses_isolated_child_env_and_records_names_only(tmp_path, monkeypatch):
+    """The worker reads its own ~/.codex login, never the shell's credential.
+
+    ANTHROPIC_API_KEY rather than OPENAI_API_KEY: an OpenAI key in the parent is
+    a *billing route* for this family and refuses the launch outright (see
+    `test_billing_override_in_parent_env_refuses_to_start`).  A foreign vendor's
+    key cannot misbill a Codex run, so stripping it silently is the whole answer
+    — and stripping is what this case is about.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-not-for-the-worker")
+    process = FakeProcessRunner(_complete())
+    runner = CodexExecRunner(process_runner=process, snapshotter=Snapshots("a", "a"))
+
+    runner.start("go", str(tmp_path))
+
+    env = process.calls[0]["env"]
+    assert env is not None and "ANTHROPIC_API_KEY" not in env
+    assert env.get("NO_COLOR") == "1"
+    assert "PATH" in env
+    assert "ANTHROPIC_API_KEY" in runner.last_env_receipt["stripped"]
+    assert "sk-not-for-the-worker" not in json.dumps(runner.last_env_receipt)
+
+
+def test_billing_override_in_parent_env_refuses_to_start(tmp_path, monkeypatch):
+    """Refuse before a process exists, not after an unattributable run."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://proxy.invalid/v1")
+    process = FakeProcessRunner(_complete())
+    runner = CodexExecRunner(process_runner=process, snapshotter=Snapshots("a", "a"))
+
+    with pytest.raises(runner_env.BillingOverrideError, match="OPENAI_BASE_URL"):
+        runner.start("go", str(tmp_path))
+
+    assert process.calls == []
+
+
+def test_cancel_for_delegates(tmp_path):
+    """The registry cancels by key; this runner owns one turn, so key is noise."""
+    runner = CodexExecRunner(process_runner=FakeProcessRunner(),
+                             snapshotter=lambda _p: {"tree_digest": "same",
+                                                     "snapshot_complete": True})
+    calls = []
+    runner.cancel_current = lambda: (calls.append("cancelled"), True)[1]
+
+    assert runner.cancel_for("codex-exec") is True
+    assert runner.cancel_for() is True
+    assert calls == ["cancelled", "cancelled"]
+
+
+def test_probe_reads_metadata_only(tmp_path, monkeypatch):
+    """which + one --version + the shape of auth.json.  No token, no network."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    secret = _jwt(time.time() + 3600)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {"access_token": secret, "refresh_token": "rt-secret-value",
+                   "id_token": "id-secret-value"},
+        "OPENAI_API_KEY": "sk-secret-value",
+    }), encoding="utf-8")
+    fake_cli = str(tmp_path / "codex.cmd")
+    monkeypatch.setattr(agent_runners.shutil, "which",
+                        lambda name: fake_cli if name == "codex" else None)
+
+    spawned = []
+
+    def fake_run(argv, **kwargs):
+        spawned.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "codex-cli 0.149.0\n", "")
+
+    monkeypatch.setattr(agent_runners.subprocess, "run", fake_run)
+
+    probe = CodexExecRunner().probe(codex_home=str(codex_home))
+
+    # `codex login status` is a live probe (it can hit the network); the registry
+    # owns it.  --version is the only child this path is allowed to start.
+    assert spawned == [(fake_cli, "--version")]
+    assert probe.installed is True
+    assert probe.executable_path == fake_cli
+    assert probe.version == "codex-cli 0.149.0"
+    assert probe.login == "ok"
+    assert probe.usable() is True
+    # An OAuth login is not evidence of *which* plan pays; --live decides that.
+    assert probe.billing_class == "unknown"
+    assert probe.billing_evidence["login_kind"] == "chatgpt"
+    assert probe.billing_evidence["expires_at"] > time.time()
+    serialized = json.dumps(probe.to_dict())
+    for value in (secret, "rt-secret-value", "id-secret-value", "sk-secret-value"):
+        assert value not in serialized
+
+
+def test_probe_reports_missing_and_expired_logins(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_runners.shutil, "which", lambda _name: None)
+    absent = CodexExecRunner().probe(codex_home=str(tmp_path / "nope"))
+    assert absent.installed is False and absent.usable() is False
+    assert "not installed" in absent.detail
+
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": _jwt(time.time() - 60)}}),
+        encoding="utf-8")
+    monkeypatch.setattr(agent_runners.shutil, "which", lambda _name: str(tmp_path / "codex"))
+    monkeypatch.setattr(agent_runners, "_cli_version", lambda _exe: ("codex-cli 0.149.0", ""))
+
+    # No refresh token, so the next turn would stop at a login prompt with the
+    # prompt already delivered.  A refresh token makes the same file usable.
+    expired = CodexExecRunner().probe(codex_home=str(codex_home))
+    assert expired.login == "expired" and expired.usable() is False
+
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": _jwt(time.time() - 60),
+                               "refresh_token": "rt"}}), encoding="utf-8")
+    assert CodexExecRunner().probe(codex_home=str(codex_home)).login == "ok"
+
+
+def test_usage_reads_token_usage_alias_and_cache_writes(tmp_path):
+    """Codex 0.149.0 may spell the block `token_usage`; cache writes are billed."""
+    events = [
+        {"type": "thread.started", "thread_id": THREAD},
+        {"type": "turn.started"},
+        {"type": "turn.completed",
+         "token_usage": {"input_tokens": 9, "cached_input_tokens": 3,
+                         "output_tokens": 4, "reasoning_output_tokens": 2,
+                         "cache_write_input_tokens": 7}},
+    ]
+    process = FakeProcessRunner(ProcessOutcome(stdout=_jsonl(*events), exit_code=0))
+    runner = CodexExecRunner(process_runner=process, snapshotter=Snapshots("a", "a"))
+
+    snapshot = runner.start("count me", str(tmp_path))
+
+    assert snapshot.usage == {"input_tokens": 9, "cached_input_tokens": 3,
+                              "output_tokens": 4, "reasoning_output_tokens": 2,
+                              "cache_write_input_tokens": 7}
+    assert snapshot.settled is True

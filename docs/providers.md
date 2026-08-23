@@ -76,3 +76,25 @@ COLLIE_PROVIDER=deepseek collie                          # env override wins for
 
 Each provider has a sensible default model; override with `--model` or in Settings. The web GUI's
 model picker lists what each connected provider exposes.
+
+## Provider is the brain, not the worker
+
+Everything on this page selects the **brain**: which model does the thinking. It does not select
+the **worker**: whose agent loop, tools, sandbox, and approval model actually carry the task out.
+Those are two different axes, and Collie keeps them separate on purpose.
+
+| | Setting | Chosen by | Question it answers |
+|---|---|---|---|
+| Brain | `PROVIDER` / `MODEL` | `--provider`, `--model` | Which model reasons about the task, and who is billed for those tokens. |
+| Worker | `RUNNER` / `RUNNER_POOL` | `--runner` | Which harness runs the loop — Collie's own, or an external coding CLI such as `codex exec` or `claude -p`. |
+
+The default worker is `collie`, Collie's own harness, and with that default the brain settings above
+are the whole story: Collie drives its own tool loop with the provider you picked. Choose an
+external worker and the relationship inverts — that CLI brings its own model, its own login, and its
+own tools, so `PROVIDER`/`MODEL` no longer decide who thinks, while Collie keeps the budget, the
+approval policy, the verification gate, the receipt, and cancellation.
+
+Two routes on this page shell out to a vendor CLI and are still *brains*, not workers:
+`claude-cli` is a single-inference compatibility route through `claude -p` inside Collie's own loop,
+and it is unrelated to the `claude-code` **worker**, which hands Claude Code the whole task and lets
+it run its own loop. See [Workers](runners.md).

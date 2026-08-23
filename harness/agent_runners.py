@@ -8,6 +8,19 @@ The first implementation wraps Codex's documented non-interactive JSONL
 interface.  Prompts are sent on stdin (never exposed in the process argv), the
 workspace is bounded by Codex's ``workspace-write`` sandbox, and an interrupted
 turn that may have changed files is *not* silently replayed.
+
+Two things the host machine would otherwise contribute to a worker are cut off
+here rather than trusted:
+
+* **The user's Codex configuration.**  ``~/.codex/config.toml`` can register MCP
+  servers, enable web search and relax the sandbox.  It is a document about the
+  user's own interactive sessions, and nobody reviewed it for the task being
+  delegated, so ``start`` passes the ``--ignore-*``/``--strict-config`` family
+  and pins ``web_search`` off (see :meth:`CodexExecRunner.start`).
+* **The parent environment.**  It routinely carries an API key or a base-URL
+  override belonging to a *different* account than the one Collie probed.  The
+  child gets :func:`harness.runner_env.child_env` and nothing else, and a parent
+  variable that would re-route the billing refuses the launch outright.
 """
 from __future__ import annotations
 
@@ -21,9 +34,9 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from . import plat
+from . import plat, runner_env, runner_specs
 from .verification import workspace_snapshot
 
 
@@ -31,12 +44,86 @@ _THREAD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _TOKEN_SECRET = re.compile(
     r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+|\b(?:sk|sess)-[A-Za-z0-9_-]{12,}\b"
 )
+# Codex's `turn.completed` usage block (codex-rs exec_events.rs).  The keys are
+# accumulated verbatim and only translated into Collie's own accounting shape by
+# `runner_specs.usage_to_collie`, so a name Codex renames shows up as a missing
+# key (None) rather than as a silent zero.
 _USAGE_KEYS = (
     "input_tokens",
     "cached_input_tokens",
     "output_tokens",
     "reasoning_output_tokens",
+    # Cache *writes* are billed separately from cache reads.  Omitting this key
+    # made a cache-priming turn look free.
+    "cache_write_input_tokens",
 )
+
+
+# Codex's own wording for a write it refused on policy grounds, copied from
+# `codex-rs/core/src/safety.rs` (PATCH_REJECTED_*_REASON).  Matching Codex's
+# text rather than a guess keeps this from firing on ordinary tool errors such
+# as "apply_patch verification failed", which the model routinely recovers from.
+_POLICY_REFUSALS = (
+    "rejected by user approval settings",
+    "blocked by read-only sandbox",
+    # execpolicy refusing a command outright, e.g.
+    #   exec_command failed ...: CreateProcess { message: "Rejected(\"... rejected:
+    #   blocked by policy\")" }
+    # which `--ignore-rules` can produce for an ordinary shell call.
+    "blocked by policy",
+)
+
+
+def _policy_refusal(stderr: str) -> str:
+    """Return the first policy-refusal line Codex logged, or "" if there is none."""
+    for line in (stderr or "").splitlines():
+        lowered = line.lower()
+        if any(marker in lowered for marker in _POLICY_REFUSALS):
+            return _clean_error(line.strip(), limit=300)
+    return ""
+
+
+def _windows_sandbox_override() -> list[str]:
+    """Pick a Windows sandbox level explicitly, because the default rejects writes.
+
+    Codex only auto-approves a patch when it can prove a platform sandbox is
+    enforcing the workspace boundary (``core/src/safety.rs`` ->
+    ``get_platform_sandbox(windows_sandbox_level != Disabled)``).  On Windows
+    that level comes from ``[windows] sandbox`` in ``~/.codex/config.toml`` and
+    defaults to ``Disabled`` -- so the moment we pass ``--ignore-user-config``
+    (which we must, to keep the host's MCP servers out of a Collie worker) every
+    write is rejected with "writing is blocked by read-only sandbox" *while the
+    process still exits 0*.  Measured on 0.149.0 / Windows 11 on 2026-08-22: the
+    same prompt silently changed nothing without this override and applied its
+    patch with it.
+
+    ``unelevated`` is the restricted-token sandbox, which needs no administrator
+    setup; ``elevated`` would additionally require a one-time admin install, so
+    it is never chosen on the user's behalf.  POSIX has Seatbelt/bwrap available
+    unconditionally and needs no override.
+
+    ``sandbox_private_desktop`` then has to be turned off, and that one is
+    subtle.  Codex defaults it on, so the sandboxed child gets its own window
+    station and desktop.  Collie launches every agent through a start gate with
+    ``CREATE_NO_WINDOW`` and pipes for stdio -- there is no console and no
+    interactive desktop to derive one from -- and the sandbox quietly degrades
+    to refusing every write instead of failing loudly.  Measured on Windows 11 /
+    0.149.0 on 2026-08-22: identical argv and environment, run as a direct child
+    it applied its patch, run under the gate it reported "the workspace is
+    read-only" and changed nothing; adding this one override made the same run
+    write the file.  Collie's Job Object already owns the process tree, so the
+    private desktop was never what bounded the worker.
+    """
+    if not plat.is_windows():
+        return []
+    return ["-c", 'windows.sandbox="unelevated"',
+            "-c", "windows.sandbox_private_desktop=false"]
+
+# Codex 0.149.0 is not consistent about the name of the usage block on
+# `turn.completed`: older builds emit `usage`, newer ones `token_usage`.  Read
+# both rather than pick one — the cost of guessing wrong is usage that silently
+# reads as zero, which is the one failure this layer exists to prevent.
+_USAGE_CONTAINERS = ("usage", "token_usage")
 
 
 # The target agent must not get even one instruction byte until the parent has
@@ -191,7 +278,16 @@ class ProcessOutcome:
 
 class ProcessRunner(Protocol):
     def run(self, argv: Sequence[str], *, cwd: str, stdin_text: str,
-            timeout_s: float, on_process: Callable[[Any], bool | None]) -> ProcessOutcome:
+            timeout_s: float, on_process: Callable[[Any], bool | None],
+            env: Mapping[str, str] | None = None) -> ProcessOutcome:
+        """Run ``argv`` to completion under caller-owned cancellation.
+
+        ``env`` is the *complete* environment for the child (as built by
+        :func:`harness.runner_env.child_env`), not a set of additions.  ``None``
+        means "inherit this process's environment", which is what every caller
+        did before the selection layer existed and is kept so an embedder's own
+        transport keeps working unchanged.
+        """
         ...
 
 
@@ -306,16 +402,26 @@ class SubprocessRunner:
     """Killable, shell-free subprocess transport used in production."""
 
     def run(self, argv: Sequence[str], *, cwd: str, stdin_text: str,
-            timeout_s: float, on_process: Callable[[Any], bool | None]) -> ProcessOutcome:
+            timeout_s: float, on_process: Callable[[Any], bool | None],
+            env: Mapping[str, str] | None = None) -> ProcessOutcome:
         target_argv = [str(item) for item in argv]
         if not target_argv or not all(target_argv):
             raise ValueError("agent argv must contain non-empty strings")
         group_kwargs = plat.new_group_kwargs()
+        # The environment goes on the *gate*, not on the target: the gate spawns
+        # the target with no env= of its own, so the target inherits exactly this
+        # mapping.  Setting it here rather than inside `_START_GATE_SCRIPT` means
+        # the credential-stripping applies to the gate interpreter too, and there
+        # is only one place where a name could leak through.
+        #
+        # `None` keeps the pre-selection-layer behaviour byte for byte: Popen
+        # inherits the parent environment when env is not passed at all.
+        child_kwargs = {} if env is None else {"env": dict(env)}
         proc = subprocess.Popen(
             [sys.executable, "-I", "-c", _START_GATE_SCRIPT],
             cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-            **group_kwargs, **plat.no_window_kwargs())
+            **child_kwargs, **group_kwargs, **plat.no_window_kwargs())
         proc._collie_tree_lock = threading.RLock()
         if not plat.is_windows() and group_kwargs.get("start_new_session"):
             # Capture the group while the trusted gate leader is alive.  Once it
@@ -400,14 +506,20 @@ class CodexExecRunner:
     """
 
     key = "codex-exec"
+    credential_family = "codex"
 
     def __init__(self, *, executable: str = "codex", model: str = "",
                  process_runner: ProcessRunner | None = None,
                  snapshotter: Callable[[str], dict[str, Any]] = workspace_snapshot,
                  default_timeout_s: float = 900.0, max_events: int = 2_000,
-                 max_event_chars: int = 128_000):
+                 max_event_chars: int = 128_000, env_policy: str = "codex"):
         if default_timeout_s <= 0:
             raise ValueError("default_timeout_s must be positive")
+        # Validate the policy name now: a typo that only surfaced at launch time
+        # would strand a half-built Mission slice instead of failing the caller
+        # that got the name wrong.
+        runner_env.allowlist(env_policy)
+        self.env_policy = env_policy
         self.executable = executable
         self.model = model
         self.process_runner = process_runner or SubprocessRunner()
@@ -415,6 +527,9 @@ class CodexExecRunner:
         self.default_timeout_s = float(default_timeout_s)
         self.max_events = max(1, int(max_events))
         self.max_event_chars = max(1_024, int(max_event_chars))
+        # {"allowed": [names], "stripped": [names]} for the most recent turn —
+        # names only, so the caller can copy it straight into a run receipt.
+        self.last_env_receipt: dict[str, list[str]] = {"allowed": [], "stripped": []}
         self._run_lock = threading.Lock()
         self._active_lock = threading.Lock()
         self._active_condition = threading.Condition(self._active_lock)
@@ -425,8 +540,34 @@ class CodexExecRunner:
     def start(self, prompt: str, workspace: str, *, timeout_s: float | None = None
               ) -> RunnerSnapshot:
         root = _workspace(workspace)
+        # Every flag after --cd exists to stop the *host's* Codex configuration
+        # from reaching a worker.  `~/.codex/config.toml` is a user document: it
+        # can register MCP servers, enable web_search, add project trust rules
+        # and set a different default sandbox, and none of that was reviewed for
+        # the task Collie is about to hand over.
+        #   --ignore-user-config  ignore ~/.codex/config.toml entirely
+        #   --ignore-rules        ignore project/user rule files (AGENTS.md-style)
+        #   --strict-config       an unparseable/unknown config key is an error,
+        #                         not a shrug — a silent fallback here would put
+        #                         the worker back on the host's defaults
+        #   -c approval_policy=…  exec cannot answer approvals anyway; saying so
+        #                         explicitly makes it fail closed instead of
+        #                         inheriting an on-request policy that blocks.
+        #                         NOTE: this must be a `-c` override, not the
+        #                         `--ask-for-approval` flag — `codex exec`
+        #                         0.149.0 rejects that flag outright ("error:
+        #                         unexpected argument '--ask-for-approval'"),
+        #                         which would make every start exit 2.
+        #   -c web_search=…       the sandbox bounds the filesystem, not the
+        #                         network; a task can otherwise pull in text that
+        #                         nobody in this run ever saw
+        # `--ephemeral` is deliberately NOT passed: it discards the thread, and
+        # `resume` needs the thread id that `thread.started` reports.
         argv = [self._executable(), "exec", "--json", "--sandbox", "workspace-write",
-                "--cd", root]
+                "--cd", root, "--ignore-user-config", "--ignore-rules",
+                "--strict-config", "-c", 'approval_policy="never"',
+                "-c", 'web_search="disabled"']
+        argv += _windows_sandbox_override()
         if self.model:
             argv += ["--model", self.model]
         argv.append("-")
@@ -447,9 +588,19 @@ class CodexExecRunner:
             raise ValueError("snapshot has no safe Codex thread id")
         # `resume` does not expose the top-level --sandbox flag.  An explicit
         # config override keeps the resumed turn at the same workspace-write
-        # boundary even if the user's global default later changes.
-        argv = [self._executable(), "exec", "resume", "--json", "-c",
-                'sandbox_mode="workspace-write"']
+        # boundary even if the user's global default later changes; the same
+        # argument applies to web_search, which `~/.codex/config.toml` can turn
+        # on for every invocation.  `--ignore-user-config`/`--ignore-rules` were
+        # verified against 0.149.0 on 2026-08-22 (resume returned the same
+        # thread id and applied its patch), so the resumed turn gets the same
+        # host-config isolation as the first one rather than silently falling
+        # back to the user's MCP servers and rules half way through a thread.
+        argv = [self._executable(), "exec", "resume", "--json",
+                "--ignore-user-config", "--ignore-rules",
+                "-c", 'sandbox_mode="workspace-write"',
+                "-c", 'approval_policy="never"',
+                "-c", 'web_search="disabled"']
+        argv += _windows_sandbox_override()
         if self.model:
             argv += ["--model", self.model]
         argv += [snapshot.thread_id, "-"]
@@ -477,6 +628,62 @@ class CodexExecRunner:
         return _terminate_owned_process(
             proc, timeout_s=max(0.0, deadline - time.monotonic()))
 
+    def cancel_for(self, key: str = "") -> bool:
+        """Cancel this runner's active turn, whatever ``key`` the caller holds.
+
+        The registry cancels by runner key because a caller that only has a
+        selection decision has nothing else to name a run with.  This runner owns
+        at most one turn at a time (``_run_lock``), so the instance *is* the
+        answer and ``key`` carries no additional information — it is accepted and
+        ignored rather than validated, because refusing a mismatched key would
+        turn "cancel everything" into a silent no-op on exactly the runner the
+        user meant.  Multi-session runners added later must key their own table.
+        """
+        return self.cancel_current()
+
+    def probe(self, *, now: float | None = None, codex_home: str | None = None,
+              ) -> runner_specs.RunnerProbe:
+        """Report what is true about the Codex CLI on this host — metadata only.
+
+        Read-only and offline by construction: ``shutil.which``, one
+        ``codex --version``, and the *shape* of ``~/.codex/auth.json``.  The
+        access token is passed to :func:`harness.ops._jwt_exp`, which decodes the
+        unsigned ``exp`` claim; neither the token nor any other claim is read,
+        stored or returned.
+
+        Deliberately **not** here: ``codex login status``.  That is a live probe
+        (it can hit the network and it re-reads the login), so it belongs to the
+        registry's ``--live`` path, which is also where ``billing_class`` is
+        decided.  A metadata-only probe of an OAuth login therefore reports
+        ``billing_class="unknown"``: "signed in" is not evidence of *which* plan
+        pays, and pretending otherwise is exactly the optimism the no-paid-overage
+        rules exist to refuse.
+        """
+        now = time.time() if now is None else float(now)
+        home = codex_home or os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+        auth_path = os.path.join(home, "auth.json")
+        resolved = shutil.which(self.executable) or ""
+        if not resolved:
+            return runner_specs.RunnerProbe(
+                key=self.key, installed=False, probed_at=now,
+                detail="the Codex CLI (%s) is not installed or not on PATH; "
+                       "install it or pass an absolute path" % self.executable)
+
+        version, version_error = _cli_version(resolved)
+        login, login_detail, evidence = _codex_login_state(auth_path, now)
+        billing_class = "unknown"
+        if evidence.get("login_kind") == "api-key":
+            # An API key in auth.json is a structural fact about the file, not a
+            # reading of its value: that login is metered per request whatever
+            # plan the same account also has.
+            billing_class = "api_metered"
+        return runner_specs.RunnerProbe(
+            key=self.key, installed=True, executable_path=resolved, version=version,
+            login=login, billing_class=billing_class,
+            billing_mode=runner_specs.BILLING_MODE_OF.get(billing_class, "unconfigured"),
+            billing_evidence=evidence, probed_at=now,
+            detail=version_error or login_detail)
+
     def _executable(self) -> str:
         # Resolve npm/installer shims now, but permit an explicit absolute path.
         # Fake process runners intentionally do not need a real CLI on PATH.
@@ -493,6 +700,16 @@ class CodexExecRunner:
         timeout = self.default_timeout_s if timeout_s is None else float(timeout_s)
         if timeout <= 0:
             raise ValueError("timeout_s must be positive")
+        # Refuse *before* a process exists.  An OPENAI_BASE_URL or CODEX_API_KEY
+        # in the parent shell would silently re-route or re-bill this turn, and
+        # the operator unsetting it is cheaper than anyone reconstructing which
+        # account paid.  Names only ever leave this call, never values.
+        runner_env.assert_no_billing_override(os.environ, self.credential_family)
+        # The complete child environment, not a set of additions: the worker gets
+        # the allowlist and nothing else, so it reads its own ~/.codex login
+        # rather than a credential Collie happened to be started with.
+        env, env_receipt = runner_env.child_env(self.env_policy)
+        self.last_env_receipt = env_receipt
         if not self._run_lock.acquire(blocking=False):
             raise RuntimeError("this Codex runner already has an active turn")
 
@@ -523,7 +740,7 @@ class CodexExecRunner:
             try:
                 outcome = self.process_runner.run(
                     tuple(argv), cwd=workspace, stdin_text=prompt,
-                    timeout_s=timeout, on_process=register)
+                    timeout_s=timeout, on_process=register, env=env)
                 if not isinstance(outcome, ProcessOutcome):
                     raise TypeError("process runner must return ProcessOutcome")
             except Exception as exc:  # represented in state; Mission decides retry policy
@@ -617,6 +834,19 @@ class CodexExecRunner:
             error = _clean_error(outcome.stderr) or "Codex exited without turn.completed"
 
         mutated, complete = _mutation(before, after)
+        if settled and complete and not mutated and _policy_refusal(outcome.stderr):
+            # Codex reports a policy-refused write on stderr and then finishes the
+            # turn normally: exit 0, `turn.completed`, no error event.  Reported
+            # verbatim that is a turn which "succeeded" while changing nothing,
+            # and a Mission slice would count it as progress.  Observed on
+            # Windows 11 / 0.149.0 on 2026-08-22, where the same argv wrote the
+            # file when Codex was a direct child but had every patch refused
+            # under this runner's process-tree owner.  The same shape appears
+            # whenever the effective sandbox is read-only or the project is not
+            # trusted, so treat a refused-and-unchanged turn as a failed one.
+            settled = False
+            error = ("Codex refused every write under its own sandbox policy and "
+                     "the workspace is unchanged: " + _policy_refusal(outcome.stderr))
         abnormal = not settled
         recovery = abnormal and (mutated or (process_started and not complete))
         return RunnerSnapshot(
@@ -689,13 +919,24 @@ def _merge_usage(prior: dict[str, int], events: Sequence[RunnerEvent]) -> dict[s
     for event in events:
         if event.type != "turn.completed":
             continue
-        raw = event.payload.get("usage") or {}
-        if not isinstance(raw, dict):
-            continue
-        for key in _USAGE_KEYS:
-            value = raw.get(key, 0)
-            if isinstance(value, (int, float)) and value >= 0:
-                usage[key] = usage.get(key, 0) + int(value)
+        for container in _USAGE_CONTAINERS:
+            raw = event.payload.get(container)
+            if not isinstance(raw, dict) or not raw:
+                continue
+            for key in _USAGE_KEYS:
+                if key not in raw:
+                    # Absent stays absent.  `runner_specs.usage_to_collie` reads
+                    # a missing key as None and a present one as a count, so
+                    # defaulting to 0 here would turn "Codex never told us how
+                    # many cache writes there were" into "there were none".
+                    continue
+                value = raw.get(key)
+                if isinstance(value, (int, float)) and value >= 0:
+                    usage[key] = usage.get(key, 0) + int(value)
+            # At most one block per event.  A build that emits both spellings is
+            # reporting the same tokens twice, and double-counted usage is worse
+            # than a name we failed to recognise.
+            break
     return usage
 
 
@@ -735,6 +976,102 @@ def _clean_error(value: Any, limit: int = 4_000) -> str:
     text = str(value or "").strip()
     text = _TOKEN_SECRET.sub(lambda match: (match.group(1) or "") + "[redacted]", text)
     return text[:limit]
+
+
+def _display_path(path: str) -> str:
+    """``C:\\Users\\alice\\.codex\\auth.json`` -> ``~/.codex/auth.json``.
+
+    Probe evidence is printed by ``collie runners`` and persisted in receipts.
+    The absolute form carries the account name of whoever ran it and says nothing
+    the tilde form does not.
+    """
+    home = os.path.expanduser("~")
+    absolute = os.path.abspath(path)
+    if home and absolute.lower().startswith(os.path.join(home, "").lower()):
+        absolute = "~" + os.sep + absolute[len(os.path.join(home, "")):]
+    return absolute.replace("\\", "/")
+
+
+def _cli_version(executable: str, timeout_s: float = 10.0) -> tuple[str, str]:
+    """Return ``(version, error)`` from one ``<cli> --version``.
+
+    ``executable`` is an already-resolved absolute path (Windows CreateProcess
+    ignores PATHEXT, so a bare ``codex`` would raise FileNotFoundError against
+    the npm ``.cmd`` shim).  A failure is reported, never raised: "installed but
+    the CLI will not answer" is a probe result the registry has to be able to
+    show, not an exception that hides the rest of the row.
+    """
+    try:
+        completed = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout_s,
+            **plat.no_window_kwargs())
+    except Exception as exc:
+        return "", _clean_error("could not run %s --version: %s: %s"
+                                % (os.path.basename(executable), type(exc).__name__, exc))
+    if completed.returncode != 0:
+        return "", _clean_error(
+            "%s --version exited with status %s: %s"
+            % (os.path.basename(executable), completed.returncode,
+               (completed.stderr or completed.stdout or "").strip()))
+    first = (completed.stdout or completed.stderr or "").strip().splitlines()
+    return (first[0].strip()[:200] if first else ""), ""
+
+
+def _codex_login_state(auth_path: str, now: float) -> tuple[str, str, dict[str, Any]]:
+    """Classify ``~/.codex/auth.json`` without reading a credential value.
+
+    Returns ``(login, detail, evidence)`` where ``login`` is one of the
+    ``RunnerProbe`` states and ``evidence`` holds only: which file was consulted,
+    which *kind* of login it describes, and — for an OAuth login — the ``exp``
+    claim of the access token as a unix timestamp.  ``exp`` is a public,
+    unsigned, non-secret field of a JWT and is the one thing that distinguishes
+    "signed in" from "the CLI will bounce this run to a login prompt".
+    """
+    from .ops import _jwt_exp  # decodes exp only; shared so there is one decoder
+
+    shown = _display_path(auth_path)
+    evidence: dict[str, Any] = {"source": "file:%s" % shown}
+    if not os.path.isfile(auth_path):
+        evidence["login_kind"] = "none"
+        return ("not-logged-in", "no Codex login at %s; run `codex login`" % shown, evidence)
+    try:
+        with open(auth_path, "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        if not isinstance(value, dict):
+            raise ValueError("auth.json is not an object")
+    except Exception as exc:
+        evidence["login_kind"] = "unreadable"
+        return ("unknown", _clean_error("could not read %s: %s: %s"
+                                        % (shown, type(exc).__name__, exc)), evidence)
+
+    tokens = value.get("tokens")
+    tokens = tokens if isinstance(tokens, dict) else {}
+    access = tokens.get("access_token")
+    if isinstance(access, str) and access:
+        evidence["login_kind"] = "chatgpt"
+        expires_at = _jwt_exp(access)
+        has_refresh = bool(tokens.get("refresh_token"))
+        if expires_at:
+            evidence["expires_at"] = expires_at
+        if expires_at and expires_at <= now and not has_refresh:
+            # With a refresh token the CLI renews on its own, so an expired
+            # access token is not a reason to reject the runner; without one the
+            # next turn stops at a login prompt with the prompt already sent.
+            return ("expired",
+                    "the Codex login in %s expired and has no refresh token; "
+                    "run `codex login`" % shown, evidence)
+        return ("ok", "", evidence)
+
+    # API-key login: the key's *presence* is the fact; the value is never read.
+    if isinstance(value.get("OPENAI_API_KEY"), str) and value.get("OPENAI_API_KEY"):
+        evidence["login_kind"] = "api-key"
+        return ("ok", "", evidence)
+
+    evidence["login_kind"] = "none"
+    return ("not-logged-in",
+            "%s has neither an OAuth token nor an API key; run `codex login`" % shown,
+            evidence)
 
 
 def _text(value: Any) -> str:

@@ -106,6 +106,33 @@ SCHEMA = [
          {"value": "high", "label": "High", "label_zh": "高"}],
      "hint": "Reasoning depth for providers that support it. Auto resolves per run; unsupported models use their provider default and the receipt says so.",
      "hint_zh": "对支持该能力的模型设置推理深度。自动模式会逐任务决定；不支持时使用 provider 默认值，并在回执中说明。"},
+    # Worker (RUNNER) is a different axis from Brain (PROVIDER/MODEL): the provider decides which
+    # model thinks, the runner decides which harness actually carries out the task — whose tool
+    # loop, whose sandbox, whose approval model, and (for an external CLI) whose login and billing
+    # route. Default `collie` keeps today's behaviour bit-for-bit: nothing probes external CLIs and
+    # no other code path changes. `auto` never reaches outside RUNNER_POOL, so a task can never be
+    # silently moved onto a subscription the user did not put in the pool themselves.
+    # The option values here must stay in sync with runner_registry.SPECS (plus "auto", which is
+    # not a runner but a request to choose one) — tests/test_settings_runner.py pins the list.
+    {"group": "Model", "key": "RUNNER", "label": "Worker (who carries out the task)",
+     "type": "select", "default": "collie",
+     "options": [
+         {"value": "collie", "label": "Collie's own harness (default)"},
+         {"value": "auto", "label": "Auto — pick per task and usage, inside the consented pool"},
+         {"value": "codex-exec", "label": "OpenAI Codex CLI (codex exec)"},
+         {"value": "claude-code", "label": "Claude Code (claude -p)"}],
+     "hint": "Which harness does the work — not which model thinks (that is Provider/Model above). "
+             "Collie's own harness is the default and the fallback; it is the only one with the "
+             "browser, desktop, MCP and per-action approval tools. An external worker runs its own "
+             "CLI under its own login and billing route. Auto only ever picks from the members "
+             "listed in Worker pool below; run `collie runners` to see what is installed."},
+    {"group": "Model", "key": "RUNNER_POOL", "label": "Worker pool (consent list for Auto)",
+     "type": "text", "default": "collie",
+     "hint": "Comma-separated workers Auto may choose from, best first (order is also the "
+             "tie-break preference). Writing an external worker here IS the explicit consent to "
+             "use its login and billing route for your tasks; a worker that is not in the pool is "
+             "never picked automatically, even when it is installed and logged in. An explicit "
+             "--runner still overrides this list."},
     {"group": "Model", "key": "TEMPERATURE", "label": "Temperature", "type": "number", "default": "", "min": "0", "max": "1", "step": "0.1",
      "hint": "Sampling randomness. 0 = deterministic & repeatable (best for code); ~1 = more creative/varied. Leave empty to use the provider default (Claude ≈ 1.0)."},
     {"group": "Model", "key": "MAX_TOKENS", "label": "Max output tokens / turn", "type": "number", "default": "", "min": "0",
@@ -236,6 +263,14 @@ _ZH = {
                              "openai-compat": "OpenAI 兼容端点",
                              "mock": "Mock(离线示例 — 仅测试)"}},
     "MODEL": {"label": "模型", "hint": "可选的精确模型锁定。留空即 Auto:Collie 不跨 provider,按任务选择模型和推理强度。"},
+    "RUNNER": {"label": "Worker(由谁来干活)",
+               "hint": "由谁来干活 —— 不是由谁来思考(思考用哪个模型在上面的「模型提供方/模型」里选)。默认且兜底永远是 Collie 自己的 harness,也只有它带浏览器、桌面、MCP 和逐条审批这些工具;外部 worker 会用它自己的 CLI、自己的登录和计费路线。auto 只会在下面「Worker 同意池」列出的成员里挑;`collie runners` 可以看本机装了哪些。",
+               "options": {"collie": "Collie 自己的 harness(默认)",
+                           "auto": "自动 — 按任务与用量在同意池里选",
+                           "codex-exec": "OpenAI Codex CLI(codex exec)",
+                           "claude-code": "Claude Code(claude -p)"}},
+    "RUNNER_POOL": {"label": "Worker 同意池(auto 的候选名单)",
+                    "hint": "逗号分隔的 worker 名单,auto 只从这里面挑,靠前的优先(平手时也按这个顺序)。把一个外部 worker 写进这里,就等于明确同意用它的登录与计费路线来跑你的任务;没写进池子的,哪怕装了、登录了也不会被自动选中。显式的 --runner 仍然优先于这份名单。"},
     "TEMPERATURE": {"label": "采样温度", "hint": "随机性。0 = 确定且可复现(适合代码);≈1 更发散。留空用提供方默认(Claude ≈ 1.0)。"},
     "MAX_TOKENS": {"label": "单轮最大输出 tokens", "hint": "模型单轮可生成的 token 上限。留空 = 提供方默认;长文件/大计划可调高。"},
     "WEBSEARCH": {"label": "网页搜索", "hint": "允许 collie 搜网(免密引擎/SearXNG)。若下方本地 Chrome 桥在线,则优先用真 Chrome。"},
