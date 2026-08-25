@@ -271,6 +271,11 @@ print((request.results ?? []).compactMap { $0.payloadStringValue }.first ?? "NO-
         print("  SKIP macOS Vision round-trip (swift timed out)")
         return
     decoded = (out.stdout or "").strip().splitlines()[-1] if out.stdout.strip() else ""
+    # Vision can write a VM/GPU diagnostic to stdout without a newline before
+    # Swift prints the decoded payload. Keep the independent-decoder assertion
+    # strict while ignoring only that native prefix.
+    if decoded.endswith(text):
+        decoded = text
     if not decoded or decoded in ("LOAD-FAIL", "NO-CODE") and out.returncode != 0:
         print("  SKIP macOS Vision round-trip (toolchain unavailable: %s)" % (out.stderr or "")[:80])
         return
