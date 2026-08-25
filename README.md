@@ -58,7 +58,7 @@ Collie is **terminal-first** and reaches editors through an open protocol, not a
 | Surface | Command | Reaches |
 |---|---|---|
 | **Terminal** | `collie` (TUI) · `collie -p "task"` | anywhere — SSH, CI, tmux |
-| **Browser GUI** | `collie web` | chat, the live verification gate, diffs, the star-map, the ambient desktop, settings |
+| **Browser GUI** | `collie web` | chat, local notes + calendar, the live verification gate, diffs, the star-map, the ambient desktop, settings |
 | **iPhone** | `collie web --lan` (same Wi-Fi) or `--remote` (anywhere, via the relay) + the companion app | scan the pair code once, then run from the phone |
 | **VS Code** | the bundled `vscode-collie` extension | Collie docked in a sidebar panel (manages its own server) |
 | **Editors (ACP)** | `collie acp` | Zed · JetBrains · neovim · VS Code — one adapter, every [ACP](https://agentclientprotocol.com) editor |

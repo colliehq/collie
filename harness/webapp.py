@@ -855,11 +855,56 @@ class Handler(BaseHTTPRequestHandler):
                         Handler._mirror_subs.pop(sid, None)
 
     # ------------------------------------------------------------------ helpers
+    def _discard_request_body(self, limit: int = 65536) -> bool:
+        """Consume a small rejected request body so Windows can deliver the HTTP error cleanly.
+
+        Closing a socket with unread POST bytes makes Winsock send a TCP reset. The client then sees
+        WinError 10053 instead of the 403/400 JSON Collie wrote. Bound the drain so an unauthenticated
+        client cannot force unbounded reads; oversized or slow bodies close the connection instead.
+        """
+        try:
+            length = int(self.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            return False
+        if length <= 0:
+            self._request_body_consumed = True
+            return True
+        if length > limit:
+            return False
+        connection = getattr(self, "connection", None)
+        previous_timeout = connection.gettimeout() if connection is not None else None
+        try:
+            if connection is not None:
+                connection.settimeout(0.5)
+            remaining = length
+            while remaining:
+                chunk = self.rfile.read(remaining)
+                if not chunk:
+                    return False
+                remaining -= len(chunk)
+            self._request_body_consumed = True
+            return True
+        except (OSError, ValueError):
+            return False
+        finally:
+            if connection is not None:
+                try:
+                    connection.settimeout(previous_timeout)
+                except OSError:
+                    pass
+
     def _send_html(self, body: bytes, code: int = 200, ctype: str = "text/html; charset=utf-8"):
+        close_after = False
+        if (code >= 400 and getattr(self, "command", "") == "POST" and
+                not getattr(self, "_request_body_consumed", False)):
+            close_after = not self._discard_request_body()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if close_after:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
@@ -873,10 +918,15 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("content-length") or 0)
         except ValueError:
             return None
-        if n <= 0 or n > maxlen:
+        if n <= 0:
+            self._request_body_consumed = True
+            return None
+        if n > maxlen:
             return None
         try:
-            body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+            raw = self.rfile.read(n)
+            self._request_body_consumed = True
+            body = json.loads(raw.decode("utf-8") or "{}")
         except (ValueError, UnicodeDecodeError):
             return None
         return body if isinstance(body, dict) else None
@@ -931,6 +981,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_logo()
             if path == "/map":
                 return self._serve_static("map.html", "text/html; charset=utf-8")
+            if path == "/personal":
+                return self._serve_static("personal.html", "text/html; charset=utf-8")
             if path == "/wallpaper":
                 return self._serve_static("wallpaper.html", "text/html; charset=utf-8")
             if path == "/ambient":
@@ -944,6 +996,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ver":
                 # non-secret per-process id; a long-lived desktop page polls this and reloads when it changes
                 return self._send_html(BOOT.encode(), 200, "text/plain; charset=utf-8")
+            if path.startswith("/api/state/"):
+                from . import personalweb as _personalweb
+                if _personalweb.handle_get(
+                        self, path, parsed, urllib.parse.parse_qs(parsed.query)):
+                    return
             if path == "/api/whoami":
                 # Behind the same pairing gate as everything else: which dog this is, and which
                 # repository it is standing in, is not public.
@@ -1293,6 +1350,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        self._request_body_consumed = False
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if not self._host_ok():
@@ -1302,6 +1360,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/pair":
                 return self._serve_pair_exchange()
+            if path.startswith("/api/state/"):
+                from . import personalweb as _personalweb
+                if _personalweb.handle_post(self, path, parsed):
+                    return
             if path == "/api/checkpoint/restore":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2610,6 +2672,10 @@ def main(argv=None, on_bound=None):
     bound — which is not always the one asked for, since a busy port makes this scan forward.
     A caller that needs to point something at the server (the native app window) has no other
     way to learn where it landed."""
+    # `python -m harness.webapp` bypasses the CLI entrypoint, so it needs the same protection from
+    # Windows cp1252 consoles before the first status line prints a bullet or arrow.
+    from . import plat as _plat
+    _plat.make_output_safe()
     argv = list(sys.argv[1:] if argv is None else argv)
     port = 8787
     open_browser = True

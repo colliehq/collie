@@ -61,6 +61,8 @@ _BASE: dict[str, RiskClass] = {
     "load_tools": RiskClass.READ,
     "plan": RiskClass.READ,
     "mcpctl_status": RiskClass.READ,
+    "notes_read": RiskClass.READ,
+    "calendar_read": RiskClass.READ,
     # web_fetch/web_search leave the machine, but only to READ a public URL: no
     # session, no cookies, nothing mutated. Gating them would stop ordinary
     # research and buy nothing — the injection risk they DO carry is already
@@ -84,6 +86,8 @@ _BASE: dict[str, RiskClass] = {
     "edit_file": RiskClass.WRITE_LOCAL,
     "remember": RiskClass.WRITE_LOCAL,
     "undo": RiskClass.WRITE_LOCAL,
+    "note_save": RiskClass.WRITE_LOCAL,
+    "calendar_save": RiskClass.WRITE_LOCAL,
     # -- exec ---------------------------------------------------------------
     "bash": RiskClass.EXEC,
     "run_in_env": RiskClass.EXEC,

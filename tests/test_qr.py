@@ -227,7 +227,10 @@ def test_vision_decodes_the_png():
         for x in range(side):
             mx = x // scale - quiet
             dark = 0 <= my < len(matrix) and 0 <= mx < len(matrix) and matrix[my][mx]
-            row.append(0 if dark else 255)
+            value = 0 if dark else 255
+            # RGB is the most widely exercised ImageIO/Vision PNG path. The
+            # previous valid grayscale PNG produced no Vision observation on CI.
+            row.extend((value, value, value))
         raw += bytes(row)
 
     def chunk(tag, data):
@@ -238,20 +241,23 @@ def test_vision_decodes_the_png():
     png = os.path.join(tmp, "pair.png")
     with open(png, "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n")
-        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 0, 0, 0, 0)))
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0)))
         f.write(chunk(b"IDAT", zlib.compress(raw, 9)))
         f.write(chunk(b"IEND", b""))
 
     script = os.path.join(tmp, "decode.swift")
     with open(script, "w") as f:
         f.write('''import Foundation
+import ImageIO
 import Vision
-import AppKit
 let path = CommandLine.arguments[1]
-guard let image = NSImage(contentsOfFile: path), let tiff = image.tiffRepresentation,
-      let bitmap = NSBitmapImageRep(data: tiff), let cg = bitmap.cgImage else { print("LOAD-FAIL"); exit(1) }
+let url = URL(fileURLWithPath: path)
+guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+      let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+    print("LOAD-FAIL"); exit(2)
+}
 let request = VNDetectBarcodesRequest(); request.symbologies = [.qr]
-try VNImageRequestHandler(cgImage: cg, options: [:]).perform([request])
+try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
 print((request.results ?? []).compactMap { $0.payloadStringValue }.first ?? "NO-CODE")
 ''')
     env = dict(os.environ)
@@ -265,10 +271,18 @@ print((request.results ?? []).compactMap { $0.payloadStringValue }.first ?? "NO-
         print("  SKIP macOS Vision round-trip (swift timed out)")
         return
     decoded = (out.stdout or "").strip().splitlines()[-1] if out.stdout.strip() else ""
+    # Vision can write a VM/GPU diagnostic to stdout without a newline before
+    # Swift prints the decoded payload. Keep the independent-decoder assertion
+    # strict while ignoring only that native prefix.
+    if decoded.endswith(text):
+        decoded = text
     if not decoded or decoded in ("LOAD-FAIL", "NO-CODE") and out.returncode != 0:
         print("  SKIP macOS Vision round-trip (toolchain unavailable: %s)" % (out.stderr or "")[:80])
         return
-    check(decoded == text, "macOS Vision decodes the rendered PNG back to the pairing URL")
+    detail = "got %r; swift rc=%d; stderr=%r" % (
+        decoded, out.returncode, (out.stderr or "")[-160:])
+    check(decoded == text,
+          "macOS Vision decodes the rendered PNG back to the pairing URL (%s)" % detail)
 
 
 def main():

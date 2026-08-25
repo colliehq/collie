@@ -15,6 +15,10 @@ if [ ! -x "$PY" ]; then
     fi
   done
 fi
+# Git Bash on Windows inherits a legacy cp1252 console. The suite deliberately prints multilingual
+# text and status symbols; make those diagnostics data rather than a reason for Python to abort.
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
 rc=0
 
 echo "── py_compile (all modules) ─────────────────────────────"
@@ -49,7 +53,11 @@ if $PY tests/test_desktop.py >/dev/null 2>&1; then echo "  desktop (ambient widg
 if $PY tests/test_desktopweb.py >/dev/null 2>&1; then echo "  desktop web (audio-proxy SSRF allow-list + relay CSRF-token gate) OK"; else echo "  desktop web FAIL"; rc=1; fi
 
 echo "── model catalog + codex provider (offline) ─────────────"
-if $PY tests/test_catalog.py >/dev/null 2>&1; then echo "  catalog OK"; else echo "  catalog FAIL"; rc=1; fi
+if catalog_out=$($PY tests/test_catalog.py 2>&1); then
+  echo "  catalog OK"
+else
+  echo "  catalog FAIL"; echo "$catalog_out" | tail -30 | sed "s/^/    /"; rc=1
+fi
 if $PY tests/test_codex_oauth.py >/dev/null 2>&1; then echo "  codex_oauth OK"; else echo "  codex_oauth FAIL"; rc=1; fi
 
 echo "── renderer tests (JS) ──────────────────────────────────"
@@ -134,7 +142,7 @@ if "$PY" -c "import playwright" >/dev/null 2>&1; then
   for t in steer_ui_check parallel_ui_check; do
     out=$("$PY" tests/browser_suite.py "$t" 2>&1); trc=$?
     if [ "$trc" = "0" ]; then echo "  $t OK"
-    else echo "  $t FAIL"; echo "$out" | tail -14 | sed "s/^/    /"; rc=1; fi
+    else echo "  $t FAIL"; echo "$out" | sed "s/^/    /"; rc=1; fi
   done
 else
   echo "  (playwright not found — skipping GUI suite)"
@@ -142,7 +150,7 @@ fi
 
 echo "── remote E2E crypto (zero-knowledge relay) ─────────────"
 if $PY -c "import cryptography" >/dev/null 2>&1; then
-  if $PY tests/test_e2e.py >/dev/null 2>&1; then echo "  e2e OK"; else echo "  e2e FAIL"; rc=1; fi
+  if e2e_out=$($PY tests/test_e2e.py 2>&1); then echo "  e2e OK"; else echo "  e2e FAIL"; echo "$e2e_out" | tail -20 | sed "s/^/    /"; rc=1; fi
 else
   echo "  e2e SKIP (needs collie-harness[remote])"
 fi
@@ -151,7 +159,7 @@ echo "── pair code (collie's own optical format) ─────────
 if $PY tests/test_paircode.py >/dev/null 2>&1; then echo "  paircode OK"; else echo "  paircode FAIL"; rc=1; fi
 
 echo "── QR encoder (fallback pairing code) ───────────────────"
-if $PY tests/test_qr.py >/dev/null 2>&1; then echo "  qr OK"; else echo "  qr FAIL"; rc=1; fi
+if qr_out=$($PY tests/test_qr.py 2>&1); then echo "  qr OK"; else echo "  qr FAIL"; echo "$qr_out" | tail -20 | sed "s/^/    /"; rc=1; fi
 
 echo "── web --lan host guard (phone pairing) ─────────────────"
 if $PY tests/test_web_lan.py >/dev/null 2>&1; then echo "  web --lan OK"; else echo "  web --lan FAIL"; rc=1; fi
@@ -172,10 +180,10 @@ else
   echo "  gate suite NOT RUN — pytest is not installed (pip install pytest)"; rc=1
 fi
 
-echo '── what `collie slack` does with an ask ─────────────────'
+echo "── what collie slack does with an ask ───────────────────"
 if $PY tests/test_slack_worker.py >/dev/null 2>&1; then echo "  slack worker OK"; else echo "  slack worker FAIL"; rc=1; fi
 if $PY tests/test_whoami.py >/dev/null 2>&1; then echo "  whoami (which dog is this) OK"; else echo "  whoami FAIL"; rc=1; fi
-if $PY tests/test_slack_answer.py >/dev/null 2>&1; then echo "  slack answer (executed) OK"; else echo "  slack answer FAIL"; rc=1; fi
+if slack_out=$($PY tests/test_slack_answer.py 2>&1); then echo "  slack answer (executed) OK"; else echo "  slack answer FAIL"; echo "$slack_out" | tail -20 | sed "s/^/    /"; rc=1; fi
 
 echo "── a face per dog (deterministic logo variants) ─────────"
 if $PY tests/test_avatar.py >/dev/null 2>&1; then echo "  avatar OK"; else echo "  avatar FAIL"; rc=1; fi
