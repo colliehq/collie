@@ -94,13 +94,13 @@ def main():
 
         # Leaving must not stop it. The old guard made this click do nothing at all.
         pg.click("#newChat")
-        pg.wait_for_timeout(500)
+        pg.wait_for_selector("#chatEmpty", timeout=3000)
         left = pg.evaluate("""() => ({
-            welcome: !!document.querySelector('#welcome'),
+            newThread: !!document.querySelector('#chatEmpty'),
             liveBubble: !!document.querySelector('.msg.assistant .flow'),
             composerReady: !document.getElementById('input').disabled
         })""")
-        check(left["welcome"], "starting a new thread while one runs actually leaves")
+        check(left["newThread"], "starting a new thread while one runs actually leaves")
         check(not left["liveBubble"], "the window stops showing the run it walked away from")
         check(left["composerReady"], "and the composer is ready for the second thing")
 

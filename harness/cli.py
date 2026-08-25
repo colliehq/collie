@@ -1434,7 +1434,10 @@ def cmd_harnesses(args):
 def cmd_dashboard(args):
     _, runs_db, out_html, _ = _paths()
     if not os.path.exists(runs_db):
-        print("no runs.db yet — run `selftest` or `compare` first"); return 1
+        # An empty dashboard is useful on first launch and proves the install is complete. Recorder
+        # creates the same schema real runs use; closing it before build also releases Windows locks.
+        recorder = Recorder(runs_db)
+        recorder.close()
     dash.build(runs_db, out_html)
     print("dashboard -> %s" % out_html)
     return 0

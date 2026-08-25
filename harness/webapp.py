@@ -2610,6 +2610,10 @@ def main(argv=None, on_bound=None):
     bound — which is not always the one asked for, since a busy port makes this scan forward.
     A caller that needs to point something at the server (the native app window) has no other
     way to learn where it landed."""
+    # `python -m harness.webapp` bypasses the CLI entrypoint, so it needs the same protection from
+    # Windows cp1252 consoles before the first status line prints a bullet or arrow.
+    from . import plat as _plat
+    _plat.make_output_safe()
     argv = list(sys.argv[1:] if argv is None else argv)
     port = 8787
     open_browser = True

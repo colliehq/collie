@@ -29,7 +29,7 @@ POSIX_ONLY = (
     "osascript", "screencapture", "sips", "security", "ioreg", "tccutil", "socketfilterfw",
     "xdg-open", "/usr/", "pbcopy", "diskutil", "launchctl", '"ps"', "'ps'",
     "codesign", "hdiutil", "spctl", "ditto", "brew", "avfoundation", "wslpath",
-    "zenity", "kdialog",
+    "zenity", "kdialog", "start_new_session=True",
 )
 # Opening a file manager, a browser or an editor is a REQUEST for a window. Suppressing it is the
 # bug, not the fix.

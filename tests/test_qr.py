@@ -246,12 +246,9 @@ def test_vision_decodes_the_png():
     with open(script, "w") as f:
         f.write('''import Foundation
 import Vision
-import AppKit
 let path = CommandLine.arguments[1]
-guard let image = NSImage(contentsOfFile: path), let tiff = image.tiffRepresentation,
-      let bitmap = NSBitmapImageRep(data: tiff), let cg = bitmap.cgImage else { print("LOAD-FAIL"); exit(1) }
 let request = VNDetectBarcodesRequest(); request.symbologies = [.qr]
-try VNImageRequestHandler(cgImage: cg, options: [:]).perform([request])
+try VNImageRequestHandler(url: URL(fileURLWithPath: path), options: [:]).perform([request])
 print((request.results ?? []).compactMap { $0.payloadStringValue }.first ?? "NO-CODE")
 ''')
     env = dict(os.environ)

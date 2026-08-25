@@ -2,10 +2,12 @@
 responds, and exits cleanly (no crash). Strict per-surface timeouts + hard kills (a stuck server
 must never hang the suite).
     .venv/bin/python tests/surfaces_test.py     (exit 0 = all pass)"""
-import json, os, subprocess, sys, threading, time, urllib.error, urllib.request
+import json, os, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SURFACE_DATA = tempfile.mkdtemp(prefix="collie_surfaces_data_")
 ENV = dict(os.environ, COLLIE_PROVIDER="mock", PYTHONUNBUFFERED="1",
+           COLLIE_DATA_DIR=SURFACE_DATA,
            # isolate session writes so the mock suite never pollutes the user's real Map run list
            COLLIE_SESSIONS_DIR=os.path.join(__import__("tempfile").gettempdir(), "collie_surftest_sessions"))
 # Invoke collie as a module (sys.executable -m harness.cli), NOT the installed `collie` console
@@ -18,7 +20,8 @@ def check(name, cond, detail=""):
 
 def run(args, timeout=45, stdin=None):
     p = subprocess.run(COLLIE + args, cwd=ROOT, env=ENV, capture_output=True,
-                       text=True, timeout=timeout, input=stdin)
+                       text=True, encoding="utf-8", errors="replace",
+                       timeout=timeout, input=stdin)
     return p.stdout, p.stderr, p.returncode
 
 def test_run_json():
@@ -33,8 +36,9 @@ def test_run_stream_json():
 
 def test_dashboard():
     out, _, rc = run(["dashboard"])
-    p = os.path.join(ROOT, "data", "dashboard.html")
-    check("dashboard builds valid html", rc == 0 and os.path.exists(p) and "<html" in open(p).read().lower())
+    p = os.path.join(SURFACE_DATA, "dashboard.html")
+    check("dashboard builds valid html", rc == 0 and os.path.exists(p) and
+          "<html" in open(p, encoding="utf-8").read().lower())
 
 def test_repl():
     out, _, rc = run(["repl"], stdin="hi\n/exit\n", timeout=45)
@@ -45,14 +49,19 @@ def test_tui():
     check("tui starts + exits clean", "session" in out and rc == 0 and "Traceback" not in out)
 
 def test_browser_bridge_health():
-    p = subprocess.Popen(COLLIE + ["browser-bridge", "--port", "8689"], cwd=ROOT,
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    p = subprocess.Popen(COLLIE + ["browser-bridge", "--port", str(port)], cwd=ROOT,
                          env=dict(ENV, COLLIE_BROWSER_BRIDGE_NOSPAWN="1"),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         ok = False
-        for _ in range(20):
+        for _ in range(80):
             try:
-                d = json.load(urllib.request.urlopen("http://127.0.0.1:8689/health", timeout=1))
+                d = json.load(urllib.request.urlopen(
+                    "http://127.0.0.1:%d/health" % port, timeout=1))
                 ok = d.get("ok") is True and "extension_connected" in d; break
             except Exception:
                 time.sleep(0.25)
@@ -62,7 +71,7 @@ def test_browser_bridge_health():
             # returns the HTTP code, or -1 on timeout (a request that PASSED the CSRF gate and is
             # long-polling /poll — i.e. NOT 403).
             try:
-                req = urllib.request.Request("http://127.0.0.1:8689" + path, data=data,
+                req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=data,
                                              headers=headers, method=method)
                 urllib.request.urlopen(req, timeout=2)
                 return 200
