@@ -25,7 +25,10 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # macOS runs the same full browser/protocol/pytest surface and currently
+    # completes in ~25 minutes. Keep enough variance for hosted-runner load;
+    # individual operations retain their own much tighter hang timeouts.
+    timeout-minutes: 35
     strategy:
       fail-fast: false          # one OS failing must not hide the status of the others
       matrix:

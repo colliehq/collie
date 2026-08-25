@@ -142,7 +142,7 @@ if "$PY" -c "import playwright" >/dev/null 2>&1; then
   for t in steer_ui_check parallel_ui_check; do
     out=$("$PY" tests/browser_suite.py "$t" 2>&1); trc=$?
     if [ "$trc" = "0" ]; then echo "  $t OK"
-    else echo "  $t FAIL"; echo "$out" | tail -14 | sed "s/^/    /"; rc=1; fi
+    else echo "  $t FAIL"; echo "$out" | sed "s/^/    /"; rc=1; fi
   done
 else
   echo "  (playwright not found — skipping GUI suite)"
