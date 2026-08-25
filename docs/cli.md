@@ -14,6 +14,8 @@ onboarding when nothing is configured. Full help for any command: `collie <comma
 | `collie app` | Open the native desktop window (Windows). |
 | `collie tui` | Rich terminal chat with a live tool/gate/diff timeline. |
 | `collie repl` | Interactive REPL that keeps the conversation thread. |
+| `collie notes list` / `collie notes add "<text>" --title "<title>"` | Search, create and manage local notes. `note` is an alias for `notes`. |
+| `collie calendar list` / `collie calendar add "<title>" --start "<ISO time>"` | Manage the local calendar. Notes and events stay in `~/.collie/collie-personal.db`; there is no cloud sync. |
 
 ## Running work
 

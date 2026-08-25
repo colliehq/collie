@@ -981,6 +981,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_logo()
             if path == "/map":
                 return self._serve_static("map.html", "text/html; charset=utf-8")
+            if path == "/personal":
+                return self._serve_static("personal.html", "text/html; charset=utf-8")
             if path == "/wallpaper":
                 return self._serve_static("wallpaper.html", "text/html; charset=utf-8")
             if path == "/ambient":
@@ -994,6 +996,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ver":
                 # non-secret per-process id; a long-lived desktop page polls this and reloads when it changes
                 return self._send_html(BOOT.encode(), 200, "text/plain; charset=utf-8")
+            if path.startswith("/api/state/"):
+                from . import personalweb as _personalweb
+                if _personalweb.handle_get(
+                        self, path, parsed, urllib.parse.parse_qs(parsed.query)):
+                    return
             if path == "/api/whoami":
                 # Behind the same pairing gate as everything else: which dog this is, and which
                 # repository it is standing in, is not public.
@@ -1353,6 +1360,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/pair":
                 return self._serve_pair_exchange()
+            if path.startswith("/api/state/"):
+                from . import personalweb as _personalweb
+                if _personalweb.handle_post(self, path, parsed):
+                    return
             if path == "/api/checkpoint/restore":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

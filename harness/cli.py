@@ -5,6 +5,8 @@
     python -m harness.cli compare [--cc off|baseline|real] [--provider ...]
     python -m harness.cli dashboard         # rebuild data/dashboard.html
     python -m harness.cli mem search "<q>"  |  mem add "<text>"
+    python -m harness.cli notes list         |  notes add "<text>"
+    python -m harness.cli calendar list      |  calendar add "<title>" --start <ISO>
 """
 from __future__ import annotations
 import argparse
@@ -1443,6 +1445,124 @@ def cmd_dashboard(args):
     return 0
 
 
+def _print_personal(value, as_json=False):
+    if as_json:
+        import json
+        print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+        return
+    if not value:
+        print("(none)")
+        return
+    if isinstance(value, list):
+        for row in value:
+            if "start_at" in row:
+                from .personal_state import format_time
+                when = format_time(row.get("start_at"), all_day=bool(row.get("all_day")))
+                place = " @ %s" % row["location"] if row.get("location") else ""
+                print("%-16s  %-20s  %s%s" % (row["id"], when, row["title"], place))
+            else:
+                pin = "*" if row.get("pinned") else " "
+                preview = " ".join(str(row.get("body") or "").split())[:90]
+                print("%s %-15s  %-28s  %s" % (pin, row["id"], row["title"][:28], preview))
+        return
+    print(value)
+
+
+def cmd_notes(args):
+    """Local personal notes — a scriptable surface over the same store chat tools use."""
+    from .personal_state import PersonalState
+    try:
+        with PersonalState() as state:
+            if args.action == "list":
+                rows = state.notes(query=args.query, limit=args.limit)
+                _print_personal(rows, args.as_json)
+                return 0
+            if args.action == "get":
+                row = state.note(args.value)
+                if not row:
+                    print("unknown note: %s" % args.value, file=sys.stderr)
+                    return 1
+                _print_personal(row, args.as_json)
+                return 0
+            if args.action == "add":
+                row = state.add_note(args.value, title=args.title or "",
+                                     pinned=bool(args.pinned), source="cli")
+            elif args.action == "append":
+                row = state.append_note(args.value, args.text, source="cli")
+            elif args.action == "edit":
+                fields = {}
+                if args.title is not None: fields["title"] = args.title
+                if args.text is not None: fields["body"] = args.text
+                if args.pinned is not None: fields["pinned"] = args.pinned
+                row = state.update_note(args.value, **fields)
+            else:
+                row = state.delete_note(args.value)
+                if not row:
+                    print("unknown note: %s" % args.value, file=sys.stderr)
+                    return 1
+                _print_personal({"deleted": args.value}, args.as_json)
+                return 0
+            if not row:
+                print("unknown note: %s" % args.value, file=sys.stderr)
+                return 1
+            _print_personal(row, args.as_json)
+            return 0
+    except (TypeError, ValueError) as exc:
+        print("notes: %s" % exc, file=sys.stderr)
+        return 2
+
+
+def cmd_calendar(args):
+    """Local personal calendar — deliberately no cloud account or sync dependency."""
+    from .personal_state import PersonalState, format_time
+    try:
+        with PersonalState() as state:
+            if args.action == "list":
+                rows = state.events(since=args.since or None, until=args.until or None,
+                                    query=args.query, limit=args.limit) \
+                    if (args.since or args.until) else state.upcoming(days=args.days, limit=args.limit)
+                _print_personal(rows, args.as_json)
+                return 0
+            if args.action == "get":
+                row = state.event(args.value)
+                if not row:
+                    print("unknown event: %s" % args.value, file=sys.stderr)
+                    return 1
+                view = dict(row)
+                view["start"] = format_time(row.get("start_at"), all_day=bool(row.get("all_day")))
+                view["end"] = format_time(row.get("end_at"), all_day=bool(row.get("all_day")))
+                _print_personal(view, args.as_json)
+                return 0
+            if args.action == "add":
+                row = state.add_event(args.value, args.start, end_at=args.end,
+                                      all_day=bool(args.all_day), kind=args.kind or "meeting",
+                                      location=args.location or "", notes=args.text or "")
+            elif args.action == "edit":
+                fields = {}
+                for arg, field in (("title", "title"), ("start", "start_at"),
+                                   ("end", "end_at"), ("all_day", "all_day"),
+                                   ("kind", "kind"), ("location", "location"),
+                                   ("text", "notes")):
+                    value = getattr(args, arg)
+                    if value is not None: fields[field] = value
+                row = state.update_event(args.value, **fields)
+            else:
+                row = state.delete_event(args.value)
+                if not row:
+                    print("unknown event: %s" % args.value, file=sys.stderr)
+                    return 1
+                _print_personal({"deleted": args.value}, args.as_json)
+                return 0
+            if not row:
+                print("unknown event: %s" % args.value, file=sys.stderr)
+                return 1
+            _print_personal(row, args.as_json)
+            return 0
+    except (TypeError, ValueError) as exc:
+        print("calendar: %s" % exc, file=sys.stderr)
+        return 2
+
+
 def cmd_mem(args):
     mem_db, runs_db, _, _ = _paths()
     if args.action == "eval":
@@ -2178,7 +2298,7 @@ def cmd_mcp(args):
     return 0
 
 
-CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "mem", "acp",
+CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "dashboard", "note", "notes", "calendar", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit"}
 
@@ -2587,6 +2707,37 @@ def main(argv=None):
     ph = sub.add_parser("harnesses"); ph.set_defaults(fn=cmd_harnesses)
 
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
+
+    pn = sub.add_parser("notes", aliases=["note"], help="local notes: list/add/get/append/edit/delete")
+    pn.add_argument("action", nargs="?", default="list",
+                    choices=["list", "add", "get", "append", "edit", "delete"])
+    pn.add_argument("value", nargs="?", default="", help="note text for add; note id otherwise")
+    pn.add_argument("--title", default=None)
+    pn.add_argument("--text", default=None, help="text for append/edit")
+    pn.add_argument("--query", default="", help="list: search title and body")
+    pn.add_argument("--limit", type=int, default=50)
+    pin = pn.add_mutually_exclusive_group()
+    pin.add_argument("--pin", dest="pinned", action="store_true")
+    pin.add_argument("--unpin", dest="pinned", action="store_false")
+    pn.set_defaults(pinned=None, fn=cmd_notes)
+    pn.add_argument("--json", dest="as_json", action="store_true")
+
+    pcal = sub.add_parser("calendar", help="local calendar: list/add/get/edit/delete")
+    pcal.add_argument("action", nargs="?", default="list",
+                      choices=["list", "add", "get", "edit", "delete"])
+    pcal.add_argument("value", nargs="?", default="", help="event title for add; event id otherwise")
+    pcal.add_argument("--start", default=None, help="ISO-8601 date/time")
+    pcal.add_argument("--end", default=None, help="ISO-8601 date/time")
+    pcal.add_argument("--since", default=""); pcal.add_argument("--until", default="")
+    pcal.add_argument("--days", type=int, default=14); pcal.add_argument("--limit", type=int, default=50)
+    pcal.add_argument("--query", default=""); pcal.add_argument("--kind", default=None)
+    pcal.add_argument("--location", default=None); pcal.add_argument("--text", default=None,
+                                                                      help="event notes")
+    day = pcal.add_mutually_exclusive_group()
+    day.add_argument("--all-day", dest="all_day", action="store_true")
+    day.add_argument("--timed", dest="all_day", action="store_false")
+    pcal.set_defaults(all_day=None, fn=cmd_calendar)
+    pcal.add_argument("--json", dest="as_json", action="store_true")
 
     pm = sub.add_parser("mem")
     pm.add_argument("action", choices=["search", "add", "reembed", "eval", "import", "purge-imported"])

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Notes &amp; Calendar · Collie</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f3f1eb;--surface:#fffdf8;--ink:#20231f;--muted:#6d736c;
+      --line:#d9d7cf;--green:#276749;--green2:#e4f0e8;--red:#a33b32;--shadow:0 14px 40px #20231f12}
+    @media(prefers-color-scheme:dark){:root{--bg:#161815;--surface:#20231f;--ink:#edf0ea;--muted:#aeb4ac;
+      --line:#3b403a;--green:#84c49e;--green2:#263d30;--red:#f29b91;--shadow:none}}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    button,input,textarea,select{font:inherit;color:inherit}button{cursor:pointer}.shell{max-width:1120px;margin:auto;padding:22px}
+    header{display:flex;align-items:center;gap:14px;margin-bottom:20px}.back{color:var(--muted);text-decoration:none;font-size:22px}
+    h1{font-size:24px;margin:0}.local{margin-left:auto;color:var(--green);background:var(--green2);border-radius:99px;padding:5px 10px;font-size:12px;font-weight:700}
+    .tabs{display:flex;gap:7px;margin-bottom:16px}.tab,.secondary,.danger{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 12px}
+    .tab.on,.primary{border-color:var(--green);background:var(--green);color:#fff}.layout{display:grid;grid-template-columns:340px 1fr;gap:18px}
+    .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow)}h2{font-size:16px;margin:0 0 14px}
+    form{display:grid;gap:10px}label{display:grid;gap:5px;color:var(--muted);font-size:12px}input,textarea,select{width:100%;border:1px solid var(--line);background:transparent;border-radius:8px;padding:9px 10px}
+    textarea{resize:vertical;min-height:100px}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.check{display:flex;align-items:center;gap:8px}.check input{width:auto}
+    .actions{display:flex;gap:8px}.primary{border:1px solid var(--green);border-radius:9px;padding:8px 13px}.secondary{color:var(--muted)}.danger{color:var(--red)}
+    .toolbar{display:flex;gap:10px;margin-bottom:12px}.toolbar input{flex:1}.list{display:grid;gap:9px}.item{border:1px solid var(--line);border-radius:11px;padding:13px}
+    .item-head{display:flex;gap:10px;align-items:flex-start}.item h3{margin:0;font-size:14px;flex:1}.meta{font-size:12px;color:var(--muted);margin-top:3px}.body{white-space:pre-wrap;margin-top:9px;color:var(--muted)}
+    .item-actions{display:flex;gap:6px;margin-top:10px}.item-actions button{padding:5px 8px;font-size:12px}.pin{color:var(--green)}.empty{color:var(--muted);padding:25px;text-align:center}.error{color:var(--red);margin-bottom:10px}
+    [hidden]{display:none!important}@media(max-width:760px){.shell{padding:14px}.layout{grid-template-columns:1fr}.local{font-size:0}.local:after{content:"Local";font-size:12px}.row{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><main class="shell">
+  <header><a class="back" href="/" aria-label="Back to Workbench">←</a><div><h1>Notes &amp; Calendar</h1><div class="meta">Your personal working context</div></div><span class="local">Stored only on this computer</span></header>
+  <nav class="tabs"><button class="tab on" data-view="notes">Notes</button><button class="tab" data-view="events">Calendar</button></nav>
+  <div id="error" class="error" hidden></div>
+  <section class="layout" id="notesView">
+    <div class="card"><h2 id="noteFormTitle">New note</h2><form id="noteForm">
+      <label>Title <input id="noteTitle" maxlength="200" placeholder="Optional — first line is used"></label>
+      <label>Note <textarea id="noteBody" maxlength="20000" required placeholder="Remember this…"></textarea></label>
+      <label class="check"><input id="notePinned" type="checkbox"> Pin this note</label>
+      <div class="actions"><button class="primary" type="submit">Save note</button><button class="secondary" id="noteCancel" type="button" hidden>Cancel</button></div>
+    </form></div>
+    <div class="card"><div class="toolbar"><input id="noteSearch" type="search" placeholder="Search notes…"><button class="secondary" id="noteRefresh">Refresh</button></div><div id="notes" class="list"></div></div>
+  </section>
+  <section class="layout" id="eventsView" hidden>
+    <div class="card"><h2 id="eventFormTitle">New event</h2><form id="eventForm">
+      <label>Title <input id="eventTitle" maxlength="200" required placeholder="Interview, deadline, focus block…"></label>
+      <div class="row"><label>Starts <input id="eventStart" type="datetime-local" required></label><label>Ends <input id="eventEnd" type="datetime-local"></label></div>
+      <div class="row"><label>Kind <select id="eventKind"><option>meeting</option><option>interview</option><option>deadline</option><option>call</option><option>block</option><option>reminder</option><option>other</option></select></label><label>Location <input id="eventLocation" maxlength="300"></label></div>
+      <label class="check"><input id="eventAllDay" type="checkbox"> All day</label>
+      <label>Notes <textarea id="eventNotes" maxlength="12000"></textarea></label>
+      <div class="actions"><button class="primary" type="submit">Save event</button><button class="secondary" id="eventCancel" type="button" hidden>Cancel</button></div>
+    </form></div>
+    <div class="card"><div class="toolbar"><input id="eventSearch" type="search" placeholder="Search calendar…"><button class="secondary" id="eventRefresh">Refresh</button></div><div id="events" class="list"></div></div>
+  </section>
+</main><script>
+  const $=id=>document.getElementById(id), token=(document.querySelector('meta[name="collie-token"]')||{}).content||"";
+  let notes=[],events=[],editNote="",editEvent="",searchTimer=0;
+  const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  function url(path){return path+(path.includes("?")?"&":"?")+"token="+encodeURIComponent(token)}
+  async function api(path,body){let opt=body?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}:{};
+    let r=await fetch(url(path),opt),d=await r.json().catch(()=>({error:"Invalid response"}));if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d}
+  function fail(e){$("error").textContent=e.message||String(e);$("error").hidden=false}function clearError(){$("error").hidden=true}
+  function show(view){document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("on",b.dataset.view===view));$("notesView").hidden=view!=="notes";$("eventsView").hidden=view!=="events";view==="notes"?loadNotes():loadEvents()}
+  document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>show(b.dataset.view));
+  async function loadNotes(){try{clearError();let q=$("noteSearch").value.trim(),d=await api("/api/state/notes"+(q?"?q="+encodeURIComponent(q):""));notes=d.notes||[];
+    $("notes").innerHTML=notes.map(n=>`<article class="item"><div class="item-head"><h3>${n.pinned?'<span class="pin">★</span> ':''}${esc(n.title)}</h3><span class="meta">${new Date(n.updated_at*1000).toLocaleDateString()}</span></div><div class="body">${esc(n.body)}</div><div class="item-actions"><button class="secondary" data-note-edit="${esc(n.id)}">Edit</button><button class="danger" data-note-delete="${esc(n.id)}">Delete</button></div></article>`).join("")||'<div class="empty">No notes yet.</div>'}catch(e){fail(e)}}
+  function resetNote(){editNote="";$("noteForm").reset();$("noteFormTitle").textContent="New note";$("noteCancel").hidden=true}
+  $("noteForm").onsubmit=async e=>{e.preventDefault();try{await api("/api/state/note",{action:editNote?"update":"add",id:editNote,title:$("noteTitle").value,text:$("noteBody").value,pinned:$("notePinned").checked});resetNote();loadNotes()}catch(x){fail(x)}};
+  $("notes").onclick=async e=>{let id=e.target.dataset.noteEdit||e.target.dataset.noteDelete;if(!id)return;let n=notes.find(x=>x.id===id);if(e.target.dataset.noteEdit){editNote=id;$("noteTitle").value=n.title||"";$("noteBody").value=n.body||"";$("notePinned").checked=!!n.pinned;$("noteFormTitle").textContent="Edit note";$("noteCancel").hidden=false;scrollTo(0,0)}else if(confirm("Delete this note?")){try{await api("/api/state/note",{action:"delete",id});loadNotes()}catch(x){fail(x)}}};
+  $("noteCancel").onclick=resetNote;$("noteRefresh").onclick=loadNotes;$("noteSearch").oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(loadNotes,200)};
+  const localInput=seconds=>{if(!seconds)return"";let d=new Date(seconds*1000),z=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`};
+  async function loadEvents(){try{clearError();let q=$("eventSearch").value.trim(),d=await api("/api/state/events"+(q?"?q="+encodeURIComponent(q):""));events=d.events||[];
+    $("events").innerHTML=events.map(v=>`<article class="item"><div class="item-head"><h3>${esc(v.title)}</h3><span class="meta">${esc(v.start)}</span></div><div class="meta">${esc(v.kind)}${v.location?" · "+esc(v.location):""}</div>${v.notes?'<div class="body">'+esc(v.notes)+'</div>':''}<div class="item-actions"><button class="secondary" data-event-edit="${esc(v.id)}">Edit</button><button class="danger" data-event-delete="${esc(v.id)}">Delete</button></div></article>`).join("")||'<div class="empty">Nothing scheduled in this window.</div>'}catch(e){fail(e)}}
+  function resetEvent(){editEvent="";$("eventForm").reset();$("eventFormTitle").textContent="New event";$("eventCancel").hidden=true}
+  $("eventForm").onsubmit=async e=>{e.preventDefault();try{await api("/api/state/event",{action:editEvent?"update":"add",id:editEvent,title:$("eventTitle").value,start:$("eventStart").value,end:$("eventEnd").value,kind:$("eventKind").value,location:$("eventLocation").value,all_day:$("eventAllDay").checked,notes:$("eventNotes").value});resetEvent();loadEvents()}catch(x){fail(x)}};
+  $("events").onclick=async e=>{let id=e.target.dataset.eventEdit||e.target.dataset.eventDelete;if(!id)return;let v=events.find(x=>x.id===id);if(e.target.dataset.eventEdit){editEvent=id;$("eventTitle").value=v.title||"";$("eventStart").value=localInput(v.start_at);$("eventEnd").value=localInput(v.end_at);$("eventKind").value=v.kind||"meeting";$("eventLocation").value=v.location||"";$("eventAllDay").checked=!!v.all_day;$("eventNotes").value=v.notes||"";$("eventFormTitle").textContent="Edit event";$("eventCancel").hidden=false;scrollTo(0,0)}else if(confirm("Delete this event?")){try{await api("/api/state/event",{action:"delete",id});loadEvents()}catch(x){fail(x)}}};
+  $("eventCancel").onclick=resetEvent;$("eventRefresh").onclick=loadEvents;$("eventSearch").oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(loadEvents,200)};loadNotes();
+</script></body></html>

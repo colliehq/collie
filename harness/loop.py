@@ -452,7 +452,8 @@ class Harness:
         # importantly, in the answer.
         fell_back = None
         ctx = ToolCtx(cwd=self.cwd, project=self.project, memory=self.memory,
-                      recorder=self.recorder, registry=self.registry)
+                      recorder=self.recorder, registry=self.registry,
+                      gate=getattr(self, "gate", None))
         # Snapshot the tree BEFORE anything is edited, so a run can be undone wholesale. Taken
         # here rather than at the first edit: by the time an edit lands a command may already have
         # written files, and the point the user wants back is "before I asked for this".

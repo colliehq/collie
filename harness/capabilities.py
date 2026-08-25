@@ -48,6 +48,21 @@ def _note_execute(record):
         return {"path": p, "skipped": "empty note"}   # write nothing; verify will FAIL it
     with open(p, "a", encoding="utf-8") as f:
         f.write(text + "\n")
+    # Keep the original plain-text note as the independently verifiable receipt, and mirror it
+    # into the structured local store so notes written by delegated jobs are visible to chat and
+    # the CLI too. The capability predates personal.db; a mirror failure must not falsify the
+    # successful file write or its verifier.
+    try:
+        from .personal_state import PersonalState
+        title = os.path.splitext(os.path.basename(p))[0] or "Notes"
+        with PersonalState() as state:
+            note = state.find_note(title)
+            if note and str(note.get("title") or "").casefold() == title.casefold():
+                state.append_note(note["id"], text, source="capability")
+            else:
+                state.add_note(text, title=title, source="capability")
+    except Exception:
+        pass
     return {"path": p}
 
 

@@ -112,6 +112,9 @@ class ToolCtx:
     # in this session instead of asking for a restart — `mcpctl_add` registers the new server's tools
     # straight away, the same way enable_capability makes a gated capability usable immediately.
     registry: object = None
+    # A person-facing run has a permission gate. Benchmarks, Pack attempts and embedded workers do
+    # not, and personal-state tools use this boundary to keep the owner's notes/calendar private.
+    gate: object = None
 
 
 class Tool:
@@ -876,6 +879,10 @@ def default_registry(code_search: bool = False,
     for t in (ReadFileTool(), WriteFileTool(), EditFileTool(), BashTool(), GrepTool(),
               GlobTool(), MemorySearchTool(), RememberTool(), PlanTool(), UndoTool()):
         r.register(t)
+    # Local personal state. The tools remain visible on every conversational surface, but refuse
+    # reads/writes when ToolCtx has no person-facing gate (benchmarks and worker runs).
+    from .personal_tools import register_personal
+    register_personal(r)
     if code_search:                              # semantic repo navigation (embedding)
         from .codeindex import register_code_search
         register_code_search(r)
