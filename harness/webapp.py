@@ -855,11 +855,56 @@ class Handler(BaseHTTPRequestHandler):
                         Handler._mirror_subs.pop(sid, None)
 
     # ------------------------------------------------------------------ helpers
+    def _discard_request_body(self, limit: int = 65536) -> bool:
+        """Consume a small rejected request body so Windows can deliver the HTTP error cleanly.
+
+        Closing a socket with unread POST bytes makes Winsock send a TCP reset. The client then sees
+        WinError 10053 instead of the 403/400 JSON Collie wrote. Bound the drain so an unauthenticated
+        client cannot force unbounded reads; oversized or slow bodies close the connection instead.
+        """
+        try:
+            length = int(self.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            return False
+        if length <= 0:
+            self._request_body_consumed = True
+            return True
+        if length > limit:
+            return False
+        connection = getattr(self, "connection", None)
+        previous_timeout = connection.gettimeout() if connection is not None else None
+        try:
+            if connection is not None:
+                connection.settimeout(0.5)
+            remaining = length
+            while remaining:
+                chunk = self.rfile.read(remaining)
+                if not chunk:
+                    return False
+                remaining -= len(chunk)
+            self._request_body_consumed = True
+            return True
+        except (OSError, ValueError):
+            return False
+        finally:
+            if connection is not None:
+                try:
+                    connection.settimeout(previous_timeout)
+                except OSError:
+                    pass
+
     def _send_html(self, body: bytes, code: int = 200, ctype: str = "text/html; charset=utf-8"):
+        close_after = False
+        if (code >= 400 and getattr(self, "command", "") == "POST" and
+                not getattr(self, "_request_body_consumed", False)):
+            close_after = not self._discard_request_body()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if close_after:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
@@ -873,10 +918,15 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("content-length") or 0)
         except ValueError:
             return None
-        if n <= 0 or n > maxlen:
+        if n <= 0:
+            self._request_body_consumed = True
+            return None
+        if n > maxlen:
             return None
         try:
-            body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+            raw = self.rfile.read(n)
+            self._request_body_consumed = True
+            body = json.loads(raw.decode("utf-8") or "{}")
         except (ValueError, UnicodeDecodeError):
             return None
         return body if isinstance(body, dict) else None
@@ -1293,6 +1343,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        self._request_body_consumed = False
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if not self._host_ok():
