@@ -94,9 +94,12 @@ def main():
 
         # Leaving must not stop it. The old guard made this click do nothing at all.
         pg.click("#newChat")
-        pg.wait_for_selector("#chatEmpty", timeout=3000)
+        # This HQ UI renders the welcome surface for a fresh thread. `#chatEmpty` belongs to the
+        # later personal-product UI and can never appear here, so waiting for it made Linux CI
+        # fail even though the thread switch had succeeded.
+        pg.wait_for_selector("#welcome", timeout=3000)
         left = pg.evaluate("""() => ({
-            newThread: !!document.querySelector('#chatEmpty'),
+            newThread: !!document.querySelector('#welcome'),
             liveBubble: !!document.querySelector('.msg.assistant .flow'),
             composerReady: !document.getElementById('input').disabled
         })""")
