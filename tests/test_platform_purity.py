@@ -179,12 +179,16 @@ def check_tests_never_open_a_browser():
     import glob
     bad = []
     for path in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "*.py")):
-        src = open(path, encoding="utf-8").read()
-        for i, line in enumerate(src.splitlines(), 1):
+        raw = open(path, encoding="utf-8").read().splitlines()
+        # A test docstring that describes the web surface is not a subprocess invocation. Reuse
+        # the same code-only view as the platform API scans above, otherwise a harmless `"web"`
+        # in prose trips this gate on Linux.
+        lines = _code_only(raw)
+        for i, line in enumerate(lines, 1):
             if '"web"' not in line or "--no-open" in line:
                 continue
             # the flag is often on the same call but a line or two down
-            window = "\n".join(src.splitlines()[i - 1:i + 2])
+            window = "\n".join(lines[i - 1:i + 2])
             if "--no-open" not in window:
                 bad.append("%s:%d" % (os.path.basename(path), i))
     check(not bad, "no test starts `collie web` without --no-open%s"
