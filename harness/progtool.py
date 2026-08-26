@@ -301,8 +301,19 @@ class _Handler(BaseHTTPRequestHandler):
             return self._deny()
         try:
             n = int(self.headers.get("content-length", 0) or 0)
-            req = json.loads(self.rfile.read(n) or b"{}")
+            if n <= 0 or n > 1_048_576:
+                raise ValueError("RPC body must be 1..1048576 bytes")
+
+            def reject_constant(value):
+                raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+            req = json.loads(self.rfile.read(n), parse_constant=reject_constant)
+            if not isinstance(req, dict):
+                raise ValueError("RPC body must be a JSON object")
             name = req.get("name", "")
+            args = req.get("args", {})
+            if not isinstance(name, str) or not name or not isinstance(args, dict):
+                raise ValueError("RPC name must be a string and args must be an object")
             # Never dispatch against the registry here.  That used to bypass the Harness
             # permission gate, audit ledger, lifecycle hooks and durability fence.  The
             # callback is installed only while Harness is executing this execute_code call;
@@ -312,10 +323,11 @@ class _Handler(BaseHTTPRequestHandler):
             if broker is None:
                 out = "ERROR: execute_code inner tool broker is unavailable"
             else:
-                out = broker(name, req.get("args", {}) or {})
-            body = json.dumps({"result": out if isinstance(out, str) else str(out)}).encode()
+                out = broker(name, args)
+            body = json.dumps({"result": out if isinstance(out, str) else str(out)},
+                              allow_nan=False).encode()
         except Exception as e:
-            body = json.dumps({"result": "ERROR(rpc): %s" % e}).encode()
+            body = json.dumps({"result": "ERROR(rpc): %s" % e}, allow_nan=False).encode()
         try:
             self.send_response(200)
             self.send_header("content-type", "application/json")

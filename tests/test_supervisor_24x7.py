@@ -172,6 +172,32 @@ def test_worker_identity_cannot_escape_log_root_or_persist_probe_credentials():
         })
 
 
+def test_supervisor_authority_types_and_timing_bounds_are_strict(tmp_path):
+    with pytest.raises(ValueError, match="enabled must be boolean"):
+        supervisor.WorkerSpec.from_dict({
+            "name": "must-not-start", "argv": ["python"], "enabled": "false"})
+    with pytest.raises(ValueError, match="finite number"):
+        supervisor.WorkerSpec.from_dict({
+            "name": "never-stable", "argv": ["python"], "stable_s": float("nan")})
+    with pytest.raises(ValueError, match="finite integer"):
+        supervisor.WorkerSpec.from_dict({
+            "name": "fractional", "argv": ["python"], "max_rapid_failures": 1.5})
+    with pytest.raises(ValueError, match="env must be a JSON object"):
+        supervisor.WorkerSpec.from_dict({
+            "name": "bad-env", "argv": ["python"], "env": []})
+
+    path = tmp_path / "supervisor.json"
+    path.write_text(
+        '{"schema":1,"poll_interval_s":NaN,"workers":[]}', encoding="utf-8")
+    with pytest.raises(ValueError, match="non-finite JSON"):
+        supervisor.load_config(str(path))
+
+    config = supervisor.default_config(str(tmp_path), python="python")
+    config["workers"].append(dict(config["workers"][0]))
+    with pytest.raises(ValueError, match="names must be unique"):
+        supervisor.save_config(config, str(path))
+
+
 def test_slack_worker_adopts_fresh_legacy_heartbeat_then_takes_over(tmp_path):
     spawned = []
 

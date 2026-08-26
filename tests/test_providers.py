@@ -505,6 +505,32 @@ def test_direct_oauth_never_falls_back_to_ambient_oauth_token(monkeypatch):
     assert "login-store token is unavailable" in completion.error_detail
 
 
+def test_oauth_expiring_mid_run_returns_terminal_completion_instead_of_raising(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider, OAUTH_EXPIRED_HINT
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = False
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("expired token must stop before HTTP")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.text.startswith("ERROR(anthropic-oauth):")
+    assert completion.error_detail == OAUTH_EXPIRED_HINT
+
+
 def test_direct_oauth_request_reservation_failure_stops_before_http(monkeypatch):
     from harness.providers import AnthropicOAuthProvider
 

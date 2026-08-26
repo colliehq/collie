@@ -33,11 +33,41 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import costs
+
+
+def _mapping(value: Any) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _items(value: Any) -> tuple:
+    return tuple(value) if isinstance(value, (list, tuple, set, frozenset)) else ()
+
+
+def _strict_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    return bool(default) if value is None else False
+
+
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        if math.isfinite(number):
+            return number
+    return float(default)
+
+
+def _finite_int(value: Any, default: int = 0, *, minimum: int | None = None,
+                maximum: int = (1 << 63) - 1) -> int:
+    number = _finite_float(value, float(default))
+    answer = max(-maximum, min(maximum, int(number)))
+    return max(minimum, answer) if minimum is not None else answer
 from .recorder import RunResult
 
 
@@ -83,7 +113,9 @@ SURFACES = (
 # route every turn, slack has no approver, and loop feeds ``res.messages`` back in
 # (an external runner returns none).
 EXTERNAL_ALLOWED_SURFACES = {
-    1: ("run",),
+    # The phase-one CLIs now have host-owned Web/Pack/Mission call sites.  Later
+    # runner *protocols* remain phase-gated by their HarnessSpec.phase.
+    1: ("run", "web", "pack", "mission-code"),
     2: ("run", "web", "pack", "mission-code"),
     3: ("run", "web", "pack", "mission-code", "delegate", "automation"),
 }
@@ -111,14 +143,31 @@ CANONICAL_TYPES = frozenset({
 # serialized form contains neither the secret nor the "Bearer " marker the test
 # suite greps for.
 _REDACTED = "[redacted]"
-_AUTH_HEADER = re.compile(r"(?i)\b(authorization|proxy-authorization|x-api-key)\s*:[^\r\n]*")
+_AUTH_HEADER = re.compile(
+    r"(?i)\b(authorization|proxy-authorization|x-api-key|cookie|set-cookie)\s*:[^\r\n]*")
 _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _SECRETS = re.compile(
     r"\b(?:sk|sess)-[A-Za-z0-9_-]{4,}"           # OpenAI / Anthropic style keys, session ids
-    r"|\bghp_[A-Za-z0-9]{8,}"                    # GitHub personal access token
-    r"|\bAKIA[0-9A-Z]{8,}"                       # AWS access key id
+    r"|\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}"   # Stripe secret/restricted keys
+    r"|\bgsk_[A-Za-z0-9]{20,}"                   # Groq
+    r"|\b(?:xai|bai)-[A-Za-z0-9-]{20,}"          # xAI / Boson
+    r"|\bAIza[0-9A-Za-z_-]{35}\b"                # Google
+    r"|\bya29\.[0-9A-Za-z_-]{20,}"               # Google OAuth
+    r"|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}"
+    r"|\bgithub_pat_[A-Za-z0-9_]{20,}"            # GitHub tokens
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"            # Slack tokens
+    r"|\bAKIA[0-9A-Z]{16}\b"                     # AWS access key id
     r"|\beyJ[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_.=-]+)*"   # JWT (base64 '{"' header)
 )
+_ASSIGNED_SECRET = re.compile(
+    r"(?i)(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret[_-]?key|"
+    r"client[_-]?secret|password|passwd)\b\s*['\"]?\s*[=:]\s*['\"]?"
+    r"([A-Za-z0-9_\-./+]{16,})['\"]?")
+_SECRET_FLAG = re.compile(
+    r"(?i)(?:--?(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|"
+    r"password|passwd|token))\s+(?:['\"])?([A-Za-z0-9_\-./+]{16,})(?:['\"])?")
+_URL_CREDENTIAL = re.compile(
+    r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@")
 _PAYLOAD_LIMIT = 4_000
 
 
@@ -136,7 +185,46 @@ def redact_text(text: Any, limit: int = 16_000) -> str:
     value = _AUTH_HEADER.sub(lambda m: "%s: %s" % (m.group(1), _REDACTED), value)
     value = _BEARER.sub(_REDACTED, value)
     value = _SECRETS.sub(_REDACTED, value)
+    value = _ASSIGNED_SECRET.sub(
+        lambda match: match.group(0).replace(match.group(1), _REDACTED), value)
+    value = _SECRET_FLAG.sub(
+        lambda match: match.group(0).replace(match.group(1), _REDACTED), value)
+    value = _URL_CREDENTIAL.sub(lambda match: match.group(1) + _REDACTED + "@", value)
     return value[:limit]
+
+
+class _RedactionStructureError(ValueError):
+    pass
+
+
+def _redact_structure(value: Any, limit: int, depth: int,
+                      seen: set[int]) -> Any:
+    if depth > 64:
+        raise _RedactionStructureError("max-depth")
+    if isinstance(value, str):
+        return redact_text(value, limit)
+    if isinstance(value, float) and not math.isfinite(value):
+        return "[non-finite]"
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if not isinstance(value, (dict, list, tuple)):
+        return redact_text(repr(value), limit)
+
+    marker = id(value)
+    if marker in seen:
+        raise _RedactionStructureError("cycle")
+    seen.add(marker)
+    try:
+        if isinstance(value, dict):
+            return {
+                redact_text(key, min(limit, 256)):
+                    _redact_structure(item, limit, depth + 1, seen)
+                for key, item in value.items()
+            }
+        return [_redact_structure(item, limit, depth + 1, seen)
+                for item in value]
+    finally:
+        seen.discard(marker)
 
 
 def redact_value(value: Any, limit: int = _PAYLOAD_LIMIT) -> Any:
@@ -146,20 +234,16 @@ def redact_value(value: Any, limit: int = _PAYLOAD_LIMIT) -> Any:
     truncated preview rather than being dropped, because a truncated tool result
     still explains what the runner did while an absent one does not.
     """
-    if isinstance(value, str):
-        return redact_text(value, limit)
-    if isinstance(value, dict):
-        cleaned: dict[str, Any] = {
-            str(key): redact_value(item, limit) for key, item in value.items()
-        }
-    elif isinstance(value, (list, tuple)):
-        cleaned = [redact_value(item, limit) for item in value]
-    elif isinstance(value, (int, float, bool)) or value is None:
-        return value
-    else:
-        return redact_text(repr(value), limit)
     try:
-        encoded = json.dumps(cleaned, ensure_ascii=False, separators=(",", ":"))
+        cleaned = _redact_structure(value, limit, 0, set())
+    except (_RedactionStructureError, RecursionError) as exc:
+        reason = str(exc) if isinstance(exc, _RedactionStructureError) else "max-depth"
+        return {"truncated": True, "reason": reason}
+    if not isinstance(cleaned, (dict, list)):
+        return cleaned
+    try:
+        encoded = json.dumps(cleaned, ensure_ascii=False, separators=(",", ":"),
+                             allow_nan=False)
     except (TypeError, ValueError):
         return {"truncated": True, "preview": redact_text(repr(cleaned), limit)}
     if len(encoded) <= limit:
@@ -302,31 +386,32 @@ class RunnerCapabilities:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RunnerCapabilities":
-        value = dict(value or {})
+        value = _mapping(value)
         windows_native = value.get("windows_native")
         return cls(
             protocol=str(value.get("protocol") or ""),
             protocol_version=str(value.get("protocol_version") or ""),
-            session_create=bool(value.get("session_create", True)),
-            session_resume=bool(value.get("session_resume")),
-            session_fork=bool(value.get("session_fork")),
-            streaming=bool(value.get("streaming")),
-            cursor_replay=bool(value.get("cursor_replay")),
-            steer=bool(value.get("steer")),
-            follow_up=bool(value.get("follow_up")),
+            session_create=_strict_bool(value.get("session_create"), True),
+            session_resume=_strict_bool(value.get("session_resume")),
+            session_fork=_strict_bool(value.get("session_fork")),
+            streaming=_strict_bool(value.get("streaming")),
+            cursor_replay=_strict_bool(value.get("cursor_replay")),
+            steer=_strict_bool(value.get("steer")),
+            follow_up=_strict_bool(value.get("follow_up")),
             cancel=str(value.get("cancel") or "process-tree"),
-            approval_round_trip=bool(value.get("approval_round_trip")),
-            usage_tokens=bool(value.get("usage_tokens")),
-            usage_cost=bool(value.get("usage_cost")),
-            quota_signals=bool(value.get("quota_signals")),
-            request_gate=bool(value.get("request_gate")),
-            native_goal=bool(value.get("native_goal")),
-            native_scheduler=bool(value.get("native_scheduler")),
+            approval_round_trip=_strict_bool(value.get("approval_round_trip")),
+            usage_tokens=_strict_bool(value.get("usage_tokens")),
+            usage_cost=_strict_bool(value.get("usage_cost")),
+            quota_signals=_strict_bool(value.get("quota_signals")),
+            request_gate=_strict_bool(value.get("request_gate")),
+            native_goal=_strict_bool(value.get("native_goal")),
+            native_scheduler=_strict_bool(value.get("native_scheduler")),
             confinement=str(value.get("confinement") or "none"),
-            tools=frozenset(str(item) for item in (value.get("tools") or ())),
-            needs_git_workspace=bool(value.get("needs_git_workspace", True)),
+            tools=frozenset(str(item) for item in _items(value.get("tools"))),
+            needs_git_workspace=_strict_bool(value.get("needs_git_workspace"), True),
             prompt_transport=str(value.get("prompt_transport") or "stdin"),
-            windows_native=None if windows_native is None else bool(windows_native),
+            windows_native=(None if windows_native is None else
+                            _strict_bool(windows_native)),
         )
 
 
@@ -367,21 +452,22 @@ class HarnessSpec:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "HarnessSpec":
-        value = dict(value or {})
+        value = _mapping(value)
         return cls(
             key=str(value.get("key") or ""),
             label=str(value.get("label") or ""),
             kind=str(value.get("kind") or "external"),
             binary=str(value.get("binary") or ""),
-            version_argv=tuple(str(item) for item in (value.get("version_argv") or ())),
+            version_argv=tuple(str(item) for item in _items(value.get("version_argv"))),
             min_version=str(value.get("min_version") or ""),
             credential_family=str(value.get("credential_family") or ""),
             caps=RunnerCapabilities.from_dict(value.get("caps") or {}),
             env_policy=str(value.get("env_policy") or "native"),
             guard_alias=str(value.get("guard_alias") or ""),
-            phase=int(value.get("phase") or 1),
-            default_timeout_s=float(value.get("default_timeout_s") or 900.0),
-            notes=tuple(str(item) for item in (value.get("notes") or ())),
+            phase=_finite_int(value.get("phase"), 1, minimum=1),
+            default_timeout_s=max(.001, _finite_float(
+                value.get("default_timeout_s"), 900.0)),
+            notes=tuple(str(item) for item in _items(value.get("notes"))),
         )
 
 
@@ -430,6 +516,20 @@ class RunnerProbe:
             and not self.detail.startswith(NOT_IMPLEMENTED_PREFIX)
         )
 
+    def availability(self) -> str:
+        """Operator-facing state that does not conflate installed with runnable."""
+        if self.detail.startswith(NOT_IMPLEMENTED_PREFIX):
+            return "declared-not-runnable"
+        if not self.installed:
+            return "not-installed"
+        if self.login not in ("ok", "n/a"):
+            return "needs-login"
+        if not self.usable():
+            return "not-runnable"
+        if str(self.compat or "").lower().startswith("verified"):
+            return "runnable-verified"
+        return "runnable-unverified"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
@@ -447,25 +547,30 @@ class RunnerProbe:
             "ttl_s": self.ttl_s,
             "detail": self.detail,
             "usable": self.usable(),
+            "runnable": self.usable(),
+            "availability": self.availability(),
+            "compat_verified": str(self.compat or "").lower().startswith("verified"),
         }
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RunnerProbe":
-        value = dict(value or {})
+        value = _mapping(value)
+        raw_caps = _mapping(value.get("capabilities"))
         return cls(
             key=str(value.get("key") or ""),
-            installed=bool(value.get("installed")),
+            installed=_strict_bool(value.get("installed")),
             executable_path=str(value.get("executable_path") or ""),
             version=str(value.get("version") or ""),
             login=str(value.get("login") or "unknown"),
             billing_class=str(value.get("billing_class") or "unknown"),
             billing_mode=str(value.get("billing_mode") or "unconfigured"),
-            overage_attested=bool(value.get("overage_attested")),
-            billing_evidence=dict(value.get("billing_evidence") or {}),
-            capabilities=dict(value.get("capabilities") or {}),
+            overage_attested=_strict_bool(value.get("overage_attested")),
+            billing_evidence=_mapping(value.get("billing_evidence")),
+            capabilities=(RunnerCapabilities.from_dict(raw_caps).to_dict()
+                          if raw_caps else {}),
             compat=str(value.get("compat") or "unverified"),
-            probed_at=float(value.get("probed_at") or 0.0),
-            ttl_s=float(value.get("ttl_s") or 60.0),
+            probed_at=_finite_float(value.get("probed_at"), 0.0),
+            ttl_s=max(0.0, _finite_float(value.get("ttl_s"), 60.0)),
             detail=str(value.get("detail") or ""),
         )
 
@@ -514,13 +619,13 @@ class NativeSessionRef:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "NativeSessionRef":
-        value = dict(value or {})
+        value = _mapping(value)
         return cls(
             runner=str(value.get("runner") or ""),
             workspace=str(value.get("workspace") or ""),
             locator=str(value.get("locator") or ""),
             protocol_version=str(value.get("protocol_version") or ""),
-            created_at=float(value.get("created_at") or 0.0),
+            created_at=_finite_float(value.get("created_at"), 0.0),
             workspace_digest=str(value.get("workspace_digest") or ""),
         )
 
@@ -560,13 +665,13 @@ class CanonicalEvent:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "CanonicalEvent":
-        value = dict(value or {})
+        value = _mapping(value)
         return cls(
-            cursor=int(value.get("cursor") or 0),
+            cursor=_finite_int(value.get("cursor"), 0, minimum=0),
             type=str(value.get("type") or ""),
             native_type=str(value.get("native_type") or ""),
-            payload=dict(value.get("payload") or {}),
-            at=float(value.get("at") or 0.0),
+            payload=_mapping(value.get("payload")),
+            at=_finite_float(value.get("at"), 0.0),
             runner=str(value.get("runner") or ""),
         )
 
@@ -607,15 +712,15 @@ class ApprovalRequest:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ApprovalRequest":
-        value = dict(value or {})
+        value = _mapping(value)
         return cls(
             approval_id=str(value.get("approval_id") or ""),
             runner=str(value.get("runner") or ""),
             kind=str(value.get("kind") or ""),
             command=str(value.get("command") or ""),
             cwd=str(value.get("cwd") or ""),
-            paths=tuple(str(item) for item in (value.get("paths") or ())),
-            raw=dict(value.get("raw") or {}),
+            paths=tuple(str(item) for item in _items(value.get("paths")))[:256],
+            raw=_mapping(value.get("raw")),
         )
 
 
@@ -642,7 +747,7 @@ class ApprovalDecision:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ApprovalDecision":
-        value = dict(value or {})
+        value = _mapping(value)
         return cls(
             approval_id=str(value.get("approval_id") or ""),
             outcome=str(value.get("outcome") or ""),
@@ -709,7 +814,7 @@ class RunnerUsage:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RunnerUsage":
-        value = dict(value or {})
+        value = _mapping(value)
         return cls(
             input_tokens=_opt_int(value.get("input_tokens")),
             output_tokens=_opt_int(value.get("output_tokens")),
@@ -725,7 +830,8 @@ def _opt_int(value: Any) -> int | None:
     """int() that keeps "absent" distinguishable from zero."""
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
+    if (isinstance(value, (int, float)) and math.isfinite(float(value))
+            and 0 <= float(value) <= (1 << 63) - 1):
         return int(value)
     return None
 
@@ -733,7 +839,8 @@ def _opt_int(value: Any) -> int | None:
 def _opt_float(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
+    if (isinstance(value, (int, float)) and math.isfinite(float(value))
+            and float(value) >= 0):
         return float(value)
     return None
 
@@ -802,7 +909,7 @@ def usage_to_collie(runner_key: str, raw: dict) -> RunnerUsage:
         )
 
     if dialect == "claude":
-        # The `claude -p --output-format json` result object, or its `usage` member.
+        # The terminal object from `--output-format stream-json`, or its usage member.
         inner = raw.get("usage")
         counts = dict(inner) if isinstance(inner, dict) else raw
         return RunnerUsage(
@@ -916,8 +1023,32 @@ class RunnerReceipt:
     error: str = ""
 
     def __post_init__(self) -> None:
+        normalized_usage = RunnerUsage.from_dict(_mapping(self.usage))
+        recovery_required = self.recovery_required is True
+        object.__setattr__(self, "decision", redact_value(_mapping(self.decision)))
+        object.__setattr__(self, "native_session",
+                           redact_value(_mapping(self.native_session)))
+        object.__setattr__(self, "usage", normalized_usage.to_dict())
+        object.__setattr__(self, "usage_known",
+                           self.usage_known is True and normalized_usage.known)
+        object.__setattr__(self, "cost_usd_reported",
+                           _opt_float(self.cost_usd_reported))
+        object.__setattr__(self, "cost_usd_equivalent",
+                           _opt_float(self.cost_usd_equivalent))
+        object.__setattr__(self, "model", redact_text(self.model, 256))
+        object.__setattr__(self, "settled",
+                           self.settled is True and not recovery_required)
+        object.__setattr__(self, "recovery_required", recovery_required)
+        object.__setattr__(self, "mutated", None if self.mutated is None else
+                           self.mutated is True)
+        object.__setattr__(self, "event_count", _finite_int(
+            self.event_count, 0, minimum=0))
         object.__setattr__(self, "error", redact_text(self.error))
-        object.__setattr__(self, "approvals", tuple(self.approvals or ()))
+        object.__setattr__(self, "approvals", tuple(
+            redact_value(_mapping(item)) for item in _items(self.approvals)[-256:]
+            if isinstance(item, dict)))
+        object.__setattr__(self, "env_receipt",
+                           redact_value(_mapping(self.env_receipt)))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -948,8 +1079,9 @@ class RunnerReceipt:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RunnerReceipt":
-        value = dict(value or {})
+        value = _mapping(value)
         mutated = value.get("mutated")
+        approvals = _items(value.get("approvals"))[-256:]
         return cls(
             runner=str(value.get("runner") or ""),
             runner_version=str(value.get("runner_version") or ""),
@@ -958,20 +1090,21 @@ class RunnerReceipt:
             billing_class=str(value.get("billing_class") or "unknown"),
             billing_mode=str(value.get("billing_mode") or "unconfigured"),
             credential_family=str(value.get("credential_family") or ""),
-            decision=dict(value.get("decision") or {}),
-            native_session=dict(value.get("native_session") or {}),
-            usage=dict(value.get("usage") or {}),
-            usage_known=bool(value.get("usage_known")),
+            decision=_mapping(value.get("decision")),
+            native_session=_mapping(value.get("native_session")),
+            usage=_mapping(value.get("usage")),
+            usage_known=_strict_bool(value.get("usage_known")),
             cost_usd_reported=_opt_float(value.get("cost_usd_reported")),
             cost_usd_equivalent=_opt_float(value.get("cost_usd_equivalent")),
             model=str(value.get("model") or ""),
-            settled=bool(value.get("settled")),
-            recovery_required=bool(value.get("recovery_required")),
-            mutated=None if mutated is None else bool(mutated),
+            settled=_strict_bool(value.get("settled")),
+            recovery_required=_strict_bool(value.get("recovery_required")),
+            mutated=None if mutated is None else _strict_bool(mutated),
             events_digest=str(value.get("events_digest") or ""),
-            event_count=int(value.get("event_count") or 0),
-            approvals=tuple(dict(item) for item in (value.get("approvals") or ())),
-            env_receipt=dict(value.get("env_receipt") or {}),
+            event_count=_finite_int(value.get("event_count"), 0, minimum=0),
+            approvals=tuple(_mapping(item) for item in approvals
+                            if isinstance(item, dict)),
+            env_receipt=_mapping(value.get("env_receipt")),
             fallback_from=str(value.get("fallback_from") or ""),
             error=str(value.get("error") or ""),
         )
@@ -1018,8 +1151,9 @@ class HarnessRequest:
         A pin or an explicit ``RUNNER=<key>`` narrows to exactly one candidate, so
         the default ``RUNNER=collie`` path never probes anything — that is what
         keeps the untouched configuration at literally zero added cost.  Only
-        ``auto`` opens the pool, and ``collie`` is always appended as the backstop
-        because a filtered-empty pool must still run the task.
+        ``auto`` opens the pool, and ``collie`` is always appended as the backstop.
+        It is still subject to hard billing rules: a filtered-empty pool refuses
+        rather than overriding ``no_paid_overage``/``subscription_only``.
         """
         if self.pin:
             return (self.pin,)
@@ -1067,34 +1201,36 @@ class HarnessRequest:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "HarnessRequest":
-        value = dict(value or {})
+        value = _mapping(value)
         is_git = value.get("workspace_is_git")
         model = value.get("model")
         return cls(
             surface=str(value.get("surface") or ""),
             intent=str(value.get("intent") or ""),
             route_kind=str(value.get("route_kind") or ""),
-            needs=frozenset(str(item) for item in (value.get("needs") or ())),
+            needs=frozenset(str(item) for item in _items(value.get("needs"))),
             workspace=str(value.get("workspace") or ""),
             workspace_path=str(value.get("workspace_path") or ""),
-            workspace_is_git=None if is_git is None else bool(is_git),
+            workspace_is_git=(None if is_git is None else _strict_bool(is_git)),
             strategy=str(value.get("strategy") or "single"),
             provider=str(value.get("provider") or ""),
             model=None if model is None else str(model),
             provider_family=str(value.get("provider_family") or ""),
             pin=str(value.get("pin") or ""),
             configured=str(value.get("configured") or "collie"),
-            pool=tuple(str(item) for item in (value.get("pool") or ("collie",))),
-            no_paid_overage=bool(value.get("no_paid_overage")),
-            subscription_only=bool(value.get("subscription_only")),
-            overnight=bool(value.get("overnight")),
+            pool=tuple(str(item) for item in
+                       (_items(value.get("pool")) or ("collie",))),
+            no_paid_overage=_strict_bool(value.get("no_paid_overage")),
+            subscription_only=_strict_bool(value.get("subscription_only")),
+            overnight=_strict_bool(value.get("overnight")),
             max_cost_usd=_opt_float(value.get("max_cost_usd")),
             max_total_tokens=_opt_int(value.get("max_total_tokens")),
-            has_approver=bool(value.get("has_approver")),
+            has_approver=_strict_bool(value.get("has_approver")),
             gate_mode=str(value.get("gate_mode") or ""),
             os_name=str(value.get("os_name") or "nt"),
-            phase=int(value.get("phase") or CURRENT_PHASE),
-            history_window_days=int(value.get("history_window_days") or 14),
+            phase=_finite_int(value.get("phase"), CURRENT_PHASE, minimum=1),
+            history_window_days=_finite_int(
+                value.get("history_window_days"), 14, minimum=0),
         )
 
 
@@ -1125,14 +1261,16 @@ class CandidateScore:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "CandidateScore":
-        value = dict(value or {})
+        value = _mapping(value)
+        raw_terms = _mapping(value.get("terms"))
         return cls(
             key=str(value.get("key") or ""),
-            eligible=bool(value.get("eligible")),
-            hard_reasons=tuple(str(item) for item in (value.get("hard_reasons") or ())),
-            score=float(value.get("score") or 0.0),
-            terms={str(k): float(v) for k, v in dict(value.get("terms") or {}).items()},
-            soft_reasons=tuple(str(item) for item in (value.get("soft_reasons") or ())),
+            eligible=_strict_bool(value.get("eligible")),
+            hard_reasons=tuple(str(item) for item in _items(value.get("hard_reasons"))),
+            score=_finite_float(value.get("score"), 0.0),
+            terms={str(k): _finite_float(v, 0.0)
+                   for k, v in list(raw_terms.items())[:256]},
+            soft_reasons=tuple(str(item) for item in _items(value.get("soft_reasons"))),
         )
 
 
@@ -1182,19 +1320,22 @@ class HarnessDecision:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "HarnessDecision":
-        value = dict(value or {})
+        value = _mapping(value)
         return cls(
             runner=str(value.get("runner") or ""),
             source=str(value.get("source") or ""),
             credential_family=str(value.get("credential_family") or ""),
             billing_class=str(value.get("billing_class") or "unknown"),
             billing_mode=str(value.get("billing_mode") or "unconfigured"),
-            reasons=tuple(str(item) for item in (value.get("reasons") or ())),
-            rejected={str(k): str(v) for k, v in dict(value.get("rejected") or {}).items()},
+            reasons=tuple(str(item) for item in _items(value.get("reasons"))),
+            rejected={str(k): str(v) for k, v in _mapping(
+                value.get("rejected")).items()},
             candidates=tuple(CandidateScore.from_dict(item)
-                             for item in (value.get("candidates") or ())),
-            fallback_chain=tuple(str(item) for item in (value.get("fallback_chain") or ())),
-            probe=dict(value.get("probe") or {}),
+                             for item in _items(value.get("candidates"))
+                             if isinstance(item, dict)),
+            fallback_chain=tuple(str(item) for item in _items(
+                value.get("fallback_chain"))),
+            probe=_mapping(value.get("probe")),
             probe_digest=str(value.get("probe_digest") or ""),
             signals_digest=str(value.get("signals_digest") or ""),
             error=str(value.get("error") or ""),

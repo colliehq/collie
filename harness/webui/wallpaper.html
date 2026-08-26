@@ -45,6 +45,18 @@
   .bgmode #top,.bgmode #chat,.bgmode #brand{display:none!important}   /* ?bg=1 → pure galaxy for the behind-icons wallpaper layer (chat lives in a separate floating window) */
   :where(button,textarea):focus-visible{outline:3px solid var(--pine2);outline-offset:3px}
   @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
+  /* Quiet visual run view: preserve the galaxy, reduce the control chrome. */
+  :root{--ink:#edf2ed;--mut:#98a59c;--faint:#5e6b62;--bg:#050806;--pine:#93b9a6;--pine2:#b2d0c1;
+    --amber:#d7a557;--green:#72c39a;--coral:#ef776e}
+  .glass{background:rgba(15,20,17,.80);border-color:rgba(178,199,184,.15);backdrop-filter:blur(12px);box-shadow:0 10px 30px -18px #000}
+  #top{top:16px}
+  #banner{gap:9px;padding:8px 14px;border-radius:10px;font-size:13px}
+  #banner .bdot{width:8px;height:8px}
+  #banner #btitle{font-size:13px}#banner #bsub{font-size:12px}
+  #chat{bottom:70px;width:min(620px,92vw);border-radius:13px;padding:9px 10px;gap:8px}
+  .composer textarea{border-radius:9px;background:rgba(255,255,255,.025)}
+  .send,.newc{width:40px;height:40px;border-radius:9px}
+  #brand{left:18px;bottom:58px;font-size:9px;letter-spacing:.1em}
 </style></head><body>
 <script>(function(){try{var m=new URLSearchParams(location.search);if(m.get('bg')==='1'){document.documentElement.className+=' bgmode';document.title='collie-bg';}}catch(e){}})();</script>
 <canvas id="cv" aria-hidden="true"></canvas>

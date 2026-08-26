@@ -39,6 +39,13 @@ Local features — driving your logged-in browser, arranging your desktop, contr
 recording your screen — run **entirely on your own computer**. Their output stays local unless you
 send it somewhere yourself.
 
+The browser extension's current-page side chat sends the question plus the displayed page title,
+URL, and any text you explicitly selected to the model provider configured in your local Collie.
+It does so only after you press Send. The bridge token, Web UI token, cookies, and raw browser profile
+are not sent to the page or to Collie's servers. Browser tab ownership, pause state, and per-site
+input preferences stay in Chrome's extension storage; Collie's persistent navigation preference
+stays in local `~/.collie/settings.json`.
+
 ## Your machine, your control
 
 Every capability that touches your real environment is **opt-in and user-initiated**: the browser

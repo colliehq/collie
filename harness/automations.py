@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -64,7 +65,29 @@ class AutomationQueueFull(AutomationError):
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+                      allow_nan=False)
+
+
+def _reject_json_constant(value: str):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _json_object(value: Any, *, label: str = "automation JSON") -> dict:
+    parsed = json.loads(value, parse_constant=_reject_json_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("%s must be an object" % label)
+    return parsed
+
+
+def _runtime_number(value: Any, label: str, *, integer: bool = False) -> int | float:
+    if (not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(float(value)) or float(value) < 0):
+        raise ValueError("%s must be a finite non-negative %s" %
+                         (label, "integer" if integer else "number"))
+    if integer and not float(value).is_integer():
+        raise ValueError("%s must be a finite non-negative integer" % label)
+    return int(value) if integer else float(value)
 
 
 def _canonical(path: str) -> str:
@@ -107,6 +130,7 @@ class PermissionPolicy:
     write_roots: tuple[str, ...] = ()
     network_hosts: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
+    desktop_targets: tuple[str, ...] = ()
     external_writes: bool = False
     current_workspace: bool = False
     webhook_ingest: bool = False
@@ -114,15 +138,32 @@ class PermissionPolicy:
     @classmethod
     def from_dict(cls, value: dict | None):
         value = value or {}
+        if not isinstance(value, dict):
+            raise ValueError("permissions must be an object")
+
+        def collection(key):
+            raw = value.get(key, ())
+            if not isinstance(raw, (list, tuple, set, frozenset)):
+                raise ValueError("permissions.%s must be a list" % key)
+            return raw
+
+        def flag(key):
+            raw = value.get(key, False)
+            if not isinstance(raw, bool):
+                raise ValueError("permissions.%s must be boolean" % key)
+            return raw
+
         return cls(
-            tuple(_canonical(p) for p in value.get("read_roots", ()) if str(p).strip()),
-            tuple(_canonical(p) for p in value.get("write_roots", ()) if str(p).strip()),
-            tuple(sorted({str(h).strip().lower() for h in value.get("network_hosts", ())
+            tuple(_canonical(p) for p in collection("read_roots") if str(p).strip()),
+            tuple(_canonical(p) for p in collection("write_roots") if str(p).strip()),
+            tuple(sorted({str(h).strip().lower() for h in collection("network_hosts")
                           if str(h).strip()})),
-            tuple(sorted({str(t).strip() for t in value.get("tools", ()) if str(t).strip()})),
-            bool(value.get("external_writes", False)),
-            bool(value.get("current_workspace", False)),
-            bool(value.get("webhook_ingest", False)),
+            tuple(sorted({str(t).strip() for t in collection("tools") if str(t).strip()})),
+            tuple(sorted({str(t).strip().lower() for t in collection("desktop_targets")
+                          if str(t).strip()})),
+            flag("external_writes"),
+            flag("current_workspace"),
+            flag("webhook_ingest"),
         )
 
     def as_dict(self) -> dict:
@@ -150,6 +191,14 @@ class PermissionPolicy:
         if not self.external_writes:
             raise PermissionDenied("external writes are not permitted")
         return True
+
+    def require_desktop_target(self, target: str) -> str:
+        target = str(target or "").strip().lower()
+        if not target:
+            raise PermissionDenied("desktop action has no scopeable target")
+        if target not in self.desktop_targets:
+            raise PermissionDenied("desktop target %s is not permitted" % target)
+        return target
 
     def require_url(self, url: str) -> str:
         parsed = urllib.parse.urlsplit(url)
@@ -179,41 +228,59 @@ class AutomationSpec:
 
     @classmethod
     def from_dict(cls, value: dict):
+        if not isinstance(value, dict):
+            raise ValueError("automation spec must be an object")
+
+        def object_field(key, default):
+            raw = value.get(key, default)
+            if not isinstance(raw, dict):
+                raise ValueError("%s must be an object" % key)
+            return dict(raw)
+
         aid = str(value.get("automation_id") or value.get("id") or "")
         if not _ID_RE.fullmatch(aid):
             raise ValueError("automation id must be 1-80 safe characters")
         task = str(value.get("task") or "").strip()
         if not task:
             raise ValueError("automation task is required")
-        trigger = dict(value.get("trigger") or {})
+        trigger = object_field("trigger", {})
         if not str(trigger.get("provider") or "").strip():
             raise ValueError("trigger.provider is required")
-        context = dict(value.get("context") or {"policy": "fresh"})
+        for key in ("fire_immediately", "catch_up"):
+            if key in trigger and not isinstance(trigger[key], bool):
+                raise ValueError("trigger.%s must be boolean" % key)
+        context = object_field("context", {"policy": "fresh"})
         policy = context.get("policy", "fresh")
         if policy not in ("fresh", "continued"):
             raise ValueError("context.policy must be fresh or continued")
         if policy == "continued" and not str(context.get("session_id") or "").strip():
             raise ValueError("continued context requires an explicit session_id")
-        workspace = dict(value.get("workspace") or {"mode": "isolated"})
+        workspace = object_field("workspace", {"mode": "isolated"})
         if workspace.get("mode", "isolated") not in ("isolated", "current"):
             raise ValueError("workspace.mode must be isolated or current")
         permissions = PermissionPolicy.from_dict(value.get("permissions"))
         if workspace.get("mode", "isolated") == "current" and not permissions.current_workspace:
             raise ValueError("current workspace requires permissions.current_workspace=true")
-        budget = dict(value.get("budget") or {})
+        budget = object_field("budget", {})
         defaults = {"max_wall_s": 1800.0, "max_model_tokens": 200000,
                     "max_cost_usd": 25.0, "max_actions": 100,
                     "max_runs_per_day": 24, "max_retries": 1, "max_turns": 50}
         for key, default in defaults.items():
             raw = budget.get(key, default)
             try:
+                if isinstance(raw, bool):
+                    raise ValueError
                 number = float(raw) if isinstance(default, float) else int(raw)
-            except (TypeError, ValueError):
+                if (not math.isfinite(float(number)) or
+                        (not isinstance(default, float) and isinstance(raw, float)
+                         and not raw.is_integer())):
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
                 raise ValueError("budget.%s must be numeric" % key)
             if number < 0 or (key != "max_retries" and number == 0):
                 raise ValueError("budget.%s must be positive" % key)
             budget[key] = number
-        execution = dict(value.get("execution") or {})
+        execution = object_field("execution", {})
         mode = str(execution.get("mode") or "project")
         if mode not in ("plan", "project"):
             raise ValueError("unattended execution.mode must be plan or project")
@@ -221,13 +288,19 @@ class AutomationSpec:
         for key in ("provider", "model", "project"):
             if key in execution:
                 execution[key] = str(execution[key])
-        notifications = tuple(sorted({str(x) for x in value.get(
-            "notifications", ("failure", "needs_you"))
+        if "allow_mock" in execution and not isinstance(execution["allow_mock"], bool):
+            raise ValueError("execution.allow_mock must be boolean")
+        if "enabled" in value and not isinstance(value["enabled"], bool):
+            raise ValueError("enabled must be boolean")
+        raw_notifications = value.get("notifications", ("failure", "needs_you"))
+        if not isinstance(raw_notifications, (list, tuple, set, frozenset)):
+            raise ValueError("notifications must be a list")
+        notifications = tuple(sorted({str(x) for x in raw_notifications
                                       if str(x) in ("start", "success", "failure", "needs_you")}))
         return cls(automation_id=aid, task=task, trigger=trigger, context=context,
                    workspace=workspace, budget=budget, execution=execution,
                    notifications=notifications, permissions=permissions,
-                   enabled=bool(value.get("enabled", True)))
+                   enabled=value.get("enabled", True))
 
     def as_dict(self) -> dict:
         value = asdict(self)
@@ -485,18 +558,19 @@ class AutomationStore:
 
     def specs(self, *, enabled_only: bool = True) -> list[AutomationSpec]:
         sql = "SELECT spec_json FROM automations" + (" WHERE enabled=1" if enabled_only else "")
-        return [AutomationSpec.from_dict(json.loads(row[0]))
+        return [AutomationSpec.from_dict(_json_object(row[0], label="durable automation spec"))
                 for row in self.db.execute(sql + " ORDER BY automation_id")]
 
     def spec(self, automation_id: str) -> AutomationSpec | None:
         row = self.db.execute("SELECT spec_json FROM automations WHERE automation_id=?",
                               (automation_id,)).fetchone()
-        return AutomationSpec.from_dict(json.loads(row[0])) if row else None
+        return AutomationSpec.from_dict(
+            _json_object(row[0], label="durable automation spec")) if row else None
 
     def cursor(self, automation_id: str) -> dict:
         row = self.db.execute("SELECT cursor_json FROM trigger_state WHERE automation_id=?",
                               (automation_id,)).fetchone()
-        return json.loads(row[0]) if row else {}
+        return _json_object(row[0], label="durable trigger cursor") if row else {}
 
     def set_cursor(self, automation_id: str, cursor: dict, *, error: str = "",
                    now: float | None = None):
@@ -581,6 +655,20 @@ class AutomationStore:
                     self.db.commit()
                     return None
                 row = rows[0]
+                try:
+                    request = _json_object(
+                        row["request_json"], label="durable automation request")
+                except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
+                    self.db.execute(
+                        "UPDATE executions SET state=?,updated_at=?,last_error=? "
+                        "WHERE execution_id=? AND state=?",
+                        (NEEDS_YOU, now, "invalid durable request JSON: %s" % exc,
+                         row["execution_id"], PENDING))
+                    self.audit(row["automation_id"], "recovery", NEEDS_YOU, {
+                        "reason": "invalid_durable_request_json",
+                    }, execution_id=row["execution_id"], now=now)
+                    self.db.commit()
+                    return None
                 lease_token = uuid.uuid4().hex
                 self.db.execute(
                     "UPDATE executions SET state=?,attempts=attempts+1,lease_until=?,"
@@ -595,7 +683,8 @@ class AutomationStore:
                 out["attempts"] = int(out["attempts"]) + 1
                 out["lease_token"] = lease_token
                 out["lease_until"] = now + max(1.0, lease_s)
-                out["request"] = json.loads(out.pop("request_json"))
+                out.pop("request_json")
+                out["request"] = request
                 return out
             except Exception:
                 self.db.rollback()
@@ -610,11 +699,17 @@ class AutomationStore:
                 "SELECT execution_id,automation_id,request_json,attempts FROM executions "
                 "WHERE state=? AND lease_until<=?", (RUNNING, now)))
             for row in rows:
-                request = json.loads(row["request_json"])
-                retries = int((request.get("budget") or {}).get("max_retries", 1))
+                try:
+                    request = _json_object(
+                        row["request_json"], label="durable automation request")
+                    retries = int((request.get("budget") or {}).get("max_retries", 1))
+                    replay_safe = _replay_safe_request(request)
+                except (TypeError, ValueError, OverflowError, json.JSONDecodeError,
+                        RecursionError):
+                    request, retries, replay_safe = {}, -1, False
                 # Unknown side effects are never guessed safe. Read-only runs may be retried within
                 # their explicit retry budget; externally mutating ones wait for a human verdict.
-                state = (PENDING if _replay_safe_request(request)
+                state = (PENDING if replay_safe
                          and int(row["attempts"]) <= retries else NEEDS_YOU)
                 cur = self.db.execute(
                     "UPDATE executions SET state=?,lease_until=0,lease_token='',"
@@ -625,7 +720,7 @@ class AutomationStore:
                 if cur.rowcount:
                     self.audit(row["automation_id"], "recovery", state, {
                         "reason": "lease_expired",
-                        "replay_safe": _replay_safe_request(request),
+                        "replay_safe": replay_safe,
                     }, execution_id=row["execution_id"], now=now)
                     changed += 1
             self.db.commit()
@@ -678,12 +773,15 @@ class AutomationStore:
                   cost_usd: float = 0, actions: int = 0, wall_s: float = 0,
                   now: float | None = None) -> dict:
         now = float(time.time() if now is None else now)
+        model_tokens = _runtime_number(model_tokens, "model_tokens", integer=True)
+        cost_usd = _runtime_number(cost_usd, "cost_usd")
+        actions = _runtime_number(actions, "actions", integer=True)
+        wall_s = _runtime_number(wall_s, "wall_s")
         with self._lock:
             self.db.execute(
                 "UPDATE usage SET model_tokens=model_tokens+?,cost_usd=cost_usd+?,"
                 "actions=actions+?,wall_s=wall_s+?,updated_at=? WHERE execution_id=?",
-                (max(0, int(model_tokens)), max(0.0, float(cost_usd)), max(0, int(actions)),
-                 max(0.0, float(wall_s)), now, execution_id))
+                (model_tokens, cost_usd, actions, wall_s, now, execution_id))
             self.db.commit()
         return self.usage(execution_id)
 
@@ -706,7 +804,8 @@ class AutomationStore:
         out = []
         for row in self.db.execute(query, args):
             item = dict(row)
-            item["detail"] = json.loads(item.pop("detail_json") or "{}")
+            item["detail"] = _json_object(
+                item.pop("detail_json") or "{}", label="durable automation audit detail")
             out.append(item)
         return out
 
@@ -793,15 +892,16 @@ class BudgetGuard:
 
     def consume(self, *, model_tokens: int = 0, cost_usd: float = 0,
                 actions: int = 0) -> dict:
-        wall = max(0.0, self.clock() - self.started)
+        wall = _runtime_number(self.clock() - self.started, "elapsed wall time")
         usage = self.store.add_usage(self.execution_id, model_tokens=model_tokens,
                                      cost_usd=cost_usd, actions=actions, wall_s=wall)
         self.started = self.clock()
         checks = (("model_tokens", "max_model_tokens"), ("cost_usd", "max_cost_usd"),
                   ("actions", "max_actions"), ("wall_s", "max_wall_s"))
         for used, limit in checks:
-            cap = float(self.budget.get(limit, 0) or 0)
-            if cap and float(usage.get(used, 0) or 0) > cap:
+            cap = _runtime_number(self.budget.get(limit, 0) or 0, "budget.%s" % limit)
+            consumed = _runtime_number(usage.get(used, 0) or 0, "usage.%s" % used)
+            if cap and consumed > cap:
                 raise BudgetExceeded("automation %s exceeded %s" % (self.execution_id, limit))
         return usage
 
@@ -1023,13 +1123,30 @@ class _LimitedTool:
 
     def _authorize_args(self, args: dict):
         if self.name in ("read_file", "grep"):
-            self._path(str(args.get("path") or "."), write=False)
+            return self._path(str(args.get("path") or "."), write=False)
         elif self.name in ("write_file", "edit_file"):
-            self._path(str(args.get("path") or ""), write=True)
+            return self._path(str(args.get("path") or ""), write=True)
         elif self.name == "glob":
             pattern = str(args.get("pattern") or "")
             if os.path.isabs(pattern) or ".." in pattern.replace("\\", "/").split("/"):
                 raise PermissionDenied("glob pattern may not escape the resolved workspace")
+            return pattern
+        elif self.name == "desktop_apps":
+            raise PermissionDenied("unattended desktop_apps would enumerate every visible app")
+        elif self.name.startswith("desktop_"):
+            from .risk import RiskClass, classify, target_for
+            target = target_for(self.name, args)
+            self.policy.require_desktop_target(target or "")
+            if classify(self.name, self.inner) is RiskClass.EXTERNAL:
+                self.policy.require_external_write()
+            return target
+        elif self.name == "screenshot":
+            # Whole-screen unattended capture would exceed any per-app grant. A title is
+            # required and bound to the automation's snapshotted desktop_targets list.
+            target = str(args.get("title") or "").strip().lower()
+            self.policy.require_desktop_target(target)
+            return target
+        return self.name
 
     def run(self, args, ctx):
         remaining = self.deadline - time.monotonic()
@@ -1038,11 +1155,11 @@ class _LimitedTool:
             return "ERROR: automation wall/action budget exhausted"
         args = dict(args or {})
         try:
-            self._authorize_args(args)
+            authorized_target = self._authorize_args(args)
         except PermissionDenied as exc:
             self._audit("denied", str(args.get("path") or args.get("pattern") or ""), str(exc))
             return "ERROR: permission denied: %s" % exc
-        self._audit("allowed", str(args.get("path") or args.get("pattern") or self.name))
+        self._audit("allowed", str(authorized_target or self.name))
         props = (self.schema or {}).get("properties") or {}
         for key in ("timeout_s", "timeout"):
             if key in props:
@@ -1059,10 +1176,14 @@ class _LimitedTool:
         return result
 
 
-def _unscopable_unattended_tool(name: str) -> bool:
+def _unscopable_unattended_tool(name: str, policy: PermissionPolicy | None = None) -> bool:
     """Return true when ambient authority cannot be reduced to this execution's snapshot."""
-    return (name in ("bash", "execute_code", "load_tools", "enable_capability", "screenshot")
-            or name.startswith(("browser_", "desktop_", "mcp__", "mcpctl_")))
+    if name == "desktop_apps":
+        return True
+    if name == "screenshot" or name.startswith("desktop_"):
+        return not bool(policy and policy.desktop_targets)
+    return (name in ("bash", "execute_code", "load_tools", "enable_capability")
+            or name.startswith(("browser_", "mcp__", "mcpctl_")))
 
 
 def _run_collie_request(request: dict) -> dict:
@@ -1101,12 +1222,13 @@ def _run_collie_request(request: dict) -> dict:
         if hasattr(harness.provider, "timeout"):
             harness.provider.timeout = max(.2, min(float(harness.provider.timeout), wall_cap))
         allowed = set((request.get("permissions") or {}).get("tools") or ())
+        policy = PermissionPolicy.from_dict(request.get("permissions"))
         # These tools cannot be scoped precisely by path/host after handoff (shell can `cd ..` or
         # open arbitrary sockets; browser/MCP/desktop calls operate on ambient authenticated state).
         # The default unattended executor therefore never registers them. A future OS sandbox or
         # authenticated external-action executor can implement a separate runner explicitly.
         unsafe = {name for name in harness.registry._tools  # noqa: SLF001
-                  if _unscopable_unattended_tool(name)}
+                  if _unscopable_unattended_tool(name, policy)}
         if "*" not in allowed:
             harness.registry._tools = {name: tool for name, tool in harness.registry._tools.items()
                                        if name in allowed and name not in unsafe}  # noqa: SLF001
@@ -1119,7 +1241,15 @@ def _run_collie_request(request: dict) -> dict:
                 "denied_unscopable": sorted(allowed & unsafe),
             }, execution_id=request["execution_id"])
             authority_store.db.commit()
-        policy = PermissionPolicy.from_dict(request.get("permissions"))
+        # The normal project gate asks a person before external desktop calls. An
+        # unattended automation has no approver, so preinstall only the exact
+        # (tool,target) rules snapshotted in its spec. _LimitedTool independently
+        # rechecks the same target and external_writes flag at execution time.
+        if getattr(harness, "gate", None) is not None:
+            for name in allowed:
+                if name.startswith("desktop_"):
+                    for target in policy.desktop_targets:
+                        harness.gate.session_rules.add((name, target))
         harness.registry._tools = {  # noqa: SLF001
             name: _LimitedTool(tool, deadline, counter,
                                int(budget.get("max_actions") or 1), policy, cwd,
@@ -1196,7 +1326,8 @@ class DefaultCollieRunner:
             child_request = dict(request)
             child_request["_authority_db"] = guard.store.path
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(child_request, fh, ensure_ascii=False)
+                json.dump(child_request, fh, ensure_ascii=False, allow_nan=False)
+                fh.flush(); os.fsync(fh.fileno())
             env = os.environ.copy()
             env["COLLIE_MAX_TOTAL_TOKENS"] = str(int(budget["max_model_tokens"]))
             env["COLLIE_MAX_COST"] = str(float(budget["max_cost_usd"]))
@@ -1219,7 +1350,9 @@ class DefaultCollieRunner:
                 raise BudgetExceeded("automation hard wall-time budget exhausted")
             try:
                 with open(result_path, encoding="utf-8") as fh:
-                    result = json.load(fh)
+                    result = json.load(fh, parse_constant=_reject_json_constant)
+                if not isinstance(result, dict):
+                    raise ValueError("child result is not an object")
             except Exception:
                 raise AutomationError("Collie automation child exited %s without a result" %
                                       proc.returncode)
@@ -1230,14 +1363,17 @@ class DefaultCollieRunner:
                 if kind == "BudgetExceeded":
                     raise BudgetExceeded(str(result["exception"]))
                 raise AutomationError(str(result["exception"]))
-            guard.consume(model_tokens=int(result.get("total_tokens") or 0),
-                          cost_usd=float(result.get("cost_usd") or 0),
-                          actions=int(result.get("tool_calls") or 0))
+            guard.consume(
+                model_tokens=_runtime_number(
+                    result.get("total_tokens") or 0, "child total_tokens", integer=True),
+                cost_usd=_runtime_number(result.get("cost_usd") or 0, "child cost_usd"),
+                actions=_runtime_number(
+                    result.get("tool_calls") or 0, "child tool_calls", integer=True))
             return result
         finally:
             with self._lock:
                 self._proc = None
-            shutil.rmtree(temp_root, ignore_errors=True)
+            shutil.rmtree(temp_root)
 
 
 class AutomationDaemon:
@@ -1347,21 +1483,26 @@ def main(argv=None) -> int:
     if args.action == "_execute":
         try:
             with open(args.request, encoding="utf-8") as fh:
-                value = _run_collie_request(json.load(fh))
+                request = json.load(fh, parse_constant=_reject_json_constant)
+            if not isinstance(request, dict):
+                raise ValueError("automation child request must be an object")
+            value = _run_collie_request(request)
         except Exception as exc:
             value = {"exception_type": type(exc).__name__,
                      "exception": "%s: %s" % (type(exc).__name__, exc)}
-        fd = os.open(args.result, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        result_temp = args.result + ".tmp.%d" % os.getpid()
+        fd = os.open(result_temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(value, fh, ensure_ascii=False)
+            json.dump(value, fh, ensure_ascii=False, allow_nan=False)
             fh.flush(); os.fsync(fh.fileno())
+        os.replace(result_temp, args.result)
         return 0
     state, db_path, ops_path, workspace_root = _cli_paths(args)
 
     if args.action == "upsert":
         raw = sys.stdin.read() if args.config == "-" else open(
             os.path.abspath(args.config), encoding="utf-8").read()
-        values = json.loads(raw)
+        values = json.loads(raw, parse_constant=_reject_json_constant)
         values = values if isinstance(values, list) else [values]
         with AutomationStore(db_path) as store:
             specs = [store.upsert(value).as_dict() for value in values]
@@ -1376,7 +1517,8 @@ def main(argv=None) -> int:
         with AutomationStore(db_path) as store:
             value = {"executions": store.executions(args.automation_id),
                      "audit": store.audit_log(args.automation_id),
-                     "configured": [spec.automation_id for spec in store.specs(False)]}
+                     "configured": [spec.automation_id for spec in
+                                    store.specs(enabled_only=False)]}
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return 0
     if args.action == "tick":

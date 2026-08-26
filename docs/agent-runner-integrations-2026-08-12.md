@@ -1,7 +1,7 @@
 # Collie Agent Runner 集成决策
 
 日期：2026-08-12
-状态：Collie 原生 overnight control plane 与官方 Claude Agent SDK 路线已实现并通过短 E2E；12 小时 soak 尚未执行；Codex `exec` runner POC 已验证；其他 adapter 仍是集成计划
+状态：Collie 原生 overnight control plane 与官方 Claude Agent SDK 路线已实现并通过短 E2E；12 小时 soak 尚未执行；Codex `exec` 与 Claude Code phase-one worker 已贯通 CLI、Web、Pack 和非 overnight Mission code slice；其他 adapter 仍是集成计划
 
 ## 结论
 
@@ -35,7 +35,9 @@ SHA-256 一并保存在上述脱敏证据中。确定性单测另外覆盖 reser
 
 **历史、已被取代：**早期 branch 的 `anthropic-oauth` 实验曾由 Collie 直接向 Messages endpoint 发 raw OAuth 请求；测试账号的最小 probe 返回 HTTP 429，并且 login-store token 不覆盖 12 小时。这个事实保留用于解释为何放弃 raw direct 路线，但它不再描述当前 native overnight provider，也不能用来否定或证明 Agent SDK 路线。
 
-外部集成建议保持统一 `AgentRunner` contract。已有的 `CodexExecRunner` POC 验证了 JSONL 事件、usage 和同一 thread resume；下一步优先用 Codex SDK 做自动化 worker，需要完整 approval/event/live-control 时再接 App Server。Prime RPC 和 Pi RPC 可共用严格 LF-JSONL transport，但 adapter 必须分开。Hermes 则同时提供 Gateway worker 协议和可借鉴的 durable goal/Kanban claim 语义。ACP 保留为编辑器互操作层，不作为 Collie 的首选 worker 控制协议。
+外部集成保持统一 `AgentRunner` contract。当前 `CodexExecRunner` 与 `ClaudeCodeRunner` 已把严格 LF framing、实时完整事件、usage、原生 session resume、进程树取消、环境隔离和脱敏 receipt 接到四个 phase-one surface。外部 worker 不具备 Collie approval round-trip 或 turn-in-flight steering，Web 会按实际 capability 禁用这些操作。下一步优先用 Codex SDK 做自动化 worker，需要完整 approval/event/live-control 时再接 App Server。Prime RPC 和 Pi RPC 可共用严格 LF-JSONL transport，但 adapter 必须分开。Hermes 则同时提供 Gateway worker 协议和可借鉴的 durable goal/Kanban claim 语义。ACP 保留为编辑器互操作层，不作为 Collie 的首选 worker 控制协议。
+
+Phase-one 的协议与持久化边界现在还明确包含：单事件 128,000 字符与整流 16 MiB capture 上限、唯一且必须在末尾的 terminal record、有限非负 usage、最多 10,000 条恢复事件，以及 capability/receipt JSON 的严格布尔解析。prompt、history recap、native event、final output、错误和 verifier 输出在进入 stream/session/receipt 前统一脱敏。Web、CLI、Pack 与 Mission 都把 receipt 当发布栅栏；receipt 写盘失败会保留有用答案但使运行失败，Mission 的 transcript/ownership WAL 失败进一步进入 `recovery_required`。损坏的 session journal 不再被任何 writer 当空会话覆盖，额度/探测 cache 遇到回拨时钟或不同注入 transport 也不会复用旧证据。
 
 计费口径必须以当前官方政策为准。截至 2026-08-12，Anthropic 的说明允许 Claude Agent SDK 使用 paid Claude plan allowance。Collie 当前把它归类为 Max subscription allowance，同时仍检查实际 auth/billing route 并禁止 API/paid fallback；这不代表 plan 无速率或用量上限，也不保证未来政策不变。`claude -p` 在本项目中只用于 benchmark/compatibility comparison，不是原生 overnight runtime。[Anthropic：use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
 
@@ -300,19 +302,21 @@ daemon restart、auth refresh 和限额重置测试仍属于验收工作。
 ### 当前已完成
 
 - Collie native overnight control plane：自有 loop + 官方 Claude Agent SDK，冻结显式 Opus model，使用 Collie replacement system prompt，清空 SDK settings/tools/skills/plugins/agents/slash commands，禁用 API/paid/provider/model fallback，并具有可恢复 session、process-tree cancellation、workspace baseline/fresh verifier 和 12-active-hour/7-day-elapsed leash；短 E2E 已通过，12 小时 soak 未完成。
-- `AgentRunner`/snapshot/event 原型与 `CodexExecRunner`：使用 stdin prompt、`workspace-write` sandbox、JSONL 事件、usage/cursor 持久化、start→resume、超时/取消和保守 recovery 标记。
+- `AgentRunner`/snapshot/event phase-one 与 `CodexExecRunner`、`ClaudeCodeRunner`：使用 stdin prompt、各自的 workspace confinement、严格 LF 事件、usage/cursor 持久化、start→resume、实时事件、输出上限、超时/取消和保守 recovery 标记；已接入 CLI、Web、Pack 与非 overnight Mission code slice。
+- CLI/Web/Pack 已在外部 worker 接收 prompt 前写入 `external_action` WAL；receipt、可见 transcript、Pack 候选证据或 cleanup 任一未持久化都会保留恢复栅栏。Mission 的 leash/case、code-worker IPC 与进程所有权 receipt 只接受严格 JSON 对象，异常数值和损坏权限数据在启动 worker 前进入 `RECOVERY_REQUIRED`。
+- 外围 authority seam 也已统一失败关闭：Action approval 会在确认和执行前重验 HMAC/严格 JSON；Web、browser bridge、delegate dashboard 与 `execute_code` RPC 拒绝非对象和非有限数值；Automation 的权限布尔值、预算、durable request、usage 和 child result 均严格校验，损坏任务在 claim 前转入 `needs_you`。Claude Agent SDK 的 usage counter 也不得为负数、小数、布尔或非有限值。
 
 ### P0：把外部 runner 接入 Mission
 
 目标：让已验证的 runner POC 受现有 Mission 边界统一控制，而不是比较谁回答得更好。
 
-- 在已有 `AgentRunner`/snapshot/event POC 上补齐 `RunnerCapabilities`、`NativeSessionRef` 和 billing policy types。
-- 把已有 `CodexExecRunner` 接入 Mission capability，仍只作为 JSONL/resume/usage 的 smoke adapter。
+- 已完成：在 `AgentRunner`/snapshot/event 上补齐 `RunnerCapabilities`、`NativeSessionRef`、billing policy、route signals 与不可变 worker profile。
+- 已完成：把 `CodexExecRunner` 与 `ClaudeCodeRunner` 接入非 overnight Mission code slice；worker 只能 yield，最终状态仍只由 fresh host verifier 写入。
 - 实现 Codex Python SDK runner，覆盖 thread start/continue/resume、sandbox 和稳定 runtime pinning，作为首个 production external worker。
-- 新增可 kill、限流、严格 LF framing 的 `LfJsonlProcessTransport`。
+- 已完成 phase-one 子集：共用可 kill、严格 LF framing、有限 stdout/stderr 捕获的 subprocess transport；双向 request correlation 留给 RPC adapter。
 - 实现 `PiRpcRunner` 与 `PrimeRpcRunner`；共享 transport，不共享未经 conformance test 的命令/字段假设。
-- 接入现有 Mission lease、checkpoint、event store、host verifier 和 process-tree cancellation。
-- CLI 试验入口（未实现）：`collie mission start --code --runner prime|pi|codex-exec --workspace ... --provider ... --model ... --verify-command ... --no-paid-overage`。
+- 已完成：接入现有 Mission lease、checkpoint、event/session receipt、host verifier、用量 fail-closed guard 和 process-tree cancellation；每个 runnable boundary 重新证明冻结的 auth/billing/quota route。
+- CLI/API/Web 入口已实现：`collie mission start --code --runner codex-exec|claude-code --workspace ... --provider ... --model ... --verify-command ... --no-paid-overage`。Prime/Pi 尚未进入当前 phase，不能选择。
 - 对 Prime/Pi 明确关闭 native goal、heartbeat、schedule 与自动 provider fallback。
 
 P0 验收：同一 fixture task 连续运行至少 20 个 slice；在 prompt 接收前后、tool side effect 后和 checkpoint 前后强杀进程，均可恢复到同一 native session，且不盲重放 uncertain operation；最终只有 fresh host verifier 可以写 `VERIFIED`。
@@ -323,7 +327,7 @@ P0 验收：同一 fixture task 连续运行至少 20 个 slice；在 prompt 接
 - 实现 `HermesGatewayRunner`，覆盖 Gateway ready、session resume/branch、steer/interrupt、approval/clarify/secret。
 - 增加 Hermes goal/Kanban conformance fixtures：检查 claim generation、heartbeat、stale reclaim、retry/circuit breaker 和 explicit terminal outcome，同时证明 native continuation 被禁用。
 - 抽象 `Runtime`：local subprocess 与 container 两种实现；workspace mount、network policy 和 secret injection 独立于 runner。
-- UI/API 加入 attach、steer、cancel、approval、native session/version、billing mode、rate-limit reset 和 verification evidence。
+- 已完成 phase-one 部分：UI/API 已加入按 capability 的 steer/cancel/approval 状态、native worker receipt、billing mode、Codex rate-limit usage/reset 和 verification evidence；外部非交互 CLI 的 live steer/approval 仍明确不可用。
 - 做真实 8–12 小时 soak：系统睡眠/唤醒、Collie daemon 重启、runner 崩溃、网络抖动、auth refresh 与限额重置。
 
 P1 验收：一次 overnight mission 经至少两次 supervisor restart 和一次 worker crash 后仍恢复；没有重复 Collie dispatch；任何不确定外部副作用都进入 `RECOVERY_REQUIRED`；成功状态带匹配当前 workspace digest 的验证证据。

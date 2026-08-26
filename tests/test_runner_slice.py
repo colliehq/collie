@@ -181,6 +181,27 @@ def test_unknown_usage_is_none_not_zero(monkeypatch, workspace):
     assert res.total_tokens is None and res.cost_usd is None
 
 
+def test_external_result_is_persisted_for_dashboard_and_route_health(monkeypatch,
+                                                                      workspace):
+    from harness.recorder import Recorder
+
+    runner = _FakeRunner("codex-exec", result=_snapshot("codex-exec", workspace))
+    _install(monkeypatch, codex_exec=runner)
+    recorder = Recorder(os.path.join(workspace, "runs.db"))
+    try:
+        res = runner_slice.run_adhoc(
+            _decision(), "t", workspace, model="gpt-5", task_id="adhoc",
+            recorder=recorder)
+        row = recorder.db.execute(
+            "SELECT harness,task_id,input_tokens,verified,success FROM runs "
+            "WHERE run_id=?", (res.run_id,)).fetchone()
+    finally:
+        recorder.close()
+
+    assert res.run_id > 0
+    assert tuple(row) == ("codex-exec", "adhoc", 80, 0, 1)
+
+
 # --- fallback ---------------------------------------------------------------
 def test_start_time_failure_uses_fallback_and_records_from(monkeypatch, workspace):
     """A CLI that is not installed never saw the prompt, so the chain continues."""
@@ -277,6 +298,22 @@ def test_transport_failure_before_a_child_falls_back(monkeypatch, workspace):
     assert factory.built == ["codex-exec", "claude-code"]
     assert res.harness == "claude-code"
     assert runner_slice.receipt_of(res).fallback_from == "codex-exec"
+
+
+def test_unexpected_start_exception_requires_recovery_and_never_falls_back(
+        monkeypatch, workspace):
+    first = _FakeRunner("codex-exec", raises=RuntimeError("parser crashed"))
+    second = _FakeRunner("claude-code", result=_snapshot("claude-code", workspace))
+    factory = _install(monkeypatch, codex_exec=first, claude_code=second)
+
+    res = runner_slice.run_adhoc(
+        _decision(fallback=("claude-code",)), "edit", workspace)
+    receipt = runner_slice.receipt_of(res)
+
+    assert factory.built == ["codex-exec"]
+    assert receipt.recovery_required is True
+    assert receipt.settled is False
+    assert receipt.mutated is None
 
 
 def test_exhausted_chain_reports_the_last_failure(monkeypatch, workspace):
@@ -377,6 +414,35 @@ def test_resume_accepts_a_native_session_dict(monkeypatch, workspace):
     assert runner.resumes == [(locator, "keep going")]
 
 
+def test_resume_refuses_a_locator_from_another_workspace(monkeypatch, workspace, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    runner = _FakeRunner("codex-exec", result=_snapshot("codex-exec", workspace))
+    _install(monkeypatch, codex_exec=runner)
+    receipt_section = {
+        "runner": "codex-exec", "workspace": str(other),
+        "locator": "0198f0aa-1111-7000-8000-0000000000aa",
+    }
+
+    with pytest.raises(ValueError, match="different workspace"):
+        runner_slice.run_adhoc(
+            _decision(), "keep going", workspace, resume_from=receipt_section)
+
+    assert runner.starts == [] and runner.resumes == []
+
+
+def test_resume_refuses_a_snapshot_from_another_runner(monkeypatch, workspace):
+    runner = _FakeRunner("codex-exec", result=_snapshot("codex-exec", workspace))
+    _install(monkeypatch, codex_exec=runner)
+    foreign = _snapshot("claude-code", workspace)
+
+    with pytest.raises(ValueError, match="claude-code, not codex-exec"):
+        runner_slice.run_adhoc(_decision(), "keep going", workspace,
+                               resume_from=foreign)
+
+    assert runner.starts == [] and runner.resumes == []
+
+
 def test_resume_never_falls_back(monkeypatch, workspace):
     """A locator is one worker's private session id; nobody else can continue it."""
     runner = _FakeRunner("codex-exec", raises=FileNotFoundError("codex missing"))
@@ -404,6 +470,75 @@ def test_emit_reports_the_decision_and_the_receipt(monkeypatch, workspace):
     assert dict(seen[0][1])["runner"] == "codex-exec"
     assert "runner" in kinds                      # native events replayed
     assert dict(seen[-1][1])["usage_known"] is True
+
+
+def test_transcript_text_keeps_answer_and_terminal_error():
+    class Result:
+        answer = "worker produced a patch"
+        error = "required check failed"
+
+    text = runner_slice.transcript_text(Result())
+
+    assert text.startswith("worker produced a patch")
+    assert "Worker error" in text and "required check failed" in text
+
+
+def test_live_native_event_is_not_replayed_a_second_time(monkeypatch, workspace):
+    class _Streaming(_FakeRunner):
+        def set_event_callback(self, callback):
+            self.callback = callback
+
+        def start(self, prompt, ws, *, timeout_s=None):
+            snapshot = _snapshot(self.key, ws)
+            self.callback(snapshot.events[0])
+            return snapshot
+
+    runner = _Streaming("codex-exec")
+    _install(monkeypatch, codex_exec=runner)
+    seen = []
+
+    runner_slice.run_adhoc(
+        _decision(), "t", workspace,
+        emit=lambda kind, payload: seen.append((kind, payload)))
+
+    native = [payload for kind, payload in seen
+              if kind == "runner" and payload.get("event") == "native"]
+    assert len(native) == 1
+    assert native[0]["cursor"] == 1 and native[0]["live"] is True
+
+
+def test_live_native_event_projection_is_bounded(monkeypatch, workspace):
+    events = tuple(
+        RunnerEvent(cursor=index, type="item.updated",
+                    payload={"index": index}, at=1.0)
+        for index in range(1, 206))
+    snapshot = _snapshot(
+        "codex-exec", workspace, cursor=len(events), events=events)
+
+    class _Streaming(_FakeRunner):
+        def set_event_callback(self, callback):
+            self.callback = callback
+
+        def start(self, prompt, ws, *, timeout_s=None):
+            for event in events:
+                self.callback(event)
+            return snapshot
+
+    runner = _Streaming("codex-exec")
+    _install(monkeypatch, codex_exec=runner)
+    seen = []
+
+    runner_slice.run_adhoc(
+        _decision(), "t", workspace,
+        emit=lambda kind, payload: seen.append((kind, payload)))
+
+    native = [payload for kind, payload in seen
+              if kind == "runner" and payload.get("event") == "native"]
+    omitted = [payload for kind, payload in seen
+               if kind == "runner" and payload.get("event") == "native-events-omitted"]
+    assert len(native) == runner_slice._MAX_REPLAYED_EVENTS
+    assert len(omitted) == 1
+    assert omitted[0]["omitted_after"] == runner_slice._MAX_REPLAYED_EVENTS
 
 
 def test_a_failing_emitter_never_fails_the_run(monkeypatch, workspace):
@@ -456,6 +591,22 @@ def test_history_note_is_prefixed_to_the_prompt(monkeypatch, workspace):
     assert prompt.endswith("Task:\nadd a line")
 
 
+def test_external_worker_prompt_and_history_never_receive_pasted_credentials(
+        monkeypatch, workspace):
+    runner = _FakeRunner("codex-exec", result=_snapshot("codex-exec", workspace))
+    _install(monkeypatch, codex_exec=runner)
+    secret = "sk-" + "a" * 32
+
+    runner_slice.run_adhoc(
+        _decision(), "use api_key=" + secret, workspace,
+        history_note="prior Authorization: Bearer " + secret)
+
+    prompt = runner.starts[0][0]
+    assert secret not in prompt
+    assert "Bearer " not in prompt
+    assert "[redacted]" in prompt
+
+
 # --- refusals ---------------------------------------------------------------
 def test_a_failed_decision_is_refused_not_run(monkeypatch, workspace):
     _install(monkeypatch)
@@ -489,7 +640,7 @@ def test_empty_task_is_refused(monkeypatch, workspace):
     assert factory.built == []
 
 def test_receipt_names_the_model_claude_actually_used():
-    """`claude -p --output-format json` has no top-level model, only a breakdown.
+    """Claude's terminal stream-json result has no top-level model, only a breakdown.
 
     A single run lists more than one -- a small model for internal steps and the
     one that answered -- so the receipt takes the most expensive entry and its
@@ -509,3 +660,8 @@ def test_receipt_names_the_model_claude_actually_used():
     assert _dominant_model({}) == ""
     # Without a cost the raw key is still better than claiming nothing ran.
     assert _dominant_model({"some-model": {"canonicalModel": "some-model"}}) == "some-model"
+    # Non-finite JSON numbers cannot pin the first entry as the apparent winner.
+    assert _dominant_model({
+        "poison": {"costUSD": float("nan")},
+        "real": {"costUSD": 0.5, "canonicalModel": "real-model"},
+    }) == "real-model"

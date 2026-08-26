@@ -81,11 +81,12 @@ def test_web_ui_sends_each_axis_and_does_not_fake_fast():
     page = (Path(__file__).resolve().parents[1] / "harness" / "webui" / "index.html").read_text(
         encoding="utf-8")
     for field in ("runIntent", "runQuality", "runVerification", "runWorkspace", "runStrategy",
-                  "runEffort", "runSpeed", "verifyCommand"):
+                  "runEffort", "runSpeed", "runRunner", "verifyCommand"):
         assert f'id="{field}"' in page
     for query in ("&intent=", "&quality=", "&verification=", "&workspace=", "&strategy=",
                   "&effort=", "&speed=", "&explicit_axes="):
         assert query in page
+    assert '"&runner="' in page
     assert "Fast is not lower effort" in page
     assert 'data-val="quick"' in page
     assert 'data-val="test"' in page and 'data-val="review"' in page

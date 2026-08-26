@@ -19,6 +19,7 @@ GC that stops the 118-file balloon.
 """
 from __future__ import annotations
 import json
+import secrets
 import sqlite3
 import time
 
@@ -72,7 +73,70 @@ class SqliteMemory:
         except sqlite3.OperationalError:
             pass
         self.has_fts = True
+        self._prepare_sync_trigger_compatibility()
         self._init_schema()
+
+    # ------------------------------------------------------------------ #
+    def _prepare_sync_trigger_compatibility(self) -> None:
+        """Register the connection-local ABI used by newer memory databases.
+
+        A user can switch between Collie development tracks that share ``~/.collie``.  Some tracks
+        add durable delta-sync triggers to ``facts``.  SQLite persists those triggers but not the
+        Python functions they call, so opening that database on this track used to fail during the
+        first ordinary migration UPDATE.  Detect that forward schema before touching ``facts`` and
+        provide the same stable trigger functions.  Databases without these triggers are left
+        completely unchanged.
+        """
+        row = self.db.execute("""SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND sql LIKE '%collie_memory_%' LIMIT 1""").fetchone()
+        if not row:
+            return
+
+        self._memory_sync_suppressed = 0
+        self._memory_sync_origin = ""
+        self._memory_hlc_millis = 0
+        self._memory_hlc_counter = 0
+        self.db.execute("""CREATE TABLE IF NOT EXISTS memory_meta(
+            key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '')""")
+        row = self.db.execute(
+            "SELECT value FROM memory_meta WHERE key='device_id'").fetchone()
+        device_id = str(row[0]) if row and row[0] else "memdev_" + secrets.token_hex(12)
+        if not row or not row[0]:
+            self.db.execute(
+                "INSERT OR REPLACE INTO memory_meta(key,value) VALUES('device_id',?)",
+                (device_id,))
+        self._memory_origin_device = device_id
+
+        def origin():
+            return self._memory_sync_origin or self._memory_origin_device
+
+        def hlc():
+            millis = int(time.time_ns() // 1_000_000)
+            if millis > self._memory_hlc_millis:
+                self._memory_hlc_millis, self._memory_hlc_counter = millis, 0
+            else:
+                self._memory_hlc_counter += 1
+            return "%013d:%06d:%s" % (
+                self._memory_hlc_millis, self._memory_hlc_counter, origin())
+
+        def json_pairs(*items):
+            if len(items) % 2:
+                raise ValueError("collie_memory_json needs key/value pairs")
+            return json.dumps(
+                {str(items[i]): items[i + 1] for i in range(0, len(items), 2)},
+                ensure_ascii=False, separators=(",", ":"))
+
+        self.db.create_function(
+            "collie_memory_sync_suppress", 0,
+            lambda: int(self._memory_sync_suppressed > 0))
+        self.db.create_function("collie_memory_origin", 0, origin)
+        self.db.create_function("collie_memory_hlc", 0, hlc)
+        self.db.create_function(
+            "collie_memory_change_id", 0, lambda: "mchg_" + secrets.token_hex(16))
+        self.db.create_function(
+            "collie_memory_claim_id", 0, lambda: "mem_" + secrets.token_hex(16))
+        self.db.create_function("collie_memory_json", -1, json_pairs)
+        self.db.commit()
 
     # ------------------------------------------------------------------ #
     def _init_schema(self) -> None:
@@ -563,8 +627,13 @@ class SqliteMemory:
         qv = self.embedder.embed(query, kind="query")
         rows = self.db.execute(
             "SELECT id, embedding FROM facts WHERE (project=? OR project='global') "
-            "AND superseded_by IS NULL AND status IN (%s) AND scope IN (%s)" %
-            (sq, scope_q), (project, *statuses, *scopes)).fetchall()
+            "AND superseded_by IS NULL AND status IN (%s) AND scope IN (%s) "
+            "AND embed_model=?" % (sq, scope_q),
+            (project, *statuses, *scopes, self.embed_model)).fetchall()
+        # Embeddings from different models are unrelated vector spaces.  Sparse recall still sees
+        # older rows after a model switch, but the dense arm must use only vectors produced by the
+        # current model until `collie mem reembed` migrates them.  Besides preventing false scores,
+        # this avoids comparing every legacy vector only to discover a dimension mismatch.
         # HashEmbedding (bag-of-words) produces spurious positive cosines on token overlap, so we
         # abstain on non-positive for it; a REAL semantic embedder's weakly-related passage (cosine
         # near 0) is genuine signal — keep it so cross-lingual/paraphrase matches enter RRF.

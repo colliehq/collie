@@ -340,7 +340,10 @@ class ScreenshotTool(Tool):
         "whole screen), max_dim (longest edge in px, default 1568). Prefer a title over full screen: "
         "one window is a clearer image and far fewer tokens. For reading or clicking structure "
         "(buttons, fields, links) prefer desktop_inspect / browser_snapshot — a tree is exact where "
-        "an image is a guess; use this to judge appearance, or when there is no tree to read.")
+        "an image is a guess; use this to judge appearance, or when there is no tree to read. For a "
+        "custom-rendered native app with no tree, pass coordinates read from this image to "
+        "desktop_mouse with the same window title plus image_width/image_height; it scales the "
+        "downsampled image point back to the real window.")
     schema = {"type": "object", "properties": {
         "title": {"type": "string", "description": "substring of the target window's title; omit for full screen"},
         "max_dim": {"type": "integer", "description": "longest edge in pixels (default 1568)"},
@@ -381,9 +384,13 @@ class ScreenshotTool(Tool):
         src = ""
         if res.get("source_width") and res["source_width"] != res.get("width"):
             src = " (downscaled from %sx%s)" % (res["source_width"], res["source_height"])
-        return ("Captured %s at %sx%s%s via %s.%s The image is attached — look at it.\nSaved: %s"
+        coordinate_note = ("\nFor window-relative pixel input: desktop_mouse(match=%r, x=…, y=…, "
+                           "image_width=%s, image_height=%s)." %
+                           (res.get("title") or title, res.get("width", "?"), res.get("height", "?"))) \
+                          if title else ""
+        return ("Captured %s at %sx%s%s via %s.%s The image is attached — look at it.%s\nSaved: %s"
                 % (what, res.get("width", "?"), res.get("height", "?"), src,
-                   res.get("how", "?"), note, path))
+                   res.get("how", "?"), note, coordinate_note, path))
 
 
 def register_screenshot(registry) -> None:

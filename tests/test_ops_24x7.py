@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import pytest
 
 from harness.ops import (NotificationPump, OpsStore, OutboxFull, RotatingLog,
                          aggregate_health, credential_health, enqueue_health_alerts,
@@ -61,6 +62,32 @@ def test_outbox_retry_lease_dead_letter_capacity_and_pump(tmp_path):
         pump = NotificationPump(store, lambda item: item["notification_id"] == pending)
         assert pump.step()["sent"] == 1
         assert store.notification_stats()["delivered"] == 1
+
+
+def test_outbox_strict_json_and_corrupt_payload_are_fail_closed(tmp_path):
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        with pytest.raises((TypeError, ValueError), match="compliant|Out of range"):
+            store.enqueue("notice", "bad", "body", payload={"usage": float("nan")})
+        with pytest.raises(ValueError, match="payload must be an object"):
+            store.enqueue("notice", "bad", "body", payload=[])
+        with pytest.raises(ValueError, match="claim limit"):
+            store.claim(limit=True)
+
+        nid = store.enqueue("notice", "corrupt", "must not send", payload={"ok": True},
+                            now=10)
+        store.db.execute(
+            "UPDATE notifications SET payload_json=? WHERE notification_id=?",
+            ('{"authority":NaN}', nid))
+        store.db.commit()
+        sent = []
+        assert store.deliver_once(lambda item: sent.append(item) or True, now=10) == {
+            "sent": 0, "retried": 0, "dead": 0}
+        row = store.db.execute(
+            "SELECT state,last_error FROM notifications WHERE notification_id=?", (nid,)
+        ).fetchone()
+        assert row["state"] == "dead"
+        assert "invalid durable notification payload" in row["last_error"]
+        assert sent == []
 
 
 def test_credential_health_exposes_metadata_not_tokens(tmp_path):

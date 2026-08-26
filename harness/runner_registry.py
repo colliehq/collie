@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import shutil
 import threading
@@ -64,6 +65,11 @@ from .runner_specs import (
 # How long a probe row stays fresh.  Also the ``ttl_s`` written into every probe,
 # so a caller that persists one can tell how stale it is without asking us.
 PROBE_TTL_S = 60.0
+
+
+def _reject_json_constant(value: str) -> Any:
+    """Reject JavaScript numeric extensions at every metadata trust boundary."""
+    raise ValueError("non-standard JSON constant: %s" % value)
 
 
 # --- declared capabilities --------------------------------------------------
@@ -112,7 +118,7 @@ CODEX_EXEC_CAPABILITIES = RunnerCapabilities(
     session_create=True,
     session_resume=True,            # `codex exec resume <thread_id>`
     session_fork=False,
-    streaming=False,                # events are replayed after the process exits
+    streaming=True,                 # complete exec --json records arrive live
     cursor_replay=False,
     steer=False,                    # a new instruction means the next resume
     follow_up=False,
@@ -123,7 +129,9 @@ CODEX_EXEC_CAPABILITIES = RunnerCapabilities(
     approval_round_trip=False,
     usage_tokens=True,              # turn.completed.usage, accumulated by _merge_usage
     usage_cost=False,               # Codex reports tokens, never dollars
-    quota_signals=False,            # app-server only (account/rateLimits/read), phase 2
+    # `exec` itself has no quota frame; the selector performs the app-server's
+    # read-only account/rateLimits/read handshake as a companion signal.
+    quota_signals=True,
     request_gate=False,
     native_goal=False,              # `exec` has no goals surface; app-server does
     native_scheduler=False,
@@ -213,7 +221,8 @@ _SPECS: dict[str, HarnessSpec] = {
         notes=(
             "codex exec rejects every approval request (fail-closed); shell work "
             "is bounded by --sandbox workspace-write, not by Collie's gate",
-            "events are replayed after the process exits, not streamed",
+            "complete exec --json events stream live; partial token deltas are "
+            "not emitted by this CLI protocol",
             "Windows: writes are refused intermittently when launched through "
             "Collie's process-tree owner even with the sandbox overrides in "
             "place (1 of 4 runs succeeded, 2026-08-22 / 0.149.0). The turn still "
@@ -482,7 +491,7 @@ def apply_compat_report(path: str) -> dict[str, tuple[str, ...]]:
         return {}
     try:
         with open(path, "r", encoding="utf-8") as handle:
-            report = json.load(handle)
+            report = json.load(handle, parse_constant=_reject_json_constant)
         if not isinstance(report, dict):
             raise ValueError("compat report is not a JSON object")
     except (OSError, ValueError) as exc:
@@ -619,7 +628,7 @@ def _claude_login_state(now: float) -> tuple[str, str, dict[str, Any]]:
                 evidence)
     try:
         with open(path, "r", encoding="utf-8") as handle:
-            value = json.load(handle)
+            value = json.load(handle, parse_constant=_reject_json_constant)
         if not isinstance(value, dict):
             raise ValueError("credentials file is not an object")
     except Exception as exc:
@@ -636,7 +645,8 @@ def _claude_login_state(now: float) -> tuple[str, str, dict[str, Any]]:
     evidence["login_kind"] = "claude.ai"
     expires_at = oauth.get("expiresAt")
     has_refresh = bool(oauth.get("refreshToken"))     # presence only; never the value
-    if isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool):
+    if (isinstance(expires_at, (int, float)) and
+            not isinstance(expires_at, bool) and math.isfinite(float(expires_at))):
         # Claude Code writes milliseconds.  Recorded as seconds so every probe in
         # this module speaks one unit.
         seconds = float(expires_at) / 1000.0
@@ -645,6 +655,10 @@ def _claude_login_state(now: float) -> tuple[str, str, dict[str, Any]]:
             return ("expired",
                     "the Claude Code login in %s expired and has no refresh token; "
                     "run `claude login`" % shown, evidence)
+    elif expires_at is not None:
+        evidence["login_kind"] = "malformed"
+        return ("unknown", "%s has a malformed Claude Code login expiry" % shown,
+                evidence)
     return ("ok", "", evidence)
 
 
@@ -849,6 +863,8 @@ def probe(key: str, *, live: bool = False, now: float | None = None,
     """
     autoload_compat_report()
     now = time.time() if now is None else float(now)
+    if not math.isfinite(now):
+        raise ValueError("probe time must be finite")
     spec = SPECS.get(key)
     if spec is None:
         return RunnerProbe(key=str(key), installed=False, probed_at=now,
@@ -861,10 +877,13 @@ def probe(key: str, *, live: bool = False, now: float | None = None,
         except Exception:
             provider = ""
     cache_key = (spec.key, bool(live), provider if spec.key == "collie" else "")
-    with _LOCK:
-        cached = _CACHE.get(cache_key)
-        if cached is not None and now - cached.probed_at < cached.ttl_s:
-            return cached
+    cacheable = status_runner is None
+    if cacheable:
+        with _LOCK:
+            cached = _CACHE.get(cache_key)
+            age = now - cached.probed_at if cached is not None else -1.0
+            if cached is not None and 0 <= age < cached.ttl_s:
+                return cached
 
     try:
         if spec.phase > CURRENT_PHASE:
@@ -883,8 +902,9 @@ def probe(key: str, *, live: bool = False, now: float | None = None,
             probed_at=now, ttl_s=PROBE_TTL_S,
             detail="could not probe %s: %s: %s" % (spec.key, type(exc).__name__, exc))
 
-    with _LOCK:
-        _CACHE[cache_key] = result
+    if cacheable:
+        with _LOCK:
+            _CACHE[cache_key] = result
     return result
 
 

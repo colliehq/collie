@@ -2,6 +2,7 @@
 // Answers, at a glance, the question that cost a long debugging session: "is this thing actually
 // connected, and is the collie I'm running the one it's talking to?"
 const BRIDGE = "http://127.0.0.1:8677";
+let WEB = "http://127.0.0.1:8787";
 const $ = (id) => document.getElementById(id);
 
 function setStatus(kind, title, sub) {
@@ -22,6 +23,7 @@ async function refresh() {
   const v = chrome.runtime.getManifest().version;
   $("ver").textContent = "v" + v;
   $("rTab").textContent = await currentTab();
+  await refreshPresence();
   $("hint").textContent = "";
   setStatus("", "Checking…", "contacting the local bridge");
   try {
@@ -58,6 +60,78 @@ async function refresh() {
     setStatus("bad", "Bridge not running", "nothing is listening on 8677");
     $("hint").textContent = "Start it with  collie browser-bridge  (or run  collie setup  to install "
       + "it at logon).";
+  }
+}
+
+async function refreshPresence() {
+  try {
+    const reply = await chrome.runtime.sendMessage({ type: "collie:get-status" });
+    const state = reply && reply.state;
+    if (!state || !state.attached) {
+      $("rAgent").textContent = "Not attached";
+      $("takeover").textContent = "Pause tab";
+      $("takeover").disabled = true;
+      return;
+    }
+    $("rAgent").textContent = (state.state || "idle") + " · " + (state.space || "default");
+    const paused = state.state === "paused";
+    $("takeover").textContent = paused ? "Resume tab" : "Pause tab";
+    $("takeover").disabled = false;
+  } catch (e) { $("rAgent").textContent = "Unavailable"; }
+}
+
+async function getWebToken() {
+  const remembered = await chrome.storage.local.get("collieWebPort");
+  if (Number(remembered.collieWebPort)) WEB = "http://127.0.0.1:" + Number(remembered.collieWebPort);
+  const reply = await chrome.runtime.sendMessage({ type: "collie:get-bridge-token" });
+  if (!reply || !reply.token) throw new Error("bridge token missing");
+  const requestAuth = () => fetch(WEB + "/api/browser/bridge-auth", {
+    headers: { Authorization: "Bearer " + reply.token }, cache: "no-store"
+  });
+  let response;
+  let needsStart = false;
+  try {
+    response = await requestAuth();
+    needsStart = !response.ok && response.status !== 403;
+  } catch (e) { needsStart = true; }
+  if (needsStart) {
+    for (let port = 8787; port < 8799 && needsStart; port++) {
+      if (WEB.endsWith(":" + port)) continue;
+      const candidate = "http://127.0.0.1:" + port;
+      try {
+        const found = await fetch(candidate + "/api/browser/bridge-auth", {
+          headers: { Authorization: "Bearer " + reply.token }, cache: "no-store"
+        });
+        if (found.ok) {
+          WEB = candidate; response = found; needsStart = false;
+          await chrome.storage.local.set({ collieWebPort: port });
+        }
+      } catch (e) {}
+    }
+  }
+  if (needsStart) {
+    const started = await fetch(BRIDGE + "/web/start", { method: "POST", headers: {
+      Authorization: "Bearer " + reply.token, "X-Collie-Bridge": "1", "content-type": "application/json"
+    }, body: "{}" });
+    const detail = await started.json().catch(() => ({}));
+    if (!started.ok || !detail.ok) throw new Error(detail.error || "could not start Collie web");
+    WEB = "http://127.0.0.1:" + Number(detail.port || 8787);
+    await chrome.storage.local.set({ collieWebPort: Number(detail.port || 8787) });
+    response = await requestAuth();
+  }
+  if (!response.ok) throw new Error("Collie web unavailable");
+  return await response.json();
+}
+
+async function refreshSiteAccess() {
+  try {
+    const auth = await getWebToken();
+    $("siteAccess").value = auth.site_access || "all_except_sensitive";
+    $("siteAccess").disabled = false;
+    $("policyNote").textContent = "Clicks, typing, sends, payments and deletes keep separate approval.";
+  } catch (e) {
+    $("siteAccess").disabled = true;
+    $("policyNote").textContent = "Start `collie web` to change the persistent policy.";
   }
 }
 
@@ -127,9 +201,34 @@ $("tokSave").addEventListener("click", async () => {
 });
 
 $("recheck").addEventListener("click", refresh);
+$("takeover").addEventListener("click", async () => {
+  const paused = $("takeover").textContent.startsWith("Resume");
+  await chrome.runtime.sendMessage({ type: paused ? "collie:resume-active" : "collie:pause-active" });
+  await refreshPresence();
+});
+$("siteAccess").addEventListener("change", async () => {
+  try {
+    const auth = await getWebToken();
+    const response = await fetch(WEB + "/api/settings?token=" + encodeURIComponent(auth.token), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ BROWSER_SITE_ACCESS: $("siteAccess").value })
+    });
+    if (!response.ok) throw new Error("save failed");
+    $("policyNote").textContent = "Saved. It controls navigation only; high-impact actions still ask.";
+  } catch (e) {
+    $("policyNote").textContent = "Could not save: " + e.message;
+    refreshSiteAccess();
+  }
+});
+$("openSide").addEventListener("click", async () => {
+  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (tabs[0]) await chrome.sidePanel.open({ windowId: tabs[0].windowId });
+  window.close();
+});
 $("openCollie").addEventListener("click", () => {
-  chrome.tabs.create({ url: "http://127.0.0.1:8787/" });
+  chrome.tabs.create({ url: WEB + "/" });
 });
 refresh();
 refreshMode();
 refreshToken();
+refreshSiteAccess();

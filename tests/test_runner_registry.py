@@ -251,6 +251,22 @@ def test_probe_survives_an_unreadable_login_file(monkeypatch, empty_home,
         assert row.detail
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_probe_rejects_nonstandard_claude_expiry_json(
+        constant, empty_home, no_network, installed_clis):
+    directory = empty_home / ".claude"
+    directory.mkdir()
+    (directory / ".credentials.json").write_text(
+        '{"claudeAiOauth":{"expiresAt":%s}}' % constant, encoding="utf-8")
+
+    row = runner_registry.probe("claude-code")
+
+    assert row.login == "unknown"
+    assert row.usable() is False
+    assert "could not read" in row.detail
+    assert constant not in json.dumps(row.to_dict(), allow_nan=False)
+
+
 def test_probe_cache_ttl(monkeypatch, empty_home, no_network, installed_clis):
     first = runner_registry.probe("codex-exec", now=1_000.0)
     calls = len(installed_clis.calls)
@@ -269,6 +285,16 @@ def test_probe_cache_ttl(monkeypatch, empty_home, no_network, installed_clis):
                                      stderr="Logged in using ChatGPT"))
     assert live is not later
     assert runner_registry.probe("codex-exec", now=1_061.0) is later
+
+
+def test_probe_cache_refreshes_after_wall_clock_moves_backward(
+        empty_home, no_network, installed_clis):
+    runner_registry.probe("codex-exec", now=1_000.0)
+    calls = len(installed_clis.calls)
+
+    runner_registry.probe("codex-exec", now=900.0)
+
+    assert len(installed_clis.calls) > calls
 
 
 def test_probe_all_skips_unknown_keys(empty_home, no_network, installed_clis):
@@ -376,6 +402,24 @@ def test_live_codex_exact_status_line_is_the_only_evidence(empty_home, no_networ
     assert "example.com" not in json.dumps(other.to_dict())
 
 
+def test_injected_live_status_runners_never_share_cached_billing_truth(
+        empty_home, no_network, installed_clis):
+    subscription = runner_registry.probe(
+        "codex-exec", live=True,
+        status_runner=lambda _argv: completed(stderr="Logged in using ChatGPT"))
+    unknown = runner_registry.probe(
+        "codex-exec", live=True,
+        status_runner=lambda _argv: completed(stderr="Logged in with API key"))
+
+    assert subscription.billing_class == "subscription_allowance"
+    assert unknown.billing_class == "unknown"
+
+
+def test_probe_rejects_non_finite_clock():
+    with pytest.raises(ValueError, match="finite"):
+        runner_registry.probe("collie", now=float("nan"), provider="mock")
+
+
 # --- phase gate -------------------------------------------------------------
 def test_phase_gate_marks_unusable(installed_clis, empty_home, no_network):
     future = [key for key, spec in runner_registry.SPECS.items()
@@ -440,6 +484,15 @@ def _report(tmp_path, **rows):
         "runners": {key: {"checks": value} for key, value in rows.items()}}),
         encoding="utf-8")
     return str(path)
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_apply_compat_report_rejects_nonstandard_json_numbers(tmp_path, constant):
+    path = tmp_path / "runner-compat.json"
+    path.write_text('{"date":%s,"runners":{}}' % constant, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="could not read compat report"):
+        runner_registry.apply_compat_report(str(path))
 
 
 def test_apply_compat_report_downgrades(tmp_path, empty_home, no_network,

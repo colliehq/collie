@@ -191,6 +191,17 @@ def test_worker_accepts_exactly_one_assistant_and_reports_usage():
     assert sdk.options.system_prompt == "collie"
 
 
+@pytest.mark.parametrize("usage", [
+    {"input_tokens": -1}, {"input_tokens": 1.5},
+    {"input_tokens": float("nan")}, {"input_tokens": True},
+])
+def test_worker_rejects_invalid_usage_counters(usage):
+    messages = _messages("assistant-1")
+    messages[-1]["usage"] = usage
+    with pytest.raises(RuntimeError, match="invalid input_tokens usage"):
+        _run_query(messages)
+
+
 def test_worker_accepts_thinking_and_text_fragments_with_one_message_id():
     messages = _messages("unused")
     messages[1:2] = [
@@ -267,6 +278,17 @@ def test_provider_uses_collie_prompt_and_parses_tool_protocol():
     assert completion.api_key_source == "none"
     assert provider.request["system_prompt"] == "COLLIE SYSTEM"
     assert "# Tools the executor can run:" in provider.request["prompt"]
+
+
+def test_provider_rejects_invalid_worker_usage_before_accounting():
+    provider = _Provider({
+        "ok": True, "text": '{"answer":"done"}',
+        "usage": {"input_tokens": float("nan")}, "api_key_source": "none",
+    })
+    completion = provider.complete("s", [{"role": "user", "content": "u"}], [])
+    assert completion.stop_reason == "error"
+    assert completion.request_count == 1, "the malformed response still consumed one request"
+    assert "invalid input_tokens usage" in completion.error_detail
 
 
 def test_provider_accepts_one_unambiguous_fenced_tool_envelope():

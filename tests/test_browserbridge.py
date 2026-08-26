@@ -13,6 +13,8 @@ import os
 import sys
 import threading
 import types
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -154,6 +156,16 @@ def test_tabs_tool_lists_and_routes():
         bb.BrowserTabs().run({"action": "release", "close": True}, CTX)
         check(stub.sent[0]["action"] == "release" and stub.sent[0]["close"] is True,
               "release passes close through")
+
+        for action in ("pause", "resume", "status"):
+            stub = with_stub(ok({action + "d": True}))
+            bb.BrowserTabs().run({"action": action}, CTX)
+            check(stub.sent[0]["action"] == action, action + " routes to the hard-control action")
+
+        stub = with_stub(ok({"finalized": True, "closed": True}))
+        bb.BrowserTabs().run({"action": "finalize", "close": True}, CTX)
+        check(stub.sent[0]["action"] == "finalize" and stub.sent[0]["close_owned"] is True,
+              "finalize can close only a Collie-owned tab")
     finally:
         bb._CURRENT_SPACE[0] = None
         bb._call = real
@@ -306,6 +318,20 @@ def test_ambiguous_click_still_warns():
         bb._call = real
 
 
+def test_browser_space_releases_control_after_a_used_run():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"ok": True}))
+        with bb.browser_space("web-session", release=True):
+            # A real tool call marks the lane used; status probes alone do not.
+            activity = bb._SPACE_ACTIVITY.get()
+            activity["used"] = True
+        check(stub.sent[-1]["action"] == "finalize", "used Web browser lanes finalize in finally")
+        check(stub.sent[-1]["close_owned"] is False, "automatic finalization leaves the handoff tab open")
+    finally:
+        bb._call = real
+
+
 def test_reversible_advance_uses_only_an_exact_ref_and_surfaces_refusal():
     real = bb._call
     try:
@@ -443,6 +469,68 @@ def test_auth_can_be_switched_off_only_loudly():
             os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
         check("dangerously" in "COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH".lower(),
               "and it is named so nobody turns it on by accident")
+    _isolated_home(body)
+
+
+def test_http_boundary_rejects_nonfinite_json_before_delivery():
+    old = os.environ.get("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH")
+    os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = "1"
+    bridge = bb._Bridge()
+    server = bb.ThreadingHTTPServer(("127.0.0.1", 0), bb._handler(bridge))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:%d/result" % server.server_address[1],
+            data=b'{"id":"c1","data":{"value":NaN}}', method="POST",
+            headers={"X-Collie-Bridge": "1", "Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            status = 200
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            json.loads(exc.read())
+        check(status == 400, "bridge rejects NaN JSON instead of delivering it")
+        check(not bridge.results, "rejected bridge input cannot populate a pending result")
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
+        if old is None:
+            os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
+        else:
+            os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = old
+
+
+def test_sidepanel_can_start_web_only_through_authenticated_bridge():
+    def body(_home):
+        old_env = os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
+        good = bb.token()
+        bridge = bb._Bridge()
+        server = bb.ThreadingHTTPServer(("127.0.0.1", 0), bb._handler(bridge))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        old_start = bb.start_web_background
+        bb.start_web_background = lambda: {"ok": True, "started": True, "port": 8787}
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d/web/start" % server.server_address[1]
+            def post(secret):
+                req = urllib.request.Request(url, data=b"{}", method="POST", headers={
+                    "X-Collie-Bridge": "1", "Authorization": "Bearer " + secret,
+                    "Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        return response.status, json.loads(response.read())
+                except urllib.error.HTTPError as exc:
+                    return exc.code, json.loads(exc.read())
+            status, result = post(good)
+            check(status == 200 and result.get("started") is True,
+                  "the authenticated extension can lazily start side-chat Web")
+            status, _ = post("wrong")
+            check(status == 401, "an untrusted local caller cannot start the Web agent")
+        finally:
+            bb.start_web_background = old_start
+            server.shutdown(); server.server_close(); thread.join(timeout=3)
+            if old_env is not None:
+                os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = old_env
     _isolated_home(body)
 
 

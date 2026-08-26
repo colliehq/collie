@@ -185,16 +185,21 @@ def test_h5_unknown_billing_rejected_under_no_paid_overage():
     assert decision.rejected["claude-code"].startswith("H5: billing class unknown")
 
 
-def test_h5_requires_attestation_and_evidence():
+def test_h5_subscription_only_requires_route_evidence_not_overage_attestation():
     without_attestation = _decide(
         _req(needs=frozenset({"code"}), pin="claude-code", subscription_only=True),
         probes=_probes(_probe("collie"), _probe("claude-code", overage_attested=False)))
-    assert "attestation" in without_attestation.rejected["claude-code"]
+    assert without_attestation.runner == "claude-code"
 
     without_evidence = _decide(
         _req(needs=frozenset({"code"}), pin="claude-code", subscription_only=True),
         probes=_probes(_probe("collie"), _probe("claude-code", billing_evidence={})))
     assert "no billing evidence" in without_evidence.rejected["claude-code"]
+
+    no_paid_without_attestation = _decide(
+        _req(needs=frozenset({"code"}), pin="claude-code", no_paid_overage=True),
+        probes=_probes(_probe("collie"), _probe("claude-code", overage_attested=False)))
+    assert "attestation" in no_paid_without_attestation.rejected["claude-code"]
 
 
 def test_h5_codex_evidence_expires():
@@ -213,6 +218,21 @@ def test_h5_codex_evidence_expires():
                                           billing_evidence={"source": "file:~/.codex/auth.json",
                                                             "observed_at": NOW - 60})))
     assert fresh.runner == "codex-exec"
+
+    malformed_time = _decide(
+        _req(needs=frozenset({"code", "bash"}), pin="codex-exec",
+             no_paid_overage=True),
+        probes=_probes(_probe("collie"), _probe(
+            "codex-exec", billing_evidence={"source": "login", "observed_at": float("nan")},
+            probed_at=0)))
+    assert "older than" in malformed_time.rejected["codex-exec"]
+
+
+def test_selection_rejects_non_finite_clock():
+    import pytest
+
+    with pytest.raises(ValueError, match="selection time"):
+        _decide(_req(), now=float("nan"))
 
 
 def test_h5_token_budget_needs_measurable_usage():
@@ -282,6 +302,98 @@ def test_h7_cooldown_rejects_auto_but_not_a_named_runner():
     pinned = _decide(_req(needs=frozenset({"code"}), pin="claude-code"),
                      signals=_Signals())
     assert pinned.runner == "claude-code"
+
+
+def test_h7_signal_set_is_route_specific_in_auto_selection():
+    from harness.runner_signals import (QuotaSnapshot, RateLimitWindow,
+                                        RouteSignals, SignalSet)
+
+    signals = SignalSet({
+        "codex-exec": RouteSignals(
+            runner="codex-exec", auth_status="ok",
+            quota=QuotaSnapshot(primary=RateLimitWindow(95), observed_at=NOW)),
+        "collie": RouteSignals(runner="collie", auth_status="ok"),
+    })
+    decision = _decide(
+        _req(needs=frozenset({"code"}), configured="auto",
+             pool=("codex-exec", "collie")), signals=signals)
+
+    assert decision.runner == "collie"
+    assert "quota is 95% used" in decision.rejected["codex-exec"]
+    assert decision.signals_digest == signals.digest()
+
+
+def test_h7_malformed_duck_typed_signals_degrade_to_unknown_without_crashing():
+    class _Window:
+        used_percent = "not-a-percent"
+
+    class _Quota:
+        primary = _Window()
+        secondary = None
+        rate_limit_reached_type = ""
+
+    class _History:
+        runs = "many"
+        verified = object()
+
+    class _RateLimit:
+        observed_at = "yesterday-ish"
+
+    class _Signals:
+        auth_status = "ok"
+        recent_429 = "several"
+        cooldown_until = "later"
+        quota_guard = "most"
+        quota = _Quota()
+        history = _History()
+        rate_limit = _RateLimit()
+        mission_budget = None
+
+        def digest(self):
+            raise ValueError("observer broke")
+
+    decision = _decide(
+        _req(needs=frozenset({"code"}), configured="auto",
+             pool=("claude-code", "collie")), signals=_Signals())
+
+    assert decision.runner in {"claude-code", "collie"}
+    assert len(decision.signals_digest) == 64
+    assert any("quota: unknown" in score.soft_reasons
+               for score in decision.candidates if score.eligible)
+
+
+def test_h7_untrusted_signal_numbers_are_clamped_to_safe_scoring_ranges():
+    class _Window:
+        used_percent = 999999
+
+    class _Quota:
+        primary = _Window()
+        secondary = None
+        rate_limit_reached_type = ""
+
+    class _History:
+        runs = 10
+        verified = 10_000
+
+    class _Signals:
+        auth_status = "ok"
+        recent_429 = -20
+        cooldown_until = float("inf")
+        quota_guard = -1
+        quota = _Quota()
+        history = _History()
+        rate_limit = None
+        mission_budget = None
+
+        def to_dict(self):
+            return {}
+
+    decision = _decide(
+        _req(needs=frozenset({"code"}), configured="auto",
+             pool=("claude-code", "collie")), signals=_Signals())
+
+    assert decision.runner == "collie"
+    assert "quota is 100% used (guard 90%)" in decision.rejected["claude-code"]
 
 
 def test_h8_overnight_locks_collie():
@@ -408,16 +520,18 @@ def test_configured_unavailable_is_error_too():
     assert decision.error
 
 
-def test_auto_empty_falls_back_to_collie():
-    # Everything, collie included, is rejected — auto still has to run the task.
+def test_auto_empty_never_overrides_hard_billing_rules():
+    # Everything, Collie included, is rejected. Auto ranks only eligible
+    # routes; it cannot waive the user's no-paid-overage promise.
     decision = _decide(_req(needs=frozenset({"code"}), configured="auto",
                             pool=("codex-exec", "collie"), no_paid_overage=True),
                        probes=_probes(_probe("collie", billing_class="unknown"),
                                       _probe("codex-exec", billing_class="unknown")))
-    assert decision.runner == "collie"
+    assert decision.runner == ""
     assert decision.source == "safety-default"
     assert "codex-exec" in decision.rejected
-    assert any("every candidate was rejected" in line for line in decision.reasons)
+    assert "collie" in decision.rejected
+    assert "no eligible worker" in decision.error
 
 
 def test_fallback_chain_same_family_same_billing():
@@ -665,3 +779,51 @@ def test_request_from_run_treats_zero_budgets_as_no_limit(tmp_path):
         cwd=str(tmp_path))
     assert req.max_cost_usd is None
     assert req.max_total_tokens is None
+
+
+def test_request_from_web_pins_worker_and_uses_same_selector_contract(tmp_path):
+    (tmp_path / ".git").mkdir()
+    req = runner_select.request_from_surface(
+        "web", "claude-code", _Decision(),
+        _Settings({"RUNNER": "collie", "RUNNER_POOL": "codex-exec,collie"}),
+        cwd=str(tmp_path), has_approver=True)
+    assert req.surface == "web"
+    assert req.pin == "claude-code"
+    assert req.candidates() == ("claude-code",)
+    assert req.needs == frozenset({"code"})
+    assert _decide(req).runner == "claude-code"
+
+
+def test_request_from_mission_carries_durable_and_billing_boundaries(tmp_path):
+    (tmp_path / ".git").mkdir()
+    req = runner_select.request_from_surface(
+        "mission-code", "auto", _Decision(),
+        _Settings({"RUNNER_POOL": "claude-code,collie"}), cwd=str(tmp_path),
+        no_paid_overage=True, subscription_only=True)
+    assert req.workspace == "mission"
+    assert req.configured == "auto" and req.pin == ""
+    assert req.no_paid_overage is True and req.subscription_only is True
+
+
+def test_request_builder_treats_non_finite_budget_settings_as_unset(tmp_path):
+    req = runner_select.request_from_surface(
+        "web", "", _Decision(),
+        _Settings({"MAX_COST": "Infinity", "MAX_TOTAL_TOKENS": "NaN"}),
+        cwd=str(tmp_path))
+
+    assert req.max_cost_usd is None
+    assert req.max_total_tokens is None
+
+
+def test_request_from_pack_records_the_private_git_workspace(tmp_path):
+    """Pack copies any source tree, then creates a private git baseline for the worker.
+
+    Eligibility must describe that guaranteed candidate workspace.  Looking for
+    ``.git`` in the source would reject an ordinary folder even though the worker
+    never receives that folder directly.
+    """
+    req = runner_select.request_from_surface(
+        "pack", "codex-exec", _Decision(), _Settings(), cwd=str(tmp_path))
+    assert req.workspace == "isolated"
+    assert req.workspace_is_git is True
+    assert req.surface == "pack"

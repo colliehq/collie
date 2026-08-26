@@ -118,12 +118,15 @@ def test_parent_session_markers_are_stripped():
     """Collie is usually started from inside one of these CLIs (swe.py's bug)."""
     env, receipt = child_env("codex", environ=_parent(
         CODEX_THREAD_ID="thr_123", CODEX_PERMISSION_PROFILE="read-only",
+        CODEX_CI="1", CODEX_SESSION_ID="session-parent",
         CLAUDECODE="1", CLAUDE_CODE_ENTRYPOINT="cli"))
     assert "CODEX_THREAD_ID" not in env
     assert "CODEX_PERMISSION_PROFILE" not in env
+    assert "CODEX_CI" not in env and "CODEX_SESSION_ID" not in env
     assert "CLAUDECODE" not in env
     assert "CLAUDE_CODE_ENTRYPOINT" not in env
     assert "CODEX_THREAD_ID" in receipt["stripped"]
+    assert "CODEX_CI" in receipt["stripped"]
     assert "CLAUDECODE" in receipt["stripped"]
 
 

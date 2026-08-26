@@ -44,6 +44,28 @@ _DROP_HEADERS = {
 _CHUNK = 2048
 
 
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key: %s" % key)
+        value[key] = item
+    return value
+
+
+def _strict_json_object(value):
+    parsed = json.loads(
+        value, parse_constant=_reject_json_constant,
+        object_pairs_hook=_unique_json_object)
+    if not isinstance(parsed, dict):
+        raise ValueError("relay message must be a JSON object")
+    return parsed
+
+
 def _validated_relay_url(relay_url: str) -> str:
     """Return a normalized relay origin, rejecting network-visible plaintext transports."""
     value = str(relay_url or "").strip()
@@ -272,8 +294,8 @@ class RelayClient:
                 if kind != "text":
                     continue
                 try:
-                    msg = json.loads(data)
-                except ValueError:
+                    msg = _strict_json_object(data)
+                except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
                     continue
                 self._dispatch(ws, msg)
         finally:
@@ -323,6 +345,9 @@ class RelayClient:
 
     # ------------------------------------------------------------------ frame dispatch
     def _dispatch(self, ws, msg: dict):
+        if not isinstance(msg, dict):
+            self._protocol_error(ws, None, "relay message must be an object")
+            return
         t = msg.get("t")
         if t == "req":
             # Hosted v2 is E2E-only.  Accepting the old method/path/body fields would make a relay
@@ -581,18 +606,19 @@ class RelayClient:
 
     def _e2e_key_for(self, req: dict):
         """Return `(K_sess, session, device_id, envelope)` for a valid sealed request."""
-        if not req.get("enc") or int(req.get("seq", -1)) != 0:
+        seq = req.get("seq", -1)
+        if not req.get("enc") or type(seq) is not int or seq != 0:
             return None, None, None, None
         from . import e2e
-        session = str(req.get("session") or "")
-        cid = str(req.get("cid") or "")
-        if not session or len(session) > 256 or not cid or len(cid) > 128:
+        session = req.get("session")
+        cid = req.get("cid")
+        if (not isinstance(session, str) or not session or len(session) > 256 or
+                not isinstance(cid, str) or not cid or len(cid) > 128 or
+                not isinstance(req.get("enc"), str)):
             return None, None, None, None
         try:
-            enc = json.loads(req["enc"])
-            if not isinstance(enc, dict):
-                return None, None, None, None
-        except (TypeError, ValueError):
+            enc = _strict_json_object(req["enc"])
+        except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return None, None, None, None
         # No device id is exposed outside the ciphertext.  The AEAD tag identifies the one K_dev
         # that can open the request; the number of devices is intentionally small and bounded by the
@@ -678,8 +704,11 @@ class RelayClient:
             if key is None or envelope is None:
                 raise ValueError("sealed request could not be authenticated; re-pair this device")
 
-            method = str(envelope.get("method") or "GET").upper()
-            raw_path = str(envelope.get("path") or "/")
+            raw_method = envelope.get("method", "GET")
+            raw_path = envelope.get("path", "/")
+            if not isinstance(raw_method, str) or not isinstance(raw_path, str):
+                raise ValueError("invalid inner request method or path")
+            method = raw_method.upper()
             parsed = urllib.parse.urlsplit(raw_path)
             if method not in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}:
                 raise ValueError("invalid inner request method")
@@ -688,11 +717,15 @@ class RelayClient:
                 raise ValueError("invalid inner request path")
             path = self._inject_token(raw_path)
             raw_headers = envelope.get("headers") or {}
-            if not isinstance(raw_headers, dict) or len(raw_headers) > 128:
+            if (not isinstance(raw_headers, dict) or len(raw_headers) > 128 or
+                    any(not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in raw_headers.items())):
                 raise ValueError("invalid inner request headers")
-            headers = {str(k): str(v) for k, v in raw_headers.items()
-                       if str(k).lower() not in _DROP_HEADERS}
+            headers = {k: v for k, v in raw_headers.items()
+                       if k.lower() not in _DROP_HEADERS}
             body = envelope.get("body") or b""
+            if not isinstance(body, bytes):
+                raise ValueError("invalid inner request body")
 
             if not self._claim_request(device_id, cid, method, parsed.path):
                 next_seq = self._send_head(

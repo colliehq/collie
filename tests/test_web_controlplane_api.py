@@ -37,6 +37,79 @@ def _json(url, method="GET", body=None):
         return exc.code, json.loads(exc.read())
 
 
+def _raw_json(url, raw):
+    request = urllib.request.Request(
+        url, data=raw.encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def test_browser_extension_bridge_auth_and_cors_are_narrow(web_server, monkeypatch):
+    from harness import browserbridge
+
+    base, web_token, _ = web_server
+    bridge_secret = "bridge-secret-for-test"
+    extension_origin = "chrome-extension://" + ("a" * 32)
+    monkeypatch.setattr(browserbridge, "token", lambda: bridge_secret)
+
+    preflight = urllib.request.Request(
+        base + "/api/browser/bridge-auth", method="OPTIONS",
+        headers={"Origin": extension_origin,
+                 "Access-Control-Request-Method": "GET",
+                 "Access-Control-Request-Headers": "authorization"})
+    with urllib.request.urlopen(preflight, timeout=8) as response:
+        assert response.status == 204
+        assert response.headers["Access-Control-Allow-Origin"] == extension_origin
+
+    request = urllib.request.Request(
+        base + "/api/browser/bridge-auth",
+        headers={"Origin": extension_origin,
+                 "Authorization": "Bearer " + bridge_secret})
+    with urllib.request.urlopen(request, timeout=8) as response:
+        result = json.loads(response.read())
+        assert response.headers["Access-Control-Allow-Origin"] == extension_origin
+    assert result["token"] == web_token
+    assert result["site_access"] in ("all_except_sensitive", "ask_every_site", "all_sites")
+
+    denied = urllib.request.Request(
+        base + "/api/browser/bridge-auth",
+        headers={"Origin": extension_origin, "Authorization": "Bearer wrong"})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(denied, timeout=8)
+    assert exc.value.code == 403
+
+    web_page = urllib.request.Request(
+        base + "/api/browser/bridge-auth", method="OPTIONS",
+        headers={"Origin": "https://attacker.example"})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(web_page, timeout=8)
+    assert exc.value.code == 403
+
+
+def test_http_json_boundary_rejects_nonstandard_numbers_and_non_objects(web_server):
+    from harness import webapp
+
+    base, token, _ = web_server
+    for raw in ('{"session":"s","q":NaN}',
+                '{"session":"s","q":Infinity}', '[]'):
+        code, result = _raw_json(base + "/api/steer?token=" + token, raw)
+        assert code == 400
+        assert result["queued"] is False
+
+    class Sink:
+        _send_json = webapp.Handler._send_json
+
+        def _send_html(self, body, code, ctype):
+            self.body, self.code, self.ctype = body, code, ctype
+
+    with pytest.raises(ValueError):
+        Sink()._send_json({"invalid": float("nan")})
+
+
 def test_activity_health_and_hooks_are_authenticated_and_content_safe(
         web_server, monkeypatch):
     from harness import controlplane

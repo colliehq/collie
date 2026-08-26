@@ -10,8 +10,9 @@ this machine happens to be logged into. So `runner_registry.probe_all` and
 heuristic that reclassified the task as chat would fail these tests for a reason
 that has nothing to do with what they are testing.
 
-The one thing deliberately NOT faked is the default path's probe: it is replaced
-with a function that raises, because "we never called it" is the claim.
+The default path's only probe is a faked native Collie row: the production probe
+is local and process-free, and its job is to keep billing/capability evidence in
+the receipt without inspecting an external CLI.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ import os
 
 import pytest
 
-from harness import cli, runner_registry, runner_select, runner_slice, settings
+from harness import cli, runner_registry, runner_select, runner_slice, sessions, settings
 from harness import router, verification
 from harness.recorder import RunResult
 from harness.router import RunDecision
@@ -167,12 +168,17 @@ def test_run_with_external_runner_json_and_receipt(monkeypatch, tmp_path, capsys
     assert callable(seen["emit"]) and seen["resume_from"] is None
     # A Brain name is not portable: `mock-coder-v1` must not reach `codex exec`.
     assert seen["model"] == ""
+    assert seen["provider"] == "codex"
 
     session_file = isolated_state / "sessions" / (payload["session"] + ".json")
-    receipts = json.loads(session_file.read_text(encoding="utf-8"))["run_receipts"]
+    saved_session = json.loads(session_file.read_text(encoding="utf-8"))
+    receipts = saved_session["run_receipts"]
     assert receipts[-1]["verified"] is True
     assert receipts[-1]["runner"]["native_session"]["locator"] == "th_abc"
     assert receipts[-1]["runner"]["env_receipt"]["stripped"] == ["OPENAI_API_KEY"]
+    assert [message["content"] for message in saved_session["messages"]] == [
+        "rename the helper", "renamed it"]
+    assert sessions.recovery_state(payload["session"]) is None
 
     # Now the same settled worker with a check that fails. The receipt still says
     # settled — the worker did stop cleanly — and `verified` goes to False, which is
@@ -187,10 +193,13 @@ def test_run_with_external_runner_json_and_receipt(monkeypatch, tmp_path, capsys
     failed = json.loads(capsys.readouterr().out.strip())
     assert failed["runner"]["settled"] is True
     assert "required check failed" in failed["error"]
-    failed_receipts = json.loads(
+    failed_session = json.loads(
         (isolated_state / "sessions" / (failed["session"] + ".json")).read_text(
-            encoding="utf-8"))["run_receipts"]
+            encoding="utf-8"))
+    failed_receipts = failed_session["run_receipts"]
     assert failed_receipts[-1]["verified"] is False
+    assert "required check failed" in failed_session["messages"][-1]["content"]
+    assert "required check failed" in failed_session["last_answer"]
 
 
 def test_run_runner_unavailable_exit_2(monkeypatch, tmp_path, capsys):
@@ -215,6 +224,44 @@ def test_run_runner_unavailable_exit_2(monkeypatch, tmp_path, capsys):
     assert captured.out.strip() == ""      # no JSON result for a run that never ran
 
 
+def test_external_run_receipt_failure_changes_exit_and_keeps_answer(
+        monkeypatch, tmp_path, capsys):
+    _pin_router(monkeypatch, _decision())
+    monkeypatch.setattr(runner_registry, "probe_all",
+                        lambda keys=None, **kw: {"codex-exec": _probe("codex-exec")})
+    seen = {}
+    _fake_run_adhoc(monkeypatch, _worker_result("codex-exec", answer="useful patch"), seen)
+    monkeypatch.setattr(sessions, "append_run_receipt", lambda *_a, **_kw: False)
+
+    code = cli.cmd_run(_args(cwd=str(tmp_path), runner="codex-exec"))
+    payload = json.loads(capsys.readouterr().out.strip())
+
+    assert code == 1
+    assert payload["answer"] == "useful patch"
+    assert "run receipt could not be persisted" in payload["error"]
+    saved = sessions.load(payload["session"])
+    assert "useful patch" in saved["messages"][-1]["content"]
+    assert "run receipt could not be persisted" in saved["messages"][-1]["content"]
+    assert sessions.recovery_state(payload["session"])["recovery_required"] is True
+
+
+def test_corrupt_resume_is_refused_before_routing(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "state" / "sessions" / "broken.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"id":"broken","messages":[', encoding="utf-8")
+    monkeypatch.setattr(
+        runner_registry, "probe_all",
+        lambda **_kw: (_ for _ in ()).throw(
+            AssertionError("routing must not start for corrupt recovery state")))
+
+    code = cli.cmd_run(_args(cwd=str(tmp_path), resume="broken"))
+    payload = json.loads(capsys.readouterr().out.strip())
+
+    assert code == 2
+    assert payload["recovery_required"] is True
+    assert payload["recovery"]["state"] == "invalid"
+
+
 def test_run_external_rejects_goal_persona(monkeypatch, tmp_path, capsys):
     """--persona/--goal are harness features; dropping them silently is not an option."""
     _pin_router(monkeypatch, _decision())
@@ -233,19 +280,21 @@ def test_run_external_rejects_goal_persona(monkeypatch, tmp_path, capsys):
         assert captured.out.strip() == ""
 
 
-def test_default_path_never_probes(monkeypatch, tmp_path, capsys):
-    """RUNNER=collie with no --runner costs exactly nothing.
-
-    Both probe entry points are replaced with functions that raise: the claim is
-    not "the probe was cheap", it is "no probe happened", and a passing assertion
-    on elapsed time would not have said that.
-    """
+def test_default_path_only_records_the_process_free_native_probe(monkeypatch, tmp_path,
+                                                                 capsys):
+    """RUNNER=collie records truthful evidence without inspecting another CLI."""
     _pin_router(monkeypatch, _decision())
 
     def never(*a, **kw):
-        raise AssertionError("the default path must not probe any external worker")
-    monkeypatch.setattr(runner_registry, "probe", never)
-    monkeypatch.setattr(runner_registry, "probe_all", never)
+        raise AssertionError("the default path must not construct an external worker")
+    seen_probe = {}
+    def native_probe(keys=None, provider="", **_kw):
+        seen_probe.update(keys=tuple(keys or ()), provider=provider)
+        return {"collie": _probe(
+            "collie", executable_path="", version="0.test", login="n/a",
+            billing_class="local", billing_mode="local",
+            capabilities=runner_registry.COLLIE_CAPABILITIES.to_dict())}
+    monkeypatch.setattr(runner_registry, "probe_all", native_probe)
     monkeypatch.setattr(runner_registry, "make_runner", never)
     monkeypatch.setattr(runner_slice, "run_adhoc", never)
 
@@ -270,8 +319,9 @@ def test_default_path_never_probes(monkeypatch, tmp_path, capsys):
     assert payload["decision"]["runner"]["runner"] == "collie"
     assert payload["decision"]["runner"]["source"] == "configured"
     assert payload["runner"] is None       # no external worker, no worker receipt
-    # And the synthesized probe says outright that nobody inspected a host.
-    assert "in-process" in payload["decision"]["runner"]["probe"]["detail"]
+    assert seen_probe == {"keys": ("collie",), "provider": "mock"}
+    assert payload["decision"]["runner"]["billing_class"] == "local"
+    assert payload["decision"]["runner"]["probe"]["capabilities"]["steer"] is True
 
 
 def test_run_pinned_model_travels_to_the_same_vendor(monkeypatch, tmp_path, capsys):
@@ -334,6 +384,10 @@ def test_run_resume_continues_the_workers_own_thread(monkeypatch, tmp_path, caps
     _fake_run_adhoc(monkeypatch, _worker_result("codex-exec"), seen)
 
     sid = "20260822-000000-aaaa"
+    sessions.save(sid, [
+        {"role": "user", "content": "first request"},
+        {"role": "assistant", "content": "first answer"},
+    ])
     sessions.append_run_receipt(sid, {"runner": _receipt("claude-code", "cc_1").to_dict()})
     sessions.append_run_receipt(sid, {"runner": _receipt("codex-exec", "th_prev").to_dict()})
 
@@ -341,6 +395,8 @@ def test_run_resume_continues_the_workers_own_thread(monkeypatch, tmp_path, caps
     capsys.readouterr()
     assert seen["resume_from"]["locator"] == "th_prev"
     assert seen["history_note"] is None
+    assert [message["content"] for message in sessions.load(sid)["messages"]] == [
+        "first request", "first answer", "rename the helper", "renamed it"]
 
     # The same session on a worker that never saw it starts fresh instead.
     seen.clear()
@@ -461,3 +517,75 @@ def test_run_parser_offers_only_arrived_runners(tmp_path):
         argparse.Namespace(runner="auto", web_search=False, mode=None),
         _decision(), settings, cwd=str(tmp_path), has_approver=False)
     assert request.configured == "auto" and request.pin == ""
+
+
+# --- collie pack --runner --------------------------------------------------
+def _pack_args(**over):
+    base = dict(task="fix the parser", cwd="", provider="mock", model=None,
+                n=2, check=None, apply=False, quality=None, verification=None,
+                effort=None, speed=None, roster=None, parallel=1, json=True,
+                runner=None)
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_pack_external_runner_reaches_pack_with_worker_model(monkeypatch, tmp_path,
+                                                              capsys):
+    from harness import pack
+
+    _pin_router(monkeypatch, _decision(provider="codex-oauth", model="gpt-5.6-sol",
+                                       strategy="pack"))
+    monkeypatch.setattr(runner_registry, "probe_all",
+                        lambda keys=None, **kw: {"codex-exec": _probe("codex-exec")})
+    seen = {}
+
+    def fake_pack(*args, **kwargs):
+        seen.update(kwargs)
+        return {"n": 2, "winner": 0, "reason": "candidate answered", "applied": False,
+                "attempts": [], "total_cost_usd": 0.0, "answer": "done",
+                "winner_runner": "codex-exec", "roster": ["codex-exec"]}
+
+    monkeypatch.setattr(pack, "run_pack", fake_pack)
+    assert cli.cmd_pack(_pack_args(cwd=str(tmp_path), runner="codex-exec")) == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["decision"]["runner"]["runner"] == "codex-exec"
+    assert seen["runner_decision"].runner == "codex-exec"
+    assert seen["runner_model"] == "gpt-5.6-sol"
+
+
+def test_pack_human_output_preserves_unknown_worker_cost(monkeypatch, tmp_path,
+                                                          capsys):
+    from harness import pack
+
+    _pin_router(monkeypatch, _decision(provider="codex-oauth", model="gpt-5.6-sol",
+                                       strategy="pack"))
+    monkeypatch.setattr(runner_registry, "probe_all",
+                        lambda keys=None, **kw: {"codex-exec": _probe("codex-exec")})
+    monkeypatch.setattr(pack, "run_pack", lambda *args, **kwargs: {
+        "n": 2, "winner": 0, "reason": "candidate answered", "applied": False,
+        "attempts": [], "total_cost_usd": None, "answer": "done",
+        "winner_runner": "codex-exec", "roster": ["codex-exec"]})
+
+    assert cli.cmd_pack(_pack_args(
+        cwd=str(tmp_path), runner="codex-exec", json=False)) == 0
+
+    output = capsys.readouterr().out
+    assert "total cost unknown" in output
+    assert "winner: attempt 0" in output
+
+
+def test_pack_external_runner_and_provider_roster_are_mutually_exclusive(monkeypatch,
+                                                                         tmp_path,
+                                                                         capsys):
+    from harness import pack
+
+    _pin_router(monkeypatch, _decision(strategy="pack"))
+    monkeypatch.setattr(runner_registry, "probe_all",
+                        lambda keys=None, **kw: {"codex-exec": _probe("codex-exec")})
+    monkeypatch.setattr(pack, "run_pack",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            AssertionError("Pack must not start after a conflicting selection")))
+    code = cli.cmd_pack(_pack_args(cwd=str(tmp_path), runner="codex-exec",
+                                   roster="groq,openai"))
+    assert code == 2
+    assert "--roster" in capsys.readouterr().err

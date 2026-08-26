@@ -24,6 +24,7 @@ import csv
 import html
 import io
 import json
+import math
 import os
 import re
 import signal
@@ -51,6 +52,37 @@ _SECRET_ENV_RE = re.compile(
 )
 
 
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _exact_bool(value, name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError("%s must be boolean" % name)
+    return value
+
+
+def _bounded_number(value, name: str, default, *, minimum=0.0, integer=False):
+    if value is None:
+        value = default
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value) or value < minimum or
+            (integer and int(value) != value)):
+        kind = "integer" if integer else "number"
+        raise ValueError("%s must be a finite %s >= %s" % (name, kind, minimum))
+    return int(value) if integer else float(value)
+
+
+def _string_field(value, name: str, default="") -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ValueError("%s must be a string" % name)
+    return value
+
+
 def state_dir(path: str | None = None) -> str:
     return os.path.abspath(path or os.environ.get("COLLIE_STATE_DIR")
                            or os.path.expanduser("~/.collie"))
@@ -65,7 +97,7 @@ def _atomic_json(path: str, value: dict):
     tmp = "%s.tmp-%d-%d" % (path, os.getpid(), threading.get_ident())
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(value, f, indent=2, ensure_ascii=False)
+            json.dump(value, f, indent=2, ensure_ascii=False, allow_nan=False)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -79,12 +111,17 @@ def _atomic_json(path: str, value: dict):
 
 def _safe_env(env: dict | None) -> dict:
     """Only persist non-secret worker tuning, never credentials."""
+    if env is None:
+        env = {}
+    if not isinstance(env, dict):
+        raise ValueError("worker env must be a JSON object")
     out = {}
-    for key, value in (env or {}).items():
-        key = str(key)
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("worker env keys and values must be strings")
         if _SECRET_ENV_RE.search(key):
             continue
-        out[key] = str(value)
+        out[key] = value
     return out
 
 
@@ -109,31 +146,40 @@ class WorkerSpec:
         if not isinstance(value, dict) or not value.get("name"):
             raise ValueError("worker needs a name")
         argv = value.get("argv")
-        if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
+        if (not isinstance(argv, list) or not argv or
+                not all(isinstance(x, str) and x for x in argv)):
             raise ValueError("worker %s needs a string argv" % value.get("name"))
         name = str(value["name"])
         if not _WORKER_NAME_RE.fullmatch(name):
             raise ValueError("worker name must be 1-80 path-safe characters")
-        probe_url = str(value.get("probe_url") or "")
+        probe_url = _string_field(value.get("probe_url"), "worker probe_url")
         parsed_probe = urllib.parse.urlsplit(probe_url)
         if probe_url and (parsed_probe.username is not None or parsed_probe.password is not None):
             raise ValueError("worker probe_url must not embed credentials")
-        adopt_heartbeat = str(value.get("adopt_heartbeat") or "")
+        adopt_heartbeat = _string_field(
+            value.get("adopt_heartbeat"), "worker adopt_heartbeat")
         # Schema-1 supervisor files created before heartbeat adoption did not carry this field.
         # Infer it for Collie's generated Slack workers so upgrades can immediately adopt an
         # already-connected legacy listener instead of racing its per-dog OS lock.
         if not adopt_heartbeat and name.startswith("slack-"):
             adopt_heartbeat = "slack:" + name[len("slack-"):]
         return cls(
-            name=name, argv=list(argv), enabled=bool(value.get("enabled", True)),
-            critical=bool(value.get("critical", True)), cwd=str(value.get("cwd") or ""),
+            name=name, argv=list(argv),
+            enabled=_exact_bool(value.get("enabled"), "worker enabled", True),
+            critical=_exact_bool(value.get("critical"), "worker critical", True),
+            cwd=_string_field(value.get("cwd"), "worker cwd"),
             env=_safe_env(value.get("env")), probe_url=probe_url,
-            probe_json_key=str(value.get("probe_json_key") or ""),
+            probe_json_key=_string_field(
+                value.get("probe_json_key"), "worker probe_json_key"),
             adopt_heartbeat=adopt_heartbeat,
-            startup_grace_s=float(value.get("startup_grace_s", 30)),
-            stable_s=float(value.get("stable_s", 120)),
-            max_rapid_failures=int(value.get("max_rapid_failures", 8)),
-            max_backoff_s=float(value.get("max_backoff_s", 300)),
+            startup_grace_s=_bounded_number(
+                value.get("startup_grace_s"), "worker startup_grace_s", 30),
+            stable_s=_bounded_number(value.get("stable_s"), "worker stable_s", 120),
+            max_rapid_failures=_bounded_number(
+                value.get("max_rapid_failures"), "worker max_rapid_failures", 8,
+                minimum=1, integer=True),
+            max_backoff_s=_bounded_number(
+                value.get("max_backoff_s"), "worker max_backoff_s", 300, minimum=1),
         )
 
     def as_dict(self) -> dict:
@@ -202,11 +248,32 @@ def default_config(root: str | None = None, python: str | None = None) -> dict:
     }
 
 
-def save_config(value: dict, path: str | None = None):
-    specs = [WorkerSpec.from_dict(item).as_dict() for item in value.get("workers", [])]
+def _normalize_config(value: dict) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("supervisor config must be a JSON object")
+    workers = value.get("workers", [])
+    if not isinstance(workers, list):
+        raise ValueError("supervisor workers must be a list")
+    specs = [WorkerSpec.from_dict(item).as_dict() for item in workers]
+    names = [item["name"] for item in specs]
+    if len(set(names)) != len(names):
+        raise ValueError("supervisor worker names must be unique")
     clean = dict(value)
     clean["schema"] = SCHEMA
+    clean["state_dir"] = _string_field(
+        value.get("state_dir"), "supervisor state_dir")
+    clean["poll_interval_s"] = _bounded_number(
+        value.get("poll_interval_s"), "supervisor poll_interval_s", 5, minimum=0.2)
+    clean["heartbeat_ttl_s"] = _bounded_number(
+        value.get("heartbeat_ttl_s"), "supervisor heartbeat_ttl_s", 20, minimum=5)
+    clean["alert_interval_s"] = _bounded_number(
+        value.get("alert_interval_s"), "supervisor alert_interval_s", 30, minimum=5)
     clean["workers"] = specs
+    return clean
+
+
+def save_config(value: dict, path: str | None = None):
+    clean = _normalize_config(value)
     _atomic_json(path or config_path(value.get("state_dir")), clean)
 
 
@@ -214,13 +281,13 @@ def load_config(path: str | None = None, *, python: str | None = None) -> dict:
     path = path or config_path()
     try:
         with open(path, encoding="utf-8") as f:
-            value = json.load(f)
+            value = json.load(f, parse_constant=_reject_json_constant)
     except FileNotFoundError:
         value = default_config(os.path.dirname(path))
-    if not isinstance(value, dict) or int(value.get("schema", 0)) != SCHEMA:
+    if (not isinstance(value, dict) or isinstance(value.get("schema"), bool) or
+            value.get("schema") != SCHEMA):
         raise ValueError("unsupported supervisor config schema")
-    value["workers"] = [WorkerSpec.from_dict(item).as_dict()
-                        for item in value.get("workers", [])]
+    value = _normalize_config(value)
     # A dog can opt into Slack after supervisor.json was first created. Discover only those
     # generated launchers on every supervisor start, preserving every existing worker setting.
     # This also lets the supervisor adopt pre-supervisor listeners during an upgrade.
@@ -504,18 +571,20 @@ def startup_self_check(config: dict, store: OpsStore) -> dict:
 class Supervisor:
     def __init__(self, config: dict, *, store: OpsStore | None = None,
                  runtime_factory=WorkerRuntime, clock=time.time, monotonic=time.monotonic):
+        config = _normalize_config(config)
         self.config = config
         self.root = state_dir(config.get("state_dir"))
         self.store = store or OpsStore(os.path.join(self.root, "ops.db"))
         self._own_store = store is None
         self.clock, self.monotonic = clock, monotonic
-        self.poll_s = max(0.2, float(config.get("poll_interval_s", 5)))
-        self.alert_s = max(5.0, float(config.get("alert_interval_s", 30)))
-        self.workers = [runtime_factory(WorkerSpec.from_dict(item), self.store, self.root)
-                        for item in config.get("workers", []) if item.get("enabled", True)]
+        self.poll_s = config["poll_interval_s"]
+        self.alert_s = config["alert_interval_s"]
+        specs = [WorkerSpec.from_dict(item) for item in config["workers"]]
+        self.workers = [runtime_factory(spec, self.store, self.root)
+                        for spec in specs if spec.enabled]
         for worker in self.workers:
             if hasattr(worker, "heartbeat_ttl"):
-                worker.heartbeat_ttl = max(5.0, float(config.get("heartbeat_ttl_s", 20)))
+                worker.heartbeat_ttl = config["heartbeat_ttl_s"]
         self.stop_event = threading.Event()
         self._last_mono = self.monotonic()
         self._last_alert = 0.0

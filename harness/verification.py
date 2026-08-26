@@ -20,6 +20,42 @@ _SNAPSHOT_BYTE_CAP = 64 * 1024 * 1024
 _GENERATED_CACHE_DIRS = frozenset({
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 })
+_VERIFICATION_OUTPUT_CHARS = 4_000
+
+
+class _TailCapture:
+    """Thread-safe bounded tail for a verifier's arbitrarily large stdout."""
+
+    def __init__(self, limit: int = _VERIFICATION_OUTPUT_CHARS):
+        self.limit = max(1, int(limit))
+        self._value = ""
+        self._lock = threading.Lock()
+
+    def append(self, value) -> None:
+        if not value:
+            return
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        with self._lock:
+            self._value = (self._value + str(value))[-self.limit:]
+
+    def text(self) -> str:
+        with self._lock:
+            return self._value
+
+
+def _bounded_stdout_reader(stream, tail: _TailCapture) -> None:
+    """Drain a verifier pipe without ever allocating one unbounded line."""
+    try:
+        while True:
+            chunk = stream.readline(65_536)
+            if chunk == "":
+                return
+            tail.append(chunk)
+    except Exception:
+        # Cancellation closes the pipe underneath this daemon thread.  Process
+        # status and the ownership proof remain the completion facts.
+        return
 
 
 def _is_untracked_generated_cache(rel: str) -> bool:
@@ -49,8 +85,11 @@ import os
 import subprocess
 import sys
 
+def reject_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
 try:
-    request = json.loads(sys.stdin.read())
+    request = json.loads(sys.stdin.read(), parse_constant=reject_constant)
     argv = request.get("argv")
     use_shell = request.get("shell")
     valid_argv = (isinstance(argv, str) and bool(argv)) or (
@@ -205,7 +244,11 @@ def _filesystem_snapshot(cwd: str) -> dict:
                     complete = False
             if not complete:
                 break
-    except OSError:
+    # Windows reserved device basenames (for example a literal ``nul`` file produced by a POSIX
+    # shell) can make ntpath.relpath raise ValueError because the path resolves onto ``\\.\nul``
+    # instead of the workspace drive.  A snapshot of such a tree is incomplete, but the verifier
+    # must fail closed rather than crash before it can return evidence.
+    except (OSError, ValueError):
         complete = False
     return {"tree_digest": digest.hexdigest(), "snapshot_complete": complete,
             "snapshot_kind": "filesystem"}
@@ -460,6 +503,8 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
     owned_posix_pgid = None
     tree_cleanup_ok = False
     tree_cleanup_error = ""
+    bounded_tail = None
+    bounded_reader = None
     try:
         # On POSIX a verifier must have a group Collie can safely kill without
         # signalling itself.  Continuing in a shared group would allow an
@@ -520,13 +565,45 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         else:
             request = json.dumps(
                 {"argv": args, "shell": bool(use_shell)},
-                ensure_ascii=True, separators=(",", ":"))
+                ensure_ascii=True, separators=(",", ":"), allow_nan=False)
             proc._collie_verification_gate_closed = False
             executed = True
-            output, _ = proc.communicate(input=request, timeout=timeout)
+            # Production Popen pipes take the bounded path.  Several embedders
+            # and process doubles expose only ``communicate``; keep that narrow
+            # compatibility path, while a real child can never accumulate an
+            # unbounded stdout string in this process.
+            if (getattr(proc, "stdout", None) is not None and
+                    getattr(proc, "stdin", None) is not None and
+                    callable(getattr(proc.stdout, "readline", None)) and
+                    callable(getattr(proc.stdin, "write", None)) and
+                    callable(getattr(proc, "wait", None))):
+                bounded_tail = _TailCapture()
+                bounded_reader = threading.Thread(
+                    target=_bounded_stdout_reader,
+                    args=(proc.stdout, bounded_tail),
+                    name="collie-verifier-stdout", daemon=True)
+                bounded_reader.start()
+                try:
+                    proc.stdin.write(request)
+                    proc.stdin.flush()
+                finally:
+                    proc.stdin.close()
+                try:
+                    proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    raise subprocess.TimeoutExpired(
+                        "verification command", timeout,
+                        output=bounded_tail.text())
+                bounded_reader.join(timeout=5)
+                if bounded_reader.is_alive():
+                    raise RuntimeError(
+                        "verification output pipe did not close after command exit")
+                output = bounded_tail.text()
+            else:
+                output, _ = proc.communicate(input=request, timeout=timeout)
             evidence["exit_code"] = int(proc.returncode)
             evidence["command_passed"] = proc.returncode == 0
-            evidence["output"] = (output or "")[-4000:]
+            evidence["output"] = (output or "")[-_VERIFICATION_OUTPUT_CHARS:]
     except subprocess.TimeoutExpired as e:
         executed = True
         # ``Popen.communicate`` does not kill its child on timeout.  More importantly, killing
@@ -538,27 +615,32 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
             tree_cleanup_error = str(
                 getattr(proc, "_collie_verification_tree_error", "") or
                 "process-tree extinction could not be confirmed")
-        partial = _captured_text(e.output)
-        try:
-            drained, _ = proc.communicate(timeout=5)
-            if isinstance(drained, (str, bytes)):
-                partial = _captured_text(drained)
-        except subprocess.TimeoutExpired as drain_error:
+        partial = (bounded_tail.text() if bounded_tail is not None else
+                   _captured_text(e.output))
+        if bounded_reader is not None:
+            bounded_reader.join(timeout=5)
+            partial = bounded_tail.text()
+        else:
+            try:
+                drained, _ = proc.communicate(timeout=5)
+                if isinstance(drained, (str, bytes)):
+                    partial = _captured_text(drained)
+            except subprocess.TimeoutExpired as drain_error:
             # A broken platform/process double must not turn verification cleanup into an
             # unbounded wait.  Keep any bytes communicate managed to collect, close our pipe, and
             # make a final best-effort reap of the direct child.
-            if isinstance(drain_error.output, (str, bytes)):
-                partial = _captured_text(drain_error.output)
-            try:
-                if proc.stdout is not None:
-                    proc.stdout.close()
-            except Exception:
-                pass
-            try:
-                proc.kill()
-                proc.wait(timeout=1)
-            except Exception:
-                pass
+                if isinstance(drain_error.output, (str, bytes)):
+                    partial = _captured_text(drain_error.output)
+                try:
+                    if proc.stdout is not None:
+                        proc.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
         evidence["output"] = partial[-3500:] + "\n(check timed out after %ds)" % timeout
     except Exception as e:
         evidence["output"] = "check failed to run: %s: %s" % (type(e).__name__, e)
@@ -613,4 +695,11 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
     # the check or whose freshness snapshot was incomplete.
     evidence["passed"] = bool(
         evidence["command_passed"] and evidence["ran_after_last_edit"])
+    # Command lines and test output are durable and are streamed to remote UI
+    # clients.  Execute the original command above, but persist only a bounded,
+    # redacted projection; verification status/digests are untouched.
+    from .runner_specs import redact_text
+    evidence["command"] = redact_text(evidence.get("command", ""), 4_000)
+    evidence["output"] = redact_text(
+        evidence.get("output", ""), _VERIFICATION_OUTPUT_CHARS)
     return evidence

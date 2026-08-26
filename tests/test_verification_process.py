@@ -417,6 +417,50 @@ def test_verification_timeout_prevents_grandchild_from_surviving(tmp_path):
     assert not survived.exists(), "the verification timeout must kill descendants, not just the shell"
 
 
+def test_real_verifier_bounds_and_redacts_large_newline_free_output(tmp_path):
+    from harness.verification import run_verification_command
+
+    script = tmp_path / "noisy_check.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.write('X' * 200000 + ' Authorization: Bearer sk-super-secret')\n",
+        encoding="utf-8")
+    python = Path(sys.executable).as_posix().replace('"', '\\"')
+
+    evidence = run_verification_command(
+        f'"{python}" noisy_check.py', str(tmp_path), timeout=10, source="test")
+
+    assert evidence["exit_code"] == 0
+    assert evidence["command_passed"] is True
+    assert evidence["passed"] is True
+    assert len(evidence["output"]) <= 4_000
+    assert "sk-super-secret" not in evidence["output"]
+    assert "Bearer " not in evidence["output"]
+    assert "[redacted]" in evidence["output"]
+
+
+def test_filesystem_snapshot_fails_closed_on_windows_device_style_path(monkeypatch, tmp_path):
+    from harness import verification
+
+    real_relpath = verification.os.path.relpath
+
+    def device_aware_relpath(path, start):
+        if verification.os.path.basename(path).lower() == "nul":
+            raise ValueError("path is on mount '\\\\.\\nul', start on mount 'C:'")
+        return real_relpath(path, start)
+
+    monkeypatch.setattr(verification.os, "walk", lambda _root: [
+        (str(tmp_path), [], ["nul"]),
+    ])
+    monkeypatch.setattr(verification.os.path, "relpath", device_aware_relpath)
+
+    snapshot = verification._filesystem_snapshot(str(tmp_path))
+
+    assert snapshot["snapshot_kind"] == "filesystem"
+    assert snapshot["snapshot_complete"] is False
+    assert len(snapshot["tree_digest"]) == 64
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
 def test_verification_success_prevents_background_descendant_from_surviving(tmp_path):
     from harness.verification import run_verification_command

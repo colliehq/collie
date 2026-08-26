@@ -275,6 +275,41 @@
   .send{background:rgba(var(--accent),1); color:var(--send-ink);} .send:hover{transform:translateY(-1px);}
   .composer.running .send{background:#e0526a; color:#fff;}
   .iconbtn svg{width:19px; height:19px;}
+
+  /* Quiet ambient mode: keep the desktop character, remove ornamental UI weight. */
+  :root {
+    --bg1:#101410; --bg2:#1A211B; --ink:#F0F2EE; --mut:#BBC2B9; --faint:#858E83;
+    --b1:82,126,102; --b2:74,104,91; --b3:112,94,130; --b4:142,105,90;
+    --logo-op:.34; --grain-op:0; --vig:rgba(5,8,6,.38);
+    --panel:rgba(22,27,23,.76); --panel-line:rgba(235,242,235,.11); --panel-ink:#F2F4F0;
+    --hover:rgba(255,255,255,.065); --accent:115,180,147; --send-ink:#102018;
+  }
+  @media (prefers-color-scheme:light) { :root {
+    --bg1:#EEF0EA; --bg2:#DDE4DD; --ink:#20231F; --mut:#596158; --faint:#7F887E;
+    --b1:170,192,179; --b2:184,199,192; --b3:197,187,207; --b4:215,196,185;
+    --logo-op:.38; --grain-op:0; --vig:rgba(100,112,102,.18);
+    --panel:rgba(252,252,249,.80); --panel-line:rgba(35,48,39,.12); --panel-ink:#20231F;
+    --hover:rgba(35,48,39,.06); --accent:53,112,82; --send-ink:#FFFFFF;
+  } }
+  .blooms { opacity:.48; filter:blur(34px); }
+  .grain { display:none; }
+  .opsbar { top:14px; right:14px; padding:5px 6px 5px 9px; border-radius:11px;
+    box-shadow:0 6px 20px rgba(0,0,0,.10); backdrop-filter:blur(14px); }
+  .open-collie { border-radius:8px; }
+  .ops-panel { top:56px; right:14px; border-radius:12px; box-shadow:0 16px 44px rgba(0,0,0,.22); }
+  .ops-section { border-radius:8px; }
+  .brand { animation:none; }
+  .logo { width:min(22vh,220px); height:min(22vh,220px); filter:none; }
+  .word { font-size:clamp(24px,3.8vh,40px); letter-spacing:.08em; }
+  .tag { letter-spacing:.2em; }
+  .card { border-radius:11px; box-shadow:0 8px 24px rgba(0,0,0,.13); backdrop-filter:blur(14px); }
+  .app { border-radius:10px; }
+  .app:hover { transform:none; }
+  .dock { bottom:7vh; width:min(620px,92vw); }
+  .reply { border-radius:12px; box-shadow:0 12px 36px rgba(0,0,0,.20); }
+  .composer { border-radius:14px; padding:7px 7px 7px 14px; box-shadow:0 10px 34px rgba(0,0,0,.18); }
+  .composer:focus-within { box-shadow:0 12px 38px rgba(0,0,0,.20); }
+  .iconbtn { border-radius:10px; }
 </style>
 </head>
 <body>
@@ -344,8 +379,8 @@
   var opsLocalNeeds = false, opsGlobalNeeds = false, opsRecoveryNeeds = false, opsLocalRunning = false, opsGlobalPending = {}, opsBackend = "connecting", opsApprovalEpoch = 0, OPS_IDENTITY = {}, OPS_LANG="en";
   var OPS_ZH={"Open Activity":"打开活动与恢复","Activity & recovery":"活动与恢复","Refresh":"刷新","Close Activity":"关闭活动与恢复","Session recovery":"会话恢复","Inspect the external system first. Collie will not replay an uncertain action automatically.":"请先检查外部系统。Collie 不会自动重放不确定操作。","Specialists":"专员","Operational activity":"运行活动","Loading…":"加载中…","Ready":"就绪","Running":"运行中","Needs you":"等你决定","Connecting…":"连接中…","Unavailable":"不可用","Open Collie":"打开 Collie","No recovery decisions.":"没有待处理的恢复决定。","No specialist runs.":"没有专员运行。","No other activity.":"没有其他活动。","Completed":"已完成","Not fired":"未发生","Cancel run":"取消运行","Steer":"补充要求","Cancel":"取消","Action failed":"操作失败","Confirm only after inspecting the external system: the action completed.":"请仅在检查外部系统并确认操作已完成后继续。","Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"请仅在检查外部系统并确认操作未发生后继续。Collie 之后可以安全重试。","Cancel this recovery without replaying the uncertain action?":"要取消此次恢复且不重放不确定操作吗？","Steer this specialist at its next safe boundary:":"在下一个安全边界向该专员补充要求：","Request specialist cancellation?":"要请求取消该专员吗？","Resolution recorded":"已记录恢复决定","Steer queued":"补充要求已排队","Cancellation requested":"已请求取消","Some operational lanes are unavailable":"部分运行通道暂不可用","Activity is unavailable":"活动暂不可用","Services":"服务","Service":"服务","Missions":"任务","Automations":"自动化","Mission":"任务","Automation":"自动化","Queued":"排队中","Blocked":"已阻塞","Waiting":"等待中","Paused":"已暂停","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿","Describe the outcome you want…":"描述你想完成的结果…","Message Collie":"给 Collie 发消息","Voice input":"语音输入","Send":"发送","Edit layout":"编辑布局","Edit desktop layout":"编辑桌面布局","Dismiss":"关闭","Dismiss reply":"关闭回复","Drag any widget to a corner · click ✓ when done":"将任意组件拖到角落 · 完成后点击 ✓","your AI operations system":"你的 AI 运营系统"};
   var OPS_ZHTW={"Open Activity":"開啟活動與復原","Activity & recovery":"活動與復原","Refresh":"重新整理","Close Activity":"關閉活動與復原","Session recovery":"工作階段復原","Inspect the external system first. Collie will not replay an uncertain action automatically.":"請先檢查外部系統。Collie 不會自動重播不確定操作。","Specialists":"專員","Operational activity":"執行活動","Loading…":"載入中…","Ready":"就緒","Running":"執行中","Needs you":"等你決定","Connecting…":"連線中…","Unavailable":"無法使用","Open Collie":"開啟 Collie","No recovery decisions.":"沒有待處理的復原決定。","No specialist runs.":"沒有專員執行。","No other activity.":"沒有其他活動。","Completed":"已完成","Not fired":"未發生","Cancel run":"取消執行","Steer":"補充要求","Cancel":"取消","Action failed":"操作失敗","Confirm only after inspecting the external system: the action completed.":"請只在檢查外部系統並確認操作已完成後繼續。","Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"請只在檢查外部系統並確認操作未發生後繼續。Collie 之後可以安全重試。","Cancel this recovery without replaying the uncertain action?":"要取消此次復原且不重播不確定操作嗎？","Steer this specialist at its next safe boundary:":"在下一個安全邊界向該專員補充要求：","Request specialist cancellation?":"要請求取消該專員嗎？","Resolution recorded":"已記錄復原決定","Steer queued":"補充要求已排入佇列","Cancellation requested":"已請求取消","Some operational lanes are unavailable":"部分執行通道暫時無法使用","Activity is unavailable":"活動暫時無法使用","Services":"服務","Service":"服務","Missions":"任務","Automations":"自動化","Mission":"任務","Automation":"自動化","Queued":"排隊中","Blocked":"已封鎖","Waiting":"等待中","Paused":"已暫停","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿","Describe the outcome you want…":"描述你想完成的結果…","Message Collie":"傳訊息給 Collie","Voice input":"語音輸入","Send":"傳送","Edit layout":"編輯版面","Edit desktop layout":"編輯桌面版面","Dismiss":"關閉","Dismiss reply":"關閉回覆","Drag any widget to a corner · click ✓ when done":"將任意元件拖到角落 · 完成後按一下 ✓","your AI operations system":"你的 AI 營運系統"};
-  Object.assign(OPS_ZH,{"Open":"打开","app":"应用","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暂停","Play or pause":"播放或暂停","Next":"下一首","Next track":"下一首曲目"});
-  Object.assign(OPS_ZHTW,{"Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目"});
+  Object.assign(OPS_ZH,{"Worker":"工作进程","Open":"打开","app":"应用","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暂停","Play or pause":"播放或暂停","Next":"下一首","Next track":"下一首曲目"});
+  Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
   function opsLocale(){return OPS_LANG==="zh-tw"?"zh-TW":(OPS_LANG==="zh"?"zh-CN":"en");}
@@ -417,7 +452,7 @@
   function renderAmbientSpecialists(activity){var box=$("ambientSpecialists"),rows=ambientRecent(activity.task_runs||[],function(row){return !opsTerminal(row.status);},12);box.textContent="";if(!rows.length){opsEmpty(box,"No specialist runs.");return;}rows.forEach(function(data){var meta=data.mission_id?tOps("Mission")+" · "+data.mission_id:"";var row=opsRow(box,(data.role||"specialist")+" · "+data.run_id,meta,data.status);if(!opsTerminal(data.status)){
         opsAction(row,"Steer","primary",function(){var text=prompt(tOps("Steer this specialist at its next safe boundary:"),"");if(text==null||!text.trim())return false;return opsPost("/api/mission/specialist/steer",{run_id:data.run_id,text:text.trim()}).then(function(){return"Steer queued";});});
         opsAction(row,"Cancel","danger",function(){if(!confirm(tOps("Request specialist cancellation?")))return false;return opsPost("/api/mission/specialist/cancel",{run_id:data.run_id}).then(function(){return"Cancellation requested";});});}});}
-  function renderAmbientOther(activity,health){var box=$("ambientOther");box.textContent="";var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};if(Object.keys(workers).length||Object.keys(services).length){opsLane(box,"Services");Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};opsRow(box,name,worker.age_s==null?"":Math.round(worker.age_s)+"s",worker.fresh?"running":"recovery_required");count++;});Object.keys(services).sort().forEach(function(name){opsRow(box,name,tOps("Service"),services[name].ok?"running":"failed");count++;});}
+  function renderAmbientOther(activity,health){var box=$("ambientOther");box.textContent="";var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};if(Object.keys(workers).length||Object.keys(services).length){opsLane(box,"Services");Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};opsRow(box,name+" · "+tOps("Worker"),worker.age_s==null?"":Math.round(worker.age_s)+"s",worker.fresh?"running":"recovery_required");count++;});Object.keys(services).sort().forEach(function(name){opsRow(box,name+" · "+tOps("Service"),"",services[name].ok?"running":"failed");count++;});}
     var missions=ambientRecent(activity.missions||[],function(row){return opsMissionActive(row.state);},6);if(missions.length){opsLane(box,"Missions");missions.forEach(function(data){opsRow(box,data.mission_id,data.lane||tOps("Mission"),data.state);count++;});}
     var automations=ambientRecent(activity.automations||[],function(row){return !opsTerminal(row.state);},6);if(automations.length){opsLane(box,"Automations");automations.forEach(function(data){opsRow(box,(data.automation_id||tOps("Automation"))+" · "+(data.execution_id||"—"),tOps("Automation"),data.state);count++;});}if(!count)opsEmpty(box,"No other activity.");}
   function renderAmbientActivity(activity,health,failures){renderAmbientRecovery(activity);renderAmbientSpecialists(activity);renderAmbientOther(activity,health);var lanes=Object.keys(activity.errors||{}).concat(Object.keys((health&&health.activity_errors)||{})),issues=(failures||[]).slice();if(lanes.length)issues.push(tOps("Some operational lanes are unavailable")+": "+lanes.join(", "));opsPanelNotice(issues.join(" · "),issues.length>0);}

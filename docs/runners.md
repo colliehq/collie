@@ -114,18 +114,23 @@ goes in over stdin, never as a command-line argument. The sandbox is `--sandbox 
 it can edit files and run shell commands inside the workspace, and approvals are set to `never` —
 `codex exec` answers every approval request by rejecting it, which is fail-closed but also means
 there is no channel back into Collie's gate. Its own goals surface is not used. Usage comes back as
-token counts (never dollars). Events are replayed after the process exits rather than streamed, so a
-`codex-exec` run shows its tool activity at the end rather than live.
+token counts (never dollars). Each complete native JSONL event is forwarded while the process is
+running and then parsed again from the full captured stream before the turn can settle. The CLI does
+not expose partial token deltas, so streaming is event-level rather than character-level.
 
 ### `claude-code` — Claude Code
 
-Runs `claude -p --output-format json` under your existing `claude login`, minimum version 2.1.221.
+Runs `claude -p --output-format stream-json --verbose` under your existing `claude login`, minimum
+version 2.1.221. Complete system, assistant, tool and terminal result records are shown live and are
+also retained in the runner snapshot and receipt digest.
 The prompt goes in over stdin. The tool list is pinned to exactly five file tools — `Read`, `Edit`,
 `Write`, `Grep`, `Glob` — and **there is no shell**, because with no approval channel back into
 Collie's gate an unreviewed `Bash` would be an unbounded action on your machine. Sessions are
-resumable through a Collie-generated UUID. It is the only worker that reports a dollar cost of its
-own. Reach for `codex-exec` or `collie` when the task needs to run commands rather than only edit
-files.
+resumable through a Collie-generated UUID. Safe mode, Chrome integration off, slash commands off,
+prompt suggestions off, and strict empty MCP configuration are pinned on both start and resume, so
+the user's plugins/skills/browser bridge cannot silently enlarge that five-tool surface. It is the
+only worker that reports a dollar cost of its own. Reach for `codex-exec` or `collie` when the task
+needs to run commands rather than only edit files.
 
 ### Declared capabilities
 
@@ -138,11 +143,11 @@ report actually verified here.
 | Shell | yes, gated per action | yes, inside the workspace sandbox | no |
 | Resume a session | yes | yes (`exec resume`) | yes (`--resume`) |
 | Steer mid-turn | yes | no — a new instruction becomes the next resume | no |
-| Streaming events | yes | no — replayed after exit | no |
+| Streaming events | yes | yes — complete JSONL records | yes — complete stream-json records |
 | Cancel | native + process tree | process tree | process tree |
 | Approvals reach Collie's gate | yes — the gate *is* the channel | no (rejects, fail-closed) | no (no shell instead) |
 | Usage: tokens / cost | yes / yes | yes / no | yes / yes |
-| Plan quota signals | no | no | no |
+| Plan quota signals | no | yes — read-only app-server snapshot | no |
 | Per-request metering (Mission leash) | yes | no | no |
 | Confinement | Collie's gate + leash, per action | `workspace-write` sandbox | tool allowlist |
 | Needs a Git workspace | no | yes | yes |
@@ -180,11 +185,116 @@ with the date and the machine it ran on. Until then, every "verified" claim in t
 above is the design's declaration rather than an observation of your host — which is exactly what
 `collie runners` will tell you if you ask it.
 
-## Not yet wired
+## Current surfaces and boundaries
 
-As of 0.21.27 the worker selection is available on `collie run` only. Missions, Pack, and the web GUI
-still run Collie's own harness; the selection layer and the Mission code-slice entry point exist and
-are tested, but those call sites do not offer the choice yet. `auto` ranks candidates on pool order,
-declared capability fit, past verified-run history, and billing preference; it does not yet see live
-rate-limit cooldowns or remaining plan allowance. Streaming, mid-turn steering, and routing an
-external worker's approval requests into Collie's gate are the next steps after that.
+Worker selection is wired through `collie run`, Web, Pack, and durable non-overnight Mission code
+slices. Each surface records the selected worker in its receipt; Web also emits the resolved Run Plan
+before work begins, and complete Codex/Claude native events are forwarded live. Pack creates a private
+Git baseline for every candidate and lets Collie's host verifier choose the winner. Mission freezes
+the worker and billing route into its leash, re-probes login/billing/quota evidence at every runnable
+boundary, and keeps the worker's native session locator for the next slice.
+
+`auto` ranks only the consented pool using pool order, capability fit, verified-run history, billing
+preference, recent 429 cooldowns, and known plan headroom. Codex headroom is obtained with a read-only
+`account/rateLimits/read` app-server handshake; the probe creates no thread and sends no model prompt.
+If every route, including Collie, fails a hard rule, Auto refuses; it never overrides H5
+`no_paid_overage`/`subscription_only` just to produce a fallback.
+Unknown quota remains visibly unknown and receives no ranking credit. Desktop and mobile show the
+worst observed quota window and its reset time; the snapshot cache is scoped to the resolved Codex
+binary and `CODEX_HOME`, so two local logins cannot borrow one another's signal.
+
+External output is treated as a bounded protocol, not as an arbitrary terminal transcript. JSONL is
+split only on LF (an optional CR is removed), so literal `U+2028`/`U+2029` inside a JSON string remain
+data. Non-standard `NaN`/`Infinity`, cyclic values, and structures deeper than 64 levels become
+explicit protocol-error evidence rather than entering a receipt or overflowing the redaction stack.
+Stdout and stderr are drained concurrently and retained up to 16 MiB each; exceeding the bound
+makes the turn unsettled instead of accepting a partial terminal frame. A live surface forwards at
+most 200 native events plus an explicit omission marker, while the receipt still records the bounded
+snapshot digest and event count. A single native event is capped at 128,000 characters before JSON
+materialization, a persisted snapshot restores at most 10,000 tail events, and every numeric counter
+must be finite and non-negative. Exactly one terminal event is required and it must be the final
+record; plausible JSON after `turn.completed`/Claude's `result` makes the invocation unsettled.
+
+Runner prompts, history recaps, events, final text, subprocess errors and verifier output are scrubbed
+for credential-shaped values before they enter a stream, transcript or receipt. The host verifier
+keeps only a redacted 4 KiB output tail. This is a last-resort containment boundary, not permission to
+paste credentials into a task: the external worker itself receives only the permanently masked prompt
+because its process cannot use Collie's reversible in-memory secret vault.
+
+Pack and Mission also fail closed when an external worker omits a budgeted usage field. The value is
+stored as `unknown`/`null`, never zero: Pack stops launching more paid candidates because it can no
+longer enforce the remaining budget, and Mission moves to `needs_human` before another slice. A
+subscription/local worker records zero *marginal* charge while retaining any reported or computable
+API-equivalent value; a metered worker with unknown cost is not relabelled free.
+
+Receipts are publication fences, not optional telemetry. CLI, Web and Pack arm a durable
+`external_action` replay fence before the worker or copy-back sees the task. It is cleared only after
+the receipt and visible transcript are durable and the worker reported no recovery requirement; an
+unexpected exception, a partial Pack apply, an orphaned attempt directory, or a missing receipt leaves
+the session in explicit recovery instead of allowing a blind retry. Pack receipts retain compact
+evidence for every candidate and report cleanup failures rather than hiding them behind best-effort
+deletion. Web, CLI, Pack and Mission keep a useful worker answer when a receipt write fails, but the
+run becomes a visible failure and cannot be called verified. Mission persists a pre-edit baseline
+before starting a worker and a post-slice ownership WAL
+before another slice can run; a transcript or ownership-write exception becomes
+`recovery_required`, while local stores are still closed independently. Existing session journals are
+validated before every update. An unreadable or semantically torn journal is never overwritten as a
+fresh conversation and appears in Activity as a recovery item requiring inspection.
+
+Mission applies the same rule to its SQLite authority boundary. Leash, case, checkpoint and event
+objects use standard JSON only; a non-object payload or `NaN`/`Infinity` is never interpreted with
+default limits. A corrupt leash or case moves to `recovery_required` before the Mission can claim a
+runner. Boolean autonomy, integer call/token/wall/storage bounds, money, expiry timestamps and both
+frozen profile digests are shape-checked before persistence. Runtime measurements are finite and
+non-negative or rejected, so malformed usage cannot be clamped to zero and undercharge the campaign.
+The killable Mission code subprocess uses the same strict-object protocol for its request, start gate,
+result and process-ownership receipt; an unreadable ownership receipt remains fenced.
+
+The Run Setup UI distinguishes Pack's *base* workspace from its execution boundary: every candidate
+runs in its own isolated worktree, the current files change only when “apply winner” is selected, and
+both desktop and phone surfaces state that explicitly. The wire value remains `workspace=current`
+because it names the baseline project; Pack itself owns candidate isolation and cleanup.
+
+The same standard-JSON rule now covers the surrounding authority seams, not only runner events.
+Web, pairing, the delegate dashboard, the logged-in browser bridge and `execute_code`'s privileged
+tool RPC reject non-object bodies and `NaN`/`Infinity` before dispatch. Responses are also encoded
+with non-finite numbers forbidden. Action proposals require object-shaped finite payloads, an exact
+boolean daemon flag and a valid TTL; approval rechecks the HMAC-bound durable payload, and corrupt
+approved JSON is terminally refused before the side effect. An incomplete action-integrity key no
+longer falls back to a process-private replacement key.
+
+Unattended automations apply the same policy to their specs, budgets, permission booleans, durable
+requests, runtime usage and parent/child files. Truthy strings cannot grant filesystem, webhook,
+current-workspace or external-write authority. A corrupt queued request is parked in `needs_you`
+before claim, malformed usage cannot be clamped to zero, child results are atomically replaced, and
+failure to remove the private execution directory is surfaced. The Claude Agent SDK worker and host
+adapter likewise reject non-finite/fractional/negative token counters before accounting.
+
+TaskTree specialist lanes no longer recover malformed durable JSON as an empty leash. New leash,
+resource, progress and usage records use finite standard JSON; child numeric ceilings can only
+narrow finite parent ceilings. A corrupt queued run is moved to `recovery_required` before claim,
+and a corrupt ancestor blocks its descendant rather than substituting fresh default budgets.
+
+The legacy Job executor now observes the same authority rule. `may`, irreversible mode and spend
+cap have exact types; a non-finite cap cannot become an accidental unlimited budget. Corrupt durable
+Job leashes are locked down and parked in `recovery_required`, paused/recovery/terminal Jobs cannot
+fire a late confirmed action, and an already executed nonce can still replay its one durable receipt.
+The CLI and delegate dashboard reject malformed shapes before creating a Job.
+
+Long-running infrastructure is strict at startup too. Supervisor enable/critical switches are real
+booleans, worker identities are unique, and every grace/backoff/poll interval is finite and bounded,
+so a string `"false"` or `NaN` cannot silently start a worker or poison recovery scheduling. The
+subscription sidecar rejects duplicate keys and non-standard JSON before transport and refuses to
+coerce fractional, negative, string or boolean usage into plausible token counts.
+
+Capability, probe, request and receipt JSON use strict booleans: the string `"false"` is not truthy.
+That matters for `approval_round_trip`, steering, paid-overage attestation, `usage_known`, settlement
+and recovery. Cache entries are scoped to the account/runtime identity, injected transports never
+borrow one another's result, and a wall-clock rollback forces a refresh rather than extending stale
+billing or quota evidence indefinitely.
+
+The non-interactive phase-one CLIs still cannot steer a turn already in flight or round-trip an
+approval into Collie's gate. Web exposes those capabilities explicitly and keeps the steering input
+disabled for such runs. Codex is bounded by its workspace-write sandbox with approvals rejected;
+Claude Code is bounded to its five file tools and receives no shell. Plan/review, chat, overnight
+Mission, REPL/TUI/ACP, Slack, delegate, and automation work therefore stay on Collie's native harness.

@@ -467,15 +467,34 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
     console = Console() if have_rich else None
     ui = RichTUI(console) if have_rich else PlainTUI()
 
+    def checked_resume(rid):
+        if not rid:
+            return None, "no session selected"
+        recovery = sess.recovery_state(rid)
+        checked = sess.load_checked(rid)
+        if (recovery and recovery.get("recovery_required")) or \
+                checked.get("status") == "invalid":
+            return None, ((recovery or {}).get("reason") or
+                          checked.get("reason") or
+                          "session journal requires inspection")
+        if checked.get("status") != "ok":
+            return None, "no such session: %s" % rid
+        return checked.get("session"), ""
+
+    sid = resume or (sess.latest() if cont else None) or sess.new_id()
+    loaded, resume_error = checked_resume(sid) if (resume or cont) else (None, "")
+    if resume_error:
+        message = "collie refused to resume %s: %s" % (sid, resume_error)
+        console.print("[red]%s[/red]" % message) if have_rich else print(message)
+        return 2
+
     from .cli import default_gate
     _gate = default_gate(cwd)
     h = make_harness(cwd, provider=provider, model=model, project=project,
                      code_search=True, web_search=True, exec_code=True, delegate=True,
                      gate=_gate)
 
-    sid = resume or (sess.latest() if cont else None) or sess.new_id()
     h.checkpoint_scope = "session:" + sid
-    loaded = sess.load(sid) if (resume or cont) else None
     history = (loaded or {}).get("messages") or []
     receipts = list((loaded or {}).get("run_receipts") or [])
     if goal:
@@ -519,7 +538,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
             if line.startswith("/resume"):
                 parts = line.split(None, 1)
                 rid = parts[1].strip() if len(parts) > 1 else sess.latest()
-                s = sess.load(rid) if rid else None
+                s, resume_error = checked_resume(rid)
                 if s:
                     history, receipts, sid = (s.get("messages") or [],
                                               list(s.get("run_receipts") or []), rid)
@@ -527,7 +546,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     msg = "resumed %s (%d prior turns)" % (
                         sid, sum(1 for m in history if m.get("role") == "user"))
                 else:
-                    msg = "no such session: %s" % rid
+                    msg = resume_error or "no such session: %s" % rid
                 if have_rich:
                     console.print("[dim]%s[/dim]" % msg)
                 else:

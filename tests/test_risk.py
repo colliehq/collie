@@ -130,6 +130,7 @@ def test_tool_self_declaration_used_only_when_unknown():
 @pytest.mark.parametrize("name", [
     "browser_click", "browser_type", "browser_press", "browser_upload",
     "browser_eval", "browser_script", "desktop_click", "desktop_type",
+    "desktop_uia", "desktop_win32",
     "enable_capability", "delegate",
 ])
 def test_reaching_off_machine_is_external(name):

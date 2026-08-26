@@ -114,6 +114,11 @@ class Gate:
     session_denied: set = field(default_factory=set)
     risk_overrides: Optional[RiskOverrides] = None
     origin_lookup: Optional[Callable[[], str]] = None
+    # Persistent navigation policy.  It is intentionally separate from
+    # session_rules: opening an ordinary site may be quiet while actions on the
+    # page still pass through the normal external-action gate below.
+    browser_site_access: str = "ask_every_site"
+    browser_sensitive_hosts: tuple = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd).expanduser().resolve()
@@ -172,6 +177,12 @@ class Gate:
 
         # -- external -------------------------------------------------------
         target = target_for(tool_name, args, self.origin_lookup)
+        if tool_name == "browser_open" and target:
+            from .browserpolicy import navigation_allowed_without_prompt
+            if navigation_allowed_without_prompt(
+                    self.browser_site_access, target, self.browser_sensitive_hosts):
+                return d(True, "allowed by persistent browser site-access policy",
+                         rule="browser site access → %s" % target, target=target)
         if target and (tool_name, target) in self.session_rules:
             rule = "%s → %s" % (tool_name, target)
             return d(True, "allowed by rule: " + rule, rule=rule, target=target)

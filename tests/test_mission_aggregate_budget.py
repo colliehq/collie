@@ -5,7 +5,7 @@ import time
 import pytest
 
 from harness.actions import ActionStore
-from harness.jobs import Capability, NEEDS_YOU
+from harness.jobs import Capability, NEEDS_YOU, RECOVERY_REQUIRED
 from harness.mission import MissionStore, StepTimedOut, create_mission, world_leash
 from harness.mission import MissionDriver
 from harness.verifier import VERIFIED, Verdict
@@ -23,6 +23,157 @@ def _create_child(store, mission_id, parent_id, leash):
 def test_world_leash_rejects_nonfinite_money_bounds(field, value):
     with pytest.raises(ValueError, match="finite"):
         world_leash(**{field: value})
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 1.5, True, "1.0"])
+def test_world_leash_rejects_non_integral_or_nonfinite_integer_bounds(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        world_leash(max_model_calls=value)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"autonomous": "false"},
+    {"may": "research"},
+    {"may": ["research", ""]},
+])
+def test_world_leash_rejects_ambiguous_authority_shapes(kwargs):
+    with pytest.raises(ValueError):
+        world_leash(**kwargs)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_world_leash_rejects_nonfinite_expiry(value):
+    with pytest.raises(ValueError, match="finite"):
+        world_leash(expires=value)
+
+
+@pytest.mark.parametrize("value", ["not-a-date", "2026-13-99T00:00:00Z"])
+def test_world_leash_rejects_invalid_text_expiry(value):
+    with pytest.raises(ValueError, match="valid ISO"):
+        world_leash(expires=value)
+
+
+def test_world_leash_normalizes_offset_expiry_to_utc():
+    assert world_leash(expires="2026-08-25T10:00:00-07:00")["expires"] == \
+        "2026-08-25T17:00:00Z"
+
+
+@pytest.mark.parametrize("field", ["execution_profile_sha256", "worker_profile_sha256"])
+def test_world_leash_validates_every_frozen_profile_digest(field):
+    with pytest.raises(ValueError, match="SHA-256"):
+        world_leash(**{field: "not-a-digest"})
+
+
+@pytest.mark.parametrize("field", ["spend_max_usd", "max_model_cost_usd"])
+def test_world_leash_rejects_boolean_money_authority(field):
+    with pytest.raises(ValueError, match="numeric"):
+        world_leash(**{field: True})
+
+
+def test_goal_evidence_drops_nonfinite_and_ambiguous_boolean_fields():
+    verdict = Verdict(VERIFIED, evidence=(
+        {"channel": "host", "at": float("inf"), "ok": True, "asserted": True},
+        {"channel": "host", "at": 1.0, "ok": True, "asserted": "false"},
+        {"channel": "host", "at": 2.0, "ok": True, "asserted": False},
+    ))
+
+    assert MissionDriver._goal_evidence(verdict) == [{
+        "channel": "host", "at": 2.0, "ok": True,
+        "asserted": False, "detail": "",
+    }]
+
+
+def test_deadline_parser_never_turns_malformed_authority_into_no_deadline():
+    with pytest.raises(ValueError, match="expires"):
+        MissionDriver._deadline_epoch({"expires": "not-a-date"})
+
+
+@pytest.mark.parametrize("column", ["leash_json", "case_json"])
+def test_corrupt_mission_authority_json_is_persistently_fenced_before_claim(
+        tmp_path, column):
+    store = MissionStore(str(tmp_path / "missions.db"))
+    create_mission(store, "corrupt", "do nothing", leash=world_leash())
+    store.db.execute("UPDATE missions SET %s=? WHERE mission_id=?" % column,
+                     ('{"value":NaN}', "corrupt"))
+    store.db.commit()
+
+    assert store.claim_run("corrupt") is None
+    mission = store.get("corrupt")
+    assert mission.state == RECOVERY_REQUIRED
+    assert "JSON is corrupt" in mission.result
+    store.close()
+
+
+def test_mission_store_never_persists_nonfinite_case_json(tmp_path):
+    store = MissionStore(str(tmp_path / "missions.db"))
+
+    with pytest.raises(ValueError):
+        create_mission(store, "nonfinite", "do nothing", leash=world_leash(),
+                       case={"cost": float("nan")})
+
+    assert store.get("nonfinite") is None
+    store.close()
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("input_tokens", -1),
+    ("output_tokens", float("nan")),
+    ("cache_tokens", 1.5),
+    ("cost_usd", float("inf")),
+    ("equivalent_cost_usd", -0.01),
+    ("wall_ms", True),
+    ("retries", "1.0"),
+])
+def test_runtime_accounting_rejects_invalid_metrics_without_undercharging(
+        tmp_path, field, value):
+    store = MissionStore(str(tmp_path / "missions.db"))
+    create_mission(store, "metrics", "do nothing", leash=world_leash())
+    token = store.claim_run("metrics")
+
+    with pytest.raises(ValueError):
+        store.account_runtime("metrics", token, **{field: value})
+
+    runtime = store.runtime("metrics")
+    assert runtime["input_tokens"] == 0
+    assert runtime["output_tokens"] == 0
+    assert runtime["cache_tokens"] == 0
+    assert runtime["model_cost_microusd"] == 0
+    assert runtime["active_wall_ms"] == 0
+    store.close()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, 1.5, True])
+def test_external_storage_accounting_rejects_invalid_metrics(tmp_path, value):
+    store = MissionStore(str(tmp_path / "missions.db"))
+    create_mission(store, "storage", "do nothing", leash=world_leash())
+
+    with pytest.raises(ValueError):
+        store.set_external_storage("storage", value)
+
+    assert store.runtime("storage")["external_storage_bytes"] == 0
+    store.close()
+
+
+@pytest.mark.parametrize("decision", [
+    {"_usage": {"input_tokens": float("nan")}},
+    {"_usage": [], "_model_calls": 1},
+    {"_model_calls": -1},
+    {"_model_calls_reserved": "false"},
+])
+def test_decision_usage_rejects_unaccountable_shapes(decision):
+    with pytest.raises(ValueError):
+        MissionDriver._usage_from_decision(decision)
+
+
+@pytest.mark.parametrize("result", [
+    {"_usage": {"cost_usd": float("inf")}},
+    {"_usage": "none"},
+    {"model_calls": -1},
+    {"_model_calls_reserved": 1},
+])
+def test_capability_usage_rejects_unaccountable_shapes(result):
+    with pytest.raises(ValueError):
+        MissionDriver._usage_from_result(result)
 
 
 @pytest.mark.parametrize(

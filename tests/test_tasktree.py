@@ -595,6 +595,53 @@ def test_child_usage_charges_every_ancestor_and_stale_claim_fails_closed(tmp_pat
     assert store.get(child["run_id"])["status"] == QUEUED
 
 
+def test_tasktree_nonfinite_leash_usage_and_durable_json_fail_closed(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, _repo = _root(store, tmp_path)
+
+    with pytest.raises(ValueError, match="max_model_cost_usd"):
+        narrow_leash(root["leash"], {**root["leash"],
+                                     "max_model_cost_usd": float("nan")})
+    with pytest.raises(ValueError, match="finite non-negative"):
+        store.account_usage(root["run_id"], "not-owned", input_tokens=float("nan"))
+    assert store.get(root["run_id"])["input_tokens"] == 0
+
+    store.db.execute("UPDATE agent_runs SET leash_json=? WHERE run_id=?",
+                     ('{"max_model_tokens":NaN}', root["run_id"]))
+    store.db.commit()
+    assert store.claim(root["run_id"]) is None
+    raw = store.db.execute(
+        "SELECT status,result FROM agent_runs WHERE run_id=?", (root["run_id"],)).fetchone()
+    assert raw["status"] == RECOVERY_REQUIRED
+    assert "invalid durable TaskTree authority" in raw["result"]
+
+
+def test_corrupt_authority_rolls_back_specialist_and_workspace_transactions(tmp_path):
+    store = TaskTreeStore(str(tmp_path / "tree.db"))
+    root, repo = _root(store, tmp_path)
+    sibling = store.spawn_specialist(
+        root["run_id"], "reader", "existing lane",
+        resources=[{"kind": "file", "id": str(repo / "a.py"), "mode": "read"}],
+        workspace=str(repo))
+    store.db.execute("UPDATE agent_runs SET resources_json=? WHERE run_id=?",
+                     ('[{"kind":"file","id":"x","mode":NaN}]', sibling["run_id"]))
+    store.db.commit()
+
+    with pytest.raises(ValueError, match="invalid durable TaskTree JSON"):
+        store.spawn_specialist(
+            root["run_id"], "other", "must not inherit a locked transaction",
+            resources=[], workspace=str(repo))
+    assert store.db.in_transaction is False
+
+    lazy = store.create_root("lazy", world_leash(), [], workspace="")
+    store.db.execute("UPDATE agent_runs SET leash_json=? WHERE run_id=?",
+                     ('{"max_model_tokens":NaN}', lazy["run_id"]))
+    store.db.commit()
+    with pytest.raises(ValueError, match="invalid durable TaskTree JSON"):
+        store.initialize_root_workspace_authority(lazy["run_id"], str(repo), "read")
+    assert store.db.in_transaction is False
+
+
 def test_stale_worker_requeues_unacked_steering_and_reconcile_supersedes_cancel(tmp_path):
     store = TaskTreeStore(str(tmp_path / "tree.db"))
     root, _repo = _root(store, tmp_path)

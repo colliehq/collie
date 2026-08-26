@@ -10,6 +10,7 @@ import re
 
 import pytest
 
+from harness import runner_specs
 from harness.agent_runners import RunnerSnapshot
 from harness.runner_specs import (
     BILLING_CLASSES,
@@ -124,6 +125,28 @@ def test_redact_text_keeps_the_authorization_header_name_but_not_its_value():
     assert not SECRET_RE.search(cleaned)
 
 
+@pytest.mark.parametrize("raw, forbidden", [
+    ('{"api_key": "ordinarylookingsecret123456"}', "ordinarylookingsecret123456"),
+    ("PASSWORD=correct-horse-battery-staple", "correct-horse-battery-staple"),
+    ("tool --token abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+    ("Cookie: session=abcdefghijklmnop", "session=abcdefghijklmnop"),
+    ("postgres://alice:longdatabasepassword@db.internal/app",
+     "alice:longdatabasepassword"),
+    ("xox" + "b-1234567890-abcdefghijklmnop",
+     "xox" + "b-1234567890-abcdefghijklmnop"),
+    ("rk_live_1234567890abcdefghijkl", "rk_live_1234567890abcdefghijkl"),
+])
+def test_redact_text_masks_structural_credentials_without_vendor_prefix(raw, forbidden):
+    cleaned = redact_text("runner echoed " + raw)
+    assert forbidden not in cleaned
+    assert "[redacted]" in cleaned
+
+
+def test_redact_text_does_not_mask_short_settings_or_normal_code():
+    raw = 'password = get_password()\napi_key="dev"\nhttps://example.com/path'
+    assert redact_text(raw) == raw
+
+
 # --- serialization is credential-free ---------------------------------------
 def test_roundtrip_no_secret_keys():
     """Every type round-trips through dict, and nothing runner-supplied leaks."""
@@ -201,6 +224,105 @@ def test_env_receipt_and_evidence_carry_names_not_values():
     assert probe.to_dict()["billing_evidence"] == {
         "source": "file:~/.codex/auth.json", "expires_at": 1_700_003_600}
     assert "token" not in json.dumps(probe.to_dict()["billing_evidence"])
+
+
+def test_probe_availability_does_not_conflate_installed_with_runnable():
+    declared = RunnerProbe(
+        key="future", installed=True, login="ok",
+        detail="not implemented in this phase: future arrives later")
+    assert declared.availability() == "declared-not-runnable"
+    assert declared.to_dict()["runnable"] is False
+
+    unverified = RunnerProbe(
+        key="codex-exec", installed=True, login="ok", compat="unverified")
+    assert unverified.availability() == "runnable-unverified"
+    assert unverified.to_dict()["compat_verified"] is False
+
+    verified = RunnerProbe(
+        key="codex-exec", installed=True, login="ok", compat="verified 2026-08-25")
+    assert verified.availability() == "runnable-verified"
+    assert verified.to_dict()["compat_verified"] is True
+
+
+def test_wire_booleans_are_strict_at_authority_boundaries():
+    caps = RunnerCapabilities.from_dict({
+        "protocol": "x", "session_create": "false", "streaming": "false",
+        "steer": "false", "approval_round_trip": "false",
+        "needs_git_workspace": "false", "windows_native": "false",
+    })
+    assert caps.session_create is False
+    assert caps.streaming is caps.steer is caps.approval_round_trip is False
+    assert caps.needs_git_workspace is False and caps.windows_native is False
+
+    probe = RunnerProbe.from_dict({
+        "key": "x", "installed": "false", "overage_attested": "false",
+        "capabilities": {"steer": "false", "approval_round_trip": "false"},
+    })
+    assert probe.installed is probe.overage_attested is False
+    assert probe.capabilities["steer"] is False
+    assert probe.capabilities["approval_round_trip"] is False
+
+    request = HarnessRequest.from_dict({
+        "workspace_is_git": "false", "no_paid_overage": "false",
+        "subscription_only": "false", "overnight": "false",
+        "has_approver": "false",
+    })
+    assert request.workspace_is_git is False
+    assert request.no_paid_overage is request.subscription_only is False
+    assert request.overnight is request.has_approver is False
+
+
+def test_receipt_wire_state_and_usage_fail_closed_on_malformed_values():
+    receipt = RunnerReceipt.from_dict({
+        "runner": "codex-exec",
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+        "usage_known": "false", "settled": "false",
+        "recovery_required": "false", "mutated": "false",
+        "cost_usd_reported": float("nan"),
+        "cost_usd_equivalent": float("inf"),
+        "event_count": float("nan"),
+    })
+    assert receipt.usage_known is False
+    assert receipt.settled is receipt.recovery_required is False
+    assert receipt.mutated is False
+    assert receipt.cost_usd_reported is receipt.cost_usd_equivalent is None
+    assert receipt.event_count == 0
+
+    inconsistent = RunnerReceipt.from_dict({
+        "settled": True, "recovery_required": True,
+        "usage": {"input_tokens": float("inf"), "output_tokens": 1},
+        "usage_known": True,
+    })
+    assert inconsistent.settled is False
+    assert inconsistent.recovery_required is True
+    assert inconsistent.usage_known is False
+
+
+def test_redacted_nested_payload_is_strict_json_even_with_non_finite_numbers():
+    value = runner_specs.redact_value({
+        "nan": float("nan"), "positive_inf": float("inf"),
+        "nested": [float("-inf"), 1],
+    })
+
+    assert value == {
+        "nan": "[non-finite]", "positive_inf": "[non-finite]",
+        "nested": ["[non-finite]", 1],
+    }
+    assert json.dumps(value, allow_nan=False)
+
+
+def test_redaction_covers_mapping_keys_and_wire_parsers_are_total():
+    secret = "sk-secretkey123456789"
+    value = runner_specs.redact_value({secret: {"safe": 1}})
+
+    assert secret not in json.dumps(value)
+    assert "[redacted]" in value
+    assert RunnerUsage.from_dict("not-a-mapping").known is False
+
+    cyclic = []
+    cyclic.append(cyclic)
+    assert runner_specs.redact_value(cyclic) == {
+        "truncated": True, "reason": "cycle"}
 
 
 # --- usage ------------------------------------------------------------------
@@ -320,9 +442,9 @@ def test_probe_usable_requires_install_login_and_implementation():
     assert _codex_probe().to_dict()["usable"] is True
 
 
-def test_surface_gate_is_phase_scoped_and_run_only_today():
+def test_surface_gate_is_phase_scoped_and_host_owned_surfaces_are_wired():
     assert CURRENT_PHASE == 1
-    assert EXTERNAL_ALLOWED_SURFACES[1] == ("run",)
+    assert EXTERNAL_ALLOWED_SURFACES[1] == ("run", "web", "pack", "mission-code")
     for phase, allowed in EXTERNAL_ALLOWED_SURFACES.items():
         assert set(allowed) <= set(SURFACES), phase
         assert set(EXTERNAL_ALLOWED_SURFACES[1]) <= set(allowed), phase

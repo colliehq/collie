@@ -29,6 +29,7 @@ const DEFAULT_SPACE = "default";
 let curSpace = DEFAULT_SPACE;
 
 let spaces = null;                       // {name: {tabId, owned, opened}}
+const pausedTabs = new Set();
 
 function spaceOf(cmd) {
   const s = cmd && typeof cmd.space === "string" ? cmd.space.trim() : "";
@@ -44,6 +45,9 @@ async function loadSpaces() {
   let saved = {};
   try { saved = await chrome.storage.session.get(["collieSpaces", "collieTabId"]); } catch (e) {}
   spaces = (saved.collieSpaces && typeof saved.collieSpaces === "object") ? saved.collieSpaces : {};
+  for (const rec of Object.values(spaces)) {
+    if (rec && rec.paused && rec.tabId != null) pausedTabs.add(rec.tabId);
+  }
   // Upgrade in place: a bridge that was already driving a tab keeps driving THAT tab after the
   // extension reloads into this version, instead of quietly opening a second one beside it.
   if (!spaces[DEFAULT_SPACE] && saved.collieTabId != null) {
@@ -66,8 +70,95 @@ async function setSpace(name, rec) {
 
 async function dropSpace(name) {
   const all = await loadSpaces();
+  const rec = all[name];
   delete all[name];
+  if (rec && rec.tabId != null && !Object.values(all).some((r) => r && r.tabId === rec.tabId)) {
+    try { await chrome.tabs.sendMessage(rec.tabId, { type: "collie:presence",
+                                                     state: { attached: false, space: name } }); }
+    catch (e) {}
+  }
+  if (rec && rec.tabId != null && !Object.values(all).some((r) => r && r.tabId === rec.tabId && r.paused))
+    pausedTabs.delete(rec.tabId);
   await saveSpaces();
+}
+
+function presenceState(name, rec) {
+  if (!rec) return { attached: false, space: name };
+  return { attached: true, space: name, tabId: rec.tabId,
+           state: rec.paused ? "paused" : (rec.state || "idle"),
+           action: rec.action || "", reason: rec.reason || "",
+           updatedAt: rec.updatedAt || 0, owned: !!rec.owned };
+}
+
+async function sendPresence(name, rec) {
+  if (!rec || rec.tabId == null || !(await tabExists(rec.tabId))) return;
+  try { await chrome.tabs.sendMessage(rec.tabId, { type: "collie:presence", state: presenceState(name, rec) }); }
+  catch (e) {}
+}
+
+async function setSpacePresence(name, state, action, reason) {
+  const rec = await getSpace(name);
+  if (!rec) return null;
+  if (rec.paused && state !== "paused") state = "paused";
+  rec.state = state || "idle";
+  rec.action = String(action || "").slice(0, 80);
+  if (reason !== undefined) rec.reason = String(reason || "").slice(0, 160);
+  rec.updatedAt = Date.now();
+  await setSpace(name, rec);
+  await sendPresence(name, rec);
+  return rec;
+}
+
+async function pauseSpace(name, reason) {
+  const rec = await getSpace(name);
+  if (!rec) return { paused: false, note: "space '" + name + "' has no tab" };
+  pausedTabs.add(rec.tabId);
+  rec.paused = true;
+  rec.state = "paused";
+  rec.reason = String(reason || "Paused by user").slice(0, 160);
+  rec.updatedAt = Date.now();
+  await setSpace(name, rec);
+  if (dbgTab === rec.tabId) { const old = dbgTab; dbgTab = null; await dbgDetach(old); }
+  await sendPresence(name, rec);
+  return { paused: true, space: name, reason: rec.reason };
+}
+
+async function pauseSpacesForTab(tabId, reason) {
+  if (tabId == null) return { paused: false };
+  pausedTabs.add(tabId);                    // hard stop before a rejected CDP call can fall back
+  const all = await loadSpaces();
+  const names = Object.keys(all).filter((name) => all[name] && all[name].tabId === tabId);
+  for (const name of names) await pauseSpace(name, reason);
+  return { paused: names.length > 0, spaces: names };
+}
+
+async function resumeSpace(name) {
+  const rec = await getSpace(name);
+  if (!rec) return { resumed: false, note: "space '" + name + "' has no tab" };
+  rec.paused = false;
+  rec.state = "idle";
+  rec.reason = "";
+  rec.updatedAt = Date.now();
+  pausedTabs.delete(rec.tabId);
+  await setSpace(name, rec);
+  await sendPresence(name, rec);
+  return { resumed: true, space: name };
+}
+
+async function spaceForTab(tabId) {
+  const all = await loadSpaces();
+  const name = Object.keys(all).find((key) => all[key] && all[key].tabId === tabId);
+  return name ? { name, rec: all[name] } : null;
+}
+
+async function agentInput(tabId, ms) {
+  try { await chrome.tabs.sendMessage(tabId, { type: "collie:agent-input", until: Date.now() + (ms || 1400) }); }
+  catch (e) {}
+}
+
+function pausedResult(tabId) {
+  return pausedTabs.has(tabId) ? { error: "Collie is paused because you took over this tab. Resume it from the extension.",
+                                   paused: true } : null;
 }
 
 async function tabExists(id) {
@@ -301,6 +392,13 @@ function pageCursor(x, y) {
     requestAnimationFrame(function () { r.style.transform = "scale(2.6)"; r.style.opacity = "0"; });
     setTimeout(function () { r.remove(); }, 520);
   }, 300);
+  // MAIN and isolated extension worlds share the DOM but not JS globals.  A
+  // DOM stamp prevents an older world's timer from hiding a newer movement.
+  const stamp = String(Date.now()) + Math.random();
+  c.setAttribute("data-collie-move", stamp);
+  setTimeout(function () {
+    if (c.getAttribute("data-collie-move") === stamp) c.style.opacity = "0";
+  }, 2600);
   return true;
 }
 
@@ -896,7 +994,18 @@ function pagePointStillRef(ref) {
   const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
   if (!inView) return { error: "approved ref " + ref + " moved off-screen before click" };
   const hit = document.elementFromPoint(x, y);
-  if (!hit || !(hit === el || (el.contains && el.contains(hit))))
+  let approved = !!hit && (hit === el || (el.contains && el.contains(hit)));
+  // document.elementFromPoint() retargets a hit inside a shadow tree to its host. Walk the exact
+  // ref's host chain so a closed-shadow control can still be revalidated without weakening the
+  // requirement that the approved node (or one of its composed hosts) owns the click point.
+  let composed = el;
+  while (!approved && composed && composed.getRootNode) {
+    const root = composed.getRootNode();
+    if (!root || !root.host) break;
+    composed = root.host;
+    approved = hit === composed || (composed.contains && composed.contains(hit));
+  }
+  if (!approved)
     return { error: "approved ref " + ref + " moved or became covered before click" };
   return { x, y, inView: true, label: (el.innerText || el.value || ref || "").trim().slice(0, 80) };
 }
@@ -1128,7 +1237,21 @@ async function getConsole(clear) {
 async function evalExpr(expr) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  return await execMain(pageEval, [expr]);
+  const first = await execMain(pageEval, [expr]);
+  if (!first || !first.error || !/content security policy|unsafe-eval/i.test(String(first.error)))
+    return first;
+  try {
+    await ensureAttached(tab.id);
+    const result = await dbgSend(tab.id, "Runtime.evaluate", {
+      expression: String(expr || ""), returnByValue: true, awaitPromise: true
+    });
+    if (result && result.exceptionDetails)
+      return { error: String(result.exceptionDetails.text || "CDP evaluation failed") };
+    const remote = result && result.result ? result.result : {};
+    return { value: remote.value !== undefined ? remote.value : (remote.description || "undefined"), trusted: true };
+  } catch (error) {
+    return { error: "CDP evaluation failed: " + String((error && error.message) || error) };
+  }
 }
 
 // --- trusted input via chrome.debugger (CDP) -----------------------------------------------------
@@ -1204,13 +1327,122 @@ chrome.debugger.onDetach.addListener((src, reason) => {
   if (src && src.tabId === dbgTab) dbgTab = null;
   // Every child session died with the attachment; keeping their ids would hand out dead handles.
   if (src && src.tabId != null) frameSessions.delete(src.tabId);
-  if (reason === "canceled_by_user") { try { chrome.storage.local.set({ trustedInput: false }); } catch (e) {} }
+  if (reason === "canceled_by_user") {
+    if (src && src.tabId != null) {
+      pausedTabs.add(src.tabId);
+      pauseSpacesForTab(src.tabId, "Chrome debugger control was canceled by you");
+    }
+    try { chrome.storage.local.set({ trustedInput: false }); } catch (e) {}
+  }
 });
 async function ensureAttached(tabId) {
+  if (pausedTabs.has(tabId)) throw new Error("Collie is paused on this tab");
   if (dbgTab === tabId) return;
   if (dbgTab != null) { const old = dbgTab; dbgTab = null; await dbgDetach(old); }
   await dbgAttach(tabId);
   dbgTab = tabId;
+}
+
+// Attach local files through Chrome DevTools Protocol. Some Chromium builds refuse to add a
+// programmatically-created File to DataTransfer even though assigning an existing OS file through
+// DOM.setFileInputFiles is supported. The bridge already has an explicitly granted `debugger`
+// permission for high-fidelity input, so callers may provide local paths as the reliable fallback.
+async function trustedUpload(selector, paths) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const files = Array.isArray(paths) ? paths.map((p) => String(p || "")).filter(Boolean) : [];
+  if (!files.length) return { error: "no local file paths supplied" };
+  if (files.length > 10) return { error: "at most 10 files can be attached at once" };
+  const query = String(selector || "input[type=file]");
+  try {
+    await agentInput(tab.id, 2200);
+    await ensureAttached(tab.id);
+    await dbgSend(tab.id, "DOM.enable", {});
+    const doc = await dbgSend(tab.id, "DOM.getDocument", { depth: -1, pierce: true });
+    const found = await dbgSend(tab.id, "DOM.querySelector", {
+      nodeId: doc && doc.root ? doc.root.nodeId : 0,
+      selector: query
+    });
+    if (!found || !found.nodeId) return { error: "no file input " + query };
+    await dbgSend(tab.id, "DOM.setFileInputFiles", { nodeId: found.nodeId, files });
+    const probe = await dbgSend(tab.id, "Runtime.evaluate", {
+      expression: "(() => { const e = document.querySelector(" + JSON.stringify(query) + "); " +
+                  "return e && e.files ? {count:e.files.length,names:Array.from(e.files).map(f=>f.name)} : {count:0,names:[]}; })()",
+      returnByValue: true
+    });
+    const value = probe && probe.result && probe.result.value ? probe.result.value : { count: files.length, names: [] };
+    const count = Number(value.count || 0);
+    return { uploaded: count, attached: count === files.length, names: value.names || [], trusted: true };
+  } catch (error) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    return { error: "native file upload failed: " + String((error && error.message) || error) };
+  }
+}
+
+// Read file-input placement through CDP. These controls are normally hidden, so the accessibility
+// snapshot cannot distinguish an active composer from a stale one kept mounted by an SPA.
+async function trustedFileInputs(selector) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const query = String(selector || "input[type=file]");
+  try {
+    await ensureAttached(tab.id);
+    const expression = "Array.from(document.querySelectorAll(" + JSON.stringify(query) + ")).map((e,i)=>{" +
+      "const r=e.getBoundingClientRect();let p=e.parentElement,parents=[];" +
+      "for(let n=0;p&&n<8;n++,p=p.parentElement)parents.push({tag:p.tagName,id:p.id||'',testid:p.getAttribute('data-testid')||'',aria:p.getAttribute('aria-label')||'',role:p.getAttribute('role')||'',text:(p.innerText||'').trim().slice(0,100)});" +
+      "return {i,accept:e.accept||'',multiple:!!e.multiple,disabled:!!e.disabled,display:getComputedStyle(e).display,rect:{x:r.x,y:r.y,w:r.width,h:r.height},parents};})";
+    const probe = await dbgSend(tab.id, "Runtime.evaluate", { expression, returnByValue: true });
+    return { inputs: probe && probe.result ? (probe.result.value || []) : [] };
+  } catch (error) {
+    return { error: "file input inspection failed: " + String((error && error.message) || error) };
+  }
+}
+
+// Click the visible upload control and bind files to the exact chooser node Chrome opens. SPAs such
+// as X can keep stale file inputs mounted; querying the DOM may therefore target a valid-looking
+// input whose React handler immediately discards the file. Intercepting the chooser preserves the
+// genuine user-gesture path and gives us Chrome's precise backend node id.
+async function trustedChooseUpload(ref, text, selector, paths) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const files = Array.isArray(paths) ? paths.map((p) => String(p || "")).filter(Boolean) : [];
+  if (!files.length) return { error: "no local file paths supplied" };
+  if (files.length > 10) return { error: "at most 10 files can be attached at once" };
+  let listener = null;
+  try {
+    await agentInput(tab.id, 9000);
+    await ensureAttached(tab.id);
+    await dbgSend(tab.id, "Page.enable", {});
+    await dbgSend(tab.id, "Page.setInterceptFileChooserDialog", { enabled: true });
+    const chooser = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("file chooser did not open")), 7000);
+      listener = (source, method, params) => {
+        if (!source || source.tabId !== tab.id || method !== "Page.fileChooserOpened") return;
+        clearTimeout(timer);
+        resolve(params || {});
+      };
+      chrome.debugger.onEvent.addListener(listener);
+    });
+    const clicked = ref ? await trustedClickRef(ref) : await trustedClick(text || "", selector || "");
+    if (!clicked || clicked.error) throw new Error((clicked && clicked.error) || "upload control click failed");
+    const opened = await chooser;
+    if (!opened.backendNodeId) throw new Error("file chooser did not expose its input node");
+    await dbgSend(tab.id, "DOM.setFileInputFiles", { backendNodeId: opened.backendNodeId, files });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return {
+      uploaded: files.length,
+      attached: true,
+      names: files.map((p) => p.replace(/^.*[\\/]/, "")),
+      chooser: true,
+      trusted: true
+    };
+  } catch (error) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    return { error: "chooser upload failed: " + String((error && error.message) || error) };
+  } finally {
+    if (listener) chrome.debugger.onEvent.removeListener(listener);
+    try { await dbgSend(tab.id, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e) {}
+  }
 }
 
 // --- cross-origin iframes (OOPIF) over CDP -------------------------------------------------------
@@ -1411,6 +1643,7 @@ async function snapshotFrames(tabId, max, opts) {
 // Click/type a `f1e7` ref: resolve the element inside its frame, then place a REAL click at the
 // frame's offset when the geometry is available, else act synthetically inside the frame.
 async function frameActRef(tabId, tag, ref, kind, text, submit) {
+  { const stopped = pausedResult(tabId); if (stopped) return stopped; }
   const fr = lookupFrame(tabId, tag);
   if (!fr) return { error: "no frame " + tag + " on this tab — take a browser_snapshot with frames:true first" };
   const tab = await activeTab();
@@ -1443,6 +1676,7 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
       if (pt2 && !pt2.error && pt2.inView) pt = pt2;
       const x = off.x + pt.x, y = off.y + pt.y;
       try {
+        await agentInput(tabId, kind === "type" ? 2000 : 1400);
         await ensureAttached(tabId);
         const b = { x, y, button: "left" };
         await dbgSend(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, buttons: 0 });
@@ -1465,6 +1699,7 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
         return { clicked: pt.label, trusted: true, frame: tag };
       } catch (e) {
         if (dbgTab === tabId) dbgTab = null;   // fall through to the synthetic path below
+        const stopped = pausedResult(tabId); if (stopped) return stopped;
       }
     }
     // No usable geometry (frame scrolled out of view, or getFrameOwner refused): act inside the
@@ -1475,6 +1710,7 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
                     : !pt.inView ? "the element is off-screen inside the frame"
                     : "the frame's position on the page could not be read (" +
                       ((geom && geom.error) || "unknown") + ")";
+    { const stopped = pausedResult(tabId); if (stopped) return stopped; }
     try {
       if (kind === "type") {
         const r = await frameEval(tabId, sid, asCall(pageTypeRef, [ref, text, !!submit]));
@@ -1519,6 +1755,7 @@ async function focusForTrusted(tab) {
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
   }
+  if (pausedTabs.has(tab.id)) return false;
   if (tab.active) return true;
   try {                                     // fallback: a tab switch inside Chrome, as pageShot does
     await chrome.tabs.update(tab.id, { active: true });
@@ -1535,14 +1772,17 @@ const NO_FOCUS = "collie's tab could be neither focus-emulated nor brought to th
 async function trustedClick(text, selector) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  if (!(await focusForTrusted(tab)))
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
-                         await exec(pageClick, [text || "", selector || ""]));
+                         await syntheticClick(text || "", selector || ""));
+  }
   const pt = await exec(pagePoint, [text || "", selector || ""]);
   if (!pt || pt.error) return pt || { error: "no element for " + (selector || text) };
   if (!pt.inView) return { error: "element found but off-screen after scroll — cannot place a real click there" };
   try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
   try {
+    await agentInput(tab.id);
     await ensureAttached(tab.id);
     const b = { x: pt.x, y: pt.y, button: "left" };
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x, y: b.y, buttons: 0 });
@@ -1551,7 +1791,8 @@ async function trustedClick(text, selector) {
     return { clicked: pt.label, trusted: true, matches: pt.matches, candidates: pt.candidates };
   } catch (e) {                          // devtools open / attach blocked — NEVER regress below synthetic
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await exec(pageClick, [text || "", selector || ""]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticClick(text || "", selector || "");
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic click: " + String((e && e.message) || e) }, r);
   }
 }
@@ -1559,14 +1800,17 @@ async function trustedClick(text, selector) {
 async function trustedType(selector, text, submit) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  if (!(await focusForTrusted(tab)))
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
-                         await exec(pageType, [selector, text, !!submit]));
+                         await syntheticType("", selector, "", text, !!submit));
+  }
   const pt = await exec(pagePoint, ["", selector]);
   if (!pt || pt.error) return pt || { error: "no field " + selector };
   if (!pt.inView) return { error: "field '" + selector + "' off-screen after scroll — cannot type there" };
   try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
   try {
+    await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
     {   // click to focus the field first
       const b = { x: pt.x, y: pt.y, button: "left" };
@@ -1584,7 +1828,8 @@ async function trustedType(selector, text, submit) {
     return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await exec(pageType, [selector, text, !!submit]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticType("", selector, "", text, !!submit);
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
   }
 }
@@ -1592,14 +1837,17 @@ async function trustedType(selector, text, submit) {
 async function trustedTypeLabel(label, text, submit) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  if (!(await focusForTrusted(tab)))
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
-                         await exec(pageTypeLabel, [label, text]));
+                         await syntheticType("", "", label, text, !!submit));
+  }
   const pt = await exec(pagePointLabel, [label]);
   if (!pt || pt.error) return pt || { error: "no field labeled " + label };
   if (!pt.inView) return { error: "field '" + label + "' off-screen after scroll — cannot type there" };
   try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
   try {
+    await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
     const b = { x: pt.x, y: pt.y, button: "left" };
     await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
@@ -1614,7 +1862,8 @@ async function trustedTypeLabel(label, text, submit) {
     return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await exec(pageTypeLabel, [label, text]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticType("", "", label, text, !!submit);
     return Object.assign({ trusted: false,
       note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
   }
@@ -1626,13 +1875,16 @@ async function trustedTypeLabel(label, text, submit) {
 async function trustedClickRef(ref) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  if (!(await focusForTrusted(tab)))
-    return Object.assign({ trusted: false, note: NO_FOCUS }, await execMain(pageClickRef, [ref]));
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    return Object.assign({ trusted: false, note: NO_FOCUS }, await syntheticClickRef(ref));
+  }
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no element for ref " + ref };
   if (!pt.inView) return { error: "element " + ref + " off-screen after scroll — cannot place a real click there" };
   try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
   try {
+    await agentInput(tab.id);
     await ensureAttached(tab.id);
     const fresh = await execMain(pagePointStillRef, [ref]);
     if (!fresh || fresh.error) return fresh || { error: "approved element changed before click" };
@@ -1643,7 +1895,8 @@ async function trustedClickRef(ref) {
     return { clicked: fresh.label, trusted: true, refRevalidated: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await execMain(pageClickRef, [ref]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticClickRef(ref);
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic click: " + String((e && e.message) || e) }, r);
   }
 }
@@ -1667,14 +1920,17 @@ async function trustedTypeRef(ref, text, submit) {
       return Object.assign({ trusted: false, note: "native <select>: option chosen in the DOM" },
                            await execMain(pageTypeRef, [ref, text, !!submit]));
   } catch (e) {}
-  if (!(await focusForTrusted(tab)))
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
-                         await execMain(pageTypeRef, [ref, text, !!submit]));
+                         await syntheticType(ref, "", "", text, !!submit));
+  }
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no field for ref " + ref };
   if (!pt.inView) return { error: "field " + ref + " off-screen after scroll — cannot type there" };
   try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
   try {
+    await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
     {   // click to focus the field first
       const b = { x: pt.x, y: pt.y, button: "left" };
@@ -1691,7 +1947,8 @@ async function trustedTypeRef(ref, text, submit) {
     return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await execMain(pageTypeRef, [ref, text, !!submit]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticType(ref, "", "", text, !!submit);
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
   }
 }
@@ -1861,6 +2118,7 @@ async function doPress(key, mods, repeat) {
   if (!tab) return { error: NO_TAB };
   if (await focusForTrusted(tab)) {
     try {
+      await agentInput(tab.id, 1600);
       await ensureAttached(tab.id);
       for (let i = 0; i < times; i++) {
         const down = { type: "keyDown", modifiers: mask, key: spec.key, code: spec.code,
@@ -1877,8 +2135,10 @@ async function doPress(key, mods, repeat) {
       return { pressed: spec.key, modifiers: mods || [], times: times, trusted: true };
     } catch (e) {
       if (dbgTab === tab.id) dbgTab = null;
+      const stopped = pausedResult(tab.id); if (stopped) return stopped;
     }
   }
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
   const r = await execMain(pageKey, [spec.key, spec.code, mask]);
   return Object.assign({ trusted: false, times: 1,
                          note: "sent a synthetic key; a page that checks isTrusted will ignore it" },
@@ -1892,6 +2152,7 @@ async function doHover(target) {
   if (!pt || pt.error) return pt || { error: "nothing to hover" };
   if (await focusForTrusted(tab)) {
     try {
+      await agentInput(tab.id);
       await ensureAttached(tab.id);
       await execMain(pageCursor, [pt.x, pt.y]);
       await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: pt.x, y: pt.y, buttons: 0 });
@@ -1899,8 +2160,10 @@ async function doHover(target) {
       return { hovered: pt.label, trusted: true };
     } catch (e) {
       if (dbgTab === tab.id) dbgTab = null;
+      const stopped = pausedResult(tab.id); if (stopped) return stopped;
     }
   }
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
   const t = target || {};
   const r = await execMain(pageHover, [t.ref || "", t.selector || "", t.text || ""]);
   return Object.assign({ trusted: false, note: "synthetic hover" }, r || {});
@@ -1909,6 +2172,7 @@ async function doHover(target) {
 async function doDrag(from, to, steps) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
   // An HTML5-draggable source needs the DataTransfer path; mouse movement alone does nothing there.
   const d = await execMain(pageIsDraggable, [from || {}]);
   if (d && d.draggable) {
@@ -1922,6 +2186,7 @@ async function doDrag(from, to, steps) {
   if (!(await focusForTrusted(tab))) return { error: NO_FOCUS };
   const n = Math.max(2, Math.min(60, Number(steps) || 12));
   try {
+    await agentInput(tab.id, 3500);
     await ensureAttached(tab.id);
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: a.x, y: a.y, buttons: 0 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mousePressed", x: a.x, y: a.y,
@@ -1947,10 +2212,12 @@ async function doClickAt(x, y) {
   if (!tab) return { error: NO_TAB };
   const before = await execMain(pageElementAt, [x, y]);
   if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
                          await execMain(pageClickAtSynthetic, [x, y]));
   }
   try {
+    await agentInput(tab.id);
     await ensureAttached(tab.id);
     await execMain(pageCursor, [x, y]);
     await sleep(320);
@@ -1960,6 +2227,7 @@ async function doClickAt(x, y) {
     return { clicked_at: [x, y], hit: before, trusted: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: "debugger unavailable, clicked synthetically" },
                          await execMain(pageClickAtSynthetic, [x, y]));
   }
@@ -2078,9 +2346,43 @@ async function wantTrusted(cmd) {
   return await trustedForOrigin(t ? originOf(t) : "");
 }
 
+async function syntheticClick(text, selector) {
+  const pt = await exec(pagePoint, [text || "", selector || ""]);
+  if (pt && !pt.error && pt.inView) {
+    try { await exec(pageCursor, [pt.x, pt.y]); await sleep(320); } catch (e) {}
+  }
+  return await exec(pageClick, [text || "", selector || ""]);
+}
+
+async function syntheticClickRef(ref) {
+  const pt = await execMain(pagePointRef, [ref]);
+  if (pt && !pt.error && pt.inView) {
+    try { await execMain(pageCursor, [pt.x, pt.y]); await sleep(320); } catch (e) {}
+  }
+  return await execMain(pageClickRef, [ref]);
+}
+
+async function syntheticType(ref, selector, label, text, submit) {
+  let pt = null;
+  if (ref) pt = await execMain(pagePointRef, [ref]);
+  else if (label) pt = await exec(pagePointLabel, [label]);
+  else if (selector) pt = await exec(pagePoint, ["", selector]);
+  if (pt && !pt.error && pt.inView) {
+    try { await (ref ? execMain(pageCursor, [pt.x, pt.y]) : exec(pageCursor, [pt.x, pt.y])); await sleep(320); }
+    catch (e) {}
+  }
+  if (ref) return await execMain(pageTypeRef, [ref, text, !!submit]);
+  if (label) return await exec(pageTypeLabel, [label, text]);
+  return await exec(pageType, [selector, text, !!submit]);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runStep(cmd) {
+    const held = await getSpace(curSpace);
+    if (held && held.paused && !["spaces", "mode", "release"].includes(cmd.action))
+      return { error: "Collie is paused in space '" + curSpace + "'. Resume it from the extension before continuing.",
+               paused: true, space: curSpace, reason: held.reason || "user takeover" };
     if (cmd.action === "open") {
       const url = httpUrl(cmd.url);
       if (!url) return { error: "browser_open only accepts http(s) URLs" };
@@ -2221,10 +2523,10 @@ async function runStep(cmd) {
         if (!tab) return { error: NO_TAB };
         r = await frameActRef(tab.id, fref.tag, fref.ref, "click");
       } else if (cmd.ref) {                           // act on the exact element from a browser_snapshot
-        r = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref) : await execMain(pageClickRef, [cmd.ref]);
+        r = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref) : await syntheticClickRef(cmd.ref);
       } else {
         r = (await wantTrusted(cmd)) ? await trustedClick(cmd.text || "", cmd.selector || "")
-                                     : await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
+                                     : await syntheticClick(cmd.text || "", cmd.selector || "");
       }
       await sleep(800);
       return { click: r, page: await exec(pageRead, []) };
@@ -2236,7 +2538,7 @@ async function runStep(cmd) {
       if (!info || info.error || !info.allowed)
         return { advance: info || { error: "could not classify the target" } };
       const clicked = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref)
-                                               : await execMain(pageClickRef, [cmd.ref]);
+                                               : await syntheticClickRef(cmd.ref);
       await sleep(500);
       if (clicked && clicked.error) return { advance: clicked };
       return { advance: Object.assign({}, info, clicked || {}), page: await exec(pageRead, []) };
@@ -2251,14 +2553,13 @@ async function runStep(cmd) {
       }
       if (cmd.ref) {                                  // act on the exact field from a browser_snapshot
         r = (await wantTrusted(cmd)) ? await trustedTypeRef(cmd.ref, cmd.text, !!cmd.submit)
-                                     : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
+                                     : await syntheticType(cmd.ref, "", "", cmd.text, !!cmd.submit);
       } else if ((await wantTrusted(cmd)) && cmd.selector) {
         r = await trustedType(cmd.selector, cmd.text, !!cmd.submit);
       } else if ((await wantTrusted(cmd)) && cmd.label) {
         r = await trustedTypeLabel(cmd.label, cmd.text, !!cmd.submit);
       } else {
-        r = cmd.label ? await exec(pageTypeLabel, [cmd.label, cmd.text])
-                      : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
+        r = await syntheticType("", cmd.selector || "", cmd.label || "", cmd.text, !!cmd.submit);
       }
       // Verify the write instead of trusting it. Skipped when submit was requested: submitting can
       // navigate or clear the field, so an empty read-back there would be a false alarm.
@@ -2280,8 +2581,14 @@ async function runStep(cmd) {
     if (cmd.action === "voice_identity") return await exec(pageVoiceIdentity, []);
     if (cmd.action === "google_voice_otp")
       return await exec(pageGoogleVoiceOtp, [cmd.service || "", cmd.max_age_seconds || 600]);
-    if (cmd.action === "upload")   // MAIN world: a snapshot ref resolves against window.__collieRefs
+    if (cmd.action === "upload") { // MAIN world: a snapshot ref resolves against window.__collieRefs
+      if (Array.isArray(cmd.paths) && cmd.paths.length && (cmd.button_ref || cmd.button_text || cmd.button_selector))
+        return await trustedChooseUpload(cmd.button_ref || "", cmd.button_text || "", cmd.button_selector || "", cmd.paths);
+      if (Array.isArray(cmd.paths) && cmd.paths.length)
+        return await trustedUpload(cmd.selector || "input[type=file]", cmd.paths);
       return await execMain(pageUpload, [cmd.selector || "", cmd.files || [], cmd.ref || ""]);
+    }
+    if (cmd.action === "file_inputs") return await trustedFileInputs(cmd.selector || "input[type=file]");
     if (cmd.action === "reload") {
       // Pick up new extension files from disk. Chrome never re-reads an unpacked extension on its
       // own, and chrome://extensions cannot be automated (privileged page — no scripting, no
@@ -2380,13 +2687,88 @@ async function runScript(cmd) {
 
 async function handle(cmd) {
   curSpace = spaceOf(cmd);
+  if (cmd.action === "pause") return await pauseSpace(curSpace, cmd.reason || "Paused from Collie");
+  if (cmd.action === "resume") return await resumeSpace(curSpace);
+  if (cmd.action === "status") {
+    const all = await loadSpaces();
+    return { current: curSpace, spaces: Object.keys(all).map((name) => presenceState(name, all[name])) };
+  }
+  if (cmd.action === "finalize") {
+    const rec = await getSpace(curSpace);
+    if (!rec) return { finalized: false, note: "space '" + curSpace + "' has no tab" };
+    await dropSpace(curSpace);
+    let closed = false;
+    if (cmd.close_owned && rec.owned) {
+      try { await chrome.tabs.remove(rec.tabId); closed = true; } catch (e) {}
+    }
+    return { finalized: true, released: true, closed,
+             note: rec.owned ? (closed ? "Collie's tab was closed" : "Collie's tab was left open")
+                             : "Your tab was released and left open" };
+  }
+  const readActions = new Set(["read", "snapshot", "links", "screenshot", "wait", "wait_for",
+                               "fields", "form_snapshot", "voice_identity", "google_voice_otp",
+                               "file_inputs", "console", "spaces", "mode"]);
+  const state = readActions.has(cmd.action) ? "observing" : "acting";
+  await setSpacePresence(curSpace, state, cmd.action || "browser action", "");
   try {
-    if (cmd.action === "script") return await runScript(cmd);
-    return await runStep(cmd);
+    const result = cmd.action === "script" ? await runScript(cmd) : await runStep(cmd);
+    return result;
   } catch (e) {
     return { error: String(e) };
+  } finally {
+    const rec = await getSpace(curSpace);
+    if (rec && !rec.paused) await setSpacePresence(curSpace, "idle", cmd.action || "", "");
   }
 }
+
+// Messages from the isolated presence script and extension-owned UI.  A web
+// page can cause a pause (safe denial of service) only through a genuinely
+// trusted physical input; it can never manufacture a Resume.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message !== "object") return false;
+  const run = async () => {
+    if (message.type === "collie:pause" || message.type === "collie:user-takeover") {
+      return await pauseSpacesForTab(sender.tab && sender.tab.id,
+        message.reason || (message.type === "collie:user-takeover" ? "You took over the page" : "Paused by user"));
+    }
+    if (message.type === "collie:presence-ready") {
+      const found = await spaceForTab(sender.tab && sender.tab.id);
+      return { state: found ? presenceState(found.name, found.rec) : { attached: false } };
+    }
+    if (message.type === "collie:get-status" || message.type === "collie:pause-active" ||
+        message.type === "collie:resume-active") {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const found = await spaceForTab(tabs[0] && tabs[0].id);
+      if (!found) return { state: { attached: false }, note: "the active tab is not controlled by Collie" };
+      if (message.type === "collie:pause-active") await pauseSpace(found.name, "Paused from extension");
+      if (message.type === "collie:resume-active") await resumeSpace(found.name);
+      const rec = await getSpace(found.name);
+      return { state: presenceState(found.name, rec) };
+    }
+    if (message.type === "collie:get-bridge-token") return { token: await bridgeToken() };
+    return null;
+  };
+  run().then(sendResponse).catch((error) => sendResponse({ error: String(error) }));
+  return true;
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: "collie-ask-selection", title: "Ask Collie about this selection",
+                                 contexts: ["selection"] });
+    chrome.contextMenus.create({ id: "collie-ask-page", title: "Ask Collie about this page",
+                                 contexts: ["page"] });
+  });
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!info || !String(info.menuItemId || "").startsWith("collie-ask-")) return;
+  await chrome.storage.session.set({ collieSideContext: {
+    title: (tab && tab.title) || "Current tab", url: (tab && tab.url) || "",
+    selection: String(info.selectionText || "").slice(0, 5000), at: Date.now()
+  } });
+  try { await chrome.sidePanel.open({ windowId: tab.windowId }); } catch (e) {}
+});
 
 // --- MV3-hardened poll loop (pattern proven in the user's auto-apply / forum-autopost bridges) ---
 // A plain for-loop of fetches dies when the service worker is suspended (~30s idle) and is NEVER
@@ -2404,11 +2786,19 @@ let __authFailed = false;
 
 async function bridgeToken() {
   if (__token !== null) return __token;
+  // An unpacked extension ships beside token.txt. Prefer that authoritative
+  // machine token over chrome.storage.local so a bridge-token rotation cannot
+  // leave this service worker permanently stuck on a cached credential. A
+  // packed/store build has no token.txt and falls back to the popup value.
+  const disk = await tokenFromDisk();
+  if (disk) {
+    __token = disk;
+    return __token;
+  }
   try {
     const s = await chrome.storage.local.get("collieToken");
     __token = typeof s.collieToken === "string" ? s.collieToken : "";
   } catch (e) { __token = ""; }
-  if (!__token) __token = await tokenFromDisk();
   return __token;
 }
 
@@ -2476,8 +2866,12 @@ async function pollOnce() {
           // A rotated token is the likely cause, so re-read the file once before giving up; only a
           // build with no file (or a genuinely wrong token) gets as far as the badge. Then stop
           // hammering — the alarm retries in 30s, by which time the user may have pasted one in.
+          // tokenFromDisk() also updates chrome.storage.local. Its onChanged
+          // listener can therefore update __token before this await resumes;
+          // compare with the credential that was actually rejected instead.
+          const rejected = __token;
           const fresh = await tokenFromDisk();
-          if (fresh && fresh !== __token) { __token = fresh; continue; }
+          if (fresh && fresh !== rejected) { __token = fresh; continue; }
           __authFailed = true;
           await noteAuthFailure(true);
           return;

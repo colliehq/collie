@@ -193,7 +193,16 @@ def default_gate(cwd, mode=None, commands=None):
     # directory (`collie trust`). Cloning a repository is not the same act as believing it.
     allowed += repo_allowed_commands(cwd)
     chosen = Mode(mode) if mode else mode_from_env()   # an explicit flag beats the environment
-    g = Gate(cwd=cwd, mode=chosen, allowed_commands=allowed)
+    site_access = str(_sget("BROWSER_SITE_ACCESS", "all_except_sensitive") or
+                      "all_except_sensitive").strip().lower()
+    if site_access not in ("ask_every_site", "all_except_sensitive", "all_sites"):
+        site_access = "ask_every_site"       # malformed settings fail closed
+    sensitive = tuple(x.strip() for x in
+                      str(_sget("BROWSER_SENSITIVE_HOSTS", "") or "").split(",")
+                      if x.strip())
+    g = Gate(cwd=cwd, mode=chosen, allowed_commands=allowed,
+             browser_site_access=site_access,
+             browser_sensitive_hosts=sensitive)
     try:                       # user-local risk overrides (mainly to relax MCP's default)
         from .overrides import RiskOverrideStore
         g.risk_overrides = RiskOverrideStore().resolver()
@@ -544,7 +553,18 @@ def cmd_repl(args):
     h.approve = tty_approver(gate=_gate)
     sid = args.resume or (sess.latest() if getattr(args, "cont", False) else None) or sess.new_id()
     h.checkpoint_scope = "session:" + sid
-    loaded = sess.load(sid) if (args.resume or getattr(args, "cont", False)) else None
+    loaded = None
+    if args.resume or getattr(args, "cont", False):
+        recovery = sess.recovery_state(sid)
+        checked = sess.load_checked(sid)
+        if (recovery and recovery.get("recovery_required")) or \
+                checked.get("status") == "invalid":
+            reason = ((recovery or {}).get("reason") or checked.get("reason") or
+                      "session journal requires inspection")
+            print("collie refused to resume %s: %s" % (sid, reason), file=sys.stderr)
+            h.memory.close(); h.recorder.close()
+            return 2
+        loaded = checked.get("session") if checked.get("status") == "ok" else None
     history = (loaded or {}).get("messages") or []
     receipts = list((loaded or {}).get("run_receipts") or [])
     if getattr(args, "goal", None):
@@ -1444,12 +1464,10 @@ class _RunnerShim:
     leaves no in-loop claims to promote.  `emit` is real enough to be replaced by
     `--stream-json` with the same lambda the native path installs.
 
-    `recorder` is a real Recorder rather than a mock, but no runs.db row is opened
-    for an external turn in phase 1 — the session receipt is its record — so the
-    `finish_run` in the verification branch updates nothing.  That is on purpose
-    and worth knowing: the dashboard covers Collie's own runs, and a row whose
-    token columns are all NULL (which is the truth for a worker that reports no
-    usage) would render as a run that cost zero.
+    `recorder` is a real Recorder rather than a mock. ``runner_slice`` opens the
+    external row once the actual fallback winner is known; the host-verification
+    tail then updates that same row. Unknown token columns remain NULL, so the
+    dashboard and route-health history do not turn "unreported" into zero.
 
     `provider` is None on purpose: no Brain of ours answered, so the
     `getattr(..., "actual_speed", decision.speed)` below falls back to what the
@@ -1535,7 +1553,33 @@ def _worker_session(sid, runner):
     return None
 
 
-def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history):
+def _worker_model(explicit_model, decision, request, spec):
+    """A model name only crosses into the worker when it belongs to that payer.
+
+    An explicit model is the operator's instruction and always travels.  A model
+    selected by Collie's Brain router travels only when the worker uses the same
+    credential family; ``deepseek-chat`` is not a meaningful Claude CLI model.
+    """
+    model = str(explicit_model or "").strip()
+    if (not model and spec is not None and
+            request.provider_family == spec.credential_family):
+        model = str(getattr(decision, "model", "") or "")
+    return model
+
+
+def _worker_provider(decision):
+    """Recorder/provider identity for an external worker's actual payer.
+
+    The Brain route may belong to a different vendor and is retained in the
+    routing decision.  A worker result must name the credential family that
+    executed it, not copy that unrelated Brain provider into usage history.
+    """
+    return str(getattr(decision, "credential_family", "") or
+               getattr(decision, "runner", "") or "external")
+
+
+def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
+                   recorder=None):
     """One turn on the external worker `hd` chose — same RunResult, someone else's process."""
     from . import runner_registry as runner_reg
     from . import runner_slice
@@ -1544,9 +1588,7 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history):
     # "deepseek-chat" to `claude -p` would be a category error. So the routed model
     # travels only when the worker signs in to the same vendor the router picked;
     # an explicit --model is the user's own instruction and always travels.
-    model = (getattr(args, "model", None) or "").strip()
-    if not model and spec is not None and request.provider_family == spec.credential_family:
-        model = decision.model or ""
+    model = _worker_model(getattr(args, "model", None), decision, request, spec)
     resume_from = (_worker_session(sid, hd.runner)
                    if (getattr(args, "resume", None) or getattr(args, "cont", False))
                    else None)
@@ -1555,7 +1597,8 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history):
         timeout_s=(spec.default_timeout_s if spec is not None else None),
         emit=emit, cancelled=None,
         history_note=(None if resume_from else _worker_history_note(history)),
-        resume_from=resume_from, model=model, task_id="adhoc")
+        resume_from=resume_from, model=model, provider=_worker_provider(hd),
+        task_id="adhoc", recorder=recorder)
 
 
 def cmd_run(args):
@@ -1627,17 +1670,21 @@ def cmd_run(args):
 
     # WHO carries out the task is a second axis beside which Brain answers it. The
     # untouched configuration (RUNNER=collie, no --runner) narrows to a single
-    # candidate, so the probe map stays empty and no external CLI is executed or even
-    # inspected — this path costs exactly what it cost before the axis existed.
+    # native candidate.  Its local probe executes no child process, but records
+    # the real provider billing route and capabilities in the decision receipt.
     from . import runner_select
     from . import runner_registry as runner_reg
     has_approver = bool(sys.stdin is not None and sys.stdin.isatty())
     runner_req = runner_select.request_from_run(
         args, decision, settings, cwd=cwd, has_approver=has_approver)
     runner_candidates = tuple(runner_req.candidates())
-    runner_probes = ({} if runner_candidates == ("collie",)
-                     else runner_reg.probe_all(keys=runner_candidates))
-    hd = runner_select.decide(runner_req, runner_reg.SPECS, runner_probes)
+    runner_probes = runner_reg.probe_all(
+        keys=runner_candidates, provider=decision.provider)
+    from . import runner_signals
+    runner_signal_set = runner_signals.for_selection(
+        runner_req, runner_probes, runs_db=runs_db)
+    hd = runner_select.decide(
+        runner_req, runner_reg.SPECS, runner_probes, signals=runner_signal_set)
     decision_payload["runner"] = hd.to_dict()
     if hd.error:
         # Fail closed, like the missing --verify-command below: quietly substituting a
@@ -1719,15 +1766,35 @@ def cmd_run(args):
     h.defer_memory_promotion = will_verify
     runner_payload = None
     if hd.runner != "collie":
-        from .runner_slice import receipt_of
+        from .runner_slice import receipt_of, transcript_text
+        # Write-ahead replay fence: if this process disappears after the CLI
+        # receives the prompt but before its result/receipt lands, --continue
+        # must not send the same edit again without inspection.
+        try:
+            sess.checkpoint(
+                sid, history or [], project=args.project, cwd=cwd,
+                run_id="external-cli", state="external_action",
+                detail={"runner": hd.runner, "surface": "run"})
+        except Exception as exc:
+            from .runner_specs import redact_text
+            print("cannot persist external-worker recovery boundary: " + redact_text(
+                "%s: %s" % (type(exc).__name__, exc), 500), file=sys.stderr)
+            h.memory.close(); h.recorder.close()
+            return 2
         try:
             res = _run_on_worker(args, hd, decision, runner_req, h.emit,
-                                 cwd=cwd, sid=sid, history=history)
+                                 cwd=cwd, sid=sid, history=history,
+                                 recorder=h.recorder)
         except ValueError as exc:
             # A --cwd that is not a directory, or an empty task. The slice checks
             # both before building a worker, so nothing was launched and nothing was
             # billed — say what is wrong rather than unwinding a traceback over it.
             print("cannot run on %s: %s" % (hd.runner, exc), file=sys.stderr)
+            try:
+                sess.checkpoint(sid, history or [], project=args.project, cwd=cwd,
+                                run_id="external-cli", terminal=True)
+            except Exception:
+                pass
             h.memory.close(); h.recorder.close()
             return 2
         worker_receipt = receipt_of(res)
@@ -1751,8 +1818,8 @@ def cmd_run(args):
             source="cli_verification")
         # Persist the final host-side verdict; run() could only record its in-loop evidence.
         h.recorder.finish_run(res)
-    sess.save(sid, res.messages, project=args.project, cwd=cwd, answer=res.answer or "")
     actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
+    receipt_error = ""
     try:
         run_receipt = {
             "decision": decision_payload, "model": res.model,
@@ -1764,9 +1831,41 @@ def cmd_run(args):
             # above is still ours alone, and the receipt's `settled` is still only
             # "it stopped cleanly".
             run_receipt["runner"] = runner_payload
-        sess.append_run_receipt(sid, run_receipt)
-    except Exception:
-        pass
+        receipt_saved = sess.append_run_receipt(sid, run_receipt)
+        if receipt_saved is False:
+            receipt_error = "run receipt could not be persisted"
+    except Exception as exc:
+        from .runner_specs import redact_text
+        receipt_error = "run receipt could not be persisted: " + redact_text(
+            "%s: %s" % (type(exc).__name__, exc), 500)
+    if receipt_error:
+        res.error = ((res.error + "; ") if res.error else "") + receipt_error
+    if hd.runner != "collie":
+        # The external CLI owns its native transcript, but Collie's session is
+        # still the user-visible continuity layer. Reconstruct only the exchange
+        # Collie observed after verification and the receipt publication fence.
+        res.messages = list(history or []) + [
+            {"role": "user", "content": args.task},
+            {"role": "assistant", "content": transcript_text(res)},
+        ]
+    # Session listings/previews are part of the same continuity contract as the
+    # transcript. Preserve answer and error together whenever both exist.
+    session_answer = (transcript_text(res) if hd.runner != "collie" else
+                      ((res.answer + "\n\n_[Run error: %s]_" % res.error)
+                       if res.answer and res.error else (res.answer or res.error or "")))
+    save_error = ""
+    external_recovery = bool(
+        hd.runner != "collie" and
+        (runner_payload is None or receipt_error or
+         (runner_payload or {}).get("recovery_required") is True))
+    try:
+        sess.save(sid, res.messages, project=args.project, cwd=cwd,
+                  answer=session_answer, preserve_active=external_recovery)
+    except Exception as exc:
+        from .runner_specs import redact_text
+        save_error = "session transcript could not be persisted: " + redact_text(
+            "%s: %s" % (type(exc).__name__, exc), 500)
+        res.error = ((res.error + "; ") if res.error else "") + save_error
     if getattr(args, "json", False) or getattr(args, "stream_json", False):
         print(_json.dumps({
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
@@ -1783,7 +1882,10 @@ def cmd_run(args):
             "mem_recalls": res.mem_recalls,
             "wall_ms": res.wall_ms, "cost_usd": res.cost_usd}, ensure_ascii=False))
     elif getattr(args, "print", False):
-        print(res.answer or res.error)          # headless: answer only (like claude -p)
+        if res.answer and res.error:
+            print(res.answer + "\n\n[run error] " + res.error)
+        else:
+            print(res.answer or res.error)      # headless: answer only (like claude -p)
     else:
         print("decision=%s · effort=%s · speed=%s · %s/%s/%s%s" % (
             res.model or decision.model, decision.effort, actual_speed,
@@ -1795,7 +1897,9 @@ def cmd_run(args):
             _counted(res.prefix_tokens), _counted(res.input_tokens),
             _counted(res.output_tokens), _counted(res.turns), _counted(res.tool_calls),
             _counted(res.mem_recalls), _counted(res.wall_ms)))
-        print("\n%s" % (res.answer or res.error))
+        visible_result = (res.answer + "\n\n[run error] " + res.error
+                          if res.answer and res.error else (res.answer or res.error))
+        print("\n%s" % visible_result)
         print("\n  session %s · continue: collie run \"…\" --continue  (or --resume %s)" % (sid, sid))
         dash.build(runs_db, out_html)
     h.memory.close(); h.recorder.close()
@@ -1841,6 +1945,7 @@ def cmd_prefix(args):
 def cmd_pack(args):
     import json as _json
     from . import pack as _pack
+    _, runs_db, _, _ = _paths()
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
 
@@ -1865,6 +1970,32 @@ def cmd_pack(args):
         verification=getattr(args, "verification", None) or "auto",
         strategy="pack", explicit_axes=explicit)
     decision_payload = decision.to_dict()
+
+    from . import runner_select
+    from . import runner_registry as runner_reg
+    requested_runner = getattr(args, "runner", None) or ""
+    runner_req = runner_select.request_from_surface(
+        "pack", requested_runner, decision, settings, cwd=cwd,
+        has_approver=bool(sys.stdin is not None and sys.stdin.isatty()))
+    runner_candidates = tuple(runner_req.candidates())
+    runner_probes = runner_reg.probe_all(
+        keys=runner_candidates, provider=decision.provider)
+    from . import runner_signals
+    runner_signal_set = runner_signals.for_selection(
+        runner_req, runner_probes, runs_db=runs_db)
+    hd = runner_select.decide(
+        runner_req, runner_reg.SPECS, runner_probes, signals=runner_signal_set)
+    decision_payload["runner"] = hd.to_dict()
+    if hd.error:
+        print(hd.error, file=sys.stderr)
+        return 2
+    if roster and hd.runner != "collie":
+        print("--roster and an external --runner are two different worker-selection "
+              "modes; use one or the other", file=sys.stderr)
+        return 2
+    worker_spec = runner_reg.SPECS.get(hd.runner)
+    worker_model = _worker_model(getattr(args, "model", None), decision,
+                                 runner_req, worker_spec)
     if roster:
         decision_payload["sources"]["roster"] = "user"
         decision_payload["reasons"].append(
@@ -1872,7 +2003,8 @@ def cmd_pack(args):
 
     def _emit(i, rec):
         tag = ("check=%s " % ("pass" if rec.get("check_pass") else "fail")) if args.check else ""
-        who = (" [%s]" % rec["provider"]) if roster and rec.get("provider") else ""
+        who = ((" [%s]" % rec["provider"]) if roster and rec.get("provider") else
+               ((" [%s]" % rec["runner"]) if rec.get("runner") != "collie" else ""))
         print("  attempt %d%s: %sverified=%s turns=%s%s" % (
             i, who, tag, rec.get("verified"), rec.get("turns"),
             (" ERROR " + rec["error"]) if rec.get("error") else ""), flush=True)
@@ -1881,7 +2013,8 @@ def cmd_pack(args):
                          model=decision.model, effort=decision.effort, speed=decision.speed,
                          apply=args.apply, emit=_emit, quality=decision.quality,
                          verification=decision.verification,
-                         roster=roster or None, parallel=getattr(args, "parallel", 1))
+                         roster=roster or None, parallel=getattr(args, "parallel", 1),
+                         runner_decision=hd, runner_model=worker_model)
     res["decision"] = decision_payload
     if getattr(args, "json", False):
         print(_json.dumps(res, ensure_ascii=False))
@@ -1900,8 +2033,10 @@ def cmd_pack(args):
     won_on = ""
     if res.get("winner_provider") and len(set(res.get("roster") or [])) > 1:
         won_on = " on %s" % (res.get("winner_model") or res["winner_provider"])
-    print("\nwinner: attempt %d%s (%s) · total $%.4f across %d attempts%s" % (
-        res["winner"], won_on, res["reason"], res["total_cost_usd"], res["n"],
+    total_cost = ("$%.4f" % res["total_cost_usd"]
+                  if res.get("total_cost_usd") is not None else "cost unknown")
+    print("\nwinner: attempt %d%s (%s) · total %s across %d attempts%s" % (
+        res["winner"], won_on, res["reason"], total_cost, res["n"],
         " · APPLIED to cwd" if res["applied"] else " · not applied (use --apply)"))
     print("\n%s" % res.get("answer", ""))
     return 0
@@ -2352,8 +2487,8 @@ def _runners_list(args):
         print("  %-16s %-38s phase %s · compat %s" % (
             p.key, (spec.label if spec else p.key)[:38],
             spec.phase if spec else "?", p.compat))
-        print("      %-9s version=%-22s login=%-14s billing=%s/%s" % (
-            "INSTALLED" if p.installed else "—", (p.version or "—")[:22], p.login,
+        print("      %-23s version=%-22s login=%-14s billing=%s/%s" % (
+            p.availability().upper(), (p.version or "—")[:22], p.login,
             p.billing_class, p.billing_mode))
         if p.detail:
             print("      %s" % p.detail)
@@ -2690,14 +2825,26 @@ def cmd_jobs(args):
             cap = args.text
             if not cap:
                 print("usage: collie jobs run <capability> '<json-args>' [--goal ...]"); return 1
+            def _reject_constant(value):
+                raise ValueError("non-finite JSON number is forbidden: %s" % value)
             try:
-                cap_args = _json.loads(args.jargs) if args.jargs else {}
-            except _json.JSONDecodeError as e:
-                print("bad json args: %s" % e); return 1
+                cap_args = (_json.loads(args.jargs, parse_constant=_reject_constant)
+                            if args.jargs else {})
+                job_leash = (_json.loads(args.leash, parse_constant=_reject_constant)
+                             if args.leash else {})
+                if not isinstance(cap_args, dict):
+                    raise ValueError("JSON args must be an object")
+                if not isinstance(job_leash, dict):
+                    raise ValueError("leash must be a JSON object")
+            except (TypeError, ValueError, _json.JSONDecodeError) as e:
+                print("bad job JSON: %s" % e); return 1
             import secrets as _s
             jid = "job-" + _s.token_hex(4)
-            jobs.create(jid, args.goal or cap, leash=_json.loads(args.leash) if args.leash else {})
-            nonce = acts.propose(cap, cap_args, job_id=jid)
+            try:
+                jobs.create(jid, args.goal or cap, leash=job_leash)
+                nonce = acts.propose(cap, cap_args, job_id=jid)
+            except (TypeError, ValueError) as e:
+                print("invalid job: %s" % e); return 1
             print("job %s  proposed %s (%s)" % (jid, cap, nonce[:12]))
             try:
                 v = Executor(acts, jobs).drive(nonce)
@@ -2810,7 +2957,7 @@ def cmd_mission(args):
     _mst.apply()
     svc = MissionService(state_dir=_state_dir())
     try:
-        action = args.action
+        action = "ls" if args.action == "list" else args.action
         if action == "ls":
             out = {"missions": svc.missions()}
         elif action == "start":
@@ -2842,7 +2989,8 @@ def cmd_mission(args):
                     no_paid_overage=bool(args.no_paid_overage),
                     billing_evidence=billing_evidence,
                     provider=args.mission_provider or "",
-                    model=args.mission_model or "", **bounds)
+                    model=args.mission_model or "",
+                    runner=getattr(args, "runner", None) or "", **bounds)
             except (ValueError, RuntimeError, _json.JSONDecodeError) as e:
                 print("invalid Mission: %s" % e); return 1
             if args.run and not out.get("error"):
@@ -3458,6 +3606,9 @@ def main(argv=None):
     pk.add_argument("--apply", action="store_true",
                     help="copy the winning attempt's files back over the working dir")
     pk.add_argument("--provider", default=None); pk.add_argument("--model", default=None)
+    pk.add_argument("--runner", default=None, choices=[*_runner_option_keys(), "auto"],
+                    help="worker for every candidate (default: saved RUNNER; auto uses "
+                         "RUNNER_POOL). Cannot be combined with --roster")
     pk.add_argument("--quality", choices=["quick", "balanced", "thorough"], default=None,
                     help="candidate run depth (default: Auto)")
     pk.add_argument("--verification", choices=["auto", "required"], default=None,
@@ -3836,7 +3987,7 @@ def main(argv=None):
     pmis = sub.add_parser(
         "mission", help="durable campaigns: start/list/status/report/run/pause/resume/retry/cancel/reconcile")
     pmis.add_argument("action",
-                      choices=["start", "ls", "status", "report", "run", "pause", "resume", "retry",
+                      choices=["start", "list", "ls", "status", "report", "run", "pause", "resume", "retry",
                                "cancel", "confirm", "continue", "accept", "check",
                                "reconcile"])
     pmis.add_argument("text", nargs="?", default="", help="goal (start) or mission id")
@@ -3872,6 +4023,9 @@ def main(argv=None):
                       help="freeze this Mission to an explicit provider route")
     pmis.add_argument("--model", dest="mission_model", default="",
                       help="freeze this Mission to an explicit provider model/alias")
+    pmis.add_argument("--runner", default=None, choices=[*_runner_option_keys(), "auto"],
+                      help="freeze durable code slices to this worker (requires --code; "
+                           "overnight is always collie)")
     pmis.add_argument("--run", action="store_true",
                       help="for start: run synchronously instead of leaving it queued")
     pmis.add_argument("--json", action="store_true")

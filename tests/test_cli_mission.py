@@ -41,6 +41,8 @@ def test_cli_can_create_pause_resume_and_cancel(monkeypatch, tmp_path, capsys):
 
     rc, listed = _run(capsys, ["mission", "ls", "--json"])
     assert rc == 0 and listed["missions"][0]["mission_id"] == mid
+    rc, listed_alias = _run(capsys, ["mission", "list", "--json"])
+    assert rc == 0 and listed_alias == listed
 
 
 def test_cli_starts_atomic_subscription_only_overnight_code_mission(

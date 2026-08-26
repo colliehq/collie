@@ -25,6 +25,7 @@ import queue
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -284,6 +285,11 @@ class _Bridge:
 
 
 def _handler(bridge, enforce_host=True):
+    max_body_bytes = 32 * 1024 * 1024  # screenshots/uploads fit; broken peers cannot exhaust RAM
+
+    def reject_json_constant(value):
+        raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -300,7 +306,13 @@ def _handler(bridge, enforce_host=True):
             and goes to restart the thing that was working. It is a race with the last packet, so it
             shows up intermittently — the surfaces suite caught it on one of two identical POSTs.
             """
-            n = int(self.headers.get("content-length", 0) or 0) if not self._body_read else 0
+            try:
+                n = int(self.headers.get("content-length", 0) or 0) if not self._body_read else 0
+            except (TypeError, ValueError):
+                n = 0
+            if n < 0 or n > max_body_bytes:
+                self.close_connection = True
+                n = 0
             while n > 0:
                 chunk = self.rfile.read(min(n, 65536))
                 if not chunk:
@@ -314,7 +326,7 @@ def _handler(bridge, enforce_host=True):
             # (urllib, same host) and the extension (host_permissions bypass CORS) don't need it;
             # a wildcard ACAO would let any visited page read the results (exfil).
             self._drain()
-            b = json.dumps(obj).encode()
+            b = json.dumps(obj, allow_nan=False).encode()
             self.send_response(code)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(b)))
@@ -322,9 +334,15 @@ def _handler(bridge, enforce_host=True):
             self.wfile.write(b)
 
         def _body(self):
-            n = int(self.headers.get("content-length", 0) or 0)
+            try:
+                n = int(self.headers.get("content-length", 0) or 0)
+            except (TypeError, ValueError):
+                raise ValueError("invalid content length")
+            if n <= 0 or n > max_body_bytes:
+                self.close_connection = True
+                raise ValueError("request body must be 1..%d bytes" % max_body_bytes)
             self._body_read = True
-            return json.loads(self.rfile.read(n) or b"{}")
+            return json.loads(self.rfile.read(n), parse_constant=reject_json_constant)
 
         def _web_origin(self):
             # a real WEB PAGE always sends its http(s) Origin on a cross-origin fetch; collie's tools
@@ -410,10 +428,13 @@ def _handler(bridge, enforce_host=True):
                     timeout = int(body.get("timeout", 60))
                 except (TypeError, ValueError):
                     timeout = 60
+                timeout = max(1, min(timeout, 300))
                 return self._json(bridge.enqueue(body, timeout=timeout))
             if self.path.startswith("/result"):     # from the extension
                 bridge.deliver(body.get("id"), body.get("data", body))
                 return self._json({"ok": True})
+            if self.path.startswith("/web/start"):  # side panel: lazily bring up its local UI API
+                return self._json(start_web_background())
             self._json({"error": "not found"}, 404)
     return H
 
@@ -658,6 +679,75 @@ def start_background(port=None):
     return False
 
 
+def _web_server_up(port=8787, timeout=1.0):
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % int(port), timeout=timeout) as r:
+            return bool((r.read() or b"").strip())
+    except Exception:
+        return False
+
+
+def _web_extension_api_up(port=8787, timeout=1.0):
+    """A 403 proves the new bridge-auth route exists; 404 means an old Web process."""
+    try:
+        urllib.request.urlopen("http://127.0.0.1:%d/api/browser/bridge-auth" % int(port),
+                               timeout=timeout)
+        return True
+    except urllib.error.HTTPError as exc:
+        return exc.code == 403
+    except Exception:
+        return False
+
+
+def start_web_background(port=8787):
+    """Start the side panel's Web/SSE backend on demand, without opening a tab."""
+    import socket
+    import subprocess
+    import sys
+
+    requested = int(port or 8787)
+    port = None
+    for candidate in range(requested, requested + 12):
+        if _web_extension_api_up(candidate):
+            return {"ok": True, "started": False, "port": candidate}
+        try:
+            with socket.create_connection(("127.0.0.1", candidate), timeout=0.25):
+                continue                        # occupied by an old Web or another local service
+        except OSError:
+            port = candidate
+            break
+    if port is None:
+        return {"ok": False, "error": "ports %d-%d are occupied" % (requested, requested + 11)}
+
+    cwd = os.getcwd()
+    try:
+        from . import sessions
+        recent = sessions.recent(1)
+        candidate = str((recent[0] if recent else {}).get("cwd") or "")
+        if candidate and os.path.isdir(candidate):
+            cwd = candidate
+    except Exception:
+        pass
+    if not os.path.isdir(cwd):
+        cwd = os.path.expanduser("~")
+    try:
+        package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = ("import sys;sys.path.insert(0,%r);from harness.webapp import main;"
+                "sys.exit(main(['--port',%r,'--no-open']))" %
+                (package_parent, str(port)))
+        subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **plat.new_group_kwargs(), **plat.no_window_kwargs())
+    except Exception as exc:
+        return {"ok": False, "error": "could not start Collie web: %s" % exc}
+    for _ in range(40):
+        if _web_extension_api_up(port, timeout=0.4):
+            return {"ok": True, "started": True, "port": port}
+        time.sleep(0.25)
+    return {"ok": False, "error": "Collie web did not become ready on port %d" % port}
+
+
 def install_autostart():
     """Register the bridge to start hidden at every logon (per-machine resolved paths, no console)."""
     from . import plat
@@ -755,6 +845,7 @@ def _ensure_server(port):
 
 _CURRENT_SPACE = [None]
 _SPACE_CONTEXT = contextvars.ContextVar("collie_browser_space", default="")
+_SPACE_ACTIVITY = contextvars.ContextVar("collie_browser_space_activity", default=None)
 
 
 def _space():
@@ -769,17 +860,35 @@ def _space():
 
 
 @contextlib.contextmanager
-def browser_space(name):
+def browser_space(name, release=False):
     """Bind browser commands in this execution context to one isolated tab lane.
 
     ContextVar (rather than a process environment variable) keeps concurrent Web
     ticker/daemon threads from changing each other's tab.
     """
     token = _SPACE_CONTEXT.set((name or "default")[:40])
+    activity_token = _SPACE_ACTIVITY.set({"used": False}) if release else None
     try:
         yield
     finally:
+        activity = _SPACE_ACTIVITY.get() if release else None
+        # End control ownership even when the run crashed or its client went
+        # away.  Tabs are left open by default: the safety invariant is release,
+        # while closing a deliverable is a separate deliberate choice.
+        if release and activity and activity.get("used"):
+            try:
+                _call({"action": "finalize", "close_owned": False}, timeout=4)
+            except Exception:
+                pass
+        if activity_token is not None:
+            _SPACE_ACTIVITY.reset(activity_token)
         _SPACE_CONTEXT.reset(token)
+
+
+def finalize_space(space=None, close_owned=False, timeout=5):
+    """Release one browser lane; user-owned tabs are never closed."""
+    return _call({"action": "finalize", "space": (space or _space())[:40],
+                  "close_owned": bool(close_owned)}, timeout=timeout)
 
 
 def space_identity(space, timeout=4):
@@ -806,6 +915,9 @@ def _call(cmd, timeout=60):
     _ensure_server(port)
     cmd = dict(cmd)
     cmd.setdefault("space", _space())
+    activity = _SPACE_ACTIVITY.get()
+    if activity is not None and cmd.get("action") not in ("spaces", "status", "mode", "release", "finalize"):
+        activity["used"] = True
     body = json.dumps(dict(cmd, timeout=timeout)).encode()
     req = urllib.request.Request("http://127.0.0.1:%d/enqueue" % port, data=body,
                                  headers={"content-type": "application/json",
@@ -1337,11 +1449,14 @@ class BrowserTabs(Tool):
         "  action='attach' — take the tab the USER is looking at into this space. Use only when they "
         "asked for that (\"use the tab I have open\", \"finish this page\"); afterwards collie's "
         "commands act on THAT page\n"
+        "  action='pause' / 'resume' — hard-stop or explicitly resume this space\n"
+        "  action='status' — show live presence/pause state for every space\n"
         "  action='release' — let go of this space's tab. Add close=true to also close it, which "
         "works only for a tab collie opened; a tab the user handed over is left open.\n"
+        "  action='finalize' — end control ownership at handoff; close=true closes only a tab Collie opened\n"
         "Args: optional action, space (which lane), close, tab_id.")
     schema = {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["list", "attach", "release"]},
+        "action": {"type": "string", "enum": ["list", "attach", "release", "pause", "resume", "status", "finalize"]},
         "space": {"type": "string"}, "close": {"type": "boolean"}, "tab_id": {"type": "integer"}}}
 
     def run(self, args, ctx):
@@ -1357,6 +1472,10 @@ class BrowserTabs(Tool):
             return _fmt(_call(cmd))
         if act == "release":
             return _fmt(_call({"action": "release", "close": bool(args.get("close"))}))
+        if act in ("pause", "resume", "status"):
+            return _fmt(_call({"action": act}))
+        if act == "finalize":
+            return _fmt(_call({"action": "finalize", "close_owned": bool(args.get("close"))}))
         res = _call({"action": "spaces"})
         d = _data(res)
         if not isinstance(d, dict):

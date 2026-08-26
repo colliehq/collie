@@ -7,6 +7,7 @@ keeps a long thread from bloating the prefix, so sessions can grow safely.
 import ast
 import contextlib
 import json
+import math
 import os
 import threading
 import time
@@ -14,6 +15,10 @@ import time
 
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
 
 
 def _parse_legacy_toolcall(s, ToolCall):
@@ -149,10 +154,64 @@ def _msgs_in(messages):
 def _load_raw(p):
     try:
         with open(p, encoding="utf-8") as f:
-            s = json.load(f)
+            s = json.load(f, parse_constant=_reject_json_constant)
         return s if isinstance(s, dict) else None
     except Exception:
         return None
+
+
+def _validate_raw(raw, sid):
+    """Validate the recovery-bearing structure before any read/modify/write.
+
+    A syntactically valid JSON object can still be torn in exactly the fields
+    that fence replay.  Every writer uses this same validator so a fast path
+    cannot repair that evidence into a deceptively clean session.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("session journal is unreadable")
+    if raw.get("id") not in (None, sid):
+        raise ValueError("session identity does not match its filename")
+    for field in ("project", "cwd", "title", "last_answer"):
+        if field in raw and not isinstance(raw.get(field), str):
+            raise ValueError("session %s is malformed" % field)
+    if "updated" in raw:
+        updated = raw.get("updated")
+        if (isinstance(updated, bool) or not isinstance(updated, (int, float)) or
+                not math.isfinite(float(updated)) or float(updated) < 0):
+            raise ValueError("session timestamp is malformed")
+    messages = raw.get("messages", [])
+    if not isinstance(messages, list) or not all(
+            isinstance(item, dict) for item in messages):
+        raise ValueError("session messages are malformed")
+    if "active_run" in raw:
+        active = raw.get("active_run")
+        if not isinstance(active, dict):
+            raise ValueError("session active_run is malformed")
+        valid_states = {
+            "turn_boundary", "calling_model", "model_complete",
+            "executing_tool", "tool_complete", "external_action",
+            "terminal", "canceled",
+        }
+        state = active.get("state")
+        if not isinstance(state, str) or state not in valid_states:
+            raise ValueError("session active_run state is malformed")
+        if not isinstance(active.get("detail", {}), dict):
+            raise ValueError("session active_run detail is malformed")
+        if not isinstance(active.get("run_id", ""), str):
+            raise ValueError("session active_run identity is malformed")
+        turn = active.get("turn", 0)
+        if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
+            raise ValueError("session active_run turn is malformed")
+        updated = active.get("updated", 0)
+        if (isinstance(updated, bool) or not isinstance(updated, (int, float)) or
+                not math.isfinite(float(updated)) or float(updated) < 0):
+            raise ValueError("session active_run timestamp is malformed")
+    if "run_receipts" in raw:
+        receipts = raw.get("run_receipts")
+        if not isinstance(receipts, list) or not all(
+                isinstance(item, dict) for item in receipts):
+            raise ValueError("session run_receipts are malformed")
+    return raw
 
 
 def _merge_messages(old, new):
@@ -172,13 +231,14 @@ def _merge_messages(old, new):
     return merged
 
 
-def save(sid, messages, project="demo", cwd="", answer=""):
+def save(sid, messages, project="demo", cwd="", answer="",
+         preserve_active=False):
     p = _path(sid)
     if not p:
         return sid
     incoming = _msgs_out(messages)
     with _locked(p):
-        old = _load_raw(p) or {}
+        old = _validate_raw(_load_raw(p), sid) if os.path.exists(p) else {}
         obj = {"id": sid, "project": old.get("project") or project,
                "cwd": old.get("cwd") or cwd, "updated": time.time(),
                "messages": _merge_messages(old.get("messages"), incoming),
@@ -190,6 +250,11 @@ def save(sid, messages, project="demo", cwd="", answer=""):
         # ``active_run`` checkpoint, which save() intentionally closes.
         if old.get("run_receipts"):
             obj["run_receipts"] = old["run_receipts"]
+        if preserve_active and isinstance(old.get("active_run"), dict):
+            # An external worker may have returned useful text while still
+            # requiring reconciliation (or while its receipt failed to land).
+            # Saving that text must not erase the pre-launch replay fence.
+            obj["active_run"] = old["active_run"]
         _atomic_dump(obj, p)
     return sid
 
@@ -203,17 +268,13 @@ def append_run_receipt(sid, receipt, limit=40, directory=None):
         if os.path.exists(p):
             # Never turn an unreadable/torn journal into a fresh-looking one.
             # Recovery callers use this return value as a publication fence.
-            obj = _load_raw(p)
-            if not isinstance(obj, dict):
+            try:
+                obj = _validate_raw(_load_raw(p), sid)
+            except ValueError:
                 return False
         else:
             obj = {"id": sid, "messages": []}
-        if obj.get("id") not in (None, sid):
-            return False
         existing = obj.get("run_receipts", [])
-        if not isinstance(existing, list) or not all(
-                isinstance(row, dict) for row in existing):
-            return False
         rows = list(existing)
         rows.append(dict(receipt))
         obj["run_receipts"] = rows[-max(1, int(limit or 40)):]
@@ -236,7 +297,7 @@ def checkpoint(sid, messages, project="demo", cwd="", run_id="", turn=0,
         return sid
     incoming = _msgs_out(messages)
     with _locked(p):
-        old = _load_raw(p) or {}
+        old = _validate_raw(_load_raw(p), sid) if os.path.exists(p) else {}
         obj = dict(old)
         obj.update({"id": sid, "project": old.get("project") or project,
                     "cwd": old.get("cwd") or cwd, "updated": time.time(),
@@ -260,7 +321,14 @@ def recovery_state(sid, directory=None):
     if not p or not os.path.exists(p):
         return None
     with _locked(p):
-        raw = _load_raw(p) or {}
+        try:
+            raw = _validate_raw(_load_raw(p), sid)
+        except ValueError as exc:
+            return {
+                "state": "invalid", "updated": _mtime(p),
+                "recovery_required": True, "auto_resumable": False,
+                "reason": "session journal requires inspection: %s" % exc,
+            }
     active = raw.get("active_run")
     if not isinstance(active, dict):
         return None
@@ -306,7 +374,7 @@ def reconcile_recovery(sid, resolution, note="", confirmed=False, directory=None
     if not p or not os.path.exists(p):
         raise KeyError("no such session")
     with _locked(p):
-        raw = _load_raw(p) or {}
+        raw = _validate_raw(_load_raw(p), sid)
         active = raw.get("active_run")
         if not isinstance(active, dict) or active.get("state") not in (
                 "executing_tool", "external_action"):
@@ -359,8 +427,18 @@ def append_exchange(sid, user_text, answer, project="web", cwd=""):
     if not p:
         return sid
     with _locked(p):
-        existing = _load_raw(p) or {}
-        messages = list(existing.get("messages") or [])
+        if os.path.exists(p):
+            existing = _load_raw(p)
+            # A torn or structurally invalid journal is recovery evidence.  Do
+            # not turn it into a fresh-looking conversation merely because a
+            # fast-path command or external worker finished successfully.
+            if not isinstance(existing, dict):
+                raise ValueError("cannot append to an unreadable session journal")
+        else:
+            existing = {}
+        existing = _validate_raw(existing, sid)
+        raw_messages = existing.get("messages", [])
+        messages = list(raw_messages)
         messages.append({"role": "user", "content": user_text})
         messages.append({"role": "assistant", "content": answer})
         obj = dict(existing)
@@ -379,7 +457,7 @@ def _atomic_dump(obj, p):
     tmp = "%s.%d.%s.tmp" % (p, os.getpid(), os.urandom(6).hex())
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, default=str)
+            json.dump(obj, f, ensure_ascii=False, default=str, allow_nan=False)
             f.flush()
             os.fsync(f.fileno())
         try:
@@ -412,9 +490,12 @@ def load(sid):
         return None
     with _locked(p):
         s = _load_raw(p)
-    if s is not None:
+    try:
+        s = _validate_raw(s, sid)
         s["messages"] = _msgs_in(s.get("messages"))
-    return s
+        return s
+    except Exception:
+        return None
 
 
 def load_checked(sid, directory=None):
@@ -430,43 +511,9 @@ def load_checked(sid, directory=None):
     try:
         with _locked(p):
             with open(p, encoding="utf-8") as fh:
-                raw = json.load(fh)
-        if not isinstance(raw, dict):
-            raise ValueError("session root is not an object")
-        if raw.get("id") not in (None, sid):
-            raise ValueError("session identity does not match its filename")
+                raw = json.load(fh, parse_constant=_reject_json_constant)
+        raw = _validate_raw(raw, sid)
         messages = raw.get("messages", [])
-        if not isinstance(messages, list) or not all(
-                isinstance(item, dict) for item in messages):
-            raise ValueError("session messages are malformed")
-        # A syntactically valid JSON file can still be semantically torn.  In
-        # particular, treating a malformed active_run as if no run were active
-        # would erase the only fence that says an edit/tool may have been in
-        # flight.  Mission callers must distinguish that from a clean session.
-        if "active_run" in raw:
-            active = raw.get("active_run")
-            if not isinstance(active, dict):
-                raise ValueError("session active_run is malformed")
-            state = active.get("state")
-            valid_states = {
-                "turn_boundary", "calling_model", "model_complete",
-                "executing_tool", "tool_complete", "external_action",
-                "terminal", "canceled",
-            }
-            if not isinstance(state, str) or state not in valid_states:
-                raise ValueError("session active_run state is malformed")
-            if not isinstance(active.get("detail", {}), dict):
-                raise ValueError("session active_run detail is malformed")
-            if not isinstance(active.get("run_id", ""), str):
-                raise ValueError("session active_run identity is malformed")
-            turn = active.get("turn", 0)
-            if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
-                raise ValueError("session active_run turn is malformed")
-        if "run_receipts" in raw:
-            receipts = raw.get("run_receipts")
-            if not isinstance(receipts, list) or not all(
-                    isinstance(item, dict) for item in receipts):
-                raise ValueError("session run_receipts are malformed")
         raw["messages"] = _msgs_in(messages)
         return {"status": "ok", "session": raw}
     except Exception as exc:

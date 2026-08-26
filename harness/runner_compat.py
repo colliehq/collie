@@ -663,9 +663,7 @@ def check_framing(ctx: CheckContext) -> str:
     # mapping from drifting apart before the translator is written.
     _expect("runner.error" in CANONICAL_TYPES,
             "runner.error is missing from CANONICAL_TYPES")
-    observations.append("U+2028 is a record boundary for str.splitlines(), so a frame "
-                        "containing one is reported as a protocol error rather than "
-                        "silently split")
+    observations.append("LF-only framing keeps literal U+2028/U+2029 inside JSON strings")
     return "; ".join(observations)
 
 
@@ -717,7 +715,10 @@ def _framing_cases(key: str):
             ("chunked", chunked, "settled"),
             ("invalid_json",
              out("\n".join(lines[:1] + ["{not json"] + lines[1:])), "error_event"),
-            ("u2028", out("\n".join([lines[0], u2028] + lines[1:])), "error_event"),
+            # Codex JSONL is LF-delimited. Literal U+2028/U+2029 inside a JSON
+            # string are data, not record boundaries (the same strict framing
+            # rule used by Prime/Pi RPC), so this stream remains valid.
+            ("u2028", out("\n".join([lines[0], u2028] + lines[1:])), "settled"),
             ("not_an_object", out(lines[0] + "\n[1,2,3]\n"), "error_event"),
             ("nul_and_noise",
              out(lines[0] + "\n\x00\x01binary noise\n"), "error_event"),
@@ -860,6 +861,9 @@ def _check_argv(key: str, argv: tuple[str, ...], *, resume: bool) -> None:
             _expect(required in flags,
                     "codex %s argv is missing %s: the host's own configuration "
                     "would reach the worker" % ("resume" if resume else "start", required))
+        _expect("--strict-config" in flags,
+                "codex %s argv is missing --strict-config" %
+                ("resume" if resume else "start"))
         _expect('web_search="disabled"' in overrides,
                 "codex argv does not disable web_search")
         # The design's `--ask-for-approval never` is spelled as a `-c` override
@@ -874,13 +878,18 @@ def _check_argv(key: str, argv: tuple[str, ...], *, resume: bool) -> None:
             _expect('sandbox_mode="workspace-write"' in overrides,
                     "codex resume argv does not re-pin the sandbox")
         else:
-            _expect("--strict-config" in flags,
-                    "codex start argv is missing --strict-config")
             _expect("--sandbox" in flags and "workspace-write" in argv,
                     "codex start argv does not pin --sandbox workspace-write")
     elif key == "claude-code":
         _expect("--strict-mcp-config" in flags,
                 "claude argv does not exclude the user's MCP servers")
+        _expect("--safe-mode" in flags and "--no-chrome" in flags,
+                "claude argv does not disable host customizations/Chrome")
+        _expect("--disable-slash-commands" in flags,
+                "claude argv does not disable skills and slash commands")
+        _expect("--prompt-suggestions" in flags and
+                argv[argv.index("--prompt-suggestions") + 1] == "false",
+                "claude argv does not disable prompt suggestions")
         _expect("--permission-mode" in argv
                 and argv[argv.index("--permission-mode") + 1] == "acceptEdits",
                 "claude argv does not pin --permission-mode acceptEdits")

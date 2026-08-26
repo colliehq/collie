@@ -1,6 +1,55 @@
 # Changelog
 
-## Unreleased — Evidence-gated agent foundations
+## v0.21.32 — Browser control you can see and stop
+
+- Added a persistent current-page side chat, selection context menu, visible acting/paused presence,
+  pointer feedback, a hard Stop control, and explicit user-takeover/resume behavior to the Chrome
+  bridge while keeping every consequential page action behind Collie's existing approval gate.
+- Added a recommended site-access policy that remembers ordinary websites but continues asking for
+  banks, brokerages, payment services, and crypto sites; navigation permission remains separate from
+  permission to click, type, upload, send, buy, delete, or change settings.
+- Made extension/backend version matching and multi-checkout discovery explicit, released controlled
+  tabs safely at run completion, and added a credential-free browser-extension package to the signed
+  GitHub release pipeline.
+- Audited the cumulative v0.21.27–v0.21.32 changes with the complete cross-surface release gate,
+  clean wheel/sdist installation, documentation, secret, and packaged-asset checks.
+
+## v0.21.31 — Capability acceptance hardening
+
+- Made verification snapshots fail closed instead of crashing when a Windows workspace contains a
+  reserved device-style entry whose path cannot be relativized against the drive mount.
+- Fixed `collie automations status` so it can report enabled and disabled configurations with the
+  keyword-only store API, and pinned the behavior with a CLI regression test.
+- Exercised the installed product against a real local browser, native Windows UI Automation,
+  durable memory, Missions, Pack selection, automation budgets, native speech synthesis, and
+  WeChat's logged-out desktop surface using isolated/self-owned targets.
+
+## v0.21.30 — Logic-audited desktop release
+
+- Kept the Run Setup sheet above the growing composer so every desktop and Pack configuration can
+  still reach Send, and restored the single-column shell on narrow desktop and phone viewports.
+- Isolated semantic-memory cosine recall by embedding model, preventing legacy vectors from a
+  different vector space from degrading current dense results while retaining them for BM25 recall.
+- Made memory startup forward-compatible with persisted delta-sync triggers from another Collie
+  development track by registering their connection-local SQLite function ABI before migrations.
+- Re-ran the complete compile, component, browser-extension, Remote, GUI, API, CLI, packaging, and
+  Python regression gates, including the opt-in trusted browser bridge against local fixture pages.
+
+## v0.21.29 — Quiet, unified interface
+
+- Reworked the main workbench, sidebar, top bar, welcome state, and composer around a compact neutral design system.
+- Simplified onboarding, model selection, run setup, and settings while preserving every existing control and capability.
+- Made Activity and Capabilities dedicated workspaces, and unified the visual language across mobile, Remote, Ambient, Map, and Wallpaper surfaces.
+
+## v0.21.28 — Evidence-gated agents and native desktop control
+
+- **Windows desktop control now uses semantic interfaces before simulated input.** The automatic
+  ladder is application API/browser DOM → UI Automation → MSAA/IAccessible → allow-listed Win32
+  control messages → keyboard → mouse, and every result reports the method/layer actually used.
+  Advanced Selection, Grid/Table, Scroll, Window, Transform, Dock, MultipleView and virtualized-item
+  patterns are available through `desktop_uia`; classic buttons, edits, checkboxes and list/combo
+  selection are exposed through `desktop_win32`. Window-bound unattended scripts remain target
+  scoped, and Windows integrity/UAC, secure-desktop and anti-cheat boundaries are never bypassed.
 
 - **Missions can delegate through a durable agent graph.** Model-facing `agent.spawn`,
   `agent.send`, `agent.poll`, and `agent.cancel` create descendant-scoped specialist Missions.

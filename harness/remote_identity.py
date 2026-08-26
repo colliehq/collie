@@ -23,6 +23,44 @@ import secrets
 import time
 
 
+class RemoteIdentityError(RuntimeError):
+    """The durable pairing identity is unreadable and must not be regenerated."""
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key: %s" % key)
+        value[key] = item
+    return value
+
+
+def _validate_data(data):
+    if not isinstance(data, dict):
+        raise ValueError("remote identity must be a JSON object")
+    for field in ("device_id", "room", "agent_key"):
+        if (not isinstance(data.get(field), str) or not data[field] or
+                len(data[field]) > 512):
+            raise ValueError("remote identity %s is missing or invalid" % field)
+    if not isinstance(data.get("devices", {}), dict):
+        raise ValueError("remote identity devices must be an object")
+    if len(data.get("devices", {})) > 4096:
+        raise ValueError("remote identity device list exceeds safety limit")
+    # A corrupt legacy device row must not make unrelated phones unavailable.
+    # It is ignored in memory and disappears on the next explicit store update.
+    data = dict(data)
+    data["devices"] = {
+        key: dict(value) for key, value in data.get("devices", {}).items()
+        if isinstance(key, str) and isinstance(value, dict)
+    }
+    return data
+
+
 def _state_dir() -> str:
     return os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
 
@@ -149,11 +187,19 @@ def load_or_create() -> Identity:
     data = None
     if os.path.exists(path):
         try:
+            if os.path.getsize(path) > 8 * 1024 * 1024:
+                raise ValueError("remote identity exceeds safety limit")
             with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (ValueError, OSError):
-            data = None
-    if not data or "device_id" not in data:
+                data = _validate_data(json.load(
+                    f, parse_constant=_reject_json_constant,
+                    object_pairs_hook=_unique_json_object))
+        except (ValueError, OSError, TypeError, json.JSONDecodeError,
+                RecursionError) as exc:
+            # Replacing a torn identity would silently rotate the room/agent key
+            # and forget every paired phone. Preserve the file for recovery.
+            raise RemoteIdentityError(
+                "durable remote identity is invalid; inspect %s" % path) from exc
+    if data is None:
         data = {
             "device_id": secrets.token_urlsafe(12),
             # a stable, unguessable room slug (~72 bits) → the phone URL never changes for this desktop
@@ -176,11 +222,20 @@ def load_or_create() -> Identity:
 
 
 def _atomic_write(path: str, data: dict):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    tmp = "%s.%d.%s.tmp" % (path, os.getpid(), secrets.token_hex(4))
     try:
-        os.chmod(tmp, 0o600)      # best-effort on Windows; a real no-op there but harmless
-    except OSError:
-        pass
-    os.replace(tmp, path)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)  # best-effort on Windows; NTFS owns access there
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass

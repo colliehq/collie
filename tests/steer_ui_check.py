@@ -92,7 +92,8 @@ def main():
         started = pg.evaluate("""() => {
             const es = (window.__es || []).find(e => e.url.indexOf('/api/stream') > -1);
             if (!es) return false;
-            es.emit('start', {session: 's-steer-check', provider: 'mock', cwd: '/tmp', prior_turns: 0});
+            es.emit('start', {session: 's-steer-check', provider: 'mock', cwd: '/tmp', prior_turns: 0,
+                              worker_capabilities: {steer: true}});
             return true;
         }""")
         check(started, "the composer opened a run stream")
@@ -136,7 +137,8 @@ def main():
 
         check(pg.evaluate("() => document.getElementById('scroll').scrollTop > 50"),
               "typing it scrolled the view back to it")
-        check("pending" not in (pg.get_attribute(".flow .steer-note", "class") or ""),
+        note_class = note.get_attribute("class") if note else ""
+        check(note is not None and "pending" not in note_class,
               "and it stops saying 'queued' once the desktop confirms")
 
         # A run that ended first must say so on the note itself, not only in a passing event line.

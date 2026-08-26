@@ -1,4 +1,5 @@
 """A roster spreads the attempts over different backends without losing track of which is which."""
+import json
 import os
 import sys
 import tempfile
@@ -7,6 +8,9 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from harness import pack
+from harness import runner_slice
+from harness.recorder import RunResult
+from harness.runner_specs import HarnessDecision, RunnerReceipt
 
 
 def test_roster_entries_parse_without_mangling_ollama_tags():
@@ -125,6 +129,63 @@ def test_cleanup_deletes_only_the_owned_attempt_directory(monkeypatch, tmp_path)
     assert sentinel.exists(), "the attempt's parent and sibling data must survive cleanup"
 
 
+def test_cleanup_failure_is_returned_as_durable_outcome_evidence(monkeypatch, tmp_path):
+    _stub_backends(monkeypatch, [])
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    monkeypatch.setattr(pack, "_isolate", lambda _cwd: str(attempt))
+    monkeypatch.setattr(
+        pack.shutil, "rmtree",
+        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("directory busy")))
+
+    result = pack.run_pack("t", str(tmp_path), n=1, roster=["groq"])
+
+    assert result["cleanup_errors"][0]["idx"] == 0
+    assert "directory busy" in result["cleanup_errors"][0]["error"]
+    assert "could not be removed" in result["reason"]
+
+
+def test_isolation_copy_failure_reports_retained_partial_workspace(monkeypatch, tmp_path):
+    partial = tmp_path / "partial-attempt"
+
+    def make_partial(**_kwargs):
+        partial.mkdir()
+        return str(partial)
+
+    monkeypatch.setattr(pack.tempfile, "mkdtemp", make_partial)
+    monkeypatch.setattr(
+        pack.shutil, "copytree",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("copy failed")))
+    monkeypatch.setattr(
+        pack.shutil, "rmtree",
+        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("directory busy")))
+
+    try:
+        pack._isolate(str(tmp_path))
+    except RuntimeError as exc:
+        detail = str(exc)
+    else:  # pragma: no cover - makes a silent orphan an explicit test failure
+        raise AssertionError("retained partial workspace was not reported")
+
+    assert str(partial) in detail
+    assert "directory busy" in detail
+
+
+def test_pack_budget_rejects_nonfinite_configuration_and_usage(monkeypatch):
+    monkeypatch.setenv("COLLIE_MAX_COST", "NaN")
+    try:
+        pack._PackBudget.from_env()
+    except ValueError as exc:
+        assert "finite" in str(exc)
+    else:
+        raise AssertionError("NaN cost ceiling silently disabled the Pack budget")
+
+    budget = pack._PackBudget(max_cost=1, max_tokens=100)
+    assert budget.account_values(tokens=1.5, cost_usd=float("inf")) == (
+        "cost_usd", "tokens")
+    assert budget.exceeded() is True
+
+
 def test_a_tree_is_copied_only_when_its_attempt_starts(monkeypatch):
     """Copying all N up front makes a sequential pack wait through N copytrees of the whole repo
     before the first model call."""
@@ -188,3 +249,175 @@ def test_preflight_still_refuses_before_spending_attempts(monkeypatch):
     res = pack.run_pack("t", tempfile.mkdtemp(), n=3, roster=["openai", "groq"])
     assert res["winner"] is None and res["attempts"] == []
     assert "OPENAI_API_KEY" in res["reason"]
+
+
+def _external_decision(key="codex-exec"):
+    return HarnessDecision(
+        runner=key, source="user", credential_family="codex",
+        billing_class="subscription_allowance", billing_mode="subscription",
+        reasons=("pinned by user",), rejected={}, candidates=(), fallback_chain=(),
+        probe={"key": key}, probe_digest="d" * 8)
+
+
+def test_external_worker_runs_every_isolated_candidate_and_records_receipt(monkeypatch,
+                                                                           tmp_path):
+    """Pack owns isolation/checking; the selected worker owns candidate generation."""
+    roots, calls = [], []
+
+    def isolate(_cwd):
+        root = tempfile.mkdtemp(prefix="external_pack_")
+        roots.append(root)
+        return root
+
+    monkeypatch.setattr(pack, "_isolate", isolate)
+    monkeypatch.setattr(pack, "_init_external_git", lambda root: calls.append(("git", root)))
+
+    receipt = RunnerReceipt.from_dict({
+        "runner": "codex-exec", "settled": True, "usage_known": True,
+        "billing_class": "subscription_allowance", "billing_mode": "subscription",
+    })
+
+    def run_adhoc(decision, task, workspace, **kwargs):
+        idx = len([row for row in calls if row[0] == "run"])
+        calls.append(("run", workspace, kwargs.get("model"), kwargs.get("task_id"),
+                      kwargs.get("provider")))
+        result = RunResult(task_id="pack%d" % idx, harness="codex-exec",
+                           model="gpt-worker", provider="codex", turns=1,
+                           total_tokens=100 + idx, cost_usd=0.01, success=True,
+                           answer="candidate %d" % idx, error="", messages=[])
+        setattr(result, runner_slice.RECEIPT_ATTR, receipt)
+        return result
+
+    monkeypatch.setattr(runner_slice, "run_adhoc", run_adhoc)
+    res = pack.run_pack("fix it", str(tmp_path), n=2,
+                        runner_decision=_external_decision(), runner_model="gpt-worker")
+
+    assert [row[0] for row in calls] == ["git", "run", "git", "run"]
+    assert all(row[4] == "codex" for row in calls if row[0] == "run")
+    assert [a["runner"] for a in res["attempts"]] == ["codex-exec", "codex-exec"]
+    assert all(a["runner_receipt"]["settled"] for a in res["attempts"])
+    assert res["winner_runner"] == "codex-exec"
+    assert res["roster"] == ["codex-exec"]
+    assert res["answer"] == "candidate 0"
+
+
+def test_external_pack_attributes_a_pre_prompt_fallback_to_actual_runner(monkeypatch,
+                                                                         tmp_path):
+    import harness.cli as cli
+
+    monkeypatch.setattr(pack, "_isolate", lambda _cwd: tempfile.mkdtemp(prefix="pack_fallback_"))
+    monkeypatch.setattr(pack, "_init_external_git", lambda _root: None)
+    monkeypatch.setattr(cli, "_paths", lambda: (
+        str(tmp_path / "memory.db"), str(tmp_path / "runs.db"),
+        str(tmp_path / "dashboard.html"), str(tmp_path / "sandbox")))
+    receipt = RunnerReceipt.from_dict({
+        "runner": "codex-appserver", "settled": True, "usage_known": True,
+        "billing_class": "subscription_allowance", "billing_mode": "subscription",
+    })
+
+    def fell_back(*args, **kwargs):
+        result = RunResult(
+            task_id="pack0", harness="codex-appserver", provider="codex",
+            total_tokens=10, input_tokens=8, output_tokens=2, turns=1,
+            cost_usd=0.01, success=True, answer="fallback candidate", messages=[])
+        setattr(result, runner_slice.RECEIPT_ATTR, receipt)
+        return result
+
+    monkeypatch.setattr(runner_slice, "run_adhoc", fell_back)
+    result = pack.run_pack(
+        "fix it", str(tmp_path), n=1,
+        runner_decision=_external_decision("codex-exec"))
+
+    assert result["attempts"][0]["runner"] == "codex-appserver"
+    assert result["winner_runner"] == "codex-appserver"
+    assert result["attempts"][0]["runner_receipt"]["runner"] == "codex-appserver"
+
+
+def test_external_parallel_emit_failure_does_not_fail_work_or_leak_trees(monkeypatch,
+                                                                         tmp_path):
+    """A disconnected observer cannot rewrite real worker/check outcomes."""
+    roots = []
+
+    def isolate(_cwd):
+        root = tempfile.mkdtemp(prefix="pack_emit_")
+        roots.append(root)
+        return root
+
+    monkeypatch.setattr(pack, "_isolate", isolate)
+    monkeypatch.setattr(pack, "_init_external_git", lambda _root: None)
+    monkeypatch.setattr(runner_slice, "run_adhoc", lambda *a, **kw: RunResult(
+        harness="codex-exec", success=True, answer="done", turns=1, messages=[]))
+
+    def bad_emit(_idx, _rec):
+        raise RuntimeError("consumer disconnected sk-super-secret")
+
+    res = pack.run_pack("fix it", str(tmp_path), n=2, parallel=2, emit=bad_emit,
+                        runner_decision=_external_decision())
+    assert res["winner"] == 0
+    assert all(a["runner"] == "codex-exec" for a in res["attempts"])
+    assert all(not a["error"] for a in res["attempts"])
+    assert "sk-super-secret" not in json.dumps(res)
+    assert all(not os.path.exists(root) for root in roots)
+
+
+def test_verifier_start_failure_becomes_attempt_evidence_and_cleans_trees(monkeypatch,
+                                                                          tmp_path):
+    """A broken host checker must not abort Pack before exact-root cleanup."""
+    _stub_backends(monkeypatch, [])
+    roots = []
+
+    def isolate(_cwd):
+        root = tempfile.mkdtemp(prefix="pack_check_error_")
+        roots.append(root)
+        return root
+
+    monkeypatch.setattr(pack, "_isolate", isolate)
+    monkeypatch.setattr(
+        pack, "_run_check_evidence",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            RuntimeError("checker leaked api_key=abcdefghijklmnop")))
+
+    res = pack.run_pack("fix it", str(tmp_path), n=2, check="broken-check")
+
+    assert res["winner"] is None
+    assert all(row["check_pass"] is False for row in res["attempts"])
+    assert all("verification failed" in row["error"] for row in res["attempts"])
+    assert "abcdefghijklmnop" not in json.dumps(res)
+    assert all(not os.path.exists(root) for root in roots)
+
+
+def test_budgeted_external_pack_stops_when_worker_usage_is_unknown(monkeypatch,
+                                                                    tmp_path):
+    """An absent meter is not zero; no later candidate may spend past the blind spot."""
+    import harness.cli as cli
+
+    monkeypatch.setenv("COLLIE_MAX_TOTAL_TOKENS", "1000")
+    monkeypatch.delenv("COLLIE_MAX_COST", raising=False)
+    monkeypatch.setattr(pack, "_isolate", lambda _cwd: tempfile.mkdtemp(prefix="pack_budget_"))
+    monkeypatch.setattr(pack, "_init_external_git", lambda _root: None)
+    monkeypatch.setattr(cli, "_paths", lambda: (
+        str(tmp_path / "memory.db"), str(tmp_path / "runs.db"),
+        str(tmp_path / "dashboard.html"), str(tmp_path / "sandbox")))
+    calls = []
+
+    def unknown_usage(*args, **kwargs):
+        calls.append(kwargs.get("task_id"))
+        return RunResult(
+            harness="codex-exec", success=True, answer="done", turns=1,
+            total_tokens=None, cost_usd=None, messages=[])
+
+    monkeypatch.setattr(runner_slice, "run_adhoc", unknown_usage)
+
+    result = pack.run_pack(
+        "fix it", str(tmp_path), n=3,
+        runner_decision=_external_decision())
+
+    assert calls == ["pack0"]
+    assert result["winner"] is None
+    assert result["budget_exhausted"] is True
+    assert result["budget_usage_unknown"] is True
+    assert result["budget_unknown_fields"] == ["tokens"]
+    assert result["total_cost_usd"] is None
+    assert "did not report tokens" in result["attempts"][0]["error"]
+    assert all("budget exhausted" in row["error"]
+               for row in result["attempts"][1:])

@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{color-scheme:light dark;--bg:#fbfcfe;--panel:#f1f3f7;--ink:#171b24;--muted:#687082;
+    --line:#dce1ea;--accent:#43569d;--ok:#3e8e6e;--bad:#c94b40}
+  @media(prefers-color-scheme:dark){:root{--bg:#14161d;--panel:#1d212a;--ink:#eef0f5;--muted:#9ba2b3;
+    --line:#303540;--accent:#8295dd;--ok:#65c69a;--bad:#e17e73}}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:9px;padding:12px 13px;border-bottom:1px solid var(--line)}
+  header img{width:25px;height:25px}.title{font-weight:700}.state{margin-left:auto;color:var(--muted);font-size:11px}
+  .context{margin:10px 11px 0;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+  .context b,.context span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.context span{color:var(--muted);font-size:11px}
+  #messages{flex:1;overflow:auto;padding:12px 11px;display:flex;flex-direction:column;gap:9px}
+  .msg{max-width:94%;padding:8px 10px;border-radius:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+  .user{align-self:flex-end;background:var(--accent);color:white}.assistant{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
+  .meta{align-self:center;color:var(--muted);font-size:11px;padding:2px 8px}.error{color:var(--bad)}
+  .permission{border:1px solid #c38a33;background:color-mix(in srgb,#c38a33 12%,var(--panel));border-radius:10px;padding:10px}
+  .permission b,.permission span{display:block}.permission span{font-size:11px;color:var(--muted);margin:3px 0 8px}
+  .perm-actions,.controls{display:flex;gap:6px}.perm-actions button{font-size:11px;padding:5px 7px}
+  footer{padding:9px 10px 11px;border-top:1px solid var(--line);background:var(--bg)}
+  textarea{width:100%;resize:none;min-height:58px;max-height:150px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font:inherit;outline:none}
+  textarea:focus{border-color:var(--accent)}button{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--panel);color:var(--ink);cursor:pointer}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:650}.controls{margin-top:7px}.controls .primary{flex:1}
+  #resume{display:none}.small{font-size:11px;color:var(--muted);margin-left:auto;align-self:center}
+</style>
+</head>
+<body>
+  <header><img src="icon48.png" alt=""><span class="title">Ask Collie</span><span class="state" id="state">Connecting…</span></header>
+  <div class="context"><b id="pageTitle">Current tab</b><span id="pageUrl">—</span><span id="selection"></span></div>
+  <main id="messages"></main>
+  <footer>
+    <textarea id="prompt" placeholder="Ask about this page, or tell Collie what to do…"></textarea>
+    <div class="controls">
+      <button class="primary" id="send">Send</button><button id="stop" disabled>Stop run</button>
+      <button id="pause">Pause tab</button><button id="resume">Resume tab</button>
+    </div>
+    <div class="small" id="hint"></div>
+  </footer>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

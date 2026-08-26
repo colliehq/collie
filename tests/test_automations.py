@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -14,6 +15,26 @@ from harness.automations import (AutomationDaemon, AutomationExecutor, Automatio
                                  TriggerRegistry, WorkspaceAllocator, _LimitedTool,
                                  _unscopable_unattended_tool)
 from harness.ops import OpsStore
+
+
+def test_status_cli_lists_disabled_specs_without_crashing(tmp_path, capsys):
+    from harness import automations
+
+    state = tmp_path / "state"
+    db = state / "automations.db"
+    state.mkdir()
+    with AutomationStore(str(db)) as store:
+        value = _spec("disabled", {
+            "provider": "timer", "every_s": 10,
+        }, tmp_path)
+        value["enabled"] = False
+        store.upsert(value)
+
+    assert automations.main([
+        "status", "disabled", "--state-dir", str(state),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["configured"] == ["disabled"]
 
 
 def _spec(aid, trigger, root, **extra):
@@ -35,6 +56,74 @@ def test_policy_validation_requires_explicit_continuation_and_current_workspace(
         AutomationSpec.from_dict(_spec(
             "bad2", {"provider": "timer", "every_s": 10}, tmp_path,
             workspace={"mode": "current"}))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), True])
+def test_automation_budget_rejects_nonfinite_and_boolean_limits(tmp_path, value):
+    with pytest.raises(ValueError, match="budget.max_cost_usd"):
+        AutomationSpec.from_dict(_spec(
+            "bad-budget", {"provider": "timer", "every_s": 10}, tmp_path,
+            budget={"max_cost_usd": value}))
+
+
+@pytest.mark.parametrize("field", ["external_writes", "current_workspace", "webhook_ingest"])
+def test_permission_flags_do_not_treat_truthy_strings_as_authority(field):
+    with pytest.raises(ValueError, match=field):
+        PermissionPolicy.from_dict({field: "false"})
+
+
+def test_automation_boolean_and_collection_fields_are_exact(tmp_path):
+    value = _spec("typed", {"provider": "timer", "every_s": 10}, tmp_path)
+    value["enabled"] = "false"
+    with pytest.raises(ValueError, match="enabled"):
+        AutomationSpec.from_dict(value)
+    with pytest.raises(ValueError, match="permissions.tools"):
+        PermissionPolicy.from_dict({"tools": "read_file"})
+    value = _spec("bad-shape", {"provider": "timer", "every_s": 10}, tmp_path)
+    value["budget"] = [["max_cost_usd", 1]]
+    with pytest.raises(ValueError, match="budget must be an object"):
+        AutomationSpec.from_dict(value)
+
+
+def test_unattended_desktop_authority_is_exactly_target_scoped(tmp_path):
+    policy = PermissionPolicy.from_dict({
+        "tools": ["desktop_script"], "desktop_targets": ["WeChat"],
+        "external_writes": True,
+    })
+    assert policy.desktop_targets == ("wechat",)
+    assert not _unscopable_unattended_tool("desktop_script", policy)
+    assert _unscopable_unattended_tool("desktop_apps", policy)
+    assert _unscopable_unattended_tool("desktop_script")
+
+    class DummyDesktopScript:
+        name, description, tier = "desktop_script", "test", "always"
+        schema = {"type": "object", "properties": {}}
+        def provider_schema(self): return {"name": self.name}
+        def run(self, args, ctx): return "ran"
+
+    counter = {"actions": 0, "cancelled": False}
+    tool = _LimitedTool(DummyDesktopScript(), time.monotonic() + 10, counter, 3,
+                        policy, str(tmp_path))
+    assert tool.run({"match": "WeChat", "steps": [{"action": "wait"}]}, None) == "ran"
+    denied = tool.run({"match": "Notepad", "steps": [{"action": "wait"}]}, None)
+    assert "desktop target notepad is not permitted" in denied
+
+
+def test_unattended_desktop_mutation_still_requires_external_writes(tmp_path):
+    policy = PermissionPolicy.from_dict({
+        "tools": ["desktop_key"], "desktop_targets": ["wechat"],
+    })
+
+    class DummyKey:
+        name, description, tier = "desktop_key", "test", "always"
+        schema = {"type": "object", "properties": {}}
+        def provider_schema(self): return {"name": self.name}
+        def run(self, args, ctx): return "must not run"
+
+    tool = _LimitedTool(DummyKey(), time.monotonic() + 10,
+                        {"actions": 0, "cancelled": False}, 3, policy, str(tmp_path))
+    assert "external writes are not permitted" in tool.run(
+        {"match": "wechat", "key": "Enter"}, None)
 
 
 def test_timer_is_durable_idempotent_and_context_policy_is_snapshotted(tmp_path):
@@ -182,6 +271,29 @@ def test_budget_exhaustion_and_crash_recovery_park_external_writes(tmp_path):
             guard.consume(model_tokens=2)
     finally:
         guard_store.close()
+
+
+def test_runtime_usage_and_corrupt_durable_request_fail_closed(tmp_path):
+    from harness.automations import BudgetGuard
+
+    with AutomationStore(str(tmp_path / "strict.db")) as store:
+        spec = store.upsert(_spec("strict", {
+            "provider": "timer", "every_s": 1, "fire_immediately": True,
+        }, tmp_path), now=1)
+        execution_id = store.enqueue(spec, "manual:strict", {"kind": "test"}, now=1)
+        request = json.loads(store.executions()[0]["request_json"])
+        guard = BudgetGuard(store, execution_id, request["budget"], request=request)
+        with pytest.raises(ValueError, match="finite non-negative"):
+            guard.consume(cost_usd=float("nan"))
+        assert store.usage(execution_id)["cost_usd"] == 0
+
+        store.db.execute("UPDATE executions SET request_json=? WHERE execution_id=?",
+                         ('{"budget":{"max_cost_usd":NaN}}', execution_id))
+        store.db.commit()
+        assert store.claim(now=2) is None
+        row = store.executions()[0]
+        assert row["state"] == NEEDS_YOU
+        assert "invalid durable request JSON" in row["last_error"]
 
 
 def test_expired_attempt_is_token_fenced_and_filesystem_writes_are_not_replayed(tmp_path):

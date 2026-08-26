@@ -128,6 +128,24 @@ def test_release_workflow_packages_and_publishes_vscode_vsix():
     ), "the GitHub release files must publish Collie-VSCode.vsix from its artifact"
 
 
+def test_release_workflow_packages_and_publishes_credential_free_browser_extension():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    browser_job = _workflow_job(workflow, "browser-extension")
+    release_job = _workflow_job(workflow, "release")
+
+    assert "./installer/package_browser_extension.ps1" in browser_job
+    assert re.search(r"(?m)^\s*name:\s*browser-extension\s*$", browser_job)
+    assert re.search(
+        r"(?m)^\s*path:\s*dist/collie-browser-bridge-\*\.zip\s*$", browser_job)
+    assert re.search(
+        r"(?m)^\s*needs:\s*\[[^\]]*\bbrowser-extension\b[^\]]*\]\s*$", release_job)
+    assert re.search(
+        r"(?m)^\s*artifacts/browser-extension/collie-browser-bridge-\*\.zip\s*$",
+        release_job,
+    )
+
+
 def test_release_wheel_gate_requires_sdk_and_rejects_retired_oauth_proxy():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8")

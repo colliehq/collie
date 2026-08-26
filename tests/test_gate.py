@@ -164,6 +164,33 @@ def test_browser_open_pins_to_its_destination(tmp_path):
     assert d.target == "https://evil.example"
 
 
+def test_persistent_site_access_allows_navigation_but_not_actions(tmp_path):
+    g = G(tmp_path, browser_site_access="all_except_sensitive",
+          origin_lookup=lambda: "https://docs.example/page")
+    opened = g.evaluate("browser_open", {"url": "https://docs.example/guide"})
+    assert opened.allowed and "site-access policy" in opened.reason
+    click = g.evaluate("browser_click", {"ref": "e1"})
+    assert not click.allowed and click.needs_user
+
+
+@pytest.mark.parametrize("url", [
+    "https://secure.bank.example/login",
+    "https://www.chase.com/",
+    "https://wallet.example/sign",
+    "https://custom.finance.test/account",
+])
+def test_sensitive_sites_still_ask_under_recommended_policy(tmp_path, url):
+    g = G(tmp_path, browser_site_access="all_except_sensitive",
+          browser_sensitive_hosts=("custom.finance.test",))
+    d = g.evaluate("browser_open", {"url": url})
+    assert not d.allowed and d.needs_user
+
+
+def test_all_sites_policy_is_explicitly_available(tmp_path):
+    g = G(tmp_path, browser_site_access="all_sites")
+    assert g.evaluate("browser_open", {"url": "https://bank.example/"}).allowed
+
+
 def test_reject_always_stops_the_asking(tmp_path):
     g = G(tmp_path, origin_lookup=lambda: "http://x.test")
     g.apply_outcome(Outcome.REJECT_ALWAYS, "browser_click", "http://x.test")

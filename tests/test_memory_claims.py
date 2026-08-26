@@ -1,6 +1,7 @@
 """Memory claims stay quarantined until a host attests or verifies them."""
 import contextlib
 import io
+import json
 import os
 import sqlite3
 import sys
@@ -307,6 +308,37 @@ def test_recall_and_scoped_listing_enforce_claim_scope_and_project():
         root.cleanup()
 
 
+def test_dense_recall_never_compares_embeddings_from_a_different_model():
+    root = tempfile.TemporaryDirectory()
+    path = os.path.join(root.name, "memory.db")
+    old_embedder = HashEmbedding(dim=32)
+    old_embedder.name = "old-space"
+    memory = SqliteMemory(path, embedder=old_embedder)
+    try:
+        old_claim = memory.remember(
+            "shared semantic sentinel", project="repo", scope="repo")
+    finally:
+        memory.close()
+
+    current_embedder = HashEmbedding(dim=64)
+    current_embedder.name = "current-space"
+    memory = SqliteMemory(path, embedder=current_embedder)
+    try:
+        current_claim = memory.remember(
+            "shared semantic sentinel current", project="repo", scope="repo",
+            consolidate=False)
+        dense_ids = {rid for rid, _ in memory._dense(
+            "shared semantic sentinel", "repo", 20)}
+        assert current_claim in dense_ids
+        assert old_claim not in dense_ids
+        # The old row remains available to BM25/RRF while awaiting an explicit re-embed.
+        assert old_claim in {rid for rid, _ in memory._sparse(
+            "shared semantic sentinel", "repo", 20)}
+    finally:
+        memory.close()
+        root.cleanup()
+
+
 def test_promotion_cannot_rewrite_scope_or_consolidate_across_scopes():
     root = tempfile.TemporaryDirectory()
     memory = SqliteMemory(os.path.join(root.name, "memory.db"), embedder=HashEmbedding())
@@ -530,6 +562,45 @@ def test_mem_cli_lists_and_reviews_proposals_as_local_user():
             assert "positive integer" in output.getvalue()
         finally:
             cli.DATA = old_data
+
+
+def test_reopening_a_forward_sync_trigger_database_registers_its_function_abi():
+    """Persisted SQLite triggers must survive switching back from a newer Collie track."""
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "memory.db")
+        memory = SqliteMemory(path)
+        memory.remember("forward-compatible fact", project="repo")
+        memory.close()
+
+        raw = sqlite3.connect(path)
+        raw.execute("UPDATE facts SET scope='' ")
+        raw.execute("""CREATE TABLE forward_sync_probe(
+            change_id TEXT,claim_id TEXT,origin TEXT,hlc TEXT,payload_json TEXT)""")
+        raw.executescript("""
+            CREATE TRIGGER forward_sync_probe_v1 AFTER UPDATE OF scope ON facts
+            WHEN collie_memory_sync_suppress()=0
+            BEGIN
+              INSERT INTO forward_sync_probe(change_id,claim_id,origin,hlc,payload_json)
+              VALUES(collie_memory_change_id(),collie_memory_claim_id(),
+                collie_memory_origin(),collie_memory_hlc(),
+                collie_memory_json('scope',NEW.scope,'text',NEW.text));
+            END;
+        """)
+        raw.commit()
+        raw.close()
+
+        reopened = SqliteMemory(path)
+        try:
+            row = reopened.db.execute("SELECT * FROM forward_sync_probe").fetchone()
+            assert row is not None
+            assert row["change_id"].startswith("mchg_") and len(row["change_id"]) == 37
+            assert row["claim_id"].startswith("mem_") and len(row["claim_id"]) == 36
+            assert row["origin"].startswith("memdev_")
+            assert row["hlc"].endswith(":" + row["origin"])
+            assert json.loads(row["payload_json"]) == {
+                "scope": "repo", "text": "forward-compatible fact"}
+        finally:
+            reopened.close()
 
 
 if __name__ == "__main__":

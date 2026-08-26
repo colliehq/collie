@@ -719,6 +719,10 @@
     white-space: nowrap; min-width: 0; }
   .trace-step.ok  .ts-ico { color: var(--meadow); }
   .trace-step.bad .ts-ico, .trace-step.bad .ts-restext { color: var(--coral); }
+  .trace-step.plan { border-left: 2px solid var(--pine); border-radius: 0 8px 8px 0;
+    background: var(--surface-2); padding: 7px 10px; }
+  .trace-step.plan .ts-ico { color: var(--pine); }
+  .trace-step.plan .ts-target { white-space: normal; line-height: 1.45; }
   /* copy-answer button (hover-reveal) */
   .msg .copy { position: absolute; top: -2px; right: 0; opacity: 0; border: 1px solid var(--line);
     background: var(--surface); color: var(--muted); border-radius: 7px; padding: 2px 9px;
@@ -1378,9 +1382,215 @@
   :where(button,a,input,select,textarea,[tabindex]):focus-visible{outline:3px solid color-mix(in srgb,var(--pine) 72%,white);outline-offset:2px}
   .rec-switch{border:0;padding:0}
   .thread[role="button"]:focus-visible{outline-offset:-2px}
+
+  /* ========================================================= quiet interface
+     One neutral shell, one accent, and one surface per job.  The older rules above
+     still carry component behaviour; this layer deliberately owns presentation. */
+  :root,
+  :root[data-theme="light"] {
+    --bg:#F6F6F3; --surface:#FBFBF9; --surface-2:#F1F1ED; --raise:#FFFFFF;
+    --ink:#1D1D1B; --muted:#686864; --faint:#94948D; --line:#E3E3DD; --line-2:#ECECE7;
+    --pine:#35594A; --pine-ink:#28473B; --on-accent:#FFFFFF;
+    --meadow:#357A5D; --meadow-bg:#E8F2EC; --coral:#C4493D; --coral-bg:#F9E9E6;
+    --amber:#A66A15; --azure:#36718B;
+    --scrollbar-track:#F1F1ED; --scrollbar-thumb:#C9C9C2; --scrollbar-thumb-hover:#AAAAA2;
+    --shadow:0 1px 2px rgba(23,31,27,.04),0 5px 16px rgba(23,31,27,.05);
+    --shadow-lg:0 14px 38px rgba(23,31,27,.13);
+  }
+  @media (prefers-color-scheme:dark) {
+    :root {
+      --bg:#111310; --surface:#171916; --surface-2:#1D201C; --raise:#222520;
+      --ink:#ECEDE9; --muted:#A2A59E; --faint:#737870; --line:#2C302B; --line-2:#242823;
+      --pine:#8FB9A6; --pine-ink:#A9CAB9; --on-accent:#142019;
+      --meadow:#72BD98; --meadow-bg:#1B3528; --coral:#F07B70; --coral-bg:#3A2421;
+      --amber:#D8A14C; --azure:#79B6CC;
+      --scrollbar-track:#151714; --scrollbar-thumb:#393E37; --scrollbar-thumb-hover:#50574D;
+      --shadow:0 1px 2px rgba(0,0,0,.26),0 6px 18px rgba(0,0,0,.24);
+      --shadow-lg:0 18px 44px rgba(0,0,0,.42);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#111310; --surface:#171916; --surface-2:#1D201C; --raise:#222520;
+    --ink:#ECEDE9; --muted:#A2A59E; --faint:#737870; --line:#2C302B; --line-2:#242823;
+    --pine:#8FB9A6; --pine-ink:#A9CAB9; --on-accent:#142019;
+    --meadow:#72BD98; --meadow-bg:#1B3528; --coral:#F07B70; --coral-bg:#3A2421;
+    --amber:#D8A14C; --azure:#79B6CC;
+    --scrollbar-track:#151714; --scrollbar-thumb:#393E37; --scrollbar-thumb-hover:#50574D;
+    --shadow:0 1px 2px rgba(0,0,0,.26),0 6px 18px rgba(0,0,0,.24);
+    --shadow-lg:0 18px 44px rgba(0,0,0,.42);
+  }
+
+  body { font-size:14px; }
+  .app { grid-template-columns:232px minmax(0,1fr); }
+  .side { background:var(--bg); }
+  .brand { padding:14px 14px 9px; }
+  .glyph { width:29px; height:29px; filter:none; }
+  .brand .word { font-size:15px; }
+  .brand .tag { font-size:10.5px; max-width:164px; }
+  .newbtn { margin:4px 10px 9px; min-height:36px; padding:7px 10px; border-color:transparent;
+    background:var(--surface); border-radius:8px; }
+  .side-nav { padding:0 7px 8px; gap:1px; }
+  .side-nav-item { min-height:34px; padding:6px 9px; border-radius:7px; }
+  .side-nav-item.on { border-color:transparent; box-shadow:none; }
+  .side-section-rule { margin:0 12px 7px; }
+  .side .lbl { padding:4px 15px; font-size:9.5px; }
+  .threads { padding:2px 7px 10px; }
+  .thread { padding:7px 9px; border-radius:7px; }
+  .thread .t-last { margin-top:1px; font-size:12.5px; -webkit-line-clamp:1; }
+  .thread .t-turns { display:none; }
+  .gate { margin:8px 10px 10px; padding:9px 10px; border-radius:9px; background:transparent; }
+  .gate .g-sub { display:none; }
+
+  .topbar { min-height:50px; padding:7px 14px; gap:7px; background:var(--surface); }
+  .topbar h1 { font-size:14px; }
+  .pill { padding:3px 8px; border:0; background:transparent; }
+  .tbtn { width:32px; height:32px; border-color:transparent; background:transparent; border-radius:8px; }
+  .tbtn:hover { border-color:transparent; background:var(--surface-2); }
+  .model-trigger { height:32px; border-color:transparent; background:transparent; padding:0 8px; }
+  .model-trigger:hover { background:var(--surface-2); border-color:transparent; }
+  .topbar-more { position:relative; }
+  .topbar-more > summary { list-style:none; }
+  .topbar-more > summary::-webkit-details-marker { display:none; }
+  .topbar-more[open] > summary { background:var(--surface-2); }
+  .topbar-tools { position:absolute; z-index:45; right:0; top:calc(100% + 8px); width:210px;
+    display:grid; grid-template-columns:repeat(5,32px); justify-content:space-between; gap:7px;
+    padding:9px; border:1px solid var(--line); border-radius:11px; background:var(--raise);
+    box-shadow:var(--shadow-lg); }
+  .topbar-tools .tbtn { border-color:var(--line); background:var(--surface); }
+
+  .scroll { background:var(--bg); }
+  .thread-log { max-width:840px; }
+  .welcome { max-width:620px; margin:clamp(46px,9vh,88px) auto 0; padding:0 24px 28px; }
+  .wc-identity { margin-bottom:22px; }
+  .wc-logo { width:34px; height:34px; filter:none; }
+  .wc-kicker { display:none; }
+  .wc-presence { font-size:12px; color:var(--muted); }
+  .wc-title { font-size:clamp(25px,3.2vw,34px); letter-spacing:-.035em; }
+  .wc-sub { max-width:52ch; margin-top:8px; font-size:14px; line-height:1.55; }
+  .wc-examples { display:flex; flex-direction:column; gap:2px; max-width:560px; margin:24px 0 0; }
+  .wc-card { display:grid; grid-template-columns:170px 1fr; align-items:baseline; gap:12px;
+    padding:9px 10px; border:0; border-radius:8px; background:transparent; }
+  .wc-card:hover { transform:none; box-shadow:none; border-color:transparent; background:var(--surface-2); }
+  .wc-card .wc-ct { font-size:13px; }
+  .wc-card .wc-cd { margin:0; font-size:11.5px; }
+  .wc-trust { margin-top:22px; padding-top:12px; border-top:1px solid var(--line-2); }
+  .wc-trust span:not(:first-child) { display:none; }
+
+  .composer { padding:10px 16px 13px; background:var(--surface); }
+  .composer .inner { max-width:840px; min-height:48px; border-radius:12px; background:var(--raise);
+    padding:6px 6px 6px 11px; box-shadow:0 1px 1px rgba(0,0,0,.02); }
+  .composer .inner:focus-within { box-shadow:0 0 0 2px color-mix(in srgb,var(--pine) 15%,transparent); }
+  .hint { max-width:840px; margin-top:5px; font-size:10px; }
+
+  /* Run setup is a real sheet.  All axes remain present but become scan-friendly columns. */
+  .mode-menu { position:fixed; inset:64px 18px 92px auto; width:min(760px,calc(100vw - 36px));
+    max-height:none; overflow-y:auto; padding:18px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+    align-content:start; gap:14px 18px; border-radius:14px; box-shadow:var(--shadow-lg); }
+  .mode-menu-head { grid-column:1/-1; display:flex; align-items:flex-start; gap:16px;
+    padding:0 0 13px; border-bottom:1px solid var(--line); }
+  .mode-menu-title { flex:1; display:flex; flex-direction:column; gap:2px; }
+  .mode-menu-title strong { font-size:16px; }
+  .mode-menu-title span { color:var(--muted); font-size:11.5px; }
+  .mode-close { width:30px; height:30px; border:0; border-radius:8px; color:var(--muted);
+    background:transparent; font:20px/1 var(--sans); cursor:pointer; }
+  .mode-close:hover { color:var(--ink); background:var(--surface-2); }
+  .mode-auto-note { grid-column:1/-1; margin:0; padding:9px 11px; }
+  .mode-group { padding:0; }
+  .mode-group + .mode-group { border-top:0; padding-top:0; }
+  .mode-group-title { padding:0 6px 5px; }
+  .mode-item { min-height:30px; padding:5px 6px; gap:7px; }
+  .mode-item.is-active { background:var(--meadow-bg); }
+  .mi-name { font-size:12.5px; }
+  .mi-desc,.mode-group-help { display:none; }
+
+  /* Model picker is a command palette, not a catalog of badges. */
+  .model-overlay { padding:8vh 16px 24px; align-items:flex-start; }
+  .model-dialog { width:min(620px,100%); border-radius:14px; }
+  .model-head { padding:15px 16px 10px; border-bottom:0; }
+  .model-head-copy p { margin-top:2px; }
+  .model-toolbar { padding:7px 16px 10px; }
+  .model-list { padding:3px 8px 9px; }
+  .model-option { min-height:54px; padding:8px 9px; border-radius:9px; }
+  .model-option-tags { display:none; }
+  .model-foot { padding:9px 16px; }
+
+  /* Settings keeps the category map, but removes the dashboard-inside-a-dialog. */
+  .modal-overlay { padding:4vh 16px; }
+  .modal { border-radius:14px; }
+  .modal.modal-wide { max-width:820px; }
+  .modal-head { padding:13px 16px; }
+  .modal-wide .modal-body { height:min(72vh,660px); }
+  .set-rail { width:180px; padding:10px 8px; background:var(--surface); }
+  .set-search { margin:0 2px 9px; width:calc(100% - 4px); border-color:var(--line-2); background:var(--surface-2); }
+  .set-nav { min-height:34px; padding:6px 9px; border-radius:7px; }
+  .set-nav.on { background:var(--surface-2); box-shadow:none; }
+  .set-nav .n { display:none; }
+  .set-pane-wrap { padding:4px 24px 18px; }
+  .set-pane > h3 { margin:18px 0 6px; font-size:18px; }
+  .set-group { padding:11px 0 5px; }
+  .set-group + .set-group { border-top:1px solid var(--line-2); }
+  .set-row { min-height:42px; }
+  .set-overview { padding:10px 0 2px; }
+  .set-overview-hero { padding:8px 0 13px; border:0; border-radius:0; background:transparent; }
+  .set-overview-hero img { width:38px; height:38px; filter:none; }
+  .set-overview-grid { display:flex; gap:0; margin:0; border-block:1px solid var(--line-2); }
+  .set-overview-card { flex:1; padding:11px 0; border:0; border-radius:0; background:transparent; }
+  .set-overview-card + .set-overview-card { margin-left:18px; }
+  .set-overview-card:nth-child(n+3) { display:none; }
+  .set-quicklinks { margin-top:10px; }
+  .set-quicklinks button { padding:6px 8px; border-color:transparent; background:transparent; }
+  .modal-foot { padding:10px 16px; background:var(--surface); }
+
+  /* Library and Activity are pages, never drawers stacked under a conversation. */
+  .library-panel,.activity-panel { flex:1; min-height:0; overflow:auto; border-top:0; background:var(--bg); }
+  .library-inner,.activity-inner { max-width:980px; margin:0 auto; padding:28px 28px 40px; }
+  .library-head,.activity-head { padding-bottom:14px; border-bottom:1px solid var(--line); }
+  .library-head h2 { font-size:22px; }
+  .library-grid,.activity-grid { gap:8px; }
+  .library-card,.activity-lane { border-radius:10px; box-shadow:none; }
+
+  /* First run: one recommended row, then compact alternatives. */
+  .ob-overlay { padding:18px; background:color-mix(in srgb,var(--bg) 82%,transparent); backdrop-filter:blur(8px); }
+  .ob-card { width:min(520px,96vw); padding:22px; border-radius:16px; }
+  .ob-hero { display:grid; grid-template-columns:38px 1fr; column-gap:12px; text-align:left; padding:0 0 16px; }
+  .ob-hero::before { display:none; }
+  .ob-logo,.name-preview,.br-badge { grid-row:1/3; width:38px; height:38px; margin:0; filter:none; }
+  .ob-hero h1 { margin:0 0 3px; font-family:var(--sans); font-size:21px; }
+  .ob-sub { margin:0; max-width:none; font-size:12.5px; line-height:1.45; }
+  .ob-label { margin:4px 2px 8px; font-size:9.5px; }
+  .ob-grid { display:flex; flex-direction:column; gap:5px; }
+  .ob-brain { display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:12px; row-gap:2px;
+    padding:10px 11px; border-radius:9px; }
+  .ob-brain:hover { transform:none; box-shadow:none; background:var(--surface-2); }
+  .ob-brain.is-rec { padding:12px; background:var(--meadow-bg); }
+  .ob-pill { display:none; }
+  .ob-brain.is-rec .ob-pill { display:block; grid-column:1/-1; width:max-content; margin-bottom:3px; }
+  .ob-bname { font-size:13.5px; }
+  .ob-bvia { grid-column:1; font-size:11.5px; }
+  .ob-bcta { grid-column:2; grid-row:1/3; align-self:center; margin:0; font-size:12px; }
+  .ob-brain.is-rec .ob-bcta { grid-row:2/4; }
+  .ob-keyrow { justify-content:flex-start; margin-top:12px; font-size:12px; }
+  .ob-foot { justify-content:flex-start; gap:12px; margin-top:12px; padding-top:10px; }
+
+  @media (max-width:900px) {
+    /* This override lives after the desktop quiet-shell rule, so repeat the original responsive
+       grid contract here; otherwise the late 232px desktop column wins on phones and tablets. */
+    .app { grid-template-columns:1fr; grid-template-rows:auto 1fr; }
+  }
+  @media (max-width:760px) {
+    .mode-menu { inset:52px 8px 8px; width:auto; grid-template-columns:1fr; overflow-y:auto; }
+    .mode-menu-head,.mode-auto-note { grid-column:1; }
+    .set-overview-grid { display:block; }
+    .set-overview-card + .set-overview-card { margin-left:0; border-top:1px solid var(--line-2); }
+  }
+  @media (max-width:620px) {
+    .wc-card { grid-template-columns:1fr; gap:1px; }
+    .wc-trust { display:none; }
+    .topbar-tools { position:fixed; top:48px; right:8px; }
+  }
 </style>
 
-<div class="app">
+<div class="app" data-ui="minimal">
   <!-- ============================================ sidebar : sessions -->
   <aside class="side">
     <div class="brand">
@@ -1452,7 +1662,7 @@
   <!-- ================================================= main column -->
   <div class="main">
     <div class="topbar">
-      <button class="tbtn" id="sideToggle" title="toggle sidebar" aria-label="toggle sidebar">
+      <button class="tbtn" id="sideToggle" title="Toggle sidebar" aria-label="Toggle sidebar" data-i18n-title="Toggle sidebar" data-i18n-aria-label="Toggle sidebar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
       </button>
       <h1 id="pageTitle" data-i18n="Home">Home</h1>
@@ -1461,7 +1671,7 @@
            Anything the agent starts and leaves running has to be stoppable without asking the agent
            again, and on a machine with no menu bar this is the only place that can be. -->
       <button type="button" class="pill np-pill" id="npPill" hidden
-              title="Stop the music collie is playing">
+              title="Stop the music Collie is playing" data-i18n-title="Stop the music Collie is playing">
         <span aria-hidden="true">♪</span>
         <span class="np-title" id="npTitle"></span>
         <span class="np-stop">Stop</span>
@@ -1474,25 +1684,32 @@
       </button>
       <!-- Rewind. Hidden unless a snapshot actually exists: an undo button that cannot undo is
            worse than no button, because the user relies on it BEFORE letting the agent run. -->
-      <button class="tbtn" id="rewindBtn" title="Rewind the files to before a run" aria-label="rewind" hidden>
+      <button class="tbtn" id="rewindBtn" title="Rewind the files to before a run" aria-label="Rewind files" data-i18n-title="Rewind the files to before a run" data-i18n-aria-label="Rewind files" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
       </button>
-      <button class="tbtn" id="runDetailsBtn" title="run details" aria-label="run details" aria-controls="workpanel" aria-expanded="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
-      </button>
-      <button class="tbtn" id="activityBtn" title="Activity & health" aria-label="Activity & health" aria-controls="activityPanel" aria-expanded="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V9M10 18V5M16 18v-7M22 18V2"/></svg>
-      </button>
-      <a class="tbtn" id="mapBtn" href="/map" target="_blank" rel="noopener" title="Map — 3D code galaxy" aria-label="open code map">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
-      </a>
-      <button class="tbtn" id="themeBtn" title="toggle theme" aria-label="toggle theme">
-        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-      </button>
-      <button class="tbtn" id="recordBtn" title="Screen record (webcam bubble + mic)" aria-label="screen record">
-        <svg id="recordIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/></svg>
-      </button>
-      <button class="tbtn" id="settingsBtn" title="settings" aria-label="settings">
+      <details class="topbar-more" id="topbarMore">
+        <summary class="tbtn" title="More tools" aria-label="More tools">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+        </summary>
+        <div class="topbar-tools" aria-label="More tools">
+          <button class="tbtn" id="runDetailsBtn" title="run details" aria-label="run details" data-i18n-title="run details" data-i18n-aria-label="run details" aria-controls="workpanel" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+          </button>
+          <button class="tbtn" id="activityBtn" title="Activity & health" aria-label="Activity & health" data-i18n-title="Activity & health" data-i18n-aria-label="Activity & health" aria-controls="activityPanel" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V9M10 18V5M16 18v-7M22 18V2"/></svg>
+          </button>
+          <a class="tbtn" id="mapBtn" href="/map" target="_blank" rel="noopener" title="Map — 3D code galaxy" aria-label="Open code map" data-i18n-title="Map — 3D code galaxy" data-i18n-aria-label="Open code map">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+          </a>
+          <button class="tbtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme" data-i18n-title="Toggle theme" data-i18n-aria-label="Toggle theme">
+            <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          </button>
+          <button class="tbtn" id="recordBtn" title="Screen record (webcam bubble + mic)" aria-label="Screen record" data-i18n-title="Screen record (webcam bubble + mic)" data-i18n-aria-label="Screen record">
+            <svg id="recordIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/></svg>
+          </button>
+        </div>
+      </details>
+      <button class="tbtn" id="settingsBtn" title="Settings" aria-label="Settings" data-i18n-title="Settings" data-i18n-aria-label="Settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
     </div>
@@ -1520,7 +1737,7 @@
       </div>
     </div>
 
-    <section class="library-panel" id="libraryPanel" role="region" aria-label="Library" hidden>
+    <section class="library-panel" id="libraryPanel" role="region" aria-label="Library" data-i18n-aria-label="Library" hidden>
       <div class="library-inner">
         <div class="library-head">
           <div class="library-head-copy">
@@ -1535,7 +1752,7 @@
       </div>
     </section>
 
-    <section class="workpanel" id="workpanel" role="region" aria-label="run details" hidden>
+    <section class="workpanel" id="workpanel" role="region" aria-label="run details" data-i18n-aria-label="run details" hidden>
       <div class="wpbody">
         <!-- receipt : the honest token / $ / time tally (the gate itself lives in the
              sidebar's bottom-left corner; the runbar summary above mirrors its state) -->
@@ -1580,17 +1797,17 @@
       </div>
     </section>
 
-    <section class="activity-panel" id="activityPanel" role="region" aria-label="Activity and health" hidden>
+    <section class="activity-panel" id="activityPanel" role="region" aria-label="Activity and health" data-i18n-aria-label="Activity and health" hidden>
       <div class="activity-inner">
         <div class="activity-head"><strong>Activity</strong><span class="activity-health" id="activityHealth">loading</span>
           <span class="spacer"></span><button type="button" id="activityRefresh">Refresh</button>
-          <button type="button" id="activityClose" aria-label="Close activity">×</button></div>
+          <button type="button" id="activityClose" aria-label="Close activity" data-i18n-aria-label="Close activity">×</button></div>
         <div class="activity-notice" id="activityNotice" role="status" aria-live="polite"></div>
         <div class="activity-grid" id="activityGrid"><div class="activity-empty">Loading operational state…</div></div>
       </div>
     </section>
 
-    <button class="scrolldown" id="scrollDownBtn" title="Scroll to latest" aria-label="Scroll to latest">
+    <button class="scrolldown" id="scrollDownBtn" title="Scroll to latest" aria-label="Scroll to latest" data-i18n-title="Scroll to latest" data-i18n-aria-label="Scroll to latest">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
     </button>
 
@@ -1598,7 +1815,7 @@
     <div class="composer" id="composer">
       <div class="attach-strip" id="attachStrip" hidden></div>
       <div class="inner">
-        <div class="slash-menu" id="slashMenu" role="listbox" aria-label="Commands" hidden>
+        <div class="slash-menu" id="slashMenu" role="listbox" aria-label="Commands" data-i18n-aria-label="Commands" hidden>
           <button type="button" class="slash-option" role="option" data-command="/mission ">
             <span class="slash-command">/mission</span><span class="slash-copy"><span class="slash-name" data-i18n="Durable mission">Durable mission</span><span class="slash-desc" data-i18n="Runs hands-off using your saved Autonomy rules.">Runs hands-off using your saved Autonomy rules.</span></span>
           </button>
@@ -1620,12 +1837,41 @@
           <input type="hidden" id="runStrategy" value="single">
           <input type="hidden" id="runEffort" value="auto">
           <input type="hidden" id="runSpeed" value="standard">
-          <button type="button" class="mode-trigger" id="modeTrigger" title="Run setup" aria-haspopup="dialog" aria-controls="modeMenu" aria-expanded="false">
+          <input type="hidden" id="runRunner" value="">
+          <button type="button" class="mode-trigger" id="modeTrigger" title="Run setup" data-i18n-title="Run setup" aria-haspopup="dialog" aria-controls="modeMenu" aria-expanded="false">
             <span class="mt-dot" data-mode="balanced"></span><span id="modeLabel">Auto</span>
             <svg class="mt-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
           </button>
           <div class="mode-menu" id="modeMenu" role="dialog" aria-label="Run setup" data-i18n-aria-label="Run setup" hidden>
+            <div class="mode-menu-head">
+              <div class="mode-menu-title"><strong data-i18n="Run setup">Run setup</strong><span data-i18n="Auto is the default.">Auto is the default.</span></div>
+              <button type="button" class="mode-close" id="modeClose" aria-label="Close run setup">×</button>
+            </div>
             <p class="mode-auto-note"><strong data-i18n="Auto is the default.">Auto is the default.</strong> <span data-i18n="Collie chooses a run plan from the task; override only when you need a specific boundary.">Collie chooses a run plan from the task; override only when you need a specific boundary.</span></p>
+            <fieldset class="mode-group" data-run-group="runner" role="radiogroup">
+              <legend class="mode-group-title" data-i18n="Worker">Worker</legend>
+              <button type="button" class="mode-item is-active" data-axis="runner" data-val="" role="radio" aria-checked="true" tabindex="0">
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" data-i18n="Saved default">Saved default</span><span class="mi-desc" id="savedWorkerDesc" data-i18n="Use the worker selected in Settings">Use the worker selected in Settings</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="runner" data-val="auto" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot"></span><span class="mi-txt"><span class="mi-name" data-i18n="Auto worker pool">Auto worker pool</span><span class="mi-desc" data-i18n="Choose only among workers allowed in RUNNER_POOL">Choose only among workers allowed in RUNNER_POOL</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="runner" data-val="collie" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name">Collie</span><span class="mi-desc" data-worker-status="collie" data-i18n="Native tools, approvals, streaming, and steering">Native tools, approvals, streaming, and steering</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="runner" data-val="codex-exec" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="isolated"></span><span class="mi-txt"><span class="mi-name">Codex CLI</span><span class="mi-desc" data-worker-status="codex-exec" data-i18n="Checking installation and login…">Checking installation and login…</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <button type="button" class="mode-item" data-axis="runner" data-val="claude-code" role="radio" aria-checked="false" tabindex="-1">
+                <span class="mi-dot" data-mode="thorough"></span><span class="mi-txt"><span class="mi-name">Claude Code</span><span class="mi-desc" data-worker-status="claude-code" data-i18n="Checking installation and login…">Checking installation and login…</span></span>
+                <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>
+              </button>
+              <p class="mode-group-help" data-i18n="External workers use their own login and current protocol capabilities; unavailable choices are disabled.">External workers use their own login and current protocol capabilities; unavailable choices are disabled.</p>
+            </fieldset>
             <fieldset class="mode-group" data-run-group="intent" role="radiogroup">
               <legend class="mode-group-title" data-i18n="Intent">Intent</legend>
               <button type="button" class="mode-item is-active" data-axis="intent" data-val="build" role="radio" aria-checked="true" tabindex="0">
@@ -1663,15 +1909,15 @@
             <fieldset class="mode-group" data-run-group="effort" role="radiogroup">
               <legend class="mode-group-title" data-i18n="Reasoning effort">Reasoning effort</legend>
               <button type="button" class="mode-item is-active" data-axis="effort" data-val="auto" role="radio" aria-checked="true" tabindex="0"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name" data-i18n="Auto by task">Auto by task</span><span class="mi-desc" data-i18n="Use the lowest reasoning level that fits">Use the lowest reasoning level that fits</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
-              <button type="button" class="mode-item" data-axis="effort" data-val="low" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot" data-mode="plan"></span><span class="mi-txt"><span class="mi-name">Low</span><span class="mi-desc">Fastest reasoning pass</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
-              <button type="button" class="mode-item" data-axis="effort" data-val="medium" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name">Medium</span><span class="mi-desc">Everyday reasoning</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
-              <button type="button" class="mode-item" data-axis="effort" data-val="high" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot" data-mode="thorough"></span><span class="mi-txt"><span class="mi-name">High</span><span class="mi-desc">For ambiguity and hard debugging</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" data-axis="effort" data-val="low" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot" data-mode="plan"></span><span class="mi-txt"><span class="mi-name" data-i18n="Low">Low</span><span class="mi-desc" data-i18n="Fastest reasoning pass">Fastest reasoning pass</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" data-axis="effort" data-val="medium" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name" data-i18n="Medium">Medium</span><span class="mi-desc" data-i18n="Everyday reasoning">Everyday reasoning</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" data-axis="effort" data-val="high" role="radio" aria-checked="false" tabindex="-1"><span class="mi-dot" data-mode="thorough"></span><span class="mi-txt"><span class="mi-name" data-i18n="High">High</span><span class="mi-desc" data-i18n="For ambiguity and hard debugging">For ambiguity and hard debugging</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
             </fieldset>
             <fieldset class="mode-group" data-run-group="speed" role="radiogroup">
               <legend class="mode-group-title" data-i18n="Generation speed">Generation speed</legend>
-              <button type="button" class="mode-item is-active" data-axis="speed" data-val="standard" role="radio" aria-checked="true" tabindex="0"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name">Standard</span><span class="mi-desc">Normal provider service tier</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
-              <button type="button" class="mode-item" id="runFastItem" data-axis="speed" data-val="fast" role="radio" aria-checked="false" tabindex="-1" hidden><span class="mi-dot" data-mode="required"></span><span class="mi-txt"><span class="mi-name">Fast</span><span class="mi-desc">Same model, higher service tier</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
-              <p class="mode-group-help" id="runFastHelp">Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.</p>
+              <button type="button" class="mode-item is-active" data-axis="speed" data-val="standard" role="radio" aria-checked="true" tabindex="0"><span class="mi-dot"></span><span class="mi-txt"><span class="mi-name" data-i18n="Standard">Standard</span><span class="mi-desc" data-i18n="Normal provider service tier">Normal provider service tier</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <button type="button" class="mode-item" id="runFastItem" data-axis="speed" data-val="fast" role="radio" aria-checked="false" tabindex="-1" hidden><span class="mi-dot" data-mode="required"></span><span class="mi-txt"><span class="mi-name" data-i18n="Fast">Fast</span><span class="mi-desc" data-i18n="Same model, higher service tier">Same model, higher service tier</span></span><svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg></button>
+              <p class="mode-group-help" id="runFastHelp" data-i18n="Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.">Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.</p>
             </fieldset>
             <fieldset class="mode-group" data-run-group="verification" role="radiogroup">
               <legend class="mode-group-title" data-i18n="Verification">Verification</legend>
@@ -1687,7 +1933,7 @@
             <fieldset class="mode-group" data-run-group="workspace" role="radiogroup">
               <legend class="mode-group-title" data-i18n="Workspace">Workspace</legend>
               <button type="button" class="mode-item is-active" data-axis="workspace" data-val="current" role="radio" aria-checked="true" tabindex="0">
-                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" data-i18n="Current files">Current files</span><span class="mi-desc" data-i18n="Edit the working tree you already have open">Edit the working tree you already have open</span></span>
+                <span class="mi-dot" data-mode="balanced"></span><span class="mi-txt"><span class="mi-name" id="workspaceCurrentName" data-i18n="Current files">Current files</span><span class="mi-desc" id="workspaceCurrentDesc" data-i18n="Edit the working tree you already have open">Edit the working tree you already have open</span></span>
                 <svg class="mi-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
               </button>
               <button type="button" class="mode-item" data-axis="workspace" data-val="isolated" role="radio" aria-checked="false" tabindex="-1">
@@ -1708,18 +1954,18 @@
             </fieldset>
           </div>
         </div>
-        <textarea id="input" rows="1" aria-label="Message Collie" data-i18n-placeholder="Describe the outcome you want…" placeholder="Describe the outcome you want…"></textarea>
+        <textarea id="input" rows="1" aria-label="Message Collie" data-i18n-aria-label="Message Collie" data-i18n-placeholder="Describe the outcome you want…" placeholder="Describe the outcome you want…"></textarea>
         <input type="file" id="fileInput" accept="image/*" multiple hidden>
-        <button class="attach" id="attachBtn" title="attach image (or paste / drop one)" aria-label="attach image">
+        <button class="attach" id="attachBtn" title="Attach image (or paste / drop one)" aria-label="Attach image" data-i18n-title="Attach image (or paste / drop one)" data-i18n-aria-label="Attach image">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
-        <button class="send" id="send" title="Send" aria-label="Send">
+        <button class="send" id="send" title="Send" aria-label="Send" data-i18n-title="Send" data-i18n-aria-label="Send">
           <svg id="sendIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>
         </button>
       </div>
       <div class="verify-opts" id="verifyOpts" hidden>
         <label for="verifyCommand" data-i18n="Proposed check">Proposed check</label>
-        <input id="verifyCommand" type="text" autocomplete="off" placeholder="detecting a repository check…" aria-label="Proposed verification command">
+        <input id="verifyCommand" type="text" autocomplete="off" placeholder="detecting a repository check…" aria-label="Proposed verification command" data-i18n-placeholder="detecting a repository check…" data-i18n-aria-label="Proposed verification command">
       </div>
       <div class="pack-opts" id="packOpts" hidden>
         <label class="po-n"><span data-i18n="Attempts">Attempts</span>&nbsp;<input id="packN" type="number" min="2" max="6" step="1" value="3" required inputmode="numeric" data-i18n-title="How many isolated attempts" title="How many isolated attempts"></label>
@@ -1793,8 +2039,8 @@
   <div class="ob-card">
     <div class="ob-hero">
       <img class="ob-logo" src="/logo.svg" alt="" width="56" height="56">
-      <h1 id="obTitle">Welcome to Collie</h1>
-      <p class="ob-sub">Choose a brain for your Collie. You can switch models later; Collie keeps one mission history, permission boundary and evidence trail across them.</p>
+      <h1 id="obTitle">Choose a model</h1>
+      <p class="ob-sub">Start with the recommended option. You can switch at any time.</p>
     </div>
     <div class="ob-label" id="obLabel">Ready to use</div>
     <div class="ob-grid" id="obGrid"></div>
@@ -2013,7 +2259,7 @@
     return "en";
   }
   var ZH = {
-    "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Library": "能力库", "Activity": "活动",
+    "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Library": "能力库", "Activity": "活动", "Worker": "工作进程", "Service": "服务",
     "Needs You": "需要你", "New task": "新任务", "Recent work": "最近工作",
     "No sessions yet.": "还没有对话。", "Loading model…": "正在加载模型…", "Model unavailable": "模型不可用",
     "idle": "空闲", "running": "运行中", "stopping": "正在停止",
@@ -2108,12 +2354,13 @@
     "Verification": "验证", "Auto": "自动", "Ask for a check after edits when one is relevant": "编辑后在适用时要求执行检查",
     "Required": "必须", "Do not accept edited code without an executed assertion": "没有实际执行的断言就不接受代码修改",
     "Workspace": "工作区", "Current files": "当前文件", "Edit the working tree you already have open": "编辑当前已打开的工作树",
+    "Pack base": "Pack 基准工作区", "Candidates run in isolated worktrees; current files change only when a winner is applied.": "每个候选都在隔离 worktree 中运行；只有应用胜出结果时才会改动当前文件。",
     "Isolated worktree": "隔离 worktree", "Run on its own branch and review the diff first": "在独立分支运行，并先审查 diff",
     "Strategy": "执行策略", "Single run": "单次运行", "One agent, one result": "一个 agent，一个结果",
     "Pack · best-of-N": "Pack · N 选一", "N isolated candidates, selected by an executed check": "运行 N 个隔离候选，并用实际检查选出结果",
     "required check command — exit 0 = pass, e.g. pytest -q": "必须填写检查命令 — 退出码 0 表示通过，例如 pytest -q",
     "apply winner to files": "将胜出结果应用到文件", "Plan": "计划", "Thorough": "深入", "Verify": "验证",
-    "Isolated": "隔离", "Pack": "Pack", "Run setup": "运行设置",
+    "Isolated": "隔离", "Pack": "Pack", "Run setup": "运行设置", "Run plan": "运行方案",
     "Pack needs an executed check command to select a winner.": "Pack 需要一条实际执行的检查命令来选出胜出结果。",
     "Attempts must be a whole number from 2 to 6.": "尝试次数必须是 2 到 6 之间的整数。",
     "Attempts": "尝试次数", "How many isolated attempts": "要运行多少个隔离尝试", "Required Pack check command": "Pack 必填检查命令",
@@ -2208,7 +2455,7 @@
   // Traditional Chinese (Taiwan idiom). Generated from ZH via OpenCC s2twp — 設定/儲存/載入/訊息/
   // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
   var ZHTW = {
-    "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Library": "能力庫", "Activity": "活動",
+    "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Library": "能力庫", "Activity": "活動", "Worker": "工作程序", "Service": "服務",
     "Needs You": "需要你", "New task": "新任務", "Recent work": "最近工作",
     "No sessions yet.": "還沒有對話。", "Loading model…": "正在載入模型…", "Model unavailable": "模型無法使用",
     "idle": "閒置", "running": "執行中", "stopping": "正在停止",
@@ -2289,12 +2536,13 @@
     "Verification": "驗證", "Auto": "自動", "Ask for a check after edits when one is relevant": "編輯後在適用時要求執行檢查",
     "Required": "必須", "Do not accept edited code without an executed assertion": "沒有實際執行的斷言就不接受程式碼修改",
     "Workspace": "工作區", "Current files": "目前檔案", "Edit the working tree you already have open": "編輯目前已開啟的工作樹",
+    "Pack base": "Pack 基準工作區", "Candidates run in isolated worktrees; current files change only when a winner is applied.": "每個候選都在隔離 worktree 中執行；只有套用勝出結果時才會變更目前檔案。",
     "Isolated worktree": "隔離 worktree", "Run on its own branch and review the diff first": "在獨立分支執行，並先審查 diff",
     "Strategy": "執行策略", "Single run": "單次執行", "One agent, one result": "一個 agent，一個結果",
     "Pack · best-of-N": "Pack · N 選一", "N isolated candidates, selected by an executed check": "執行 N 個隔離候選，並用實際檢查選出結果",
     "required check command — exit 0 = pass, e.g. pytest -q": "必須填寫檢查命令 — 結束碼 0 表示通過，例如 pytest -q",
     "apply winner to files": "將勝出結果套用到檔案", "Plan": "計畫", "Thorough": "深入", "Verify": "驗證",
-    "Isolated": "隔離", "Pack": "Pack", "Run setup": "執行設定",
+    "Isolated": "隔離", "Pack": "Pack", "Run setup": "執行設定", "Run plan": "執行方案",
     "Pack needs an executed check command to select a winner.": "Pack 需要一條實際執行的檢查命令來選出勝出結果。",
     "Attempts must be a whole number from 2 to 6.": "嘗試次數必須是 2 到 6 之間的整數。",
     "Attempts": "嘗試次數", "How many isolated attempts": "要執行多少個隔離嘗試", "Required Pack check command": "Pack 必填檢查命令",
@@ -2382,6 +2630,120 @@
     "API key not set for that provider": "該 provider 未設定 API key",
     "__kbd": "<kbd>Enter</kbd> 傳送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 換行 · SSE 實時流式"
   };
+  // Strings introduced by operational surfaces are kept in one additive block
+  // so the two selectable Chinese locales cannot silently fall back to English.
+  Object.assign(ZH, {
+    "Toggle sidebar":"切换侧栏","Stop the music Collie is playing":"停止 Collie 正在播放的音乐",
+    "Rewind the files to before a run":"将文件回退到运行前","Rewind files":"回退文件",
+    "Activity & health":"活动与健康","Activity and health":"活动与健康",
+    "Map — 3D code galaxy":"地图 — 3D 代码星系","Open code map":"打开代码地图","Toggle theme":"切换主题",
+    "Screen record (webcam bubble + mic)":"屏幕录制（摄像头浮窗与麦克风）","Screen record":"屏幕录制",
+    "Close activity":"关闭活动面板","Scroll to latest":"滚动到最新内容","Commands":"命令",
+    "Message Collie":"给 Collie 发消息","Attach image (or paste / drop one)":"附加图片（也可粘贴或拖放）",
+    "Attach image":"附加图片","Send":"发送","detecting a repository check…":"正在检测仓库检查命令…",
+    "Proposed verification command":"建议的验证命令",
+    "Saved default":"已保存的默认值","Use the worker selected in Settings":"使用设置中选择的工作进程",
+    "Checking installation and login…":"正在检查安装与登录状态…",
+    "Auto worker pool":"自动工作进程池","Choose only among workers allowed in RUNNER_POOL":"只从 RUNNER_POOL 允许的工作进程中选择",
+    "Native tools, approvals, streaming, and steering":"原生工具、审批、流式输出与运行中追加指令",
+    "External workers use their own login and current protocol capabilities; unavailable choices are disabled.":"外部工作进程使用各自的登录与当前协议能力；不可用的选项会被禁用。",
+    "Low":"低","Fastest reasoning pass":"最快的推理过程","Medium":"中","Everyday reasoning":"日常推理",
+    "High":"高","For ambiguity and hard debugging":"适合歧义较多和困难调试的任务","Standard":"标准",
+    "Normal provider service tier":"提供商的标准服务等级","Fast":"快速","Same model, higher service tier":"同一模型，更高服务等级",
+    "Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.":"快速模式不会降低推理强度：它使用同一模型，仅在提供商明确报告该服务等级与计费溢价时显示。",
+    "Fast appears only for a provider/model with a reported same-model tier.":"只有提供商或模型明确报告同模型快速等级时才会显示快速模式。",
+    "Fast is not reported by this provider/model":"此提供商或模型未报告快速模式",
+    "same model at about 1.5x generation speed; 2.5x Codex credits when the account supports Fast":"同一模型，生成速度约为 1.5 倍；账户支持快速模式时消耗 2.5 倍 Codex credits",
+    "same GPT-5.4 model through Codex Fast; the current credit premium is account/version dependent":"通过 Codex Fast 使用同一 GPT-5.4 模型；当前 credits 溢价取决于账户和版本",
+    "same model via service_tier=fast; 2x current API token price":"通过 service_tier=fast 使用同一模型；按当前 API token 价格的 2 倍计费",
+    "same eligible Opus model via speed=fast; extra-usage billing may be required":"通过 speed=fast 使用同一符合条件的 Opus 模型；可能需要额外用量计费",
+    " · a dot means it needs an OAuth app of your own":" · 圆点表示需要你自己的 OAuth 应用","+ Add server":"+ 添加服务器","Add":"添加",
+    "An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.":"已批准的操作正在执行，或结果尚不确定。请刷新或取消；继续操作不会重放它。",
+    "Auto worker":"自动工作进程","Cancel this mission? Its audit history will be kept.":"取消此任务？其审计历史会保留。",
+    "Check now":"立即检查","Confirm & run":"确认并运行","Confirm this inspected code outcome: ":"确认已检查的代码结果：",
+    "Could not reach Collie.":"无法连接 Collie。","Could not stop the run":"无法停止此次运行",
+    "Create a Collie Mail address from the command line.":"请从命令行创建 Collie Mail 地址。","Its stored sign-in is deleted too.":"其已保存的登录信息也会被删除。",
+    "Mission command needs exactly one mission id.":"任务命令必须且只能包含一个任务 ID。","Mission goal required after start.":"start 后必须提供任务目标。","Unknown Mission option:":"未知的任务选项：",
+    "No MCP servers configured yet.":"尚未配置 MCP 服务器。","No missions yet. Try /mission <goal>.":"尚无任务。可尝试 /mission <目标>。",
+    "No setting matches.":"没有匹配的设置。","OFF":"关闭","Pause":"暂停","Reconcile uncertain run":"核对结果不确定的运行",
+    "Remove":"移除","Remove the MCP server":"移除 MCP 服务器","Resume":"继续","Run":"运行","Run stopped by the user.":"运行已由用户停止。",
+    "Search settings…":"搜索设置…","Sign in":"登录","Sign in again":"重新登录","Sign out":"退出登录","Steer not delivered":"追加指令未送达",
+    "Switch off":"关闭","Switch on":"开启","Test or Required verification needs a proposed check command.":"测试或必须验证需要一个建议的检查命令。",
+    "The prior external action may already have fired. Inspect the target site and receipts before continuing.":"之前的外部操作可能已经执行。继续前请检查目标站点和回执。",
+    "The run is still starting; wait for its run id before stopping.":"运行仍在启动，请等运行 ID 返回后再停止。",
+    "This Mission command does not take arguments.":"此任务命令不接受参数。","This worker cannot accept instructions until its current turn finishes.":"此工作进程在当前回合结束前无法接收追加指令。",
+    "This worker cannot be steered — stop it or wait":"此工作进程不支持运行中追加指令——请停止或等待",
+    "Waiting for worker capabilities…":"正在等待工作进程能力信息…","applied":"已应用","cancellation requested":"已请求取消","connected":"已连接",
+    "could not apply":"无法应用","could not draw this panel: ":"无法显示此面板：","creating the mission…":"正在创建任务…","external worker":"外部工作进程",
+    "https://… URL, or a command like: npx -y some-mcp-server":"https://… 网址，或类似 npx -y some-mcp-server 的命令",
+    "loading missions…":"正在加载任务…","loading mission…":"正在加载任务…","model unavailable — set a working provider in Settings":"模型不可用——请在设置中选择可用的提供商",
+    "name, e.g. linear":"名称，例如 linear","needs an OAuth app of your own":"需要你自己的 OAuth 应用","network error":"网络错误","not signed in":"未登录",
+    "quota used":"额度已用","quota resets":"额度重置","ready":"就绪","runnable-verified":"可运行 · 已验证兼容性","runnable-unverified":"可运行 · 兼容性未验证",
+    "worker cannot accept steering during this run":"此工作进程在本次运行中不支持插话","worker cannot pause for Collie approval round-trips":"此工作进程无法暂停并等待 Collie 审批","worker has no supported cancellation channel":"此工作进程没有受支持的取消通道","worker default":"工作进程默认模型",
+    "not-installed":"未安装","needs-login":"需要登录","not-runnable":"不可运行","declared-not-runnable":"已声明 · 尚不可运行",
+    "routing…":"正在路由…","run cancelled":"运行已取消","signed in":"已登录","static token":"静态 token",
+    "steering request failed":"追加指令请求失败","steering unavailable":"无法追加指令","stopping…":"正在停止…","target page":"目标页面",
+    "the run emitted its final canceled verdict":"运行已返回最终取消结果","the run finished before cancellation took effect":"运行在取消生效前已经结束",
+    "the run registry confirmed the canceled verdict":"运行注册表已确认取消结果","this setting is held by an environment variable — ":"此设置由环境变量控制——",
+    "tools":"工具","unavailable":"不可用","updating mission…":"正在更新任务…","waiting for the run's final canceled verdict":"正在等待运行的最终取消结果",
+    "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
+  });
+  Object.assign(ZHTW, {
+    "Toggle sidebar":"切換側欄","Stop the music Collie is playing":"停止 Collie 正在播放的音樂",
+    "Rewind the files to before a run":"將檔案回復到執行前","Rewind files":"回復檔案",
+    "Activity & health":"活動與健康","Activity and health":"活動與健康",
+    "Map — 3D code galaxy":"地圖 — 3D 程式碼星系","Open code map":"開啟程式碼地圖","Toggle theme":"切換主題",
+    "Screen record (webcam bubble + mic)":"螢幕錄製（攝影機浮動視窗與麥克風）","Screen record":"螢幕錄製",
+    "Close activity":"關閉活動面板","Scroll to latest":"捲動到最新內容","Commands":"命令",
+    "Message Collie":"傳訊息給 Collie","Attach image (or paste / drop one)":"附加圖片（也可貼上或拖放）",
+    "Attach image":"附加圖片","Send":"傳送","detecting a repository check…":"正在偵測儲存庫檢查命令…",
+    "Proposed verification command":"建議的驗證命令",
+    "Saved default":"已儲存的預設值","Use the worker selected in Settings":"使用設定中選擇的工作程序",
+    "Checking installation and login…":"正在檢查安裝與登入狀態…",
+    "Auto worker pool":"自動工作程序池","Choose only among workers allowed in RUNNER_POOL":"只從 RUNNER_POOL 允許的工作程序中選擇",
+    "Native tools, approvals, streaming, and steering":"原生工具、核准、串流輸出與執行中追加指令",
+    "External workers use their own login and current protocol capabilities; unavailable choices are disabled.":"外部工作程序使用各自的登入與目前協定能力；無法使用的選項會停用。",
+    "Low":"低","Fastest reasoning pass":"最快的推理過程","Medium":"中","Everyday reasoning":"日常推理",
+    "High":"高","For ambiguity and hard debugging":"適合歧義較多與困難除錯的任務","Standard":"標準",
+    "Normal provider service tier":"供應商的標準服務等級","Fast":"快速","Same model, higher service tier":"同一模型，更高服務等級",
+    "Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.":"快速模式不會降低推理強度：它使用同一模型，僅在供應商明確回報該服務等級與計費溢價時顯示。",
+    "Fast appears only for a provider/model with a reported same-model tier.":"只有供應商或模型明確回報同模型快速等級時才會顯示快速模式。",
+    "Fast is not reported by this provider/model":"此供應商或模型未回報快速模式",
+    "same model at about 1.5x generation speed; 2.5x Codex credits when the account supports Fast":"同一模型，產生速度約為 1.5 倍；帳戶支援快速模式時消耗 2.5 倍 Codex credits",
+    "same GPT-5.4 model through Codex Fast; the current credit premium is account/version dependent":"透過 Codex Fast 使用同一 GPT-5.4 模型；目前 credits 溢價取決於帳戶與版本",
+    "same model via service_tier=fast; 2x current API token price":"透過 service_tier=fast 使用同一模型；按目前 API token 價格的 2 倍計費",
+    "same eligible Opus model via speed=fast; extra-usage billing may be required":"透過 speed=fast 使用同一符合條件的 Opus 模型；可能需要額外用量計費",
+    " · a dot means it needs an OAuth app of your own":" · 圓點表示需要你自己的 OAuth 應用程式","+ Add server":"+ 新增伺服器","Add":"新增",
+    "An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.":"已核准的操作正在執行，或結果尚不確定。請重新整理或取消；繼續操作不會重播它。",
+    "Auto worker":"自動工作程序","Cancel this mission? Its audit history will be kept.":"取消此任務？其稽核歷史會保留。",
+    "Check now":"立即檢查","Confirm & run":"確認並執行","Confirm this inspected code outcome: ":"確認已檢查的程式碼結果：",
+    "Could not reach Collie.":"無法連線 Collie。","Could not stop the run":"無法停止此次執行",
+    "Create a Collie Mail address from the command line.":"請從命令列建立 Collie Mail 地址。","Its stored sign-in is deleted too.":"其已儲存的登入資訊也會刪除。",
+    "Mission command needs exactly one mission id.":"任務命令必須且只能包含一個任務 ID。","Mission goal required after start.":"start 後必須提供任務目標。","Unknown Mission option:":"未知的任務選項：",
+    "No MCP servers configured yet.":"尚未設定 MCP 伺服器。","No missions yet. Try /mission <goal>.":"尚無任務。可嘗試 /mission <目標>。",
+    "No setting matches.":"沒有符合的設定。","OFF":"關閉","Pause":"暫停","Reconcile uncertain run":"核對結果不確定的執行",
+    "Remove":"移除","Remove the MCP server":"移除 MCP 伺服器","Resume":"繼續","Run":"執行","Run stopped by the user.":"執行已由使用者停止。",
+    "Search settings…":"搜尋設定…","Sign in":"登入","Sign in again":"重新登入","Sign out":"登出","Steer not delivered":"追加指令未送達",
+    "Switch off":"關閉","Switch on":"開啟","Test or Required verification needs a proposed check command.":"測試或必要驗證需要一個建議的檢查命令。",
+    "The prior external action may already have fired. Inspect the target site and receipts before continuing.":"先前的外部操作可能已經執行。繼續前請檢查目標網站與回執。",
+    "The run is still starting; wait for its run id before stopping.":"執行仍在啟動，請等執行 ID 傳回後再停止。",
+    "This Mission command does not take arguments.":"此任務命令不接受參數。","This worker cannot accept instructions until its current turn finishes.":"此工作程序在目前回合結束前無法接收追加指令。",
+    "This worker cannot be steered — stop it or wait":"此工作程序不支援執行中追加指令——請停止或等待",
+    "Waiting for worker capabilities…":"正在等待工作程序能力資訊…","applied":"已套用","cancellation requested":"已請求取消","connected":"已連線",
+    "could not apply":"無法套用","could not draw this panel: ":"無法顯示此面板：","creating the mission…":"正在建立任務…","external worker":"外部工作程序",
+    "https://… URL, or a command like: npx -y some-mcp-server":"https://… 網址，或類似 npx -y some-mcp-server 的命令",
+    "loading missions…":"正在載入任務…","loading mission…":"正在載入任務…","model unavailable — set a working provider in Settings":"模型無法使用——請在設定中選擇可用的供應商",
+    "name, e.g. linear":"名稱，例如 linear","needs an OAuth app of your own":"需要你自己的 OAuth 應用程式","network error":"網路錯誤","not signed in":"未登入",
+    "quota used":"額度已用","quota resets":"額度重置","ready":"就緒","runnable-verified":"可執行 · 已驗證相容性","runnable-unverified":"可執行 · 相容性未驗證",
+    "worker cannot accept steering during this run":"此工作程序在本次執行中不支援補充要求","worker cannot pause for Collie approval round-trips":"此工作程序無法暫停並等待 Collie 核准","worker has no supported cancellation channel":"此工作程序沒有受支援的取消通道","worker default":"工作程序預設模型",
+    "not-installed":"未安裝","needs-login":"需要登入","not-runnable":"無法執行","declared-not-runnable":"已聲明 · 尚無法執行",
+    "routing…":"正在路由…","run cancelled":"執行已取消","signed in":"已登入","static token":"靜態 token",
+    "steering request failed":"追加指令請求失敗","steering unavailable":"無法追加指令","stopping…":"正在停止…","target page":"目標頁面",
+    "the run emitted its final canceled verdict":"執行已傳回最終取消結果","the run finished before cancellation took effect":"執行在取消生效前已經結束",
+    "the run registry confirmed the canceled verdict":"執行註冊表已確認取消結果","this setting is held by an environment variable — ":"此設定由環境變數控制——",
+    "tools":"工具","unavailable":"無法使用","updating mission…":"正在更新任務…","waiting for the run's final canceled verdict":"正在等待執行的最終取消結果",
+    "will run with":"將使用","worker failed":"工作程序失敗","worker settled":"工作程序已結束","More worker events omitted":"已省略更多工作程序事件"
+  });
   var I18N = {
     zh: ZH,
     "zh-tw": ZHTW,
@@ -2692,21 +3054,19 @@
   // schema's implementation groups. Every key is still rendered from the server schema, so types,
   // bounds and provider-owned defaults remain authoritative.
   var SET_CATS = [
-    { id: "overview", label: "My Collie", zh: "我的 Collie", kind: "overview", keys: ["COMPANION_NAME"] },
+    { id: "overview", label: "General", zh: "通用", kind: "overview", keys: ["COMPANION_NAME"] },
     { id: "brains", label: "Brains & routing", zh: "模型与路由",
-      keys: ["PROVIDER", "MODEL", "REASONING_EFFORT"] },
+      keys: ["PROVIDER", "MODEL", "REASONING_EFFORT", "RUNNER", "RUNNER_POOL"] },
     { id: "caps", label: "Capabilities", zh: "能力",
       keys: ["WEBSEARCH", "BROWSER_BRIDGE", "PLAN_FIRST", "MCP_MANAGE"] },
     { id: "devices", label: "Desktop & devices", zh: "桌面与设备",
       keys: ["WALLPAPER", "DESKTOP_CONTROL", "SCREEN_CAPTURE", "REMOTE"] },
     { id: "mcp", label: "Connections", zh: "连接",
       keys: [], mcp: true },
-    { id: "memory", label: "Memory", zh: "记忆",
-      keys: ["EMBED", "DISTILL"] },
-    { id: "autonomy", label: "Autonomy & limits", zh: "自主与限额",
+    { id: "memory", label: "Privacy & security", zh: "记忆与隐私",
+      keys: ["EMBED", "DISTILL", "REDACT_SECRETS"] },
+    { id: "autonomy", label: "Autonomy", zh: "自主控制",
       keys: ["MISSION_APPROVAL_MODE", "PROFILE_AGE_BAND", "AUTO_APPLY_PROFILE_CLAIMS", "MAX_AUTO_AUTH_RISK", "DEFER_MISSING_AUTHORIZATIONS", "MAX_TURNS", "MAX_COST", "MAX_TOTAL_TOKENS", "RETRIES", "OVERFLOW_RECOVERY"] },
-    { id: "privacy", label: "Privacy & security", zh: "隐私与安全",
-      keys: ["REDACT_SECRETS"] },
     { id: "advanced", label: "Advanced", zh: "高级",
       keys: ["LANG", "TEMPERATURE", "MAX_TOKENS", "HF_ENDPOINT", "RECENCY_HALFLIFE", "RERANK", "RETRY_BASE", "SKILL_DIRS"] }
   ];
@@ -2824,8 +3184,7 @@
         + '<div class="set-overview-grid">'
         + '<div class="set-overview-card"><div class="k">' + setEsc(t("Runtime")) + '</div><div class="v" id="settingsRuntimeStatus">' + setEsc(t("Checking…")) + '</div></div>'
         + '<div class="set-overview-card"><div class="k">' + setEsc(t("Default brain")) + '</div><div class="v">' + setEsc(brain) + '</div></div>'
-        + '<div class="set-overview-card"><div class="k">' + setEsc(t("Sensitive actions")) + '</div><div class="v">' + setEsc(t("Ask before acting")) + '</div></div>'
-        + '<div class="set-overview-card"><div class="k">' + setEsc(t("Evidence")) + '</div><div class="v">' + setEsc(t("Recorded by check and scope")) + '</div></div></div>'
+        + '</div>'
         + '<div class="set-quicklinks"><button data-settings-jump="brains">' + setEsc(t("Choose a brain")) + '</button>'
         + '<button data-settings-jump="caps">' + setEsc(t("Review capabilities")) + '</button>'
         + '<button data-settings-jump="mcp">' + setEsc(t("Manage connections")) + '</button></div></div>';
@@ -3315,8 +3674,8 @@
       var card = document.createElement("button");
       card.className = "ob-brain" + (rec ? " is-rec" : "");
       card.innerHTML = '<span class="ob-pill"></span><span class="ob-bname"></span>'
-        + '<span class="ob-bvia"></span><span class="ob-bcta">Use this →</span>';
-      card.querySelector(".ob-pill").textContent = rec ? "Recommended" : "✓ Detected";
+        + '<span class="ob-bvia"></span><span class="ob-bcta">Choose</span>';
+      card.querySelector(".ob-pill").textContent = rec ? "Recommended" : "";
       card.querySelector(".ob-bname").textContent = OB_NAME[prov] || pick.via || prov;
       card.querySelector(".ob-bvia").textContent = extra + " · " + obShort(pick.label) + " by default";
       card.addEventListener("click", function () { obUse(pick, card); });
@@ -3364,6 +3723,13 @@
     if (!skipped && COLLIE_IDENTITY.name_source === "default" && COLLIE_IDENTITY.name_editable !== false) nameOnboardOpen();
     else maybeOpenBrainOnboarding();
   });
+  // Local visual QA route. It changes no saved state and uses the same live catalog/handlers as
+  // first run, so onboarding can be inspected after a machine is already configured.
+  try {
+    if (new URLSearchParams(location.search).get("preview") === "onboarding") {
+      setTimeout(obOpen, 0);
+    }
+  } catch (_) {}
 
   // ---- connect your browser (optional; offered after picking a brain, and from Settings) --------
   var brOverlay = $("brOverlay"), brTimer = null, brExtPath = "";
@@ -3557,7 +3923,8 @@
   // ---- state ------------------------------------------------------------
   var currentSession = null, currentRun = null;
   var priorTurns = -1;   // user-turns before the running run; interrupt recovery's baseline (-1 = unknown)
-  var es = null, running = false, runStart = 0, tlCount = 0, diffCount = 0, streamRAF = 0;
+  var es = null, running = false, runCanSteer = false, shownRunPlan = "",
+      runStart = 0, tlCount = 0, diffCount = 0, streamRAF = 0;
   var streamLaunchToken = 0, routePending = false, routeToken = 0;
 
   // ---- gate -------------------------------------------------------------
@@ -3603,10 +3970,31 @@
       el.textContent = "Auto · waiting"; el.title = ""; return;
     }
     var speed = actualSpeed || d.actual_speed || d.speed || "standard";
-    el.textContent = [d.model, d.effort || "default", speed,
+    var worker = d.runner && d.runner.runner ? d.runner.runner : "collie";
+    var planWorker = (d.run_plan && d.run_plan.worker) || {};
+    var shownModel = worker === "collie" ? d.model :
+      (planWorker.model || t("worker default"));
+    el.textContent = [worker, shownModel, d.effort || "default", speed,
       (d.intent || "build") + "/" + (d.quality || "balanced") +
       "/" + (d.verification || "auto")].join(" · ");
-    el.title = (d.reasons || []).join("\n");
+    el.title = (d.reasons || []).concat((d.runner && d.runner.reasons) || []).join("\n");
+  }
+  function runPlanSummary(plan) {
+    if (!plan) return "";
+    var worker = plan.worker || {}, brain = plan.brain || {}, task = plan.task || {},
+        verify = plan.verification || {};
+    var actualModel = worker.model || (worker.key === "collie"
+      ? (brain.model || brain.provider || "default") : t("worker default"));
+    return [worker.key || "collie", actualModel,
+      (task.intent || "build") + "/" + (task.quality || "balanced"),
+      verify.mode || "auto", task.workspace || "current", task.strategy || "single"].join(" · ");
+  }
+  function showRunPlan(plan) {
+    if (!plan || !plan.id || shownRunPlan === plan.id) return;
+    shownRunPlan = plan.id;
+    var summary = runPlanSummary(plan), limitations = (plan.limitations || []).map(t).join("; ");
+    traceStep("◇", t("Run plan"), summary, limitations, "plan");
+    addEvent("meta", "flag", t("Run plan"), summary);
   }
   function setReceipt(r) {
     if (!r || !Object.keys(r).length) setDecision(null);
@@ -4068,10 +4456,10 @@
     activityNotice(unavailable.length ? ("Some operational lanes are unavailable: " + unavailable.join(", ")) : "", unavailable.length > 0);
     var grid = $("activityGrid"); grid.textContent = "";
     var serviceRows = Object.keys(health.workers || {}).map(function (name) {
-      return { id: name, state: (health.workers[name].state || "unknown") + (health.workers[name].fresh ? " · fresh" : " · stale") };
+      return { id: name + " · " + t("Worker"), state: (health.workers[name].state || "unknown") + (health.workers[name].fresh ? " · fresh" : " · stale") };
     });
     Object.keys(health.services || {}).forEach(function (name) {
-      serviceRows.push({ id: name, state: health.services[name].ok ? "ok" : "down" });
+      serviceRows.push({ id: name + " · " + t("Service"), state: health.services[name].ok ? "ok" : "down" });
     });
     if (health.supervisor && Object.keys(health.supervisor).length) {
       serviceRows.push({ id: "supervisor", state: health.supervisor.status ||
@@ -4127,8 +4515,12 @@
         activityNotice("Activity could not refresh: " + (error.message || error || "unavailable"), true); });
   }
   function setActivityOpen(open) {
-    if (!activityPanel) return; activityPanel.hidden = !open;
+    if (!activityPanel) return;
     if (open && typeof setLibraryOpen === "function") setLibraryOpen(false);
+    activityPanel.hidden = !open;
+    $("scroll").hidden = !!open; $("composer").hidden = !!open;
+    $("scrollDownBtn").hidden = !!open;
+    if (open) setRunDetailsOpen(false);
     activityButton.setAttribute("aria-expanded", open ? "true" : "false"); if (open) loadActivity();
   }
   if (activityButton) activityButton.onclick = function () {
@@ -4334,9 +4726,10 @@
   }
   function setLibraryOpen(open) {
     if (!libraryPanel) return;
+    if (open) { setActivityOpen(false); setRunDetailsOpen(false); }
     libraryPanel.hidden = !open; $("scroll").hidden = !!open; $("composer").hidden = !!open;
     $("scrollDownBtn").hidden = !!open;
-    if (open) { setActivityOpen(false); setRunDetailsOpen(false); loadLibrary().catch(function () {}); }
+    if (open) loadLibrary().catch(function () {});
   }
   if ($("libraryRefresh")) $("libraryRefresh").onclick = function () { loadLibrary().catch(function () {}); };
   if ($("libraryClose")) $("libraryClose").onclick = function () {
@@ -4490,6 +4883,9 @@
     card.querySelector(".mbody").textContent =
       "/mission <goal> (uses your Autonomy setting) · /mission --review <goal> · /mission list · " +
       "advanced: /mission --domains=x.com,*.y.com --rate=6 <goal> · " +
+      "code: /mission --code --runner=codex-exec --workspace=PATH " +
+      "--verify=COMMAND [--no-paid-overage] <goal> · " +
+      "overnight: add --overnight --no-paid-overage (official subscription route only) · " +
       "/mission status|report|pause|resume|cancel|check|continue|accept|reconcile <id>";
   }
   function handleMissionCommand(text) {
@@ -4529,14 +4925,29 @@
     var explicit = /^start\s+([\s\S]+)$/i.exec(raw);
     var goal = explicit ? explicit[1].trim() : raw;
     var autonomous = null, bounds = {}, option;
-    while ((option = /^--(auto|autonomous|review|confirm|domains=\S+|rate=\d+|max-actions=\d+|max-steps=\d+)(?:\s+|$)/i.exec(goal))) {
+    while ((option = /^--(auto|autonomous|review|confirm|code|overnight|no-paid-overage|(?:(?:domains|rate|max-actions|max-steps|runner|workspace|verify|verify-command|provider|model)=(?:"[^"]*"|'[^']*'|\S+)))(?:\s+|$)/i.exec(goal))) {
       var rawOpt = option[1]; goal = goal.slice(option[0].length).trim();
+      var eq = rawOpt.indexOf("="), optionValue = eq < 0 ? "" : rawOpt.slice(eq + 1);
+      if (optionValue.length > 1 && ((optionValue[0] === '"' && optionValue.slice(-1) === '"') ||
+          (optionValue[0] === "'" && optionValue.slice(-1) === "'"))) optionValue = optionValue.slice(1, -1);
       if (/^(auto|autonomous)$/i.test(rawOpt)) autonomous = true;
       else if (/^(review|confirm)$/i.test(rawOpt)) autonomous = false;
-      else if (/^domains=/i.test(rawOpt)) bounds.allowed_domains = rawOpt.slice(rawOpt.indexOf("=") + 1).split(",").filter(Boolean);
-      else if (/^rate=/i.test(rawOpt)) bounds.actions_per_hour = Number(rawOpt.split("=")[1]);
-      else if (/^max-actions=/i.test(rawOpt)) bounds.max_irreversible_actions = Number(rawOpt.split("=")[1]);
-      else if (/^max-steps=/i.test(rawOpt)) bounds.max_total_steps = Number(rawOpt.split("=")[1]);
+      else if (/^code$/i.test(rawOpt)) bounds.code = true;
+      else if (/^overnight$/i.test(rawOpt)) bounds.overnight = true;
+      else if (/^no-paid-overage$/i.test(rawOpt)) bounds.no_paid_overage = true;
+      else if (/^domains=/i.test(rawOpt)) bounds.allowed_domains = optionValue.split(",").filter(Boolean);
+      else if (/^rate=/i.test(rawOpt)) bounds.actions_per_hour = Number(optionValue);
+      else if (/^max-actions=/i.test(rawOpt)) bounds.max_irreversible_actions = Number(optionValue);
+      else if (/^max-steps=/i.test(rawOpt)) bounds.max_total_steps = Number(optionValue);
+      else if (/^runner=/i.test(rawOpt)) bounds.runner = optionValue;
+      else if (/^workspace=/i.test(rawOpt)) bounds.workspace = optionValue;
+      else if (/^(?:verify|verify-command)=/i.test(rawOpt)) bounds.verify_command = optionValue;
+      else if (/^provider=/i.test(rawOpt)) bounds.provider = optionValue;
+      else if (/^model=/i.test(rawOpt)) bounds.model = optionValue;
+    }
+    if (/^--(?:\s+|$)/.test(goal)) goal = goal.replace(/^--(?:\s+|$)/, "").trim();
+    else if (/^--[^\s]*/.test(goal)) {
+      addErr(t("Unknown Mission option:") + " " + goal.match(/^--[^\s]*/)[0]); return true;
     }
     if (!goal) { missionHelp(); return true; }
     _startMissionCard(goal, autonomous, bounds);
@@ -4867,7 +5278,7 @@
                                "&token=" + encodeURIComponent(CT));
       // Only real run traffic counts as proof of life: the bus also emits `mirror_hello` on connect
       // and `ping` every 15s with no run behind it at all.
-      ["start", "token", "tool", "steer"].forEach(function (ev) {
+      ["start", "token", "tool", "steer", "runner", "receipt"].forEach(function (ev) {
         mirror.addEventListener(ev, function () {
           if (!alive && !settled) { alive = true; say(t("reconnected — Collie is still working…")); }
         });
@@ -5274,6 +5685,7 @@
       })
       .catch(function () {});
   }
+  pollRuns();
   setInterval(pollRuns, 2500);
 
   function loadSessions() {
@@ -5391,10 +5803,13 @@
   function followSession(sid) {
     var knownRun = liveRuns[sid] || {};
     currentRun = knownRun.run || null; running = true; cancelPending = knownRun.state === "canceling";
+    runCanSteer = !!knownRun.can_steer; shownRunPlan = "";
     setRunState(cancelPending ? "stopping" : "running", true);
     var runButton = $("send");runButton.classList.add("stop");runButton.disabled=cancelPending;
     runButton.title=cancelPending?"Stopping…":"Stop run";runButton.setAttribute("aria-label",cancelPending?"Stopping run":"Stop run");
-    $("input").disabled=cancelPending;$("input").placeholder=t("Steer while Collie works — Enter to send");
+    $("input").disabled=cancelPending;$("input").placeholder=t(runCanSteer ?
+      "Steer while the worker runs — Enter to send" :
+      "This worker cannot be steered — stop it or wait");
     var note = addEvent("meta", "eye", t("still working"),
                         t("this run started elsewhere — following it live; the thread fills in when it lands"));
     // A live bubble to put the steps in. Without one traceStep has nowhere to write (it returns on a
@@ -5410,7 +5825,10 @@
     // not news: rendering them as live activity would make a run look like it was doing ten things
     // in the same instant you opened it.
     var replaying = false;
-    src.addEventListener("start", function(m){try{var d=JSON.parse(m.data||"{}");if(d.run)currentRun=d.run;}catch(_){}});
+    src.addEventListener("start", function(m){try{var d=JSON.parse(m.data||"{}");if(d.run)currentRun=d.run;
+      runCanSteer=!!((d.worker_capabilities||{}).steer);
+      $("input").placeholder=t(runCanSteer?"Steer while the worker runs — Enter to send":
+        "This worker cannot be steered — stop it or wait");showRunPlan(d.run_plan);}catch(_){}});
     src.addEventListener("mirror_replay", function () { replaying = true; });
     src.addEventListener("mirror_live", function () { replaying = false; });
     ["tool", "edit", "repro"].forEach(function (ev) {
@@ -5576,6 +5994,7 @@
     clearTimeout(cancelPollTimer);cancelPollTimer=0;
     cancelPending = false;
     running = false;
+    runCanSteer = false;
     currentRun = null;
     PENDING_PERMS = {}; updateNeedsYou();
     setRunState("idle", false);
@@ -5692,7 +6111,7 @@
 
   function readRunConfig() {
     var explicit = Object.keys(window.runExplicitAxes || {}).filter(function (k) {
-      return window.runExplicitAxes[k];
+      return window.runExplicitAxes[k] && k !== "runner";
     });
     return {
       intent: ($("runIntent") && $("runIntent").value) || "build",
@@ -5702,6 +6121,7 @@
       strategy: ($("runStrategy") && $("runStrategy").value) || "single",
       effort: ($("runEffort") && $("runEffort").value) || "auto",
       speed: ($("runSpeed") && $("runSpeed").value) || "standard",
+      runner: ($("runRunner") && $("runRunner").value) || "",
       explicit_axes: explicit.length ? explicit.join(",") : "none",
       verify_command: ($("verifyCommand") && $("verifyCommand").value.trim()) || "",
       verify_source: ($("verifyCommand") && $("verifyCommand").dataset.source) || "",
@@ -5765,6 +6185,12 @@
     // boundary (Claude Code model), NOT a new run. Text-only for now; images still start fresh runs.
     if (running) {
       if (!q || !currentSession) return;   // nothing to steer, or the run hasn't reported its id yet
+      if (!runCanSteer) {
+        addEvent("meta", "flag", t("steering unavailable"),
+          t("This worker cannot accept instructions until its current turn finishes."));
+        input.placeholder = t("This worker cannot be steered — stop it or wait");
+        return;
+      }
       input.value = ""; input.style.height = "auto";
       steer(q);
       return;
@@ -5816,14 +6242,14 @@
     clearTimeline(); setReceipt({});
     setGate("working");                 // neutral while exploring — NOT "verifying" until an edit
     setRunState("running", true);
-    running = true; currentRun = null; runStart = Date.now();
+    running = true; runCanSteer = false; shownRunPlan = ""; currentRun = null; runStart = Date.now();
     var thisLaunch = ++streamLaunchToken;
     if (window.setRunSetupLocked) window.setRunSetupLocked(true);
     var b = $("send"); b.classList.add("stop"); b.disabled = false;
     b.title = "Stop run"; b.setAttribute("aria-label", "Stop run");
     $("sendIcon").innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
-    // input stays ENABLED so you can steer while it works; the button becomes Stop.
-    input.placeholder = t("Steer while Collie works — Enter to send");
+    // The start frame names the selected worker's actual steering capability.
+    input.placeholder = t("Waiting for worker capabilities…");
     // upload any attached images first (-> ids), then open the stream referencing them
     var launch = function (imgIds) {
     if (thisLaunch !== streamLaunchToken || !running) return;
@@ -5841,6 +6267,7 @@
               "&strategy=" + encodeURIComponent(strategy) +
               "&effort=" + encodeURIComponent(runConfig.effort || "auto") +
               "&speed=" + encodeURIComponent(runConfig.speed || "standard") +
+              (runConfig.runner ? "&runner=" + encodeURIComponent(runConfig.runner) : "") +
               "&explicit_axes=" + encodeURIComponent(runConfig.explicit_axes || "none") +
               (runConfig.route_kind ? "&route_kind=" + encodeURIComponent(runConfig.route_kind) : "") +
               (runConfig.verify_command ? "&verify_command=" + encodeURIComponent(runConfig.verify_command) : "") +
@@ -5864,11 +6291,16 @@
       var d = JSON.parse(e.data);
       currentSession = d.session;
       currentRun = d.run || null;
+      runCanSteer = !!((d.worker_capabilities || {}).steer);
+      input.placeholder = t(runCanSteer ?
+        "Steer while the worker runs — Enter to send" :
+        "This worker cannot be steered — stop it or wait");
       // Exact baseline for interrupt recovery: user-turns in the thread BEFORE this run. Once this
       // run's answer is saved the file holds one more user turn than this, which is how recovery
       // tells "the answer landed" from "the file is just stale mid-run".
       priorTurns = (typeof d.prior_turns === "number") ? d.prior_turns : -1;
       setDecision(d.decision || d, d.actual_speed);
+      showRunPlan(d.run_plan);
       // run drawer stays as the user left it — no auto-open (it used to pop open on every run)
       addEvent("meta", "flag", t("run started"),
         (d.model || d.provider) + " · " + (d.effort || "default") + " · " +
@@ -5879,6 +6311,20 @@
       // the loop picked up a queued steer and injected it as a user turn — confirm delivery
       var d = JSON.parse(e.data);
       addEvent("meta", "flag", t("steering delivered"), (d.text || "").slice(0, 120));
+    });
+
+    es.addEventListener("runner", function (e) {
+      var d = JSON.parse(e.data), kind = d.event || "worker", detail = "";
+      if (kind === "native") {
+        detail = (d.type || "event") + (d.cursor == null ? "" : " · #" + d.cursor);
+      } else if (kind === "native-events-omitted") {
+        detail = t("More worker events omitted") + " · " + (d.omitted_after || 0);
+      } else if (kind === "fallback") {
+        detail = (d.from || "") + " → " + (d.to || "") + " · " + (d.reason || "");
+      }
+      addEvent("meta", kind === "fallback" ? "bad" : "flag",
+               d.runner || d.to || t("external worker"), detail,
+               kind === "fallback" ? "bad" : "");
     });
 
     es.addEventListener("tool", function (e) {
@@ -5946,6 +6392,12 @@
 
     es.addEventListener("receipt", function (e) {
       var d = JSON.parse(e.data);
+      if (d.runner && d.native_session) {
+        addEvent("meta", d.settled ? "ok" : "bad", d.runner,
+                 d.settled ? t("worker settled") : (d.error || t("worker failed")),
+                 d.settled ? "ok" : "bad");
+        return;
+      }
       setReceipt(d);
       if (d.verified) { runVerified = true; setGate("pass"); }
       else if (sawEdit && sawRepro && !lastReproPass) setGate("fail");
@@ -6110,6 +6562,13 @@
       else if (!sawEdit) setGate("none");
       else if (sawRepro) setGate(lastReproPass ? "pass" : "fail");
       else setGate("none", "An edit was made but no reproduction ran — Collie could not confirm it green.");
+      // The terminal frame is newer than the 2.5s registry poll.  Update the
+      // sidebar's local mirror before redrawing it, otherwise a finished run is
+      // briefly labelled "working" beside an already-idle conversation.
+      if (currentSession && liveRuns[currentSession]) {
+        liveRuns[currentSession].state = d.canceled ? "canceled" : (d.error ? "failed" : "done");
+        liveRuns[currentSession].verified = !!d.verified;
+      }
       finishStreamUI();
       if (!d.error && !d.canceled) loadHandoffArtifact(d.session, intent);
       loadSessions();
@@ -6444,14 +6903,28 @@
         verifyCommand = $("verifyCommand"),
         fields = { intent: $("runIntent"), quality: $("runQuality"),
           verification: $("runVerification"), workspace: $("runWorkspace"),
-          strategy: $("runStrategy"), effort: $("runEffort"), speed: $("runSpeed") };
+          strategy: $("runStrategy"), effort: $("runEffort"), speed: $("runSpeed"),
+          runner: $("runRunner") };
     var setupLocked = false, capabilities = null;
     window.runExplicitAxes = window.runExplicitAxes || {};
     if (!pick) return;
+    function positionMenu() {
+      /* Pack and Required reveal extra composer rows. Keep the desktop sheet above the live
+         composer edge instead of relying on a fixed gap that can cover Send after it grows. */
+      if (window.innerWidth <= 760) {
+        menu.style.removeProperty("bottom");
+        return;
+      }
+      var composer = document.querySelector(".composer");
+      if (!composer) return;
+      var rect = composer.getBoundingClientRect();
+      menu.style.bottom = Math.max(18, window.innerHeight - rect.top + 12) + "px";
+    }
     function open(o) {
       pick.classList.toggle("open", o); menu.hidden = !o;
       trig.setAttribute("aria-expanded", o ? "true" : "false");
       if (o) {
+        positionMenu();
         var current = menu.querySelector('.mode-item[aria-checked="true"]:not(:disabled)') ||
                       menu.querySelector(".mode-item:not(:disabled)");
         if (current) current.focus();
@@ -6463,13 +6936,46 @@
           strategy = fields.strategy.value, planning = intent === "plan",
           reviewing = intent === "review", testing = intent === "test",
           nonBuild = intent !== "build", packing = strategy === "pack";
+      var workspaceCurrentName = $("workspaceCurrentName"),
+          workspaceCurrentDesc = $("workspaceCurrentDesc");
+      if (workspaceCurrentName) workspaceCurrentName.textContent = t(
+        packing ? "Pack base" : "Current files");
+      if (workspaceCurrentDesc) workspaceCurrentDesc.textContent = t(
+        packing ? "Candidates run in isolated worktrees; current files change only when a winner is applied." :
+                  "Edit the working tree you already have open");
+      /* External CLIs cannot inherit Collie's read-only tool gate. If someone
+         chose one and then changes the intent to Plan/Review/Test, keep the
+         setup runnable and make the native worker choice visible in the
+         trigger instead of leaving a disabled-but-checked worker that the
+         server can only refuse. Auto remains valid: the selector rejects
+         external candidates and deterministically falls back to Collie. */
+      var effectiveWorker = fields.runner.value ||
+        (capabilities && capabilities.worker_default) || "collie";
+      if (nonBuild && effectiveWorker !== "collie" && effectiveWorker !== "auto") {
+        fields.runner.value = "collie";
+        window.runExplicitAxes.runner = true;
+      }
       menu.querySelectorAll(".mode-item").forEach(function (it) {
         var axis = it.getAttribute("data-axis"), on = fields[axis].value === it.getAttribute("data-val");
         var effortUnsupported = axis === "effort" && it.getAttribute("data-val") !== "auto" &&
           capabilities && (capabilities.reasoning_efforts || []).indexOf(it.getAttribute("data-val")) < 0;
+        var workerKey = axis === "runner" ? it.getAttribute("data-val") : "";
+        var workerRow = workerKey && workerKey !== "auto" && capabilities &&
+          (capabilities.workers || []).filter(function (row) { return row.key === workerKey; })[0];
+        /* A missing capability row is unknown, not available. Keep explicit
+           external choices disabled until the server has proved this exact
+           installation/login; Saved default and Auto still reach the same
+           fail-closed server selector. */
+        var explicitExternal = axis === "runner" && workerKey &&
+          workerKey !== "auto" && workerKey !== "collie";
+        var workerUnavailable = !!(explicitExternal &&
+          (!capabilities || !workerRow || !workerRow.probe || !workerRow.probe.runnable));
+        var workerReadOnlyMismatch = axis === "runner" && nonBuild &&
+          workerKey && workerKey !== "collie" && workerKey !== "auto";
         it.classList.toggle("is-active", on);
         it.setAttribute("aria-checked", on ? "true" : "false");
-        it.disabled = setupLocked || effortUnsupported || nonBuild &&
+        it.disabled = setupLocked || effortUnsupported || workerUnavailable ||
+                      workerReadOnlyMismatch || nonBuild &&
                       (axis === "verification" || axis === "workspace" || axis === "strategy") ||
                       packing && axis === "workspace";
         /* One tab stop per radio group. Disabled Plan/Pack-dependent groups have none until
@@ -6488,6 +6994,9 @@
       if (!nonBuild && workspace === "isolated") parts.push(t("Isolated"));
       if (!nonBuild && packing) parts.push(t("Pack"));
       if (fields.speed.value === "fast") parts.push("Fast");
+      if (fields.runner.value) {
+        parts.push(fields.runner.value === "auto" ? t("Auto worker") : fields.runner.value);
+      }
       if (!Object.keys(window.runExplicitAxes).some(function (k) { return window.runExplicitAxes[k]; })) {
         parts = [t("Auto")];
       }
@@ -6505,12 +7014,14 @@
       [$("packN"), packCheck, $("packApply"), verifyCommand].forEach(function (el) {
         if (el) el.disabled = setupLocked;
       });
+      if (!menu.hidden) requestAnimationFrame(positionMenu);
       if (setupLocked && !menu.hidden) open(false);
     }
     function choose(axis, val) {
       if (!fields[axis]) return;
       fields[axis].value = val;
-      window.runExplicitAxes[axis] = true;
+      if (axis === "runner" && !val) delete window.runExplicitAxes.runner;
+      else window.runExplicitAxes[axis] = true;
       // Plan has no meaningful verification/workspace/Pack execution. Pack already owns N isolated
       // candidate trees, so nesting it in another worktree is both slow and misleading.
       if (axis === "intent" && val !== "build") {
@@ -6525,6 +7036,8 @@
       paint();
     }
     trig.addEventListener("click", function (e) { e.stopPropagation(); open(menu.hidden); });
+    var modeClose = $("modeClose");
+    if (modeClose) modeClose.addEventListener("click", function () { open(false); trig.focus(); });
     trig.addEventListener("keydown", function (e) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(true); }
     });
@@ -6554,6 +7067,7 @@
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && !menu.hidden) { open(false); trig.focus(); }
     });
+    window.addEventListener("resize", function () { if (!menu.hidden) positionMenu(); });
     window.refreshRunSetup = paint;
     window.setRunSetupLocked = function (value) { setupLocked = !!value; paint(); };
     window.refreshRunCapabilities = function () {
@@ -6565,8 +7079,31 @@
           fields.speed.value = "standard"; delete window.runExplicitAxes.speed;
         }
         var help = $("runFastHelp");
-        if (help) help.textContent = capabilities.fast_note ||
-          "Fast appears only for a provider/model with a reported same-model tier.";
+        if (help) help.textContent = t(capabilities.fast_note ||
+          "Fast appears only for a provider/model with a reported same-model tier.");
+        var saved = $("savedWorkerDesc");
+        if (saved) saved.textContent = t("Use the worker selected in Settings") + ": " +
+          (capabilities.worker_default || "collie");
+        (capabilities.workers || []).forEach(function (row) {
+          var status = menu.querySelector('[data-worker-status="' + row.key + '"]');
+          if (!status || !row.probe) return;
+          var signal = (capabilities.worker_signals || {})[row.key] || {};
+          var quota = signal.quota || {}, windows = [quota.primary, quota.secondary].filter(Boolean);
+          var worst = windows.slice().sort(function (a, b) {
+            return Number(b.used_percent || 0) - Number(a.used_percent || 0);
+          })[0] || null;
+          var used = worst ? Number(worst.used_percent || 0) : null;
+          var resetAt = worst && Number(worst.resets_at || 0);
+          var resetNote = resetAt ? t("quota resets") + " " +
+            new Date(resetAt * 1000).toLocaleString() : "";
+          var base = row.key === "collie"
+            ? t("Native tools, approvals, streaming, and steering")
+            : t(row.probe.availability ||
+                (row.probe.runnable ? "ready" : (row.probe.detail || "unavailable")));
+          status.textContent = base + (used === null ? "" : " · " + used + "% " + t("quota used"));
+          status.title = [row.probe.detail || "", signal.error || "", resetNote]
+            .filter(Boolean).join(" · ");
+        });
         paint();
         return capabilities;
       }).catch(function () {

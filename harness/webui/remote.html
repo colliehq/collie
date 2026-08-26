@@ -72,6 +72,34 @@
   .activityrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;padding:8px 1px;border-bottom:1px solid var(--line);font-size:12px}.activityrow:last-child{border:0}.activitymain{min-width:0}.activityname{font-weight:650;overflow-wrap:anywhere}.activitymeta{margin-top:2px;color:var(--dim);font-size:10.5px;overflow-wrap:anywhere}.activitystate{align-self:start;color:var(--good);font:10.5px ui-monospace,monospace}.activitystate.warn{color:var(--warn)}.activitystate.bad{color:var(--bad)}.activityactions{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap}.activityactions button{padding:5px 9px;font-size:11px}.activitytree{position:relative;margin-left:var(--tree-indent,0)}.activitytree::before{content:"";position:absolute;left:-8px;top:0;bottom:0;width:1px;background:var(--line)}.activitytree.root::before{display:none}.activitylane-label{padding:8px 1px 3px;color:var(--dim);font-size:10px;font-weight:750;letter-spacing:.04em;text-transform:uppercase}
   @media(max-width:700px){.packgrid,.activitygrid{grid-template-columns:1fr}.packstats{grid-template-columns:repeat(2,minmax(0,1fr))}.activitylane.full{grid-column:auto}}
   @media(max-width:520px){.wrap{padding:18px 12px 40px}.card{padding:15px}.pairinfo{min-width:0}.qr{width:min(180px,100%);height:auto;aspect-ratio:1}.card{overflow-x:auto}th,td{white-space:normal}.packidentity{align-items:flex-start}.packstats{grid-template-columns:1fr 1fr}}
+
+  /* Pack shares Collie's quiet shell; operational color remains semantic only. */
+  :root { color-scheme:light; --bg:#F6F6F3; --card:#FFFFFF; --line:#E3E3DD; --ink:#1D1D1B;
+    --dim:#777771; --brand:#35594A; --brand2:#35594A; --good:#357A5D; --bad:#C4493D; --warn:#A66A15; }
+  @media (prefers-color-scheme:dark) { :root { color-scheme:dark; --bg:#111310; --card:#1A1D19;
+    --line:#2C302B; --ink:#ECEDE9; --dim:#92978F; --brand:#8FB9A6; --brand2:#35594A;
+    --good:#72BD98; --bad:#F07B70; --warn:#D8A14C; } }
+  body { font-size:14px; }
+  .wrap { max-width:880px; padding:24px 20px 54px; }
+  .back { margin-bottom:16px; font-weight:550; }
+  h1 { font-size:24px; letter-spacing:-.025em; }
+  h1 img { width:24px; height:24px; }
+  .sub { max-width:64ch; margin:4px 0 24px; }
+  .card { margin-bottom:12px; padding:18px; border-radius:11px; box-shadow:none; }
+  .card h2 { margin-bottom:12px; color:var(--ink); font-size:12px; letter-spacing:.02em; }
+  .link,.foot code,.packstat,.packlane h3,.activitylane h3 { background:var(--bg); }
+  button { background:var(--bg); border-radius:8px; }
+  button.primary { background:var(--brand2); }
+  .packidentity { margin-bottom:12px; }
+  .packidentity img { width:38px; height:38px; filter:none; }
+  .packstats { gap:0; margin:0 0 14px; border-block:1px solid var(--line); }
+  .packstat { padding:10px 7px; border:0; border-radius:0; background:transparent; }
+  .packstat b { font-size:16px; }
+  .packlane,.activitylane { border-radius:8px; }
+  .packrow,.activityrow { padding-block:7px; }
+  .truthnote { padding-top:2px; }
+  .pendcard { border-radius:11px; background:var(--card); }
+  .toast { background:var(--card); }
 </style>
 </head>
 <body>
@@ -81,11 +109,11 @@
   <div class="sub" data-i="See which Collies and workers are available, what they are carrying, and which phones can supervise this device.">See which Collies and workers are available, what they are carrying, and which phones can supervise this device.</div>
 
   <div class="card" id="packcard">
-    <h2><span data-i="Pack now">Pack now</span> <span id="packhealth" class="pill idle" role="status" aria-live="polite">Loading…</span></h2>
+    <h2><span data-i="Pack now">Pack now</span> <span id="packhealth" class="pill idle" role="status" aria-live="polite" data-i="Loading…">Loading…</span></h2>
     <div class="packerr" id="packerr" role="alert" aria-live="assertive"></div>
     <div class="packidentity"><img id="packavatar" src="/api/avatar.png" alt="">
-      <div><div class="packwho" id="packwho">Collie</div><div class="packmeta" id="packdevice">Checking this device…</div>
-        <div class="packmeta" id="packmodel">Checking provider and model…</div></div></div>
+      <div><div class="packwho" id="packwho">Collie</div><div class="packmeta" id="packdevice" data-i="Checking this device…">Checking this device…</div>
+        <div class="packmeta" id="packmodel" data-i="Checking provider and model…">Checking provider and model…</div></div></div>
     <div class="packstats">
       <div class="packstat"><b id="statInteractive">—</b><span data-i="Interactive">Interactive</span></div>
       <div class="packstat"><b id="statMissions">—</b><span data-i="Missions">Missions</span></div>
@@ -94,14 +122,14 @@
       <div class="packstat"><b id="statNeeds">—</b><span data-i="Needs You">Needs You</span></div>
     </div>
     <div class="packgrid">
-      <section class="packlane"><h3 data-i="Available here">Available here</h3><div class="packrows" id="packmembers"><div class="packempty">Loading availability…</div></div></section>
-      <section class="packlane"><h3 data-i="Active assignments">Active assignments</h3><div class="packrows" id="packassignments"><div class="packempty">Loading assignments…</div></div></section>
+      <section class="packlane"><h3 data-i="Available here">Available here</h3><div class="packrows" id="packmembers"><div class="packempty" data-i="Loading availability…">Loading availability…</div></div></section>
+      <section class="packlane"><h3 data-i="Active assignments">Active assignments</h3><div class="packrows" id="packassignments"><div class="packempty" data-i="Loading assignments…">Loading assignments…</div></div></section>
     </div>
     <div class="truthnote" data-i="Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.">Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.</div>
   </div>
 
   <div class="card" id="activitycard">
-    <h2><span data-i="Activity & recovery">Activity &amp; recovery</span><span id="activityhealth" class="pill idle" role="status" aria-live="polite">Loading…</span><button type="button" class="activity-title-action" id="activityRefresh" data-i="Refresh">Refresh</button></h2>
+    <h2><span data-i="Activity & recovery">Activity &amp; recovery</span><span id="activityhealth" class="pill idle" role="status" aria-live="polite" data-i="Loading…">Loading…</span><button type="button" class="activity-title-action" id="activityRefresh" data-i="Refresh">Refresh</button></h2>
     <div class="activitynotice" id="activitynotice" role="status" aria-live="polite"></div>
     <div class="activitygrid">
       <section class="activitylane"><h3 data-i="Session recovery">Session recovery</h3><p class="activityhelp" data-i="Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.">Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.</p><div class="activityrows" id="remoteRecovery"><div class="activityempty" data-i="Loading…">Loading…</div></div></section>
@@ -180,7 +208,7 @@ var ZH = {
   "Turn on remote":"开启远程","Pairing":"配对","Scan on your phone, or open this link:":"手机扫码，或打开此链接：",
   "The link fragment contains a one-time secret. It is never sent to the relay and cannot be typed as a login code.":"链接片段内含一次性密钥；它绝不会发送给 relay，也不能作为登录码手动输入。",
   "QR fingerprint (display only — not a login code)":"二维码指纹（仅供显示——不是登录码）","Copy link":"复制链接","New pairing QR":"生成新配对二维码",
-  "Paired devices":"已配对设备","Device":"设备","Paired":"配对时间","Loading…":"加载中…","Rename":"改备注","Kick":"踢除",
+  "Paired devices":"已配对设备","Device":"设备","Paired":"配对时间","Loading…":"加载中…","Loading availability…":"正在加载可用伙伴…","Loading assignments…":"正在加载分工…","Checking this device…":"正在检查本设备…","Checking provider and model…":"正在检查提供商和模型…","Rename":"改备注","Kick":"踢除",
   "No paired devices yet. Scan the code on your phone to add one.":"还没有已配对的设备。手机扫码即可添加。",
   "Paired devices reconnect automatically after a restart — no need to re-pair.":"已配对设备在电脑重开后会自动恢复，无需重新配对。",
   "Press Ctrl-C or":"按 Ctrl-C 或","turn off remote":"关闭远程","to cut all remote access instantly.":"可立即切断所有远程访问。",
@@ -200,9 +228,10 @@ var ZH = {
   "Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"请仅在检查外部系统并确认操作未发生后继续。Collie 之后可以安全重试。",
   "Cancel this recovery without replaying the uncertain action?":"要取消此次恢复且不重放不确定操作吗？","Steer this specialist at its next safe boundary:":"在下一个安全边界向该专员补充要求：","Request specialist cancellation?":"要请求取消该专员吗？",
   "Resolution recorded":"已记录恢复决定","Steer queued":"补充要求已排队","Cancellation requested":"已请求取消","Some operational lanes are unavailable":"部分运行通道暂不可用","Activity is unavailable":"活动暂不可用",
-  "Services":"服务","Service":"服务","Mission":"任务","Automation":"自动化","Queued":"排队中","Running":"运行中","Blocked":"已阻塞","Waiting":"等待中","Paused":"已暂停","Completed status":"已完成","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿"
+  "Services":"服务","Service":"服务","Worker":"工作进程","Mission":"任务","Automation":"自动化","Queued":"排队中","Running":"运行中","Blocked":"已阻塞","Waiting":"等待中","Paused":"已暂停","Completed status":"已完成","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿"
 };
 var ZHTW = {
+  "Loading…":"載入中…","Loading availability…":"正在載入可用夥伴…","Loading assignments…":"正在載入分工…","Checking this device…":"正在檢查本裝置…","Checking provider and model…":"正在檢查供應商與模型…",
   "Activity & recovery":"活動與復原","Refresh":"重新整理","Session recovery":"工作階段復原","Operational activity":"執行活動","Specialist run tree":"專員執行樹",
   "Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.":"先檢查外部系統，再處理不確定操作。Collie 不會自動重播該操作。",
   "Only lifecycle metadata is shown; task content and tool arguments stay private.":"這裡只顯示生命週期中繼資料；任務內容和工具參數維持私密。",
@@ -212,15 +241,35 @@ var ZHTW = {
   "Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"請只在檢查外部系統並確認操作未發生後繼續。Collie 之後可以安全重試。",
   "Cancel this recovery without replaying the uncertain action?":"要取消此次復原且不重播不確定操作嗎？","Steer this specialist at its next safe boundary:":"在下一個安全邊界向該專員補充要求：","Request specialist cancellation?":"要請求取消該專員嗎？",
   "Resolution recorded":"已記錄復原決定","Steer queued":"補充要求已排入佇列","Cancellation requested":"已請求取消","Some operational lanes are unavailable":"部分執行通道暫時無法使用","Activity is unavailable":"活動暫時無法使用",
-  "Services":"服務","Service":"服務","Mission":"任務","Automation":"自動化","Queued":"排隊中","Running":"執行中","Blocked":"已封鎖","Waiting":"等待中","Paused":"已暫停","Completed status":"已完成","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿"
+  "Services":"服務","Service":"服務","Worker":"工作程序","Mission":"任務","Automation":"自動化","Queued":"排隊中","Running":"執行中","Blocked":"已封鎖","Waiting":"等待中","Paused":"已暫停","Completed status":"已完成","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿"
 }; // falls back to zh where older strings are missing (see t())
 Object.assign(ZH,{
+  "A device":"一台设备",
   "Pending pairing request":"待处理的配对请求","Check this matches the number on the phone.":"请确认此号码与手机上显示的一致。","Not me":"不是我","Allow":"允许",
   "Unknown OS":"未知操作系统","Repository not reported":"未报告代码库","Device identity unavailable":"设备身份信息不可用","Provider default":"提供方默认设置","Provider and model unavailable":"提供方和模型信息不可用",
   "Operational lanes":"运行通道","Some Pack state is unavailable":"部分伙伴群状态不可用","This Collie":"当前 Collie","Health endpoint did not respond":"健康检查端点无响应","This device":"本设备","Unknown":"未知",
   "heartbeat {n}s ago":"心跳 · {n} 秒前","Supervisor":"监督服务","Local coordination service":"本地协调服务","Stopped":"已停止","Not running":"未运行","Assignments unavailable.":"分工信息不可用。","{n} more active assignments":"还有 {n} 条进行中的分工"
 });
 Object.assign(ZHTW,{
+  "A device":"一台裝置","Action failed":"操作失敗","Active assignments":"進行中的分工","Automations":"自動化",
+  "Available":"可用","Available here":"本機可用","Back to Collie":"返回 Collie","Connection details":"連線詳情",
+  "Copy failed; select the link above.":"複製失敗，請選取上方連結。","Copy is unavailable; select the link above.":"無法自動複製，請選取上方連結。",
+  "Copy link":"複製連結","Could not check pending pairings":"無法檢查待處理的配對","Could not reach the remote service":"無法連線遠端服務",
+  "Degraded":"部分無法使用","Device":"裝置","Device label:":"裝置備註：","Interactive":"對話","Kick":"移除",
+  "Kick this device? It will need to scan again to pair.":"移除此裝置？它需要再次掃碼才能配對。","Kicked":"已移除","Link copied":"已複製連結",
+  "Missions":"任務","Needs You":"需要你","New pairing QR":"產生新的配對 QR code","No active assignments.":"沒有進行中的分工。",
+  "No paired devices yet. Scan the code on your phone to add one.":"尚無已配對裝置。請用手機掃碼新增。","No pairing link is available yet.":"尚無可用的配對連結。",
+  "Pack":"夥伴群","Pack now":"目前夥伴群","Paired":"配對時間","Paired devices":"已配對裝置",
+  "Paired devices reconnect automatically after a restart — no need to re-pair.":"電腦重新啟動後，已配對裝置會自動重新連線，無需再次配對。",
+  "Paired · live reachability not reported":"已配對 · 未回報即時可達狀態","Pairing QR code":"配對 QR code","Press Ctrl-C or":"按 Ctrl-C 或",
+  "QR fingerprint (display only — not a login code)":"QR 指紋（僅供顯示——不是登入碼）","QR unavailable — use the link below":"QR code 暫時無法使用，請改用下方連結",
+  "Reachability":"可達狀態","Remote is off. Start with collie web --remote, or turn it on below.":"遠端功能尚未開啟。請以 collie web --remote 啟動，或按下方按鈕開啟。",
+  "Remote supervision":"遠端監督","Rename":"修改備註","Renamed":"已修改備註","Responding":"有回應",
+  "Scan on your phone, or open this link:":"請用手機掃碼，或開啟此連結：",
+  "See which Collies and workers are available, what they are carrying, and which phones can supervise this device.":"查看目前可用的 Collie 與工作程序、它們負責的工作，以及哪些手機可以監督此裝置。",
+  "Specialists":"專員","The link fragment contains a one-time secret. It is never sent to the relay and cannot be typed as a login code.":"連結片段含有一次性密鑰；它絕不會傳送至 relay，也不能手動輸入作為登入碼。",
+  "Turn on remote":"開啟遠端","Unavailable":"無法使用","Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.":"工作程序的新鮮度由本機心跳回報。已配對手機是監督介面，並不是另一個工作程序。",
+  "relay":"relay","room":"房間","to cut all remote access instantly.":"即可立即切斷所有遠端存取。","turn off remote":"關閉遠端",
   "Pending pairing request":"待處理的配對請求","Check this matches the number on the phone.":"請確認此號碼與手機上顯示的一致。","Not me":"不是我","Allow":"允許",
   "Unknown OS":"未知作業系統","Repository not reported":"未回報程式碼庫","Device identity unavailable":"裝置識別資訊無法使用","Provider default":"提供者預設值","Provider and model unavailable":"提供者與模型資訊無法使用",
   "Operational lanes":"執行通道","Some Pack state is unavailable":"部分夥伴群狀態無法使用","This Collie":"此 Collie","Health endpoint did not respond":"健康檢查端點未回應","This device":"此裝置","Unknown":"未知",
@@ -276,7 +325,7 @@ function renderRemoteRunTree(activity){var box=document.getElementById('remoteRu
       activityAction(row,'Cancel','danger',function(){if(!confirm(t('Request specialist cancellation?')))return false;return getJson('/api/mission/specialist/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({run_id:data.run_id})}).then(function(){return'Cancellation requested';});});}});}
 function activityRecent(rows,active,max){var out=(rows||[]).filter(active);(rows||[]).slice(-max).forEach(function(row){if(out.indexOf(row)<0)out.push(row);});return out.slice(-max);}
 function renderRemoteOther(activity,health){var box=document.getElementById('remoteOtherActivity');box.textContent='';var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};
-  if(Object.keys(workers).length||Object.keys(services).length){activityLaneLabel(box,'Services');Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};activityRow(box,name,worker.age_s==null?'':Math.round(worker.age_s)+'s',worker.fresh?'running':'recovery_required');count++;});Object.keys(services).sort().forEach(function(name){activityRow(box,name,t('Service'),services[name].ok?'running':'failed');count++;});}
+  if(Object.keys(workers).length||Object.keys(services).length){activityLaneLabel(box,'Services');Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};activityRow(box,name+' · '+t('Worker'),worker.age_s==null?'':Math.round(worker.age_s)+'s',worker.fresh?'running':'recovery_required');count++;});Object.keys(services).sort().forEach(function(name){activityRow(box,name+' · '+t('Service'),'',services[name].ok?'running':'failed');count++;});}
   var missions=activityRecent(activity.missions||[],function(row){return activeMission(row.state);},7);if(missions.length){activityLaneLabel(box,'Missions');missions.forEach(function(data){activityRow(box,data.mission_id,data.lane||t('Mission'),data.state);count++;});}
   var automations=activityRecent(activity.automations||[],function(row){return activeTask(row.state);},7);if(automations.length){activityLaneLabel(box,'Automations');automations.forEach(function(data){activityRow(box,(data.automation_id||t('Automation'))+' · '+(data.execution_id||'—'),t('Automation'),data.state);count++;});}
   if(!count)activityEmpty(box,'No other activity.');}
@@ -359,7 +408,7 @@ function render(s){
     tb.appendChild(tr);
   });
 }
-function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function pollPending(){
   getJson('/api/remote/pending').then(function(j){
     var box=document.getElementById('pendingbox');

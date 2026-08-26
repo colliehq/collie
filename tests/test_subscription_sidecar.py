@@ -92,6 +92,20 @@ def _request(server, method, path, body=None, *, auth=True, headers=None):
     return response.status, headers_out, data
 
 
+def _raw_json_request(server, payload):
+    connection = http.client.HTTPConnection(
+        "127.0.0.1", server.server_port, timeout=5)
+    connection.request("POST", "/v1/chat/completions", body=payload, headers={
+        "Authorization": "Bearer " + sidecar.BEARER_SENTINEL,
+        "Content-Type": "application/json",
+        "Content-Length": str(len(payload)),
+    })
+    response = connection.getresponse()
+    data = response.read()
+    connection.close()
+    return response.status, data
+
+
 def test_brand_neutral_serialization_preserves_caller_context_and_tools():
     system, prompt, tools = sidecar.serialize_turn(_body())
 
@@ -134,6 +148,39 @@ def test_worker_output_contract_is_strict(text):
     with pytest.raises(RuntimeError, match="response contract"):
         sidecar._strict_result({"text": text, "usage": {},
                                 "api_key_source": "none"}, {"read"})
+
+
+@pytest.mark.parametrize("usage", [
+    {"input_tokens": True},
+    {"input_tokens": 1.5},
+    {"input_tokens": -1},
+    {"input_tokens": "7"},
+])
+def test_worker_usage_contract_never_coerces_or_truncates(usage):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        sidecar._strict_result({
+            "text": '{"answer":"done"}', "usage": usage,
+            "api_key_source": "none",
+        }, set())
+
+
+def test_http_rejects_nonstandard_and_ambiguous_json_before_transport(tmp_path):
+    transport = FakeTransport()
+    server, thread = _start_server(tmp_path, transport)
+    try:
+        prefix = ('{"model":"%s","messages":[],"stream":false,' % sidecar.MODEL)
+        status_nan, data_nan = _raw_json_request(
+            server, (prefix + '"temperature":NaN}').encode())
+        status_dup, data_dup = _raw_json_request(
+            server, (prefix + '"stream":true}').encode())
+        assert status_nan == status_dup == 400
+        assert json.loads(data_nan)["error"]["code"] == "invalid_json"
+        assert json.loads(data_dup)["error"]["code"] == "invalid_json"
+        assert transport.calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
 
 
 @pytest.mark.parametrize("text", [

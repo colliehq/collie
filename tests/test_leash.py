@@ -63,6 +63,21 @@ def test_spend_cap_and_expiry():
                    now_iso="2026-07-21").decision == DENY, "expired leash -> DENY")
 
 
+def test_malformed_authority_and_nonfinite_spend_fail_closed():
+    print("test_malformed_authority_and_nonfinite_spend_fail_closed")
+    check(evaluate({"may": "pay.*"}, "pay.charge").decision == DENY,
+          "a string is not an allowlist")
+    check(evaluate({"may": ["pay.*"], "spend_max_usd": float("nan")},
+                   "pay.charge", spend_usd=10).decision == DENY,
+          "NaN cap must not behave as unlimited")
+    check(evaluate({"may": ["pay.*"], "spend_max_usd": True},
+                   "pay.charge", spend_usd=1).decision == DENY,
+          "JSON true must not become a numeric dollar cap")
+    check(evaluate({"may": ["pay.*"], "spend_max_usd": 100},
+                   "pay.charge", spend_usd=float("nan")).decision == DENY,
+          "NaN requested spend must not bypass comparison")
+
+
 def test_executor_enforces_deny_even_after_confirm():
     print("test_executor_enforces_deny_even_after_confirm")
     clear_registry()

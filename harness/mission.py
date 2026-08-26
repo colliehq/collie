@@ -527,15 +527,60 @@ class Mission:
         return self.state in _TERMINAL
 
 
+_INVALID_DURABLE_JSON = "_collie_invalid_durable_json"
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-standard JSON constant: %s" % value)
+
+
+def _json_invalid(value):
+    return isinstance(value, dict) and value.get(_INVALID_DURABLE_JSON) is True
+
+
+def _nonnegative_integer(value, name):
+    if value is None or value == "":
+        return 0
+    if isinstance(value, bool) or (isinstance(value, float) and (
+            not math.isfinite(value) or not value.is_integer())):
+        raise ValueError("%s must be a non-negative integer" % name)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("%s must be a non-negative integer" % name) from None
+    if isinstance(value, str) and str(parsed) != value.strip():
+        raise ValueError("%s must be a non-negative integer" % name)
+    if parsed < 0:
+        raise ValueError("%s must be a non-negative integer" % name)
+    return parsed
+
+
+def _nonnegative_number(value, name):
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, bool):
+        raise ValueError("%s must be finite and non-negative" % name)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("%s must be finite and non-negative" % name) from None
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError("%s must be finite and non-negative" % name)
+    return parsed
+
+
 def _js(o):
-    return json.dumps(o or {}, ensure_ascii=False)
+    return json.dumps(o or {}, ensure_ascii=False, allow_nan=False)
 
 
 def _jl(s):
     try:
-        return json.loads(s) if s else {}
-    except (json.JSONDecodeError, TypeError):
-        return {}
+        value = json.loads(s, parse_constant=_reject_json_constant) if s else {}
+        if not isinstance(value, dict):
+            raise ValueError("durable JSON payload is not an object")
+        return value
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {_INVALID_DURABLE_JSON: True}
 
 
 def _compact_event(value, limit=4000):
@@ -909,8 +954,13 @@ class MissionStore:
             return error
         for row in lineage:
             aggregate = self._aggregate_runtime_locked(row["mission_id"])
+            leash = _jl(row["leash_json"])
+            if _json_invalid(leash):
+                return ("mission durable leash is corrupt" if
+                        row["mission_id"] == mission_id else
+                        "ancestor Mission durable leash is corrupt")
             reason = self._runtime_budget_reason(
-                _jl(row["leash_json"]), aggregate, row["created_at"], now)
+                leash, aggregate, row["created_at"], now)
             if reason:
                 return reason if row["mission_id"] == mission_id else \
                     "ancestor %s: %s" % (row["mission_id"], reason)
@@ -961,6 +1011,8 @@ class MissionStore:
             remaining_ms = []
             for row in lineage:
                 leash = _jl(row["leash_json"])
+                if _json_invalid(leash):
+                    return 0.0
                 limit_s = float(leash.get("max_active_wall_seconds", 21600) or 0)
                 if limit_s <= 0:
                     continue
@@ -979,13 +1031,18 @@ class MissionStore:
         A token is optional for recovery bookkeeping.  When supplied, a stale
         worker is fenced and cannot charge a fresh run's budget.
         """
-        charged_wall_ms = max(0, int(wall_ms or 0))
-        vals = (charged_wall_ms, max(0, int(input_tokens or 0)),
-                max(0, int(output_tokens or 0)), max(0, int(cache_tokens or 0)),
-                max(0, int(round(float(cost_usd or 0.0) * 1_000_000))),
-                max(0, int(round(float(equivalent_cost_usd or 0.0) * 1_000_000))),
-                max(0, int(retries or 0)), max(0, int(model_calls or 0)),
-                max(0, int(turns or 0)), charged_wall_ms, int(time.time()),
+        charged_wall_ms = _nonnegative_integer(wall_ms, "wall_ms")
+        vals = (charged_wall_ms,
+                _nonnegative_integer(input_tokens, "input_tokens"),
+                _nonnegative_integer(output_tokens, "output_tokens"),
+                _nonnegative_integer(cache_tokens, "cache_tokens"),
+                int(round(_nonnegative_number(cost_usd, "cost_usd") * 1_000_000)),
+                int(round(_nonnegative_number(
+                    equivalent_cost_usd, "equivalent_cost_usd") * 1_000_000)),
+                _nonnegative_integer(retries, "retries"),
+                _nonnegative_integer(model_calls, "model_calls"),
+                _nonnegative_integer(turns, "turns"),
+                charged_wall_ms, int(time.time()),
                 mission_id)
         owner = ""
         args = list(vals)
@@ -1008,7 +1065,7 @@ class MissionStore:
     def set_external_storage(self, mission_id, storage_bytes, token=""):
         """Set (not add) the current size of a Mission-owned external transcript."""
         owner = ""
-        args = [max(0, int(storage_bytes or 0)), mission_id]
+        args = [_nonnegative_integer(storage_bytes, "storage_bytes"), mission_id]
         if token:
             owner = (" AND EXISTS (SELECT 1 FROM missions m "
                      "WHERE m.mission_id=mission_runtime.mission_id "
@@ -1191,11 +1248,22 @@ class MissionStore:
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
             candidate = self.db.execute(
-                "SELECT 1 FROM missions WHERE mission_id=? AND state IN (%s) "
+                "SELECT leash_json,case_json FROM missions WHERE mission_id=? AND state IN (%s) "
                 "AND COALESCE(run_token,'')=''" % marks,
                 (mission_id, *states)).fetchone()
             if not candidate:
                 self.db.rollback()
+                return None
+            corrupt_parts = [name for name in ("leash", "case") if _json_invalid(
+                _jl(candidate[name + "_json"]))]
+            if corrupt_parts:
+                self.db.execute(
+                    "UPDATE missions SET state=?,result=?,updated_at=? WHERE mission_id=? "
+                    "AND state IN (%s) AND COALESCE(run_token,'')=''" % marks,
+                    (RECOVERY_REQUIRED,
+                     "durable Mission %s JSON is corrupt; inspect and reconcile" %
+                     " and ".join(corrupt_parts), now, mission_id, *states))
+                self.db.commit()
                 return None
             # A previous unconfirmed boundary keeps a settled campaign fence
             # until its conservative lease expires. Retire it while the old
@@ -1255,6 +1323,8 @@ class MissionStore:
             if not row:
                 return False
             leash = _jl(row["leash_json"])
+            if _json_invalid(leash):
+                return False
             max_idle = max(0.05, float(leash.get("max_step_seconds", 600))) + 5
             if int(row["progress_at"] or 0) and now - int(row["progress_at"]) > max_idle:
                 return False
@@ -1349,6 +1419,7 @@ class MissionStore:
                     # are not evidence that the worker remained active.
                     active_since = int(row["active_since"] or 0)
                     leash = _jl(row["leash_json"])
+                    corrupt_leash = _json_invalid(leash)
                     max_step_ms = int(
                         (max(0.05, float(leash.get("max_step_seconds", 600))) + 5.0) *
                         1000)
@@ -1367,7 +1438,10 @@ class MissionStore:
                             (inflight_ms, now, row["mission_id"]))
                     safe = row["phase"] in safe_phases
                     exhausted = self._budget_reason_locked(row["mission_id"], now)
-                    if safe and exhausted:
+                    if corrupt_leash:
+                        state = RECOVERY_REQUIRED
+                        result = "durable Mission leash JSON is corrupt; inspect and reconcile"
+                    elif safe and exhausted:
                         state = NEEDS_YOU
                         result = exhausted
                     else:
@@ -2026,7 +2100,7 @@ class MissionStore:
         if (not resource.startswith("mission-active:") or not slot_token or
                 slot_token.startswith("settled:")):
             return False
-        charged_wall_ms = max(0, int(wall_ms or 0))
+        charged_wall_ms = _nonnegative_integer(wall_ms, "wall_ms")
         now = int(time.time())
         with self._lock:
             try:
@@ -2905,42 +2979,63 @@ class MissionDriver:
 
     @staticmethod
     def _usage_from_decision(decision):
-        usage = (decision or {}).get("_usage") or {}
+        if not isinstance(decision, dict):
+            raise ValueError("model decision must be an object")
+        usage = decision.get("_usage") if "_usage" in decision else {}
+        if not isinstance(usage, dict):
+            raise ValueError("model decision usage must be an object")
+        reserved = decision.get("_model_calls_reserved", False)
+        if not isinstance(reserved, bool):
+            raise ValueError("model call reservation marker must be boolean")
+        calls = _nonnegative_integer(decision.get("_model_calls", 1), "model_calls")
         return {
-            "input_tokens": int(usage.get("input_tokens", 0) or 0),
-            "output_tokens": int(usage.get("output_tokens", 0) or 0),
-            "cache_tokens": int(usage.get("cache_tokens", 0) or 0),
-            "cost_usd": float((decision or {}).get("_cost_usd", 0.0) or 0.0),
-            "equivalent_cost_usd": float(
-                (decision or {}).get("_equivalent_cost_usd", 0.0) or 0.0),
-            "retries": int((decision or {}).get("_retry", 0) or 0),
+            "input_tokens": _nonnegative_integer(
+                usage.get("input_tokens", 0), "input_tokens"),
+            "output_tokens": _nonnegative_integer(
+                usage.get("output_tokens", 0), "output_tokens"),
+            "cache_tokens": _nonnegative_integer(
+                usage.get("cache_tokens", 0), "cache_tokens"),
+            "cost_usd": _nonnegative_number(decision.get("_cost_usd", 0.0),
+                                             "cost_usd"),
+            "equivalent_cost_usd": _nonnegative_number(
+                decision.get("_equivalent_cost_usd", 0.0),
+                "equivalent_cost_usd"),
+            "retries": _nonnegative_integer(decision.get("_retry", 0), "retries"),
             # A transport-aware provider reserves every request immediately
             # before starting its physical transport. Legacy providers precharge the first
             # logical request in reserve_decision and report only extras here.
-            "model_calls": (0 if (decision or {}).get("_model_calls_reserved")
-                            else max(0, int(
-                                (decision or {}).get("_model_calls", 1) or 1) - 1)),
+            "model_calls": 0 if reserved else max(0, calls - 1),
         }
 
     @staticmethod
     def _usage_from_result(result):
         usage = result.get("_usage") if isinstance(result, dict) else None
+        if isinstance(result, dict) and "_usage" in result and not isinstance(usage, dict):
+            raise ValueError("capability result usage must be an object")
         usage = usage if isinstance(usage, dict) else {}
+        reserved = result.get("_model_calls_reserved", False) \
+            if isinstance(result, dict) else False
+        if not isinstance(reserved, bool):
+            raise ValueError("model call reservation marker must be boolean")
         return {
-            "input_tokens": int(usage.get("input_tokens", 0) or 0),
-            "output_tokens": int(usage.get("output_tokens", 0) or 0),
-            "cache_tokens": int(usage.get("cache_tokens", 0) or 0),
-            "cost_usd": float(usage.get("cost_usd", 0.0) or 0.0),
-            "equivalent_cost_usd": float(
-                result.get("equivalent_cost_usd", 0.0) or 0.0)
+            "input_tokens": _nonnegative_integer(
+                usage.get("input_tokens", 0), "input_tokens"),
+            "output_tokens": _nonnegative_integer(
+                usage.get("output_tokens", 0), "output_tokens"),
+            "cache_tokens": _nonnegative_integer(
+                usage.get("cache_tokens", 0), "cache_tokens"),
+            "cost_usd": _nonnegative_number(usage.get("cost_usd", 0.0),
+                                             "cost_usd"),
+            "equivalent_cost_usd": _nonnegative_number(
+                result.get("equivalent_cost_usd", 0.0), "equivalent_cost_usd")
             if isinstance(result, dict) else 0.0,
             # Nested agent loops must count against the same durable campaign
             # envelope as the outer Mission decider.  These fields are absent on
             # ordinary deterministic capabilities and therefore remain zero.
-            "model_calls": (0 if result.get("_model_calls_reserved") else
-                            int(result.get("model_calls", 0) or 0))
+            "model_calls": (0 if reserved else _nonnegative_integer(
+                result.get("model_calls", 0), "model_calls"))
             if isinstance(result, dict) else 0,
-            "turns": int(result.get("turns", 0) or 0)
+            "turns": _nonnegative_integer(result.get("turns", 0), "turns")
             if isinstance(result, dict) else 0,
         }
 
@@ -2977,10 +3072,11 @@ class MissionDriver:
             channel = str(channel or "").strip()
             if (not channel or channel.lower() in ("model", "self-report", "model-self-report")
                     or not isinstance(at, (int, float)) or isinstance(at, bool)
-                    or not isinstance(ok, bool)):
+                    or not math.isfinite(float(at)) or float(at) < 0
+                    or not isinstance(ok, bool) or not isinstance(asserted, bool)):
                 continue
             evidence.append({"channel": channel[:120], "at": float(at), "ok": ok,
-                             "asserted": bool(asserted), "detail": str(detail or "")[:1000]})
+                             "asserted": asserted, "detail": str(detail or "")[:1000]})
         return evidence
 
     @staticmethod
@@ -2990,6 +3086,8 @@ class MissionDriver:
         if raw in (None, ""):
             return 0
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            if not math.isfinite(float(raw)):
+                raise ValueError("Mission leash expires must be finite")
             return int(raw)
         try:
             parsed = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
@@ -2997,7 +3095,7 @@ class MissionDriver:
                 parsed = parsed.replace(tzinfo=timezone.utc)
             return int(parsed.timestamp())
         except (TypeError, ValueError, OverflowError):
-            return 0
+            raise ValueError("Mission leash expires is invalid") from None
 
     def _active_step_timeout(self, mission_id, leash):
         """Clamp one blocking boundary to the campaign's remaining active time."""
@@ -3815,6 +3913,12 @@ class MissionDriver:
         read_target = None
         heartbeat_pair = self._start_heartbeat(mission_id, token) if heartbeat else None
         try:
+            initial = self.store.get(mission_id)
+            if (initial is None or _json_invalid(initial.leash) or
+                    _json_invalid(initial.case)):
+                return self._finish(
+                    mission_id, token, RECOVERY_REQUIRED,
+                    "durable Mission authority or case JSON is corrupt; inspect and reconcile")
             # A confirmed action may be waiting only because the shared browser
             # profile was busy.  Retry that exact, already-approved nonce before
             # asking the model to propose anything new.
@@ -4841,15 +4945,22 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
     `autonomous=True` pre-authorizes the irreversible primitives (still within the
     other bounds); otherwise they park for confirm. Only bounds enforced by
     deterministic host checks should be supplied; opaque metadata is not authority."""
+    if not isinstance(autonomous, bool):
+        raise ValueError("Mission leash autonomous must be a boolean")
     default_may = ["research", "compose", "observe", "agent.*", "web.*",
                    "browse", "browse.*", "verification.*"]
+    if may is not None and (not isinstance(may, (list, tuple, set)) or
+                            not all(isinstance(item, str) and item.strip()
+                                    for item in may)):
+        raise ValueError("Mission leash may must be a list of non-empty strings")
     known = {"spend_max_usd", "allowed_domains", "max_total_steps",
              "max_irreversible_actions", "actions_per_hour", "max_model_tokens",
              "max_model_cost_usd", "max_model_calls", "max_active_wall_seconds",
              "max_elapsed_seconds",
              "max_step_seconds", "max_retries", "max_storage_bytes", "checkpoint_keep",
              "human_escalate_seconds", "human_timeout_seconds", "workspace_mode",
-             "max_specialists", "max_specialist_depth", "execution_profile_sha256"}
+             "max_specialists", "max_specialist_depth", "execution_profile_sha256",
+             "worker_profile_sha256"}
     unknown = sorted(set(bounds) - known)
     if unknown:
         raise ValueError("unenforced Mission leash bound(s): " + ", ".join(unknown))
@@ -4860,9 +4971,16 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
                 "human_escalate_seconds", "human_timeout_seconds", "max_specialists",
                 "max_specialist_depth"):
         if key in bounds:
+            value = bounds[key]
+            if isinstance(value, bool) or (
+                    isinstance(value, float) and (
+                        not math.isfinite(value) or not value.is_integer())):
+                raise ValueError("Mission leash %s must be a positive integer" % key)
             try:
-                bounds[key] = int(bounds[key])
-            except (TypeError, ValueError):
+                bounds[key] = int(value)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("Mission leash %s must be a positive integer" % key)
+            if isinstance(value, str) and str(bounds[key]) != value.strip():
                 raise ValueError("Mission leash %s must be a positive integer" % key)
             if bounds[key] < 1:
                 raise ValueError("Mission leash %s must be a positive integer" % key)
@@ -4872,6 +4990,8 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
             raise ValueError("Mission leash allowed_domains must be a non-empty string list")
         bounds["allowed_domains"] = [x.strip().lower() for x in bounds["allowed_domains"]]
     if "spend_max_usd" in bounds:
+        if isinstance(bounds["spend_max_usd"], bool):
+            raise ValueError("Mission leash spend_max_usd must be numeric")
         try:
             spend = float(bounds["spend_max_usd"])
         except (TypeError, ValueError):
@@ -4880,6 +5000,8 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
             raise ValueError("Mission leash spend_max_usd must be finite")
         bounds["spend_max_usd"] = max(0.0, spend)
     if "max_model_cost_usd" in bounds:
+        if isinstance(bounds["max_model_cost_usd"], bool):
+            raise ValueError("Mission leash max_model_cost_usd must be numeric")
         try:
             bounds["max_model_cost_usd"] = float(bounds["max_model_cost_usd"])
         except (TypeError, ValueError):
@@ -4888,18 +5010,21 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
                 bounds["max_model_cost_usd"] <= 0):
             raise ValueError(
                 "Mission leash max_model_cost_usd must be finite and positive")
-    if "execution_profile_sha256" in bounds:
-        digest = str(bounds["execution_profile_sha256"] or "").lower()
+    for digest_key in ("execution_profile_sha256", "worker_profile_sha256"):
+        if digest_key not in bounds:
+            continue
+        digest = str(bounds[digest_key] or "").lower()
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(
-                "Mission leash execution_profile_sha256 must be a SHA-256 hex digest")
-        bounds["execution_profile_sha256"] = digest
+                "Mission leash %s must be a SHA-256 hex digest" % digest_key)
+        bounds[digest_key] = digest
     if bounds.get("workspace_mode", "current") not in ("current", "isolated"):
         raise ValueError("Mission leash workspace_mode must be 'current' or 'isolated'")
     if ("human_timeout_seconds" in bounds and "human_escalate_seconds" in bounds and
             bounds["human_timeout_seconds"] < bounds["human_escalate_seconds"]):
         raise ValueError("Mission leash human_timeout_seconds must be >= human_escalate_seconds")
-    leash = {"may": sorted(default_may if may is None else may),
+    leash = {"may": sorted(default_may if may is None else
+                            (item.strip() for item in may)),
              "irreversible": "allow" if autonomous else "confirm",
              # Durable campaign-wide limits; unlike max_steps-per-advance these
              # survive every wait, restart, and competing daemon.
@@ -4928,9 +5053,25 @@ def world_leash(may=None, autonomous=False, expires=None, **bounds) -> dict:
         # commonly have an epoch deadline; accepting it without normalization stores
         # an int that crashes the first primitive-catalog evaluation (str > int).
         if isinstance(expires, (int, float)) and not isinstance(expires, bool):
-            expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
+            if not math.isfinite(float(expires)):
+                raise ValueError("Mission leash expires must be finite")
+            try:
+                expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
+            except (OverflowError, OSError, ValueError):
+                raise ValueError(
+                    "Mission leash expires is outside the supported range") from None
         elif isinstance(expires, str):
             expires = expires.strip()
+            if expires:
+                try:
+                    parsed = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    expires = parsed.astimezone(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ")
+                except (TypeError, ValueError, OverflowError):
+                    raise ValueError("Mission leash expires must be a valid ISO timestamp") \
+                        from None
         else:
             raise ValueError("Mission leash expires must be an ISO timestamp or epoch seconds")
         if expires:

@@ -38,6 +38,7 @@ import json
 import hashlib
 import inspect
 import fnmatch
+import math
 import os
 import re
 import secrets
@@ -1266,6 +1267,26 @@ def _code_session_id(mission_id, workspace):
         material.encode("utf-8", "replace")).hexdigest()[:24]
 
 
+def _optional_nonnegative_int(value, name):
+    """Parse an optional durable authority value without truncation or NaN."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValueError("%s must be a non-negative integer" % name)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError("%s must be a non-negative integer" % name)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("%s must be a non-negative integer" % name) from None
+    if isinstance(value, str) and str(parsed) != value.strip():
+        raise ValueError("%s must be a non-negative integer" % name)
+    if parsed < 0:
+        raise ValueError("%s must be a non-negative integer" % name)
+    return parsed
+
+
 def _default_code_verifier(workspace, result, command="", baseline_digest="",
                            timeout_seconds=300, *, patch_attributed=False,
                            agent_post_tree_digest=""):
@@ -1275,8 +1296,13 @@ def _default_code_verifier(workspace, result, command="", baseline_digest="",
         return {"verified": bool(getattr(result, "verified", False)),
                 "detail": "no host verification command configured", "evidence": None}
     from .verification import run_verification_command
+    try:
+        parsed_timeout = _optional_nonnegative_int(
+            timeout_seconds, "verify_timeout_seconds")
+    except ValueError as exc:
+        return {"verified": False, "detail": str(exc), "evidence": None}
     evidence = run_verification_command(
-        command, workspace, timeout=max(1, min(3600, int(timeout_seconds or 300))),
+        command, workspace, timeout=max(1, min(3600, parsed_timeout or 300)),
         source="mission_code_profile", after_last_edit=True)
     # The verifier is allowed to execute repository code and can therefore
     # create files of its own (for example __pycache__, coverage data, or build
@@ -1311,13 +1337,15 @@ def _default_code_verifier(workspace, result, command="", baseline_digest="",
 
 
 def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
-               execution_profile=None, verify_command="", session_id="",
+               execution_profile=None, worker_profile=None, verify_command="", session_id="",
                baseline_tree_digest="", expected_tree_digest="", slice_turns=None,
                verify_timeout_seconds=None, max_session_storage_bytes=None,
-               max_model_calls=None, mission_store_path="", mission_run_token=""):
+               max_model_calls=None, runs_db="", mission_store_path="",
+               mission_run_token=""):
     import os
     from . import sessions
-    from .cli import make_harness
+    from .cli import (make_harness, _RunnerShim, _paths, _worker_history_note,
+                      _worker_model, _worker_provider)
     from . import settings as _s
     cwd = os.path.realpath(os.path.abspath(workspace or os.getcwd()))
     roots = [os.path.realpath(os.path.abspath(p)) for p in
@@ -1360,6 +1388,21 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
             not all(ch.isalnum() or ch in "-_." for ch in sid)):
         return {"answer": "durable code session id is invalid", "verified": False,
                 "needs_human": True}
+    try:
+        session_limit = _optional_nonnegative_int(
+            max_session_storage_bytes, "max_session_storage_bytes") or 0
+        verified_timeout = _optional_nonnegative_int(
+            verify_timeout_seconds, "verify_timeout_seconds")
+        model_call_limit = _optional_nonnegative_int(
+            max_model_calls, "max_model_calls")
+    except ValueError as exc:
+        return {"answer": "invalid Mission code authority: " + str(exc),
+                "verified": False, "continue_needed": False,
+                "needs_human": True, "session_id": sid}
+    if model_call_limit == 0:
+        return {"answer": "Mission model-request budget is exhausted",
+                "verified": False, "continue_needed": False,
+                "needs_human": True, "session_id": sid}
     checked = sessions.load_checked(sid)
     if checked.get("status") == "invalid":
         return {
@@ -1424,12 +1467,15 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         # Persist this before the first possible edit.  If the worker dies after
         # changing files but before its final slice receipt, restart still knows
         # which bytes belonged to the user and which belong to this Mission.
-        baseline_persisted = sessions.append_run_receipt(sid, {
-            "kind": "mission_code_baseline",
-            "mission_id": str(mission_id or ""),
-            "session_id": sid,
-            "baseline_tree_digest": baseline_digest,
-        }, limit=128)
+        try:
+            baseline_persisted = sessions.append_run_receipt(sid, {
+                "kind": "mission_code_baseline",
+                "mission_id": str(mission_id or ""),
+                "session_id": sid,
+                "baseline_tree_digest": baseline_digest,
+            }, limit=128)
+        except Exception:
+            baseline_persisted = False
         if not baseline_persisted:
             return {
                 "answer": "could not durably persist the pre-edit code baseline",
@@ -1509,10 +1555,6 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         after = str(receipt.get("post_tree_digest") or "")
         if before and after and before == expected_digest:
             expected_digest = after
-    try:
-        session_limit = max(0, int(max_session_storage_bytes or 0))
-    except (TypeError, ValueError):
-        session_limit = 0
     before_session_bytes = sessions.storage_bytes(sid)
     if session_limit and before_session_bytes >= session_limit:
         return {
@@ -1535,11 +1577,38 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
             "post_tree_digest": str(pre_slice.get("tree_digest") or ""),
             "_external_storage_bytes": before_session_bytes,
         }
-    h = make_harness(cwd, provider=provider, model=model,
-                     project=project, embed="hash", rerank="off", distill="off",
-                     web_search=False, code_search=True, exec_code=False,
-                     subscription_only=bool(profile.get("subscription_only")))
+    worker_decision = None
+    worker_request = None
+    external_worker = False
+    worker_receipt = None
+    worker_spec = None
+    worker_model = ""
+    if isinstance(worker_profile, dict) and worker_profile:
+        from .runner_select import refresh_frozen_worker_profile
+        from .runner_specs import HarnessRequest
+        try:
+            worker_decision = refresh_frozen_worker_profile(
+                worker_profile, cwd=cwd, runs_db=str(runs_db or ""))
+            worker_request = HarnessRequest.from_dict(worker_profile.get("request") or {})
+        except ValueError as exc:
+            return {"answer": str(exc), "verified": False, "continue_needed": False,
+                    "needs_human": True, "session_id": sid}
+        external_worker = worker_decision.runner != "collie"
+        if external_worker:
+            from . import runner_registry
+            worker_spec = runner_registry.SPECS.get(worker_decision.runner)
+            worker_model = _worker_model(
+                "", type("MissionRoute", (), {"model": model})(),
+                worker_request, worker_spec)
+    if external_worker:
+        h = _RunnerShim(str(runs_db or "") or _paths()[1])
+    else:
+        h = make_harness(cwd, provider=provider, model=model,
+                         project=project, embed="hash", rerank="off", distill="off",
+                         web_search=False, code_search=True, exec_code=False,
+                         subscription_only=bool(profile.get("subscription_only")))
     request_store = None
+    external_request_id = ""
     if mission_store_path and mission_run_token:
         from .mission import MissionStore
         request_store = MissionStore(str(mission_store_path))
@@ -1548,27 +1617,40 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
             request_id = "req_" + secrets.token_hex(16)
             ok = request_store.reserve_model_request(
                 str(mission_id or ""), str(mission_run_token), request_id,
-                provider=getattr(h.provider, "name", ""),
-                model=getattr(h.provider, "model", ""), purpose=purpose)
+                provider=(_worker_provider(worker_decision) if external_worker else
+                          getattr(h.provider, "name", "")),
+                model=((worker_model or worker_decision.runner) if external_worker else
+                       getattr(h.provider, "model", "")), purpose=purpose)
             return request_id if ok else None
 
-        h.provider.request_gate = reserve_request
-        h.provider.request_complete = request_store.complete_model_request
+        if external_worker:
+            external_request_id = reserve_request("external_code_slice") or ""
+            if not external_request_id:
+                request_store.close()
+                h.memory.close(); h.recorder.close()
+                return {"answer": "Mission model-request budget is exhausted",
+                        "verified": False, "continue_needed": False,
+                        "needs_human": True, "session_id": sid}
+        else:
+            h.provider.request_gate = reserve_request
+            h.provider.request_complete = request_store.complete_model_request
     elif profile.get("profile") == "overnight" and max_model_calls not in (None, ""):
         return {"answer": "overnight code model-request authority is missing",
                 "verified": False, "needs_human": True}
-    if profile.get("subscription_only"):
+    if profile.get("subscription_only") and not external_worker:
         # Claude CLI normally permits an API-key fallback.  Overnight code does
         # not: its frozen billing route is part of Mission authority.
         h.provider.subscription_only = True
     # Positive authority list: a capability advertised as reversible cannot load
     # browser/desktop/MCP hands or a general shell behind Mission's outer gate.
-    _restrict_code_child(h, cwd)
+    if not external_worker:
+        _restrict_code_child(h, cwd)
     # This child intentionally has no shell capability.  Verification is an
     # exact parent-authorized host command after every slice, so the generic
     # loop's "use bash to verify" nudge would only waste a model turn.
-    h.self_verify = False
-    if profile.get("profile") == "overnight":
+    if not external_worker:
+        h.self_verify = False
+    if profile.get("profile") == "overnight" and not external_worker:
         # Let Mission's durable wait/backoff own transport retries.  Sleeping and
         # retrying inside a killable slice obscures the runnable-boundary auth
         # recheck and can consume several subscription requests before the
@@ -1579,22 +1661,20 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         try:
             slice_turns = int(os.environ.get(
                 "COLLIE_CODE_SLICE_TURNS", os.environ.get("COLLIE_CODE_TURNS", "24")))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             slice_turns = 24
     try:
         slice_turns = int(slice_turns)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         slice_turns = 24
-    h.max_turns = max(1, min(50, slice_turns))
-    if max_model_calls not in (None, ""):
-        try:
-            h.max_model_calls = max(0, int(max_model_calls))
-        except (TypeError, ValueError):
-            h.max_model_calls = 0
-        if h.max_model_calls:
+    h.max_turns = max(1, min(50, slice_turns)) if not external_worker else None
+    if model_call_limit is not None:
+        h.max_model_calls = model_call_limit
+        if h.max_model_calls and not external_worker:
             h.max_turns = min(h.max_turns, h.max_model_calls)
-    h.durable_session_id = sid
-    h.checkpoint_scope = "session:" + sid
+    if not external_worker:
+        h.durable_session_id = sid
+        h.checkpoint_scope = "session:" + sid
     prompt = str(goal or "")
     if history:
         prompt = ("Continue the same coding task from its durable checkpoint. Inspect the "
@@ -1613,19 +1693,76 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
                            "repair this before finishing):\n" +
                            (feedback + "\n" if feedback else "") + output[-2500:])
     try:
-        res = h.run("code:" + str(mission_id or project), prompt, history=history)
+        if external_worker:
+            from . import runner_slice
+            resume_from = None
+            for prior_receipt in reversed(prior_receipts):
+                section = prior_receipt.get("runner") \
+                    if isinstance(prior_receipt, dict) else None
+                if isinstance(section, dict) and \
+                        section.get("runner") == worker_decision.runner:
+                    resume_from = section.get("native_session") or None
+                    if resume_from:
+                        break
+            res = runner_slice.run_adhoc(
+                worker_decision, prompt, cwd,
+                timeout_s=(worker_spec.default_timeout_s if worker_spec else None),
+                history_note=(None if resume_from else _worker_history_note(history)),
+                resume_from=resume_from, model=worker_model,
+                provider=_worker_provider(worker_decision),
+                task_id="code:" + str(mission_id or project), recorder=h.recorder)
+            worker_receipt = runner_slice.receipt_of(res)
+            if external_request_id and request_store is not None:
+                request_store.complete_model_request(
+                    external_request_id, "completed" if not res.error else "failed")
+        else:
+            res = h.run("code:" + str(mission_id or project), prompt, history=history)
     except Exception:
         # The durable baseline was written before entering the model/tool loop.
         # Close local stores before propagating so the process wrapper can turn
         # this outcome-uncertain boundary into Mission recovery state.
-        try:
-            h.memory.close()
-            h.recorder.close()
-            if request_store is not None:
-                request_store.close()
-        except Exception:
-            pass
+        if request_store is not None and external_request_id:
+            try:
+                request_store.complete_model_request(external_request_id, "failed")
+            except Exception:
+                pass
+        for store in (getattr(h, "memory", None), getattr(h, "recorder", None),
+                      request_store):
+            close = getattr(store, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
         raise
+    # A Mission always has a token leash. Declared runner capability is not
+    # enough: if this particular invocation omitted usage, treating None as zero
+    # would authorize another slice against an unmeasurable budget. Mark the
+    # slice as needing attention before its transcript is committed.
+    worker_billing = str(getattr(worker_decision, "billing_class", "") or "")
+    safe_worker_billing = external_worker and worker_billing in (
+        "subscription_allowance", "local")
+    raw_usage = {
+        "input_tokens": getattr(res, "input_tokens", None),
+        "output_tokens": getattr(res, "output_tokens", None),
+        "cache_tokens": (
+            None if (getattr(res, "cache_read", None) is None or
+                     getattr(res, "cache_creation", None) is None)
+            else int(getattr(res, "cache_read", 0) or 0) +
+                 int(getattr(res, "cache_creation", 0) or 0)),
+    }
+    missing_usage = [key for key, value in raw_usage.items() if value is None]
+    if (external_worker and not safe_worker_billing and
+            getattr(res, "cost_usd", None) is None):
+        missing_usage.append("cost_usd")
+    usage_error = ""
+    if external_worker and missing_usage:
+        usage_error = (
+            "external worker did not report usage required by the Mission leash: " +
+            ", ".join(missing_usage))
+        res.error = ((str(getattr(res, "error", "") or "") + "; ")
+                     if getattr(res, "error", "") else "") + usage_error
+        res.success = False
     # Freeze the exact agent-owned boundary before transcript persistence or
     # the host verifier can touch the workspace.  The final post-slice snapshot
     # below remains the physical continuation boundary; this one alone decides
@@ -1646,19 +1783,43 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     patch_attributed = bool(
         (patch_attributed or agent_mutated) and agent_snapshot_complete and
         baseline_digest and agent_post_digest != baseline_digest)
-    sessions.save(sid, res.messages, project=project, cwd=cwd, answer=res.answer or "")
+    transcript_persisted = True
+    transcript_error = ""
+    try:
+        if external_worker:
+            sessions.append_exchange(sid, prompt, runner_slice.transcript_text(res),
+                                     project=project, cwd=cwd)
+        else:
+            sessions.save(sid, res.messages, project=project, cwd=cwd,
+                          answer=res.answer or "")
+    except Exception as persist_exc:
+        from .runner_specs import redact_text
+        transcript_persisted = False
+        transcript_error = "code transcript could not be persisted: " + redact_text(
+            "%s: %s" % (type(persist_exc).__name__, persist_exc), 500)
+        res.error = ((str(getattr(res, "error", "") or "") + "; ")
+                     if getattr(res, "error", "") else "") + transcript_error
+        res.success = False
     if host_verifier is None:
         verification = _default_code_verifier(
             cwd, res, verify_command, baseline_digest=baseline_digest,
-            timeout_seconds=verify_timeout_seconds or 300,
+            timeout_seconds=verified_timeout or 300,
             patch_attributed=patch_attributed,
             agent_post_tree_digest=str(agent_post_slice.get("tree_digest") or ""))
     else:
         verification = host_verifier(cwd, res)
     if isinstance(verification, bool):
         verification = {"verified": verification}
-    verification = verification if isinstance(verification, dict) else {}
+    verification = dict(verification) if isinstance(verification, dict) else {}
     verified = bool(verification.get("verified"))
+    if usage_error:
+        verified = False
+        verification["verified"] = False
+        verification["usage_guard"] = usage_error
+    if not transcript_persisted:
+        verified = False
+        verification["verified"] = False
+        verification["transcript_guard"] = transcript_error
     error_text = str(getattr(res, "error", "") or "")
     if not error_text and str(getattr(res, "answer", "") or "").startswith("ERROR("):
         error_text = str(getattr(res, "answer", "") or "")
@@ -1686,23 +1847,36 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     session_recovery = sessions.recovery_state(sid)
     journal_uncertain = bool(session_recovery and
                              session_recovery.get("recovery_required"))
-    recovery_required = bool(journal_uncertain or not slice_snapshot_complete)
+    recovery_required = bool(journal_uncertain or not slice_snapshot_complete or
+                             not transcript_persisted)
     needs_human = bool(error_text and not transient and not verified and
                        not recovery_required)
     continue_needed = bool(not verified and not recovery_required and not needs_human and
                            (getattr(res, "turns_exhausted", False) or transient or
                             profile.get("profile") == "overnight"))
-    marginal_cost = 0.0 if profile.get("subscription_only") else float(
-        getattr(res, "cost_usd", 0.0) or 0.0)
+    reported_cost = getattr(res, "cost_usd", None)
+    no_marginal_charge = bool(
+        safe_worker_billing or (not external_worker and profile.get("subscription_only")))
+    marginal_cost = 0.0 if no_marginal_charge else (
+        None if reported_cost is None else float(reported_cost))
+    equivalent_cost = None if reported_cost is None else float(reported_cost)
     usage = {
-        "input_tokens": int(getattr(res, "input_tokens", 0) or 0),
-        "output_tokens": int(getattr(res, "output_tokens", 0) or 0),
-        "cache_tokens": int(getattr(res, "cache_read", 0) or 0) +
-                        int(getattr(res, "cache_creation", 0) or 0),
+        "known": not missing_usage,
+        "input_tokens": (None if raw_usage["input_tokens"] is None else
+                         int(raw_usage["input_tokens"] or 0)),
+        "output_tokens": (None if raw_usage["output_tokens"] is None else
+                          int(raw_usage["output_tokens"] or 0)),
+        "cache_tokens": raw_usage["cache_tokens"],
         # Mission's cost leash is a charge leash.  Equivalent API value remains
         # visible separately instead of falsely stopping a flat subscription.
         "cost_usd": marginal_cost,
-        "equivalent_cost_usd": float(getattr(res, "cost_usd", 0.0) or 0.0),
+        "equivalent_cost_usd": equivalent_cost,
+    }
+    accounted_usage = {
+        "input_tokens": int(raw_usage["input_tokens"] or 0),
+        "output_tokens": int(raw_usage["output_tokens"] or 0),
+        "cache_tokens": int(raw_usage["cache_tokens"] or 0),
+        "cost_usd": float(marginal_cost or 0.0),
     }
     receipt = {
         "kind": "mission_code_slice", "mission_id": str(mission_id or ""),
@@ -1719,9 +1893,21 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "turns_exhausted": bool(getattr(res, "turns_exhausted", False)),
         "verified": verified, "continue_needed": continue_needed,
         "verification": verification,
+        "transcript_persisted": transcript_persisted,
+        "transcript_error": transcript_error,
         "usage": usage,
+        "runner": worker_receipt.to_dict() if worker_receipt is not None else None,
+        "worker_decision": (worker_decision.to_dict()
+                            if worker_decision is not None else None),
     }
-    receipt_persisted = sessions.append_run_receipt(sid, receipt, limit=128)
+    receipt_error = ""
+    try:
+        receipt_persisted = sessions.append_run_receipt(sid, receipt, limit=128)
+    except Exception as persist_exc:
+        from .runner_specs import redact_text
+        receipt_persisted = False
+        receipt_error = "code ownership receipt could not be persisted: " + redact_text(
+            "%s: %s" % (type(persist_exc).__name__, persist_exc), 500)
     if not receipt_persisted:
         # The workspace may already contain edits. Without the post-slice WAL
         # receipt those bytes have uncertain ownership and must be reconciled;
@@ -1737,16 +1923,25 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         h.recorder.finish_run(res)
     except Exception:
         pass
-    try:
-        h.memory.close(); h.recorder.close()
-        if request_store is not None:
-            request_store.close()
-    except Exception:
-        pass
+    for store in (getattr(h, "memory", None), getattr(h, "recorder", None),
+                  request_store):
+        close = getattr(store, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+    public_answer = str(getattr(res, "answer", "") or "")
+    if not transcript_persisted:
+        public_answer += (("\n\n" if public_answer else "") + transcript_error)
+    if not receipt_persisted:
+        ownership_error = (receipt_error or
+                           "code slice completed but its ownership receipt was not "
+                           "durably persisted")
+        public_answer += (("\n\n" if public_answer else "") + ownership_error)
+    public_answer = public_answer or str(getattr(res, "error", "") or "")
     return {
-        "answer": (
-            "code slice completed but its ownership receipt was not durably persisted"
-            if not receipt_persisted else res.answer or res.error or ""),
+        "answer": public_answer,
         "verified": verified,
         "continue_needed": continue_needed, "session_id": sid,
         "turns_exhausted": bool(getattr(res, "turns_exhausted", False)),
@@ -1754,8 +1949,8 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "model_calls": int(getattr(res, "model_calls", 0) or
                            getattr(res, "turns", 0) or 0),
         "_model_calls_reserved": bool(request_store is not None),
-        "_usage": {key: usage[key] for key in
-                   ("input_tokens", "output_tokens", "cache_tokens", "cost_usd")},
+        "_usage": accounted_usage,
+        "_usage_known": usage["known"],
         "equivalent_cost_usd": usage["equivalent_cost_usd"],
         "baseline_tree_digest": baseline_digest,
         "expected_tree_digest": expected_digest,
@@ -1763,6 +1958,7 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "post_tree_digest": str(post_slice.get("tree_digest") or ""),
         "verification": verification,
         "error": error_text[:1000],
+        "receipt_error": receipt_error,
         "transient": transient,
         "retry_after_seconds": 60 if transient else 0,
         "recovery_required": recovery_required,
@@ -1770,6 +1966,7 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "slice_mutated": slice_mutated,
         "verifier_mutated": verifier_mutated,
         "patch_attributed": patch_attributed,
+        "runner": worker_receipt.to_dict() if worker_receipt is not None else None,
         "_external_storage_bytes": session_bytes,
     }
 
@@ -1786,6 +1983,7 @@ def _real_code(runner=None):
             out = _live_code(
                 goal, ws, mission_id=getattr(rec, "job_id", ""),
                 execution_profile=execution_profile,
+                worker_profile=case.get("worker_profile") or {},
                 verify_command=code_profile.get("verify_command") or "",
                 session_id=(code_profile.get("session_id") or
                             case.get("code_session_id") or ""),
@@ -1806,6 +2004,7 @@ def _real_code(runner=None):
                     p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()) or
                     any(name in params for name in (
                         "workspace", "mission_id", "execution_profile",
+                        "worker_profile",
                         "verify_command", "max_wall_seconds", "session_id",
                         "baseline_tree_digest", "slice_turns",
                         "expected_tree_digest",
@@ -1818,6 +2017,7 @@ def _real_code(runner=None):
                 context = {
                     "workspace": ws, "mission_id": getattr(rec, "job_id", ""),
                     "execution_profile": execution_profile,
+                    "worker_profile": case.get("worker_profile") or {},
                     "verify_command": code_profile.get("verify_command") or "",
                     "session_id": (code_profile.get("session_id") or
                                    case.get("code_session_id") or ""),
@@ -1889,7 +2089,11 @@ def _real_code(runner=None):
             "model_calls": int(out.get("model_calls", 0) or 0),
             "_model_calls_reserved": bool(out.get("_model_calls_reserved")),
             "_usage": dict(out.get("_usage") or {}),
-            "equivalent_cost_usd": float(out.get("equivalent_cost_usd", 0.0) or 0.0),
+            "_usage_known": bool(out.get("_usage_known", True)),
+            "equivalent_cost_usd": (
+                None if out.get("equivalent_cost_usd") is None else
+                float(out.get("equivalent_cost_usd") or 0.0)),
+            "runner": out.get("runner") if isinstance(out.get("runner"), dict) else None,
             "verification": out.get("verification"),
             "error": out.get("error", ""),
             "_external_storage_bytes": int(

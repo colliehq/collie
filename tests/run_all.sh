@@ -3,6 +3,13 @@
 # Kept LF by .gitattributes: this entrypoint runs under Git Bash on Windows CI too.
 #   bash tests/run_all.sh
 cd "$(dirname "$0")/.."
+# PowerShell's bare `bash` commonly resolves to WSL, although this Windows
+# checkout and its CI contract require Git Bash. Fail with one actionable
+# sentence instead of producing hundreds of path/runtime false negatives.
+if [ -n "${WSL_INTEROP:-}" ] && case "$PWD" in /mnt/[a-zA-Z]/*) true;; *) false;; esac; then
+  echo "ERROR: Windows checkout opened through WSL bash. Run with Git Bash: 'C:\Program Files\Git\bin\bash.exe' tests/run_all.sh" >&2
+  exit 2
+fi
 PY=.venv/bin/python
 # fall back to whatever interpreter this OS actually ships. Use the BARE command name (not the
 # `command -v` path — that resolves to spaces like "C:\Users\First Last\..." which split an unquoted
@@ -17,6 +24,19 @@ if [ ! -x "$PY" ]; then
   done
 fi
 rc=0
+NODE_OK=0
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR=$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0)
+  if [ "$NODE_MAJOR" -ge 20 ] 2>/dev/null; then
+    NODE_OK=1
+  else
+    echo "ERROR: Node >=20 is required for JavaScript regressions (found $(node --version 2>/dev/null || echo unknown))" >&2
+    rc=1
+  fi
+else
+  echo "ERROR: Node >=20 is required for JavaScript regressions" >&2
+  rc=1
+fi
 
 echo "── py_compile (all modules) ─────────────────────────────"
 if $PY -m py_compile harness/*.py; then echo "  OK"; else echo "  FAIL"; rc=1; fi
@@ -54,7 +74,7 @@ if catalog_out=$($PY tests/test_catalog.py 2>&1); then echo "  catalog OK"; else
 if $PY tests/test_codex_oauth.py >/dev/null 2>&1; then echo "  codex_oauth OK"; else echo "  codex_oauth FAIL"; rc=1; fi
 
 echo "── renderer tests (JS) ──────────────────────────────────"
-if command -v node >/dev/null 2>&1; then
+if [ "$NODE_OK" = "1" ]; then
   node tests/render_test.js || rc=1
   node tests/mail_names_test.js || rc=1
 else
@@ -62,7 +82,7 @@ else
 fi
 
 echo "── browser extension: page-side logic (JS) ──────────────"
-if command -v node >/dev/null 2>&1; then
+if [ "$NODE_OK" = "1" ]; then
   node tests/browser_ext_test.js || rc=1
   node tests/vscode_extension_test.js || rc=1
 else
@@ -80,7 +100,7 @@ echo "$live_out" | grep -E "SKIP|FAIL|passed ==" | sed 's/^/  /'
 [ "$live_rc" = "0" ] || rc=1
 
 echo "── relay pairing handshake (JS) ─────────────────────────"
-if command -v node >/dev/null 2>&1; then
+if [ "$NODE_OK" = "1" ]; then
   node tests/relay_pairing_test.js || rc=1
   node tests/relay_sealed_test.js || rc=1
 else
@@ -88,7 +108,7 @@ else
 fi
 
 echo "── relay push + APNs bearer token (JS) ──────────────────"
-if command -v node >/dev/null 2>&1; then
+if [ "$NODE_OK" = "1" ]; then
   node tests/relay_push_test.js || rc=1
   node tests/landing_security_test.mjs || rc=1
 else
@@ -168,12 +188,13 @@ echo "── all collected pytest regressions ───────────�
 # them, runs nothing, and exits 0. Run the complete collected suite here—not a hand-maintained list
 # that silently forgets each new runtime, Library, release, or security regression file.
 if $PY -c "import pytest" >/dev/null 2>&1; then
-  pytest_out=$($PY -m pytest -q 2>&1); pytest_rc=$?
-  if [ "$pytest_rc" = "0" ]; then
-    echo "  $(echo "$pytest_out" | tail -1)"
+  # Stream progress: collecting the complete suite into a shell variable made
+  # a healthy multi-minute run indistinguishable from a hung process.
+  if $PY -m pytest -q; then
+    echo "  pytest suite OK"
   else
+    pytest_rc=$?
     echo "  pytest suite FAIL (exit $pytest_rc)"
-    echo "$pytest_out" | tail -80 | sed 's/^/    /'
     rc=1
   fi
 else

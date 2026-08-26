@@ -99,6 +99,21 @@ def test_session_append_is_lossless_across_threads_and_processes(monkeypatch, tm
     assert {"p%d-q%d" % (p, i) for p in range(3) for i in range(3)} <= users
 
 
+def test_session_append_never_overwrites_a_corrupt_recovery_journal(monkeypatch,
+                                                                    tmp_path):
+    from harness import sessions
+
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path))
+    path = tmp_path / "corrupt.json"
+    original = b'{"id":"corrupt","messages":['
+    path.write_bytes(original)
+
+    with pytest.raises(ValueError, match="unreadable session journal"):
+        sessions.append_exchange("corrupt", "new question", "new answer")
+
+    assert path.read_bytes() == original
+
+
 def test_concurrent_full_saves_merge_divergent_exchanges(monkeypatch, tmp_path):
     from harness import sessions
 
@@ -504,6 +519,77 @@ def test_web_pack_appends_history_and_finishes_registry(monkeypatch, tmp_path):
     assert captured["task"] == contents[2]
     assert [m["content"] for m in captured["history"]] == ["before", "prior"]
     assert callable(captured["gate_factory"])
+    assert sessions.recovery_state(sid) is None
+    receipt = sessions.load(sid)["run_receipts"][-1]
+    assert [row["idx"] for row in receipt["attempts"]] == [0, 1]
+
+
+def test_web_pack_receipt_failure_is_visible_and_preserves_answer(monkeypatch, tmp_path):
+    from harness import pack, sessions, webapp
+
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(webapp, "_provider", lambda: "mock")
+    monkeypatch.setattr(pack, "run_pack", lambda *_a, **_kw: {
+        "winner": 0, "answer": "useful winner", "reason": "verified",
+        "applied": False,
+        "attempts": [{"idx": 0, "turns": 2, "verified": True,
+                      "runner_receipt": {"runner": "codex-exec"}}],
+        "n": 2, "total_cost_usd": 0, "canceled": False, "apply_error": "",
+    })
+    monkeypatch.setattr(sessions, "append_run_receipt", lambda *_a, **_kw: False)
+    sid = "pack-receipt-failure"
+    events = []
+    fake = object.__new__(webapp.Handler)
+    fake._sse_open = lambda: None
+    fake._sse = lambda kind, data: events.append((kind, data))
+    with webapp.Handler._runs_lock:
+        webapp.Handler._runs.clear(); webapp.Handler._cancel_events.clear()
+
+    webapp.Handler._serve_stream(fake, {
+        "q": ["pack now"], "session": [sid], "strategy": ["pack"], "n": ["2"],
+        "check": ["python -m pytest -q"],
+    })
+
+    done = events[-1][1]
+    assert done["answer"] == "useful winner"
+    assert "pack receipt could not be persisted" in done["error"]
+    assert webapp.Handler._runs_snapshot()[0]["state"] == "failed"
+    messages = sessions.load(sid)["messages"]
+    assert "useful winner" in messages[-1]["content"]
+    assert "pack receipt could not be persisted" in messages[-1]["content"]
+    assert sessions.recovery_state(sid)["recovery_required"] is True
+
+
+def test_web_pack_partial_apply_keeps_recovery_fence(monkeypatch, tmp_path):
+    from harness import pack, sessions, webapp
+
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(webapp, "_provider", lambda: "mock")
+    monkeypatch.setattr(pack, "run_pack", lambda *_a, **_kw: {
+        "winner": 0, "answer": "candidate answer", "reason": "apply failed",
+        "applied": False, "apply_error": "copy stopped after one file",
+        "attempts": [{"idx": 0, "turns": 1, "verified": True}],
+        "n": 2, "total_cost_usd": 0, "canceled": False,
+        "cleanup_errors": [],
+    })
+    sid = "pack-partial-apply"
+    events = []
+    fake = object.__new__(webapp.Handler)
+    fake._sse_open = lambda: None
+    fake._sse = lambda kind, data: events.append((kind, data))
+    with webapp.Handler._runs_lock:
+        webapp.Handler._runs.clear(); webapp.Handler._cancel_events.clear()
+
+    webapp.Handler._serve_stream(fake, {
+        "q": ["pack now"], "session": [sid], "strategy": ["pack"], "n": ["2"],
+        "check": ["python -m pytest -q"], "apply": ["1"],
+    })
+
+    done = events[-1][1]
+    assert "apply failed" in done["error"]
+    assert sessions.recovery_state(sid)["recovery_required"] is True
+    receipt = sessions.load(sid)["run_receipts"][-1]
+    assert receipt["apply_error"] == "copy stopped after one file"
 
 
 def test_loop_cancel_stops_before_next_tool(monkeypatch, tmp_path):

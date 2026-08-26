@@ -24,8 +24,8 @@ import sqlite3
 import threading
 import time
 
-from .actions import EXECUTING, RefusedError
-from .jobs import Executor, WAITING, FAILED_S, NEEDS_YOU
+from .actions import EXECUTING, PENDING, RefusedError
+from .jobs import Executor, WAITING, FAILED_S, NEEDS_YOU, RECOVERY_REQUIRED
 
 PENDING_W = "pending"
 CLAIMED_W = "claimed"
@@ -75,14 +75,46 @@ class Scheduler:
     def schedule(self, job_id: str, nonce: str, fire_at: int, kind: str = "timer",
                  now: int = None) -> int:
         """Park a proposed action until fire_at; the job goes to WAITING."""
-        now = int(now if now is not None else time.time())
+        if not isinstance(job_id, str) or not isinstance(nonce, str) or not nonce:
+            raise ValueError("scheduled wait needs a string job id and action nonce")
+        if isinstance(fire_at, bool) or not isinstance(fire_at, int) or fire_at < 0:
+            raise ValueError("fire_at must be a non-negative integer timestamp")
+        if now is None:
+            now = int(time.time())
+        elif isinstance(now, bool) or not isinstance(now, int) or now < 0:
+            raise ValueError("schedule time must be a non-negative integer timestamp")
+        if not isinstance(kind, str) or not kind or len(kind) > 40:
+            raise ValueError("wait kind must be a non-empty bounded string")
+        if job_id:
+            job = self.jobs.get(job_id)
+            if not job or job.terminal or job.state == RECOVERY_REQUIRED:
+                raise ValueError("scheduled wait job is missing, terminal, or recovering")
+            action = self.actions.get(nonce)
+            if (not action or action.job_id != job_id or
+                    action.state not in (PENDING, EXECUTING)):
+                raise ValueError(
+                    "scheduled wait must own one pending or interrupted action for the same job")
         with self._lock:
-            cur = self.db.execute(
-                "INSERT INTO waits(job_id,nonce,kind,fire_at,state,created_at,fired_at)"
-                " VALUES(?,?,?,?,?,?,0)",
-                (job_id, nonce, kind, int(fire_at), PENDING_W, now))
-            self.db.commit()
-            wid = cur.lastrowid
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                old = self.db.execute(
+                    "SELECT wait_id,job_id,kind,fire_at FROM waits WHERE nonce=? "
+                    "ORDER BY wait_id LIMIT 1", (nonce,)).fetchone()
+                if old:
+                    if (old["job_id"] != job_id or old["kind"] != kind or
+                            old["fire_at"] != fire_at):
+                        raise ValueError("action nonce is already bound to a different wait")
+                    wid = old["wait_id"]
+                else:
+                    cur = self.db.execute(
+                        "INSERT INTO waits(job_id,nonce,kind,fire_at,state,created_at,fired_at)"
+                        " VALUES(?,?,?,?,?,?,0)",
+                        (job_id, nonce, kind, fire_at, PENDING_W, now))
+                    wid = cur.lastrowid
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         if job_id:
             self.jobs.set_state(job_id, WAITING, f"waiting until {fire_at}")
         return wid

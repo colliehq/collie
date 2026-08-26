@@ -96,9 +96,27 @@ creates an empty per-execution directory. `workspace.mode: current` must opt in 
 `permissions.current_workspace: true` and place the workspace under an allowed write root.
 
 The default unattended runner enforces wall-time, turn, token, cost, action, and daily-run caps in
-a killable child process. It does not register shell, code-execution, browser, desktop, dynamic-tool,
-or MCP tools: those carry ambient authority that cannot yet be confined to the snapshotted
-filesystem/host policy. Use an explicitly sandboxed custom runner for those capabilities.
+a killable child process. It does not register shell, code-execution, browser, dynamic-tool, or MCP
+tools: those carry ambient authority that cannot be confined to the snapshotted filesystem/host
+policy. Native desktop tools are the narrow exception: an automation must list every tool, set
+`external_writes: true`, and bind calls to an exact `desktop_targets` entry. Whole-desktop discovery
+(`desktop_apps`) stays unavailable; `screenshot` requires a non-empty title that is itself an allowed
+target; a window-bound `desktop_script` rejects inner steps that switch apps or use screen-global
+coordinates. The ordinary project gate receives only those exact `(tool,target)` rules.
+
+For example, a pre-authorized WeChat-only automation can use:
+
+```json
+"permissions": {
+  "tools": ["desktop_inspect", "desktop_read", "desktop_wait", "desktop_script"],
+  "desktop_targets": ["wechat"],
+  "external_writes": true
+}
+```
+
+Desktop control (and screen capture, if `screenshot` is included) must also be enabled in Settings.
+An expired execution lease with desktop/external authority is parked in `needs_you`; it is never
+blindly replayed after a possible send.
 
 Timer, file, and page triggers are polled by the daemon. Webhook ingestion is deliberately not an
 open listener: authenticated callers POST to `/api/automation/webhook`, and the Web layer calls

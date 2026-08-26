@@ -8,6 +8,7 @@ Collie still owns the system prompt, tool protocol, loop, and request budget.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -22,6 +23,19 @@ from .providers import (ClaudeCliProvider, Completion, ModelProvider, Usage,
 
 _MAX_STDOUT = 2 * 1024 * 1024
 _MAX_STDERR = 128 * 1024
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _usage_counter(value, key):
+    raw = value.get(key, 0) or 0
+    if (not isinstance(raw, (int, float)) or isinstance(raw, bool)
+            or not math.isfinite(float(raw)) or raw < 0
+            or not float(raw).is_integer()):
+        raise RuntimeError("Claude Agent SDK response has invalid %s usage" % key)
+    return int(raw)
 
 
 def _sanitized_worker_env(source=None) -> dict[str, str]:
@@ -214,7 +228,7 @@ class ClaudeAgentSdkProvider(ModelProvider):
         popen_kw = {}
         popen_kw.update(plat.new_group_kwargs())
         popen_kw.update(plat.no_window_kwargs())
-        payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        payload = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")
         with self._process_condition:
             if registration is None:
                 invocation = uuid.uuid4().hex
@@ -388,7 +402,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
             detail = stderr
             if raw:
                 try:
-                    failed = json.loads(raw.decode("utf-8"))
+                    failed = json.loads(raw.decode("utf-8"),
+                                        parse_constant=_reject_json_constant)
                     if isinstance(failed, dict):
                         detail = failed.get("error") or detail
                 except Exception:
@@ -396,7 +411,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
             raise RuntimeError("Claude Agent SDK worker exited %d%s" % (
                 proc.returncode, (": " + _safe_failure(detail)) if detail else ""))
         try:
-            result = json.loads(raw.decode("utf-8"))
+            result = json.loads(raw.decode("utf-8"),
+                                parse_constant=_reject_json_constant)
         except Exception as exc:
             raise RuntimeError("Claude Agent SDK worker returned invalid JSON") from exc
         if not isinstance(result, dict):
@@ -457,10 +473,10 @@ class ClaudeAgentSdkProvider(ModelProvider):
             if not isinstance(usage_data, dict):
                 raise RuntimeError("Claude Agent SDK response has invalid usage")
             usage = Usage(
-                input_tokens=int(usage_data.get("input_tokens", 0) or 0),
-                output_tokens=int(usage_data.get("output_tokens", 0) or 0),
-                cache_read=int(usage_data.get("cache_read_input_tokens", 0) or 0),
-                cache_creation=int(usage_data.get("cache_creation_input_tokens", 0) or 0),
+                input_tokens=_usage_counter(usage_data, "input_tokens"),
+                output_tokens=_usage_counter(usage_data, "output_tokens"),
+                cache_read=_usage_counter(usage_data, "cache_read_input_tokens"),
+                cache_creation=_usage_counter(usage_data, "cache_creation_input_tokens"),
             )
             allowed_tools = ({str(schema.get("name") or "") for schema in tool_schemas}
                              if tool_schemas else None)

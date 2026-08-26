@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -79,7 +80,10 @@ def _load_or_create_key(keyfile: str) -> bytes:
             except FileNotFoundError:
                 pass
             time.sleep(0.01)
-        return k                            # last resort (never observed in practice)
+        # A private in-memory key that differs from the durable winner would
+        # let this process mint actions no later process can verify.  Refuse the
+        # store instead of creating unrecoverable authority.
+        raise RuntimeError("action integrity key exists but is incomplete")
     try:
         os.write(fd, k)
     finally:
@@ -97,7 +101,20 @@ EXPIRED = "expired"      # TTL elapsed before confirm
 
 
 def _j(o) -> str:
-    return json.dumps(o or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    value = {} if o is None else o
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False)
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _jo(value) -> dict:
+    parsed = json.loads(value or "{}", parse_constant=_reject_json_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("durable action JSON must be an object")
+    return parsed
 
 
 def _mac(key: bytes, capability: str, args: dict, leash_id: str = "", job_id: str = "",
@@ -197,6 +214,23 @@ class ActionStore:
         # note.append): it is executed by colliejobd at fire time, never by a human,
         # so it MUST stay out of the confirm inbox — otherwise a person could click
         # it and fire the reminder early.
+        if not isinstance(auto, bool):
+            raise ValueError("action auto flag must be boolean")
+        if isinstance(ttl_s, bool):
+            raise ValueError("action TTL must be a finite positive number")
+        try:
+            ttl = float(ttl_s)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("action TTL must be a finite positive number")
+        if not math.isfinite(ttl) or ttl < 1:
+            raise ValueError("action TTL must be a finite number of at least one second")
+        args = {} if args is None else args
+        snapshot = {} if snapshot is None else snapshot
+        if not isinstance(args, dict) or not isinstance(snapshot, dict):
+            raise ValueError("action args and snapshot must be JSON objects")
+        # Serialize before minting/persisting authority.  This rejects NaN,
+        # Infinity and unserializable values without leaving a partial action.
+        args_json, snapshot_json = _j(args), _j(snapshot)
         nonce = secrets.token_hex(16)
         now = int(time.time())
         with self._lock:
@@ -205,10 +239,10 @@ class ActionStore:
                      risk,leash_id,snapshot_json,state,created_at,expires_at,
                      decided_at,executed_at,attempted_at,auto,refuse_reason)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,0,?,'')""",
-                (nonce, job_id, capability, json.dumps(args or {}, ensure_ascii=False),
+                (nonce, job_id, capability, args_json,
                  _mac(self._key, capability, args, leash_id, job_id, risk, snapshot), risk, leash_id,
-                 json.dumps(snapshot or {}, ensure_ascii=False), PENDING,
-                 now, now + int(ttl_s), int(auto)))
+                 snapshot_json, PENDING,
+                 now, now + int(ttl), int(auto)))
             self.db.commit()
         return nonce
 
@@ -223,9 +257,9 @@ class ActionStore:
             return None
         return ActionRecord(
             nonce=r["nonce"], capability=r["capability"],
-            args=json.loads(r["args_json"] or "{}"), digest=r["digest"],
+            args=_jo(r["args_json"]), digest=r["digest"],
             risk=r["risk"], state=r["state"], job_id=r["job_id"],
-            leash_id=r["leash_id"], snapshot=json.loads(r["snapshot_json"] or "{}"),
+            leash_id=r["leash_id"], snapshot=_jo(r["snapshot_json"]),
             created_at=r["created_at"], expires_at=r["expires_at"])
 
     # ── confirm: a human approves the concrete record (single transition) ──
@@ -242,6 +276,16 @@ class ActionStore:
                                 (EXPIRED, now, nonce, PENDING))
                 self.db.commit()
                 raise RefusedError("expired before confirm")
+            try:
+                args, snapshot = _jo(r["args_json"]), _jo(r["snapshot_json"])
+                intact = hmac.compare_digest(
+                    _mac(self._key, r["capability"], args, r["leash_id"], r["job_id"],
+                         r["risk"], snapshot), r["digest"] or "")
+            except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+                intact = False
+            if not intact:
+                self._refuse(nonce, "invalid or tampered action payload", now)
+                raise RefusedError("invalid or tampered action payload")
             # ATOMIC CAS: only PENDING -> APPROVED. Without `AND state=PENDING` a
             # stale WAL-snapshot read (two concurrent tickers) could blindly revive
             # an already-EXECUTED nonce back to APPROVED and re-fire it — the
@@ -308,9 +352,9 @@ class ActionStore:
                 return False
             record = ActionRecord(
                 nonce=row["nonce"], capability=row["capability"],
-                args=json.loads(row["args_json"] or "{}"), digest=row["digest"],
+                args=_jo(row["args_json"]), digest=row["digest"],
                 risk=row["risk"], state=row["state"], job_id=row["job_id"],
-                leash_id=row["leash_id"], snapshot=json.loads(row["snapshot_json"] or "{}"),
+                leash_id=row["leash_id"], snapshot=_jo(row["snapshot_json"]),
                 created_at=row["created_at"], expires_at=row["expires_at"])
             verdict = Verdict(INCONCLUSIVE, str(reason or "stale reversible execution retired")[:200])
             _rc, params = self._mk_receipt(
@@ -350,9 +394,13 @@ class ActionStore:
             if r["state"] != APPROVED:
                 raise RefusedError(f"not approved for execution (state={r['state']})")
             # payload binding: capability/args AND authority fields must be intact
-            args = json.loads(r["args_json"] or "{}")
-            expect = _mac(self._key, r["capability"], args, r["leash_id"], r["job_id"],
-                          r["risk"], json.loads(r["snapshot_json"] or "{}"))
+            try:
+                args, snapshot = _jo(r["args_json"]), _jo(r["snapshot_json"])
+                expect = _mac(self._key, r["capability"], args, r["leash_id"], r["job_id"],
+                              r["risk"], snapshot)
+            except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+                self._refuse(nonce, "invalid durable action JSON", now)
+                raise RefusedError("invalid durable action JSON")
             if not hmac.compare_digest(expect, r["digest"] or ""):
                 self._refuse(nonce, "payload MAC mismatch (tampered)", now)
                 raise RefusedError("payload MAC mismatch (tampered)")
@@ -428,7 +476,7 @@ class ActionStore:
         — it does not catch non-pattern PII (e.g. a raw card number), so callers
         handling such data should pass a stricter redact_fn."""
         ev = "; ".join(getattr(o, "detail", str(o)) for o in (verdict.evidence or ()))
-        raw = json.dumps(record.args, ensure_ascii=False)
+        raw = json.dumps(record.args, ensure_ascii=False, allow_nan=False)
         args_redacted = redact_fn(raw) if redact_fn else _redact.redact(raw, {})
         rc = Receipt(nonce=record.nonce, capability=record.capability, approved=approved,
                      verdict=verdict.status, verdict_reason=verdict.reason, evidence=ev,

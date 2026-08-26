@@ -38,6 +38,13 @@ OP_CLOSE = 0x8
 OP_PING = 0x9
 OP_PONG = 0xA
 
+# The public relay is untrusted.  Length is advertised before allocation, so
+# reject oversized frames before `_read_exact` can ask the buffered reader to
+# materialize attacker-controlled gigabytes.  Fragmentation has a separate
+# aggregate bound because many individually valid frames form one message.
+MAX_FRAME_BYTES = 2 * 1024 * 1024
+MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+
 
 class WebSocketError(Exception):
     pass
@@ -180,6 +187,8 @@ class WebSocketClient:
             length = struct.unpack(">H", self._read_exact(2))[0]
         elif length == 127:
             length = struct.unpack(">Q", self._read_exact(8))[0]
+        if length > MAX_FRAME_BYTES:
+            raise WebSocketError("WebSocket frame exceeds safety limit")
         mask = self._read_exact(4) if masked else None
         payload = self._read_exact(length) if length else b""
         if mask:
@@ -209,11 +218,15 @@ class WebSocketClient:
             if opcode in (OP_TEXT, OP_BINARY):
                 frag_op = opcode
                 frags = bytearray(payload)
+                if len(frags) > MAX_MESSAGE_BYTES:
+                    raise WebSocketError("WebSocket message exceeds safety limit")
                 if fin:
                     return self._deliver(frag_op, bytes(frags))
             elif opcode == OP_CONT:
                 if frag_op is None:
                     raise WebSocketError("continuation frame with no start")
+                if len(frags) + len(payload) > MAX_MESSAGE_BYTES:
+                    raise WebSocketError("WebSocket message exceeds safety limit")
                 frags += payload
                 if fin:
                     return self._deliver(frag_op, bytes(frags))

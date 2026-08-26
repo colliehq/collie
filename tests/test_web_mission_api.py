@@ -128,6 +128,14 @@ def test_web_ui_keeps_mission_out_of_the_model_router():
     start_call = html.index("_startMissionCard(goal, autonomous, bounds)", malformed_guard)
     assert malformed_guard < start_call
     assert 'if (/^(?:list|ls|help)\\s+/i.test(raw))' in html
+    assert 'bounds.code = true' in html
+    assert 'bounds.overnight = true' in html
+    assert 'bounds.no_paid_overage = true' in html
+    assert 'bounds.runner = optionValue' in html
+    assert 'bounds.workspace = optionValue' in html
+    assert 'bounds.verify_command = optionValue' in html
+    unknown_guard = html.index('t("Unknown Mission option:")', handler_pos)
+    assert unknown_guard < start_call
 
 
 def test_mission_api_validates_and_atomically_binds_overnight_code_profile(

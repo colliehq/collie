@@ -64,6 +64,26 @@ function eq(name, got, want) {
   ok ? pass++ : fail++;
 }
 
+// --- product shell: presence, hard takeover, and side-panel entry points -------------------------
+{
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'harness', 'browser_ext', 'manifest.json'), 'utf8'));
+  const scripts = (manifest.content_scripts || []).flatMap((row) => row.js || []);
+  t('the visible presence/takeover sensor ships as an isolated content script', scripts.includes('presence.js'));
+  t('the extension declares a real side panel', manifest.side_panel && manifest.side_panel.default_path === 'sidepanel.html');
+  t('selection/page entry points have context-menu permission', (manifest.permissions || []).includes('contextMenus'));
+  t('Chrome debugger cancellation becomes a hard pause',
+    /reason === "canceled_by_user"[\s\S]{0,300}pauseSpacesForTab/.test(src));
+  t('a paused CDP path refuses synthetic fallback',
+    /const stopped = pausedResult\(tab\.id\); if \(stopped\) return stopped;[\s\S]{0,180}synthetic/.test(src));
+  const presence = fs.readFileSync(path.join(__dirname, '..', 'harness', 'browser_ext', 'presence.js'), 'utf8');
+  t('page takeover reacts only to physical trusted input', /!event\.isTrusted/.test(presence));
+  t('the page cannot forge resume', !/collie:resume-active/.test(presence));
+  const sidepanel = fs.readFileSync(path.join(__dirname, '..', 'harness', 'browser_ext', 'sidepanel.js'), 'utf8');
+  t('side chat lazily starts its authenticated local Web backend',
+    /8677\/web\/start/.test(sidepanel) && /X-Collie-Bridge/.test(sidepanel));
+}
+
 // --- the smallest DOM these functions actually touch ---------------------------------------------
 const VIEW = { w: 1000, h: 800 };
 function el(tag, opts) {

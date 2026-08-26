@@ -11,10 +11,11 @@ receipt months later and produce the same answer.
 
 Four properties are load-bearing, and each one shows up as a rule below:
 
-* **The default path costs nothing.**  ``RUNNER=collie`` with no ``--runner``
-  makes :meth:`HarnessRequest.candidates` return ``("collie",)``, so the caller
-  probes nothing and today's behaviour is unchanged bit-for-bit.  The test
-  ``test_default_runner_collie_skips_probe`` pins that.
+* **The default path costs nothing extra.**  ``RUNNER=collie`` with no
+  ``--runner`` makes :meth:`HarnessRequest.candidates` return ``("collie",)``.
+  The caller records Collie's process-free local probe, but never inspects or
+  launches an external CLI.  This preserves truthful capabilities and billing
+  evidence in the receipt without adding a paid or network action.
 * **An explicit choice is never substituted.**  A pin (``--runner X``, a roster
   member) or a configured ``RUNNER=X`` that turns out to be unusable produces
   ``error`` and an empty ``runner``; the caller must refuse to run.  Quietly
@@ -23,7 +24,7 @@ Four properties are load-bearing, and each one shows up as a rule below:
 * **Auto only ever reaches into ``RUNNER_POOL``.**  Writing an external worker
   into the pool *is* the consent to use its billing route; a worker that is not
   in the pool is never picked, however well installed and logged in it is.
-* **Collie is the floor.**  Hard rules H1/H2/H4/H6/H8–H11 exist to constrain
+* **Collie is the eligible floor.**  Hard rules H1/H2/H4/H6/H8–H11 exist to constrain
   *external* workers, so they are not applied to Collie's own harness — the one
   candidate that is always available.  Only H5 (billing) can reject Collie, and
   that is the existing subscription preflight's job, not a substitution.
@@ -33,16 +34,19 @@ evidenced is ``unknown`` and loses the no-paid-overage rules; unknown quota
 scores ``0`` in the soft sort (not ``0.5``) so an unmeasured runner cannot ride a
 constant term to the top.
 
-Phase 1 has no usage signals: ``signals=None`` skips H7 and leaves the two signal
-terms at their unknown values.  The interface is already here so phase 2 wires
-:mod:`harness.usage_signals` in without touching the rule order.
+Callers may still pass ``signals=None`` to skip H7.  Auto-capable surfaces now
+provide route-specific snapshots from :mod:`harness.runner_signals`: local
+history for every worker and Codex's read-only app-server quota window. Unknown
+providers keep the signal terms at zero rather than receiving guessed headroom.
 """
 from __future__ import annotations
 
+import dataclasses
+import math
 import os
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .runner_specs import (
@@ -61,13 +65,13 @@ from .runner_specs import (
 
 # --- soft-sort weights ------------------------------------------------------
 # Sum = 1.0.  Order matters only for reading; the terms are independent.  The two
-# signal-fed terms (route_health, headroom) keep their weight in phase 1 even
-# though they are unknown, so turning signals on in phase 2 changes rankings
-# rather than re-scaling every score that was ever recorded in a receipt.
+# signal-fed terms (route_health, headroom) keep their weight even when unknown,
+# so adding evidence changes rankings rather than re-scaling every score that
+# was ever recorded in a receipt.
 _WEIGHTS: dict[str, float] = {
     "pool_order": 0.20,      # where the operator put it in RUNNER_POOL
-    "route_health": 0.20,    # auth ok and no recent 429           (signals, phase 2)
-    "headroom": 0.20,        # quota left on the route             (signals, phase 2)
+    "route_health": 0.20,    # auth ok and no recent 429
+    "headroom": 0.20,        # quota left on the route
     "history": 0.15,         # Laplace-smoothed verified rate on this project
     "fit": 0.10,             # declared capabilities we actually use
     "billing_pref": 0.10,    # prefer an included route when a budget is set
@@ -112,7 +116,33 @@ def _positive(value: str) -> float | None:
         number = float(str(value).strip())
     except (TypeError, ValueError):
         return None
-    return number if number > 0 else None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Parse untrusted signal counters without letting telemetry break routing."""
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _finite_float(value: Any) -> float | None:
+    """Return a finite telemetry number, or unknown for malformed snapshots."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _is_git_workspace(path: str) -> bool:
+    """A normal repository has a .git directory; a worktree has a .git file."""
+    return os.path.exists(os.path.join(str(path or ""), ".git"))
 
 
 def _version_key(text: str) -> tuple[int, ...]:
@@ -314,10 +344,14 @@ def _billing_reasons(req: HarnessRequest, key: str, spec: HarnessSpec,
     """H5 — the rules that keep a run on the account the operator consented to."""
     out: list[str] = []
     if req.no_paid_overage or req.subscription_only:
+        policy = "no-paid-overage" if req.no_paid_overage else "subscription-only"
         if probe.billing_class not in _SAFE_BILLING:
-            out.append("H5: billing class %s cannot be run under no-paid-overage"
-                       % probe.billing_class)
-        elif not probe.overage_attested:
+            out.append("H5: billing class %s cannot be run under %s"
+                       % (probe.billing_class, policy))
+        # subscription_only means "this must be the evidenced plan/local route".
+        # Only the stronger no_paid_overage promise says the operator also
+        # disabled provider-side paid credits, overage and auto-reload.
+        elif req.no_paid_overage and not probe.overage_attested:
             out.append("H5: no operator attestation that this route has no paid "
                        "overage")
         elif not probe.billing_evidence:
@@ -347,15 +381,13 @@ def _stale_evidence(req: HarnessRequest, spec: HarnessSpec, probe: RunnerProbe,
     """
     if _family_of(req, spec) != "codex":
         return False
-    observed = probe.billing_evidence.get("observed_at")
-    if observed is None:
-        observed = probe.probed_at or 0.0
-    try:
-        observed = float(observed)
-    except (TypeError, ValueError):
-        return False
-    if observed <= 0 or not now:
-        return False
+    observed = _finite_float(probe.billing_evidence.get("observed_at"))
+    if observed is None or observed <= 0:
+        observed = _finite_float(probe.probed_at)
+    # Codex subscription evidence has a freshness contract. Missing/malformed
+    # time is unknown authority, not evidence that can never become stale.
+    if observed is None or observed <= 0 or not now:
+        return True
     return (now - observed) > _CODEX_EVIDENCE_MAX_AGE_S
 
 
@@ -378,16 +410,19 @@ def _signal_reasons(req: HarnessRequest, signals: Any, now: float) -> list[str]:
     if _explicit(req):
         return out
 
-    cooldown = getattr(signals, "cooldown_until", None)
-    if cooldown and now and float(cooldown) > now:
+    cooldown = _finite_float(getattr(signals, "cooldown_until", None))
+    if cooldown and now and cooldown > now:
         out.append("H7: route is in cooldown for another %d s"
-                   % int(float(cooldown) - now))
-    if int(getattr(signals, "recent_429", 0) or 0) >= _RECENT_429_LIMIT:
+                   % int(cooldown - now))
+    recent_429 = max(0, _safe_int(getattr(signals, "recent_429", 0), 0))
+    if recent_429 >= _RECENT_429_LIMIT:
         out.append("H7: %s recent rate-limit responses"
-                   % getattr(signals, "recent_429", 0))
+                   % recent_429)
     quota = getattr(signals, "quota", None)
     if quota is not None:
-        guard = int(getattr(signals, "quota_guard", 0) or _DEFAULT_QUOTA_GUARD)
+        guard = _safe_int(getattr(signals, "quota_guard", 0), _DEFAULT_QUOTA_GUARD)
+        if guard < 1 or guard > 100:
+            guard = _DEFAULT_QUOTA_GUARD
         used = _worst_used_percent(quota)
         if used is not None and used >= guard:
             out.append("H7: quota is %d%% used (guard %d%%)" % (used, guard))
@@ -404,7 +439,9 @@ def _worst_used_percent(quota: Any) -> int | None:
         window = getattr(quota, name, None)
         used = getattr(window, "used_percent", None) if window is not None else None
         if used is not None:
-            values.append(int(used))
+            parsed = _safe_int(used, -1)
+            if parsed >= 0:
+                values.append(min(100, parsed))
     return max(values) if values else None
 
 
@@ -456,14 +493,15 @@ def _route_health(signals: Any, now: float) -> float:
     if signals is None:
         return 0.5
     auth = str(getattr(signals, "auth_status", "") or "unknown")
-    recent = int(getattr(signals, "recent_429", 0) or 0)
+    recent = max(0, _safe_int(getattr(signals, "recent_429", 0), 0))
     evidence = getattr(signals, "rate_limit", None)
     observed = getattr(evidence, "observed_at", None) if evidence is not None else None
     if auth != "ok":
         return 0.5
     if not recent:
         return 1.0
-    if observed and now and (now - float(observed)) > _COOLDOWN_429_S:
+    observed_number = _finite_float(observed)
+    if observed_number and now and (now - observed_number) > _COOLDOWN_429_S:
         return 0.5
     return 0.0
 
@@ -486,11 +524,47 @@ def _history_term(signals: Any) -> float:
     history = getattr(signals, "history", None) if signals is not None else None
     if history is None:
         return 0.5
-    runs = int(getattr(history, "runs", 0) or 0)
+    runs = max(0, _safe_int(getattr(history, "runs", 0), 0))
     if runs < _HISTORY_MIN_RUNS:
         return 0.5                      # too few runs to have an opinion
-    verified = int(getattr(history, "verified", 0) or 0)
+    verified = max(0, min(runs, _safe_int(getattr(history, "verified", 0), 0)))
     return (verified + 1) / float(runs + 2)     # Laplace
+
+
+def _signals_for(signals: Any, key: str) -> Any:
+    """Return route-specific signals while preserving the phase-1 duck type.
+
+    Early callers supplied one snapshot and expected it to apply to their only
+    candidate.  Auto selection has several payers, so a modern SignalSet exposes
+    ``for_runner(key)``; applying one route's quota to every candidate would
+    reject the healthy alternatives along with the exhausted one.
+    """
+    if signals is None:
+        return None
+    getter = getattr(signals, "for_runner", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:
+            return None
+    if isinstance(signals, Mapping):
+        return signals.get(key)
+    return signals
+
+
+def _signals_digest(signals: Any) -> str:
+    """Fingerprint usable telemetry, without making a broken observer fatal."""
+    if signals is None:
+        return ""
+    try:
+        digest = getattr(signals, "digest", None)
+        if callable(digest):
+            return str(digest())
+        export = getattr(signals, "to_dict", None)
+        value = export() if callable(export) else {}
+        return stable_digest(value)
+    except Exception:
+        return stable_digest({"signals": "unavailable"})
 
 
 # --- the decision -----------------------------------------------------------
@@ -504,6 +578,8 @@ def decide(req: HarnessRequest, specs: Mapping[str, HarnessSpec],
     hand it a single probe (or none) and pay nothing.
     """
     now = time.time() if now is None else float(now)
+    if not math.isfinite(now) or now < 0:
+        raise ValueError("selection time must be a finite non-negative number")
     keys = req.candidates()
 
     scored: list[CandidateScore] = []
@@ -519,7 +595,8 @@ def decide(req: HarnessRequest, specs: Mapping[str, HarnessSpec],
         if probe is None and key == "collie":
             probe = _synth_collie_probe()
         caps = _effective_caps(spec, probe) if spec is not None else RunnerCapabilities(protocol="")
-        hard, soft = _hard_reasons(req, key, spec, probe, caps, signals, now)
+        route_signals = _signals_for(signals, key)
+        hard, soft = _hard_reasons(req, key, spec, probe, caps, route_signals, now)
         if probe is not None:
             probe_of[key] = probe
         caps_of[key] = caps
@@ -536,8 +613,9 @@ def decide(req: HarnessRequest, specs: Mapping[str, HarnessSpec],
     ranked: list[tuple[float, dict[str, float], list[str], str]] = []
     if auto and len(eligible) > 1:
         for key in eligible:
-            score, terms, notes = _score(req, key, probe_of[key], caps_of[key],
-                                         signals, now)
+            score, terms, notes = _score(
+                req, key, probe_of[key], caps_of[key],
+                _signals_for(signals, key), now)
             ranked.append((score, terms, notes, key))
         pool = [item for item in req.pool if item]
 
@@ -562,22 +640,25 @@ def decide(req: HarnessRequest, specs: Mapping[str, HarnessSpec],
 
     probe_digest = stable_digest({key: probe.to_dict()
                                   for key, probe in sorted(probe_of.items())})
-    signals_digest = ""
-    if signals is not None:
-        digest = getattr(signals, "digest", None)
-        signals_digest = digest() if callable(digest) else stable_digest(
-            getattr(signals, "to_dict", dict)())
+    signals_digest = _signals_digest(signals)
 
     if not chosen:
         if not auto:
             return _refusal(req, keys, rejected, scored, probe_digest, signals_digest)
-        # Auto: the pool filtered empty, so the task still runs — on Collie.
-        # (Collie can only be rejected by H5, which the existing subscription
-        # preflight is the right place to fail on, with its own evidence.)
-        chosen = "collie"
-        probe_of.setdefault("collie", probes.get("collie") or _synth_collie_probe())
-        soft_of.setdefault("collie", [])
-        soft_of["collie"] = soft_of["collie"] + ["every candidate was rejected"]
+        # Auto may rank preferences, never waive hard rules. In particular H5
+        # is the user's billing promise; forcing Collie after H5 rejected it can
+        # spend on an unknown/metered route while the receipt says it was denied.
+        reasons = tuple("runner rejected %s: %s" % (name, rejected[name])
+                        for name in keys if name in rejected)
+        return HarnessDecision(
+            runner="", source="safety-default", credential_family="",
+            billing_class="unknown", billing_mode="unconfigured",
+            reasons=reasons, rejected=rejected, candidates=tuple(scored),
+            fallback_chain=(), probe={}, probe_digest=probe_digest,
+            signals_digest=signals_digest,
+            error=("runner auto pool has no eligible worker; hard safety/billing "
+                   "rules are never overridden — fix the rejected route evidence "
+                   "or choose a compatible worker explicitly"))
 
     spec = specs.get(chosen)
     probe = probe_of.get(chosen) or _synth_collie_probe()
@@ -755,7 +836,7 @@ def request_from_run(args: Any, decision: Any, settings: Any, *, cwd: str,
         needs=frozenset(needs),
         workspace=getattr(decision, "workspace", "current") or "current",
         workspace_path=cwd,
-        workspace_is_git=os.path.isdir(os.path.join(cwd, ".git")),
+        workspace_is_git=_is_git_workspace(cwd),
         strategy=getattr(decision, "strategy", "single") or "single",
         provider=getattr(decision, "provider", "") or "",
         model=getattr(decision, "model", None) or None,
@@ -775,3 +856,142 @@ def request_from_run(args: Any, decision: Any, settings: Any, *, cwd: str,
         os_name=os.name,
         phase=CURRENT_PHASE,
     )
+
+
+def request_from_surface(surface: str, requested_runner: str, decision: Any,
+                         settings: Any, *, cwd: str, has_approver: bool = False,
+                         gate_mode: str = "", needs: Iterable[str] | None = None,
+                         no_paid_overage: bool = False,
+                         subscription_only: bool = False,
+                         overnight: bool = False) -> HarnessRequest:
+    """Build the same reproducible worker request for Web, Pack and Mission.
+
+    An empty ``requested_runner`` means the saved ``RUNNER`` setting.  ``auto``
+    opens only the explicitly consented ``RUNNER_POOL``; a named value is a pin
+    and therefore never silently falls back to a different payer.
+    """
+    surface = str(surface or "").strip().lower()
+    if surface not in ("web", "pack", "mission-code"):
+        raise ValueError("unsupported worker surface: %s" % (surface or "empty"))
+    requested = str(requested_runner or "").strip().lower()
+    configured = (_setting(settings, "RUNNER", "collie") or "collie").strip().lower()
+    pin = ""
+    if requested == "auto":
+        configured = "auto"
+    elif requested:
+        pin = requested
+    intent = getattr(decision, "intent", "build") or "build"
+    required = set(needs or {"code"})
+    if intent_needs_shell(intent):
+        required.add("bash")
+    return HarnessRequest(
+        surface=surface,
+        intent=intent,
+        route_kind=getattr(decision, "route_kind", "code") or "code",
+        needs=frozenset(required),
+        workspace=("mission" if surface == "mission-code" else
+                   ("isolated" if surface == "pack" else
+                    (getattr(decision, "workspace", "current") or "current"))),
+        workspace_path=cwd,
+        # Pack creates a private git baseline in every isolated candidate before
+        # the external process starts.  Record the workspace the worker will
+        # actually receive, not whether the source directory happened to be a
+        # repository.  Web/Mission operate directly on their supplied roots.
+        workspace_is_git=(True if surface == "pack" else
+                          _is_git_workspace(cwd)),
+        strategy=getattr(decision, "strategy", "single") or "single",
+        provider=getattr(decision, "provider", "") or "",
+        model=getattr(decision, "model", None) or None,
+        provider_family=family_of_provider(getattr(decision, "provider", "") or ""),
+        pin=pin,
+        configured=configured,
+        pool=_parse_pool(_setting(settings, "RUNNER_POOL", "collie")),
+        no_paid_overage=bool(no_paid_overage),
+        subscription_only=bool(subscription_only),
+        overnight=bool(overnight),
+        max_cost_usd=_positive(_setting(settings, "MAX_COST", "0")),
+        max_total_tokens=(lambda value: int(value) if value else None)(
+            _positive(_setting(settings, "MAX_TOTAL_TOKENS", "0"))),
+        has_approver=bool(has_approver),
+        gate_mode=str(gate_mode or ""),
+        os_name=os.name,
+        phase=CURRENT_PHASE,
+    )
+
+
+def freeze_worker_profile(request: HarnessRequest,
+                          decision: HarnessDecision) -> dict[str, Any]:
+    """The non-secret, immutable worker route carried by a durable Mission."""
+    if request.surface != "mission-code":
+        raise ValueError("only a Mission worker request can be frozen")
+    if decision.error or not decision.runner:
+        raise ValueError(decision.error or "Mission worker selection has no runner")
+    return {
+        "version": 1,
+        "request": request.to_dict(),
+        "decision": decision.to_dict(),
+    }
+
+
+def refresh_frozen_worker_profile(profile: Mapping[str, Any], *, cwd: str,
+                                  specs: Mapping[str, HarnessSpec] | None = None,
+                                  probe_all: Any = None, runs_db: str = "",
+                                  signal_loader: Any = None) -> HarnessDecision:
+    """Re-prove a frozen Mission worker at a runnable boundary.
+
+    The runner identity and billing class are immutable authority.  Installation,
+    login and compatibility are live facts, so every durable slice re-probes the
+    one frozen candidate and stops if those facts no longer support the route.
+    """
+    value = dict(profile or {})
+    if int(value.get("version") or 0) != 1:
+        raise ValueError("frozen Mission worker profile version is invalid")
+    request = HarnessRequest.from_dict(value.get("request") or {})
+    frozen = HarnessDecision.from_dict(value.get("decision") or {})
+    if request.surface != "mission-code" or frozen.error or not frozen.runner:
+        raise ValueError("frozen Mission worker profile is invalid")
+    raw = request.to_dict()
+    originally_auto = not request.pin and (request.configured or "collie") == "auto"
+    raw.update({
+        "workspace_path": str(cwd or ""),
+        "workspace_is_git": _is_git_workspace(cwd),
+        # Preserve whether the operator chose Auto.  The candidate set is still
+        # narrowed to the frozen worker (plus Collie's safety backstop), but H7
+        # must continue to apply cooldown/quota guards to an Auto-owned route.
+        # Turning it into a user pin here used to bypass those guards forever.
+        "pin": "" if originally_auto else frozen.runner,
+        "configured": "auto" if originally_auto else frozen.runner,
+        "pool": [frozen.runner],
+    })
+    current_request = HarnessRequest.from_dict(raw)
+    if specs is None or probe_all is None:
+        from . import runner_registry
+        specs = runner_registry.SPECS if specs is None else specs
+        probe_all = runner_registry.probe_all if probe_all is None else probe_all
+    keys = tuple(current_request.candidates())
+    probes = probe_all(
+        keys=keys, live=bool(current_request.no_paid_overage or
+                             current_request.subscription_only),
+        provider=current_request.provider)
+    if current_request.no_paid_overage:
+        # ``no_paid_overage`` is durable operator authority, protected by the
+        # Mission worker-profile digest.  Live status can re-prove the plan but
+        # cannot observe provider-side overage toggles, so retain that explicit
+        # attestation while replacing every observable probe field.
+        probes = {key: dataclasses.replace(probe, overage_attested=True)
+                  for key, probe in probes.items()}
+    if signal_loader is None:
+        from . import runner_signals
+        signal_loader = runner_signals.for_selection
+    signal_set = signal_loader(current_request, probes, runs_db=runs_db)
+    current = decide(current_request, specs, probes, signals=signal_set)
+    if current.error:
+        raise ValueError("frozen Mission worker is no longer runnable: %s" % current.error)
+    if current.runner != frozen.runner:
+        raise ValueError("frozen Mission worker changed identity")
+    if current.credential_family != frozen.credential_family:
+        raise ValueError("frozen Mission worker credential family changed")
+    if current.billing_class != frozen.billing_class or \
+            current.billing_mode != frozen.billing_mode:
+        raise ValueError("frozen Mission worker billing route changed")
+    return current

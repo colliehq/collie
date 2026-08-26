@@ -132,6 +132,52 @@ def test_start_is_stdin_safe_bounded_and_serializable(tmp_path):
     assert RunnerSnapshot.from_dict(snapshot.to_dict()) == snapshot
 
 
+def test_snapshot_deserialization_is_bounded_and_fail_closed(tmp_path):
+    raw = {
+        "runner": "codex-exec",
+        "workspace": str(tmp_path),
+        "thread_id": THREAD,
+        "cursor": float("nan"),
+        "events": [
+            {"cursor": index, "type": "message", "payload": {"text": "ok"},
+             "at": float("inf")}
+            for index in range(10_005)
+        ],
+        "usage": {"input_tokens": float("inf"), "bool_is_not_usage": True,
+                  "cost": 0.125},
+        # JSON corruption must not turn truthy strings into permission/state facts.
+        "settled": "false",
+        "recovery_required": "false",
+        "mutated": "false",
+        "final_output": "Authorization: Bearer secret-token-123456789",
+    }
+
+    snapshot = RunnerSnapshot.from_dict(raw)
+
+    assert snapshot.cursor == 0
+    assert len(snapshot.events) == 10_000
+    assert snapshot.events[0].cursor == 5
+    assert snapshot.events[-1].at == 0.0
+    assert snapshot.usage == {"cost": 0.125}
+    assert snapshot.settled is snapshot.recovery_required is snapshot.mutated is False
+    assert "secret-token-123456789" not in snapshot.final_output
+
+
+def test_snapshot_without_workspace_does_not_default_to_process_cwd():
+    assert RunnerSnapshot.from_dict({"runner": "codex-exec"}).workspace == ""
+
+
+def test_event_type_and_mapping_keys_cannot_leak_credentials():
+    secret = "sk-eventsecret123456789"
+    event = agent_runners.RunnerEvent.from_dict({
+        "type": secret, "payload": {secret: "safe"},
+    })
+
+    encoded = json.dumps(event.to_dict())
+    assert secret not in encoded
+    assert "[redacted]" in encoded
+
+
 def test_resume_uses_exact_thread_and_accumulates_cursor_events_usage(tmp_path):
     process = FakeProcessRunner(
         _complete(text="first", input_tokens=10, output_tokens=2),
@@ -217,6 +263,36 @@ def test_invalid_protocol_after_mutation_is_recovery_required(tmp_path):
     assert snapshot.recovery_required is True
     assert snapshot.events[0].type == "protocol.invalid_json"
     assert "invalid" in snapshot.error
+
+
+def test_non_standard_json_number_is_a_protocol_error(tmp_path):
+    process = FakeProcessRunner(ProcessOutcome(
+        stdout=_jsonl(
+            {"type": "thread.started", "thread_id": THREAD},
+        ) + '{"type":"turn.completed","usage":{"input_tokens":NaN}}\n',
+        exit_code=0))
+    runner = CodexExecRunner(process_runner=process,
+                             snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert snapshot.events[-1].type == "protocol.invalid_json"
+    # The literal survives only as diagnostic text; no non-standard numeric
+    # value survives into the serialized snapshot.
+    assert json.dumps(snapshot.to_dict(), allow_nan=False)
+
+
+def test_excessively_nested_json_becomes_protocol_evidence_not_an_exception(tmp_path):
+    nested = '{"type":"message","payload":' + ("[" * 2000) + "0" + ("]" * 2000) + "}\n"
+    runner = CodexExecRunner(
+        process_runner=FakeProcessRunner(ProcessOutcome(stdout=nested, exit_code=0)),
+        snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert snapshot.events[-1].type == "protocol.invalid_json"
 
 
 def test_completed_stream_without_thread_id_is_not_treated_as_settled(tmp_path):
@@ -330,6 +406,254 @@ def test_default_process_transport_enforces_wall_timeout_without_duplicate_outpu
     assert time.monotonic() - started < 5
     assert outcome.timed_out is True
     assert outcome.stdout.count("ONE") == 1
+
+
+def test_default_transport_delivers_complete_stdout_records_before_exit(tmp_path):
+    first = threading.Event()
+    records = []
+    outcomes = []
+
+    def consume(record):
+        records.append(record)
+        if "FIRST" in record:
+            first.set()
+
+    worker = threading.Thread(target=lambda: outcomes.append(
+        SubprocessRunner().run(
+            [sys.executable, "-c",
+             "import time; print('FIRST', flush=True); time.sleep(1); "
+             "print('SECOND', flush=True)"],
+            cwd=str(tmp_path), stdin_text="private", timeout_s=5,
+            on_process=lambda _proc: True, on_stdout=consume)), daemon=True)
+    worker.start()
+
+    assert first.wait(3), "the first flushed record was buffered until process exit"
+    assert worker.is_alive(), "the callback must run while the target is still active"
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert outcomes[0].exit_code == 0
+    assert "".join(records) == outcomes[0].stdout
+    assert [record.strip() for record in records] == ["FIRST", "SECOND"]
+
+
+def test_streaming_transport_bounds_captured_output_and_skips_partial_record(tmp_path):
+    records = []
+    outcome = SubprocessRunner(max_output_chars=65_536).run(
+        [sys.executable, "-c", "print('X' * 70000, flush=True)"],
+        cwd=str(tmp_path), stdin_text="private", timeout_s=5,
+        on_process=lambda _proc: True, on_stdout=records.append)
+
+    assert outcome.exit_code == 0
+    assert outcome.output_truncated is True
+    assert len(outcome.stdout) == 65_536
+    assert records == []
+
+
+def test_non_streaming_transport_is_bounded_too(tmp_path):
+    outcome = SubprocessRunner(max_output_chars=65_536).run(
+        [sys.executable, "-c", "print('Y' * 70000, flush=True)"],
+        cwd=str(tmp_path), stdin_text="private", timeout_s=5,
+        on_process=lambda _proc: True)
+
+    assert outcome.exit_code == 0
+    assert outcome.output_truncated is True
+    assert len(outcome.stdout) == 65_536
+
+
+def test_transport_never_uses_unbounded_readline_for_one_huge_record():
+    class SizedStream:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        def readline(self, size=-1):
+            assert 0 < size <= 65_536
+            return self.chunks.pop(0) if self.chunks else ""
+
+    class Sink:
+        def write(self, _value):
+            return None
+
+        def flush(self):
+            return None
+
+        def close(self):
+            return None
+
+    class Proc:
+        def __init__(self):
+            self.stdout = SizedStream(["Z" * 65_536, "Z" * 4_464 + "\n"])
+            self.stderr = SizedStream([])
+            self.stdin = Sink()
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    records = []
+    outcome = SubprocessRunner(max_output_chars=65_536)._streaming_communicate(
+        Proc(), "private", 5, records.append)
+
+    assert outcome.output_truncated is True
+    assert len(outcome.stdout) == 65_536
+    assert records == []
+
+
+def test_codex_parser_keeps_constant_event_tail_but_aggregates_whole_stream(tmp_path):
+    rows = ([{"type": "thread.started", "thread_id": THREAD}] +
+            [{"type": "turn.started", "seq": i} for i in range(5_000)] +
+            [{"type": "item.completed", "item": {
+                "type": "agent_message", "text": "bounded"}},
+             {"type": "turn.completed", "usage": {"input_tokens": 7}}])
+    runner = CodexExecRunner(
+        process_runner=FakeProcessRunner(ProcessOutcome(
+            stdout=_jsonl(*rows), exit_code=0)),
+        snapshotter=Snapshots("same", "same"), max_events=3)
+
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert snapshot.settled is True
+    assert snapshot.cursor == len(rows)
+    assert len(snapshot.events) == 3
+    assert snapshot.thread_id == THREAD
+    assert snapshot.final_output == "bounded"
+    assert snapshot.usage["input_tokens"] == 7
+
+
+def test_codex_rejects_oversized_single_event_before_json_materialization(tmp_path):
+    rows = [
+        {"type": "thread.started", "thread_id": THREAD},
+        {"type": "item.completed", "item": {
+            "type": "agent_message", "text": "S" * 2_000}},
+        {"type": "turn.completed", "usage": {"input_tokens": 1}},
+    ]
+    runner = CodexExecRunner(
+        process_runner=FakeProcessRunner(ProcessOutcome(
+            stdout=_jsonl(*rows), exit_code=0)),
+        snapshotter=Snapshots("same", "same"), max_event_chars=1_024)
+
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert snapshot.final_output == ""
+    assert any(event.type == "protocol.event_too_large"
+               for event in snapshot.events)
+
+
+def test_codex_rejects_duplicate_terminal_events(tmp_path):
+    complete = _complete()
+    stdout = complete.stdout + _jsonl(
+        {"type": "turn.completed", "usage": {"input_tokens": 1}})
+    runner = CodexExecRunner(
+        process_runner=FakeProcessRunner(ProcessOutcome(stdout=stdout, exit_code=0)),
+        snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert "inconsistent JSONL" in snapshot.error
+
+
+def test_codex_rejects_records_after_terminal_event(tmp_path):
+    complete = _complete()
+    stdout = complete.stdout + _jsonl({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "too late"}})
+    runner = CodexExecRunner(
+        process_runner=FakeProcessRunner(ProcessOutcome(stdout=stdout, exit_code=0)),
+        snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert snapshot.final_output == "too late"
+    assert "inconsistent JSONL" in snapshot.error
+
+
+def test_codex_runner_projects_jsonl_records_live_without_changing_snapshot(tmp_path):
+    outcome = _complete(text="streamed")
+    projected = []
+
+    class StreamingTransport:
+        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process, env=None,
+                on_stdout=None):
+            on_process(FakeProcess())
+            for record in outcome.stdout.splitlines(keepends=True):
+                on_stdout(record)
+            return outcome
+
+    runner = CodexExecRunner(
+        process_runner=StreamingTransport(),
+        snapshotter=Snapshots("same", "same"), event_callback=projected.append)
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert [event.type for event in projected] == [
+        "thread.started", "turn.started", "item.completed", "turn.completed"]
+    assert [event.cursor for event in projected] == [1, 2, 3, 4]
+    assert [event.type for event in snapshot.events] == [event.type for event in projected]
+    assert snapshot.settled is True and snapshot.final_output == "streamed"
+
+
+def test_codex_jsonl_uses_only_lf_not_unicode_line_separators(tmp_path):
+    records = [
+        {"type": "thread.started", "thread_id": THREAD},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {
+            "id": "item_1", "type": "agent_message",
+            "text": "before\u2028middle\u2029after"}},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 1, "output_tokens": 2}},
+    ]
+    stdout = "\n".join(json.dumps(row, ensure_ascii=False) for row in records) + "\n"
+    outcome = ProcessOutcome(stdout=stdout, exit_code=0)
+    projected = []
+
+    class LfTransport:
+        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process, env=None,
+                on_stdout=None):
+            on_process(FakeProcess())
+            for raw in stdout.split("\n")[:-1]:
+                on_stdout(raw + "\n")
+            return outcome
+
+    runner = CodexExecRunner(
+        process_runner=LfTransport(), snapshotter=Snapshots("same", "same"),
+        event_callback=projected.append)
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert [event.type for event in projected] == [row["type"] for row in records]
+    assert [event.type for event in snapshot.events] == [row["type"] for row in records]
+    assert snapshot.final_output == "before\u2028middle\u2029after"
+    assert snapshot.settled is True
+
+
+def test_codex_snapshot_redacts_native_events_final_output_and_stderr(tmp_path):
+    process = FakeProcessRunner(ProcessOutcome(
+        stdout=_complete(text="credential ghp_1234567890abcdef").stdout,
+        stderr="Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        exit_code=1))
+    runner = CodexExecRunner(
+        process_runner=process, snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("inspect", str(tmp_path))
+    serialized = json.dumps(snapshot.to_dict())
+
+    assert "ghp_1234567890abcdef" not in serialized
+    assert "eyJhbGciOiJIUzI1NiJ9" not in serialized
+    assert "Bearer " not in serialized
+    assert "[redacted]" in serialized
+
+
+def test_codex_refuses_to_settle_when_transport_truncated_output(tmp_path):
+    complete = _complete(text="looks complete")
+    process = FakeProcessRunner(ProcessOutcome(
+        stdout=complete.stdout, exit_code=0, output_truncated=True))
+    runner = CodexExecRunner(
+        process_runner=process, snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("inspect", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert "bounded capture limit" in snapshot.error
 
 
 def test_default_transport_holds_target_behind_registration_gate(tmp_path):
@@ -629,6 +953,7 @@ def test_resume_argv_keeps_sandbox_override(tmp_path):
     # `codex exec resume` 0.149.0 on 2026-08-22.
     assert "--ignore-user-config" in argv
     assert "--ignore-rules" in argv
+    assert "--strict-config" in argv
     assert "--ephemeral" not in argv
     assert argv[-2:] == (THREAD, "-")
 
@@ -745,6 +1070,21 @@ def test_probe_reports_missing_and_expired_logins(tmp_path, monkeypatch):
         json.dumps({"tokens": {"access_token": _jwt(time.time() - 60),
                                "refresh_token": "rt"}}), encoding="utf-8")
     assert CodexExecRunner().probe(codex_home=str(codex_home)).login == "ok"
+
+
+def test_probe_rejects_nonstandard_numbers_in_auth_metadata(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        '{"tokens":{"access_token":"x"},"metadata":NaN}', encoding="utf-8")
+    monkeypatch.setattr(agent_runners.shutil, "which", lambda _name: str(tmp_path / "codex"))
+    monkeypatch.setattr(agent_runners, "_cli_version", lambda _exe: ("codex-cli 0.149.0", ""))
+
+    probe = CodexExecRunner().probe(codex_home=str(codex_home))
+
+    assert probe.login == "unknown"
+    assert probe.billing_evidence["login_kind"] == "unreadable"
+    assert probe.usable() is False
 
 
 def test_usage_reads_token_usage_alias_and_cache_writes(tmp_path):

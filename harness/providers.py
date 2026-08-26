@@ -240,9 +240,12 @@ def _error_completion(name: str, err, usage=None, status: int = 0) -> Completion
                 detail += " | limits: " + json.dumps(rl, sort_keys=True)
         except Exception:
             pass
+        from .redact import redact as _redact_error
+        detail = _redact_error(detail, {})[:1200]
         msg = "HTTP %d: %s" % (err.code, detail)
     else:
-        detail = str(err)
+        from .redact import redact as _redact_error
+        detail = _redact_error(str(err)[:1200], {})
         msg = "%s: %s" % (type(err).__name__, detail)
     # 300 was enough for a message and not for the evidence behind it: the body alone already fills
     # it, so appending the limit headers above would have written them straight into the truncation.
@@ -806,7 +809,13 @@ class AnthropicOAuthProvider(AnthropicProvider):
                 stop_reason="error",
                 error_detail="direct model request authority is missing")
         if claude_oauth_expired(login_store_only=direct):
-            raise RuntimeError(OAUTH_EXPIRED_HINT)
+            # Provider.complete has a no-throw transport contract. A token can
+            # expire during a long-lived Harness after construction, so surface
+            # the actionable condition as the same terminal Completion shape as
+            # 401/timeout instead of tearing down the owning Mission loop.
+            return Completion(
+                text="ERROR(anthropic-oauth): " + OAUTH_EXPIRED_HINT,
+                stop_reason="error", error_detail=OAUTH_EXPIRED_HINT)
         token = _read_oauth_token(login_store_only=direct)
         if direct and not token:
             return Completion(

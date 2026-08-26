@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import re
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -13,6 +14,38 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
+
+
+def test_first_party_surfaces_share_the_quiet_interface_contract():
+    desktop = read("harness/webui/index.html")
+    mobile = read("harness/webui/mobile.html")
+    remote = read("harness/webui/remote.html")
+    ambient = read("harness/webui/ambient.html")
+    wallpaper = read("harness/webui/wallpaper.html")
+    explorer = read("harness/webui/map.html")
+
+    assert 'data-ui="minimal"' in desktop
+    assert 'id="topbarMore"' in desktop and 'class="topbar-tools"' in desktop
+    assert 'id="modeClose"' in desktop and 'class="mode-menu-head"' in desktop
+    assert 'get("preview") === "onboarding"' in desktop
+    assert "grid-template-columns:232px" in desktop
+    assert "--bg:#F6F6F3" in desktop and "--pine:#35594A" in desktop
+    assert "--bg:#F6F6F3" in mobile and "--bg:#F6F6F3" in remote
+    assert "Quiet ambient mode" in ambient and "Quiet visual run view" in wallpaper
+    assert "The map stays immersive" in explorer
+
+
+def test_library_and_activity_replace_the_conversation_instead_of_stacking():
+    desktop = read("harness/webui/index.html")
+    activity = desktop.split("function setActivityOpen(open)", 1)[1].split("if (activityButton)", 1)[0]
+    library = desktop.split("function setLibraryOpen(open)", 1)[1].split(
+        'if ($("libraryRefresh"))', 1)[0]
+
+    for block in (activity, library):
+        assert '$("scroll").hidden = !!open' in block
+        assert '$("composer").hidden = !!open' in block
+        assert '$("scrollDownBtn").hidden = !!open' in block
+    assert library.index("setActivityOpen(false)") < library.index("libraryPanel.hidden = !open")
 
 
 def test_every_run_surface_uses_the_server_cancel_contract():
@@ -32,6 +65,19 @@ def test_mobile_steer_and_zoom_contracts():
     assert "JSON.stringify({session:currentSession,q:qv})" in page
     assert "JSON.stringify({session:currentSession,text:qv})" not in page
     assert "externalRunning" in page and "Steer not delivered" in page
+
+
+def test_dedicated_surfaces_coerce_event_values_and_mobile_workers_fail_closed():
+    mobile = read("harness/webui/mobile.html")
+    remote = read("harness/webui/remote.html")
+
+    for name, page in (("mobile", mobile), ("remote", remote)):
+        assert re.search(r"function esc\(s\)\{ return String\(s==null\?", page), name
+        assert "&quot;" in page and "&#39;" in page, name
+
+    assert 'available=!explicitExternal||!!(probe&&probe.runnable)' in mobile
+    assert 'row.dataset.available="false";row.disabled=true' in mobile
+    assert 'if(row.selected){$("mRunner").value=""' in mobile
 
 
 def test_ecosystem_shell_exposes_missions_pack_library_and_global_approvals():
@@ -125,6 +171,24 @@ def test_dedicated_surfaces_expose_safe_activity_and_recovery_controls():
         for private_field in ("data.task", "data.result", "data.workspace", "data.resources",
                               "data.leash", "data.args", "data.prompt", "data.messages"):
             assert private_field not in block, (name, private_field)
+
+
+def test_activity_distinguishes_same_named_workers_from_services():
+    pages = {
+        "desktop": read("harness/webui/index.html"),
+        "mobile": read("harness/webui/mobile.html"),
+        "remote": read("harness/webui/remote.html"),
+        "ambient": read("harness/webui/ambient.html"),
+    }
+    for name, page in pages.items():
+        assert 'name + " · " + t("Worker")' in page or \
+               'name+" · "+t("Worker")' in page or \
+               "name+' · '+t('Worker')" in page or \
+               'name+" · "+tOps("Worker")' in page, name
+        assert 'name + " · " + t("Service")' in page or \
+               'name+" · "+t("Service")' in page or \
+               "name+' · '+t('Service')" in page or \
+               'name+" · "+tOps("Service")' in page, name
 
 
 def test_mobile_and_remote_render_compact_parent_child_specialist_trees():
@@ -238,8 +302,10 @@ def test_run_setup_is_orthogonal_accessible_and_available_on_mobile():
     desktop = read("harness/webui/index.html")
     mobile = read("harness/webui/mobile.html")
 
-    assert desktop.count('role="radiogroup"') == 7
-    assert desktop.count('role="radio"') == 19
+    assert desktop.count('role="radiogroup"') == 8
+    assert desktop.count('role="radio"') == 24
+    assert 'id="runRunner"' in desktop
+    assert 'data-val="codex-exec"' in desktop and 'data-val="claude-code"' in desktop
     assert 'data-i18n-aria-label="Run setup"' in desktop
     assert "choose(axis, target.getAttribute(\"data-val\"))" in desktop
     assert "it.tabIndex = on && !it.disabled ? 0 : -1" in desktop
@@ -328,6 +394,23 @@ def test_desktop_dialogs_and_dynamic_model_count_are_accessible():
     assert 'classList.add("dropped")' in steer_catch and "Steer not delivered" in steer_catch
 
 
+def test_desktop_shows_the_resolved_server_run_plan_and_worker_limits():
+    page = read("harness/webui/index.html")
+    assert "function runPlanSummary(plan)" in page
+    assert "function showRunPlan(plan)" in page
+    assert 'showRunPlan(d.run_plan)' in page
+    assert 'shownRunPlan === plan.id' in page
+    assert '(plan.limitations || []).map(t).join("; ")' in page
+    assert '.trace-step.plan' in page
+    assert 'runCanSteer = !!((d.worker_capabilities || {}).steer)' in page
+    assert 'This worker cannot be steered — stop it or wait' in page
+    assert 'liveRuns[currentSession].state = d.canceled ? "canceled"' in page
+    assert 'liveRuns[currentSession].verified = !!d.verified' in page
+    assert 'row.key === "collie"' in page
+    assert 't("Native tools, approvals, streaming, and steering")' in page
+    assert 't(row.probe.availability ||' in page
+
+
 def test_desktop_scrollbars_follow_explicit_and_system_themes():
     page = read("harness/webui/index.html")
     assert ':root[data-theme="light"]' in page and "color-scheme:light" in page
@@ -347,6 +430,99 @@ def test_only_complete_ui_languages_are_selectable():
     language_block = settings.split('"key": "LANG"', 1)[1].split("],", 1)[0]
     assert all(code in language_block for code in ('"auto"', '"en"', '"zh"', '"zh-tw"'))
     assert '"es"' not in language_block
+
+
+def test_selectable_desktop_locales_cover_declared_and_dynamic_strings():
+    page = read("harness/webui/index.html")
+    zh = (page.split("var ZH = {", 1)[1].split("var ZHTW = {", 1)[0] +
+          page.split("Object.assign(ZH, {", 1)[1].split("Object.assign(ZHTW, {", 1)[0])
+    zhtw = (page.split("var ZHTW = {", 1)[1].split("Object.assign(ZH, {", 1)[0] +
+            page.split("Object.assign(ZHTW, {", 1)[1].split("var I18N = {", 1)[0])
+    key_pattern = r'"((?:\\.|[^"\\])*)"\s*:'
+    zh_keys, zhtw_keys = set(re.findall(key_pattern, zh)), set(re.findall(key_pattern, zhtw))
+    declared = {unescape(value) for value in re.findall(
+        r'data-i18n(?:-[\w-]+)?="([^"]+)"', page)}
+    dynamic = set(re.findall(r'\bt\("([^"\n]+)"\)', page))
+    missing = sorted((declared | dynamic) - (zh_keys & zhtw_keys))
+    assert missing == []
+
+
+def test_desktop_hydrates_cross_window_run_state_before_poll_interval():
+    page = read("harness/webui/index.html")
+    immediate = page.index("  pollRuns();\n  setInterval(pollRuns, 2500);")
+    assert page.index("  function pollRuns() {") < immediate
+
+
+def test_read_only_run_setup_never_keeps_an_external_worker_checked():
+    page = read("harness/webui/index.html")
+    assert 'effectiveWorker !== "collie" && effectiveWorker !== "auto"' in page
+    assert 'fields.runner.value = "collie";' in page
+    assert 'workerKey !== "collie" && workerKey !== "auto"' in page
+
+
+def test_explicit_external_worker_stays_disabled_until_probe_truth_arrives():
+    page = read("harness/webui/index.html")
+    assert 'var explicitExternal = axis === "runner"' in page
+    assert "(!capabilities || !workerRow || !workerRow.probe || !workerRow.probe.runnable)" in page
+
+
+def test_selectable_mobile_locales_cover_declared_and_dynamic_strings():
+    page = read("harness/webui/mobile.html")
+    zh = page.split("var ZH={", 1)[1].split("var ZHTW={", 1)[0]
+    zhtw = page.split("var ZHTW={", 1)[1].split("function t(en)", 1)[0]
+    key_pattern = r'"((?:\\.|[^"\\])*)"\s*:'
+    zh_keys, zhtw_keys = set(re.findall(key_pattern, zh)), set(re.findall(key_pattern, zhtw))
+    declared = {unescape(value) for value in re.findall(
+        r'data-t(?:-[\w-]+)?="([^"]+)"', page)}
+    dynamic = set(re.findall(r"\bt\((?:'([^'\n]+)'|\"([^\"\n]+)\")\)", page))
+    dynamic_keys = {left or right for left, right in dynamic}
+    missing = sorted((declared | dynamic_keys) - (zh_keys & zhtw_keys))
+    assert missing == []
+
+
+def test_mobile_run_setup_carries_worker_truth_and_blocks_unsupported_steering():
+    page = read("harness/webui/mobile.html")
+    assert 'id="mRunner"' in page
+    assert "runner:$(\"mRunner\").value" in page
+    assert "'&runner='+encodeURIComponent(o.runner)" in page
+    assert page.count('"runner","receipt"') >= 2
+    assert "if(!runCapabilitiesKnown||!runCanSteer)" in page
+    assert "data.worker_capabilities||{}" in page
+    assert 'effectiveWorker!=="collie"&&effectiveWorker!=="auto"' in page
+    assert "function mobileRunPlanSummary(plan)" in page
+    assert "(plan.limitations||[]).map(t)" in page
+
+
+def test_selectable_remote_locales_cover_declared_and_dynamic_strings():
+    page = read("harness/webui/remote.html")
+    zh = (page.split("var ZH = {", 1)[1].split("var ZHTW = {", 1)[0] +
+          page.split("Object.assign(ZH,{", 1)[1].split("Object.assign(ZHTW,{", 1)[0])
+    zhtw = (page.split("var ZHTW = {", 1)[1].split("Object.assign(ZH,{", 1)[0] +
+            page.split("Object.assign(ZHTW,{", 1)[1].split("function t(en)", 1)[0])
+    key_pattern = r'"((?:\\.|[^"\\])*)"\s*:'
+    zh_keys, zhtw_keys = set(re.findall(key_pattern, zh)), set(re.findall(key_pattern, zhtw))
+    declared = {unescape(value) for value in re.findall(
+        r'data-i(?:-[\w-]+)?="([^"]+)"', page)}
+    dynamic = set(re.findall(r"\bt\((?:'([^'\n]+)'|\"([^\"\n]+)\")\)", page))
+    dynamic_keys = {left or right for left, right in dynamic}
+    missing = sorted((declared | dynamic_keys) - (zh_keys & zhtw_keys))
+    assert missing == []
+
+
+def test_selectable_ambient_locales_cover_declared_and_dynamic_strings():
+    page = read("harness/webui/ambient.html")
+    zh = (page.split("var OPS_ZH=", 1)[1].split("var OPS_ZHTW=", 1)[0] +
+          page.split("Object.assign(OPS_ZH,", 1)[1].split("Object.assign(OPS_ZHTW,", 1)[0])
+    zhtw = (page.split("var OPS_ZHTW=", 1)[1].split("Object.assign(OPS_ZH,", 1)[0] +
+            page.split("Object.assign(OPS_ZHTW,", 1)[1].split("function opsLocale", 1)[0])
+    key_pattern = r'"((?:\\.|[^"\\])*)"\s*:'
+    zh_keys, zhtw_keys = set(re.findall(key_pattern, zh)), set(re.findall(key_pattern, zhtw))
+    declared = {unescape(value) for value in re.findall(
+        r'data-ops-(?:t|aria|title)="([^"]+)"', page)}
+    dynamic = set(re.findall(r'\btOps\((?:"([^"\n]+)"|\'([^\'\n]+)\')\)', page))
+    dynamic_keys = {left or right for left, right in dynamic}
+    missing = sorted((declared | dynamic_keys) - (zh_keys & zhtw_keys))
+    assert missing == []
 
 
 def test_landing_has_no_passive_tracking_and_has_disclosure_and_a11y():
@@ -516,3 +692,12 @@ def test_local_server_builds_per_document_csp_hashes():
         digest = base64.b64encode(hashlib.sha256(normalized).digest()).decode()
         assert f"'sha256-{digest}'" in policy
     assert "frame-ancestors 'self'" in policy and "base-uri 'none'" in policy
+
+
+def test_pack_workspace_copy_explains_the_real_isolation_boundary():
+    desktop = read("harness/webui/index.html")
+    mobile = read("harness/webui/mobile.html")
+
+    assert ("Candidates run in isolated worktrees; current files change only when a "
+            "winner is applied.") in desktop
+    assert 'pack?"Pack base · candidates isolated":"Current files"' in mobile

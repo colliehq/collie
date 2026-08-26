@@ -1,15 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "collie browser bridge",
-  "version": "3.5",
-  "description": "Lets the collie agent drive THIS browser (navigate / read / click / type) via a localhost bridge, using your real logged-in session.",
+  "name": "Collie Browser Bridge",
+  "version": "3.6",
+  "description": "Ask Collie about the current page and let it navigate, read, click, and type in your real signed-in Chrome through a local bridge.",
   "permissions": [
     "scripting",
     "tabs",
     "activeTab",
     "alarms",
     "storage",
-    "debugger"
+    "debugger",
+    "sidePanel",
+    "contextMenus"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",
@@ -19,6 +21,9 @@
   "background": {
     "service_worker": "background.js"
   },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -26,6 +31,12 @@
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["presence.js"],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
   "icons": {

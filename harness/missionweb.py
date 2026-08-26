@@ -167,6 +167,70 @@ def _execution_profile_digest(profile: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _worker_profile_digest(profile: dict) -> str:
+    """Immutable pin for the Mission's selected worker and payer evidence."""
+    from .runner_specs import stable_digest
+    return stable_digest(dict(profile or {}))
+
+
+def _mission_worker_profile(requested: str, route: dict, workspace: str, *,
+                            overnight: bool, no_paid_overage: bool,
+                            runs_db: str = "") -> dict:
+    """Select and freeze the code worker before a durable Mission is created."""
+    from types import SimpleNamespace
+    from . import runner_registry, runner_select, runner_signals, settings
+
+    requested = str(requested or "").strip().lower()
+    if overnight:
+        if requested not in ("", "collie"):
+            raise ValueError("overnight Mission code stays on Collie's own harness")
+        requested = "collie"
+    decision_shape = SimpleNamespace(
+        intent="build", route_kind="code", workspace="mission", strategy="single",
+        provider=str(route.get("provider") or ""), model=str(route.get("model") or ""))
+    # Collie's native Mission layer already owns its provider subscription guard.
+    # First choose WHO without duplicating that guard; if the chosen worker is
+    # external, re-decide the exact pin under the stronger billing constraints.
+    request = runner_select.request_from_surface(
+        "mission-code", requested, decision_shape, settings,
+        cwd=workspace or os.getcwd(), no_paid_overage=False,
+        subscription_only=False, overnight=overnight)
+    candidates = tuple(request.candidates())
+    probes = runner_registry.probe_all(
+        keys=candidates, live=False, provider=decision_shape.provider)
+    signal_set = runner_signals.for_selection(request, probes, runs_db=runs_db)
+    selected = runner_select.decide(
+        request, runner_registry.SPECS, probes, signals=signal_set)
+    if selected.error:
+        raise ValueError(selected.error)
+    if selected.runner != "collie":
+        raw = request.to_dict()
+        raw.update(pin=selected.runner, configured=selected.runner,
+                   pool=[selected.runner],
+                   no_paid_overage=bool(no_paid_overage),
+                   subscription_only=bool(route.get("subscription_only")))
+        from .runner_specs import HarnessRequest
+        request = HarnessRequest.from_dict(raw)
+        probes = runner_registry.probe_all(
+            keys=(selected.runner,),
+            live=bool(no_paid_overage or route.get("subscription_only")),
+            provider=decision_shape.provider)
+        if no_paid_overage:
+            # The flag is the operator's explicit statement that paid credits,
+            # overage and auto-reload are disabled.  A vendor status probe can
+            # prove the plan route but cannot observe those account toggles, so
+            # keep the two facts separate and freeze both into the receipt.
+            import dataclasses
+            probes = {key: dataclasses.replace(probe, overage_attested=True)
+                      for key, probe in probes.items()}
+        signal_set = runner_signals.for_selection(request, probes, runs_db=runs_db)
+        selected = runner_select.decide(
+            request, runner_registry.SPECS, probes, signals=signal_set)
+        if selected.error:
+            raise ValueError(selected.error)
+    return runner_select.freeze_worker_profile(request, selected)
+
+
 def _clean(d: dict) -> dict:
     """Drop the injected `_case` context from args/case before it hits the UI."""
     return {k: v for k, v in (d or {}).items() if k not in ("_case", "_leash")}
@@ -484,7 +548,8 @@ class MissionService:
             from .codeworker import CodeSliceProcessRunner
             from .primitives import _code_verify, _real_code
             code_process = CodeSliceProcessRunner(
-                session_dir=os.path.join(self._state_dir, "mission-code-sessions"))
+                session_dir=os.path.join(self._state_dir, "mission-code-sessions"),
+                runs_db=os.path.join(self._state_dir, "data", "runs.db"))
             self._code_process = code_process
             wrapped = []
             for cap in self._capabilities:
@@ -642,6 +707,21 @@ class MissionService:
                     allowed_states=(QUEUED, WAITING, NEEDS_YOU)):
                 raise RuntimeError("Mission left its runnable boundary during route activation")
             mission = self.store.get(mission.mission_id) or mission
+        worker_profile = (mission.case or {}).get("worker_profile")
+        if isinstance(worker_profile, dict):
+            pinned_worker = str(
+                (mission.leash or {}).get("worker_profile_sha256") or "")
+            if not pinned_worker or pinned_worker != _worker_profile_digest(worker_profile):
+                raise RuntimeError(
+                    "frozen Mission worker profile failed its immutable route pin")
+            workspace = str((mission.case or {}).get("_isolated_workspace") or os.getcwd())
+            try:
+                from .runner_select import refresh_frozen_worker_profile
+                refresh_frozen_worker_profile(
+                    worker_profile, cwd=workspace,
+                    runs_db=os.path.join(self._state_dir, "data", "runs.db"))
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
         if self._runtime_ready:
             from .providers import provider_default_model
             active_provider = _canonical_provider(self._provider)
@@ -1234,7 +1314,7 @@ class MissionService:
     def _inherit_execution_contract(source, target_case):
         """Copy immutable code/billing authority into a fresh audit successor."""
         source_case = dict(getattr(source, "case", {}) or {})
-        for key in ("execution_profile", "code_profile", "billing_safety"):
+        for key in ("execution_profile", "code_profile", "billing_safety", "worker_profile"):
             value = source_case.get(key)
             if isinstance(value, dict):
                 target_case[key] = json.loads(json.dumps(value, ensure_ascii=False))
@@ -1268,7 +1348,7 @@ class MissionService:
               case: dict = None, *, code: bool = False, workspace: str = "",
               overnight: bool = False, verify_command: str = "",
               no_paid_overage: bool = False, billing_evidence: dict = None,
-              provider: str = "", model: str = "",
+              provider: str = "", model: str = "", runner: str = "",
               **bounds) -> dict:
         """Persist first and return the id immediately; /run or the daemon claims it.
 
@@ -1282,13 +1362,17 @@ class MissionService:
             raise ValueError("Mission code and overnight options must be booleans")
         if billing_evidence is not None and not isinstance(billing_evidence, dict):
             raise ValueError("Mission billing_evidence must be an object")
-        if not isinstance(provider, str) or not isinstance(model, str):
-            raise ValueError("Mission provider and model must be strings")
+        if (not isinstance(provider, str) or not isinstance(model, str) or
+                not isinstance(runner, str)):
+            raise ValueError("Mission provider, model, and runner must be strings")
         provider = provider.strip()
         model = model.strip()
+        runner = runner.strip().lower()
         if ("\x00" in provider or "\x00" in model or len(provider) > 120 or
-                len(model) > 240):
-            raise ValueError("Mission provider/model override is invalid")
+                len(model) > 240 or "\x00" in runner or len(runner) > 80):
+            raise ValueError("Mission provider/model/runner override is invalid")
+        if runner and not code:
+            raise ValueError("Mission runner requires code mode")
         if workspace and not code:
             raise ValueError("Mission workspace requires code mode")
         if verify_command and not code:
@@ -1342,6 +1426,10 @@ class MissionService:
                 provider or self._provider, model or self._model,
                 overnight=overnight)
             case["execution_profile"] = profile
+            case["worker_profile"] = _mission_worker_profile(
+                runner, profile, workspace, overnight=overnight,
+                no_paid_overage=no_paid_overage,
+                runs_db=os.path.join(self._state_dir, "data", "runs.db"))
             if overnight:
                 try:
                     case["billing_safety"] = self._subscription_preflight(
@@ -1401,6 +1489,9 @@ class MissionService:
         if isinstance(case.get("execution_profile"), dict):
             bounds["execution_profile_sha256"] = _execution_profile_digest(
                 case["execution_profile"])
+        if isinstance(case.get("worker_profile"), dict):
+            bounds["worker_profile_sha256"] = _worker_profile_digest(
+                case["worker_profile"])
         # Durable jobs get their own worktree by default.  The Web/CLI provisioner
         # binds its canonical path later through bind_workspace(); ordinary world
         # Missions pay no cost for this until they actually choose ``code``.
@@ -1830,9 +1921,17 @@ class MissionService:
                     if digest:
                         case["code_baseline_tree_digest"] = digest
                         case["code_expected_tree_digest"] = digest
+                worker_profile = parent_case.get("worker_profile")
+                if isinstance(worker_profile, dict):
+                    case["worker_profile"] = json.loads(json.dumps(
+                        worker_profile, ensure_ascii=False))
             try:
+                child_leash = dict(run["leash"])
+                if isinstance(case.get("worker_profile"), dict):
+                    child_leash["worker_profile_sha256"] = _worker_profile_digest(
+                        case["worker_profile"])
                 create_mission(
-                    self.store, child_mid, run["task"], case=case, leash=run["leash"],
+                    self.store, child_mid, run["task"], case=case, leash=child_leash,
                     lane="specialist", external_run_id=run["run_id"])
             except sqlite3.IntegrityError:
                 # Another dispatcher may have repaired the same crash window.

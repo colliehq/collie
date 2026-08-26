@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import signal
 import sys
@@ -265,11 +266,18 @@ def _assistant_text(message) -> str:
 
 def _usage_dict(value) -> dict:
     value = value if isinstance(value, dict) else {}
+    def counter(key):
+        raw = value.get(key, 0) or 0
+        if (not isinstance(raw, (int, float)) or isinstance(raw, bool)
+                or not math.isfinite(float(raw)) or raw < 0
+                or not float(raw).is_integer()):
+            raise RuntimeError("SDK returned invalid %s usage" % key)
+        return int(raw)
     return {
-        "input_tokens": int(value.get("input_tokens", 0) or 0),
-        "output_tokens": int(value.get("output_tokens", 0) or 0),
-        "cache_read_input_tokens": int(value.get("cache_read_input_tokens", 0) or 0),
-        "cache_creation_input_tokens": int(value.get("cache_creation_input_tokens", 0) or 0),
+        "input_tokens": counter("input_tokens"),
+        "output_tokens": counter("output_tokens"),
+        "cache_read_input_tokens": counter("cache_read_input_tokens"),
+        "cache_creation_input_tokens": counter("cache_creation_input_tokens"),
     }
 
 
@@ -344,7 +352,9 @@ def _read_request() -> dict:
     raw = sys.stdin.buffer.read(4 * 1024 * 1024 + 1)
     if len(raw) > 4 * 1024 * 1024:
         raise RuntimeError("worker request exceeded the safety limit")
-    request = json.loads(raw.decode("utf-8"))
+    def reject_constant(value):
+        raise ValueError("non-finite JSON number is forbidden: %s" % value)
+    request = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
     if not isinstance(request, dict) or request.get("protocol") != 1:
         raise RuntimeError("invalid worker protocol")
     for key in ("model", "system_prompt", "prompt"):
@@ -373,7 +383,8 @@ def main() -> int:
     except Exception as exc:
         # Parent applies Collie's secret redactor before surfacing this bounded text.
         result = {"ok": False, "error": "%s: %s" % (type(exc).__name__, str(exc)[:1000])}
-    sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":"),
+                                allow_nan=False))
     return 0 if result.get("ok") else 1
 
 

@@ -1,11 +1,15 @@
 """Hosted remote v2: relay-blind pairing, fail-closed requests and authenticated records."""
 import base64
+import io
 import json
 import secrets
+import struct
 import time
 
-from harness import e2e
-from harness.remote import RelayClient, RemoteState
+import pytest
+
+from harness import e2e, remote_identity, wsclient
+from harness.remote import RelayClient, RemoteState, _strict_json_object
 
 
 class Identity:
@@ -35,6 +39,52 @@ class WS:
 def client(secret=None, identity=None):
     return RelayClient("wss://relay.test", identity or Identity(), secret or secrets.token_urlsafe(32),
                        "127.0.0.1", 8787, "local-token")
+
+
+def test_relay_and_websocket_protocols_bound_untrusted_json_and_frames(monkeypatch):
+    for raw in ('[]', '{"t":"req","seq":NaN}',
+                '{"t":"req","t":"device_added"}'):
+        with pytest.raises(ValueError):
+            _strict_json_object(raw)
+
+    conn = wsclient.WebSocketClient.__new__(wsclient.WebSocketClient)
+    conn._reader = io.BytesIO(
+        bytes([0x81, 0x7f]) + struct.pack(">Q", wsclient.MAX_FRAME_BYTES + 1))
+    with pytest.raises(wsclient.WebSocketError, match="frame exceeds"):
+        conn._read_frame()
+
+    frames = iter([(False, wsclient.OP_TEXT, b"abc"),
+                   (True, wsclient.OP_CONT, b"def")])
+    conn._read_frame = lambda: next(frames)
+    monkeypatch.setattr(wsclient, "MAX_MESSAGE_BYTES", 5)
+    with pytest.raises(wsclient.WebSocketError, match="message exceeds"):
+        conn.recv_message()
+
+
+def test_authenticated_inner_request_still_requires_unambiguous_standard_json():
+    key = b"k" * 32
+    raw = b'{"method":"GET","method":"POST","path":"/","body_b64":""}'
+    enc = e2e.seal(key, raw, e2e.aad("room", "cid", "session", "c2s", 0))
+    with pytest.raises(ValueError, match="duplicate JSON"):
+        e2e.open_request(
+            key, enc, room="room", frame_id="cid", session="session", seq=0)
+    for seq in (False, "0", 0.0, -1, 2 ** 64):
+        with pytest.raises(ValueError, match="unsigned 64-bit"):
+            e2e.aad("room", "cid", "session", "c2s", seq)
+
+
+def test_corrupt_remote_identity_is_preserved_for_recovery_not_rotated(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    path = tmp_path / "remote.json"
+    corrupt = '{"device_id":"desktop","room":"stable","agent_key":NaN,"devices":{}}'
+    path.write_text(corrupt, encoding="utf-8")
+
+    with pytest.raises(remote_identity.RemoteIdentityError, match="inspect"):
+        remote_identity.load_or_create()
+
+    assert path.read_text(encoding="utf-8") == corrupt
+    assert not list(tmp_path.glob("remote.json.*.tmp"))
 
 
 def test_pairing_secret_never_enters_relay_frames_and_is_one_shot():

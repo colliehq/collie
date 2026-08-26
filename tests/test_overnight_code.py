@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from harness import sessions
+from harness import codeworker
 from harness.actions import ActionStore
 from harness.codeworker import CodeSliceProcessRunner
 from harness.jobs import (Capability, DONE_VERIFIED, NEEDS_YOU,
@@ -99,6 +100,67 @@ def _install_fake_harnesses(monkeypatch, results):
 
     monkeypatch.setattr("harness.cli.make_harness", make_harness)
     return seen
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("max_session_storage_bytes", float("inf")),
+    ("max_session_storage_bytes", -1),
+    ("verify_timeout_seconds", float("nan")),
+    ("verify_timeout_seconds", 1.5),
+    ("max_model_calls", float("inf")),
+    ("max_model_calls", -1),
+    ("max_model_calls", True),
+])
+def test_live_code_rejects_malformed_numeric_authority_before_model_call(
+        tmp_path, monkeypatch, field, value):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(
+        "harness.cli.make_harness",
+        lambda *_args, **_kwargs: pytest.fail("invalid authority reached the model"))
+
+    out = _live_code("continue", str(workspace), mission_id="bad-authority",
+                     **{field: value})
+
+    assert out["verified"] is False
+    assert out["needs_human"] is True
+    assert "invalid Mission code authority" in out["answer"]
+
+
+def test_live_code_zero_model_call_authority_is_exhausted_before_model_call(
+        tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setattr(
+        "harness.cli.make_harness",
+        lambda *_args, **_kwargs: pytest.fail("exhausted authority reached the model"))
+
+    out = _live_code("continue", str(workspace), mission_id="zero-authority",
+                     max_model_calls=0)
+
+    assert out["verified"] is False
+    assert out["needs_human"] is True
+    assert "budget is exhausted" in out["answer"]
+
+
+def test_live_code_nonfinite_slice_turns_falls_back_to_bounded_default(
+        tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    seen = _install_fake_harnesses(monkeypatch, [_result(
+        answer="partial", messages=[{"role": "assistant", "content": "partial"}],
+        exhausted=True)])
+
+    out = _live_code("continue", str(workspace), mission_id="bad-slice-turns",
+                     slice_turns=float("inf"), host_verifier=lambda *_: False)
+
+    assert out["continue_needed"] is True
+    assert seen[0]["max_turns"] == 24
 
 
 def test_live_code_resumes_one_stable_mission_session_and_reports_slice_usage(
@@ -993,6 +1055,48 @@ def test_code_slice_process_runs_from_an_uninstalled_source_checkout(tmp_path, m
     assert out["turns"] >= 1
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, "bad"])
+def test_code_slice_process_rejects_invalid_wall_limit_before_creating_worker_state(
+        tmp_path, monkeypatch, value):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        codeworker.tempfile, "mkdtemp",
+        lambda **_kwargs: pytest.fail("invalid wall authority created worker state"))
+    runner = CodeSliceProcessRunner(
+        popen=lambda *_args, **_kwargs: pytest.fail("invalid authority spawned a worker"))
+
+    with pytest.raises(ValueError, match="max_wall_seconds"):
+        runner("work", workspace=str(workspace), mission_id="bad-wall",
+               max_wall_seconds=value)
+
+
+def test_codeworker_private_json_rejects_nonfinite_values_without_partial_file(tmp_path):
+    path = tmp_path / "private.json"
+
+    with pytest.raises(ValueError):
+        codeworker._private_json(str(path), {"budget": float("nan")})
+
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("payload", ["[]", '{"pid":NaN}'])
+def test_corrupt_worker_receipt_stays_fenced_without_crashing(
+        tmp_path, payload):
+    runner = CodeSliceProcessRunner(
+        popen=lambda *_args, **_kwargs: None,
+        session_dir=str(tmp_path / "sessions"), worker_dir=str(tmp_path / "workers"))
+    os.makedirs(runner.worker_dir)
+    path = runner._receipt_path("corrupt")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+
+    assert runner.cancel_persisted("corrupt") is False
+    assert runner.has_owned_worker("corrupt") is True
+    assert os.path.exists(path)
+
+
 def test_code_slice_process_searches_its_bound_workspace(tmp_path):
     """The real worker must retain enough non-secret OS context for grep.
 
@@ -1303,6 +1407,29 @@ def test_live_code_never_starts_edit_when_baseline_receipt_cannot_persist(
     assert "baseline" in out["answer"]
 
 
+def test_live_code_never_starts_edit_when_baseline_receipt_raises(
+        tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "fix.py").write_text("broken = True\n", encoding="utf-8")
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(workspace))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(
+        sessions, "append_run_receipt",
+        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("disk denied")))
+    monkeypatch.setattr(
+        "harness.cli.make_harness",
+        lambda *_a, **_kw: pytest.fail("model must not start without a durable baseline"))
+
+    out = _live_code(
+        "fix it", str(workspace), mission_id="baseline-write-raised",
+        session_id="mission-code-baseline-write-raised")
+
+    assert out["recovery_required"] is True
+    assert out["verified"] is False
+    assert "baseline" in out["answer"]
+
+
 def test_live_code_fails_closed_when_post_edit_receipt_cannot_persist(
         tmp_path, monkeypatch):
     workspace = tmp_path / "repo"
@@ -1333,6 +1460,65 @@ def test_live_code_fails_closed_when_post_edit_receipt_cannot_persist(
     saved = sessions.load(session_id)
     assert not any(row.get("kind") == "mission_code_slice"
                    for row in saved.get("run_receipts") or [])
+
+
+def test_live_code_preserves_answer_when_slice_receipt_raises(
+        tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(workspace))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    _install_fake_harnesses(monkeypatch, [_result(
+        answer="useful result", messages=[{"role": "assistant", "content": "done"}],
+        exhausted=False, verified=True)])
+    append = sessions.append_run_receipt
+
+    def raise_slice_receipt(sid, receipt, **kwargs):
+        if receipt.get("kind") == "mission_code_slice":
+            raise PermissionError("api_key=ordinarylookingsecret123456")
+        return append(sid, receipt, **kwargs)
+
+    monkeypatch.setattr(sessions, "append_run_receipt", raise_slice_receipt)
+
+    out = _live_code(
+        "fix it", str(workspace), mission_id="slice-write-raised",
+        session_id="mission-code-slice-write-raised",
+        host_verifier=lambda *_a: {"verified": True})
+
+    assert out["recovery_required"] is True
+    assert out["verified"] is False
+    assert "useful result" in out["answer"]
+    assert "ownership receipt could not be persisted" in out["answer"]
+    assert "ordinarylookingsecret123456" not in out["answer"]
+
+
+def test_live_code_transcript_failure_is_recovery_required_and_receipted(
+        tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(workspace))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    session_id = "mission-code-transcript-write-failed"
+    _install_fake_harnesses(monkeypatch, [_result(
+        answer="useful result", messages=[{"role": "assistant", "content": "done"}],
+        exhausted=False, verified=True)])
+    monkeypatch.setattr(
+        sessions, "save",
+        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("disk denied")))
+
+    out = _live_code(
+        "fix it", str(workspace), mission_id="transcript-write-failed",
+        session_id=session_id, host_verifier=lambda *_a: {"verified": True})
+
+    assert out["recovery_required"] is True
+    assert out["verified"] is False
+    assert "useful result" in out["answer"]
+    assert "transcript could not be persisted" in out["answer"]
+    saved = sessions.load(session_id)
+    receipt = next(row for row in saved["run_receipts"]
+                   if row.get("kind") == "mission_code_slice")
+    assert receipt["transcript_persisted"] is False
+    assert receipt["verified"] is False
 
 
 def test_completed_reconcile_adopts_crashed_edit_and_next_slice_runs(

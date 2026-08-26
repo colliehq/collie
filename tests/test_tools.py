@@ -217,6 +217,20 @@ def test_bash_no_spill_under_cap():
     r = BashTool().run({"command": "echo hi", "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert "saved to" not in r and r.strip() == "hi", "small output must not spill: %r" % r
 
+
+def test_spill_name_survives_pid_reuse_and_legacy_counter_collision(tmp_path, monkeypatch):
+    from harness import tools as T
+    monkeypatch.setattr(T, "_SPILL_DIR", str(tmp_path))
+    monkeypatch.setattr(T, "_spill_swept", True)
+    legacy = tmp_path / ("bash-%d-1.log" % os.getpid())
+    legacy.write_text("previous process", encoding="utf-8")
+
+    path = T._spill_full_output("new process output")
+
+    assert path and path != str(legacy)
+    assert open(path, encoding="utf-8").read() == "new process output"
+    assert legacy.read_text(encoding="utf-8") == "previous process"
+
 def test_spill_sweep():
     from harness import tools as T
     os.makedirs(T._SPILL_DIR, mode=0o700, exist_ok=True)
@@ -336,6 +350,21 @@ def test_execute_code_routes_recursion_guard_through_broker():
     assert "cannot be called" in out.split("DG:")[1], "delegate-via-RPC must be refused"
     assert [name for name, _args in brokered] == ["execute_code", "delegate"], (
         "nested amplification denials must traverse the auditable host broker")
+
+def test_execute_code_rpc_rejects_nonfinite_arguments_before_broker():
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    ctx = _ctx(os.getcwd())
+    brokered = []
+    ctx.tool_broker = lambda name, args: brokered.append((name, args)) or "unexpected"
+
+    out = reg.get("execute_code").run(
+        {"code": 'print(tool("read_file", value=float("nan")))', "timeout": 20}, ctx)
+
+    assert "non-finite JSON number is forbidden" in out
+    assert brokered == [], "invalid RPC JSON reached the privileged tool broker"
 
 def test_execute_code_inner_calls_fail_closed_without_harness_broker():
     from harness.tools import default_registry

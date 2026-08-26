@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import secrets
 import shutil
@@ -30,20 +31,36 @@ if __name__ == "__main__" and not __package__:
     __package__ = "harness"
 
 
+def _reject_json_constant(value: str):
+    raise ValueError("non-standard JSON constant: %s" % value)
+
+
+def _strict_json_object(handle) -> dict:
+    value = json.load(handle, parse_constant=_reject_json_constant)
+    if not isinstance(value, dict):
+        raise ValueError("JSON payload is not an object")
+    return value
+
+
 def _private_json(path: str, value: dict) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(value, fh, ensure_ascii=False)
-        fh.flush()
-        os.fsync(fh.fileno())
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(value, fh, ensure_ascii=False, allow_nan=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
 
 
 def _write_result(path: str, value: dict) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(value, fh, ensure_ascii=False)
-        fh.flush()
-        os.fsync(fh.fileno())
+    temp = path + "." + secrets.token_hex(8) + ".tmp"
+    _private_json(temp, value)
+    os.replace(temp, path)
 
 
 def _is_windows() -> bool:
@@ -62,7 +79,7 @@ def _wait_start_gate(path: str, token: str, timeout_s: float = 30.0) -> None:
     while True:
         try:
             with open(path, encoding="utf-8") as fh:
-                value = json.load(fh)
+                value = _strict_json_object(fh)
             candidate = str(value.get("token") or "") if isinstance(value, dict) else ""
             if not candidate or not secrets.compare_digest(candidate, str(token or "")):
                 raise RuntimeError("Mission code worker start gate was not authentic")
@@ -103,6 +120,7 @@ def _execute_request(request: dict) -> dict:
         str(request.get("goal") or ""), workspace,
         mission_id=str(request.get("mission_id") or ""),
         execution_profile=request.get("execution_profile") or {},
+        worker_profile=request.get("worker_profile") or {},
         verify_command=str(request.get("verify_command") or ""),
         session_id=str(request.get("session_id") or ""),
         baseline_tree_digest=str(request.get("baseline_tree_digest") or ""),
@@ -111,6 +129,7 @@ def _execute_request(request: dict) -> dict:
         verify_timeout_seconds=request.get("verify_timeout_seconds"),
         max_session_storage_bytes=request.get("max_session_storage_bytes"),
         max_model_calls=request.get("max_model_calls"),
+        runs_db=str(request.get("runs_db") or ""),
         mission_store_path=str(request.get("mission_store_path") or ""),
         mission_run_token=str(request.get("mission_run_token") or ""),
     )
@@ -119,7 +138,7 @@ def _execute_request(request: dict) -> dict:
 class CodeSliceProcessRunner:
     """Run one native Collie code slice in a process that can be terminated."""
 
-    def __init__(self, popen=None, session_dir=None, worker_dir=None):
+    def __init__(self, popen=None, session_dir=None, worker_dir=None, runs_db=None):
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._starting = {}
@@ -134,6 +153,8 @@ class CodeSliceProcessRunner:
         self.worker_dir = os.path.realpath(os.path.abspath(
             worker_dir or os.path.join(os.path.dirname(self.session_dir),
                                        "mission-code-workers")))
+        self.runs_db = (os.path.realpath(os.path.abspath(str(runs_db)))
+                        if runs_db else "")
 
     def _receipt_path(self, mission_id):
         digest = hashlib.sha256(str(mission_id or "").encode(
@@ -233,7 +254,7 @@ class CodeSliceProcessRunner:
         """Remove only the receipt generation this caller actually owns."""
         try:
             with open(path, encoding="utf-8") as fh:
-                current = json.load(fh)
+                current = _strict_json_object(fh)
             if not isinstance(current, dict) or not secrets.compare_digest(
                     str(current.get("token") or ""), str(token or "")):
                 return False
@@ -257,7 +278,7 @@ class CodeSliceProcessRunner:
             path = os.path.join(self.worker_dir, name)
             try:
                 with open(path, encoding="utf-8") as fh:
-                    row = json.load(fh)
+                    row = _strict_json_object(fh)
             except Exception:
                 continue
             if mission_id is not None and str(row.get("mission_id") or "") != str(mission_id):
@@ -277,7 +298,7 @@ class CodeSliceProcessRunner:
                     while time.monotonic() < deadline:
                         try:
                             with open(path, encoding="utf-8") as fh:
-                                current = json.load(fh)
+                                current = _strict_json_object(fh)
                             if str(current.get("token") or "") != token:
                                 cancelled = True
                                 break
@@ -345,7 +366,7 @@ class CodeSliceProcessRunner:
                 if not os.path.isfile(path):
                     continue
                 with open(path, encoding="utf-8") as fh:
-                    row = json.load(fh)
+                    row = _strict_json_object(fh)
                 if mission_id is None or str(row.get("mission_id") or "") == key:
                     return True
         except (OSError, ValueError, TypeError):
@@ -442,35 +463,49 @@ class CodeSliceProcessRunner:
 
     def __call__(self, goal, *, workspace=None, mission_id=None,
                  execution_profile=None, verify_command="", max_wall_seconds=0,
+                 worker_profile=None,
                  session_id="", baseline_tree_digest="", slice_turns=None,
-                  expected_tree_digest="",
-                  verify_timeout_seconds=None, max_session_storage_bytes=None,
-                  max_model_calls=None, mission_store_path="", mission_run_token=""):
+                 expected_tree_digest="",
+                 verify_timeout_seconds=None, max_session_storage_bytes=None,
+                 max_model_calls=None, runs_db="", mission_store_path="",
+                 mission_run_token=""):
         workspace = os.path.realpath(os.path.abspath(str(workspace or "")))
         if not os.path.isdir(workspace):
             raise ValueError("Mission code workspace does not exist")
+        try:
+            wall_limit = float(max_wall_seconds or 0)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("max_wall_seconds must be finite and non-negative") from None
+        if not math.isfinite(wall_limit) or wall_limit < 0:
+            raise ValueError("max_wall_seconds must be finite and non-negative")
         temp_root = tempfile.mkdtemp(prefix="collie-mission-code-")
         request_path = os.path.join(temp_root, "request.json")
         result_path = os.path.join(temp_root, "result.json")
         start_gate_path = os.path.join(temp_root, "start.json")
         start_token = secrets.token_hex(16)
         process_key = str(mission_id or "")
-        _private_json(request_path, {
-            "goal": str(goal or ""), "workspace": workspace,
-            "mission_id": str(mission_id or ""),
-            "execution_profile": dict(execution_profile or {}),
-            "verify_command": str(verify_command or ""),
-            "session_dir": self.session_dir,
-            "session_id": str(session_id or ""),
-            "baseline_tree_digest": str(baseline_tree_digest or ""),
-            "expected_tree_digest": str(expected_tree_digest or ""),
-            "slice_turns": slice_turns,
-            "verify_timeout_seconds": verify_timeout_seconds,
-            "max_session_storage_bytes": max_session_storage_bytes,
-            "max_model_calls": max_model_calls,
-            "mission_store_path": str(mission_store_path or ""),
-            "mission_run_token": str(mission_run_token or ""),
-        })
+        try:
+            _private_json(request_path, {
+                "goal": str(goal or ""), "workspace": workspace,
+                "mission_id": str(mission_id or ""),
+                "execution_profile": dict(execution_profile or {}),
+                "worker_profile": dict(worker_profile or {}),
+                "verify_command": str(verify_command or ""),
+                "session_dir": self.session_dir,
+                "session_id": str(session_id or ""),
+                "baseline_tree_digest": str(baseline_tree_digest or ""),
+                "expected_tree_digest": str(expected_tree_digest or ""),
+                "slice_turns": slice_turns,
+                "verify_timeout_seconds": verify_timeout_seconds,
+                "max_session_storage_bytes": max_session_storage_bytes,
+                "max_model_calls": max_model_calls,
+                "runs_db": str(runs_db or self.runs_db or ""),
+                "mission_store_path": str(mission_store_path or ""),
+                "mission_run_token": str(mission_run_token or ""),
+            })
+        except Exception:
+            shutil.rmtree(temp_root)
+            raise
         from . import plat
         worker_receipt = ""
         receipt_token = secrets.token_hex(16)
@@ -566,13 +601,12 @@ class CodeSliceProcessRunner:
                 self._starting.pop(process_key, None)
                 self._condition.notify_all()
             try:
-                timeout = float(max_wall_seconds or 0)
-                proc.wait(timeout=timeout if timeout > 0 else None)
+                proc.wait(timeout=wall_limit if wall_limit > 0 else None)
             except subprocess.TimeoutExpired:
                 raise TimeoutError("Mission code slice exceeded its process wall limit")
             try:
                 with open(result_path, encoding="utf-8") as fh:
-                    result = json.load(fh)
+                    result = _strict_json_object(fh)
             except Exception:
                 raise RuntimeError(
                     "Mission code worker exited %s without a durable result" % proc.returncode)
@@ -606,7 +640,10 @@ class CodeSliceProcessRunner:
                 if self._starting.get(process_key) is start_state:
                     self._starting.pop(process_key, None)
                 self._condition.notify_all()
-            shutil.rmtree(temp_root, ignore_errors=True)
+            try:
+                shutil.rmtree(temp_root)
+            except OSError as exc:
+                cleanup_error = cleanup_error or exc
             if worker_receipt and not tree_confirmed and not unwinding:
                 raise RuntimeError(
                     "Mission code worker process-tree extinction could not be confirmed")
@@ -626,10 +663,12 @@ def main(argv=None) -> int:
     try:
         _wait_start_gate(args.start_gate, args.start_token)
         with open(args.request, encoding="utf-8") as fh:
-            value = _execute_request(json.load(fh))
+            value = _execute_request(_strict_json_object(fh))
     except Exception as exc:
+        from .runner_specs import redact_text
         value = {"exception_type": type(exc).__name__,
-                 "exception": "%s: %s" % (type(exc).__name__, exc)}
+                 "exception": redact_text(
+                     "%s: %s" % (type(exc).__name__, exc), 1000)}
     _write_result(args.result, value)
     return 0
 

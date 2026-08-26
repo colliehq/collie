@@ -100,7 +100,7 @@ def _utc_now() -> str:
 
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
-                      separators=(",", ":")).encode("utf-8")
+                      separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def _sha256(value: bytes) -> str:
@@ -108,7 +108,10 @@ def _sha256(value: bytes) -> str:
 
 
 def _safe_usage(value: Any) -> dict[str, int]:
-    value = value if isinstance(value, Mapping) else {}
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("usage must be an object")
     fields = {
         "input_tokens": "input_tokens",
         "output_tokens": "output_tokens",
@@ -118,14 +121,23 @@ def _safe_usage(value: Any) -> dict[str, int]:
     usage: dict[str, int] = {}
     for output, source in fields.items():
         raw = value.get(source, 0)
-        if isinstance(raw, bool):
-            raw = 0
-        try:
-            number = int(raw or 0)
-        except (TypeError, ValueError, OverflowError):
-            number = 0
-        usage[output] = max(0, number)
+        if type(raw) is not int or raw < 0:
+            raise ValueError("usage.%s must be a non-negative integer" % source)
+        usage[output] = raw
     return usage
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key: %s" % key)
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
 
 
 class ReceiptLedger:
@@ -714,8 +726,11 @@ class SidecarHandler(http.server.BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise SidecarError(400, "invalid_request", "request body is incomplete")
             try:
-                body = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                body = json.loads(
+                    raw.decode("utf-8"), object_pairs_hook=_unique_json_object,
+                    parse_constant=_reject_json_constant)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError,
+                    RecursionError) as exc:
                 raise SidecarError(400, "invalid_json", "request body is not valid JSON") from exc
             if not isinstance(body, dict):
                 raise SidecarError(400, "invalid_request", "request body must be an object")

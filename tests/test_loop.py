@@ -53,6 +53,121 @@ def test_loop_error_not_answer_not_memory():
     assert res.error and "ERROR(" not in (res.answer or ""), "error must not leak into answer: %r" % res.answer
     assert not any("ERROR(" in m for m in h.memory.remembered), "error must never be consolidated to memory"
 
+
+def test_user_prompt_and_resumed_history_are_redacted_before_model_and_checkpoint(monkeypatch):
+    from harness import loop
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    secret = "sk-" + "a" * 32
+    seen = {}
+
+    def answer(messages):
+        seen["messages"] = json.loads(json.dumps(messages))
+        return Completion(text="done", stop_reason="end_turn")
+
+    monkeypatch.setattr(
+        loop._settings, "get",
+        lambda key, default=None: "on" if key == "REDACT_SECRETS" else default)
+    h = make_harness(os.getcwd(), provider="mock", project="prompt_redact", embed="hash")
+    h.max_turns = 1
+    h.provider = _ScriptProvider([answer])
+
+    res = h.run(
+        "prompt_redact", "use api_key=" + secret, consolidate=False,
+        history=[{"role": "user", "content": "old token " + secret}])
+
+    model_blob = json.dumps(seen["messages"])
+    durable_blob = json.dumps(res.messages)
+    assert secret not in model_blob and secret not in durable_blob
+    assert "{{SECRET:" in model_blob and "{{SECRET:" in durable_blob
+
+
+def test_multimodal_prompt_redaction_preserves_blocks_and_image_payload(monkeypatch):
+    from harness import loop
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    secret = "sk-" + "m" * 32
+    image = "iVBORw0KGgo="
+    seen = {}
+
+    def answer(messages):
+        seen["messages"] = json.loads(json.dumps(messages))
+        return Completion(text="done", stop_reason="end_turn")
+
+    monkeypatch.setattr(
+        loop._settings, "get",
+        lambda key, default=None: "on" if key == "REDACT_SECRETS" else default)
+    h = make_harness(os.getcwd(), provider="mock", project="mm_prompt_redact", embed="hash")
+    h.max_turns = 1
+    h.provider = _ScriptProvider([answer])
+    prompt = [
+        {"type": "text", "text": "inspect api_key=" + secret},
+        {"type": "image", "media_type": "image/png", "data": image},
+    ]
+
+    res = h.run("mm_prompt_redact", prompt, consolidate=False)
+
+    sent = seen["messages"][-1]["content"]
+    stored = [m for m in res.messages if m.get("role") == "user"][-1]["content"]
+    assert isinstance(sent, list) and isinstance(stored, list)
+    assert sent[1]["data"] == image and stored[1]["data"] == image
+    assert secret not in json.dumps(sent) and secret not in json.dumps(stored)
+    assert "{{SECRET:" in sent[0]["text"] and "{{SECRET:" in stored[0]["text"]
+
+
+def test_provider_error_completion_redacts_credentials_before_retry_or_receipt():
+    from harness.providers import _error_completion
+
+    secret = "sk-" + "b" * 32
+    completion = _error_completion("provider", RuntimeError("failed api_key=" + secret))
+
+    assert secret not in completion.text
+    assert secret not in completion.error_detail
+    assert "{{SECRET:" in completion.text
+    assert "{{SECRET:" in completion.error_detail
+
+
+def test_structural_event_boundary_redacts_nested_exception_payloads():
+    from harness.cli import make_harness
+
+    secret = "sk-" + "c" * 32
+    h = make_harness(os.getcwd(), provider="mock", project="event_redact", embed="hash")
+    seen = []
+    h.emit = lambda kind, data: seen.append((kind, data))
+
+    h._emit("diagnostic", nested={"error": "api_key=" + secret})
+
+    blob = json.dumps(seen)
+    assert secret not in blob
+    assert "{{SECRET:" in blob
+
+
+def test_checkpoint_success_event_is_not_rewritten_as_failure(monkeypatch):
+    """A captured checkpoint stays successful all the way to the surface."""
+    from harness import checkpoints
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    monkeypatch.setattr(checkpoints, "available", lambda _cwd: (True, ""))
+    monkeypatch.setattr(
+        checkpoints, "capture",
+        lambda *_args, **_kwargs: types.SimpleNamespace(ref="a" * 40, kind="stash"))
+    h = make_harness(tempfile.mkdtemp(prefix="checkpoint-event-"),
+                     provider="mock", project="checkpoint_event", embed="hash")
+    h.provider = _ScriptProvider([Completion(text="done", stop_reason="end_turn")])
+    events = []
+    h.emit = lambda event, data: events.append((event, data))
+
+    res = h.run("checkpoint_event", "finish", consolidate=False)
+
+    checkpoint_events = [data for event, data in events if event == "checkpoint"]
+    assert res.checkpoint_ref == "a" * 40
+    assert checkpoint_events == [{
+        "ok": True, "ref": "a" * 12, "checkpoint_kind": "stash",
+    }], checkpoint_events
+
 def test_loop_retry_transient_then_success():
     """#5 regression lock: a retryable transport error retries (bounded) and recovers — no error,
     answer set, kind='retry' rows logged, nothing appended to the thread on the failed attempts."""

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f1220">
+<meta name="theme-color" content="#f6f6f3">
 <title>Collie</title>
 <style>
   :root { --bg:#0f1220; --bar:#141827; --card:#1a1f33; --line:#272c44; --ink:#e7ecf7; --dim:#8791ad;
@@ -163,6 +163,38 @@
   .ops-lane-label { padding:8px 1px 3px; color:var(--dim); font-size:10px; font-weight:750; letter-spacing:.05em; text-transform:uppercase; }
   :where(button,textarea,select,input,summary,[tabindex]):focus-visible { outline:3px solid #aab6ff; outline-offset:2px; }
   @media (max-width:350px) { .rungrid { grid-template-columns:1fr; } .runpack { grid-column:auto; grid-template-columns:64px minmax(0,1fr); } .runpack .check,.runhint { grid-column:1/-1; } .topstate { width:30px; padding:0; justify-content:center; } .topstate span { display:none; } .device { margin-left:0; } .ops-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+  /* Quiet mobile shell: the same neutral system as the desktop workspace. */
+  :root { color-scheme:light; --bg:#F6F6F3; --bar:#FBFBF9; --card:#FFFFFF; --line:#E3E3DD;
+    --ink:#1D1D1B; --dim:#777771; --brand:#35594A; --brand2:#35594A; --user:#E7F0EA;
+    --good:#357A5D; --bad:#C4493D; --warn:#A66A15; }
+  @media (prefers-color-scheme:dark) { :root { color-scheme:dark; --bg:#111310; --bar:#171916;
+    --card:#1D201C; --line:#2C302B; --ink:#ECEDE9; --dim:#92978F; --brand:#8FB9A6;
+    --brand2:#8FB9A6; --user:#23392E; --good:#72BD98; --bad:#F07B70; --warn:#D8A14C; } }
+  .top { min-height:52px; padding:calc(6px + var(--safe-t)) 8px 6px; background:var(--bar); }
+  .topstate { min-height:32px; padding:4px 7px; border-color:transparent; background:transparent; }
+  .topstate[data-state="needs"],.topstate[data-state="offline"] { background:transparent; }
+  .iconbtn { width:36px; height:36px; border-radius:8px; }
+  .log { padding:16px 12px 8px; }
+  .turn { margin-bottom:14px; }
+  .bubble { border-radius:13px; }
+  .user .bubble { color:var(--ink); border-bottom-right-radius:4px; }
+  .asst .bubble { background:transparent; border:0; padding:6px 2px; }
+  .empty { margin-top:17vh; }
+  .empty img { width:40px; height:40px; }
+  .permission-card { border-radius:12px; box-shadow:none; background:var(--card); }
+  .permission-target,.md pre,.md code { background:var(--bg); }
+  .composer { padding:7px 9px calc(7px + var(--safe-b)); background:var(--bar); }
+  .runsetup { margin-bottom:6px; border-radius:10px; background:transparent; }
+  .runpanel { background:var(--bar); }
+  .runfield select,.runfield input[type="text"],.runfield input[type="number"] { background:var(--card); }
+  .inrow { border-radius:14px; background:var(--card); padding-left:12px; }
+  .send { border-radius:10px; color:var(--bg); }
+  .drawer { background:var(--bar); }
+  .thread { padding:9px 10px; border-radius:8px; }
+  .ops-sheet { background:var(--bg); }
+  .ops-stat,.ops-section { border-radius:10px; box-shadow:none; }
+  .ops-section-head { background:transparent; }
 </style>
 </head>
 <body>
@@ -181,6 +213,10 @@
       <summary><span class="rsl" data-t="Advanced">Advanced</span><span class="rsv" id="runSummary">Auto</span></summary>
       <div class="runpanel">
         <div class="rungrid">
+          <label class="runfield"><span data-t="Worker">Worker</span><select id="mRunner">
+            <option value="" data-t="Saved default">Saved default</option><option value="auto" data-t="Auto worker pool">Auto worker pool</option>
+            <option value="collie">Collie</option><option value="codex-exec">Codex CLI</option><option value="claude-code">Claude Code</option>
+          </select></label>
           <label class="runfield"><span data-t="Intent">Intent</span><select id="mIntent">
             <option value="build" data-t="Build">Build</option><option value="plan" data-t="Plan · read-only">Plan · read-only</option>
             <option value="test" data-t="Test · read-only">Test · read-only</option><option value="review" data-t="Review · read-only">Review · read-only</option>
@@ -189,10 +225,10 @@
             <option value="quick" data-t="Quick">Quick</option><option value="balanced" data-t="Balanced" selected>Balanced</option><option value="thorough" data-t="Thorough">Thorough</option>
           </select></label>
           <label class="runfield"><span data-t="Reasoning effort">Reasoning effort</span><select id="mEffort">
-            <option value="auto" data-t="Auto by task">Auto by task</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+            <option value="auto" data-t="Auto by task">Auto by task</option><option value="low" data-t="Low">Low</option><option value="medium" data-t="Medium">Medium</option><option value="high" data-t="High">High</option>
           </select></label>
           <label class="runfield"><span data-t="Generation speed">Generation speed</span><select id="mSpeed">
-            <option value="standard">Standard</option><option value="fast" id="mFastOption" hidden>Fast</option>
+            <option value="standard" data-t="Standard">Standard</option><option value="fast" id="mFastOption" data-t="Fast" hidden>Fast</option>
           </select></label>
           <label class="runfield"><span data-t="Verification">Verification</span><select id="mVerification">
             <option value="auto" data-t="Auto">Auto</option><option value="required" data-t="Required">Required</option>
@@ -203,7 +239,7 @@
           <label class="runfield"><span data-t="Strategy">Strategy</span><select id="mStrategy">
             <option value="single" data-t="Single run">Single run</option><option value="pack" data-t="Pack · best-of-N">Pack · best-of-N</option>
           </select></label>
-          <label class="runfield runcheck" id="mVerifyWrap" hidden><span data-t="Proposed check">Proposed check</span><input id="mVerifyCommand" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="detecting a repository check…"></label>
+          <label class="runfield runcheck" id="mVerifyWrap" hidden><span data-t="Proposed check">Proposed check</span><input id="mVerifyCommand" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" data-t-placeholder="detecting a repository check…" placeholder="detecting a repository check…"></label>
           <div class="runpack" id="mPackOpts" hidden>
             <label class="runfield"><span data-t="Attempts">Attempts</span><input id="mPackN" type="number" min="2" max="6" step="1" value="3" required inputmode="numeric"></label>
             <label class="runapply"><input id="mPackApply" type="checkbox"><span data-t="Apply winner">Apply winner</span></label>
@@ -215,13 +251,13 @@
     </details>
     <div class="inrow">
       <textarea id="input" rows="1" autocomplete="off" aria-label="Message Collie" data-t-aria-label="Message Collie…"></textarea>
-      <button class="send" id="send" type="button" aria-label="Send">↑</button>
+      <button class="send" id="send" type="button" aria-label="Send" data-t-aria-label="Send">↑</button>
     </div>
   </div>
   <div class="scrim" id="scrim" aria-hidden="true"></div>
   <nav class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" inert>
-    <h3 id="drawerTitle">Chats</h3>
-    <button class="newbtn" id="newBtn2" type="button">＋ New chat</button>
+    <h3 id="drawerTitle" data-t="Chats">Chats</h3>
+    <button class="newbtn" id="newBtn2" type="button" data-t="＋ New chat">＋ New chat</button>
     <div class="threads" id="threads"></div>
   </nav>
   <section class="ops-sheet" id="mobileActivity" role="dialog" aria-modal="true" aria-labelledby="mobileActivityTitle" hidden inert>
@@ -258,7 +294,7 @@ var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || 
 var LOGO = "logo.svg";
 function api(p){ return p + (p.indexOf('?')<0?'?':'&') + 'token=' + encodeURIComponent(CT); }
 function $(id){ return document.getElementById(id); }
-function esc(s){ return (s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s){ return String(s==null?"":s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 // ---- i18n: English source, translated to the DESKTOP's UI language (settings LANG) ----
 var UI_LANG="en", SUPPORTED=["en","zh-tw","zh"];
@@ -269,28 +305,38 @@ var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New
   "Ask Collie to fix code, run commands, or investigate":"让 Collie 帮你改代码、跑命令、查问题",
   "Personal AI operations system":"个人 AI 运营系统","Your personal AI operations system":"你的个人 AI 运营系统",
   "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨文件、浏览器、桌面和长期任务持续工作。",
-  "Ready":"就绪","Running":"运行中","Needs you":"等你决定","Connecting…":"连接中…","Unavailable":"无法连接","Advanced":"高级设置",
+  "Ready":"就绪","Running":"运行中","Needs you":"等你决定","Connecting…":"连接中…","Loading…":"加载中…","Unavailable":"无法连接","Advanced":"高级设置",
   "Approval required":"需要你的批准","Allow once":"仅允许一次","Always":"始终允许","Deny":"拒绝",
   "Sending…":"正在发送…","Allowed":"已允许","Denied":"已拒绝","Already answered elsewhere":"已在其他设备处理",
   "Could not send":"发送失败，请重试","Continued elsewhere":"任务已从其他设备继续","Run ended":"任务已结束",
   "No chats yet":"还没有对话","Could not load chats":"无法加载对话","Could not open this chat":"无法打开此对话","Live run status unavailable":"实时运行状态不可用","From chat":"来自对话","turn":"轮","turns":"轮","Desktop is running…":"桌面正在运行…",
   "Edit":"编辑","Read":"读取","Run":"运行","Search":"搜索","Steer":"插话","Error":"错误","[image]":"[图片]",
   "Send":"发送","Stop run":"停止任务","Steer while Collie works…":"Collie 工作时可继续补充要求…",
+  "Waiting for worker capabilities…":"正在等待工作进程能力信息…","This worker cannot be steered — stop it or wait":"此工作进程不支持运行中追加指令——请停止或等待",
+  "Run plan":"运行方案","worker event":"工作进程事件","worker settled":"工作进程已结束","worker failed":"工作进程失败","More worker events omitted":"已省略更多工作进程事件",
+  "worker cannot accept steering during this run":"此工作进程在本次运行中不支持插话","worker cannot pause for Collie approval round-trips":"此工作进程无法暂停并等待 Collie 审批","worker has no supported cancellation channel":"此工作进程没有受支持的取消通道","worker default":"工作进程默认模型",
   "Connection interrupted — retrying…":"连接中断，正在重试…","The run is still starting; try again in a moment.":"任务仍在启动，请稍后再试。",
   "The run is still starting; wait for its session id before stopping.":"任务仍在启动，请拿到会话编号后再停止。",
   "Steer not delivered":"补充要求未送达","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任务已停止。",
   "Could not stop the run":"无法停止任务","Open chat":"打开对话",
   "Run setup":"运行设置","Intent":"任务意图","Build":"构建","Plan · read-only":"计划 · 只读",
+  "Saved default":"已保存的默认值","Auto worker pool":"自动工作进程池","Use the worker selected in Settings":"使用设置中选择的工作进程",
+  "Native tools, approvals, streaming, and steering":"原生工具、审批、流式输出与运行中追加指令","Codex CLI":"Codex CLI","Claude Code":"Claude Code",
+  "Checking installation and login…":"正在检查安装与登录状态…","runnable-verified":"可运行 · 已验证兼容性","runnable-unverified":"可运行 · 兼容性未验证",
+  "not-installed":"未安装","needs-login":"需要登录","not-runnable":"不可运行","declared-not-runnable":"已声明 · 尚不可运行","quota used":"额度已用","quota resets":"额度重置","Capabilities unavailable":"无法读取运行能力",
   "Test · read-only":"测试 · 只读","Review · read-only":"审查 · 只读","Run depth":"运行深度","Quick":"快速",
-  "Reasoning effort":"推理强度","Auto by task":"按任务自动","Generation speed":"生成速度","Proposed check":"建议检查",
+  "Reasoning effort":"推理强度","Auto by task":"按任务自动","Low":"低","Medium":"中","High":"高",
+  "Generation speed":"生成速度","Standard":"标准","Fast":"快速","Proposed check":"建议检查",
+  "detecting a repository check…":"正在检测仓库检查命令…",
   "Review":"审查","Test":"测试",
   "Effort":"执行深度","Balanced":"均衡","Thorough":"深入","Verification":"验证","Auto":"自动","Required":"必须",
-  "Workspace":"工作区","Current files":"当前文件","Isolated worktree":"隔离 worktree","Strategy":"执行策略",
+  "Workspace":"工作区","Current files":"当前文件","Pack base · candidates isolated":"Pack 基准 · 候选隔离运行","Isolated worktree":"隔离 worktree","Strategy":"执行策略",
   "Single run":"单次运行","Pack · best-of-N":"Pack · N 选一","Attempts":"尝试次数","Apply winner":"应用胜出结果",
   "Required check command":"必填检查命令","e.g. pytest -q":"例如 pytest -q",
   "Pack runs isolated candidates and keeps only one that passes this command.":"Pack 会运行多个隔离候选，并只保留通过这条命令的结果。",
   "Plan":"计划","Verify":"验证","Isolated":"隔离","Pack":"Pack",
   "Pack needs an executed check command to select a winner.":"Pack 需要一条实际执行的检查命令来选出胜出结果。",
+  "Test or Required verification needs a proposed check command.":"测试或必须验证需要一条建议的检查命令。",
   "Attempts must be a whole number from 2 to 6.":"尝试次数必须是 2 到 6 之间的整数。",
   "working…":"运行中…","stopping…":"正在停止…",
   "Attempt":"尝试","queued":"等待中","error":"错误","check failed":"检查失败","verified":"已验证",
@@ -298,7 +344,7 @@ var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New
   "applied to files":"已应用到文件","apply failed — winner was not written":"应用失败——胜出结果未写入",
   "not applied (preview only)":"未应用（仅预览）","stopped":"已停止",
   "Open Activity":"打开活动与恢复","Activity & recovery":"活动与恢复","Refresh":"刷新","Close Activity":"关闭活动与恢复",
-  "Missions":"任务","Specialists":"专员","Recovery":"恢复","Workers":"工作进程","Session recovery":"会话恢复",
+  "Missions":"任务","Specialists":"专员","Recovery":"恢复","Workers":"工作进程","Worker":"工作进程","Session recovery":"会话恢复",
   "Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.":"先检查外部系统，再处理不确定操作。Collie 不会自动重放该操作。",
   "Specialist run tree":"专员运行树","Only lifecycle metadata is shown; task content and tool arguments stay private.":"这里只显示生命周期元数据；任务内容和工具参数保持私密。",
   "Other activity":"其他活动","Refreshing activity…":"正在刷新活动…","Activity is unavailable":"活动暂不可用",
@@ -316,28 +362,38 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "Ask Collie to fix code, run commands, or investigate":"讓 Collie 幫你修改程式碼、執行命令或調查問題",
   "Personal AI operations system":"個人 AI 營運系統","Your personal AI operations system":"你的個人 AI 營運系統",
   "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨檔案、瀏覽器、桌面和長期任務持續工作。",
-  "Ready":"就緒","Running":"執行中","Needs you":"等你決定","Connecting…":"連線中…","Unavailable":"無法連線","Advanced":"進階設定",
+  "Ready":"就緒","Running":"執行中","Needs you":"等你決定","Connecting…":"連線中…","Loading…":"載入中…","Unavailable":"無法連線","Advanced":"進階設定",
   "Approval required":"需要你的核准","Allow once":"僅允許一次","Always":"永遠允許","Deny":"拒絕",
   "Sending…":"正在傳送…","Allowed":"已允許","Denied":"已拒絕","Already answered elsewhere":"已在其他裝置處理",
   "Could not send":"傳送失敗，請重試","Continued elsewhere":"任務已從其他裝置繼續","Run ended":"任務已結束",
   "No chats yet":"尚無對話","Could not load chats":"無法載入對話","Could not open this chat":"無法開啟此對話","Live run status unavailable":"即時執行狀態不可用","From chat":"來自對話","turn":"輪","turns":"輪","Desktop is running…":"桌面正在執行…",
   "Edit":"編輯","Read":"讀取","Run":"執行","Search":"搜尋","Steer":"補充要求","Error":"錯誤","[image]":"[圖片]",
   "Send":"傳送","Stop run":"停止任務","Steer while Collie works…":"Collie 執行時可繼續補充要求…",
+  "Waiting for worker capabilities…":"正在等待工作程序能力資訊…","This worker cannot be steered — stop it or wait":"此工作程序不支援執行中追加指令——請停止或等待",
+  "Run plan":"執行方案","worker event":"工作程序事件","worker settled":"工作程序已結束","worker failed":"工作程序失敗","More worker events omitted":"已省略更多工作程序事件",
+  "worker cannot accept steering during this run":"此工作程序在本次執行中不支援補充要求","worker cannot pause for Collie approval round-trips":"此工作程序無法暫停並等待 Collie 核准","worker has no supported cancellation channel":"此工作程序沒有受支援的取消通道","worker default":"工作程序預設模型",
   "Connection interrupted — retrying…":"連線中斷，正在重試…","The run is still starting; try again in a moment.":"任務仍在啟動，請稍後再試。",
   "The run is still starting; wait for its session id before stopping.":"任務仍在啟動，請取得工作階段編號後再停止。",
   "Steer not delivered":"補充要求未送達","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任務已停止。",
   "Could not stop the run":"無法停止任務","Open chat":"開啟對話",
   "Run setup":"執行設定","Intent":"任務意圖","Build":"構建","Plan · read-only":"計畫 · 唯讀",
+  "Saved default":"已儲存的預設值","Auto worker pool":"自動工作程序池","Use the worker selected in Settings":"使用設定中選擇的工作程序",
+  "Native tools, approvals, streaming, and steering":"原生工具、核准、串流輸出與執行中追加指令","Codex CLI":"Codex CLI","Claude Code":"Claude Code",
+  "Checking installation and login…":"正在檢查安裝與登入狀態…","runnable-verified":"可執行 · 已驗證相容性","runnable-unverified":"可執行 · 相容性未驗證",
+  "not-installed":"未安裝","needs-login":"需要登入","not-runnable":"無法執行","declared-not-runnable":"已聲明 · 尚無法執行","quota used":"額度已用","quota resets":"額度重置","Capabilities unavailable":"無法讀取執行能力",
   "Test · read-only":"測試 · 唯讀","Review · read-only":"審查 · 唯讀","Run depth":"執行深度","Quick":"快速",
-  "Reasoning effort":"推理強度","Auto by task":"按任務自動","Generation speed":"生成速度","Proposed check":"建議檢查",
+  "Reasoning effort":"推理強度","Auto by task":"按任務自動","Low":"低","Medium":"中","High":"高",
+  "Generation speed":"產生速度","Standard":"標準","Fast":"快速","Proposed check":"建議檢查",
+  "detecting a repository check…":"正在偵測儲存庫檢查命令…",
   "Review":"審查","Test":"測試",
   "Effort":"執行深度","Balanced":"均衡","Thorough":"深入","Verification":"驗證","Auto":"自動","Required":"必須",
-  "Workspace":"工作區","Current files":"目前檔案","Isolated worktree":"隔離 worktree","Strategy":"執行策略",
+  "Workspace":"工作區","Current files":"目前檔案","Pack base · candidates isolated":"Pack 基準 · 候選隔離執行","Isolated worktree":"隔離 worktree","Strategy":"執行策略",
   "Single run":"單次執行","Pack · best-of-N":"Pack · N 選一","Attempts":"嘗試次數","Apply winner":"套用勝出結果",
   "Required check command":"必填檢查命令","e.g. pytest -q":"例如 pytest -q",
   "Pack runs isolated candidates and keeps only one that passes this command.":"Pack 會執行多個隔離候選，並只保留通過這條命令的結果。",
   "Plan":"計畫","Verify":"驗證","Isolated":"隔離","Pack":"Pack",
   "Pack needs an executed check command to select a winner.":"Pack 需要一條實際執行的檢查命令來選出勝出結果。",
+  "Test or Required verification needs a proposed check command.":"測試或必要驗證需要一條建議的檢查命令。",
   "Attempts must be a whole number from 2 to 6.":"嘗試次數必須是 2 到 6 之間的整數。",
   "working…":"執行中…","stopping…":"正在停止…",
   "Attempt":"嘗試","queued":"等待中","error":"錯誤","check failed":"檢查失敗","verified":"已驗證",
@@ -345,7 +401,7 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "applied to files":"已套用到檔案","apply failed — winner was not written":"套用失敗——勝出結果未寫入",
   "not applied (preview only)":"未套用（僅預覽）","stopped":"已停止",
   "Open Activity":"開啟活動與復原","Activity & recovery":"活動與復原","Refresh":"重新整理","Close Activity":"關閉活動與復原",
-  "Missions":"任務","Specialists":"專員","Recovery":"復原","Workers":"工作程序","Session recovery":"工作階段復原",
+  "Missions":"任務","Specialists":"專員","Recovery":"復原","Workers":"工作程序","Worker":"工作程序","Session recovery":"工作階段復原",
   "Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.":"先檢查外部系統，再處理不確定操作。Collie 不會自動重播該操作。",
   "Specialist run tree":"專員執行樹","Only lifecycle metadata is shown; task content and tool arguments stay private.":"這裡只顯示生命週期中繼資料；任務內容和工具參數維持私密。",
   "Other activity":"其他活動","Refreshing activity…":"正在重新整理活動…","Activity is unavailable":"活動暫時無法使用",
@@ -440,8 +496,8 @@ function mobileRecent(rows,active,max){var picked=(rows||[]).filter(active),seen
 function renderMobileOther(activity,health){
   var box=$("mobileOtherActivity");box.textContent="";var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};
   if(Object.keys(workers).length||Object.keys(services).length){mobileOpsLane(box,"Services");Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};
-      mobileOpsRow(box,name,worker.age_s==null?"":Math.round(worker.age_s)+"s",worker.fresh?"running":"recovery_required");count++;});
-    Object.keys(services).sort().forEach(function(name){mobileOpsRow(box,name,t("Service"),services[name].ok?"running":"failed");count++;});}
+      mobileOpsRow(box,name+" · "+t("Worker"),worker.age_s==null?"":Math.round(worker.age_s)+"s",worker.fresh?"running":"recovery_required");count++;});
+    Object.keys(services).sort().forEach(function(name){mobileOpsRow(box,name+" · "+t("Service"),"",services[name].ok?"running":"failed");count++;});}
   var missions=mobileRecent(activity.missions||[],function(row){return mobileMissionActive(row.state);},8);if(missions.length){mobileOpsLane(box,"Missions");missions.forEach(function(data){mobileOpsRow(box,data.mission_id,data.lane||t("Mission"),data.state);count++;});}
   var automations=mobileRecent(activity.automations||[],function(row){return !mobileTerminal(row.state);},8);if(automations.length){mobileOpsLane(box,"Automations");automations.forEach(function(data){mobileOpsRow(box,(data.automation_id||t("Automation"))+" · "+(data.execution_id||"—"),t("Automation"),data.state);count++;});}
   var sessions=(activity.sessions||[]).filter(function(row){return !row.recovery_required;}).slice(-6);if(sessions.length){mobileOpsLane(box,"Interactive");sessions.forEach(function(data){mobileOpsRow(box,data.session_id,t("Interactive"),data.state);count++;});}
@@ -468,21 +524,33 @@ function setMobileActivityOpen(open){mobileActivityOpen=!!open;var sheet=$("mobi
 // reviving the old mixed `mode=normal|herding|isolated|pack` switch.
 var setupLocked=false,runExplicitAxes={},runCapabilities=null;
 function runOptions(){ return {
+  runner:$("mRunner").value,
   intent:$("mIntent").value, quality:$("mQuality").value,
   verification:$("mVerification").value, workspace:$("mWorkspace").value,
   strategy:$("mStrategy").value, effort:$("mEffort").value,
   speed:$("mSpeed").value,
-  explicit_axes:Object.keys(runExplicitAxes).filter(function(k){return runExplicitAxes[k];}).join(",")||"none",
+  explicit_axes:Object.keys(runExplicitAxes).filter(function(k){return k!=="runner"&&runExplicitAxes[k];}).join(",")||"none",
   verify_command:$("mVerifyCommand").value.trim(),
   verify_source:$("mVerifyCommand").dataset.source||""
 }; }
 function paintRunSetup(){
   var intent=$("mIntent").value, nonBuild=intent!=="build", test=intent==="test";
+  var effectiveWorker=$("mRunner").value||((runCapabilities||{}).worker_default)||"collie";
+  if(nonBuild&&effectiveWorker!=="collie"&&effectiveWorker!=="auto"){
+    $("mRunner").value="collie";runExplicitAxes.runner=true;
+  }
   if(nonBuild){ $("mVerification").value="auto"; $("mWorkspace").value="current"; $("mStrategy").value="single";
     delete runExplicitAxes.verification;delete runExplicitAxes.workspace;delete runExplicitAxes.strategy; }
   var pack=!nonBuild&&$("mStrategy").value==="pack";
   if(pack){ $("mWorkspace").value="current";delete runExplicitAxes.workspace; }
-  $("mIntent").disabled=setupLocked; $("mQuality").disabled=setupLocked;
+  var currentWorkspaceOption=$("mWorkspace").querySelector('option[value="current"]');
+  if(currentWorkspaceOption)currentWorkspaceOption.textContent=t(
+    pack?"Pack base · candidates isolated":"Current files");
+  $("mRunner").disabled=setupLocked;$("mIntent").disabled=setupLocked; $("mQuality").disabled=setupLocked;
+  Array.prototype.forEach.call($("mRunner").options,function(o){
+    var external=o.value&&o.value!=="auto"&&o.value!=="collie";
+    o.disabled=setupLocked||external&&nonBuild||o.dataset.available==="false";
+  });
   $("mEffort").disabled=setupLocked; $("mSpeed").disabled=setupLocked;
   $("mVerification").disabled=setupLocked||nonBuild; $("mWorkspace").disabled=setupLocked||nonBuild||pack;
   $("mStrategy").disabled=setupLocked||nonBuild;
@@ -496,6 +564,7 @@ function paintRunSetup(){
   if(!nonBuild&&$("mWorkspace").value==="isolated")parts.push(t("Isolated"));
   if(pack)parts.push(t("Pack"));
   if($("mSpeed").value==="fast")parts.push("Fast");
+  if($("mRunner").value)parts.push($("mRunner").value==="auto"?t("Auto worker pool"):$("mRunner").value);
   if(!Object.keys(runExplicitAxes).some(function(k){return runExplicitAxes[k];}))parts=[t("Auto")];
   $("runSummary").textContent=parts.join(" · ");
 }
@@ -519,7 +588,7 @@ function validateRunSetup(){
   }
   return true;
 }
-["mIntent","mQuality","mVerification","mWorkspace","mStrategy","mEffort","mSpeed"].forEach(function(id){
+["mRunner","mIntent","mQuality","mVerification","mWorkspace","mStrategy","mEffort","mSpeed"].forEach(function(id){
   $(id).addEventListener("change",function(){runExplicitAxes[id.replace(/^m/,"").toLowerCase()]=true;paintRunSetup();});
 });
 $("mPackCheck").addEventListener("input",function(){this.setCustomValidity("");});
@@ -529,8 +598,32 @@ function refreshRunCapabilities(){fetch(api('/api/run-capabilities')).then(funct
   runCapabilities=c||{};var fast=(c.speed_tiers||[]).indexOf('fast')>=0,opt=$("mFastOption");opt.hidden=!fast;opt.disabled=!fast;
   if(!fast&&$("mSpeed").value==='fast'){$("mSpeed").value='standard';delete runExplicitAxes.speed;}
   Array.prototype.forEach.call($("mEffort").options,function(o){if(o.value==='auto')return;o.disabled=(c.reasoning_efforts||[]).indexOf(o.value)<0;});
+  var rows={};(c.workers||[]).forEach(function(row){rows[row.key]=row;});
+  Array.prototype.forEach.call($("mRunner").options,function(o){
+    var key=o.value,base=key===""?t("Saved default")+" · "+(c.worker_default||"collie"):
+      (key==="auto"?t("Auto worker pool"):(key==="collie"?"Collie":(key==="codex-exec"?t("Codex CLI"):t("Claude Code"))));
+    var row=rows[key],probe=row&&row.probe,signal=(c.worker_signals||{})[key]||{},quota=signal.quota||{},windows=[quota.primary,quota.secondary].filter(Boolean);
+    var explicitExternal=key==="codex-exec"||key==="claude-code",available=!explicitExternal||!!(probe&&probe.runnable);
+    var worst=windows.slice().sort(function(a,b){return Number(b.used_percent||0)-Number(a.used_percent||0);})[0]||null;
+    var used=worst?Number(worst.used_percent||0):null,resetAt=worst&&Number(worst.resets_at||0);
+    var resetNote=resetAt?t("quota resets")+" "+new Date(resetAt*1000).toLocaleString():"";
+    var status=key==="collie"?t("Native tools, approvals, streaming, and steering"):
+      (probe?t(probe.availability||(probe.runnable?"runnable-unverified":"not-runnable")):"");
+    o.textContent=base+(status?" · "+status:"")+(used===null?"":" · "+used+"% "+t("quota used"));
+    o.dataset.available=available?"true":"false";
+    o.title=[(probe&&probe.detail)||"",signal.error||"",resetNote].filter(Boolean).join(" · ");
+  });
   paintRunSetup();
-}).catch(function(){var o=$("mFastOption");o.hidden=true;o.disabled=true;});}
+}).catch(function(){
+  runCapabilities={};var o=$("mFastOption");o.hidden=true;o.disabled=true;
+  Array.prototype.forEach.call($("mRunner").options,function(row){
+    if(row.value==="codex-exec"||row.value==="claude-code"){
+      row.dataset.available="false";row.disabled=true;row.title=t("Capabilities unavailable");
+      if(row.selected){$("mRunner").value="";delete runExplicitAxes.runner;}
+    }
+  });
+  paintRunSetup();
+});}
 function refreshVerification(){fetch(api('/api/verification')).then(function(r){return r.json();}).then(function(d){
   var first=(d.candidates||[])[0];if(!first)return;
   if(!$("mVerifyCommand").value){$("mVerifyCommand").value=first.command;$("mVerifyCommand").dataset.source=first.source||'detected';}
@@ -539,7 +632,8 @@ function refreshVerification(){fetch(api('/api/verification')).then(function(r){
 
 var IDENTITY={name:"Collie",machine:"",os:"",avatar:LOGO},currentHeaderTitle="",connectionState="connecting";
 var currentSession=null,currentRun=null,running=false,externalRunning=false;
-var runES=null,mirrorES=null,curTurn=null,curText="",cancelTimer=0,packRows=[];
+var runCanSteer=false,runCapabilitiesKnown=false;
+var runES=null,mirrorES=null,curTurn=null,curText="",cancelTimer=0,packRows=[],mobileRunnerEventCount=0;
 var lastTerminalRun=null,navigationToken=0,pendingPermissions={},globalApprovals={},approvalEpoch=0;
 function setHeaderTitle(value){currentHeaderTitle=value||"";$("titleText").textContent=currentHeaderTitle||IDENTITY.name||"Collie";}
 function markReachable(ok){connectionState=ok?"ready":"offline";paintOperationalState();}
@@ -686,17 +780,40 @@ function packDone(data){
   card.appendChild(sum);scrollDown();
 }
 
+function mobileRunPlanSummary(plan){
+  var worker=plan.worker||{},brain=plan.brain||{},task=plan.task||{},verify=plan.verification||{};
+  var actualModel=worker.model||(worker.key==="collie"?(brain.model||brain.provider||"default"):t("worker default"));
+  var summary=[worker.key||"collie",actualModel,
+    (task.intent||"build")+"/"+(task.quality||"balanced"),verify.mode||"auto",
+    task.workspace||"current",task.strategy||"single"].join(" · ");
+  var limits=(plan.limitations||[]).map(t);
+  return summary+(limits.length?" — "+limits.join("; "):"");
+}
+
 function onEvent(kind,data,sourceSession){
   if(kind==="permission"){addPermission(data,sourceSession||currentSession);return;}
   if(kind==="permission_resolved"){
     settlePermission(data.id,data.answer==='deny'?t('Denied'):t('Already answered elsewhere'),data.answer==='deny'?'bad':'ok');return;
   }
-  if(["start","token","tool","pack_start","pack_attempt","verification_evidence","done"].indexOf(kind)>=0)continuePermissions(sourceSession||currentSession,kind==="done"?t('Run ended'):t('Continued elsewhere'));
+  if(["start","token","tool","runner","receipt","pack_start","pack_attempt","verification_evidence","done"].indexOf(kind)>=0)continuePermissions(sourceSession||currentSession,kind==="done"?t('Run ended'):t('Continued elsewhere'));
   if(kind==="start"){ curTurn=addAsst(); curText=""; var d=data.decision||data;
-    addStep(curTurn,"Decision",[d.model||data.provider,d.effort||"default",d.speed||"standard",
-      (d.intent||"build")+"/"+(d.quality||"balanced")].join(" · ")); }
+    var chosen=d.runner&&d.runner.runner?d.runner.runner:"collie",caps=data.worker_capabilities||{};
+    var planWorker=(data.run_plan&&data.run_plan.worker)||{},shownModel=chosen==="collie"?
+      (d.model||data.provider):(planWorker.model||t("worker default"));
+    runCapabilitiesKnown=true;runCanSteer=caps.steer==null?chosen==="collie":!!caps.steer;setSendMode();
+    addStep(curTurn,"Decision",[chosen,shownModel,d.effort||"default",d.speed||"standard",
+      (d.intent||"build")+"/"+(d.quality||"balanced")].join(" · "));
+    if(data.run_plan&&data.run_plan.id)addStep(
+      curTurn,t("Run plan"),data.run_plan.id+" · "+mobileRunPlanSummary(data.run_plan)); }
   else if(kind==="token"){ if(!curTurn) curTurn=addAsst(); curText+=(data.t||""); setMd(curTurn,curText); }
   else if(kind==="tool"){ if(!curTurn) curTurn=addAsst(); toolLine(curTurn,data); }
+  else if(kind==="runner"){
+    if(!curTurn)curTurn=addAsst();
+    if(mobileRunnerEventCount<40)addStep(curTurn,t("worker event"),(data.runner||"")+" · "+(data.type||data.event||"event"));
+    else if(mobileRunnerEventCount===40)addStep(curTurn,t("worker event"),t("More worker events omitted"));
+    mobileRunnerEventCount++;
+  }
+  else if(kind==="receipt"){if(!curTurn)curTurn=addAsst();addStep(curTurn,data.settled?t("worker settled"):t("worker failed"),data.runner||"");}
   else if(kind==="steer"){ if(curTurn) addStep(curTurn,t('Steer'),(data.text||"").slice(0,80)); }
   else if(kind==="pack_start")packStart(data);
   else if(kind==="pack_attempt")packAttempt(data);
@@ -709,13 +826,14 @@ function terminalWasHandled(data){
   if(lastTerminalRun===data.run)return true;
   lastTerminalRun=data.run;return false;
 }
-function runStream(q){ addUser(q); running=true; curTurn=null; setSendMode();
+function runStream(q){ addUser(q); running=true;runCanSteer=false;runCapabilitiesKnown=false;mobileRunnerEventCount=0; curTurn=null; setSendMode();
   var o=runOptions();
   var url='/api/stream?q='+encodeURIComponent(q)+
     '&intent='+encodeURIComponent(o.intent)+'&quality='+encodeURIComponent(o.quality)+
     '&verification='+encodeURIComponent(o.verification)+'&workspace='+encodeURIComponent(o.workspace)+
     '&strategy='+encodeURIComponent(o.strategy)+'&effort='+encodeURIComponent(o.effort)+
     '&speed='+encodeURIComponent(o.speed)+'&explicit_axes='+encodeURIComponent(o.explicit_axes)+
+    (o.runner?'&runner='+encodeURIComponent(o.runner):'')+
     (o.verify_command?'&verify_command='+encodeURIComponent(o.verify_command):'')+
     (o.verify_source?'&verify_source='+encodeURIComponent(o.verify_source):'');
   if(o.strategy==='pack'){
@@ -724,14 +842,14 @@ function runStream(q){ addUser(q); running=true; curTurn=null; setSendMode();
   }
   url=api(url+(currentSession?'&session='+encodeURIComponent(currentSession):''));
   runES=new EventSource(url);
-  ["start","token","tool","steer","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ runES.addEventListener(ev,function(e){ var d={}; try{d=JSON.parse(e.data);}catch(_){} if(ev==="start"&&d.session){currentSession=d.session;currentRun=d.run||null;loadSessions();}if(ev==="done"&&currentRun&&d.run&&d.run!==currentRun)return;if(ev==="done"&&terminalWasHandled(d))return;onEvent(ev,d,currentSession||d.session);if(ev==="done")endRun(d);}); });
+  ["start","token","tool","steer","runner","receipt","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ runES.addEventListener(ev,function(e){ var d={}; try{d=JSON.parse(e.data);}catch(_){} if(ev==="start"&&d.session){currentSession=d.session;currentRun=d.run||null;loadSessions();}if(ev==="done"&&currentRun&&d.run&&d.run!==currentRun)return;if(ev==="done"&&terminalWasHandled(d))return;onEvent(ev,d,currentSession||d.session);if(ev==="done")endRun(d);}); });
   runES.onopen=function(){ if(running) hideBanner(); };
   runES.onerror=function(){if(running){showBanner(t('Connection interrupted — retrying…'));if(cancelling){try{runES.close();}catch(_){}runES=null;watchCancel();}}};
 }
-function endRun(data){if(data&&data.run)lastTerminalRun=data.run;clearTimeout(cancelTimer);cancelTimer=0;running=false;externalRunning=false;cancelling=false;currentRun=null;if(runES){runES.close();runES=null;}setSendMode();if(data&&data.canceled)showBanner(t('Run stopped.'));else hideBanner();loadSessions();}
+function endRun(data){if(data&&data.run)lastTerminalRun=data.run;clearTimeout(cancelTimer);cancelTimer=0;running=false;externalRunning=false;cancelling=false;currentRun=null;mobileRunnerEventCount=0;if(runES){runES.close();runES=null;}setSendMode();if(data&&data.canceled)showBanner(t('Run stopped.'));else hideBanner();loadSessions();}
 function subscribeMirror(sid){ if(mirrorES){ mirrorES.close(); mirrorES=null; } if(!sid) return;
   mirrorES=new EventSource(api('/api/mirror?session='+encodeURIComponent(sid)));
-  ["start","token","tool","steer","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ mirrorES.addEventListener(ev,function(e){ if(running) return; var d={}; try{d=JSON.parse(e.data);}catch(_){}
+  ["start","token","tool","steer","runner","receipt","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ mirrorES.addEventListener(ev,function(e){ if(running) return; var d={}; try{d=JSON.parse(e.data);}catch(_){}
     if(ev==="start"){externalRunning=true;currentRun=d.run||null;setSendMode();showBanner(t('Desktop is running…'));}
     if(ev==="done"&&currentRun&&d.run&&d.run!==currentRun)return;if(ev==="done"&&terminalWasHandled(d))return;onEvent(ev,d,sid);if(ev==="done")endRun(d);}); });
   mirrorES.onopen=function(){ if(!externalRunning) hideBanner(); };
@@ -743,10 +861,11 @@ function hideBanner(){ if(bannerEl){bannerEl.remove(); bannerEl=null;} }
 function setSendMode(){ var b=$("send"), active=running||externalRunning;
   b.classList.toggle('stop',active);b.textContent=cancelling?'…':(active?'■':'↑');b.disabled=!!cancelling;
   b.setAttribute('aria-label',active?t('Stop run'):t('Send')); b.title=active?t('Stop run'):t('Send');
-  $("input").placeholder=active?t('Steer while Collie works…'):t('Message Collie…'); setRunSetupDisabled(active);paintOperationalState(); }
+  $("input").placeholder=active?(runCapabilitiesKnown?(runCanSteer?t('Steer while Collie works…'):t('This worker cannot be steered — stop it or wait')):t('Waiting for worker capabilities…')):t('Message Collie…'); setRunSetupDisabled(active);paintOperationalState(); }
 function doSend(){ var inp=$("input"); var qv=inp.value.trim(); if(!qv) return;
   if(running||externalRunning){
     if(!currentSession){ showBanner(t('The run is still starting; try again in a moment.')); return; }
+    if(!runCapabilitiesKnown||!runCanSteer){showBanner(t(runCapabilitiesKnown?'This worker cannot be steered — stop it or wait':'Waiting for worker capabilities…'));return;}
     inp.value=''; autosize();
     fetch(api('/api/steer'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,q:qv})})
       .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
@@ -765,7 +884,7 @@ function stopRun(){ var active=running||externalRunning; if(!active||cancelling)
       showBanner(t('Stopping on the desktop…'));if(x.d.status==='already_canceled'){var terminal={session:currentSession,run:currentRun,canceled:true};if(!terminalWasHandled(terminal))onEvent('done',terminal,currentSession);endRun(terminal);}else watchCancel();})
     .catch(function(e){cancelling=false;showBanner(t('Could not stop the run')+': '+e.message);setSendMode();}); }
 function autosize(){ var i=$("input"); i.style.height='auto'; i.style.height=Math.min(i.scrollHeight,140)+'px'; }
-function detachActive(){navigationToken++;clearTimeout(cancelTimer);cancelTimer=0;if(runES){try{runES.close();}catch(_){}runES=null;}if(mirrorES){try{mirrorES.close();}catch(_){}mirrorES=null;}running=false;externalRunning=false;cancelling=false;currentRun=null;curTurn=null;packRows=[];pendingPermissions={};hideBanner();setSendMode();}
+function detachActive(){navigationToken++;clearTimeout(cancelTimer);cancelTimer=0;if(runES){try{runES.close();}catch(_){}runES=null;}if(mirrorES){try{mirrorES.close();}catch(_){}mirrorES=null;}running=false;externalRunning=false;cancelling=false;runCanSteer=false;runCapabilitiesKnown=false;currentRun=null;curTurn=null;packRows=[];mobileRunnerEventCount=0;pendingPermissions={};hideBanner();setSendMode();}
 function newChat(){ detachActive(); currentSession=null;$("log").innerHTML='';setHeaderTitle('');welcome(); closeDrawer(false); loadSessions();refreshPendingApprovals(); $("input").focus(); }
 function welcome(){ $("log").innerHTML='<div class="empty"><img src="'+LOGO+'" alt=""><div class="lead">'+t('Your personal AI operations system')+'</div><div class="sub">'+t('Ask once. Collie can work across your files, browser, desktop, and long-running missions.')+'</div></div>'; }
 function sessionTitle(msgs){ for(var i=0;i<msgs.length;i++){ if(msgs[i].role==='user'&&typeof msgs[i].content==='string') return msgs[i].content.replace(/\s+/g,' ').slice(0,40); } return ''; }
@@ -811,10 +930,10 @@ function applyStatic(){ document.documentElement.lang=UI_LANG; $("menuBtn").setA
   document.querySelectorAll('[data-t-placeholder]').forEach(function(el){el.placeholder=t(el.getAttribute('data-t-placeholder'));});
   document.querySelectorAll('[data-t-aria-label]').forEach(function(el){el.setAttribute('aria-label',t(el.getAttribute('data-t-aria-label')));});
   $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); paintRunSetup(); setSendMode(); }
-refreshRunCapabilities();refreshVerification();
+refreshVerification();
 fetch(api('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
   .catch(function(){ UI_LANG=resolveLang(null); })
-  .finally(function(){ applyStatic();setHeaderTitle('');refreshIdentity();welcome();loadSessions();startApprovalLive();refreshPendingApprovals();setInterval(loadSessions,2500);setInterval(refreshMobileActivity,5000);setInterval(refreshIdentity,15000); });
+  .finally(function(){ applyStatic();refreshRunCapabilities();setHeaderTitle('');refreshIdentity();welcome();loadSessions();startApprovalLive();refreshPendingApprovals();setInterval(loadSessions,2500);setInterval(refreshMobileActivity,5000);setInterval(refreshIdentity,15000); });
 </script>
 </body>
 </html>

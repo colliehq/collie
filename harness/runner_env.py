@@ -192,6 +192,11 @@ _ROUTING_NAMES = frozenset({
 # session that spawned it — but see `_BILLING_ROUTE_EXEMPT`: none of them names
 # a payer, so stripping is the whole fix and refusing to start would be wrong.
 _PARENT_SESSION_NAMES = frozenset({
+    # Current Codex desktop/IDE launches (0.149+) use these two shorter
+    # spellings.  They identify the parent session, not an account or endpoint;
+    # inheriting them can nest the child into the parent's permissions, while
+    # refusing them would make every worker unusable from the primary UI.
+    "CODEX_CI", "CODEX_SESSION_ID",
     "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT",
     "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_PERMISSION_PROFILE",
     "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID",

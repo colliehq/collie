@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -40,14 +41,51 @@ _ARTIFACT_REF_KEYS = (
 
 def _js(value):
     return json.dumps(value if value is not None else {}, ensure_ascii=False,
-                      sort_keys=True, default=str)
+                      sort_keys=True, allow_nan=False)
 
 
 def _jl(value, default=None):
     try:
-        return json.loads(value) if value else ({} if default is None else default)
-    except (TypeError, ValueError):
-        return {} if default is None else default
+        def reject_constant(constant):
+            raise ValueError("non-finite JSON number is forbidden: %s" % constant)
+        parsed = (json.loads(value, parse_constant=reject_constant)
+                  if value else ({} if default is None else default))
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError("invalid durable TaskTree JSON: %s" % exc) from exc
+    expected = dict if default is None else type(default)
+    if not isinstance(parsed, expected):
+        raise ValueError("invalid durable TaskTree JSON: expected %s" % expected.__name__)
+    return parsed
+
+
+_LEASH_INTEGER_CAPS = {
+    "max_total_steps", "max_irreversible_actions", "actions_per_hour",
+    "max_model_tokens", "max_model_calls", "max_active_wall_seconds",
+    "max_elapsed_seconds", "max_step_seconds", "max_retries",
+    "max_storage_bytes", "checkpoint_keep", "human_escalate_seconds",
+    "human_timeout_seconds", "max_specialists", "max_specialist_depth",
+}
+_LEASH_NUMBER_CAPS = {"spend_max_usd", "max_model_cost_usd"}
+
+
+def _validated_leash(value, *, label="leash"):
+    if not isinstance(value, dict):
+        raise ValueError("%s must be an object" % label)
+    out = dict(value)
+    if "may" in out and (not isinstance(out["may"], (list, tuple)) or
+                          not all(isinstance(item, str) and item for item in out["may"])):
+        raise ValueError("%s.may must be a list of non-empty strings" % label)
+    for key in _LEASH_INTEGER_CAPS | _LEASH_NUMBER_CAPS:
+        if key not in out:
+            continue
+        raw = out[key]
+        if (not isinstance(raw, (int, float)) or isinstance(raw, bool)
+                or not math.isfinite(float(raw)) or float(raw) < 0):
+            raise ValueError("%s.%s must be finite and non-negative" % (label, key))
+        if key in _LEASH_INTEGER_CAPS and not float(raw).is_integer():
+            raise ValueError("%s.%s must be an integer" % (label, key))
+        out[key] = int(raw) if key in _LEASH_INTEGER_CAPS else float(raw)
+    return out
 
 
 def _canonical_workspace(path):
@@ -85,7 +123,10 @@ def normalize_artifact_refs(values):
                 continue
             if key in ("revision", "size") and isinstance(item, (int, float)) \
                     and not isinstance(item, bool):
-                ref[key] = item
+                if not math.isfinite(float(item)) or float(item) < 0 \
+                        or (key == "size" and not float(item).is_integer()):
+                    continue
+                ref[key] = int(item) if key == "size" else item
             else:
                 ref[key] = str(item)[:2000 if key in ("uri", "path") else 300]
         if ref and any(ref.get(key) for key in ("uri", "path", "receipt_id", "digest")):
@@ -100,7 +141,7 @@ def _covered_capability(name, parent_patterns):
 
 def narrow_leash(parent, requested=None):
     """Return a child leash or raise when any requested authority expands parent."""
-    parent = dict(parent or {})
+    parent = _validated_leash(parent or {}, label="parent leash")
     if requested is None:
         child = dict(parent)
         # A specialist gets an isolated filesystem even when the interactive
@@ -109,7 +150,7 @@ def narrow_leash(parent, requested=None):
         if child.get("workspace_mode") == "current":
             child["workspace_mode"] = "isolated"
         return child
-    requested = dict(requested or {})
+    requested = _validated_leash(requested or {}, label="specialist leash")
     child = dict(parent)
     unknown = set(requested) - set(parent)
     if unknown:
@@ -124,27 +165,16 @@ def narrow_leash(parent, requested=None):
             raise ValueError("specialist capabilities must be covered by parent leash.may")
         child["may"] = sorted(set(may))
 
-    numeric_caps = {
-        "spend_max_usd", "max_total_steps", "max_irreversible_actions",
-        "actions_per_hour", "max_model_tokens", "max_model_cost_usd",
-        "max_model_calls",
-        "max_active_wall_seconds", "max_elapsed_seconds", "max_step_seconds",
-        "max_retries", "max_storage_bytes", "checkpoint_keep",
-        "human_escalate_seconds", "human_timeout_seconds", "max_specialists",
-        "max_specialist_depth",
-    }
+    numeric_caps = _LEASH_INTEGER_CAPS | _LEASH_NUMBER_CAPS
     for key, value in requested.items():
         if key == "may":
             continue
         if key in numeric_caps:
-            try:
-                if float(value) > float(parent[key]):
-                    raise ValueError("specialist %s cannot exceed parent (%s > %s)" %
-                                     (key, value, parent[key]))
-            except (TypeError, ValueError) as exc:
-                if isinstance(exc, ValueError) and str(exc).startswith("specialist"):
-                    raise
-                raise ValueError("specialist %s must be numeric" % key)
+            if key not in parent:
+                raise ValueError("specialist leash introduces parent-unknown authority: %s" % key)
+            if value > parent[key]:
+                raise ValueError("specialist %s cannot exceed parent (%s > %s)" %
+                                 (key, value, parent[key]))
             child[key] = value
             continue
         if key == "allowed_domains":
@@ -454,11 +484,20 @@ class TaskTreeStore:
     @staticmethod
     def _decode(row):
         out = dict(row)
-        out["leash"] = _jl(out.pop("leash_json"))
-        out["resources"] = _jl(out.pop("resources_json"), [])
-        out["background"] = bool(out["background"])
-        out["owns_workspace"] = bool(out["owns_workspace"])
-        out["cancel_requested"] = bool(out["cancel_requested"])
+        out["leash"] = _validated_leash(
+            _jl(out.pop("leash_json")), label="durable TaskTree leash")
+        out["resources"] = normalize_resources(_jl(out.pop("resources_json"), []))
+        for key in ("background", "owns_workspace", "cancel_requested"):
+            if out[key] not in (0, 1):
+                raise ValueError("invalid durable TaskTree boolean: %s" % key)
+            out[key] = out[key] == 1
+        for key in ("depth", "lease_until", "progress_seq", "progress_at",
+                    "input_tokens", "output_tokens", "cache_tokens", "model_calls",
+                    "turns", "model_cost_microusd", "active_wall_ms", "retry_count",
+                    "cancel_ack_at", "created_at", "updated_at"):
+            value = out.get(key)
+            if (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+                raise ValueError("invalid durable TaskTree counter: %s" % key)
         out["model_cost_usd"] = out["model_cost_microusd"] / 1_000_000.0
         return out
 
@@ -467,7 +506,7 @@ class TaskTreeStore:
         run_id = run_id or "run_" + secrets.token_hex(8)
         now = int(time.time())
         task = str(task)[:4000]
-        leash = dict(leash or {})
+        leash = _validated_leash(leash or {})
         resources = normalize_resources(resources)
         workspace = _canonical_workspace(workspace)
         status = QUEUED if workspace or workspace_mode != "worktree" else WORKSPACE_REQUIRED
@@ -542,7 +581,11 @@ class TaskTreeStore:
             existing = self.db.execute(
                 "SELECT * FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
             if existing:
-                decoded = self._decode(existing)
+                try:
+                    decoded = self._decode(existing)
+                except Exception:
+                    self.db.rollback()
+                    raise
                 matches = (
                     decoded["parent_run_id"] == parent_run_id and
                     decoded["role"] == str(role or "specialist")[:80] and
@@ -578,7 +621,12 @@ class TaskTreeStore:
                 "SELECT resources_json FROM agent_runs WHERE parent_run_id=? "
                 "AND status NOT IN (?,?,?)", (parent_run_id, COMPLETED, FAILED, CANCELLED)).fetchall()
             for sibling in siblings:
-                for old in _jl(sibling["resources_json"], []):
+                try:
+                    sibling_resources = _jl(sibling["resources_json"], [])
+                except Exception:
+                    self.db.rollback()
+                    raise
+                for old in sibling_resources:
                     for new in child_resources:
                         overlap = _resource_contains(old, new) or _resource_contains(new, old)
                         if overlap and "write" in (old["mode"], new["mode"]):
@@ -609,6 +657,8 @@ class TaskTreeStore:
         return child
 
     def bind_workspace(self, run_id, path, *, owns_workspace=False):
+        if not isinstance(owns_workspace, bool):
+            raise ValueError("owns_workspace must be boolean")
         canonical = os.path.realpath(os.path.abspath(str(path or "")))
         if not path or not os.path.isdir(canonical):
             raise ValueError("provisioned worktree does not exist")
@@ -618,7 +668,7 @@ class TaskTreeStore:
                 "UPDATE agent_runs SET workspace=?,owns_workspace=?,status=CASE WHEN status=? "
                 "THEN ? ELSE status END,updated_at=? WHERE run_id=? AND status NOT IN (?,?,?) "
                 "AND owner_token='' AND (workspace='' OR workspace=?)",
-                (canonical, int(bool(owns_workspace)), WORKSPACE_REQUIRED, QUEUED, now, run_id,
+                (canonical, int(owns_workspace), WORKSPACE_REQUIRED, QUEUED, now, run_id,
                  COMPLETED, FAILED, CANCELLED, canonical))
             if cur.rowcount:
                 self._event_locked(run_id, "workspace_bound",
@@ -649,7 +699,13 @@ class TaskTreeStore:
             if not row:
                 self.db.rollback()
                 raise ValueError("root run is missing")
-            run = self._decode(row)
+            try:
+                run = self._decode(row)
+            except Exception:
+                # `_decode` is an authority check.  If it raises, do not leave
+                # BEGIN IMMEDIATE held and block every other specialist lane.
+                self.db.rollback()
+                raise
             if run["parent_run_id"]:
                 self.db.rollback()
                 raise ValueError("workspace authority can only initialize a root run")
@@ -829,13 +885,31 @@ class TaskTreeStore:
         return cur.rowcount == 1
 
     def claim(self, run_id, lease_s=300):
+        if (not isinstance(lease_s, (int, float)) or isinstance(lease_s, bool)
+                or not math.isfinite(float(lease_s)) or float(lease_s) < 0):
+            raise ValueError("lease_s must be a finite non-negative number")
+        lease_seconds = int(lease_s)
         token, now = secrets.token_hex(16), int(time.time())
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
             candidate = self.db.execute(
-                "SELECT parent_run_id,status,cancel_requested FROM agent_runs WHERE run_id=?",
+                "SELECT * FROM agent_runs WHERE run_id=?",
                 (run_id,)).fetchone()
             if not candidate or candidate["status"] != QUEUED:
+                self.db.commit()
+                return None
+            try:
+                self._decode(candidate)
+            except (TypeError, ValueError, RecursionError) as exc:
+                detail = "invalid durable TaskTree authority: %s" % str(exc)[:500]
+                self.db.execute(
+                    "UPDATE agent_runs SET status=?,result=?,updated_at=? "
+                    "WHERE run_id=? AND status=? AND owner_token=''",
+                    (RECOVERY_REQUIRED, detail, now, run_id, QUEUED))
+                self._event_locked(run_id, "recovery_required", {
+                    "reason": "invalid_durable_authority"}, now)
+                self._notify_locked(run_id, "recovery_required", {
+                    "reason": detail[:1000]}, now)
                 self.db.commit()
                 return None
             ancestry = [run_id]
@@ -872,7 +946,17 @@ class TaskTreeStore:
                 return None
             exhausted = None
             for rid in ancestry:
-                reason = self.budget_reason(rid)
+                try:
+                    reason = self.budget_reason(rid)
+                except (TypeError, ValueError, RecursionError):
+                    reason = "invalid durable TaskTree authority"
+                    self.db.execute(
+                        "UPDATE agent_runs SET status=?,result=?,updated_at=? "
+                        "WHERE run_id=? AND status NOT IN (?,?,?) AND owner_token=''",
+                        (RECOVERY_REQUIRED, reason, now, rid,
+                         COMPLETED, FAILED, CANCELLED))
+                    self._event_locked(rid, "recovery_required", {
+                        "reason": "invalid_durable_authority"}, now)
                 if reason:
                     exhausted = (rid, reason)
                     break
@@ -891,19 +975,23 @@ class TaskTreeStore:
             cur = self.db.execute(
                 "UPDATE agent_runs SET status=?,owner_token=?,lease_until=?,updated_at=? "
                 "WHERE run_id=? AND status=? AND owner_token='' AND cancel_requested=0",
-                (RUNNING, token, now + int(lease_s), now, run_id, QUEUED))
+                (RUNNING, token, now + lease_seconds, now, run_id, QUEUED))
             if cur.rowcount:
-                self._event_locked(run_id, "claimed", {"lease_until": now + int(lease_s)}, now)
+                self._event_locked(run_id, "claimed", {"lease_until": now + lease_seconds}, now)
             self.db.commit()
         return token if cur.rowcount else None
 
     def renew(self, run_id, token, lease_s=300):
+        if (not isinstance(lease_s, (int, float)) or isinstance(lease_s, bool)
+                or not math.isfinite(float(lease_s)) or float(lease_s) < 0):
+            return False
+        lease_seconds = int(lease_s)
         now = int(time.time())
         with self.lock:
             cur = self.db.execute(
                 "UPDATE agent_runs SET lease_until=?,updated_at=? WHERE run_id=? "
                 "AND status IN (?,?) AND owner_token=?",
-                (now + int(lease_s), now, run_id, RUNNING, CANCEL_REQUESTED, token))
+                (now + lease_seconds, now, run_id, RUNNING, CANCEL_REQUESTED, token))
             self.db.commit()
         return cur.rowcount == 1
 
@@ -911,9 +999,16 @@ class TaskTreeStore:
         now = int(time.time())
         payload = {"summary": str(summary)[:1000]}
         if percent is not None:
+            if (not isinstance(percent, (int, float)) or isinstance(percent, bool)
+                    or not math.isfinite(float(percent))):
+                return False
             payload["percent"] = max(0, min(100, float(percent)))
         if detail is not None:
             payload["detail"] = detail
+        try:
+            _js(payload)
+        except (TypeError, ValueError, RecursionError):
+            return False
         with self.lock:
             cur = self.db.execute(
                 "UPDATE agent_runs SET progress_seq=progress_seq+1,progress_at=?,updated_at=? "
@@ -925,8 +1020,10 @@ class TaskTreeStore:
         return cur.rowcount == 1
 
     def set_background(self, run_id, background=True, token=""):
+        if not isinstance(background, bool):
+            return False
         with self.lock:
-            suffix, args = "", [int(bool(background)), int(time.time()), run_id]
+            suffix, args = "", [int(background), int(time.time()), run_id]
             if token:
                 suffix = " AND owner_token=?"
                 args.append(token)
@@ -1521,18 +1618,29 @@ class TaskTreeStore:
     def _usage_values(*, input_tokens=0, output_tokens=0, cache_tokens=0,
                       model_calls=0, turns=0, cost_usd=0.0,
                       model_cost_microusd=None, wall_ms=0, retries=0):
-        cost = (max(0, int(model_cost_microusd))
-                if model_cost_microusd is not None else
-                max(0, int(round(float(cost_usd) * 1_000_000))))
+        def counter(value, label):
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(float(value)) or float(value) < 0
+                    or not float(value).is_integer()):
+                raise ValueError("%s must be a finite non-negative integer" % label)
+            return int(value)
+
+        if model_cost_microusd is not None:
+            cost = counter(model_cost_microusd, "model_cost_microusd")
+        else:
+            if (not isinstance(cost_usd, (int, float)) or isinstance(cost_usd, bool)
+                    or not math.isfinite(float(cost_usd)) or float(cost_usd) < 0):
+                raise ValueError("cost_usd must be a finite non-negative number")
+            cost = int(round(float(cost_usd) * 1_000_000))
         return {
-            "input_tokens": max(0, int(input_tokens)),
-            "output_tokens": max(0, int(output_tokens)),
-            "cache_tokens": max(0, int(cache_tokens)),
-            "model_calls": max(0, int(model_calls)),
-            "turns": max(0, int(turns)),
+            "input_tokens": counter(input_tokens, "input_tokens"),
+            "output_tokens": counter(output_tokens, "output_tokens"),
+            "cache_tokens": counter(cache_tokens, "cache_tokens"),
+            "model_calls": counter(model_calls, "model_calls"),
+            "turns": counter(turns, "turns"),
             "model_cost_microusd": cost,
-            "active_wall_ms": max(0, int(wall_ms)),
-            "retry_count": max(0, int(retries)),
+            "active_wall_ms": counter(wall_ms, "wall_ms"),
+            "retry_count": counter(retries, "retries"),
         }
 
     def _ancestry_locked(self, run_id):
@@ -1587,7 +1695,15 @@ class TaskTreeStore:
         if not row:
             return None
         out = dict(row)
-        out["initialized"] = bool(out["initialized"])
+        if out["initialized"] not in (0, 1):
+            raise ValueError("invalid durable TaskTree usage projection boolean")
+        out["initialized"] = out["initialized"] == 1
+        for key in ("input_tokens", "output_tokens", "cache_tokens", "model_calls",
+                    "turns", "model_cost_microusd", "active_wall_ms", "retry_count",
+                    "updated_at"):
+            if (not isinstance(out.get(key), int) or isinstance(out.get(key), bool)
+                    or out[key] < 0):
+                raise ValueError("invalid durable TaskTree usage projection: %s" % key)
         out["model_cost_usd"] = out["model_cost_microusd"] / 1_000_000.0
         return out
 

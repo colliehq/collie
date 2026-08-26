@@ -73,7 +73,7 @@ class Snapshots:
 
 
 def _result(**overrides):
-    """One `--output-format json` result object."""
+    """The terminal object in a `--output-format stream-json` stream."""
     payload = {
         "type": "result",
         "subtype": "success",
@@ -109,11 +109,15 @@ def test_argv_exact_no_bypass_no_max_turns(tmp_path):
 
     assert process.calls[0]["argv"] == (
         "claude", "-p",
-        "--output-format", "json",
+        "--output-format", "stream-json",
+        "--verbose",
         "--permission-mode", "acceptEdits",
         "--tools", TOOLS,
         "--allowedTools", TOOLS,
         "--safe-mode",
+        "--no-chrome",
+        "--disable-slash-commands",
+        "--prompt-suggestions", "false",
         "--strict-mcp-config",
         "--session-id", SESSION,
     )
@@ -208,6 +212,73 @@ def test_successful_result_is_settled_and_answers(tmp_path):
     assert RunnerSnapshot.from_dict(snap.to_dict()).thread_id == SESSION
 
 
+def test_truncated_stream_never_settles_even_with_a_terminal_result(tmp_path):
+    complete = _outcome()
+    process = FakeProcessRunner(ProcessOutcome(
+        stdout=complete.stdout, exit_code=0, output_truncated=True))
+
+    snap = _runner(process).start("go", str(tmp_path))
+
+    assert snap.settled is False
+    assert "bounded capture limit" in snap.error
+
+
+def test_stream_parser_keeps_bounded_tail_and_detects_early_session_mismatch(tmp_path):
+    rows = ([{"type": "system", "subtype": "init",
+              "session_id": OTHER_SESSION}] +
+            [{"type": "assistant", "seq": i} for i in range(5_000)] +
+            [_result(session_id=SESSION)])
+    process = FakeProcessRunner(ProcessOutcome(
+        stdout="".join(json.dumps(row) + "\n" for row in rows), exit_code=0))
+
+    snap = _runner(process, max_events=3).start("go", str(tmp_path))
+
+    assert snap.settled is False
+    assert snap.cursor == len(rows)
+    assert len(snap.events) == 3
+    assert snap.thread_id == OTHER_SESSION
+    assert "inconsistent" in snap.error
+
+
+def test_oversized_terminal_result_is_protocol_error_not_unbounded_answer(tmp_path):
+    process = FakeProcessRunner(ProcessOutcome(
+        stdout=json.dumps(_result(result="S" * 2_000)), exit_code=0))
+
+    snap = _runner(process, max_event_chars=1_024).start("go", str(tmp_path))
+
+    assert snap.settled is False
+    assert snap.final_output == ""
+    assert any(event.type == "protocol.event_too_large" for event in snap.events)
+
+
+def test_stream_json_records_are_projected_live_and_persisted_in_order(tmp_path):
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+        {"type": "assistant", "message": {"content": [{"type": "text",
+                                                            "text": "working"}]}},
+        _result(result="finished"),
+    ]
+    stdout = "".join(json.dumps(row) + "\n" for row in rows)
+    projected = []
+
+    class StreamingTransport:
+        def run(self, argv, *, cwd, stdin_text, timeout_s, on_process, env=None,
+                on_stdout=None):
+            on_process(FakeProcess())
+            for record in stdout.splitlines(keepends=True):
+                on_stdout(record)
+            return ProcessOutcome(stdout=stdout, exit_code=0)
+
+    runner = _runner(StreamingTransport(), event_callback=projected.append)
+    snapshot = runner.start("go", str(tmp_path))
+
+    assert [event.type for event in projected] == ["system", "assistant", "result"]
+    assert [event.cursor for event in projected] == [1, 2, 3]
+    assert [event.type for event in snapshot.events] == ["system", "assistant", "result"]
+    assert snapshot.cursor == 3 and snapshot.final_output == "finished"
+    assert snapshot.settled is True
+
+
 def test_usage_stays_in_claude_dialect_for_usage_to_collie(tmp_path):
     process = FakeProcessRunner(_outcome())
 
@@ -224,14 +295,15 @@ def test_usage_stays_in_claude_dialect_for_usage_to_collie(tmp_path):
 
 
 def test_cost_survives_a_persisted_snapshot(tmp_path):
-    # RunnerSnapshot.from_dict int-coerces usage values, so a sub-dollar float
-    # comes back as 0 — which would read as "this run was free".
+    # Keep both the reported dollar value and the integer micro-dollar copy; the
+    # latter remains a compatibility guard for snapshots written by older builds.
     process = FakeProcessRunner(_outcome())
     snap = _runner(process).start("go", str(tmp_path))
 
     reloaded = RunnerSnapshot.from_dict(json.loads(json.dumps(snap.to_dict())))
 
     assert reloaded.usage["cost_micro_usd"] == 12_300
+    assert reloaded.usage["total_cost_usd"] == pytest.approx(0.0123)
     assert reloaded.usage["input_tokens"] == 900
 
 
@@ -307,6 +379,26 @@ def test_unparseable_stdout_is_a_protocol_error(tmp_path):
     # Deliberately strict: scavenging JSON out of surrounding noise would mean
     # parsing text the model itself wrote.
     assert snap.settled is False
+    assert any(event.type == "protocol.invalid_json" for event in snap.events)
+
+
+def test_non_standard_json_number_is_a_protocol_error(tmp_path):
+    stdout = ('{"type":"result","subtype":"success","session_id":"' +
+              SESSION + '","result":"done","cost_usd":NaN}\n')
+    snap = _runner(FakeProcessRunner(ProcessOutcome(
+        stdout=stdout, stderr="", exit_code=0))).start("go", str(tmp_path))
+
+    assert snap.settled is False
+    assert snap.events[-1].type == "protocol.invalid_json"
+    assert json.dumps(snap.to_dict(), allow_nan=False)
+
+
+def test_excessively_nested_json_becomes_protocol_evidence_not_an_exception(tmp_path):
+    nested = '{"type":"assistant","message":' + ("[" * 2000) + "0" + ("]" * 2000) + "}\n"
+    snap = _runner(FakeProcessRunner(ProcessOutcome(
+        stdout=nested, stderr="", exit_code=0))).start("go", str(tmp_path))
+
+    assert snap.settled is False
     assert snap.events[-1].type == "protocol.invalid_json"
 
 
@@ -320,7 +412,29 @@ def test_error_text_and_events_are_redacted(tmp_path):
 
     assert snap.settled is False
     assert "sk-ant-abc123456789" not in snap.error
+    assert "sk-ant-abc123456789" not in snap.final_output
     assert "sk-ant-abc123456789" not in json.dumps(snap.events[-1].to_dict())
+
+
+def test_records_after_terminal_result_are_protocol_error(tmp_path):
+    stdout = json.dumps(_result()) + "\n" + json.dumps({
+        "type": "assistant", "message": {"text": "too late"}}) + "\n"
+    process = FakeProcessRunner(ProcessOutcome(stdout=stdout, exit_code=0))
+
+    snap = _runner(process).start("go", str(tmp_path))
+
+    assert snap.settled is False
+    assert snap.final_output == "added the line"
+    assert snap.events[-1].type == "protocol.invalid_json"
+    assert snap.events[-1].payload["reason"] == "event emitted after terminal result"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1])
+def test_non_finite_or_non_positive_limits_are_rejected(value):
+    with pytest.raises(ValueError):
+        ClaudeCodeRunner(default_timeout_s=value)
+    with pytest.raises(ValueError):
+        ClaudeCodeRunner(max_budget_usd=value)
 
 
 def test_transport_failure_keeps_the_locator_and_flags_recovery(tmp_path):

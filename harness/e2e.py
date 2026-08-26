@@ -48,6 +48,19 @@ NONCE_BYTES = 12
 KEY_BYTES = 32
 
 
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key: %s" % key)
+        value[key] = item
+    return value
+
+
 class E2EUnavailable(RuntimeError):
     """`cryptography` is not installed. On a HOSTED relay this must be fatal, never a plaintext
     fallback — degrading silently would hand the operator exactly what E2E exists to withhold."""
@@ -149,8 +162,10 @@ def aad(room: str, frame_id, session: str, direction: str, seq: int) -> bytes:
     different request, or swap two frames' order, without breaking authentication."""
     if direction not in ("c2s", "s2c"):
         raise ValueError("direction must be 'c2s' or 's2c'")
+    if type(seq) is not int or seq < 0 or seq > (2 ** 64 - 1):
+        raise ValueError("seq must be an unsigned 64-bit integer")
     return (lp(room) + lp(str(frame_id)) + lp(session) + lp(direction)
-            + struct.pack(">Q", int(seq)))
+            + struct.pack(">Q", seq))
 
 
 def seal(key: bytes, plaintext: bytes, associated: bytes) -> dict:
@@ -179,13 +194,21 @@ def seal_request(key: bytes, *, room: str, frame_id, session: str, seq: int,
     the path, not the headers, not the body."""
     envelope = {"method": method, "path": path, "headers": headers or {},
                 "body_b64": base64.b64encode(body or b"").decode("ascii")}
-    return seal(key, json.dumps(envelope, separators=(",", ":")).encode("utf-8"),
+    return seal(key, json.dumps(envelope, separators=(",", ":"),
+                                allow_nan=False).encode("utf-8"),
                 aad(room, frame_id, session, "c2s", seq))
 
 
 def open_request(key: bytes, enc: dict, *, room: str, frame_id, session: str, seq: int) -> dict:
-    envelope = json.loads(open_(key, enc, aad(room, frame_id, session, "c2s", seq)))
-    envelope["body"] = base64.b64decode(envelope.pop("body_b64", "") or "")
+    envelope = json.loads(
+        open_(key, enc, aad(room, frame_id, session, "c2s", seq)),
+        parse_constant=_reject_json_constant, object_pairs_hook=_unique_json_object)
+    if not isinstance(envelope, dict):
+        raise ValueError("sealed request must be a JSON object")
+    body_b64 = envelope.pop("body_b64", "") or ""
+    if not isinstance(body_b64, str):
+        raise ValueError("sealed request body must be base64 text")
+    envelope["body"] = base64.b64decode(body_b64, validate=True)
     return envelope
 
 

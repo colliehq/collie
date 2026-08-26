@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import sqlite3
 import threading
@@ -37,13 +38,45 @@ class OutboxFull(RuntimeError):
 
 
 def _json(value) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"),
+                      allow_nan=False)
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key: %s" % key)
+        value[key] = item
+    return value
+
+
+def _json_object(value, label="JSON") -> dict:
+    parsed = json.loads(
+        value or "{}", parse_constant=_reject_json_constant,
+        object_pairs_hook=_unique_json_object)
+    if not isinstance(parsed, dict):
+        raise ValueError("%s must be an object" % label)
+    return parsed
+
+
+def _finite(value, name: str, *, minimum=None) -> float:
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value) or (minimum is not None and value < minimum)):
+        raise ValueError("%s must be a finite number" % name)
+    return float(value)
 
 
 def _load_json(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
-            value = json.load(f)
+            value = json.load(
+                f, parse_constant=_reject_json_constant,
+                object_pairs_hook=_unique_json_object)
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError, TypeError):
         return {}
@@ -112,7 +145,10 @@ class OpsStore:
     # ---------------------------------------------------------------- heartbeats
     def beat(self, name: str, state: str = "ok", detail: dict | None = None,
              *, pid: int | None = None, ttl: float = 45.0, now: float | None = None):
-        now = float(time.time() if now is None else now)
+        now = _finite(time.time() if now is None else now, "heartbeat now")
+        ttl = _finite(ttl, "heartbeat ttl", minimum=1)
+        if detail is not None and not isinstance(detail, dict):
+            raise ValueError("heartbeat detail must be an object")
         safe_detail = dict(detail or {})
         # Error strings are useful; unbounded provider responses and tracebacks are not.
         for key, value in list(safe_detail.items()):
@@ -125,19 +161,19 @@ class OpsStore:
                 "at=excluded.at,expires_at=excluded.expires_at,detail_json=excluded.detail_json",
                 (str(name)[:120], str(state)[:40],
                  int(os.getpid() if pid is None else pid), now,
-                 now + max(1.0, float(ttl)), _json(safe_detail)))
+                 now + ttl, _json(safe_detail)))
             self.db.commit()
 
     def heartbeats(self, *, now: float | None = None) -> dict[str, dict]:
-        now = float(time.time() if now is None else now)
+        now = _finite(time.time() if now is None else now, "heartbeat read time")
         with self._lock:
             rows = list(self.db.execute("SELECT * FROM heartbeats ORDER BY name"))
         out = {}
         for row in rows:
             try:
-                detail = json.loads(row["detail_json"] or "{}")
-            except ValueError:
-                detail = {}
+                detail = _json_object(row["detail_json"], "heartbeat detail")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                detail = {"_error": "invalid durable heartbeat detail"}
             out[row["name"]] = {
                 "state": row["state"], "pid": row["pid"], "at": row["at"],
                 "age_s": max(0.0, now - row["at"]),
@@ -154,7 +190,11 @@ class OpsStore:
         Once the live queue is full the item is recorded directly as a dead letter.  Once *that*
         bounded ledger is full, :class:`OutboxFull` is raised; overflow is never reported as sent.
         """
-        now = float(time.time() if now is None else now)
+        now = _finite(time.time() if now is None else now, "notification enqueue time")
+        cooldown_s = _finite(cooldown_s, "notification cooldown", minimum=0)
+        if payload is not None and not isinstance(payload, dict):
+            raise ValueError("notification payload must be an object")
+        payload_json = _json(payload or {})
         dedupe_key = str(dedupe_key or "")[:240]
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
@@ -163,7 +203,7 @@ class OpsStore:
                     row = self.db.execute(
                         "SELECT notification_id,updated_at FROM notifications WHERE dedupe_key=? "
                         "ORDER BY updated_at DESC LIMIT 1", (dedupe_key,)).fetchone()
-                    if row and now - float(row["updated_at"]) < max(0.0, float(cooldown_s)):
+                    if row and now - float(row["updated_at"]) < cooldown_s:
                         self.db.commit()
                         return str(row["notification_id"])
                 live = self.db.execute(
@@ -183,7 +223,7 @@ class OpsStore:
                     "payload_json,state,attempts,next_attempt_at,lease_until,last_error,created_at,updated_at)"
                     " VALUES(?,?,?,?,?,?,?,?,0,?,0,?,?,?)",
                     (nid, dedupe_key, str(kind)[:80], str(severity)[:20], str(title)[:160],
-                     str(body)[:1000], _json(payload or {}), state, now, last_error, now, now))
+                     str(body)[:1000], payload_json, state, now, last_error, now, now))
                 self.db.commit()
                 return nid
             except Exception:
@@ -192,7 +232,10 @@ class OpsStore:
 
     def claim(self, *, limit: int = 10, lease_s: float = 60,
               now: float | None = None) -> list[dict]:
-        now = float(time.time() if now is None else now)
+        now = _finite(time.time() if now is None else now, "notification claim time")
+        lease_s = _finite(lease_s, "notification lease", minimum=1)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("notification claim limit must be a positive integer")
         claimed = []
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
@@ -208,19 +251,27 @@ class OpsStore:
                        "WHEN 'warning' THEN 2 ELSE 3 END"
                 rows = list(self.db.execute(
                     "SELECT * FROM notifications WHERE state='pending' AND next_attempt_at<=? "
-                    "ORDER BY %s,created_at LIMIT ?" % rank, (now, max(1, int(limit)))))
+                    "ORDER BY %s,created_at LIMIT ?" % rank, (now, limit)))
                 for row in rows:
+                    try:
+                        payload = _json_object(
+                            row["payload_json"], "notification payload")
+                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                        self.db.execute(
+                            "UPDATE notifications SET state='dead',lease_until=0,last_error=?,"
+                            "updated_at=? WHERE notification_id=? AND state='pending'",
+                            (("invalid durable notification payload: %s" % exc)[:500],
+                             now, row["notification_id"]))
+                        continue
                     changed = self.db.execute(
                         "UPDATE notifications SET state='delivering',attempts=attempts+1,"
                         "lease_until=?,updated_at=? WHERE notification_id=? AND state='pending'",
-                        (now + max(1.0, float(lease_s)), now, row["notification_id"]))
+                        (now + lease_s, now, row["notification_id"]))
                     if changed.rowcount == 1:
                         item = dict(row)
                         item["attempts"] = int(item["attempts"]) + 1
-                        try:
-                            item["payload"] = json.loads(item.pop("payload_json") or "{}")
-                        except ValueError:
-                            item["payload"] = {}
+                        item.pop("payload_json", None)
+                        item["payload"] = payload
                         claimed.append(item)
                 self.db.commit()
             except Exception:

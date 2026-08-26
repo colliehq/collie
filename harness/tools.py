@@ -6,7 +6,6 @@ fetched on demand (Claude Code's ToolSearch pattern). v1 keeps a lean always-on
 core; the seam for deferred/MCP tools exists but isn't heavily populated yet.
 """
 from __future__ import annotations
-import itertools
 import json
 import os
 import shutil
@@ -393,7 +392,6 @@ class EditFileTool(Tool):
 # onto the same predictable path (which would let one pre-create/symlink the other's spill files).
 _SPILL_UID = getattr(os, "geteuid", lambda: 0)()
 _SPILL_DIR = os.path.join(tempfile.gettempdir(), "collie-spill-%d" % _SPILL_UID)
-_spill_seq = itertools.count(1)
 _spill_swept = False
 
 
@@ -423,7 +421,12 @@ def _spill_full_output(out):
                         os.unlink(fp)
                 except OSError:
                     pass
-        path = os.path.join(_SPILL_DIR, "bash-%d-%d.log" % (os.getpid(), next(_spill_seq)))
+        # PID + an in-process counter collided after a fast process restart on
+        # Windows, where the OS may reuse the PID while the previous spill file
+        # is intentionally still retained. A random creation nonce keeps O_EXCL
+        # meaningful across processes without making a legitimate spill flaky.
+        path = os.path.join(
+            _SPILL_DIR, "bash-%d-%s.log" % (os.getpid(), os.urandom(12).hex()))
         # O_EXCL|O_NOFOLLOW: fail if the target already exists or is a symlink, so a planted
         # symlink can't make us follow it and overwrite an arbitrary file the user can write.
         # (O_NOFOLLOW is added only where the platform has it — see plat.open_excl.)
@@ -852,8 +855,10 @@ class LoadToolsTool(Tool):
 _GATED_CAPS = {
     # capability key -> (settings key / COLLIE_<KEY> suffix, human label, what it grants)
     "desktop_control": ("DESKTOP_CONTROL", "Desktop control",
-                        "drive any native app window — click controls, type into fields, "
-                        "including system dialogs like file pickers"),
+                        "drive native app windows — prefer UIA/MSAA/Win32 semantic controls, then "
+                        "use keyboard/mouse fallbacks; click/drag/scroll, hold keys, manage windows and "
+                        "clipboard, and run bounded multi-step desktop scripts, including custom "
+                        "canvases and system dialogs like file pickers"),
     # Separate from desktop_control on purpose: acting and SEEING carry different risks. A capture
     # can read anything on screen — a password manager, a bank tab, a private message — and the
     # image then travels to whatever model is configured, so it gets its own consent.

@@ -1,4 +1,4 @@
-"""Claude Code as an external Collie worker (``claude -p --output-format json``).
+"""Claude Code as an external Collie worker (``claude -p --output-format stream-json``).
 
 This is the third and last thing in the repository that shells out to ``claude``,
 and it is deliberately unlike the other two.  ``providers.ClaudeCliProvider`` and
@@ -63,8 +63,12 @@ from .agent_runners import (
     _bounded_payload,
     _cli_version,
     _clean_error,
+    _finite_number,
+    _lf_records,
     _mutation,
     _prompt,
+    _reject_json_constant,
+    _run_process,
     _snapshot,
     _terminate_owned_process,
     _workspace,
@@ -74,7 +78,7 @@ from .verification import workspace_snapshot
 
 KEY = "claude-code"
 BINARY = "claude"
-PROTOCOL = "claude-print-json"
+PROTOCOL = "claude-print-stream-json"
 CREDENTIAL_FAMILY = "claude"
 ENV_POLICY = "claude"
 
@@ -92,7 +96,7 @@ CAPABILITIES = runner_specs.RunnerCapabilities(
     session_create=True,
     session_resume=True,            # --resume <uuid>
     session_fork=False,             # --fork-session exists; deliberately not used
-    streaming=False,                # phase 3: --output-format stream-json
+    streaming=True,                 # complete native records are delivered live
     cursor_replay=False,
     steer=False,
     follow_up=False,                # a follow-up here means a whole new invocation
@@ -181,7 +185,7 @@ def _budget(value: float) -> str:
 
 
 class ClaudeCodeRunner:
-    """Resumable Claude Code runner backed by ``claude -p --output-format json``.
+    """Resumable Claude Code runner backed by ``claude -p --output-format stream-json``.
 
     One active child at a time, same contract as
     :class:`~harness.agent_runners.CodexExecRunner`: the caller persists the
@@ -205,10 +209,12 @@ class ClaudeCodeRunner:
                  environ: Mapping[str, str] | None = None,
                  session_ids: Callable[[], str] | None = None,
                  max_events: int = 2_000, max_event_chars: int = 128_000,
-                 env_policy: str = ENV_POLICY):
-        if default_timeout_s <= 0:
+                 env_policy: str = ENV_POLICY,
+                 event_callback: Callable[[RunnerEvent], Any] | None = None):
+        if not _finite_number(default_timeout_s) or float(default_timeout_s) <= 0:
             raise ValueError("default_timeout_s must be positive")
-        if max_budget_usd is not None and not (float(max_budget_usd) > 0):
+        if (max_budget_usd is not None and
+                (not _finite_number(max_budget_usd) or float(max_budget_usd) <= 0)):
             raise ValueError("max_budget_usd must be positive when set")
         # Validate the policy name now: a typo that only surfaced at launch time
         # would strand a half-built Mission slice instead of failing the caller.
@@ -225,6 +231,7 @@ class ClaudeCodeRunner:
         self._session_ids = session_ids or (lambda: str(uuid.uuid4()))
         self.max_events = max(1, int(max_events))
         self.max_event_chars = max(1_024, int(max_event_chars))
+        self._event_callback = event_callback
         # {"allowed": [names], "stripped": [names]} for the most recent turn —
         # names only, so the caller can copy it straight into a run receipt.
         self.last_env_receipt: dict[str, list[str]] = {"allowed": [], "stripped": []}
@@ -234,6 +241,10 @@ class ClaudeCodeRunner:
         self._active_process: Any = None
         self._starting = False
         self._cancel_requested = False
+
+    def set_event_callback(self, callback: Callable[[RunnerEvent], Any] | None) -> None:
+        """Set the best-effort projection for complete native stream records."""
+        self._event_callback = callback
 
     # --- public API ---------------------------------------------------------
     def start(self, prompt: str, workspace: str, *, timeout_s: float | None = None
@@ -332,11 +343,15 @@ class ClaudeCodeRunner:
         argv = [
             self._executable(),
             "-p",                                # non-interactive; prompt on stdin
-            "--output-format", "json",           # one result object, parsed by _parse_result
+            "--output-format", "stream-json",    # live JSONL plus one terminal result
+            "--verbose",                         # required by Claude for stream-json
             "--permission-mode", "acceptEdits",  # edits inside the tool allowlist, nothing else
             "--tools", tools,                    # the set that exists at all …
             "--allowedTools", tools,             # … and the set allowed without a prompt
             "--safe-mode",
+            "--no-chrome",                       # never inherit the user's browser bridge
+            "--disable-slash-commands",          # task text cannot invoke a skill/command
+            "--prompt-suggestions", "false",     # no unsolicited next-prompt event/surface
             "--strict-mcp-config",               # the user's MCP servers are not this worker's
         ]
         # The locator is pinned on start and reused on resume: same uuid, two
@@ -373,7 +388,7 @@ class ClaudeCodeRunner:
                 ) -> RunnerSnapshot:
         prompt = _prompt(prompt)
         timeout = self.default_timeout_s if timeout_s is None else float(timeout_s)
-        if timeout <= 0:
+        if not _finite_number(timeout) or timeout <= 0:
             raise ValueError("timeout_s must be positive")
 
         # Before anything is created.  A wrongly-billed run cannot be refunded by
@@ -399,6 +414,7 @@ class ClaudeCodeRunner:
             self._active_condition.notify_all()
         started_at = time.time()
         before = _snapshot(self.snapshotter, workspace)
+        prior_cursor = prior.cursor if prior else 0
         outcome: ProcessOutcome | None = None
         raised: Exception | None = None
         process_started = False
@@ -415,11 +431,39 @@ class ClaudeCodeRunner:
                 self._active_condition.notify_all()
                 return allowed
 
+        live_cursor = prior_cursor
+        live_result_count = 0
+
+        def live_stdout(record: str) -> None:
+            nonlocal live_cursor, live_result_count
+            callback = self._event_callback
+            if callback is None:
+                return
+            # The wire boundary is LF (with optional CR), not every Unicode
+            # character Python calls a line separator.  U+2028 is legal inside
+            # a JSON string and must not invent two records.
+            for raw in record.split("\n"):
+                raw = raw[:-1] if raw.endswith("\r") else raw
+                if not raw.strip():
+                    continue
+                live_cursor += 1
+                event, _value, _malformed = self._event_from_line(raw, live_cursor)
+                if event.type == "result":
+                    live_result_count += 1
+                    if live_result_count > 1:
+                        event = self._protocol_event(
+                            raw, live_cursor, "duplicate terminal result")
+                try:
+                    callback(event)
+                except Exception:
+                    pass
+
         try:
             try:
-                outcome = self.process_runner.run(
-                    tuple(argv), cwd=workspace, stdin_text=prompt,
-                    timeout_s=timeout, on_process=register, env=env)
+                outcome = _run_process(
+                    self.process_runner, tuple(argv), cwd=workspace,
+                    stdin_text=prompt, timeout_s=timeout,
+                    on_process=register, env=env, on_stdout=live_stdout)
                 if not isinstance(outcome, ProcessOutcome):
                     raise TypeError("process runner must return ProcessOutcome")
             except Exception as exc:  # represented in state; the caller decides retry policy
@@ -437,7 +481,6 @@ class ClaudeCodeRunner:
         finished_at = time.time()
         after = _snapshot(self.snapshotter, workspace)
         prior_events = tuple(prior.events) if prior else ()
-        prior_cursor = prior.cursor if prior else 0
         prior_usage = dict(prior.usage) if prior else {}
         invocation = (prior.invocation if prior else 0) + 1
 
@@ -459,20 +502,26 @@ class ClaudeCodeRunner:
 
         assert outcome is not None
         cancelled = bool(cancelled or outcome.cancelled)
-        data, protocol_error = self._parse_result(outcome.stdout)
+        data, native_events, protocol_error, native_event_count, reported_ids = self._parse_stream(
+            outcome.stdout, prior_cursor)
+        protocol_error = protocol_error or bool(outcome.output_truncated)
 
         thread_id = session_id
         reported = str(data.get("session_id") or "")
-        if reported and reported != session_id:
+        if reported and reported not in reported_ids:
+            reported_ids.append(reported)
+        mismatched = [value for value in reported_ids if value != session_id]
+        if mismatched:
             # `--session-id` was not honoured, so the transcript lives somewhere
             # other than where the snapshot says.  Keep the id that actually holds
             # the work (it is the only one worth resuming) but refuse to call the
             # turn settled: something about this CLI is not what we tested against.
             protocol_error = True
-            if _SESSION_ID.fullmatch(reported):
-                thread_id = reported
+            if _SESSION_ID.fullmatch(mismatched[-1]):
+                thread_id = mismatched[-1]
 
-        result_text = str(data.get("result") or "")
+        result_text = runner_specs.redact_text(
+            data.get("result"), 1_000_000)
         subtype = str(data.get("subtype") or "").lower()
         # `error_max_turns` / `max_turns` — Claude stopped at its own ceiling.  We
         # never ask for one (there is no --max-turns in 2.1.x), so seeing this
@@ -489,9 +538,11 @@ class ClaudeCodeRunner:
             error = "Claude Code turn exceeded its %.1fs wall timeout" % timeout
         elif cancelled:
             error = "Claude Code turn was cancelled"
+        elif outcome.output_truncated:
+            error = "Claude Code output exceeded Collie's bounded capture limit"
         elif protocol_error:
             error = ("Claude Code emitted an unparseable or inconsistent "
-                     "--output-format json result: %s"
+                     "--output-format stream-json result: %s"
                      % (outcome.stderr or outcome.stdout or "(no output)"))
         elif turns_exhausted:
             error = "Claude Code stopped at its own turn limit (subtype=%s)" % subtype
@@ -503,12 +554,13 @@ class ClaudeCodeRunner:
             error = outcome.stderr or "Claude Code exited with status %s" % exit_code
 
         usage = self._usage(prior_usage, data)
-        events = prior_events + (self._event(prior_cursor, data, outcome, protocol_error),)
+        events = prior_events + tuple(native_events)
         mutated, complete = _mutation(before, after)
         recovery = (not settled) and (mutated or (process_started and not complete))
         return RunnerSnapshot(
             runner=self.key, workspace=workspace, thread_id=thread_id,
-            cursor=prior_cursor + 1, events=events[-self.max_events:], usage=usage,
+            cursor=prior_cursor + native_event_count,
+            events=events[-self.max_events:], usage=usage,
             settled=settled, exit_code=exit_code, error=self._error(error),
             recovery_required=recovery, mutated=mutated,
             mutation_check_complete=complete,
@@ -518,23 +570,110 @@ class ClaudeCodeRunner:
             started_at=started_at, finished_at=finished_at)
 
     # --- parsing ------------------------------------------------------------
-    def _parse_result(self, stdout: str) -> tuple[dict[str, Any], bool]:
-        """``--output-format json`` is exactly one object, or it is a protocol error.
+    def _parse_stream(self, stdout: str, prior_cursor: int
+                      ) -> tuple[dict[str, Any], list[RunnerEvent], bool, int,
+                                 list[str]]:
+        """Parse strict LF/CRLF JSONL and return its terminal result object.
 
-        Deliberately strict: hunting for a JSON object inside surrounding noise
-        would mean parsing text the model itself wrote, and the model's output is
-        untrusted input here.
+        Every non-empty record becomes durable evidence.  Noise is recorded as
+        ``protocol.invalid_json`` rather than scavenging a plausible result out
+        of model-controlled text.  Exactly one terminal ``type=result`` record
+        is required for a settled invocation.
         """
-        text = (stdout or "").strip()
-        if not text:
-            return {}, True
-        try:
-            value = json.loads(text)
-        except (ValueError, json.JSONDecodeError):
-            return {}, True
-        if not isinstance(value, dict):
-            return {}, True
-        return value, False
+        from collections import deque
+        events: deque[RunnerEvent] = deque(maxlen=self.max_events)
+        result: dict[str, Any] = {}
+        malformed = False
+        result_count = 0
+        event_count = 0
+        reported_ids: list[str] = []
+        saw_result = False
+        for raw in _lf_records(stdout):
+            if not raw.strip():
+                continue
+            event_count += 1
+            event, value, invalid = self._event_from_line(
+                raw, prior_cursor + event_count)
+            if saw_result:
+                event = self._protocol_event(
+                    raw, event.cursor, "event emitted after terminal result")
+                invalid = True
+            reported_id = (str(event.payload.get("session_id") or "")
+                           if isinstance(event.payload, dict) else "")
+            if reported_id and reported_id not in reported_ids:
+                if len(reported_ids) < 2:
+                    reported_ids.append(reported_id)
+                else:
+                    malformed = True
+            if not invalid and value.get("type") == "result":
+                result_count += 1
+                if result_count == 1:
+                    result = value
+                    saw_result = True
+                else:
+                    event = self._protocol_event(
+                        raw, event.cursor, "duplicate terminal result")
+                    invalid = True
+            events.append(event)
+            malformed = malformed or invalid
+        if result_count == 0:
+            malformed = True
+            if events and not any(event.type == "protocol.invalid_json"
+                                  for event in events):
+                event_count += 1
+                events.append(self._protocol_event(
+                    "", prior_cursor + event_count,
+                    "stream ended without a terminal result"))
+        return result, list(events), malformed, event_count, reported_ids
+
+    def _event_from_line(self, raw: str, cursor: int
+                         ) -> tuple[RunnerEvent, dict[str, Any], bool]:
+        if len(raw) > self.max_event_chars:
+            malformed = True
+            value = {
+                "type": "protocol.event_too_large",
+                "reason": "event exceeds %d characters" % self.max_event_chars,
+                "preview": runner_specs.redact_text(
+                    raw, min(self.max_event_chars, 4_096)),
+            }
+        else:
+            try:
+                value = json.loads(raw, parse_constant=_reject_json_constant)
+                if not isinstance(value, dict):
+                    raise ValueError("event is not an object")
+                malformed = False
+            except (ValueError, json.JSONDecodeError, RecursionError):
+                malformed = True
+                value = {
+                    "type": "protocol.invalid_json",
+                    "preview": runner_specs.redact_text(
+                        raw, min(self.max_event_chars, 4_096)),
+                }
+        payload = runner_specs.redact_value(
+            _bounded_payload(value, self.max_event_chars), self.max_event_chars)
+        unsafe_structure = bool(
+            isinstance(payload, dict) and payload.get("truncated") is True and
+            payload.get("reason") in ("max-depth", "cycle", "unsafe-structure"))
+        if unsafe_structure:
+            malformed = True
+            payload = dict(payload, type="protocol.invalid_json")
+        if not isinstance(payload, dict):
+            payload = {"type": str(value.get("type") or "unknown"),
+                       "truncated": True}
+        event = RunnerEvent(
+            cursor=cursor, type=("protocol.invalid_json" if unsafe_structure else
+                                 runner_specs.redact_text(
+                                     value.get("type") or "unknown", 256)),
+            payload=payload, at=time.time())
+        return event, value, malformed
+
+    def _protocol_event(self, raw: str, cursor: int, reason: str) -> RunnerEvent:
+        payload = {"type": "protocol.invalid_json", "reason": reason}
+        if raw:
+            payload["preview"] = runner_specs.redact_text(
+                raw, min(self.max_event_chars, 4_096))
+        return RunnerEvent(cursor=cursor, type="protocol.invalid_json",
+                           payload=payload, at=time.time())
 
     def _usage(self, prior: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
         """Cumulative usage for the thread, in Claude's own field names.
@@ -550,16 +689,19 @@ class ClaudeCodeRunner:
         """
         usage: dict[str, Any] = {}
         for key, amount in (prior or {}).items():
-            if isinstance(amount, (int, float)) and not isinstance(amount, bool):
+            if (_finite_number(amount) and float(amount) >= 0
+                    and float(amount) <= (1 << 63) - 1):
                 usage[str(key)] = amount
         counts = data.get("usage")
         counts = counts if isinstance(counts, dict) else {}
         for key in _USAGE_KEYS:
             value = counts.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            if (_finite_number(value) and float(value) >= 0
+                    and float(value) <= (1 << 63) - 1):
                 usage[key] = int(usage.get(key, 0)) + int(value)
         cost = data.get("total_cost_usd")
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0:
+        if (_finite_number(cost) and float(cost) >= 0
+                and float(cost) <= (1 << 63) - 1):
             # `RunnerSnapshot.from_dict` int-coerces every usage value, so a
             # sub-dollar float does not survive being persisted and read back —
             # it comes back as 0, which would read as "this run was free".  The
@@ -570,30 +712,6 @@ class ClaudeCodeRunner:
             usage["total_cost_usd"] = max(prior_cost, float(cost))
             usage["cost_micro_usd"] = int(round(usage["total_cost_usd"] * 1_000_000))
         return usage
-
-    def _event(self, prior_cursor: int, data: dict[str, Any],
-               outcome: ProcessOutcome, protocol_error: bool) -> RunnerEvent:
-        """One event per invocation: `json` mode has exactly one object to report.
-
-        Phase 3's ``stream-json`` mode is where per-tool events come from; phase 2's
-        ``runner_events.from_claude_json`` translates this payload into the
-        canonical ``session.started`` / ``turn.yielded`` / ``usage.updated`` triple
-        rather than this module inventing native event names Claude never emits.
-        """
-        if protocol_error and not data:
-            payload: Any = {
-                "type": "protocol.invalid_json",
-                "preview": runner_specs.redact_text(outcome.stdout or outcome.stderr or "",
-                                       min(self.max_event_chars, 4_096)),
-            }
-            return RunnerEvent(cursor=prior_cursor + 1, type="protocol.invalid_json",
-                               payload=payload, at=time.time())
-        payload = runner_specs.redact_value(_bounded_payload(data, self.max_event_chars),
-                               self.max_event_chars)
-        if not isinstance(payload, dict):
-            payload = {"type": "result", "truncated": True}
-        return RunnerEvent(cursor=prior_cursor + 1, type="result",
-                           payload=payload, at=time.time())
 
     @staticmethod
     def _error(value: Any) -> str:

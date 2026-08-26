@@ -79,6 +79,7 @@ _BASE: dict[str, RiskClass] = {
     "desktop_apps": RiskClass.READ,
     "desktop_inspect": RiskClass.READ,
     "desktop_read": RiskClass.READ,
+    "desktop_wait": RiskClass.READ,
     # -- write_local --------------------------------------------------------
     "write_file": RiskClass.WRITE_LOCAL,
     "edit_file": RiskClass.WRITE_LOCAL,
@@ -107,6 +108,15 @@ _BASE: dict[str, RiskClass] = {
     # Desktop writes: driving someone's real applications.
     "desktop_click": RiskClass.EXTERNAL,
     "desktop_type": RiskClass.EXTERNAL,
+    "desktop_range": RiskClass.EXTERNAL,
+    "desktop_uia": RiskClass.EXTERNAL,
+    "desktop_win32": RiskClass.EXTERNAL,
+    "desktop_mouse": RiskClass.EXTERNAL,
+    "desktop_drag": RiskClass.EXTERNAL,
+    "desktop_key": RiskClass.EXTERNAL,
+    "desktop_window": RiskClass.EXTERNAL,
+    "desktop_clipboard": RiskClass.EXTERNAL,
+    "desktop_script": RiskClass.EXTERNAL,
     "desktop_launch": RiskClass.EXTERNAL,
     "desktop_focus": RiskClass.EXTERNAL,
     "desktop_menu": RiskClass.EXTERNAL,
@@ -254,6 +264,30 @@ def target_for(tool_name: str, args: dict, origin_lookup=None) -> Optional[str]:
         except Exception:
             return None
     if tool_name.startswith("desktop_"):
-        app = str(args.get("app") or args.get("process") or args.get("window") or "").strip()
-        return app.lower() or None
+        # These are the ACTUAL schemas used by native.py on Windows/macOS. Keeping
+        # only the old hypothetical `app` field made every real desktop action
+        # targetless, so "always allow WeChat this run" silently degraded to an
+        # allow-once prompt at every click/type.
+        if tool_name == "desktop_clipboard":
+            return "windows-clipboard"
+        if tool_name == "desktop_launch":
+            target = str(args.get("target") or "").strip()
+            return target.lower() or None
+        app = str(args.get("app") or args.get("process") or args.get("window")
+                  or args.get("match") or "").strip()
+        if not app and tool_name in ("desktop_focus", "desktop_menu"):
+            app = str(args.get("name") or "").strip()
+        if app:
+            return app.lower()
+        try:
+            hwnd = int(args.get("hwnd") or 0)
+        except (TypeError, ValueError):
+            hwnd = 0
+        if hwnd:
+            return "hwnd:%d" % hwnd
+        try:
+            pid = int(args.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        return ("pid:%d" % pid) if pid else None
     return None

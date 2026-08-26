@@ -3,9 +3,9 @@
 This is the whole distance between a *decision* (``runner_select.decide`` said
 which worker) and a *result* (``recorder.RunResult`` plus a ``RunnerReceipt``).
 ``collie run --runner claude-code "..."`` lands here instead of building a
-``loop.Harness``; phase 2 adds ``run_mission_slice`` beside it for the Mission
-code slice, which is why this module exists at all rather than the branch living
-inside ``cli.cmd_run``.
+``loop.Harness``.  Web, Pack and Mission code slices call the same adapter, which
+is why this module exists at all rather than the branch living inside one CLI
+command.
 
 Three decisions are worth stating out loud, because each is a place where the
 obvious implementation would quietly break a promise Collie makes:
@@ -45,12 +45,13 @@ file, and every string that reaches a receipt goes through ``redact_text`` /
 from __future__ import annotations
 
 import os
+import math
 import threading
 import time
 from typing import Any, Callable, Mapping
 
 from . import runner_registry as registry
-from .agent_runners import RunnerSnapshot
+from .agent_runners import RunnerEvent, RunnerSnapshot
 from .recorder import RunResult
 from .runner_specs import (
     HarnessDecision,
@@ -96,6 +97,21 @@ def receipt_of(result: Any) -> RunnerReceipt | None:
     return receipt if isinstance(receipt, RunnerReceipt) else None
 
 
+def transcript_text(result: Any) -> str:
+    """User-visible worker answer with a terminal error kept beside it.
+
+    External CLIs can produce useful final text and still fail a host check or
+    protocol/budget guard. ``answer or error`` hides that failure in session
+    history; this compact projection preserves both without importing the
+    worker's private transcript.
+    """
+    answer = str(getattr(result, "answer", "") or "")
+    error = str(getattr(result, "error", "") or "")
+    if error:
+        answer += (("\n\n" if answer else "") + "_[Worker error: %s]_" % error)
+    return answer
+
+
 def run_adhoc(decision: HarnessDecision, task: str, workspace: str, *,
               timeout_s: float | None = None,
               emit: Callable[[str, dict], Any] | None = None,
@@ -103,7 +119,7 @@ def run_adhoc(decision: HarnessDecision, task: str, workspace: str, *,
               history_note: str | None = None,
               resume_from: Any = None,
               model: str = "", provider: str = "",
-              task_id: str = "") -> RunResult:
+              task_id: str = "", recorder: Any = None) -> RunResult:
     """Carry ``task`` to the worker ``decision`` chose and report what happened.
 
     ``decision`` must be a decision to *run*: an empty ``runner`` or a non-empty
@@ -178,15 +194,40 @@ def run_adhoc(decision: HarnessDecision, task: str, workspace: str, *,
                 "event": "fallback", "from": decision.runner, "to": key,
                 "reason": outcome.reason if outcome is not None else "",
             })
-        outcome = _attempt(key, prompt, root, prior, timeout_s, model, cancelled)
+        outcome = _attempt(key, prompt, root, prior, timeout_s, model, cancelled, emit)
         if not (outcome.pre_prompt_failure and index + 1 < len(chain)):
             break
 
     assert outcome is not None                      # chain is never empty
     fallback_from = decision.runner if outcome.key != decision.runner else ""
-    return _finish(decision, outcome, prior, emit,
-                   fallback_from=fallback_from, model=model, provider=provider,
-                   task_id=task_id)
+    result = _finish(decision, outcome, prior, emit,
+                     fallback_from=fallback_from, model=model, provider=provider,
+                     task_id=task_id)
+    _record_result(recorder, result)
+    return result
+
+
+def _record_result(recorder: Any, result: RunResult) -> None:
+    """Persist an external result in the same runs.db history as native runs.
+
+    Telemetry is deliberately best-effort, like ``Recorder.finish_run`` itself.
+    The host verifier may call ``finish_run`` again on the same ``run_id`` after
+    it has changed ``verified`` or appended a check error.
+    """
+    if recorder is None:
+        return
+    try:
+        run_id = recorder.start_run(
+            result.task_id, result.harness, result.model, result.provider,
+            note="external worker")
+        result.run_id = int(run_id or 0)
+        recorder.finish_run(result)
+    except Exception:
+        # Losing telemetry cannot change the worker's actual answer or edits.
+        try:
+            result.run_id = int(getattr(result, "run_id", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            result.run_id = 0
 
 
 # --- one attempt ------------------------------------------------------------
@@ -199,18 +240,20 @@ class _Attempt:
 
     def __init__(self, key: str, spec: HarnessSpec | None, snapshot: RunnerSnapshot,
                  *, pre_prompt_failure: bool, reason: str = "",
-                 env_receipt: dict | None = None):
+                 env_receipt: dict | None = None, live_cursor: int = 0):
         self.key = key
         self.spec = spec
         self.snapshot = snapshot
         self.pre_prompt_failure = pre_prompt_failure
         self.reason = reason
         self.env_receipt = dict(env_receipt or {"allowed": [], "stripped": []})
+        self.live_cursor = max(0, int(live_cursor or 0))
 
 
 def _attempt(key: str, prompt: str, workspace: str, prior: RunnerSnapshot | None,
              timeout_s: float | None, model: str,
-             cancelled: Callable[[], bool] | None) -> _Attempt:
+             cancelled: Callable[[], bool] | None,
+             emit: Callable[[str, dict], Any] | None) -> _Attempt:
     """Build the worker, run one turn under a cancel watcher, and describe it."""
     spec = registry.SPECS.get(key)
     if spec is None:
@@ -250,6 +293,31 @@ def _attempt(key: str, prompt: str, workspace: str, prior: RunnerSnapshot | None
 
     prior_cursor = prior.cursor if prior is not None else 0
     prior_events = len(prior.events) if prior is not None else 0
+    live_cursor = prior_cursor
+    live_count = 0
+
+    def live_event(event: RunnerEvent) -> None:
+        nonlocal live_cursor, live_count
+        if not isinstance(event, RunnerEvent) or event.cursor <= prior_cursor:
+            return
+        live_cursor = max(live_cursor, event.cursor)
+        if live_count < _MAX_REPLAYED_EVENTS:
+            _safe_emit(emit, "runner", {
+                "event": "native", "runner": key, "cursor": event.cursor,
+                "type": event.type, "payload": redact_value(event.payload),
+                "live": True,
+            })
+        elif live_count == _MAX_REPLAYED_EVENTS:
+            _safe_emit(emit, "runner", {
+                "event": "native-events-omitted", "runner": key,
+                "cursor": event.cursor, "omitted_after": _MAX_REPLAYED_EVENTS,
+                "live": True,
+            })
+        live_count += 1
+
+    set_callback = getattr(runner, "set_event_callback", None)
+    if callable(set_callback):
+        set_callback(live_event)
     with _CancelWatcher(runner, cancelled) as watcher:
         try:
             if prior is not None:
@@ -270,20 +338,22 @@ def _attempt(key: str, prompt: str, workspace: str, prior: RunnerSnapshot | None
             # same, so retrying it would only produce a second identical refusal.
             return _failed_attempt(key, spec, workspace, prior, _error_text(exc),
                                    pre_prompt_failure=False,
-                                   env_receipt=_env_receipt_of(runner))
+                                   env_receipt=_env_receipt_of(runner),
+                                   recovery_required=True)
 
     return _Attempt(
         key, spec, snapshot,
         pre_prompt_failure=_never_reached_the_prompt(
             snapshot, prior_cursor, prior_events, watcher.fired),
         reason=snapshot.error,
-        env_receipt=_env_receipt_of(runner))
+        env_receipt=_env_receipt_of(runner), live_cursor=live_cursor)
 
 
 def _failed_attempt(key: str, spec: HarnessSpec | None, workspace: str,
                     prior: RunnerSnapshot | None, error: str, *,
                     pre_prompt_failure: bool, cancelled: bool = False,
-                    env_receipt: dict | None = None) -> _Attempt:
+                    env_receipt: dict | None = None,
+                    recovery_required: bool = False) -> _Attempt:
     """A failure with no snapshot of its own, given the same shape as one.
 
     ``mutation_check_complete`` stays False: no before/after digest pair was ever
@@ -298,7 +368,8 @@ def _failed_attempt(key: str, spec: HarnessSpec | None, workspace: str,
         events=tuple(prior.events) if prior is not None else (),
         usage=dict(prior.usage) if prior is not None else {},
         settled=False, exit_code=None, error=redact_text(error),
-        recovery_required=False, mutated=False, mutation_check_complete=False,
+        recovery_required=bool(recovery_required), mutated=False,
+        mutation_check_complete=False,
         final_output=prior.final_output if prior is not None else "",
         cancelled=cancelled,
         invocation=(prior.invocation if prior is not None else 0) + 1,
@@ -434,10 +505,11 @@ def _finish(decision: HarnessDecision, attempt: _Attempt,
 
     usage = usage_to_collie(key, dict(snapshot.usage or {}))
     prior_cursor = prior.cursor if prior is not None else 0
-    replayed = [event for event in snapshot.events if event.cursor > prior_cursor]
+    replay_cursor = max(prior_cursor, attempt.live_cursor)
+    replayed = [event for event in snapshot.events if event.cursor > replay_cursor]
     for event in replayed[-_MAX_REPLAYED_EVENTS:]:
-        # Phase 1 replays the worker's own event names; phase 2's `runner_events`
-        # is what maps them onto Collie's canonical vocabulary.  Emitting them
+        # The adapter keeps the worker's original canonical event names.
+        # Emitting them
         # under an invented canonical name now would be a translation nobody
         # tested.
         _safe_emit(emit, "runner", {
@@ -536,7 +608,7 @@ def _reported_model(snapshot: RunnerSnapshot) -> str:
         payload = event.payload if isinstance(event.payload, dict) else {}
         name = payload.get("model")
         if isinstance(name, str) and name.strip():
-            return name.strip()
+            return redact_text(name.strip(), 256)
         name = _dominant_model(payload.get("modelUsage"))
         if name:
             return name
@@ -546,7 +618,7 @@ def _reported_model(snapshot: RunnerSnapshot) -> str:
 def _dominant_model(model_usage: Any) -> str:
     """The model that did the work, out of Claude's per-model cost breakdown.
 
-    `claude -p --output-format json` has no top-level "model", but it does carry
+    Claude's terminal stream-json result has no top-level "model", but it does carry
     `modelUsage: {"<id>": {..., "costUSD": …, "canonicalModel": …}}`.  A single
     run routinely lists two — a small one for internal steps and the one that
     actually answered — so the most expensive entry is the honest answer for a
@@ -562,11 +634,13 @@ def _dominant_model(model_usage: Any) -> str:
         if not isinstance(entry, Mapping):
             continue
         cost = entry.get("costUSD")
-        cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else -1.0
+        cost = (float(cost) if isinstance(cost, (int, float))
+                and not isinstance(cost, bool) and math.isfinite(float(cost))
+                and float(cost) >= 0 else -1.0)
         canonical = entry.get("canonicalModel")
         name = canonical if isinstance(canonical, str) and canonical.strip() else str(raw_name)
         if best_cost is None or cost > best_cost:
-            best_name, best_cost = name.strip(), cost
+            best_name, best_cost = redact_text(name.strip(), 256), cost
     return best_name
 
 
@@ -579,8 +653,13 @@ def _env_receipt_of(runner: Any) -> dict:
     receipt = getattr(runner, "last_env_receipt", None)
     if not isinstance(receipt, Mapping):
         return {"allowed": [], "stripped": []}
-    return {str(name): [str(item) for item in (values or ())]
-            for name, values in receipt.items()}
+    answer = {"allowed": [], "stripped": []}
+    for name in answer:
+        values = receipt.get(name)
+        if not isinstance(values, (list, tuple, set, frozenset)):
+            continue
+        answer[name] = [str(item)[:256] for item in list(values)[:512]]
+    return answer
 
 
 # --- inputs -----------------------------------------------------------------
@@ -615,9 +694,10 @@ def _resume_snapshot(resume_from: Any, runner: str,
     """
     if resume_from is None:
         return None
+    snapshot: RunnerSnapshot | None
     if isinstance(resume_from, RunnerSnapshot):
-        return resume_from
-    if isinstance(resume_from, Mapping):
+        snapshot = resume_from
+    elif isinstance(resume_from, Mapping):
         value = dict(resume_from)
         if "locator" in value and "thread_id" not in value:
             # A NativeSessionRef.to_dict(): id and path, by design nothing else.
@@ -627,14 +707,22 @@ def _resume_snapshot(resume_from: Any, runner: str,
         value.setdefault("runner", runner)
         value.setdefault("workspace", workspace)
         snapshot = RunnerSnapshot.from_dict(value)
-        return snapshot if snapshot.thread_id else None
-    locator = str(resume_from or "").strip()
-    if not locator:
+    else:
+        locator = str(resume_from or "").strip()
+        if not locator:
+            return None
+        # from_dict canonicalizes the workspace exactly as the runners' own
+        # `_workspace` does, which `ClaudeCodeRunner.resume` insists on.
+        snapshot = RunnerSnapshot.from_dict(
+            {"runner": runner, "workspace": workspace, "thread_id": locator})
+    if not snapshot.thread_id:
         return None
-    # from_dict canonicalizes the workspace exactly as the runners' own
-    # `_workspace` does, which `ClaudeCodeRunner.resume` insists on.
-    return RunnerSnapshot.from_dict(
-        {"runner": runner, "workspace": workspace, "thread_id": locator})
+    if snapshot.runner != runner:
+        raise ValueError("resume state belongs to %s, not %s" %
+                         (snapshot.runner or "an unknown runner", runner))
+    if snapshot.workspace != workspace:
+        raise ValueError("resume state belongs to a different workspace")
+    return snapshot
 
 
 def _prompt_text(task: str, history_note: str | None) -> str:
@@ -648,9 +736,14 @@ def _prompt_text(task: str, history_note: str | None) -> str:
     if not text:
         raise ValueError("task must be a non-empty string")
     note = str(history_note or "").strip()
-    if not note:
-        return text
-    return "Earlier in this session:\n%s\n\n---\n\nTask:\n%s" % (note, text)
+    combined = (text if not note else
+                "Earlier in this session:\n%s\n\n---\n\nTask:\n%s" % (note, text))
+    # Unlike Collie's native loop, an external worker owns its tool loop and
+    # cannot use Collie's in-memory placeholder vault.  It therefore receives a
+    # permanently masked projection of any pasted credential.  Preserve the
+    # prompt's length budget: redact_text's ordinary 16K bound is a receipt cap,
+    # not an instruction cap.
+    return redact_text(combined, max(16_000, len(combined)))
 
 
 def _canonical_workspace(workspace: str) -> str:
@@ -688,4 +781,5 @@ def _safe_emit(emit: Callable[[str, dict], Any] | None, kind: str,
         pass
 
 
-__all__ = ["CANCEL_POLL_S", "RECEIPT_ATTR", "receipt_of", "run_adhoc"]
+__all__ = ["CANCEL_POLL_S", "RECEIPT_ATTR", "receipt_of", "run_adhoc",
+           "transcript_text"]

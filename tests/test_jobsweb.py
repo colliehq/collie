@@ -119,6 +119,35 @@ def main():
     check(code == 200 and r.get("status") == "verified",
           f"a same-origin browser POST (Origin set + header) must succeed, got {code} {out}")
 
+    print("test_nonstandard_json_is_rejected_before_action_creation")
+    before = len(json.loads(_req(base + "/api/state")[1])["pending"])
+    req = urllib.request.Request(
+        base + "/api/run", data=b'{"capability":"note.append","args":{"x":NaN}}',
+        method="POST", headers={"Content-Type": "application/json", "X-Collie-Jobs": "1"})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        code, out = 200, ""
+    except urllib.error.HTTPError as exc:
+        code, out = exc.code, exc.read().decode()
+    after = len(json.loads(_req(base + "/api/state")[1])["pending"])
+    check(code == 400 and before == after,
+          f"NaN JSON must not create an action ({code}, {out})")
+
+    print("test_authority_field_shapes_are_rejected_before_job_creation")
+    before_jobs = len(json.loads(_req(base + "/api/state")[1])["jobs"])
+    code, out = _req(base + "/api/run", "POST", {
+        "capability": "note.append", "args": [],
+        "leash": {"may": ["note.*"]}})
+    bad_args = json.loads(out)
+    code2, out2 = _req(base + "/api/run", "POST", {
+        "capability": "note.append", "args": {},
+        "leash": {"may": "note.*"}})
+    bad_leash = json.loads(out2)
+    after_jobs = len(json.loads(_req(base + "/api/state")[1])["jobs"])
+    check(code == 200 and code2 == 200 and bad_args.get("error") and
+          bad_leash.get("error") and before_jobs == after_jobs,
+          "malformed args/leash shapes must not create durable jobs")
+
     print("test_dashboard_confirm_cannot_bypass_paused_mission")
     code, out = _req(base + "/api/confirm", "POST", {"nonce": mission_nonce})
     got = json.loads(out)

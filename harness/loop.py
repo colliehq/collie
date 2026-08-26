@@ -22,8 +22,8 @@ from . import redact as _redact
 from . import settings as _settings
 from .context import ContextComposer
 from .hooks import HookManager
-from .providers import (ModelProvider, Usage, ToolCall, classify_error, is_overflow,
-                        is_known_terminal, _error_completion)
+from .providers import (ModelProvider, Usage, ToolCall, classify_error, content_text,
+                        is_overflow, is_known_terminal, _error_completion)
 from .recorder import Recorder, RunResult
 from .tools import ToolRegistry, ToolCtx, repair_args
 from .verifier import CodeReproVerifier, Mutation, Observation
@@ -550,7 +550,13 @@ class Harness:
     def _emit(self, kind, **data):
         if self.emit:
             try:
-                self.emit(kind, data)
+                # Events fan out to SSE, mirrors, notifications and sometimes
+                # durable receipts.  Sanitize the complete nested payload at
+                # this common boundary so an exception or custom hook cannot
+                # bypass the tool-output-specific redaction path.
+                safe = _redact.redact_obj(
+                    data, getattr(self, "_secret_vault", {}))
+                self.emit(kind, safe)
             except Exception:
                 pass
 
@@ -792,9 +798,25 @@ class Harness:
                          ok=not last_repro_failed, asserted=last_repro_asserted)],
         ).verified
 
-    def run(self, task_id: str, user_msg: str, consolidate: bool = True,
+    def run(self, task_id: str, user_msg, consolidate: bool = True,
             history: list = None) -> RunResult:
         t0 = time.time()
+        # Redact before *any* model-facing or durable copy is made.  Previously
+        # only tool output was protected, while a credential pasted in the user
+        # prompt or carried by resumed history was checkpointed and sent raw.
+        # The same in-memory vault still restores placeholders only at the tool
+        # execution boundary, so key-using workflows continue to work.
+        _redact_on = (_settings.get("REDACT_SECRETS", "on") or "on") not in (
+            "off", "0", "false")
+        self._secret_vault = getattr(self, "_secret_vault", {})
+        # Keep canonical multimodal blocks intact.  Turning a list into ``str``
+        # protects neither its structure nor the image path: providers would see
+        # Python repr text and the durable thread would permanently lose the
+        # attachment.  ``redact_obj`` masks only nested strings.
+        normalized_user_msg = (user_msg if isinstance(user_msg, (str, list))
+                               else str(user_msg or ""))
+        safe_user_msg = (_redact.redact_obj(normalized_user_msg, self._secret_vault)
+                         if _redact_on else normalized_user_msg)
         rid = self.recorder.start_run(task_id, "collie", self.provider.model,
                                       self.provider.name, note="v" + __version__)
         res = RunResult(run_id=rid, task_id=task_id, harness="collie",
@@ -807,14 +829,14 @@ class Harness:
             "provider": self.provider.name, "model": self.provider.model,
         }, subject=self.project)
         submitted = self._hook("UserPromptSubmit", {
-            "run_id": rid, "task_id": task_id, "prompt": user_msg,
+            "run_id": rid, "task_id": task_id, "prompt": safe_user_msg,
             "project": self.project,
         }, subject=self.project)
         if submitted is not None and not submitted.allowed:
             res.error = "prompt blocked by lifecycle hook: %s" % (
                 submitted.reason or "policy rejected the prompt")
             res.wall_ms = int((time.time() - t0) * 1000)
-            res.messages = [{"role": "user", "content": user_msg}]
+            res.messages = [{"role": "user", "content": safe_user_msg}]
             self.recorder.finish_run(res)
             self._emit("receipt", verified=False, prefix_tokens=0,
                        input_tokens=0, output_tokens=0, total_tokens=0,
@@ -837,9 +859,13 @@ class Harness:
             from . import checkpoints as _ckpt
             _ok, _why = _ckpt.available(self.cwd)
             if _ok:
-                _cp = _ckpt.capture(self.cwd, str(task_id), rid, user_msg[:60])
+                _cp = _ckpt.capture(
+                    self.cwd, str(task_id), rid, content_text(safe_user_msg)[:60])
                 res.checkpoint_ref = _cp.ref
-                self._emit("checkpoint", ok=True, ref=_cp.ref[:12], kind=_cp.kind)
+                # ``kind`` is the event-name parameter of _emit(); using it for
+                # checkpoint metadata raises before a success reaches the UI.
+                self._emit("checkpoint", ok=True, ref=_cp.ref[:12],
+                           checkpoint_kind=_cp.kind)
             else:
                 self._emit("checkpoint", ok=False, reason=_why)
         except Exception as _ce:                 # never block the run on bookkeeping
@@ -847,21 +873,27 @@ class Harness:
         # history (prior thread) lets a session CONTINUE across CLI calls / repl turns; the
         # composer's own elision keeps a long continued thread from bloating the prefix.
         msgs0 = list(history) if history else []
+        if _redact_on:
+            msgs0 = _redact.redact_obj(msgs0, self._secret_vault)
         submitted_context = (submitted.additional_context
                              if submitted is not None else [])
-        prompt_content = user_msg
+        prompt_content = safe_user_msg
         if submitted_context:
-            prompt_content += "\n\n[Trusted lifecycle context]\n" + "\n".join(submitted_context)
+            context_text = "\n".join(submitted_context)
+            if _redact_on:
+                context_text = _redact.redact(context_text, self._secret_vault)
+            context_block = "\n\n[Trusted lifecycle context]\n" + context_text
+            if isinstance(prompt_content, list):
+                prompt_content = list(prompt_content) + [
+                    {"type": "text", "text": context_block}]
+            else:
+                prompt_content += context_block
         msgs0.append({"role": "user", "content": prompt_content})
         session = {"messages": msgs0}
         journal_state = "turn_boundary"
         journal_detail = {}
         self._session_checkpoint(session["messages"], rid, 0, journal_state)
-        # privacy: secrets found in tool output are swapped for {{SECRET:…}} placeholders before
-        # they can reach ANY cloud provider; the vault (in-memory only, never persisted) lets the
-        # execution boundary substitute real values back. Off only if the user disables the knob.
-        _redact_on = (_settings.get("REDACT_SECRETS", "on") or "on") not in ("off", "0", "false")
-        self._secret_vault = getattr(self, "_secret_vault", {})
+        # Tool output uses the same vault initialized before the prompt above.
         total = Usage()
         model_calls = 0
         # --- cache-waste ledger (point #3): the prefix SHOULD cache turn-to-turn; when it doesn't,
@@ -937,7 +969,7 @@ class Harness:
                     self._emit("steer", text=txt[:200])
                     self.recorder.log_turn(rid, turn, "steer", txt[:500], 0, 0, 0, 0)
                 system, msgs, meta = self.composer.build(
-                    session, user_msg, self.cwd, self.project, self.mode)
+                    session, safe_user_msg, self.cwd, self.project, self.mode)
                 if turn == 0:
                     res.prefix_tokens = meta.prefix_tokens
                     ceiling = getattr(self.composer.budgeter, "prefix_ceiling", 0)
@@ -1895,7 +1927,7 @@ class Harness:
                         # synthesize from the ELIDED history (composer.build), not the raw thread —
                         # the raw thread is the single most likely place to actually overflow.
                         _sys2, msgs2, _m2 = self.composer.build(
-                            session, user_msg, self.cwd, self.project, self.mode)
+                            session, safe_user_msg, self.cwd, self.project, self.mode)
                         fin = self.provider.complete(_sys2, msgs2, [], on_text=self.stream_cb)
                         self._account_usage(total, fin.usage)
                         model_calls += max(1, int(getattr(fin, "request_count", 1) or 1))
@@ -1993,6 +2025,12 @@ class Harness:
             did_edit, last_edit_turn, last_repro_turn,
             last_repro_failed, last_repro_asserted)
         if res.error:
+            # Errors can originate below the ordinary tool-output redaction
+            # boundary (provider bodies, hooks, persistence, custom tools).
+            # They are receipts/status, never executable input, so always apply
+            # structural credential redaction even when model-input redaction
+            # was explicitly disabled.
+            res.error = _redact.redact(str(res.error), self._secret_vault)[:4_000]
             res.success = False
         # ensure the thread ENDS with the final answer (the no-tool-call path breaks without
         # appending it) so a --continue'd next turn sees what this turn concluded.

@@ -50,6 +50,22 @@ FAILED_S = "failed"
 CANCELLED = "cancelled"
 
 _TERMINAL = {DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED}
+_NON_EXECUTABLE = _TERMINAL | {PAUSED, PAUSING, RECOVERY_REQUIRED, RECONCILING}
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _encode_leash(value):
+    normalized = _leash.validate(value)
+    return normalized, json.dumps(
+        normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _decode_leash(value):
+    parsed = json.loads(value or "{}", parse_constant=_reject_json_constant)
+    return _leash.validate(parsed)
 
 
 @dataclass
@@ -130,21 +146,39 @@ class JobStore:
 
     def create(self, job_id: str, goal: str, leash: dict = None) -> Job:
         now = int(time.time())
+        normalized, encoded = _encode_leash(leash)
         with self._lock:
             self.db.execute(
                 "INSERT INTO jobs(job_id,goal,leash_json,state,result,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?)",
-                (job_id, goal, json.dumps(leash or {}, ensure_ascii=False),
+                (job_id, goal, encoded,
                  QUEUED, "", now, now))
             self.db.commit()
-        return Job(job_id, goal, leash or {}, QUEUED, "", now, now)
+        return Job(job_id, goal, normalized, QUEUED, "", now, now)
+
+    def _decode_row(self, row) -> Job:
+        try:
+            leash = _decode_leash(row["leash_json"])
+            state, result = row["state"], row["result"]
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            # Corrupt durable authority is an explicit recovery state, never an
+            # implicit legacy "no leash" that would authorize every action.
+            state = RECOVERY_REQUIRED
+            result = "invalid durable Job leash: %s" % exc
+            leash = {"may": []}
+            with self._lock:
+                self.db.execute(
+                    "UPDATE jobs SET state=?,result=?,updated_at=? WHERE job_id=?",
+                    (state, result, int(time.time()), row["job_id"]))
+                self.db.commit()
+        return Job(row["job_id"], row["goal"], leash, state, result,
+                   row["created_at"], row["updated_at"])
 
     def get(self, job_id: str) -> Job:
         r = self.db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         if not r:
             return None
-        return Job(r["job_id"], r["goal"], json.loads(r["leash_json"] or "{}"),
-                   r["state"], r["result"], r["created_at"], r["updated_at"])
+        return self._decode_row(r)
 
     def set_state(self, job_id: str, state: str, result: str = None):
         with self._lock:
@@ -160,9 +194,8 @@ class JobStore:
         q, a = "SELECT * FROM jobs", ()
         if state:
             q, a = q + " WHERE state=?", (state,)
-        return [Job(r["job_id"], r["goal"], json.loads(r["leash_json"] or "{}"),
-                    r["state"], r["result"], r["created_at"], r["updated_at"])
-                for r in self.db.execute(q + " ORDER BY created_at", a)]
+        rows = self.db.execute(q + " ORDER BY created_at", a).fetchall()
+        return [self._decode_row(row) for row in rows]
 
     def close(self):
         self.db.close()
@@ -185,6 +218,16 @@ class Executor:
     def __init__(self, actions: ActionStore, jobs: JobStore):
         self.actions = actions
         self.jobs = jobs
+
+    @staticmethod
+    def _require_executable(job, record=None):
+        # A terminal Job may replay an already executed nonce so ActionStore can
+        # return its durable receipt.  It may never use terminal state to fire a
+        # distinct/late CONFIRMED action.
+        if job and job.state in _TERMINAL and record and record.state == EXECUTED:
+            return
+        if job and job.state in _NON_EXECUTABLE:
+            raise RefusedError("job state %s forbids action execution" % job.state)
 
     def _apply(self, tgt: str, cap: Capability, rec, status: str, reason: str):
         if not tgt:
@@ -227,6 +270,7 @@ class Executor:
             raise RefusedError(f"no registered capability {rec.capability!r}")
         tgt = rec.job_id
         job = self.jobs.get(tgt) if tgt else None
+        self._require_executable(job, rec)
         dec = _leash.evaluate(job.leash if job else {}, rec.capability, cap.risk)
         if dec.denied:
             raise RefusedError(f"leash denied: {dec.reason}")
@@ -256,6 +300,7 @@ class Executor:
         # out-of-scope capability or an expired/over-budget leash.
         job = self.jobs.get(tgt) if tgt else None
         if job:
+            self._require_executable(job, rec)
             dec = _leash.evaluate(job.leash, rec.capability, cap.risk)
             if dec.denied:
                 raise RefusedError(f"leash denied: {dec.reason}")

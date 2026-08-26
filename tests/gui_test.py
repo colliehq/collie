@@ -145,6 +145,23 @@ def main():
                                                 ["strategy", "pack"]]), str(axes))
             pg.click("#modeTrigger")
             pg.wait_for_selector("#modeMenu", state="visible", timeout=15000)
+            # The worker selector is now the first radio group in the popup, so opening
+            # from the trigger lands on its checked row.  Exercise that new group before
+            # moving to Intent; otherwise this assertion would silently keep testing the
+            # pre-worker menu order instead of the actual keyboard contract.
+            pg.keyboard.press("ArrowDown")
+            worker_arrow_state = pg.evaluate("""() => ({
+              value: document.querySelector('#runRunner').value,
+              autoChecked: document.querySelector('[data-axis="runner"][data-val="auto"]').getAttribute('aria-checked'),
+              autoTab: document.querySelector('[data-axis="runner"][data-val="auto"]').tabIndex,
+              savedTab: document.querySelector('[data-axis="runner"][data-val=""]').tabIndex
+            })""")
+            check("worker radio arrow selects and moves the roving tab stop",
+                  worker_arrow_state == {"value": "auto", "autoChecked": "true",
+                                         "autoTab": 0, "savedTab": -1},
+                  str(worker_arrow_state))
+            pg.keyboard.press("ArrowUp")       # restore the saved worker choice
+            pg.focus('[data-axis="intent"][data-val="build"]')
             pg.keyboard.press("ArrowDown")
             arrow_state = pg.evaluate("""() => ({
               value: document.querySelector('#runIntent').value,
@@ -226,10 +243,14 @@ def main():
             check("status rail removed", pg.query_selector(".runbar") is None and pg.query_selector("#rbGate") is None)
             check("model trigger present in toolbar", pg.query_selector(".topbar #modelTrigger") is not None)
             check("run details collapsed by default", pg.query_selector("#workpanel").is_hidden())
+            pg.click("#topbarMore > summary")
+            check("secondary toolbar actions open from More tools",
+                  pg.query_selector("#topbarMore").get_attribute("open") is not None)
             pg.click("#runDetailsBtn")
             pg.wait_for_selector("#workpanel", state="visible", timeout=15000)
             pg.click("#runDetailsBtn")
             pg.wait_for_selector("#workpanel", state="hidden", timeout=15000)
+            pg.click("#topbarMore > summary")
             pg.click("#modelTrigger")
             pg.wait_for_selector("#modelOverlay.open", timeout=15000)
             pg.wait_for_selector(".model-option", timeout=15000)
@@ -252,7 +273,9 @@ def main():
 
             # --- theme toggle + persistence ---
             before = pg.eval_on_selector(":root", "e => e.getAttribute('data-theme')")
+            pg.click("#topbarMore > summary")
             pg.click("#themeBtn"); pg.wait_for_timeout(150)
+            pg.click("#topbarMore > summary")
             after = pg.eval_on_selector(":root", "e => e.getAttribute('data-theme')")
             check("theme toggles", before != after, "%s->%s" % (before, after))
             pg.reload(wait_until="load"); pg.wait_for_timeout(300)
@@ -452,7 +475,10 @@ def main():
             pg.select_option("#mStrategy", "pack")
             check("phone Pack owns isolation and requires a check",
                   pg.eval_on_selector("#mWorkspace", "e => e.value === 'current' && e.disabled") and
-                  pg.eval_on_selector("#mPackCheck", "e => e.required && !e.closest('#mPackOpts').hidden"))
+                  pg.eval_on_selector("#mPackCheck", "e => e.required && !e.closest('#mPackOpts').hidden") and
+                  pg.eval_on_selector(
+                      '#mWorkspace option[value="current"]',
+                      "e => /candidates isolated|候选隔离运行|候選隔離執行/.test(e.textContent)"))
             pg.fill("#mPackCheck", "pytest -q")
             pg.check("#mPackApply")
             pg.evaluate("""() => {
