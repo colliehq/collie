@@ -65,12 +65,31 @@ def _mcp_row(name: str) -> dict | None:
         return None
 
 
+def _configured_local_bins() -> tuple[bool, bool]:
+    """Detect an isolated official local install without returning its private paths."""
+    try:
+        from . import mcpclient
+        cfg = mcpclient._load_config().get("comfy-local") or {}
+    except Exception:
+        return False, False
+    if not isinstance(cfg, dict):
+        return False, False
+    env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    command = cfg.get("command")
+    comfy_bin = env.get("COMFY_BIN")
+    return (
+        isinstance(command, str) and os.path.isfile(command),
+        isinstance(comfy_bin, str) and os.path.isfile(comfy_bin),
+    )
+
+
 def snapshot() -> dict:
     """Return Comfy readiness without exposing credentials or local config paths."""
     cloud = _mcp_row("comfy-cloud")
     local = _mcp_row("comfy-local") or _mcp_row("comfy-mcp")
     comfy_cli = shutil.which("comfy")
     comfy_mcp = shutil.which("comfy-mcp")
+    configured_mcp, configured_cli = _configured_local_bins()
     local_server = _local_server()
     cloud_auth = str((cloud or {}).get("auth") or "not-configured")
     return {
@@ -87,8 +106,8 @@ def snapshot() -> dict:
             **local_server,
             "mcp_configured": local is not None,
             "mcp_tools": (local or {}).get("tools"),
-            "cli_installed": bool(comfy_cli),
-            "mcp_installed": bool(comfy_mcp),
+            "cli_installed": bool(comfy_cli) or configured_cli,
+            "mcp_installed": bool(comfy_mcp) or configured_mcp,
         },
         "links": {"desktop_docs": DESKTOP_DOCS_URL, "mcp_docs": MCP_DOCS_URL},
     }

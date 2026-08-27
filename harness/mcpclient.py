@@ -82,7 +82,15 @@ def _safe_oauth_url(u):
 # Minimal, non-secret env vars a spawned stdio MCP server is allowed to inherit. collie's own process
 # holds every provider API key + OAuth token in os.environ; forwarding all of that to an arbitrary
 # third-party server binary would hand it secrets it has no need for (see _child_env).
-_ENV_ALLOW = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ")
+_ENV_ALLOW = (
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ",
+    # Python and other native stdio servers need these benign runtime/location variables on
+    # Windows.  In particular, omitting SystemRoot can make ``import _overlapped`` fail before an
+    # MCP server reaches its initialize handshake.  APPDATA/LOCALAPPDATA let isolated CLIs find
+    # their own user-level configuration; credentials remain excluded unless a server explicitly
+    # declares one in its own ``env`` block.
+    "SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+)
 
 
 def _child_env(cfg):

@@ -48,6 +48,30 @@ def test_comfy_snapshot_is_bounded_and_never_returns_executable_paths(monkeypatc
     assert "C:/private" not in serialized
 
 
+def test_comfy_snapshot_detects_isolated_configured_install(monkeypatch):
+    from harness import comfy_integration as comfy
+    from harness import mcpclient
+
+    monkeypatch.setattr(comfy, "_local_server", lambda: {
+        "reachable": True, "url": comfy.LOCAL_APP_URL,
+    })
+    monkeypatch.setattr(comfy, "_mcp_row", lambda name: (
+        {"name": name, "auth": "none", "enabled": True, "tools": 39}
+        if name == "comfy-local" else None))
+    monkeypatch.setattr(comfy.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(mcpclient, "_load_config", lambda: {"comfy-local": {
+        "command": "C:/isolated/comfy-mcp.exe",
+        "env": {"COMFY_BIN": "C:/isolated/comfy.exe"},
+    }})
+    monkeypatch.setattr(comfy.os.path, "isfile", lambda path: path.startswith("C:/isolated/"))
+
+    result = comfy.snapshot()
+    assert result["local"]["mcp_configured"] is True
+    assert result["local"]["mcp_installed"] is True
+    assert result["local"]["cli_installed"] is True
+    assert "isolated" not in json.dumps(result)
+
+
 def test_add_local_connection_requires_installed_official_server(monkeypatch):
     from harness import comfy_integration as comfy
     from harness import mcpclient
