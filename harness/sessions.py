@@ -245,6 +245,9 @@ def save(sid, messages, project="demo", cwd="", answer="",
                "last_answer": answer or old.get("last_answer", "")}
         if old.get("title"):
             obj["title"] = old["title"]
+        for field in ("forked_from", "fork_index", "lineage", "workspace", "handoffs"):
+            if field in old:
+                obj[field] = old[field]
         # Run receipts are orthogonal to the conversational transcript.  Preserve
         # them across the final transcript save without retaining an in-flight
         # ``active_run`` checkpoint, which save() intentionally closes.
@@ -622,5 +625,117 @@ def recent(n=10):
         # inherits whatever Explorer hands it, and the in-memory run list is empty at startup. The
         # star-map's project discovery seeds from these.
         out.append({"id": f[:-5], "turns": turns, "title": title[:72], "cwd": s.get("cwd") or "",
-                    "last": (s.get("last_answer") or "")[:60], "edits": n_edit, "touches": n_touch})
+                    "last": (s.get("last_answer") or "")[:60], "edits": n_edit, "touches": n_touch,
+                    "forked_from": s.get("forked_from") or "",
+                    "workspace": s.get("workspace") if isinstance(s.get("workspace"), dict) else {}})
     return out
+
+
+def timeline(sid):
+    """Return a bounded message timeline, child forks, and workspace handoffs."""
+    p = _path(sid)
+    if not p or not os.path.exists(p):
+        raise KeyError("no such session")
+    with _locked(p):
+        raw = _validate_raw(_load_raw(p), sid)
+    nodes = []
+    for index, message in enumerate(raw.get("messages") or []):
+        role = str(message.get("role") or "")
+        content = message.get("content")
+        if isinstance(content, list):
+            content = " ".join(str(x.get("text") or "") for x in content if isinstance(x, dict))
+        nodes.append({"index": index, "role": role,
+                      "summary": " ".join(str(content or "").split())[:240],
+                      "tool_calls": len(message.get("tool_calls") or [])})
+    children = []
+    d = _dir()
+    for name in os.listdir(d):
+        if not name.endswith(".json") or name[:-5] == sid:
+            continue
+        child = load(name[:-5]) or {}
+        if child.get("forked_from") == sid:
+            children.append({"id": name[:-5], "fork_index": child.get("fork_index", 0),
+                             "title": child.get("title") or "", "updated": child.get("updated", 0)})
+    children.sort(key=lambda x: float(x.get("updated") or 0))
+    return {"id": sid, "title": raw.get("title") or "", "nodes": nodes, "children": children,
+            "forked_from": raw.get("forked_from") or "", "fork_index": raw.get("fork_index"),
+            "workspace": raw.get("workspace") if isinstance(raw.get("workspace"), dict) else {},
+            "handoffs": list(raw.get("handoffs") or [])[-50:]}
+
+
+def fork(sid, at_index, *, child_id="", title=""):
+    """Create a new durable session from one exact message boundary."""
+    source_path = _path(sid)
+    if not source_path or not os.path.exists(source_path):
+        raise KeyError("no such session")
+    with _locked(source_path):
+        source = _validate_raw(_load_raw(source_path), sid)
+    messages = list(source.get("messages") or [])
+    if (isinstance(at_index, bool) or not isinstance(at_index, int) or
+            at_index < 0 or at_index > len(messages)):
+        raise ValueError("fork index must be a message boundary")
+    child_id = child_id or new_id()
+    target = _path(child_id)
+    if not target:
+        raise ValueError("invalid child session id")
+    if os.path.exists(target):
+        raise ValueError("child session already exists")
+    now = time.time()
+    child = {"id": child_id, "project": source.get("project") or "web",
+             "cwd": source.get("cwd") or "", "updated": now,
+             "messages": messages[:at_index], "last_answer": "",
+             "title": (title or ((source.get("title") or sid) + " · fork"))[:80],
+             "forked_from": sid, "fork_index": at_index,
+             "lineage": list(source.get("lineage") or [])[-30:] + [sid],
+             "workspace": dict(source.get("workspace") or {})}
+    with _locked(target):
+        _atomic_dump(child, target)
+    return {"id": child_id, "forked_from": sid, "fork_index": at_index,
+            "messages": at_index, "cwd": child["cwd"], "title": child["title"]}
+
+
+def handoff(sid, target, *, confirm=False, remove_isolated=False):
+    """Move a session between its local checkout and a managed isolated worktree."""
+    p = _path(sid)
+    if not p or not os.path.exists(p):
+        raise KeyError("no such session")
+    target = str(target or "").lower()
+    if target not in {"isolated", "local"}:
+        raise ValueError("handoff target must be isolated or local")
+    from . import worktree
+    with _locked(p):
+        raw = _validate_raw(_load_raw(p), sid)
+        workspace = dict(raw.get("workspace") or {})
+        now = time.time()
+        if target == "isolated":
+            if workspace.get("mode") == "isolated" and os.path.isdir(workspace.get("path") or ""):
+                return {"ok": True, "session": sid, "workspace": workspace, "existing": True}
+            cwd = raw.get("cwd") or os.getcwd()
+            result = worktree.prepare(cwd, sid, label=raw.get("title") or sid)
+            if not result.get("ok"):
+                raise ValueError(result.get("error") or "could not create isolated workspace")
+            workspace = {"mode": "isolated", "path": result["dir"], "branch": result["branch"],
+                         "origin": result["root"], "base_commit": result.get("base_commit") or ""}
+            raw["cwd"] = result["dir"]
+        else:
+            if workspace.get("mode") != "isolated":
+                return {"ok": True, "session": sid, "workspace": workspace, "existing": True}
+            result = worktree.handoff_to_local(
+                workspace.get("path") or "", workspace.get("origin") or "",
+                workspace.get("base_commit") or "", confirm=confirm)
+            if not result.get("ok"):
+                raise ValueError(result.get("error") or "handoff failed")
+            old_path = workspace.get("path") or ""
+            workspace = {"mode": "local", "path": workspace.get("origin") or "",
+                         "from_branch": workspace.get("branch") or "",
+                         "applied_files": result.get("files") or []}
+            raw["cwd"] = workspace["path"]
+            if remove_isolated:
+                released = worktree.release(old_path, force=True)
+                workspace["isolated_removed"] = bool(released.get("ok"))
+        raw["workspace"] = workspace
+        handoffs = list(raw.get("handoffs") or [])
+        handoffs.append({"at": now, "target": target, "workspace": workspace})
+        raw["handoffs"] = handoffs[-50:]; raw["updated"] = now
+        _atomic_dump(raw, p)
+    return {"ok": True, "session": sid, "workspace": workspace}

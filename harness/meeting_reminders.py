@@ -384,6 +384,10 @@ class ReminderStore:
                 "lead_minutes": 5,
                 "end_grace_minutes": 3,
                 "hide_titles": True,
+                # Native delivery is explicit opt-in.  Browser/in-app reminders keep working when
+                # it is false; enabling it lets the long-lived Collie host deliver after this page
+                # closes without widening recording consent.
+                "native_enabled": False,
                 "muted_until": 0.0,
                 "sensitive_terms": list(DEFAULT_SENSITIVE_TERMS),
             },
@@ -554,6 +558,8 @@ class ReminderStore:
                 prefs["enabled"] = values["enabled"] is True
             if "hide_titles" in values:
                 prefs["hide_titles"] = values["hide_titles"] is True
+            if "native_enabled" in values:
+                prefs["native_enabled"] = values["native_enabled"] is True
             if "lead_minutes" in values:
                 prefs["lead_minutes"] = max(0, min(120, int(_finite(values["lead_minutes"], 5))))
             if "end_grace_minutes" in values:
@@ -604,10 +610,13 @@ class ReminderStore:
             state["engaged"][event_id] = {"kind": _text(kind, 30), "at": time.time()}
             self._write(state)
 
-    def claim_due(self, *, now=None, limit=10) -> list[dict]:
+    def claim_due(self, *, now=None, limit=10, channel="browser") -> list[dict]:
         """Atomically claim due prompts so multiple Collie tabs do not duplicate notifications."""
         now = _finite(now, time.time())
         limit = max(1, min(50, int(limit or 10)))
+        channel = str(channel or "browser").strip().lower()
+        if channel not in {"browser", "native"}:
+            raise ReminderError("invalid reminder delivery channel")
         with _LOCK:
             state = self._load()
             prefs = state["preferences"]
@@ -631,13 +640,15 @@ class ReminderStore:
                     phase = "end"
                 if not phase:
                     continue
-                key = "%s:%s" % (event["id"], phase)
-                if key in state["notifications"] or _finite(state["snoozes"].get(key)) > now:
+                public_key = "%s:%s" % (event["id"], phase)
+                key = public_key if channel == "browser" else public_key + ":native"
+                if (key in state["notifications"] or
+                        _finite(state["snoozes"].get(public_key)) > now):
                     continue
-                candidates.append((start, phase, row, key))
+                candidates.append((start, phase, row, key, public_key))
             candidates.sort(key=lambda item: (item[0], item[1]))
             claimed = []
-            for _, phase, row, key in candidates[:limit]:
+            for _, phase, row, key, public_key in candidates[:limit]:
                 state["notifications"][key] = now
                 minutes = max(1, int(round((_finite(row["start_at"]) - now) / 60)))
                 if phase == "prepare":
@@ -650,7 +661,8 @@ class ReminderStore:
                     browser_title = "Meeting may have ended"
                     message = "Review and stop the note for %s." % row["title"]
                 claimed.append({
-                    "id": key,
+                    "id": public_key,
+                    "channel": channel,
                     "phase": phase,
                     "event": row,
                     "message": message,
@@ -678,6 +690,7 @@ class ReminderStore:
             if action == "snooze":
                 delay = max(1, min(120, int(_finite(minutes, 5))))
                 state["notifications"].pop(key, None)
+                state["notifications"].pop(key + ":native", None)
                 state["snoozes"][key] = time.time() + delay * 60
             elif action == "mute_today":
                 local = dt.datetime.now().astimezone()

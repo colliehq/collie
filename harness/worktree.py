@@ -87,6 +87,11 @@ def prepare(cwd, session, label=""):
         return {"ok": False, "dir": cwd, "branch": "", "root": "", "kind": "none",
                 "error": "not a git repository — nothing to isolate against"}
 
+    ok_base, base_commit = _git(["rev-parse", "HEAD"], root)
+    if not ok_base or not base_commit:
+        return {"ok": False, "dir": cwd, "branch": "", "root": root, "kind": "none",
+                "error": "repository has no commit to isolate"}
+    base_commit = base_commit.splitlines()[-1].strip()
     branch = PREFIX + _slug(label or session, fallback=_slug(session))
     # A session that runs twice must not collide with its own leftover branch.
     ok, _ = _git(["rev-parse", "--verify", "--quiet", branch], root)
@@ -106,7 +111,61 @@ def prepare(cwd, session, label=""):
         shutil.rmtree(os.path.dirname(dst), ignore_errors=True)
         return {"ok": False, "dir": cwd, "branch": "", "root": root, "kind": "none",
                 "error": ("git worktree add failed: " + out)[:400]}
-    return {"ok": True, "dir": dst, "branch": branch, "root": root, "kind": "worktree", "error": ""}
+    return {"ok": True, "dir": dst, "branch": branch, "root": root,
+            "base_commit": base_commit, "kind": "worktree", "error": ""}
+
+
+def _git_input(args, cwd, data, timeout=120):
+    try:
+        from . import plat
+        proc = subprocess.run(["git"] + list(args), cwd=cwd, timeout=timeout, input=data,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              **plat.no_window_kwargs())
+        return proc.returncode == 0, (proc.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, "%s: %s" % (type(exc).__name__, exc)
+
+
+def handoff_to_local(wt_dir, local_root, base_commit, *, confirm=False):
+    """Copy an isolated diff into a clean local checkout after explicit confirmation."""
+    if confirm is not True:
+        return {"ok": False, "applied": False, "error": "explicit confirmation required"}
+    wt_dir, local_root = os.path.abspath(wt_dir), os.path.abspath(local_root)
+    common = main_root(wt_dir)
+    if not common or os.path.normcase(os.path.realpath(common)) != os.path.normcase(os.path.realpath(local_root)):
+        return {"ok": False, "applied": False,
+                "error": "isolated workspace does not belong to the requested local checkout"}
+    ok, dirty = _git(["status", "--porcelain"], local_root)
+    if not ok or dirty.strip():
+        return {"ok": False, "applied": False,
+                "error": "local checkout has changes; commit or stash them before handoff"}
+    ok, _ = _git(["cat-file", "-e", str(base_commit) + "^{commit}"], wt_dir)
+    if not ok:
+        return {"ok": False, "applied": False, "error": "handoff base commit is unavailable"}
+    # Intent-to-add includes new files in the binary-safe patch without staging their contents.
+    _git(["add", "-A", "--intent-to-add"], wt_dir)
+    ok, patch = _git(["diff", "--binary", str(base_commit)], wt_dir, timeout=180)
+    if not ok:
+        return {"ok": False, "applied": False, "error": patch[:300]}
+    if not patch:
+        return {"ok": True, "applied": False, "files": [], "error": ""}
+    # _git normalizes command output with strip() for human-facing callers. A patch parser needs
+    # the final record terminator back, otherwise even a one-hunk diff is reported as corrupt.
+    patch += "\n"
+    ok, detail = _git_input(["apply", "--check", "-"], local_root, patch, timeout=180)
+    if not ok:
+        return {"ok": False, "applied": False, "error": ("handoff conflicts: " + detail)[:500]}
+    ok, detail = _git_input(["apply", "-"], local_root, patch, timeout=180)
+    if not ok:
+        return {"ok": False, "applied": False, "error": ("handoff apply failed: " + detail)[:500]}
+    ok, changed = _git(["status", "--porcelain"], local_root)
+    files = []
+    if ok:
+        for line in changed.splitlines():
+            part = line.strip().split(None, 1)
+            if len(part) == 2:
+                files.append(part[1].split(" -> ")[-1])
+    return {"ok": True, "applied": True, "files": files[:500], "error": ""}
 
 
 def find_prepared(cwd, session, label=""):

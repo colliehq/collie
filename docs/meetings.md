@@ -14,8 +14,10 @@ or platform-known IANA time zones are supported. Floating or unknown zones use t
 time, including its date-specific daylight-saving offset. Re-import an export to refresh its
 occurrences.
 
-Choose **Enable alerts** to grant this browser system-notification permission. While Meeting Notes
-is open, Collie checks locally for due events and can prompt:
+Choose **Enable alerts** to grant this browser system-notification permission. Enable **Background
+system reminders** when you also want the long-lived Collie host to check locally after the Meeting
+Notes page closes. The native notifier is opt-in, keeps a bounded local delivery receipt, and never
+starts recording. Collie can prompt:
 
 - before the event at the lead time you choose;
 - when the event starts;
@@ -24,9 +26,10 @@ is open, Collie checks locally for due events and can prompt:
 - when an opt-in AI note is ready for review.
 
 System notifications hide meeting titles by default; the private in-app prompt can show the title.
-You can snooze, mute the rest of the day, mute one recurring series, or turn reminders off. Browser
-alerts require the Meeting Notes page to remain open in this release. If notification permission is
-blocked, visible in-app prompts still work.
+You can snooze, mute the rest of the day, mute one recurring series, or turn reminders off. In-app
+actions require the Meeting Notes page; background OS delivery continues while the Collie host is
+running. If browser notification permission is blocked, visible in-app prompts and an enabled native
+notifier still work independently.
 
 Reminder settings include a local sensitive-term list. Matching titles, agendas, or locations are
 shown in the upcoming list but never produce a recording suggestion. The defaults cover common

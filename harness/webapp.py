@@ -1479,6 +1479,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("ambient.html", "text/html; charset=utf-8")
             if path == "/meetings":
                 return self._serve_static("meetings.html", "text/html; charset=utf-8")
+            if path == "/studio":
+                return self._serve_static("studio.html", "text/html; charset=utf-8")
             if path == "/remote":
                 return self._serve_static("remote.html", "text/html; charset=utf-8")
             if path == "/m":                          # mobile client (served to phones via the relay)
@@ -1506,6 +1508,52 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_live()
             if path == "/api/sessions":
                 return self._serve_sessions(urllib.parse.parse_qs(parsed.query))
+            if path in ("/api/session/timeline", "/api/plan/graph", "/api/workflows",
+                        "/api/workflow", "/api/migrations", "/api/annotations",
+                        "/api/meetings/reminders/native/status"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                query = urllib.parse.parse_qs(parsed.query)
+                try:
+                    if path == "/api/session/timeline":
+                        from . import sessions
+                        sid = str(query.get("session", [""])[0] or "").strip()
+                        if not sid:
+                            return self._send_json({"error": "session required"}, 400)
+                        return self._send_json(sessions.timeline(sid))
+                    if path == "/api/plan/graph":
+                        from .plantool import PlanArtifactStore
+                        sid = str(query.get("session", [""])[0] or "").strip()
+                        if not sid:
+                            return self._send_json({"error": "session required"}, 400)
+                        return self._send_json(PlanArtifactStore().graph(_web_plan_scope(sid)))
+                    if path == "/api/workflows":
+                        from .workflow_capture import WorkflowStore
+                        return self._send_json({"workflows": WorkflowStore().list()})
+                    if path == "/api/workflow":
+                        from .workflow_capture import WorkflowStore
+                        return self._send_json(WorkflowStore().get(
+                            str(query.get("id", [""])[0] or "")))
+                    if path == "/api/migrations":
+                        from .migration_center import MigrationCenter
+                        return self._send_json(MigrationCenter().snapshot())
+                    if path == "/api/annotations":
+                        from .annotations import AnnotationStore
+                        store = AnnotationStore()
+                        try:
+                            rows = store.list(kind=str(query.get("kind", [""])[0] or ""),
+                                artifact_id=str(query.get("artifact_id", [""])[0] or ""),
+                                status=str(query.get("status", ["open"])[0] or ""),
+                                limit=int(query.get("limit", ["200"])[0]))
+                            return self._send_json({"annotations": rows})
+                        finally:
+                            store.close()
+                    from .native_notifications import service
+                    return self._send_json(service().status())
+                except KeyError as exc:
+                    return self._send_json({"error": str(exc)}, 404)
+                except (TypeError, ValueError, RuntimeError) as exc:
+                    return self._send_json({"error": str(exc)}, 400)
             if path == "/api/checkpoints":
                 return self._serve_checkpoints()
             if path == "/api/worktrees":
@@ -2049,6 +2097,119 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/pair":
                 return self._serve_pair_exchange()
+            if (path.startswith("/api/workflows/") or path.startswith("/api/migrations/") or
+                    path.startswith("/api/annotations/") or
+                    path in ("/api/session/fork", "/api/session/handoff",
+                             "/api/plan/claim", "/api/plan/renew", "/api/plan/release") or
+                    path.startswith("/api/meetings/reminders/native/")):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(524288)
+                if not isinstance(body, dict):
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                try:
+                    if path.startswith("/api/workflows/"):
+                        from .workflow_capture import WorkflowStore
+                        store = WorkflowStore(); action = path.rsplit("/", 1)[-1]
+                        if action == "start":
+                            value = store.start(body.get("name"), description=body.get("description") or "",
+                                                session=body.get("session") or "")
+                        elif action == "event":
+                            value = store.event(str(body.get("id") or ""), body.get("kind"),
+                                                body.get("data") or {})
+                        elif action == "stop":
+                            value = store.stop(str(body.get("id") or ""))
+                        elif action == "evaluate":
+                            value = store.evaluate(str(body.get("id") or ""), body.get("cases") or [])
+                        elif action == "replay":
+                            value = store.replay_plan(str(body.get("id") or ""), body.get("variables") or {})
+                        elif action == "approve":
+                            from . import sessions
+                            saved = sessions.load(str(body.get("session") or "")) or {}
+                            cwd = os.path.abspath(str(body.get("cwd") or saved.get("cwd") or os.getcwd()))
+                            if not os.path.isdir(cwd):
+                                raise ValueError("skill project directory does not exist")
+                            value = store.approve(str(body.get("id") or ""), cwd=cwd,
+                                                  confirm=body.get("confirm") is True)
+                        else:
+                            return self._send_json({"error": "unknown workflow action"}, 404)
+                        return self._send_json({"ok": True, "result": value})
+                    if path.startswith("/api/migrations/"):
+                        from .migration_center import MigrationCenter
+                        center = MigrationCenter(); action = path.rsplit("/", 1)[-1]
+                        if action == "plan":
+                            value = center.plan(body.get("source"), kinds=body.get("kinds"),
+                                                keep_synced=body.get("keep_synced") is True)
+                        elif action == "apply":
+                            value = center.apply(str(body.get("id") or ""),
+                                confirm=body.get("confirm") is True,
+                                keep_synced=body.get("keep_synced"))
+                        elif action == "sync":
+                            value = center.sync(body.get("source"), confirm=body.get("confirm") is True)
+                        else:
+                            return self._send_json({"error": "unknown migration action"}, 404)
+                        return self._send_json({"ok": True, "result": value})
+                    if path.startswith("/api/annotations/"):
+                        from .annotations import AnnotationStore
+                        store = AnnotationStore(); action = path.rsplit("/", 1)[-1]
+                        try:
+                            if action == "create":
+                                value = store.create(body.get("kind"), body.get("artifact_id"),
+                                    body.get("anchor") or {}, body.get("body"), author="user")
+                            elif action == "resolve":
+                                value = store.resolve(str(body.get("id") or ""),
+                                    action=str(body.get("action") or "resolved"),
+                                    resolution=body.get("resolution") or "")
+                            elif action == "rework":
+                                value = store.rework(body.get("ids") or [])
+                            else:
+                                return self._send_json({"error": "unknown annotation action"}, 404)
+                            return self._send_json({"ok": True, "result": value})
+                        finally:
+                            store.close()
+                    if path in ("/api/session/fork", "/api/session/handoff"):
+                        from . import sessions
+                        sid = str(body.get("session") or "").strip()
+                        if path.endswith("/fork"):
+                            value = sessions.fork(sid, body.get("index"),
+                                child_id=str(body.get("child_id") or ""), title=body.get("title") or "")
+                        else:
+                            value = sessions.handoff(sid, body.get("target"),
+                                confirm=body.get("confirm") is True,
+                                remove_isolated=body.get("remove_isolated") is True)
+                        return self._send_json({"ok": True, "result": value})
+                    if path in ("/api/plan/claim", "/api/plan/renew", "/api/plan/release"):
+                        from .plantool import PlanArtifactStore
+                        store = PlanArtifactStore(); sid = str(body.get("session") or "").strip()
+                        if not sid:
+                            raise ValueError("session required")
+                        scope = _web_plan_scope(sid)
+                        if path.endswith("/claim"):
+                            value = store.claim(scope, body.get("task_id"), body.get("owner"),
+                                lease_s=body.get("lease_s") or 300,
+                                expected_revision=body.get("revision"))
+                        elif path.endswith("/renew"):
+                            value = store.renew(scope, body.get("task_id"), body.get("claim_token"),
+                                                lease_s=body.get("lease_s") or 300)
+                        else:
+                            value = store.release(scope, body.get("task_id"), body.get("claim_token"),
+                                completed=body.get("completed") is True,
+                                evidence=body.get("evidence") or "")
+                        return self._send_json({"ok": True, "result": value})
+                    from .native_notifications import notify, service
+                    action = path.rsplit("/", 1)[-1]
+                    if action == "test":
+                        value = notify("Collie meeting reminders",
+                                       "Background notifications are working on this computer.")
+                    elif action == "tick":
+                        value = {"deliveries": service().tick(now=body.get("now"))}
+                    else:
+                        return self._send_json({"error": "unknown native reminder action"}, 404)
+                    return self._send_json({"ok": bool(value.get("ok", True)), "result": value})
+                except KeyError as exc:
+                    return self._send_json({"error": str(exc)}, 404)
+                except (TypeError, ValueError, RuntimeError) as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path == "/api/run/cancel":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -3897,6 +4058,13 @@ class Handler(BaseHTTPRequestHandler):
             # A run belongs to the server, not the initiating socket. Every lifecycle path uses this
             # guarded writer, including pack, so closing a window never strands a running registry row.
             try:
+                from .workflow_capture import WorkflowStore
+                WorkflowStore().capture_session_event(sid, kind, data)
+            except Exception:
+                # Recording is an observability layer. A damaged draft must be visible in Studio,
+                # but must never interrupt the workflow it was trying to observe.
+                pass
+            try:
                 self._sse(kind, data)
             except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
                 pass
@@ -4574,6 +4742,11 @@ def bind_server(port=8787):
     for cand in range(port, port + 12):
         try:
             httpd = ThreadingHTTPServer(("127.0.0.1", cand), Handler)
+            try:
+                from .native_notifications import ensure_started
+                ensure_started()
+            except Exception:
+                pass
             return httpd, cand
         except OSError as e:
             if e.errno in (98, 48, 10048):     # in use: Linux 98 / macOS 48 / Windows 10048
@@ -4641,6 +4814,11 @@ def main(argv=None, on_bound=None):
               "Open http://127.0.0.1:%d/ , or pass --port <free port>." % (requested, requested + 11, requested))
         return 1
     start_mission_ticker()
+    try:
+        from .native_notifications import ensure_started
+        ensure_started()
+    except Exception as exc:
+        print("collie meeting reminders: background service unavailable: %s" % exc, flush=True)
     # a nicer local URL than a bare loopback IP: browsers resolve any *.localhost name to the
     # loopback address per RFC 6761 (zero setup, no /etc/hosts), so collie.localhost:PORT works
     # out of the box while the server still binds 127.0.0.1. VS Code parses the 127.0.0.1 line below.

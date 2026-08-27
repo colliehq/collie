@@ -254,6 +254,12 @@ should always print nothing.
 | `SqliteMemory` | CORE + evidence-gated claims + FTS5 + cosine, hybrid RRF + optional rerank |
 | `ContextComposer` | STABLE/CONTEXT/VOLATILE + auto-prefetch · a ~1K-token fixed prefix (kept deliberately lean) |
 
+The local **Studio** turns repeated runs into evaluated, explicitly approved Skills; imports local
+Claude/Cursor/Codex/Pi/Hermes setup through a digest-pinned no-overwrite migration plan; coordinates
+dependency-ready tasks with renewable file leases; anchors review comments to exact artifacts; and
+forks or hands sessions between the local checkout and isolated Git worktrees. Meeting reminders can
+also use an opt-in native background notifier while the Collie host is running.
+
 **`code_search`** extracts the identifiers from a natural-language query and greps the repo (ripgrep,
 else grep), ranking files by how many of your terms each contains — so the agent reasons about *where*
 to edit instead of grepping blind, with no model and no index to go stale. **`edit_file`** is

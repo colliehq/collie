@@ -1141,7 +1141,7 @@
   .handoff-field input:focus, .handoff-field textarea:focus, .handoff-todo input:focus,
   .handoff-todo select:focus { border-color: var(--pine); }
   .handoff-todos { display: grid; gap: 6px; }
-  .handoff-todo { display: grid; grid-template-columns: 104px 1fr auto; gap: 6px; align-items: center; }
+  .handoff-todo { display: grid; grid-template-columns: 104px minmax(160px,1fr) 90px minmax(100px,.7fr) minmax(120px,.8fr) auto; gap: 6px; align-items: center; }
   .handoff-todo button, .handoff-add, .handoff-primary { border: 1px solid var(--line); border-radius: 8px;
     background: var(--surface-2); color: var(--muted); padding: 7px 10px; cursor: pointer; font: 12px var(--sans); }
   .handoff-primary { background: var(--pine); border-color: var(--pine); color: white; font-weight: 650; }
@@ -1154,7 +1154,7 @@
   .review-loc { color: var(--ink); font: 11.5px var(--mono); }
   .review-msg { margin-top: 3px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
   .review-severity { margin-left: 6px; text-transform: uppercase; color: var(--coral); font-size: 9.5px; }
-  @media (max-width: 620px) { .handoff-card { margin-left: 0; } .handoff-todo { grid-template-columns: 1fr; } }
+  @media (max-width: 820px) { .handoff-card { margin-left: 0; } .handoff-todo { grid-template-columns: 1fr 1fr; } }
   .pk-applied { color: var(--meadow); font-weight: 600; }
   .pk-applyfail { color: var(--coral); font-weight: 600; }
   .pk-noapply { color: var(--muted); }
@@ -1735,6 +1735,9 @@
           <button class="tbtn" id="meetingBtn" title="Meeting notes" aria-label="Meeting notes">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10a2 2 0 0 1 2 2v14l-3-2-3 2-3-2-3 2V5a2 2 0 0 1 2-2z"/><path d="M9 8h6M9 12h4"/></svg>
           </button>
+          <a class="tbtn" id="studioBtn" href="/studio" title="Studio — workflows, migrations and review" aria-label="Open Studio">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h3M14 13h2"/></svg>
+          </a>
           <button class="tbtn" id="recordBtn" title="Screen record (webcam bubble + mic)" aria-label="Screen record" data-i18n-title="Screen record (webcam bubble + mic)" data-i18n-aria-label="Screen record">
             <svg id="recordIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/></svg>
           </button>
@@ -4376,8 +4379,13 @@
       t = t || {}; var row = document.createElement("div"); row.className = "handoff-todo";
       row.dataset.id = t.id || "";
       row.innerHTML = '<select aria-label="Todo status"><option value="pending">Pending</option><option value="in_progress">In progress</option><option value="completed">Completed</option><option value="blocked">Blocked</option></select>' +
-        '<input aria-label="Todo" placeholder="Task"><button type="button" aria-label="Remove todo">×</button>';
-      row.querySelector("select").value = t.status || "pending"; row.querySelector("input").value = t.content || "";
+        '<input aria-label="Todo" data-task="content" placeholder="Task"><input aria-label="Owner" data-task="owner" placeholder="Owner">' +
+        '<input aria-label="Dependencies" data-task="depends" placeholder="Depends on IDs"><input aria-label="Files" data-task="files" placeholder="Owned files">' +
+        '<button type="button" aria-label="Remove todo">×</button>';
+      row.querySelector("select").value = t.status || "pending"; row.querySelector('[data-task="content"]').value = t.content || "";
+      row.querySelector('[data-task="owner"]').value = t.owner || "main";
+      row.querySelector('[data-task="depends"]').value = (t.depends_on || []).join(", ");
+      row.querySelector('[data-task="files"]').value = (t.files || []).join(", ");
       row.querySelector("button").onclick = function () { row.remove(); }; todos.appendChild(row);
     }
     (a.todos || []).forEach(addTodo); body.querySelector(".handoff-add").onclick = function () { addTodo({}); };
@@ -4387,8 +4395,10 @@
         title: body.querySelector('[data-plan="title"]').value.trim(), files: list("files"), risks: list("risks"),
         checks: list("checks").map(function (command) { return { command: command, status: "pending" }; }),
         todos: Array.prototype.map.call(todos.querySelectorAll(".handoff-todo"), function (row, i) {
-          return { id: row.dataset.id || ("web-task-" + (i + 1)), content: row.querySelector("input").value.trim(),
-                   status: row.querySelector("select").value };
+          function csv(name){return row.querySelector('[data-task="'+name+'"]').value.split(",").map(function(x){return x.trim()}).filter(Boolean)}
+          return { id: row.dataset.id || ("web-task-" + (i + 1)), content: row.querySelector('[data-task="content"]').value.trim(),
+                   status: row.querySelector("select").value, owner: row.querySelector('[data-task="owner"]').value.trim()||"main",
+                   depends_on: csv("depends"), files: csv("files") };
         }).filter(function (x) { return x.content; }) };
     }
     var approve = body.querySelector(".handoff-primary"), status = body.querySelector(".handoff-status");
