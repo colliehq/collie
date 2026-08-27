@@ -59,6 +59,18 @@ def test_every_run_surface_uses_the_server_cancel_contract():
         assert "/api/runs" in page, name
 
 
+def test_escape_requests_the_same_server_side_cancellation_as_stop():
+    desktop = read("harness/webui/index.html")
+    mobile = read("harness/webui/mobile.html")
+    ambient = read("harness/webui/ambient.html")
+    wallpaper = read("harness/webui/wallpaper.html")
+
+    assert 'e.key === "Escape" && running' in desktop and "cancelRun()" in desktop
+    assert 'e.key!=="Escape"' in mobile and "stopRun()" in mobile
+    assert 'e.key === "Escape"' in ambient and "if (running) stopRun()" in ambient
+    assert 'e.key==="Escape"&&running' in wallpaper and "stopRun()" in wallpaper
+
+
 def test_mobile_steer_and_zoom_contracts():
     page = read("harness/webui/mobile.html")
     assert "maximum-scale" not in page

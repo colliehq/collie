@@ -877,7 +877,13 @@
   function setRunning(on){ opsLocalRunning=!!on;if(!on){running=null;runId="";opsLocalNeeds=false;}paintOps();composer.classList.toggle("running",!!on);
     send.title=on?"Stop run":"Send";send.setAttribute("aria-label",on?"Stop run":"Send"); }
   input.addEventListener("input", autosize);
-  input.addEventListener("keydown", function(e){ if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); doSend(); } else if (e.key === "Escape"){ hideReply(); } });
+  input.addEventListener("keydown", function(e){
+    if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); doSend(); }
+    else if (e.key === "Escape"){
+      e.preventDefault();
+      if (running) stopRun(); else hideReply();
+    }
+  });
   send.onclick = function(){ if (running) stopRun(); else doSend(); };
   $("replyX").onclick = function(){ hideReply(); };
   var cancelling = false, cancelWatch = 0;

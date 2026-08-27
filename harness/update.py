@@ -29,13 +29,27 @@ from . import plat
 from . import __version__
 
 REPO = os.environ.get("COLLIE_UPDATE_REPO", "colliehq/collie")
-API_LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
-API_RELEASES = "https://api.github.com/repos/%s/releases?per_page=30" % REPO
+API_LATEST = (os.environ.get("COLLIE_UPDATE_API_LATEST") or
+              "https://api.github.com/repos/%s/releases/latest" % REPO)
+API_RELEASES = (os.environ.get("COLLIE_UPDATE_API_RELEASES") or
+                "https://api.github.com/repos/%s/releases?per_page=30" % REPO)
 # Backwards-compatible name used by older embedders/tests.
 API = API_LATEST
 TEAM_ID = "58Y98W3QQK"          # the Developer ID the macOS builds are signed with
 WINDOWS_PUBLISHER_CN = "Daming Wu"  # Azure Artifact Signing identity used by release.yml
-APP_PATH = "/Applications/Collie.app"
+
+
+def _bundle_name(value=None):
+    """The signed app name an updater may replace, never an arbitrary path."""
+    name = str(value if value is not None else
+               os.environ.get("COLLIE_UPDATE_APP_BUNDLE_NAME", "Collie")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}", name):
+        raise ValueError("invalid macOS update bundle name")
+    return name
+
+
+APP_BUNDLE_NAME = _bundle_name()
+APP_PATH = os.path.join("/Applications", APP_BUNDLE_NAME + ".app")
 UPDATE_JOURNAL_SCHEMA = 1
 
 
@@ -474,7 +488,7 @@ def _restart_slack_agents(labels):
 
 
 def apply_macos(dmg, on_note=print):
-    """Replace /Applications/Collie.app from a verified dmg. Returns (ok, detail)."""
+    """Replace the configured /Applications app from a verified dmg. Returns (ok, detail)."""
     ok, why = verify_macos(dmg)
     on_note("  verify: %s" % why)
     if not ok:
@@ -487,9 +501,9 @@ def apply_macos(dmg, on_note=print):
                            capture_output=True, text=True, timeout=180)
         if r.returncode != 0:
             return False, "could not mount the disk image: " + (r.stderr or "").strip()[:160]
-        src = os.path.join(mnt, "Collie.app")
+        src = os.path.join(mnt, APP_BUNDLE_NAME + ".app")
         if not os.path.isdir(src):
-            return False, "no Collie.app inside the disk image"
+            return False, "no %s.app inside the disk image" % APP_BUNDLE_NAME
 
         # Check the app itself, not just its container: notarisation of the dmg says nothing about
         # what someone may have put inside a repackaged one.

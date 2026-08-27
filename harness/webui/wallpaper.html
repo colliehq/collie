@@ -213,7 +213,7 @@
   function addMsg(cls,txt){ const d=document.createElement("div"); d.className="msg "+cls; d.textContent=txt||""; log.appendChild(d); log.scrollTop=log.scrollHeight; return d; }
   function autninput(){ input.style.height="auto"; input.style.height=Math.min(120,input.scrollHeight)+"px"; }
   input.addEventListener("input",autninput);
-  input.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); doSend(); } });
+  input.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); doSend(); } else if(e.key==="Escape"&&running){ e.preventDefault(); stopRun(); } });
   send.onclick=()=>{ if(running) stopRun(); else doSend(); };
   newc.onclick=async()=>{ if(running&&!(await stopRun()))return; sid=""; log.innerHTML=""; input.value=""; autninput(); input.focus(); };
   // The desktop shell often eats the FIRST click on a behind-icons wallpaper (the double-click the user

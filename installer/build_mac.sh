@@ -143,6 +143,9 @@ if [ "$BUNDLE_PY" = "1" ]; then
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export COLLIE_BUNDLED=1
 export PYTHONDONTWRITEBYTECODE=1
+export COLLIE_UPDATE_API_LATEST="https://relay.collie.run/downloads/e51536720b884ed1a48bd00c62e3a299/latest.json"
+export COLLIE_UPDATE_API_RELEASES="https://relay.collie.run/downloads/e51536720b884ed1a48bd00c62e3a299/releases.json"
+export COLLIE_UPDATE_APP_BUNDLE_NAME="Collie Relay"
 PY="$HERE/Resources/python/bin/Collie"
 [ -x "$PY" ] || PY="$HERE/Resources/python/bin/python3"
 

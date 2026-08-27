@@ -7497,6 +7497,7 @@
       }
       if (e.key === "Escape") { e.preventDefault(); slashMenu.hidden = true; return; }
     }
+    if (e.key === "Escape" && running) { e.preventDefault(); cancelRun(); return; }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
 

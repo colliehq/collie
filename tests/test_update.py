@@ -57,6 +57,16 @@ def test_install_kind_detects_the_bundle():
             os.environ["COLLIE_BUNDLED"] = old
 
 
+def test_macos_update_bundle_name_is_configurable_but_never_a_path():
+    assert up._bundle_name("Collie Relay") == "Collie Relay"
+    for unsafe in ("../Collie", "/Applications/Other", "Collie/Other", ""):
+        try:
+            up._bundle_name(unsafe)
+        except ValueError:
+            continue
+        raise AssertionError("unsafe bundle name was accepted: %r" % unsafe)
+
+
 def _mkdmg(path, volname="Collie"):
     r = subprocess.run(["hdiutil", "create", "-size", "2m", "-fs", "HFS+",
                         "-volname", volname, "-quiet", path],

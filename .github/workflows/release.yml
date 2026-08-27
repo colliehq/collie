@@ -310,7 +310,7 @@ jobs:
           printf '%s%s%s%s' "$RELAY_WHEEL_B64_1" "$RELAY_WHEEL_B64_2" \
               "$RELAY_WHEEL_B64_3" "$RELAY_WHEEL_B64_4" \
               | LC_ALL=C tr -cd 'A-Za-z0-9+/=' | base64 --decode > "$RELAY_WHEEL"
-          echo "015fd7e55bb5b0738b3c79a20ad4db440311ae23bbf05d0ddbfab8c80cb25e27  $RELAY_WHEEL" \
+          echo "7e262cb414b87df6ea35dd63cfaab92a5f7ffe25f4441cc2f529e6c3e6882a3b  $RELAY_WHEEL" \
               | shasum -a 256 -c -
 
           export COLLIE_RELAY_WHEEL="$RELAY_WHEEL"
@@ -399,7 +399,7 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/windows-installer/Collie-Setup.exe
-            artifacts/macos-dmg-arm64/*.dmg
+            artifacts/macos-relay-dmg-arm64/*.dmg
             artifacts/vscode-extension/Collie-VSCode.vsix
             artifacts/browser-extension/collie-browser-bridge-*.zip
             artifacts/python-dist/*
