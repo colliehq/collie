@@ -69,6 +69,7 @@ def report(state_root: str | None = None, *, probe_services: bool = True,
            now: float | None = None) -> dict:
     """Return one content-free version/health matrix and actionable check list."""
     from .controlplane import health, state_dir
+    from .supervisor import remote_notifications_enabled
     from .update import install_kind, rollback_status
 
     now = float(time.time() if now is None else now)
@@ -114,8 +115,9 @@ def report(state_root: str | None = None, *, probe_services: bool = True,
                              "The bridge is running but no recent extension poll was observed."))
 
     health_report = health(root, probe_services=probe_services)
+    notifications_enabled = remote_notifications_enabled()
     queue = ((health_report.get("queues") or {}).get("notifications") or {})
-    if queue.get("stale"):
+    if notifications_enabled and queue.get("stale"):
         checks.append(_check(
             "notification-backlog", "needs_you", "Notifications are not draining",
             "%d notifications have waited for about %d minutes." % (
@@ -123,7 +125,8 @@ def report(state_root: str | None = None, *, probe_services: bool = True,
                 int(float(queue.get("oldest_pending_age_s") or 0) / 60)),
             action="test_notifications"))
     for name, row in (health_report.get("heartbeats") or {}).items():
-        if name in ("notification-pump", "remote") and not row.get("fresh"):
+        if (notifications_enabled and name in ("notification-pump", "remote") and
+                not row.get("fresh")):
             checks.append(_check(
                 "stale-heartbeat:" + name, "warning", "%s heartbeat is stale" % name,
                 "The last heartbeat was about %d seconds ago." % int(row.get("age_s") or 0),

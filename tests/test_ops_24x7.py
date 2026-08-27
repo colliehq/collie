@@ -81,6 +81,70 @@ def test_notification_health_uses_backlog_age_and_dead_retry_is_explicit(tmp_pat
         assert dict(row) == {"state": "pending", "attempts": 0, "last_error": ""}
 
 
+def test_unresolved_dedupe_key_coalesces_for_entire_incident(tmp_path):
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        first = store.enqueue(
+            "worker_dead", "old title", "old detail", dedupe_key="worker-dead:web",
+            cooldown_s=1, now=10)
+        second = store.enqueue(
+            "worker_dead", "current title", "current detail", severity="error",
+            payload={"worker": "web"}, dedupe_key="worker-dead:web",
+            cooldown_s=1, now=10_000)
+        assert second == first
+        row = store.db.execute(
+            "SELECT count(*) AS n,title,body,severity,payload_json FROM notifications "
+            "WHERE dedupe_key='worker-dead:web'").fetchone()
+        assert row["n"] == 1
+        assert (row["title"], row["body"], row["severity"]) == (
+            "current title", "current detail", "error")
+        assert json.loads(row["payload_json"]) == {"worker": "web"}
+
+
+def test_health_alerts_never_alert_about_their_own_backlog(tmp_path):
+    report = {
+        "workers": {"web": {"fresh": False, "state": "dead"}},
+        "services": {}, "credentials": [],
+        "queues": {"slack": {}, "notifications": {
+            "stale": True, "live": 238, "dead": 5,
+            "oldest_pending_age_s": 86_400,
+        }},
+    }
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        enqueue_health_alerts(store, report, now=10)
+        enqueue_health_alerts(store, report, now=100_000)
+        rows = list(store.db.execute(
+            "SELECT kind,dedupe_key FROM notifications ORDER BY created_at"))
+        assert [row["kind"] for row in rows] == ["worker_dead"]
+        assert rows[0]["dedupe_key"] == "worker-dead:web"
+
+
+def test_notification_maintenance_dismisses_disabled_health_and_bounds_history(tmp_path):
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        for now in (20, 30, 40):
+            nid = store.enqueue(
+                "completion", "done", "detail", dedupe_key="same-completion",
+                cooldown_s=0, now=now)
+            assert store.claim(limit=1, now=now)[0]["notification_id"] == nid
+            assert store.delivered(nid, now=now)
+        store.enqueue(
+            "worker_dead", "health", "detail", dedupe_key="worker-dead:web", now=41)
+        explicit = store.enqueue(
+            "automation_needs_you", "explicit", "detail",
+            dedupe_key="automation:run-1:needs_you", now=42)
+
+        result = store.maintain_notifications(
+            delivery_enabled=False, now=50, delivered_retention_s=1_000,
+            keep_delivered=50)
+        assert result["health_dismissed"] == 1
+        assert result["delivered_pruned"] == 2
+        assert store.db.execute(
+            "SELECT count(*) FROM notifications WHERE state='delivered'").fetchone()[0] == 1
+        pending = list(store.db.execute(
+            "SELECT notification_id,kind FROM notifications WHERE state='pending'"))
+        assert [(row["notification_id"], row["kind"]) for row in pending] == [
+            (explicit, "automation_needs_you")]
+
+
 def test_stale_backlog_and_pump_make_health_degraded(tmp_path):
     with OpsStore(str(tmp_path / "ops.db")) as store:
         store.enqueue("notice", "old", "private body", now=10)

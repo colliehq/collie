@@ -76,6 +76,7 @@ def test_recovery_center_combines_work_and_stalled_delivery_without_private_payl
     monkeypatch.setattr("harness.doctor.shutil.which", lambda _: "collie")
     monkeypatch.setattr("harness.supervisor.query_windows",
                         lambda **_: {"installed": False, "mode": "none"})
+    monkeypatch.setattr("harness.supervisor.remote_notifications_enabled", lambda: True)
     sessions.checkpoint("uncertain", [{"role": "user", "content": "private publish text"}],
                         run_id="r1", state="external_action",
                         detail={"tool_name": "publish", "tool_call_id": "c1"})

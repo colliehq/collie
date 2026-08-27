@@ -88,6 +88,15 @@ def state_dir(path: str | None = None) -> str:
                            or os.path.expanduser("~/.collie"))
 
 
+def remote_notifications_enabled() -> bool:
+    """Whether the only current notification transport has an intended recipient."""
+    try:
+        from . import settings
+        return settings.get("REMOTE", "off") == "on"
+    except Exception:
+        return False
+
+
 def config_path(root: str | None = None) -> str:
     return os.path.join(state_dir(root), "supervisor.json")
 
@@ -588,6 +597,8 @@ class Supervisor:
         self.stop_event = threading.Event()
         self._last_mono = self.monotonic()
         self._last_alert = 0.0
+        self._last_notification_maintenance = 0.0
+        self._notification_delivery_enabled = None
         self.lock = None
 
     def request_stop(self, *_):
@@ -606,10 +617,21 @@ class Supervisor:
         self.store.beat("supervisor", "running", {"workers": states, "sleep_gap_s": gap},
                         ttl=max(10.0, self.poll_s * 3), now=now)
         if now - self._last_alert >= self.alert_s:
+            delivery_enabled = remote_notifications_enabled()
+            if (delivery_enabled != self._notification_delivery_enabled or
+                    now - self._last_notification_maintenance >= 6 * 60 * 60):
+                result = self.store.maintain_notifications(
+                    delivery_enabled=delivery_enabled, now=now)
+                self.store.beat(
+                    "notification-maintenance", "ok", result,
+                    ttl=7 * 60 * 60, now=now)
+                self._notification_delivery_enabled = delivery_enabled
+                self._last_notification_maintenance = now
             report = aggregate_health(
                 self.store, desired_workers=list(states), state_dir=self.root,
                 now=now, probe_services=False)
-            enqueue_health_alerts(self.store, report, now=now)
+            if delivery_enabled:
+                enqueue_health_alerts(self.store, report, now=now)
             self._last_alert = now
         return states
 

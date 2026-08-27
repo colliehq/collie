@@ -147,6 +147,36 @@ def test_supervisor_detects_sleep_resume_and_wakes_all_workers(tmp_path):
         assert store.heartbeats(now=200)["power"]["state"] == "resumed"
 
 
+def test_supervisor_only_queues_health_alerts_when_remote_delivery_is_on(tmp_path, monkeypatch):
+    class Runtime:
+        def __init__(self, spec, store, root): self.spec = spec
+        def step(self, now): return "failed"
+        def wake(self, now): pass
+        def close(self): pass
+
+    config = {
+        "schema": 1, "state_dir": str(tmp_path), "poll_interval_s": 5,
+        "alert_interval_s": 5,
+        "workers": [supervisor.WorkerSpec("web", ["python"]).as_dict()],
+    }
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.enqueue(
+            "worker_dead", "legacy", "legacy", dedupe_key="worker-dead:web", now=1)
+        monkeypatch.setattr(supervisor, "remote_notifications_enabled", lambda: False)
+        off = supervisor.Supervisor(config, store=store, runtime_factory=Runtime,
+                                    clock=lambda: 100, monotonic=lambda: 10)
+        off.step(now=100, mono=10)
+        assert store.notification_stats().get("pending", 0) == 0
+
+        monkeypatch.setattr(supervisor, "remote_notifications_enabled", lambda: True)
+        on = supervisor.Supervisor(config, store=store, runtime_factory=Runtime,
+                                   clock=lambda: 200, monotonic=lambda: 20)
+        on.step(now=200, mono=20)
+        assert store.db.execute(
+            "SELECT count(*) FROM notifications WHERE kind='worker_dead' AND state='pending'"
+        ).fetchone()[0] == 1
+
+
 def test_default_config_never_persists_secret_environment(tmp_path):
     spec = supervisor.WorkerSpec.from_dict({
         "name": "x", "argv": ["python"],

@@ -31,6 +31,17 @@ from typing import Callable
 
 DEFAULT_STATE_DIR = os.path.expanduser("~/.collie")
 DEFAULT_DB = os.path.join(DEFAULT_STATE_DIR, "ops.db")
+HEALTH_NOTIFICATION_KINDS = frozenset({
+    "browser_disconnected",
+    "credential_expiry",
+    "dead_letters",
+    "notification_backlog",  # legacy self-referential alert, removed by maintenance
+    "notification_dead_letters",
+    "queue_backlog",
+    "service_down",
+    "worker_dead",
+})
+HEALTH_ALERT_COOLDOWN_S = 24 * 60 * 60
 
 
 class OutboxFull(RuntimeError):
@@ -185,7 +196,7 @@ class OpsStore:
     def enqueue(self, kind: str, title: str, body: str, *, severity: str = "warning",
                 payload: dict | None = None, dedupe_key: str = "", cooldown_s: float = 300,
                 now: float | None = None) -> str:
-        """Durably enqueue an alert, or return the recent duplicate's id.
+        """Durably enqueue an alert, or coalesce it with the unresolved duplicate.
 
         Once the live queue is full the item is recorded directly as a dead letter.  Once *that*
         bounded ledger is full, :class:`OutboxFull` is raised; overflow is never reported as sent.
@@ -201,8 +212,26 @@ class OpsStore:
             try:
                 if dedupe_key:
                     row = self.db.execute(
-                        "SELECT notification_id,updated_at FROM notifications WHERE dedupe_key=? "
-                        "ORDER BY updated_at DESC LIMIT 1", (dedupe_key,)).fetchone()
+                        "SELECT notification_id,state,updated_at FROM notifications "
+                        "WHERE dedupe_key=? "
+                        "ORDER BY CASE state WHEN 'pending' THEN 0 WHEN 'delivering' THEN 1 "
+                        "WHEN 'dead' THEN 2 ELSE 3 END,updated_at DESC LIMIT 1",
+                        (dedupe_key,)).fetchone()
+                    # Cooldowns suppress repeat reminders after delivery.  An unresolved incident
+                    # is different: it must remain one item for its entire lifetime, even after the
+                    # cooldown expires.  Refresh pending display data in place so a local UI sees
+                    # the current facts without turning every supervisor poll into a new alert.
+                    if row and row["state"] == "pending":
+                        self.db.execute(
+                            "UPDATE notifications SET kind=?,severity=?,title=?,body=?,"
+                            "payload_json=?,updated_at=? WHERE notification_id=? AND state='pending'",
+                            (str(kind)[:80], str(severity)[:20], str(title)[:160],
+                             str(body)[:1000], payload_json, now, row["notification_id"]))
+                        self.db.commit()
+                        return str(row["notification_id"])
+                    if row and row["state"] in ("delivering", "dead"):
+                        self.db.commit()
+                        return str(row["notification_id"])
                     if row and now - float(row["updated_at"]) < cooldown_s:
                         self.db.commit()
                         return str(row["notification_id"])
@@ -413,6 +442,96 @@ class OpsStore:
             self.db.commit()
             return n
 
+    def maintain_notifications(self, *, delivery_enabled: bool,
+                               now: float | None = None,
+                               delivered_retention_s: float = 30 * 24 * 60 * 60,
+                               dead_retention_s: float = 90 * 24 * 60 * 60,
+                               keep_delivered: int = 50) -> dict[str, int]:
+        """Keep the outbox quiet and bounded without discarding user-requested notices.
+
+        Health alerts are derived from current local state.  When remote delivery is disabled they
+        have no recipient and are safe to dismiss; doctor/control-center projections continue to
+        expose the underlying health facts.  Automation and explicit test notifications are never
+        removed here.  Legacy duplicate pending rows are coalesced for every non-empty dedupe key.
+        """
+        if not isinstance(delivery_enabled, bool):
+            raise ValueError("delivery_enabled must be boolean")
+        now = _finite(time.time() if now is None else now, "notification maintenance time")
+        delivered_retention_s = _finite(
+            delivered_retention_s, "delivered retention", minimum=0)
+        dead_retention_s = _finite(dead_retention_s, "dead retention", minimum=0)
+        if (isinstance(keep_delivered, bool) or not isinstance(keep_delivered, int) or
+                keep_delivered < 0):
+            raise ValueError("keep_delivered must be a non-negative integer")
+        result = {"health_dismissed": 0, "duplicates_removed": 0,
+                  "delivered_pruned": 0, "dead_pruned": 0}
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                # This alert was historically inserted into the queue whose inability to drain it
+                # described, which amplified every outage.  It is local-health information only.
+                result["health_dismissed"] += int(self.db.execute(
+                    "DELETE FROM notifications WHERE state='pending' "
+                    "AND kind='notification_backlog'").rowcount)
+                if not delivery_enabled:
+                    placeholders = ",".join("?" for _ in HEALTH_NOTIFICATION_KINDS)
+                    result["health_dismissed"] += int(self.db.execute(
+                        "DELETE FROM notifications WHERE state='pending' AND kind IN (%s)" %
+                        placeholders, tuple(sorted(HEALTH_NOTIFICATION_KINDS))).rowcount)
+
+                keys = self.db.execute(
+                    "SELECT dedupe_key FROM notifications "
+                    "WHERE state IN ('pending','delivering') AND dedupe_key<>'' "
+                    "GROUP BY dedupe_key HAVING count(*)>1").fetchall()
+                for key_row in keys:
+                    key = key_row["dedupe_key"]
+                    keep = self.db.execute(
+                        "SELECT notification_id FROM notifications WHERE dedupe_key=? "
+                        "AND state IN ('delivering','pending') "
+                        "ORDER BY CASE state WHEN 'delivering' THEN 0 ELSE 1 END,"
+                        "updated_at DESC LIMIT 1", (key,)).fetchone()
+                    if keep:
+                        result["duplicates_removed"] += int(self.db.execute(
+                            "DELETE FROM notifications WHERE dedupe_key=? AND state='pending' "
+                            "AND notification_id<>?", (key, keep["notification_id"])).rowcount)
+
+                # History is a concise record of distinct incidents, not a poll-by-poll audit log.
+                # Keep the latest delivery for each stable incident identity.
+                delivered_keys = self.db.execute(
+                    "SELECT dedupe_key FROM notifications WHERE state='delivered' "
+                    "AND dedupe_key<>'' GROUP BY dedupe_key HAVING count(*)>1").fetchall()
+                for key_row in delivered_keys:
+                    key = key_row["dedupe_key"]
+                    keep = self.db.execute(
+                        "SELECT notification_id FROM notifications WHERE dedupe_key=? "
+                        "AND state='delivered' ORDER BY delivered_at DESC,updated_at DESC LIMIT 1",
+                        (key,)).fetchone()
+                    if keep:
+                        result["delivered_pruned"] += int(self.db.execute(
+                            "DELETE FROM notifications WHERE dedupe_key=? AND state='delivered' "
+                            "AND notification_id<>?", (key, keep["notification_id"])).rowcount)
+
+                result["delivered_pruned"] += int(self.db.execute(
+                    "DELETE FROM notifications WHERE state='delivered' AND delivered_at<?",
+                    (now - delivered_retention_s,)).rowcount)
+                if keep_delivered == 0:
+                    result["delivered_pruned"] += int(self.db.execute(
+                        "DELETE FROM notifications WHERE state='delivered'").rowcount)
+                else:
+                    result["delivered_pruned"] += int(self.db.execute(
+                        "DELETE FROM notifications WHERE state='delivered' AND notification_id "
+                        "NOT IN (SELECT notification_id FROM notifications WHERE state='delivered' "
+                        "ORDER BY delivered_at DESC,updated_at DESC LIMIT ?)",
+                        (keep_delivered,)).rowcount)
+                result["dead_pruned"] += int(self.db.execute(
+                    "DELETE FROM notifications WHERE state='dead' AND updated_at<?",
+                    (now - dead_retention_s,)).rowcount)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+        return result
+
 
 def heartbeat(name: str, state: str = "ok", detail: dict | None = None, *,
               ttl: float = 45.0, db_path: str | None = None):
@@ -583,10 +702,11 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
 
 def enqueue_health_alerts(store: OpsStore, report: dict, *, backlog_warning: int = 25,
                           credential_warning_s: float = 3600, now: float | None = None) -> list[str]:
-    """Turn health facts into deduplicated durable notifications."""
+    """Turn health facts into low-frequency, deduplicated durable notifications."""
     now = float(time.time() if now is None else now)
     queued = []
     def add(*args, **kwargs):
+        kwargs.setdefault("cooldown_s", HEALTH_ALERT_COOLDOWN_S)
         try:
             queued.append(store.enqueue(*args, **kwargs))
         except OutboxFull:
@@ -625,23 +745,8 @@ def enqueue_health_alerts(store: OpsStore, report: dict, *, backlog_warning: int
             "%d Slack tasks need manual review" % int(slack["dead_letters"]),
             severity="error", payload={"queue": "slack"},
             dedupe_key="dead-letters:slack", now=now)
-    notification_dead = int(((report.get("queues") or {}).get("notifications") or {}).get(
-        "dead", 0) or 0)
-    if notification_dead:
-        add("notification_dead_letters", "Collie notifications are not being delivered",
-            "%d notifications exhausted their retries" % notification_dead,
-            severity="error", payload={"queue": "notifications"},
-            dedupe_key="dead-letters:notifications", now=now)
-    notification_queue = ((report.get("queues") or {}).get("notifications") or {})
-    if notification_queue.get("stale"):
-        add(
-            "notification_backlog", "Collie notifications are backing up",
-            "%d notifications have waited for about %d minutes" % (
-                int(notification_queue.get("live") or 0),
-                int(float(notification_queue.get("oldest_pending_age_s") or 0) / 60)),
-            severity="warning", payload={"queue": "notifications",
-                                          "live": int(notification_queue.get("live") or 0)},
-            dedupe_key="queue-backlog:notifications", now=now)
+    # Notification delivery failures stay in the local doctor/control-center view.  Sending an
+    # alert about a broken notification transport through that same transport is self-referential.
     for cred in report.get("credentials") or []:
         remaining = cred.get("seconds_remaining")
         if cred.get("state") in ("expired", "missing", "expiring") or (
@@ -654,8 +759,8 @@ def enqueue_health_alerts(store: OpsStore, report: dict, *, backlog_warning: int
                 "credential_expiry", "Collie credential needs attention", body,
                 severity="critical" if cred.get("state") == "expired" else "warning",
                 payload={"credential": cred["name"], "action": cred.get("action", "")},
-                dedupe_key="credential:" + cred["name"] + ":" + cred.get("state", ""),
-                cooldown_s=900, now=now)
+                dedupe_key="credential:" + cred["name"],
+                now=now)
     return queued
 
 

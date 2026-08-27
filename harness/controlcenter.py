@@ -27,6 +27,7 @@ def recovery_snapshot(path=None) -> dict:
     """Unify every decision/recovery lane with an explicit next action."""
     from .controlplane import health
     from .doctor import report as doctor_report
+    from .supervisor import remote_notifications_enabled
 
     root = _root(path)
     doctor = doctor_report(root)
@@ -61,7 +62,9 @@ def recovery_snapshot(path=None) -> dict:
         })
     queues = state.get("queues") or {}
     notification_queue = queues.get("notifications") or {}
-    if notification_queue.get("stale") or notification_queue.get("dead"):
+    notifications_enabled = remote_notifications_enabled()
+    if notifications_enabled and (notification_queue.get("stale") or
+                                  notification_queue.get("dead")):
         items.append({
             "id": "service:notifications", "kind": "notification", "identity": "notifications",
             "severity": "needs_you" if notification_queue.get("dead") else "warning",
@@ -72,7 +75,7 @@ def recovery_snapshot(path=None) -> dict:
             "actions": (["test_notifications"] +
                         (["retry_dead_notifications"] if notification_queue.get("dead") else [])),
         })
-    for name in ("notification-pump", "remote"):
+    for name in (("notification-pump", "remote") if notifications_enabled else ()):
         heartbeat = (state.get("heartbeats") or {}).get(name) or {}
         if heartbeat and not heartbeat.get("fresh"):
             items.append({
