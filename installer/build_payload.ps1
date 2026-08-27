@@ -182,6 +182,17 @@ Step "pip install collie-harness[local,remote,claude] from the repo"
 & (Join-Path $py "python.exe") -m pip install --upgrade --no-build-isolation --no-warn-script-location "$repo[local,remote,claude]"
 Assert-NativeExit "install Collie into payload" $LASTEXITCODE
 
+# distlib console launchers embed the absolute interpreter path that existed while pip built them.
+# The payload is staged under installer\payload\python and then relocated to
+# %LOCALAPPDATA%\Programs\Collie\python, so a copied Scripts\collie.exe would keep pointing back to
+# the maintainer's checkout.  The installed app intentionally launches every entry point through
+# the relocatable interpreter (`python[w].exe -m harness...`); remove the misleading, non-portable
+# console shim instead of shipping an executable that only happens to work on the build machine.
+$nonPortableCollieLauncher = Join-Path $py "Scripts\collie.exe"
+if (Test-Path -LiteralPath $nonPortableCollieLauncher) {
+  Remove-PayloadItem $nonPortableCollieLauncher
+}
+
 # 5) WebView2 Evergreen bootstrapper (tiny; installs the runtime only if the machine lacks it) ---
 $wv = Join-Path $payload "MicrosoftEdgeWebView2Setup.exe"
 if (-not (Test-Path $wv)) {
@@ -220,6 +231,9 @@ for rel in ("browser_ext/manifest.json", "webui/index.html"):
 for private in ("browser_ext/token.txt", "browser_ext/auth.js"):
     if (root / private).exists():
         raise SystemExit("private browser credential leaked into the payload: " + private)
+launcher = pathlib.Path(sys.executable).resolve().parent / "Scripts" / "collie.exe"
+if launcher.exists():
+    raise SystemExit("non-portable Collie console launcher leaked into the payload: " + str(launcher))
 print(code)
 '@
 $verifyPath = Join-Path $env:TEMP ("collie-payload-verify-{0}.py" -f $PID)

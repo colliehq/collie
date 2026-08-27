@@ -247,6 +247,8 @@ def test_payload_build_fails_closed_and_verifies_code_metadata_and_assets():
     assert "exactly one Collie dist-info" in script
     assert "private browser credential leaked" in script
     assert '("browser_ext/token.txt", "browser_ext/auth.js")' in script
+    assert 'Remove-PayloadItem $nonPortableCollieLauncher' in script
+    assert "non-portable Collie console launcher leaked" in script
     assert "collie-payload-verify-" in script
     assert "Set-Content -LiteralPath $verifyPath" in script
     assert '$ver = & (Join-Path $py "python.exe") -c $verify' not in script
