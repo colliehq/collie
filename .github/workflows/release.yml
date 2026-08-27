@@ -308,7 +308,8 @@ jobs:
           [ -n "$RELAY_WHEEL_B64_3" ] || { echo "::error::RELAY_WHEEL_B64_3 is missing"; exit 1; }
           [ -n "$RELAY_WHEEL_B64_4" ] || { echo "::error::RELAY_WHEEL_B64_4 is missing"; exit 1; }
           printf '%s%s%s%s' "$RELAY_WHEEL_B64_1" "$RELAY_WHEEL_B64_2" \
-              "$RELAY_WHEEL_B64_3" "$RELAY_WHEEL_B64_4" | base64 --decode > "$RELAY_WHEEL"
+              "$RELAY_WHEEL_B64_3" "$RELAY_WHEEL_B64_4" \
+              | LC_ALL=C tr -cd 'A-Za-z0-9+/=' | base64 --decode > "$RELAY_WHEEL"
           echo "015fd7e55bb5b0738b3c79a20ad4db440311ae23bbf05d0ddbfab8c80cb25e27  $RELAY_WHEEL" \
               | shasum -a 256 -c -
 
