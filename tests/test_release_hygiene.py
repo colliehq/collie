@@ -280,6 +280,17 @@ def test_formal_installer_payloads_include_claude_agent_sdk_by_default():
     assert 'build_mac_payload.sh "$APP" "$ARCH" "$EXTRAS"' in mac
 
 
+def test_relay_bundle_exposes_its_private_self_update_entrypoint():
+    mac = (ROOT / "installer" / "build_mac.sh").read_text(encoding="utf-8")
+    relay_launcher = mac.split('if [ "${COLLIE_RELAY_BUNDLE:-0}" = "1" ]; then', 1)[1]
+    relay_launcher = relay_launcher.split("LAUNCHER", 2)[1]
+
+    assert 'COLLIE_UPDATE_API_LATEST="https://relay.collie.run/' in relay_launcher
+    assert 'COLLIE_UPDATE_APP_BUNDLE_NAME="Collie Relay"' in relay_launcher
+    assert 'if [ "${1:-}" = "--update" ]; then' in relay_launcher
+    assert 'exec "$PY" -B -m harness.cli update "$@"' in relay_launcher
+
+
 def test_top_level_installer_build_checks_every_native_generator():
     script = (ROOT / "installer" / "build.ps1").read_text(encoding="utf-8")
     assert "branding-art generation failed" in script

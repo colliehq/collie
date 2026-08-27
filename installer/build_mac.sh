@@ -149,6 +149,14 @@ export COLLIE_UPDATE_APP_BUNDLE_NAME="Collie Relay"
 PY="$HERE/Resources/python/bin/Collie"
 [ -x "$PY" ] || PY="$HERE/Resources/python/bin/python3"
 
+# Keep Relay's private release feed reachable from Terminal as well as from the launched app.
+# Without this wrapper entry, running the bundled Python directly loses the exports above and can
+# accidentally check the public Collie feed instead.  `--update` checks; `--update --yes` installs.
+if [ "${1:-}" = "--update" ]; then
+  shift
+  exec "$PY" -B -m harness.cli update "$@"
+fi
+
 prompt_token() {
   /usr/bin/osascript <<'APPLESCRIPT'
 try
