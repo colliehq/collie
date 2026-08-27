@@ -131,6 +131,18 @@ def test_approval_lets_the_call_run(tmp_path):
     assert ran == [{"ref": "e1"}]
 
 
+def test_approval_accepts_outcome_enum_from_tty_and_inbox_surfaces(tmp_path):
+    ran = []
+    h = _h(tmp_path, gate=Gate(cwd=tmp_path),
+           approve=lambda *a: Outcome.ALLOW_ONCE)
+    h.provider = _ScriptProvider(_calls(("browser_click", {"ref": "e1"})))
+    h.registry.register(_spy("browser_click", ran))
+
+    _run(h)
+
+    assert ran == [{"ref": "e1"}]
+
+
 def test_the_approver_never_sees_a_restored_secret(tmp_path, monkeypatch):
     """THE one to never let regress.
 

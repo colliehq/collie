@@ -13,6 +13,10 @@ A tagged release contains:
 - **`Collie-VSCode.vsix`** for VS Code;
 - the Python wheel and source distribution.
 
+Stable tags additionally publish the wheel and source distribution to PyPI through its OpenID
+Connect Trusted Publishing flow. Prerelease tags remain GitHub-only until their channel policy is
+explicitly changed.
+
 The canonical download location is the
 [GitHub Releases page](https://github.com/colliehq/collie/releases). A manual workflow run may build
 unsigned macOS output for diagnostics, but it does not publish a release. A tag fails instead of
@@ -45,6 +49,11 @@ Only a `v*` tag on the canonical `colliehq/collie` repository can trigger public
 first checks that the tag matches `harness.__version__`; every artifact job then depends on the full
 quality gate. Pull requests and forks cannot enter the release environment or use its signing
 authority.
+
+Before the first publish, PyPI must configure a Trusted Publisher for repository
+`colliehq/collie`, workflow `release.yml`, environment `pypi`. The workflow then requests a
+short-lived OIDC identity and uses an exact commit-pinned PyPA publish action; there is no repository
+or environment PyPI token.
 
 ## Verify a download
 

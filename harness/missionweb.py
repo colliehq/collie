@@ -36,7 +36,8 @@ from .jobs import (CANCELLED, DONE_ACCEPTED, DONE_VERIFIED, FAILED_S, NEEDS_YOU,
                    RUNNING, WAITING, Capability)
 from .mission import (_campaign_coverage, _compact_case_storage,
                       _open_campaign_coverage,
-                      _resolved_authorization, MissionDriver, MissionStore,
+                      _resolved_authorization, completion_contract,
+                      MissionDriver, MissionStore,
                       ModelDecider, ResourceBusy, create_mission, world_leash)
 from .primitives import register_primitives
 from .verifier import (MissionGoalVerifier, FAILED as VERIFY_FAILED,
@@ -241,7 +242,8 @@ def _short(value, limit=500):
     return value[:limit]
 
 
-def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activity=None):
+def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait,
+                     activity=None, events=None):
     """Build a bounded, deterministic operator view without another model call."""
     case = mission.case or {}
     resolved_auth = [x for x in case.get("resolved_authorizations", [])
@@ -306,6 +308,21 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activi
         blocker = (_short(mission.result, 500) or
                    (_short(pending_auth[0].get("summary"), 500) if pending_auth else "") or
                    "A person-required step")
+    artifact_refs = []
+    for raw in (case.get("artifact_refs"), case.get("artifacts")):
+        values = raw if isinstance(raw, (list, tuple)) else ([raw] if raw else [])
+        for value in values:
+            if isinstance(value, str):
+                ref = value
+            elif isinstance(value, dict):
+                ref = next((str(value.get(key) or "") for key in
+                            ("path", "url", "uri", "name") if value.get(key)), "")
+            else:
+                ref = ""
+            ref = ref.strip()
+            if ref and ref not in artifact_refs:
+                artifact_refs.append(ref)
+    contract = completion_contract(mission, events or (), artifact_refs).to_dict()
     return {
         "title": _short(mission.goal, 300),
         "current": current or "Ready",
@@ -323,6 +340,7 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait, activi
         },
         "progress": {"verified": len(completed) + verified_receipts,
                      "pending": pending, "failed": failed},
+        "completion": contract,
     }
 
 
@@ -3333,8 +3351,10 @@ class MissionService:
         receipts = [{"capability": r["capability"], "verdict": r["verdict"],
                      "fired": bool(r["fired"])}
                     for r in self.actions.receipts() if r.get("job_id") == mid]
+        recent_events = self.store.events(mid, 20)
         summary = _mission_summary(
-            m, steps, receipts, runtime, inbox, next_wait, activity)
+            m, steps, receipts, runtime, inbox, next_wait, activity,
+            recent_events)
         return {
             "mission_id": mid, "goal": m.goal, "state": m.state, "result": m.result,
             "created_at": m.created_at, "updated_at": m.updated_at,
@@ -3343,7 +3363,7 @@ class MissionService:
             "report": _mission_report(m, summary, activity, receipts, runtime),
             "steps": steps,
             "activity": activity,
-            "recent_events": self.store.events(mid, 20),
+            "recent_events": recent_events,
             "inbox": inbox,                       # non-null -> render a Confirm button
             "needs_human": (m.state == NEEDS_YOU and inbox is None and
                             not action_in_flight),  # -> Accept hand-off

@@ -120,7 +120,10 @@ SCHEMA = [
          {"value": "collie", "label": "Collie's own harness (default)"},
          {"value": "auto", "label": "Auto — pick per task and usage, inside the consented pool"},
          {"value": "codex-exec", "label": "OpenAI Codex CLI (codex exec)"},
-         {"value": "claude-code", "label": "Claude Code (claude -p)"}],
+         {"value": "claude-code", "label": "Claude Code (claude -p)"},
+         {"value": "codex-sdk", "label": "OpenAI Codex Python SDK (background)"},
+         {"value": "codex-app-server", "label": "OpenAI Codex App Server (interactive stdio)"},
+         {"value": "pi-rpc", "label": "Pi RPC (no shell)"}],
      "hint": "Which harness does the work — not which model thinks (that is Provider/Model above). "
              "Collie's own harness is the default and the fallback; it is the only one with the "
              "browser, desktop, MCP and per-action approval tools. An external worker runs its own "
@@ -284,6 +287,9 @@ _ZH = {
                "options": {"collie": "Collie 自己的 harness(默认)",
                            "auto": "自动 — 按任务与用量在同意池里选",
                            "codex-exec": "OpenAI Codex CLI(codex exec)",
+                           "codex-sdk": "OpenAI Codex Python SDK(后台任务)",
+                           "codex-app-server": "OpenAI Codex App Server(交互式 stdio)",
+                           "pi-rpc": "Pi RPC(禁用 shell)",
                            "claude-code": "Claude Code(claude -p)"}},
     "RUNNER_POOL": {"label": "Worker 同意池(auto 的候选名单)",
                     "hint": "逗号分隔的 worker 名单,auto 只从这里面挑,靠前的优先(平手时也按这个顺序)。把一个外部 worker 写进这里,就等于明确同意用它的登录与计费路线来跑你的任务;没写进池子的,哪怕装了、登录了也不会被自动选中。显式的 --runner 仍然优先于这份名单。"},

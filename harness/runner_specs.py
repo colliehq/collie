@@ -75,7 +75,7 @@ from .recorder import RunResult
 # Runners are introduced in phases; a spec whose ``phase`` is beyond this is
 # declared but not selectable, so the registry can carry tomorrow's keys without
 # them ever being handed real work today.
-CURRENT_PHASE = 1
+CURRENT_PHASE = 2
 
 
 # --- billing ----------------------------------------------------------------
@@ -131,6 +131,8 @@ CANONICAL_TYPES = frozenset({
     "turn.started", "turn.yielded", "turn.failed", "turn.cancelled",
     "tool.started", "tool.completed", "file.changed", "message.completed",
     "approval.requested", "approval.resolved",
+    "interaction.requested", "interaction.resolved", "message.accepted",
+    "context.compacted",
     "usage.updated", "rate_limit.reached", "auth.required", "runner.error",
 })
 
@@ -356,6 +358,10 @@ class RunnerCapabilities:
     tools: frozenset[str] = frozenset()
     needs_git_workspace: bool = True
     prompt_transport: str = "stdin"  # stdin | argv | rpc
+    inputs: frozenset[str] = frozenset({"text"})  # text | image_url | image_file
+    compact: bool = False
+    interactions: frozenset[str] = frozenset()  # approval | user_input | select | confirm
+    capability_handshake: bool = False
     windows_native: bool | None = None   # None = unverified; the compat report decides
 
     def to_dict(self) -> dict[str, Any]:
@@ -381,6 +387,10 @@ class RunnerCapabilities:
             "tools": sorted(self.tools),
             "needs_git_workspace": self.needs_git_workspace,
             "prompt_transport": self.prompt_transport,
+            "inputs": sorted(self.inputs),
+            "compact": self.compact,
+            "interactions": sorted(self.interactions),
+            "capability_handshake": self.capability_handshake,
             "windows_native": self.windows_native,
         }
 
@@ -410,9 +420,179 @@ class RunnerCapabilities:
             tools=frozenset(str(item) for item in _items(value.get("tools"))),
             needs_git_workspace=_strict_bool(value.get("needs_git_workspace"), True),
             prompt_transport=str(value.get("prompt_transport") or "stdin"),
+            inputs=frozenset(str(item) for item in
+                             (_items(value.get("inputs")) or ("text",))),
+            compact=_strict_bool(value.get("compact")),
+            interactions=frozenset(
+                str(item) for item in _items(value.get("interactions"))),
+            capability_handshake=_strict_bool(value.get("capability_handshake")),
             windows_native=(None if windows_native is None else
                             _strict_bool(windows_native)),
         )
+
+
+@dataclass(frozen=True)
+class RunInput:
+    """Runner-neutral turn input.
+
+    Images stay references at this boundary.  The adapter that owns the target
+    protocol decides whether a data URL or a canonical local path is valid; an
+    adapter must never silently drop an unsupported image and run only the text.
+    """
+
+    text: str
+    image_urls: tuple[str, ...] = ()
+    image_files: tuple[str, ...] = ()
+    metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        text = str(self.text or "")
+        if not text.strip() or "\x00" in text:
+            raise ValueError("run input text must be non-empty and contain no NUL")
+        object.__setattr__(self, "text", text)
+        urls = []
+        remaining = 16 * 1024 * 1024
+        for item in _items(self.image_urls)[:8]:
+            url = str(item)
+            if len(url) > 8 * 1024 * 1024 or len(url) > remaining:
+                raise ValueError("run input images exceed the 16 MiB envelope")
+            urls.append(url)
+            remaining -= len(url)
+        object.__setattr__(self, "image_urls", tuple(urls))
+        object.__setattr__(self, "image_files", tuple(
+            str(item)[:4_000] for item in _items(self.image_files)[:8]))
+        object.__setattr__(self, "metadata", redact_value(_mapping(self.metadata)))
+
+    @property
+    def kinds(self) -> frozenset[str]:
+        kinds = {"text"}
+        if self.image_urls:
+            kinds.add("image_url")
+        if self.image_files:
+            kinds.add("image_file")
+        return frozenset(kinds)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"text": self.text, "image_urls": list(self.image_urls),
+                "image_files": list(self.image_files),
+                "metadata": dict(self.metadata)}
+
+    @classmethod
+    def from_value(cls, value: Any) -> "RunInput":
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            return cls(text=value)
+        value = _mapping(value)
+        return cls(text=str(value.get("text") or ""),
+                   image_urls=tuple(str(item) for item in
+                                    _items(value.get("image_urls"))),
+                   image_files=tuple(str(item) for item in
+                                     _items(value.get("image_files"))),
+                   metadata=_mapping(value.get("metadata")))
+
+
+@dataclass(frozen=True)
+class PendingInteraction:
+    """A non-terminal runner pause that requires a host response."""
+
+    interaction_id: str
+    runner: str
+    kind: str
+    prompt: str = ""
+    options: tuple[str, ...] = ()
+    raw: dict = field(default_factory=dict)
+    created_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "prompt", redact_text(self.prompt))
+        object.__setattr__(self, "options", tuple(
+            redact_text(item, 1_000) for item in _items(self.options)[:128]))
+        object.__setattr__(self, "raw", redact_value(_mapping(self.raw)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"interaction_id": self.interaction_id, "runner": self.runner,
+                "kind": self.kind, "prompt": self.prompt,
+                "options": list(self.options), "raw": dict(self.raw),
+                "created_at": self.created_at}
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "PendingInteraction":
+        value = _mapping(value)
+        return cls(interaction_id=str(value.get("interaction_id") or ""),
+                   runner=str(value.get("runner") or ""),
+                   kind=str(value.get("kind") or ""),
+                   prompt=str(value.get("prompt") or ""),
+                   options=tuple(str(item) for item in
+                                 _items(value.get("options"))),
+                   raw=_mapping(value.get("raw")),
+                   created_at=_finite_float(value.get("created_at"), 0.0))
+
+
+@dataclass(frozen=True)
+class QueuedTurnMessage:
+    """A host instruction whose delivery semantics must not be guessed."""
+
+    message_id: str
+    mode: str  # steer | follow_up
+    text: str
+    created_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("steer", "follow_up"):
+            raise ValueError("turn message mode must be steer or follow_up")
+        text = str(self.text or "")
+        if not text.strip() or "\x00" in text:
+            raise ValueError("turn message text must be non-empty and contain no NUL")
+        object.__setattr__(self, "text", redact_text(text, 4_000))
+        object.__setattr__(self, "message_id", str(self.message_id or "")[:256])
+
+    @classmethod
+    def from_value(cls, value: Any) -> "QueuedTurnMessage":
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            return cls(message_id="", mode="steer", text=value)
+        value = _mapping(value)
+        return cls(message_id=str(value.get("message_id") or value.get("id") or ""),
+                   mode=str(value.get("mode") or "steer"),
+                   text=str(value.get("text") or value.get("message") or ""),
+                   created_at=_finite_float(value.get("created_at"), 0.0))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"message_id": self.message_id, "mode": self.mode,
+                "text": self.text, "created_at": self.created_at}
+
+
+@dataclass(frozen=True)
+class CapabilityHandshake:
+    """Live adapter manifest intersected with Collie's declared contract."""
+
+    runner: str
+    protocol: str
+    protocol_version: str
+    capabilities: RunnerCapabilities
+    source: str = "adapter"
+    negotiated_at: float = 0.0
+
+    def require(self, *, needs: frozenset[str] = frozenset(),
+                input_kinds: frozenset[str] = frozenset({"text"})) -> None:
+        missing_inputs = sorted(set(input_kinds) - set(self.capabilities.inputs))
+        if missing_inputs:
+            raise RunnerProtocolError(
+                "%s cannot accept input kinds: %s" %
+                (self.runner, ", ".join(missing_inputs)))
+        missing_tools = sorted(set(needs) - set(self.capabilities.tools))
+        if missing_tools:
+            raise RunnerProtocolError(
+                "%s does not provide required tools: %s" %
+                (self.runner, ", ".join(missing_tools)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"runner": self.runner, "protocol": self.protocol,
+                "protocol_version": self.protocol_version,
+                "capabilities": self.capabilities.to_dict(),
+                "source": self.source, "negotiated_at": self.negotiated_at}
 
 
 @dataclass(frozen=True)
@@ -860,6 +1040,7 @@ def _first_int(raw: dict, *names: str) -> int | None:
 _USAGE_DIALECTS = {
     "collie": "collie",
     "codex-exec": "codex",
+    "codex-sdk": "codex",
     "codex-app-server": "codex",
     "claude-code": "claude",
     "hermes-gateway": "hermes",
@@ -993,9 +1174,11 @@ def equivalent_cost_usd(model: str, usage: RunnerUsage) -> float | None:
 class RunnerReceipt:
     """The runner section of a session receipt — what actually happened.
 
-    Every field is required on purpose.  A receipt with an empty ``billing_class``
-    or a defaulted ``usage_known`` would be a comfortable lie in exactly the place
-    this design promises the truth, so the producer has to state each one.
+    Every accounting and terminal field is required on purpose.  A receipt with
+    an empty ``billing_class`` or a defaulted ``usage_known`` would be a comfortable
+    lie in exactly the place this design promises the truth.  The additive
+    interaction/handshake fields default only so older serialized receipts remain
+    readable; every new slice writes them explicitly.
     """
 
     runner: str
@@ -1019,6 +1202,8 @@ class RunnerReceipt:
     event_count: int
     approvals: tuple                    # ApprovalDecision.to_dict(), bounded
     env_receipt: dict                   # {"allowed": [names], "stripped": [names]}
+    interactions: tuple = ()            # unresolved PendingInteraction.to_dict(), bounded
+    capability_handshake: dict = field(default_factory=dict)
     fallback_from: str = ""
     error: str = ""
 
@@ -1049,6 +1234,11 @@ class RunnerReceipt:
             if isinstance(item, dict)))
         object.__setattr__(self, "env_receipt",
                            redact_value(_mapping(self.env_receipt)))
+        object.__setattr__(self, "interactions", tuple(
+            redact_value(_mapping(item)) for item in _items(self.interactions)[-256:]
+            if isinstance(item, dict)))
+        object.__setattr__(self, "capability_handshake",
+                           redact_value(_mapping(self.capability_handshake)))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1073,6 +1263,8 @@ class RunnerReceipt:
             "event_count": self.event_count,
             "approvals": [dict(item) for item in self.approvals],
             "env_receipt": dict(self.env_receipt or {}),
+            "interactions": [dict(item) for item in self.interactions],
+            "capability_handshake": dict(self.capability_handshake or {}),
             "fallback_from": self.fallback_from,
             "error": self.error,
         }
@@ -1082,6 +1274,7 @@ class RunnerReceipt:
         value = _mapping(value)
         mutated = value.get("mutated")
         approvals = _items(value.get("approvals"))[-256:]
+        interactions = _items(value.get("interactions"))[-256:]
         return cls(
             runner=str(value.get("runner") or ""),
             runner_version=str(value.get("runner_version") or ""),
@@ -1105,6 +1298,9 @@ class RunnerReceipt:
             approvals=tuple(_mapping(item) for item in approvals
                             if isinstance(item, dict)),
             env_receipt=_mapping(value.get("env_receipt")),
+            interactions=tuple(_mapping(item) for item in interactions
+                               if isinstance(item, dict)),
+            capability_handshake=_mapping(value.get("capability_handshake")),
             fallback_from=str(value.get("fallback_from") or ""),
             error=str(value.get("error") or ""),
         )
@@ -1422,8 +1618,11 @@ def snapshot_to_run_result(snapshot: Any, spec: HarnessSpec, probe: RunnerProbe,
 __all__ = [
     "ApprovalDecision", "ApprovalRequest", "BILLING_CLASSES", "BILLING_MODE_OF",
     "CANONICAL_TYPES", "CURRENT_PHASE", "CandidateScore", "CanonicalEvent",
+    "CapabilityHandshake",
     "EXTERNAL_ALLOWED_SURFACES", "HarnessDecision", "HarnessRequest", "HarnessSpec",
-    "NOT_IMPLEMENTED_PREFIX", "NativeSessionRef", "RunnerBillingError",
+    "NOT_IMPLEMENTED_PREFIX", "NativeSessionRef", "PendingInteraction",
+    "QueuedTurnMessage", "RunInput",
+    "RunnerBillingError",
     "RunnerCapabilities", "RunnerError", "RunnerProbe", "RunnerProtocolError",
     "RunnerReceipt", "RunnerSelectionError", "RunnerUnavailableError", "RunnerUsage",
     "SURFACES", "equivalent_cost_usd", "family_of_provider", "redact_text",

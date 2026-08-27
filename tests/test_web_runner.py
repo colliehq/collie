@@ -28,15 +28,17 @@ def _probe(key="codex-exec", **over):
     return RunnerProbe(**values)
 
 
-def _receipt(locator="thread-web", recovery=False):
+def _receipt(locator="thread-web", recovery=False, runner="codex-exec"):
+    protocol = ("codex-appserver-jsonrpc" if runner == "codex-app-server"
+                else "codex-exec-jsonl")
     return RunnerReceipt.from_dict({
-        "runner": "codex-exec", "runner_version": "99.0.0",
-        "runner_protocol": "codex-exec-jsonl",
+        "runner": runner, "runner_version": "99.0.0",
+        "runner_protocol": protocol,
         "billing_class": "subscription_allowance", "billing_mode": "subscription",
         "credential_family": "codex", "usage_known": True,
         "usage": {"input_tokens": 20, "output_tokens": 10},
         "settled": not recovery, "recovery_required": recovery, "mutated": True,
-        "native_session": {"runner": "codex-exec", "locator": locator,
+        "native_session": {"runner": runner, "locator": locator,
                            "workspace": "C:/workspace"},
     })
 
@@ -136,6 +138,44 @@ def test_web_external_worker_streams_identity_saves_history_and_receipt(monkeypa
         "thread-web"
     assert saved["run_receipts"][-1]["decision"]["run_plan"] == start["run_plan"]
     assert sessions.recovery_state("web-worker") is None
+
+
+def test_web_app_server_wires_gate_inbox_and_steering(monkeypatch, tmp_path):
+    from harness import router
+
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(router, "resolve_run_decision", lambda *a, **kw: _decision())
+    monkeypatch.setattr(runner_registry, "probe_all", lambda keys=None, **kw: {
+        "codex-app-server": _probe(key="codex-app-server")})
+    seen = {}
+
+    def fake_run(decision, task, workspace, **kwargs):
+        seen.update(kwargs)
+        seen["approval_answer"] = kwargs["approval_callback"](
+            "command", {"itemId": "cmd_1", "command": "python -m pytest"})
+        receipt = _receipt(runner="codex-app-server")
+        result = RunResult(
+            task_id="web", harness="codex-app-server", provider="codex",
+            model="gpt-5.6-sol", turns=1, success=True,
+            answer="worker answer", messages=[])
+        setattr(result, runner_slice.RECEIPT_ATTR, receipt)
+        return result
+
+    monkeypatch.setattr(runner_slice, "run_adhoc", fake_run)
+    events = []
+    webapp.Handler._serve_stream(_handler(events), {
+        "q": ["fix it"], "session": ["app-server-web"],
+        "runner": ["codex-app-server"], "intent": ["build"],
+        "quality": ["balanced"], "verification": ["auto"],
+        "workspace": ["current"], "strategy": ["single"],
+    })
+
+    start = next(data for kind, data in events if kind == "start")
+    assert start["worker_capabilities"]["approval_round_trip"] is True
+    assert start["worker_capabilities"]["steer"] is True
+    assert seen["approval_answer"] == "accept"
+    assert callable(seen["approval_callback"])
+    assert callable(seen["steering"])
 
 
 def test_web_external_worker_success_survives_runs_db_telemetry_failure(monkeypatch,

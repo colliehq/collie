@@ -50,7 +50,7 @@ import threading
 import time
 from typing import Any, Callable, Mapping
 
-from . import runner_registry as registry
+from . import runner_registry as registry, runner_specs
 from .agent_runners import RunnerEvent, RunnerSnapshot
 from .recorder import RunResult
 from .runner_specs import (
@@ -112,10 +112,13 @@ def transcript_text(result: Any) -> str:
     return answer
 
 
-def run_adhoc(decision: HarnessDecision, task: str, workspace: str, *,
+def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
+              workspace: str, *,
               timeout_s: float | None = None,
               emit: Callable[[str, dict], Any] | None = None,
+              approval_callback: Callable[[str, dict], str] | None = None,
               cancelled: Callable[[], bool] | None = None,
+              steering: Callable[[], list[Any]] | None = None,
               history_note: str | None = None,
               resume_from: Any = None,
               model: str = "", provider: str = "",
@@ -194,7 +197,8 @@ def run_adhoc(decision: HarnessDecision, task: str, workspace: str, *,
                 "event": "fallback", "from": decision.runner, "to": key,
                 "reason": outcome.reason if outcome is not None else "",
             })
-        outcome = _attempt(key, prompt, root, prior, timeout_s, model, cancelled, emit)
+        outcome = _attempt(key, prompt, root, prior, timeout_s, model, cancelled, emit,
+                           approval_callback, steering)
         if not (outcome.pre_prompt_failure and index + 1 < len(chain)):
             break
 
@@ -250,10 +254,13 @@ class _Attempt:
         self.live_cursor = max(0, int(live_cursor or 0))
 
 
-def _attempt(key: str, prompt: str, workspace: str, prior: RunnerSnapshot | None,
+def _attempt(key: str, prompt: str | runner_specs.RunInput, workspace: str,
+             prior: RunnerSnapshot | None,
              timeout_s: float | None, model: str,
              cancelled: Callable[[], bool] | None,
-             emit: Callable[[str, dict], Any] | None) -> _Attempt:
+             emit: Callable[[str, dict], Any] | None,
+             approval_callback: Callable[[str, dict], str] | None,
+             steering: Callable[[], list[Any]] | None) -> _Attempt:
     """Build the worker, run one turn under a cancel watcher, and describe it."""
     spec = registry.SPECS.get(key)
     if spec is None:
@@ -318,7 +325,13 @@ def _attempt(key: str, prompt: str, workspace: str, prior: RunnerSnapshot | None
     set_callback = getattr(runner, "set_event_callback", None)
     if callable(set_callback):
         set_callback(live_event)
-    with _CancelWatcher(runner, cancelled) as watcher:
+    set_approval = getattr(runner, "set_approval_callback", None)
+    if callable(set_approval):
+        # None is intentional: runners with a bidirectional protocol must retain
+        # their own fail-closed default when the embedding surface has no Gate.
+        set_approval(approval_callback)
+    with (_CancelWatcher(runner, cancelled) as watcher,
+          _SteerWatcher(runner, steering, emit=emit)):
         try:
             if prior is not None:
                 snapshot = runner.resume(prior, prompt, timeout_s=timeout_s)
@@ -478,6 +491,90 @@ def _predicate(predicate: Callable[[], bool] | None) -> bool:
         return False
 
 
+class _SteerWatcher:
+    """Drain an embedding surface's bounded queue into ``steer_current``.
+
+    A steer can arrive just before the runner publishes its active turn id.  The
+    watcher therefore retains the message and retries until the runner accepts
+    it or the turn exits; a one-shot call would report "queued" to the browser
+    and then silently lose the instruction in that launch race.
+    """
+
+    def __init__(self, runner: Any, drain: Callable[[], list[Any]] | None,
+                 poll_s: float = CANCEL_POLL_S,
+                 emit: Callable[[str, dict], Any] | None = None):
+        self._runner = runner
+        self._drain = drain
+        self._poll_s = max(0.01, float(poll_s))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._pending: list[runner_specs.QueuedTurnMessage] = []
+        self._emit = emit
+
+    def __enter__(self) -> "_SteerWatcher":
+        if self._drain is None:
+            return self
+        self._thread = threading.Thread(target=self._loop, name="collie-runner-steer",
+                                        daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: Any) -> bool:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        for item in self._pending:
+            self._delivery(item, False, "turn ended before delivery")
+        self._pending.clear()
+        return False
+
+    def _loop(self) -> None:
+        steer = getattr(self._runner, "steer_current", None)
+        follow_up = getattr(self._runner, "follow_up_current", None)
+        if not callable(steer) and not callable(follow_up):
+            return
+        while not self._stop.is_set():
+            try:
+                rows = self._drain() if self._drain is not None else []
+            except Exception:
+                rows = []
+            for row in rows or []:
+                try:
+                    item = runner_specs.QueuedTurnMessage.from_value(row)
+                except (TypeError, ValueError):
+                    continue
+                if len(self._pending) < 64:
+                    self._pending.append(item)
+            while self._pending and not self._stop.is_set():
+                item = self._pending[0]
+                deliver = steer if item.mode == "steer" else follow_up
+                if not callable(deliver):
+                    self._delivery(item, False, "%s is unsupported" % item.mode)
+                    self._pending.pop(0)
+                    continue
+                try:
+                    accepted = bool(deliver(item.text))
+                except Exception:
+                    accepted = False
+                if not accepted:
+                    break
+                self._delivery(item, True, "accepted by runner")
+                self._pending.pop(0)
+            self._stop.wait(self._poll_s)
+
+    def _delivery(self, item: runner_specs.QueuedTurnMessage,
+                  accepted: bool, reason: str) -> None:
+        if self._emit is None:
+            return
+        try:
+            self._emit("runner.message_delivery", {
+                "message_id": item.message_id, "mode": item.mode,
+                "accepted": accepted, "reason": reason,
+            })
+        except Exception:
+            pass
+
+
 # --- result and receipt -----------------------------------------------------
 def _finish(decision: HarnessDecision, attempt: _Attempt,
             prior: RunnerSnapshot | None, emit: Callable[[str, dict], Any] | None,
@@ -544,6 +641,13 @@ def _finish(decision: HarnessDecision, attempt: _Attempt,
         event_count=len(snapshot.events),
         approvals=(),                            # phase 3: no round trip exists yet
         env_receipt=attempt.env_receipt,
+        interactions=tuple(item.to_dict() for item in
+                           snapshot.pending_interactions),
+        capability_handshake=runner_specs.CapabilityHandshake(
+            runner=key, protocol=spec.caps.protocol,
+            protocol_version=probe.version or spec.caps.protocol_version,
+            capabilities=spec.caps, source="receipt",
+            negotiated_at=snapshot.started_at).to_dict(),
         fallback_from=fallback_from,
         error=snapshot.error,
     )
@@ -725,14 +829,17 @@ def _resume_snapshot(resume_from: Any, runner: str,
     return snapshot
 
 
-def _prompt_text(task: str, history_note: str | None) -> str:
+def _prompt_text(task: str | runner_specs.RunInput, history_note: str | None
+                 ) -> str | runner_specs.RunInput:
     """The prompt handed to the worker: the task, optionally after a recap.
 
     The recap is the caller's summary of the previous turn, which an external
     worker cannot see — it has no access to Collie's message history and, on a
     fresh thread, no memory of it either.
     """
-    text = str(task or "").strip()
+    structured = isinstance(task, runner_specs.RunInput)
+    item = runner_specs.RunInput.from_value(task) if structured else None
+    text = (item.text if item is not None else str(task or "")).strip()
     if not text:
         raise ValueError("task must be a non-empty string")
     note = str(history_note or "").strip()
@@ -743,7 +850,12 @@ def _prompt_text(task: str, history_note: str | None) -> str:
     # permanently masked projection of any pasted credential.  Preserve the
     # prompt's length budget: redact_text's ordinary 16K bound is a receipt cap,
     # not an instruction cap.
-    return redact_text(combined, max(16_000, len(combined)))
+    clean = redact_text(combined, max(16_000, len(combined)))
+    if item is None:
+        return clean
+    return runner_specs.RunInput(text=clean, image_urls=item.image_urls,
+                                 image_files=item.image_files,
+                                 metadata=item.metadata)
 
 
 def _canonical_workspace(workspace: str) -> str:

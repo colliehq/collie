@@ -36,8 +36,48 @@ collie library enable org.example.release-helper --approve
 ```
 
 A correct pin proves the received bytes match the reviewed bytes. It does not prove publisher
-identity by itself. Public discovery, publisher signing, and review are deliberately future
-distribution-layer work; the local runtime never treats popularity or installation as trust.
+identity by itself. A publisher may additionally attach an Ed25519 signature, but the local runtime
+still never treats popularity, installation, or a valid unknown key as trust.
+
+## Publisher signatures
+
+Install the optional verifier with `pip install "collie-harness[extensions]"`. Collie produces the
+canonical statement a publisher signs, but never creates, imports, or stores the private key:
+
+```powershell
+collie library publisher-payload ./my-extension
+collie library validate ./my-extension
+```
+
+The payload binds the normalized manifest (without `publisher_signature`) and the SHA-256 of every
+declared content file. Sign the returned `payload_base64` bytes with the publisher's existing HSM or
+release tooling, then add the public fields to `collie-extension.json`:
+
+```json
+{
+  "publisher_signature": {
+    "algorithm": "ed25519",
+    "key_id": "release-2026",
+    "public_key": "<base64 raw 32-byte Ed25519 public key>",
+    "signature": "<base64 signature>"
+  }
+}
+```
+
+`validate` reports the exact key fingerprint and whether the signature verifies. The first valid
+package from a key is `signature_verified_untrusted`: cryptographic validity proves continuity with
+that key, not that the key belongs to the publisher named in the manifest. After verifying the
+publisher and fingerprint through an independent channel, trust that exact publisher/key pair:
+
+```powershell
+collie library publisher-trust ./my-extension --yes
+collie library publishers
+collie library publisher-untrust "Example Org" --key-id release-2026 --yes
+```
+
+Publisher trust can upgrade later packages signed by the same exact key to `publisher_verified`.
+It never approves filesystem, network, credential, browser, desktop, external-action, or host-Hook
+scopes. Activation still requires review and approval of the exact package version and authority.
 
 ## Package layout
 

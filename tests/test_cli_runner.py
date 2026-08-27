@@ -501,7 +501,7 @@ def test_runners_compat_writes_report(tmp_path, capsys):
 
 # --- parser -----------------------------------------------------------------
 def test_run_parser_offers_only_arrived_runners(tmp_path):
-    """`--runner`'s choices come from the registry, so a phase-2 key cannot be typed in.
+    """`--runner` choices come from the registry and include the current phase.
 
     Read off the same helper argparse uses rather than parsing a command line: the
     parser is built inside `main()`, which applies saved settings to os.environ as a
@@ -510,9 +510,10 @@ def test_run_parser_offers_only_arrived_runners(tmp_path):
     offered = cli._runner_option_keys()
     assert "collie" in offered and "codex-exec" in offered
     assert offered == list(runner_registry.option_keys())
-    assert "codex-app-server" not in offered          # declared, phase 2, unselectable
+    assert "codex-app-server" in offered              # implemented in current phase 2
+    assert "codex-sdk" in offered and "pi-rpc" in offered  # implemented phase 2 adapters
 
-    # `auto` is the fourth choice and means "choose from RUNNER_POOL", not a worker.
+    # `auto` means "choose from RUNNER_POOL", not a worker.
     request = runner_select.request_from_run(
         argparse.Namespace(runner="auto", web_search=False, mode=None),
         _decision(), settings, cwd=str(tmp_path), has_approver=False)

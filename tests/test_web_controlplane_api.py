@@ -328,6 +328,45 @@ def test_authenticated_automation_webhook_only_persists_allowlisted_fields(web_s
     assert "collie" in persisted and "DROP-ME" not in persisted
 
 
+def test_control_center_automation_and_memory_workflows_are_authenticated(web_server):
+    from harness.memory import SqliteMemory
+
+    base, token, state = web_server
+    spec = {"automation_id": "daily-review", "task": "review repository",
+            "trigger": {"provider": "timer", "every_s": 60, "fire_immediately": True},
+            "workspace": {"mode": "isolated"}, "permissions": {}, "enabled": False}
+    code, denied = _json(base + "/api/automations/upsert", "POST", {"spec": spec})
+    assert code == 403 and denied["error"] == "forbidden"
+    code, saved = _json(base + "/api/automations/upsert?token=" + token, "POST", {"spec": spec})
+    assert code == 200 and saved["spec"]["automation_id"] == "daily-review"
+    code, listing = _json(base + "/api/automations?token=" + token)
+    assert code == 200 and listing["specs"][0]["task"] == "review repository"
+    code, preview = _json(base + "/api/automations/preview?token=" + token, "POST",
+                          {"automation_id": "daily-review"})
+    assert code == 200 and preview["persisted"] is False
+    code, refused = _json(base + "/api/automations/run?token=" + token, "POST",
+                          {"automation_id": "daily-review"})
+    assert code == 400 and "confirmed=true" in refused["error"]
+    code, queued = _json(base + "/api/automations/run?token=" + token, "POST",
+                         {"automation_id": "daily-review", "confirmed": True})
+    assert code == 200 and queued["queued"] is True
+
+    data = state / "data"; data.mkdir()
+    memory = SqliteMemory(str(data / "memory.db"), embedder=None)
+    claim_id = memory.propose("private proposed claim", project="demo", evidence="receipt")
+    memory.close()
+    code, denied = _json(base + "/api/memory/claims")
+    assert code == 403
+    code, claims = _json(base + "/api/memory/claims?status=proposed&token=" + token)
+    assert code == 200 and claims["claims"][0]["id"] == claim_id
+    code, refused = _json(base + "/api/memory/review?token=" + token, "POST",
+                          {"memory_id": claim_id, "action": "attest"})
+    assert code == 400 and "confirmed=true" in refused["error"]
+    code, reviewed = _json(base + "/api/memory/review?token=" + token, "POST", {
+        "memory_id": claim_id, "action": "attest", "note": "checked", "confirmed": True})
+    assert code == 200 and reviewed["claim"]["status"] == "attested"
+
+
 def test_specialist_tree_inspect_steer_cancel_and_no_task_leak(web_server, tmp_path):
     from harness.missionweb import MissionService
 
@@ -383,7 +422,9 @@ def test_activity_ui_and_auto_model_contracts():
     page = (Path(__file__).parents[1] / "harness" / "webui" / "index.html").read_text("utf-8")
     for value in ("activityPanel", "/api/activity", "/api/healthz", "/api/hooks",
                   "/api/recovery/reconcile", "/api/mission/specialist/steer",
-                  "/api/mission/specialist/cancel"):
+                  "/api/mission/specialist/cancel", "Control Center", "/api/doctor",
+                  "/api/recovery-center", "/api/automations", "/api/memory/claims",
+                  "/api/budgets", "/api/security"):
         assert value in page
     assert "confirmed: true" in page and "PRIVATE" not in page
     assert "Auto — Collie chooses per task" in page

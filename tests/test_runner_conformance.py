@@ -128,15 +128,24 @@ def test_offline_matrix_answers_every_column(key):
     cells = _cells(report, key)
 
     assert set(cells) == set(OFFLINE_CHECK_NAMES)
+    spec = runner_registry.SPECS[key]
     for name, cell in cells.items():
+        if spec.phase > CURRENT_PHASE and name == "admission":
+            continue
         _assert_answered(cell, "%s.%s" % (key, name))
 
-    spec = runner_registry.SPECS[key]
     if spec.phase > CURRENT_PHASE:
-        # A key from a later phase is listed, never exercised: the matrix must
-        # say "not implemented in this phase", not quietly pass it.
-        assert all(cell["status"] == SKIP for cell in cells.values())
-        assert all("phase" in cell["detail"] for cell in cells.values())
+        # A future key gets one read-only vendor/protocol admission fingerprint.
+        # Every implementation/isolation/live column remains behind the phase
+        # gate, even if the binary happens to be installed on this host.
+        admission = cells["admission"]
+        assert admission["status"] in (PASS, FAIL, SKIP)
+        if admission["status"] in (FAIL, SKIP):
+            assert admission["detail"].strip()
+        assert all(cell["status"] == SKIP for name, cell in cells.items()
+                   if name != "admission")
+        assert all("phase" in cell["detail"] for name, cell in cells.items()
+                   if name != "admission")
         return
 
     # Every phase-1 runner, installed or not, has an answerable probe and an
@@ -144,6 +153,7 @@ def test_offline_matrix_answers_every_column(key):
     assert cells["probe"]["status"] == PASS
     assert cells["env_hygiene"]["status"] == PASS
     assert cells["billing"]["status"] == PASS
+    assert cells["admission"]["status"] in (PASS, SKIP)
 
     if spec.kind == "native":
         assert cells["framing"]["status"] == SKIP
@@ -170,7 +180,10 @@ def test_framing_reports_a_runner_error_for_every_chaotic_frame(key):
     for case in ("invalid_json", "not_an_object", "nul_and_noise", "empty"):
         assert case in cell["detail"]
     assert "crlf=settled" in cell["detail"]
-    assert "no_trailing_lf=settled" in cell["detail"]
+    if key in ("codex-app-server", "pi-rpc"):
+        assert "no_trailing_lf=error_event" in cell["detail"]
+    else:
+        assert "no_trailing_lf=settled" in cell["detail"]
     assert "chunked=settled" in cell["detail"]
 
 

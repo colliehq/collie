@@ -21,6 +21,16 @@ feature inherently requires:
   machine at all). This is the same data flow as any AI coding tool, to a provider you pick.
 - **Web search / fetch (opt-in).** If you enable it, Collie fetches public web pages you or the task
   reference (a keyless DuckDuckGo/SearXNG query, or pages via your own browser). No account.
+- **AI meeting notes (separately opt-in for every meeting).** Meeting audio and rough notes stay
+  under `~/.collie/meetings/` by default. If you enable AI processing before recording, audio is
+  sent to OpenAI's transcription endpoint using your `OPENAI_API_KEY`; the transcript is then sent
+  to your configured Collie model provider to create the note. Collie displays both destinations
+  before recording, never auto-shares the result, and retains the original transcript as evidence.
+- **Meeting schedules and reminders (local).** An `.ics` file is read only after you select it and
+  is parsed on the authenticated loopback server. Upcoming event metadata and reminder preferences
+  stay in `~/.collie/meeting-reminders.json`; attendee fields are not retained. Collie does not fetch
+  calendar feeds or send schedule metadata to a model. Reminder detection can prefill a note but
+  cannot start recording or carry consent from one meeting to another.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,
@@ -36,8 +46,9 @@ feature inherently requires:
   loads no analytics or tracking beacon.
 
 Local features — driving your logged-in browser, arranging your desktop, controlling other apps,
-recording your screen — run **entirely on your own computer**. Their output stays local unless you
-send it somewhere yourself.
+processing meeting reminders, recording your screen, and recording a meeting with AI processing
+disabled — run **entirely on your own computer**. Their output stays local unless you send it
+somewhere yourself.
 
 The browser extension's current-page side chat sends the question plus the displayed page title,
 URL, and any text you explicitly selected to the model provider configured in your local Collie.
@@ -50,14 +61,17 @@ stays in local `~/.collie/settings.json`.
 
 Every capability that touches your real environment is **opt-in and user-initiated**: the browser
 bridge requires you to install and enable an extension; remote access requires you to turn it on and
-pair a device; screen recording only runs when you start it. Collie automates your *own* computer at
+pair a device; screen recording only runs when you start it; meeting recording requires a fresh
+confirmation that participants were informed and consented. Collie automates your *own* computer at
 your request — the way tools like Playwright, AutoHotkey, or an RPA runner do — and never acts on
 anyone else's system.
 
 ## Data you can delete
 
-Collie's local state (settings, memory, sessions, paired-device list) lives under `~/.collie` on your
-machine; delete that folder to remove it. Uninstalling Collie removes the program.
+Collie's local state (settings, memory, sessions, meeting schedules, meeting recordings/notes,
+paired-device list) lives under `~/.collie` on your machine. A meeting recording or manually added
+scheduled meeting can be deleted individually from Meeting Notes; delete the whole folder to remove
+all Collie state. Uninstalling Collie removes the program.
 
 ## Changes
 

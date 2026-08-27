@@ -335,6 +335,64 @@ class OpsStore:
                 "SELECT state,count(*) AS n FROM notifications GROUP BY state").fetchall()
         return {str(row["state"]): int(row["n"]) for row in rows}
 
+    def notification_health(self, *, now: float | None = None,
+                            stale_after_s: float = 300.0) -> dict[str, int | float | bool]:
+        """Return content-free delivery health, including backlog *age*.
+
+        Counts alone made a queue of two fresh notifications indistinguishable from two items
+        stranded since yesterday.  This deliberately exposes only numeric aggregates; titles,
+        bodies, payloads and delivery errors stay in the durable store.
+        """
+        now = _finite(time.time() if now is None else now, "notification health time")
+        stale_after_s = _finite(stale_after_s, "notification stale threshold", minimum=1)
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT state,count(*) AS n FROM notifications GROUP BY state").fetchall()
+            pending = self.db.execute(
+                "SELECT min(created_at) AS oldest,min(next_attempt_at) AS next_due,"
+                "sum(attempts) AS attempts,sum(CASE WHEN next_attempt_at<=? THEN 1 ELSE 0 END) AS due "
+                "FROM notifications WHERE state IN ('pending','delivering')", (now,)).fetchone()
+        out: dict[str, int | float | bool] = {
+            str(row["state"]): int(row["n"]) for row in rows
+        }
+        oldest = float(pending["oldest"] or 0) if pending else 0.0
+        next_due = float(pending["next_due"] or 0) if pending else 0.0
+        age = max(0.0, now - oldest) if oldest else 0.0
+        live = int(out.get("pending", 0)) + int(out.get("delivering", 0))
+        out.update(
+            live=live,
+            due=int((pending["due"] if pending else 0) or 0),
+            attempts=int((pending["attempts"] if pending else 0) or 0),
+            oldest_pending_at=oldest,
+            oldest_pending_age_s=age,
+            next_attempt_at=next_due,
+            stale=bool(live and age >= stale_after_s),
+        )
+        return out
+
+    def retry_dead(self, notification_id: str = "", *, now: float | None = None) -> int:
+        """Move explicitly selected dead letters back to pending delivery.
+
+        The caller must make the operator confirmation decision.  Payload bytes are retained and
+        revalidated by :meth:`claim`; this method never reports a notification as delivered.
+        """
+        now = _finite(time.time() if now is None else now, "notification retry time")
+        notification_id = str(notification_id or "").strip()
+        with self._lock:
+            if notification_id:
+                changed = self.db.execute(
+                    "UPDATE notifications SET state='pending',attempts=0,next_attempt_at=?,"
+                    "lease_until=0,last_error='',updated_at=? "
+                    "WHERE notification_id=? AND state='dead'",
+                    (now, now, notification_id))
+            else:
+                changed = self.db.execute(
+                    "UPDATE notifications SET state='pending',attempts=0,next_attempt_at=?,"
+                    "lease_until=0,last_error='',updated_at=? WHERE state='dead'",
+                    (now, now))
+            self.db.commit()
+            return int(changed.rowcount)
+
     def dead_letters(self, limit: int = 50) -> list[dict]:
         with self._lock:
             rows = self.db.execute(
@@ -498,19 +556,28 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
 
     credentials = credential_health(now=now)
     queues = {"slack": slack_queue_health(state_dir),
-              "notifications": store.notification_stats()}
+              "notifications": store.notification_health(now=now)}
     failing = [name for name, row in workers.items()
                if not row["fresh"] or row["state"] in ("dead", "failed", "circuit_open")]
     expired = [row["name"] for row in credentials if row["state"] in ("expired", "missing")]
+    notification_pump = beats.get("notification-pump") or {}
+    notification_stalled = bool(
+        queues["notifications"].get("stale") and
+        (not notification_pump.get("fresh") or
+         notification_pump.get("state") in ("dead", "failed", "circuit_open")))
+    issues = []
+    if notification_stalled:
+        issues.append("notification_delivery_stalled")
     degraded = bool(failing or expired or queues["slack"]["unresolved"]
                     or queues["slack"]["dead_letters"]
-                    or queues["notifications"].get("dead", 0))
+                    or queues["notifications"].get("dead", 0)
+                    or notification_stalled)
     if probe_services:
         degraded = degraded or not services.get("web", {}).get("ok", False)
     return {
         "ok": not degraded, "status": "degraded" if degraded else "ok", "at": now,
         "workers": workers, "services": services, "credentials": credentials,
-        "queues": queues, "heartbeats": beats,
+        "queues": queues, "heartbeats": beats, "issues": issues,
     }
 
 
@@ -565,6 +632,16 @@ def enqueue_health_alerts(store: OpsStore, report: dict, *, backlog_warning: int
             "%d notifications exhausted their retries" % notification_dead,
             severity="error", payload={"queue": "notifications"},
             dedupe_key="dead-letters:notifications", now=now)
+    notification_queue = ((report.get("queues") or {}).get("notifications") or {})
+    if notification_queue.get("stale"):
+        add(
+            "notification_backlog", "Collie notifications are backing up",
+            "%d notifications have waited for about %d minutes" % (
+                int(notification_queue.get("live") or 0),
+                int(float(notification_queue.get("oldest_pending_age_s") or 0) / 60)),
+            severity="warning", payload={"queue": "notifications",
+                                          "live": int(notification_queue.get("live") or 0)},
+            dedupe_key="queue-backlog:notifications", now=now)
     for cred in report.get("credentials") or []:
         remaining = cred.get("seconds_remaining")
         if cred.get("state") in ("expired", "missing", "expiring") or (

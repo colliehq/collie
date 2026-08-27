@@ -64,6 +64,33 @@ def test_outbox_retry_lease_dead_letter_capacity_and_pump(tmp_path):
         assert store.notification_stats()["delivered"] == 1
 
 
+def test_notification_health_uses_backlog_age_and_dead_retry_is_explicit(tmp_path):
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        nid = store.enqueue("notice", "old", "private body", now=10)
+        health = store.notification_health(now=400, stale_after_s=300)
+        assert health["live"] == health["due"] == 1
+        assert health["oldest_pending_age_s"] == 390
+        assert health["stale"] is True
+        item = store.claim(now=400)[0]
+        assert item["notification_id"] == nid
+        assert store.failed(nid, "private transport detail", max_attempts=1, now=400) == "dead"
+        assert store.retry_dead(nid, now=401) == 1
+        row = store.db.execute(
+            "SELECT state,attempts,last_error FROM notifications WHERE notification_id=?", (nid,)
+        ).fetchone()
+        assert dict(row) == {"state": "pending", "attempts": 0, "last_error": ""}
+
+
+def test_stale_backlog_and_pump_make_health_degraded(tmp_path):
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.enqueue("notice", "old", "private body", now=10)
+        store.beat("notification-pump", "running", ttl=20, now=10)
+        report = aggregate_health(store, now=400, probe_services=False)
+        assert report["status"] == "degraded"
+        assert report["issues"] == ["notification_delivery_stalled"]
+        assert "private body" not in json.dumps(report)
+
+
 def test_outbox_strict_json_and_corrupt_payload_are_fail_closed(tmp_path):
     with OpsStore(str(tmp_path / "ops.db")) as store:
         with pytest.raises((TypeError, ValueError), match="compliant|Out of range"):

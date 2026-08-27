@@ -51,12 +51,16 @@ from typing import Any, Callable
 
 from . import __version__, claude_code_runner, plat, subscription_guard
 from .agent_runners import CodexExecRunner, _display_path
+from .codex_app_server_runner import CodexAppServerRunner
+from .codex_sdk_runner import CodexSdkRunner
+from .pi_rpc_runner import PiRpcRunner
 from .runner_specs import (
     BILLING_MODE_OF,
     CURRENT_PHASE,
     HarnessSpec,
     NOT_IMPLEMENTED_PREFIX,
     RunnerCapabilities,
+    CapabilityHandshake,
     RunnerProbe,
     RunnerUnavailableError,
     family_of_provider,
@@ -139,30 +143,52 @@ CODEX_EXEC_CAPABILITIES = RunnerCapabilities(
     tools=frozenset({"code", "bash"}),
     needs_git_workspace=True,
     prompt_transport="stdin",
+    capability_handshake=True,
     windows_native=None,            # installed here, but no turn has been verified yet
 )
 
-# --- phase 2/3 placeholders -------------------------------------------------
-# Declared, not implemented.  The values come from §E of the design (protocol
-# sources are cited there); they exist so the capability matrix in
-# `collie runners` is not a row of blanks, and every one of them is unreachable
-# until its phase arrives.
+# --- phase 2 and phase 3 declarations --------------------------------------
+# App Server is implemented by ``codex_app_server_runner``.  Phase-3 values are
+# declarations only; their probes stay fail-closed until those adapters pass the
+# same conformance matrix.
 CODEX_APP_SERVER_CAPABILITIES = RunnerCapabilities(
     protocol="codex-appserver-jsonrpc", session_create=True, session_resume=True,
     streaming=True, steer=True, cancel="native+process-tree",
     approval_round_trip=True,       # item/*/requestApproval -> Collie's gate
     usage_tokens=False,             # turn/completed usage shape unverified
     quota_signals=True,             # the only runner that reports quota
-    native_goal=True,               # thread/goal/* exists; must be proven unused (H11)
+    # The server binary has a goal surface, but this adapter neither initializes nor
+    # calls it.  Capabilities describe the adapter Collie can reach, not every method
+    # the child happens to implement; the conformance test proves those methods stay
+    # absent from the wire.
+    native_goal=False,
     confinement="workspace-write", tools=frozenset({"code", "bash"}),
-    prompt_transport="rpc", windows_native=None)
+    prompt_transport="rpc", interactions=frozenset({"approval"}),
+    capability_handshake=True, windows_native=None)
+
+CODEX_SDK_CAPABILITIES = RunnerCapabilities(
+    protocol="openai-codex-python-sdk-sidecar",
+    session_create=True, session_resume=True, session_fork=True,
+    # The sanitized single-request sidecar is for background work.  Interactive
+    # streaming/steering stays on codex-app-server, whose owned stdio transport
+    # can keep a bidirectional turn alive.
+    streaming=False, steer=False, follow_up=False,
+    cancel="process-tree", approval_round_trip=False,
+    usage_tokens=True, usage_cost=False, quota_signals=True,
+    confinement="workspace-write", tools=frozenset({"code", "bash"}),
+    prompt_transport="sdk-sidecar",
+    inputs=frozenset({"text", "image_url", "image_file"}),
+    compact=True, capability_handshake=True, windows_native=None)
 
 PI_RPC_CAPABILITIES = RunnerCapabilities(
     protocol="pi-rpc-lfjsonl", session_create=True, session_resume=True,
     session_fork=True, streaming=True, steer=True, follow_up=True,
     cancel="native+process-tree", approval_round_trip=False,
-    usage_tokens=True, confinement="none", tools=frozenset({"code", "bash"}),
-    prompt_transport="rpc", windows_native=None)
+    usage_tokens=True, usage_cost=True,
+    confinement="tools-allowlist", tools=frozenset({"code"}),
+    prompt_transport="rpc", inputs=frozenset({"text"}), compact=True,
+    interactions=frozenset({"user_input", "select", "confirm"}),
+    capability_handshake=True, windows_native=None)
 
 PRIME_RPC_CAPABILITIES = RunnerCapabilities(
     protocol="prime-rpc-lfjsonl", session_create=True,
@@ -175,10 +201,14 @@ PRIME_RPC_CAPABILITIES = RunnerCapabilities(
 
 HERMES_GATEWAY_CAPABILITIES = RunnerCapabilities(
     protocol="hermes-gateway-jsonrpc", session_create=True, session_resume=True,
-    streaming=True, steer=True, cancel="native+process-tree",
+    session_fork=True, streaming=True, steer=True, follow_up=True,
+    cancel="native+process-tree",
     approval_round_trip=True,       # approval.request -> approval.respond
     usage_tokens=True, confinement="container", tools=frozenset({"code", "bash"}),
-    prompt_transport="rpc", windows_native=None)
+    prompt_transport="rpc", inputs=frozenset({"text", "image_file"}),
+    compact=True,
+    interactions=frozenset({"approval", "user_input", "select", "confirm"}),
+    capability_handshake=True, windows_native=None)
 
 HERMES_ACP_CAPABILITIES = RunnerCapabilities(
     protocol="hermes-acp-jsonrpc", session_create=True, session_resume=True,
@@ -250,19 +280,42 @@ _SPECS: dict[str, HarnessSpec] = {
             "is no approval channel back into Collie's gate",
         ),
     ),
+    "codex-sdk": HarnessSpec(
+        key="codex-sdk",
+        label="OpenAI Codex Python SDK (isolated sidecar)",
+        kind="external",
+        binary="openai_codex",
+        version_argv=(),
+        credential_family="codex",
+        caps=CODEX_SDK_CAPABILITIES,
+        env_policy="codex",
+        guard_alias="codex-cli",
+        phase=2,
+        default_timeout_s=900.0,
+        notes=(
+            "optional install: pip install collie-harness[codex]",
+            "official SDK pinned runtime; SDK is hosted in a sanitized child process",
+            "multimodal input, native thread resume/fork, compaction, and token usage",
+            "background adapter denies all approvals; use codex-app-server for interactive approval/steer",
+        ),
+    ),
     "codex-app-server": HarnessSpec(
         key="codex-app-server",
         label="OpenAI Codex app-server (JSON-RPC)",
         kind="external",
         binary="codex",
         version_argv=("codex", "--version"),
+        min_version="0.149.0",
         credential_family="codex",
         caps=CODEX_APP_SERVER_CAPABILITIES,
         env_policy="codex",
         guard_alias="codex-cli",
         phase=2,
         notes=(
-            "phase 2 is a read-only quota probe (initialize + account/rateLimits/read)",
+            "Codex documents app-server as experimental; this adapter pins local stdio and runs conformance before trust",
+            "experimental WebSocket transport is not used",
+            "host MCP/plugins/web/hooks/memory/multi-agent/project instructions are disabled",
+            "approval requests round-trip to a callback and fail closed to decline",
             "thread/goal/* is a second control plane and is never called",
             "turn/completed usage shape: unverified",
         ),
@@ -277,10 +330,12 @@ _SPECS: dict[str, HarnessSpec] = {
         caps=PI_RPC_CAPABILITIES,
         env_policy="sidecar-harness",
         guard_alias="",             # billing route is Pi's own; unevidenced here
-        phase=3,
+        phase=2,
         notes=(
-            "no tool-level approval exists (--no-approve is project trust, not review); "
-            "bare-metal confinement is none, so shell work requires a container",
+            "bash is disabled; explicit tools: read,edit,write,grep,find,ls",
+            "extensions, skills, prompt templates, project context files, and project trust prompts are disabled",
+            "native RPC steer/follow-up/abort, sessions, fork, compaction, usage and cost",
+            "no tool-level approval exists (--no-approve is project trust, not review)",
             "the Claude route bills as extra usage: refused under no-paid-overage",
         ),
     ),
@@ -305,16 +360,18 @@ _SPECS: dict[str, HarnessSpec] = {
         key="hermes-gateway",
         label="Hermes (tui_gateway JSON-RPC)",
         kind="external",
-        binary="python",
-        version_argv=(),
+        binary="hermes",
+        version_argv=("hermes", "--version"),
         credential_family="collie-sidecar",
         caps=HERMES_GATEWAY_CAPABILITIES,
         env_policy="sidecar-harness",
         guard_alias="",
         phase=3,
         notes=(
-            "hermes -z = YOLO (every approval auto-granted): conformance only, in a container",
-            "double control plane closed by config: cronjob/kanban/delegation toolsets disabled",
+            "wire adapter implemented; real launch requires an explicit docker/podman/nerdctl command",
+            "bare gateway launch is refused because it inherits Hermes plugins, skills, MCP, schedulers, secrets, and shell",
+            "sudo and secret requests are always answered empty; approval defaults to deny",
+            "runtime session ids rotate; receipts retain only stored_session_id",
             "Hermes' own BillingRoute is not Collie evidence: billing class stays unknown",
         ),
     ),
@@ -520,7 +577,11 @@ def apply_compat_report(path: str) -> dict[str, tuple[str, ...]]:
                 "downgraded": tuple(sorted(downgraded)),
                 # "verified" means the matrix actually ran here and something
                 # passed — a row of SKIPs is not a verification.
-                "verified": any(status == _PASS for status in row.values()),
+                # A later-phase declaration may pass only the read-only adapter
+                # admission fingerprint.  That is useful evidence, but never a
+                # compatibility badge and never a reason to make it selectable.
+                "verified": (SPECS[key].phase <= CURRENT_PHASE and
+                             any(status == _PASS for status in row.values())),
                 "windows_native": windows_native,
             }
             applied[key] = _COMPAT[key]["downgraded"]
@@ -815,6 +876,12 @@ def _external_probe(spec: HarnessSpec, now: float, live: bool,
     """One external CLI: ``which`` + ``--version`` + login metadata, then ``--live``."""
     if spec.key == "codex-exec":
         base = CodexExecRunner(executable=spec.binary).probe(now=now)
+    elif spec.key == "codex-sdk":
+        base = CodexSdkRunner().probe(now=now)
+    elif spec.key == "codex-app-server":
+        base = CodexAppServerRunner(executable=spec.binary).probe(now=now)
+    elif spec.key == "pi-rpc":
+        base = PiRpcRunner(executable=spec.binary).probe(now=now)
     elif spec.key == "claude-code":
         base = claude_code_runner.ClaudeCodeRunner(executable=spec.binary).probe(now=now)
         if base.installed:
@@ -833,7 +900,9 @@ def _external_probe(spec: HarnessSpec, now: float, live: bool,
         return base
     if spec.key == "claude-code":
         return _live_claude(base, now, status_runner)
-    return _live_codex(base, now, status_runner)
+    if spec.key in ("codex-exec", "codex-sdk", "codex-app-server"):
+        return _live_codex(base, now, status_runner)
+    return base
 
 
 def probe(key: str, *, live: bool = False, now: float | None = None,
@@ -944,6 +1013,27 @@ def option_keys() -> tuple[str, ...]:
     return tuple(key for key, spec in SPECS.items() if spec.phase <= CURRENT_PHASE)
 
 
+def handshake(key: str, *, live: bool = False, provider: str = "") -> CapabilityHandshake:
+    """Return the host-observed capability manifest used for admission.
+
+    This is the same declared-capabilities ∩ conformance-report projection the
+    selector consumes, wrapped as an explicit protocol handshake so embedders do
+    not need to infer capability truth from a label or runner class.
+    """
+    spec = SPECS.get(str(key or ""))
+    if spec is None:
+        raise ValueError("unknown runner: %r" % str(key))
+    observed = probe(spec.key, live=live, provider=provider)
+    capabilities = RunnerCapabilities.from_dict(
+        observed.capabilities or spec.caps.to_dict())
+    return CapabilityHandshake(
+        runner=spec.key, protocol=capabilities.protocol,
+        protocol_version=capabilities.protocol_version or observed.version,
+        capabilities=capabilities,
+        source="probe+compat" if observed.capabilities else "declaration",
+        negotiated_at=observed.probed_at)
+
+
 def make_runner(key: str, *, model: str = "", timeout_s: float | None = None,
                 env_policy: str = "") -> Any:
     """Build the runner object for ``key``.
@@ -971,17 +1061,28 @@ def make_runner(key: str, *, model: str = "", timeout_s: float | None = None,
     if spec.key == "codex-exec":
         return CodexExecRunner(executable=spec.binary, model=model,
                                default_timeout_s=timeout, env_policy=policy)
+    if spec.key == "codex-sdk":
+        return CodexSdkRunner(model=model, default_timeout_s=timeout,
+                              env_policy=policy)
+    if spec.key == "codex-app-server":
+        return CodexAppServerRunner(
+            executable=spec.binary, model=model, default_timeout_s=timeout,
+            env_policy=policy)
     if spec.key == "claude-code":
         return claude_code_runner.ClaudeCodeRunner(
             executable=spec.binary, model=model, default_timeout_s=timeout,
             env_policy=policy)
+    if spec.key == "pi-rpc":
+        return PiRpcRunner(executable=spec.binary, model=model,
+                           default_timeout_s=timeout, env_policy=policy)
     raise RunnerUnavailableError("no runner implementation for %r" % spec.key)
 
 
 __all__ = [
-    "CODEX_APP_SERVER_CAPABILITIES", "CODEX_EXEC_CAPABILITIES", "COLLIE_CAPABILITIES",
+    "CODEX_APP_SERVER_CAPABILITIES", "CODEX_EXEC_CAPABILITIES",
+    "CODEX_SDK_CAPABILITIES", "COLLIE_CAPABILITIES",
     "HERMES_ACP_CAPABILITIES", "HERMES_GATEWAY_CAPABILITIES", "PI_RPC_CAPABILITIES",
     "PRIME_RPC_CAPABILITIES", "PROBE_TTL_S", "SPECS", "apply_compat_report",
-    "compat_status", "list_probes", "make_runner", "option_keys", "probe",
+    "compat_status", "handshake", "list_probes", "make_runner", "option_keys", "probe",
     "probe_all", "reset_cache",
 ]

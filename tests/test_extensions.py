@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from harness.extensions import ExtensionError, ExtensionStore, _Lock, _pid_alive, validate_package
+from harness.extensions import (
+    ExtensionError, ExtensionStore, _Lock, _pid_alive,
+    publisher_signing_payload, validate_package,
+)
 from harness.context import ContextComposer
 from harness.hooks import HookManager
 from harness.skills import discover_skills
@@ -68,6 +71,88 @@ def _package(tmp_path, *, version="1.0.0", ext_id="acme.release", network=None,
     (root / "collie-extension.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8")
     return root
+
+
+def _sign_package(source, key=None, key_id="release-2026"):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = key or Ed25519PrivateKey.generate()
+    public = key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    import base64
+    signature = key.sign(publisher_signing_payload(str(source)))
+    path = source / "collie-extension.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["publisher_signature"] = {
+        "algorithm": "ed25519", "key_id": key_id,
+        "public_key": base64.b64encode(public).decode("ascii"),
+        "signature": base64.b64encode(signature).decode("ascii"),
+    }
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return key
+
+
+def test_publisher_signature_binds_identity_scopes_and_content(tmp_path):
+    source = _package(tmp_path)
+    _sign_package(source)
+
+    report = validate_package(str(source))
+
+    signature = report["publisher_signature"]
+    assert signature["present"] and signature["verified"]
+    assert signature["algorithm"] == "ed25519"
+    assert signature["key_id"] == "release-2026"
+    assert len(signature["fingerprint"]) == 64
+    assert len(report["publisher_statement_sha256"]) == 64
+
+    skill = source / "skills" / "release" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
+    with pytest.raises(ExtensionError, match="signature does not match"):
+        validate_package(str(source))
+
+
+def test_signed_key_is_not_a_publisher_identity_until_explicitly_trusted(tmp_path):
+    state = tmp_path / "state"
+    source = _package(tmp_path)
+    _sign_package(source)
+    store = ExtensionStore(str(state))
+
+    installed = store.install(str(source))
+    assert installed["versions"][0]["trust_state"] == "signature_verified_untrusted"
+    with pytest.raises(ExtensionError, match="explicit confirmation"):
+        store.trust_package_publisher(str(source))
+
+    trusted = store.trust_package_publisher(str(source), confirmed=True)
+    assert trusted["trusted"] is True
+    assert store.get("acme.release")["versions"][0]["trust_state"] == "publisher_verified"
+    assert store.publishers()[0]["publisher"] == "Acme"
+
+    with pytest.raises(ExtensionError, match="explicit confirmation"):
+        store.untrust_publisher("Acme", "release-2026")
+    removed = store.untrust_publisher(
+        "Acme", "release-2026", confirmed=True)
+    assert removed["trusted"] is False
+    assert store.get("acme.release")["versions"][0]["trust_state"] \
+        == "signature_verified_untrusted"
+
+
+def test_trusted_publisher_key_upgrades_new_signed_installs_but_not_scope_approval(tmp_path):
+    state = tmp_path / "state"
+    first = _package(tmp_path, version="1.0.0")
+    key = _sign_package(first)
+    store = ExtensionStore(str(state))
+    store.trust_package_publisher(str(first), confirmed=True)
+
+    second = _package(tmp_path, version="1.1.0")
+    _sign_package(second, key=key)
+    installed = store.install(str(second))
+
+    row = next(item for item in installed["versions"] if item["version"] == "1.1.0")
+    assert row["trust_state"] == "publisher_verified"
+    assert row["approved"] is False
+    with pytest.raises(ExtensionError, match="not approved"):
+        store.enable("acme.release", "1.1.0")
 
 
 def test_install_is_inert_until_exact_scopes_are_approved(monkeypatch, tmp_path):

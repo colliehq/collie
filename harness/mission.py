@@ -527,6 +527,86 @@ class Mission:
         return self.state in _TERMINAL
 
 
+@dataclass(frozen=True)
+class CompletionContract:
+    """Five stable fields every Mission surface can render or automate on.
+
+    ``status`` distinguishes independently verified completion from an accepted
+    hand-off.  Evidence is observation, artifacts are outputs, and next_action
+    stays explicit even for terminal failures; none is inferred from a model's
+    final prose.
+    """
+
+    status: str
+    summary: str
+    evidence: tuple[dict, ...] = ()
+    artifacts: tuple[str, ...] = ()
+    next_action: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "summary": str(self.summary or "")[:2_000],
+            "evidence": [dict(item) for item in self.evidence[:20]],
+            "artifacts": [str(item)[:1_000] for item in self.artifacts[:20]],
+            "next_action": str(self.next_action or "")[:1_000],
+        }
+
+
+def completion_contract(mission, events=(), artifacts=()) -> CompletionContract:
+    """Project durable Mission state into the user-facing completion contract."""
+    state = str(getattr(mission, "state", "") or "")
+    status = {
+        DONE_VERIFIED: "verified",
+        DONE_ACCEPTED: "accepted",
+        FAILED_S: "failed",
+        CANCELLED: "cancelled",
+        NEEDS_YOU: "blocked",
+        WAITING: "waiting",
+        PAUSED: "paused",
+        PAUSING: "pausing",
+        RECOVERY_REQUIRED: "recovery_required",
+        RUNNING: "running",
+        RECONCILING: "reconciling",
+        QUEUED: "queued",
+    }.get(state, state or "unknown")
+    evidence: list[dict] = []
+    for event in reversed(tuple(events or ())):
+        if not isinstance(event, dict) or event.get("kind") != "goal_verification":
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        for item in payload.get("evidence") or ():
+            if not isinstance(item, dict):
+                continue
+            evidence.append({
+                "channel": str(item.get("channel") or "")[:120],
+                "at": item.get("at"), "ok": item.get("ok") is True,
+                "asserted": item.get("asserted") is True,
+                "detail": str(item.get("detail") or "")[:1_000],
+            })
+        break
+    if status == "verified" and not any(item.get("ok") for item in evidence):
+        # Durable state from older builds may predate evidence persistence.  Do
+        # not rewrite history as verified merely because the state name says so.
+        status = "accepted"
+    next_action = {
+        "verified": "none",
+        "accepted": "review the accepted result if more work remains",
+        "failed": "review the failure and choose retry or a different route",
+        "cancelled": "none",
+        "blocked": "provide the requested authorization or input",
+        "waiting": "wait for the scheduled observation",
+        "paused": "resume when ready",
+        "recovery_required": "inspect side effects and reconcile before retry",
+    }.get(status, "continue the Mission")
+    safe_artifacts = tuple(str(item)[:1_000] for item in tuple(artifacts or ())[:20]
+                           if str(item or "").strip())
+    return CompletionContract(status=status,
+                              summary=str(getattr(mission, "result", "") or "")[:2_000],
+                              evidence=tuple(evidence[:20]), artifacts=safe_artifacts,
+                              next_action=next_action)
+
+
 _INVALID_DURABLE_JSON = "_collie_invalid_durable_json"
 
 

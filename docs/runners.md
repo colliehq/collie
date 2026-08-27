@@ -4,6 +4,9 @@ A **worker** is whoever actually carries a task out: whose agent loop runs, whos
 whose sandbox contains them, and whose login pays for the tokens. By default the worker is Collie's
 own harness. From 0.21.27 you can also hire an external coding harness — OpenAI's Codex CLI, or
 Claude Code — for a single run, without giving up anything Collie was already guaranteeing you.
+Version 0.22.0 adds three reviewed routes: Codex App Server for interactive approval/steer, the
+official Codex Python SDK in a sanitized background sidecar, and Pi RPC with shell disabled. Collie
+remains the control plane in all three.
 
 ## Worker is not the same thing as brain
 
@@ -34,9 +37,10 @@ Hiring an external worker does not move the control plane. It stays here:
 - **Cancellation.** External workers launch through the same start gate and Job/process-group
   ownership Collie uses everywhere else, so a cancel kills the whole process tree and can prove it.
 
-And what genuinely changes: an external worker runs its own tools inside its own sandbox, so Collie
-cannot approve or deny its individual actions, and its work is billed to *its* login rather than to
-your configured provider.
+And what genuinely changes: an external worker runs its own tools inside its own sandbox and its
+work is billed to *its* login rather than to your configured provider. Only adapters with an
+explicit interaction channel can bring a native approval back to Collie's Gate; `codex-exec`, the
+Codex SDK background route, Claude Code, and Pi therefore stay fail-closed or omit shell entirely.
 
 ## Choosing a worker
 
@@ -81,6 +85,8 @@ collie runners                          # the table
 collie runners probe codex-exec         # one worker, metadata only
 collie runners probe codex-exec --live  # additionally ask the CLI's own status command
 collie runners compat --runners claude-code,codex-exec --live --report compat.json
+collie runners compat --runners codex-app-server --report app-server-compat.json
+collie runners compat --runners codex-sdk,pi-rpc --report phase2-compat.json
 ```
 
 A plain probe is deliberately cheap and read-only: it resolves the binary on `PATH`, reads
@@ -132,25 +138,86 @@ the user's plugins/skills/browser bridge cannot silently enlarge that five-tool 
 only worker that reports a dollar cost of its own. Reach for `codex-exec` or `collie` when the task
 needs to run commands rather than only edit files.
 
+### `codex-app-server` — OpenAI Codex App Server
+
+Runs Codex's documented **experimental** App Server JSON-RPC protocol over local stdio, minimum
+Codex CLI 0.149.0. Stability is earned by the pinned CLI version and Collie's conformance matrix,
+not inferred from the command name. It starts or resumes one thread, starts one turn, streams native
+events, supports `turn/steer`, and requests
+`turn/interrupt` before escalating to Collie's owned process-tree kill. Command and file-change
+approval requests round-trip to Collie's callback; no callback means `decline`. Unknown server
+requests receive a JSON-RPC method-not-found error, and broad permission requests receive an empty
+grant.
+
+On the CLI that callback uses the same Gate and attended TTY approver as Collie's native loop. On
+Web it parks the same idempotent Inbox item used by desktop and phone approval cards. Project-mode
+commands and workspace file changes may be auto-approved by the Gate; Interactive mode waits for an
+explicit answer. Mid-turn Web messages are relayed to `turn/steer`, including messages queued during
+the small process-start race.
+
+App Server has no `--ignore-user-config` switch, so the launch uses strict config and pins empty MCP
+and plugin tables, disables web search, project instructions, hooks, memories, multi-agent tools and
+apps, and re-pins `workspace-write` plus `on-request` when a thread is resumed. It uses neither the
+experimental WebSocket transport nor `thread/goal/*`; a native goal surface existing in Codex is not
+permission for a second planner to continue Collie's Mission.
+
+### `codex-sdk` — official OpenAI Codex Python SDK
+
+This optional route (`pip install "collie-harness[codex]"`) is for background slices. The official
+SDK runs in a separate sanitized Python process because SDK environment settings extend the current
+environment; putting it in-process would let ambient API keys and endpoint overrides cross the
+billing boundary. The worker pins `workspace-write`, denies every approval, disables MCP, plugins,
+web, hooks, memory, apps, multi-agent tools, and project instructions, and reports token usage.
+
+It accepts text, data-image URLs, and local image files, and supports native thread resume, fork,
+and compaction. It deliberately does not pretend a one-request sidecar can steer a live turn; use
+`codex-app-server` when approval or mid-turn interaction matters. Malformed LFJSONL, duplicate or
+non-terminal result frames, and literal records after completion make the slice unsettled.
+
+### `pi-rpc` — Pi RPC with an explicit file-tool boundary
+
+Pi runs in `--mode rpc` with exactly `read,edit,write,grep,find,ls`. Bash is absent because the RPC
+protocol has no tool-level approval round-trip. Extensions, skills, prompt templates, context files,
+and project trust prompts are disabled on every launch. Native RPC provides distinct steer and
+follow-up queues, abort, resume, fork, compaction, final assistant text, token usage, and reported
+cost. A written abort is not treated as cancellation proof: if the peer does not settle promptly,
+Collie escalates to its owned process tree.
+
+Pi authentication is probed read-only with `pi auth check --no-refresh`. Its billing class remains
+unknown unless the route can be evidenced, so `--no-paid-overage` still refuses rather than guessing.
+
 ### Declared capabilities
 
 Declared, not promised: `collie runners` shows these intersected with what the last compatibility
 report actually verified here.
 
-| | `collie` | `codex-exec` | `claude-code` |
-|---|---|---|---|
-| Tools | code, bash, browser, desktop, MCP, web search, email, Slack | code, bash | code (five file tools) |
-| Shell | yes, gated per action | yes, inside the workspace sandbox | no |
-| Resume a session | yes | yes (`exec resume`) | yes (`--resume`) |
-| Steer mid-turn | yes | no — a new instruction becomes the next resume | no |
-| Streaming events | yes | yes — complete JSONL records | yes — complete stream-json records |
-| Cancel | native + process tree | process tree | process tree |
-| Approvals reach Collie's gate | yes — the gate *is* the channel | no (rejects, fail-closed) | no (no shell instead) |
-| Usage: tokens / cost | yes / yes | yes / no | yes / yes |
-| Plan quota signals | no | yes — read-only app-server snapshot | no |
-| Per-request metering (Mission leash) | yes | no | no |
-| Confinement | Collie's gate + leash, per action | `workspace-write` sandbox | tool allowlist |
-| Needs a Git workspace | no | yes | yes |
+| | `collie` | `codex-exec` | `codex-sdk` | `codex-app-server` | `claude-code` | `pi-rpc` |
+|---|---|---|---|---|---|---|
+| Tools | code, shell, browser/apps | code, shell | code, shell | code, shell | five file tools | six file tools |
+| Shell | gated per action | workspace sandbox | workspace sandbox | workspace sandbox | no | no |
+| Resume / fork | yes / yes | yes / no | yes / yes | yes / no | yes / no | yes / yes |
+| Steer / follow-up | yes / yes | no / no | no / no | yes / no | no / no | yes / yes |
+| Input | text + native tools | text | text + URL/file images | text | text | text |
+| Streaming | yes | complete JSONL | terminal sidecar events | JSON-RPC events | stream-json | RPC events |
+| Cancel | native + tree | tree | tree | native + tree | tree | native + tree |
+| Gate approvals | yes | no; rejects | no; rejects | yes; default decline | no shell | no shell |
+| Usage tokens / cost | yes / yes | yes / no | yes / no | unverified / no | yes / yes | yes / yes |
+| Confinement | gate + leash | `workspace-write` | `workspace-write` | `workspace-write` | tool allowlist | tool allowlist |
+
+### Phase-3 declarations: Prime and Hermes
+
+`prime-rpc`, `hermes-gateway`, and `hermes-acp` are visible so their intended billing, protocol, and
+authority boundaries can be reviewed, but they are not selectable. The offline matrix
+runs one `admission` fingerprint: it may read only the candidate's version/help output and verify
+that the documented RPC/ACP entry point exists. That PASS is deliberately insufficient for a
+compatibility badge. Each adapter remains disabled until its separate framing, isolation,
+double-control, cancellation, billing, real-turn, resume, and usage evidence passes in the phase
+that implements it. Hermes Gateway's JSON-RPC wire adapter is implemented and fixture-tested,
+including stored-vs-runtime session identity, approval denial, resume, fork, compaction, and cancel.
+Real launch still requires an explicit Docker/Podman/nerdctl command and remains phase-gated: a bare
+gateway inherits Hermes profiles, plugins, skills, MCP servers, schedulers, secrets, and shell. Sudo
+and secret requests are always answered empty. Prime and Hermes were not installed on this host, so
+no live runtime claim is made about either.
 
 ## Billing classes
 
@@ -189,7 +256,7 @@ above is the design's declaration rather than an observation of your host — wh
 
 Worker selection is wired through `collie run`, Web, Pack, and durable non-overnight Mission code
 slices. Each surface records the selected worker in its receipt; Web also emits the resolved Run Plan
-before work begins, and complete Codex/Claude native events are forwarded live. Pack creates a private
+before work begins, and complete Codex/Claude/App Server/Pi native events are forwarded live. Pack creates a private
 Git baseline for every candidate and lets Collie's host verifier choose the winner. Mission freezes
 the worker and billing route into its leash, re-probes login/billing/quota evidence at every runnable
 boundary, and keeps the worker's native session locator for the next slice.
@@ -227,7 +294,9 @@ longer enforce the remaining budget, and Mission moves to `needs_human` before a
 subscription/local worker records zero *marginal* charge while retaining any reported or computable
 API-equivalent value; a metered worker with unknown cost is not relabelled free.
 
-Receipts are publication fences, not optional telemetry. CLI, Web and Pack arm a durable
+Receipts are publication fences, not optional telemetry. Each external receipt now carries the
+capability handshake used for that slice and any unresolved typed interactions; a paused
+interaction cannot be serialized as a settled terminal result. CLI, Web and Pack arm a durable
 `external_action` replay fence before the worker or copy-back sees the task. It is cleared only after
 the receipt and visible transcript are durable and the worker reported no recovery requirement; an
 unexpected exception, a partial Pack apply, an orphaned attempt directory, or a missing receipt leaves

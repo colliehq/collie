@@ -393,6 +393,44 @@ def _public_health(raw):
                  "automations_active": work.get("automations_active", 0),
                  "recovery_required": recovery},
         "activity_errors": {str(k): "unavailable" for k in (raw.get("activity_errors") or {})},
+        "issues": [str(x)[:120] for x in (raw.get("issues") or [])],
+    }
+
+
+def _public_doctor(raw):
+    """Allowlisted diagnostics for paired clients; local usernames/paths stay in the CLI."""
+    raw = raw if isinstance(raw, dict) else {}
+    runtime = raw.get("runtime") if isinstance(raw.get("runtime"), dict) else {}
+    source = runtime.get("source") if isinstance(runtime.get("source"), dict) else {}
+    command = runtime.get("command") if isinstance(runtime.get("command"), dict) else {}
+    bridge = runtime.get("browser_bridge") if isinstance(runtime.get("browser_bridge"), dict) else {}
+    extension = runtime.get("browser_extension") if isinstance(
+        runtime.get("browser_extension"), dict) else {}
+    checks = []
+    for row in raw.get("checks") or []:
+        if not isinstance(row, dict):
+            continue
+        checks.append({key: row.get(key) for key in
+                       ("id", "status", "title", "detail", "action", "command")
+                       if row.get(key) not in (None, "")})
+    databases = [{key: row.get(key) for key in ("name", "present", "bytes")}
+                 for row in (raw.get("databases") or []) if isinstance(row, dict)]
+    return {
+        "at": raw.get("at"), "ok": bool(raw.get("ok")),
+        "status": str(raw.get("status") or "unknown"),
+        "runtime": {
+            "source": {"version": source.get("version", "")},
+            "command": {"version": command.get("version", ""),
+                        "ok": bool(command.get("ok")), "error": command.get("error", "")},
+            "install_kind": runtime.get("install_kind", ""),
+            "browser_bridge": {"version": bridge.get("version", ""),
+                               "ok": bool(bridge.get("ok"))},
+            "browser_extension": {"shipped": extension.get("shipped", ""),
+                                  "loaded": extension.get("loaded", ""),
+                                  "connected": bool(extension.get("connected"))},
+        },
+        "checks": checks, "databases": databases,
+        "health": _public_health(raw.get("health") or {}),
     }
 
 
@@ -1337,6 +1375,20 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return body if isinstance(body, dict) else None
 
+    def _read_bytes(self, maxlen: int):
+        """Read an exact bounded binary POST body, or ``None`` on any malformed request."""
+        try:
+            n = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            return None
+        if n <= 0 or n > int(maxlen):
+            return None
+        try:
+            value = self.rfile.read(n)
+        except OSError:
+            return None
+        return value if len(value) == n else None
+
     def _sse_open(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1425,6 +1477,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("wallpaper.html", "text/html; charset=utf-8")
             if path == "/ambient":
                 return self._serve_static("ambient.html", "text/html; charset=utf-8")
+            if path == "/meetings":
+                return self._serve_static("meetings.html", "text/html; charset=utf-8")
             if path == "/remote":
                 return self._serve_static("remote.html", "text/html; charset=utf-8")
             if path == "/m":                          # mobile client (served to phones via the relay)
@@ -1485,7 +1539,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"extensions": ExtensionStore(_state_root()).list()})
                 except ExtensionError as exc:
                     return self._send_json({"error": str(exc)}, 409)
-            if path in ("/api/activity", "/api/healthz", "/api/recovery", "/api/hooks") or \
+            if path in ("/api/activity", "/api/healthz", "/api/recovery", "/api/hooks",
+                        "/api/doctor", "/api/control-center", "/api/automations",
+                        "/api/recovery-center", "/api/memory/claims", "/api/budgets",
+                        "/api/security") or \
                     path.startswith("/api/recovery/"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -1495,6 +1552,39 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/healthz":
                     from .controlplane import health
                     return self._send_json(_public_health(health(_state_root())))
+                if path == "/api/doctor":
+                    from .doctor import report
+                    return self._send_json(_public_doctor(report(_state_root())))
+                if path == "/api/control-center":
+                    from .controlcenter import snapshot
+                    return self._send_json(snapshot(_state_root()))
+                if path == "/api/recovery-center":
+                    from .controlcenter import recovery_snapshot
+                    return self._send_json(recovery_snapshot(_state_root()))
+                if path == "/api/automations":
+                    from .controlcenter import automation_snapshot
+                    query = urllib.parse.parse_qs(parsed.query)
+                    return self._send_json(automation_snapshot(
+                        _state_root(), str(query.get("id", [""])[0] or "")[:80]))
+                if path == "/api/memory/claims":
+                    from .controlcenter import memory_snapshot
+                    query = urllib.parse.parse_qs(parsed.query)
+                    status = str(query.get("status", [""])[0] or "") or None
+                    project = str(query.get("project", [""])[0] or "") or None
+                    try:
+                        limit = max(1, min(1000, int(query.get("limit", ["200"])[0])))
+                        return self._send_json(memory_snapshot(
+                            _state_root(), status=status, project=project, limit=limit))
+                    except (TypeError, ValueError) as exc:
+                        return self._send_json({"error": str(exc)}, 400)
+                if path == "/api/budgets":
+                    from .controlcenter import budget_snapshot
+                    query = urllib.parse.parse_qs(parsed.query)
+                    live = str(query.get("live", ["0"])[0]).lower() in ("1", "true", "on")
+                    return self._send_json(budget_snapshot(_state_root(), live_quota=live))
+                if path == "/api/security":
+                    from .controlcenter import security_snapshot
+                    return self._send_json(security_snapshot(_state_root()))
                 if path == "/api/hooks":
                     from .hooks import HookManager
                     manager = HookManager(os.getcwd())
@@ -1706,6 +1796,37 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/record/list":
                 from . import record as rec
                 return self._send_json({"recordings": rec.list_recordings()})
+            if path in ("/api/meetings", "/api/meetings/capabilities", "/api/meetings/schedule",
+                        "/api/meeting", "/api/meeting/audio"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import meeting_reminders, meetings
+                store = meetings.MeetingStore()
+                if path == "/api/meetings/capabilities":
+                    return self._send_json(meetings.capabilities())
+                if path == "/api/meetings":
+                    return self._send_json({"meetings": store.list()})
+                query = urllib.parse.parse_qs(parsed.query)
+                if path == "/api/meetings/schedule":
+                    try:
+                        return self._send_json(meeting_reminders.ReminderStore().snapshot(
+                            start_at=(query.get("start") or [None])[0],
+                            end_at=(query.get("end") or [None])[0]))
+                    except meeting_reminders.ReminderError as exc:
+                        return self._send_json({"error": str(exc)}, 400)
+                meeting_id = str((query.get("id") or [""])[0])
+                if path == "/api/meeting/audio":
+                    try:
+                        return self._serve_meeting_audio(meeting_id)
+                    except meetings.MeetingError as exc:
+                        return self._send_json({"error": str(exc)},
+                                               404 if "not found" in str(exc) else 400)
+                try:
+                    meetings.ensure_processing(meeting_id, store=store)
+                    return self._send_json(store.get(meeting_id))
+                except meetings.MeetingError as exc:
+                    return self._send_json({"error": str(exc)},
+                                           404 if "not found" in str(exc) else 400)
             if path == "/api/desktop/config":
                 from . import desktop as dt
                 return self._send_json(dt.load_config())
@@ -2046,6 +2167,95 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": str(exc)}, 409)
                 return self._send_json({"ok": True, "session": sid,
                                         "state": _public_recovery(state, sid) if state else None})
+            if path == "/api/doctor/repair":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(32768)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                if "confirmed" in body and not isinstance(body.get("confirmed"), bool):
+                    return self._send_json({"error": "confirmed must be boolean"}, 400)
+                from .doctor import repair
+                try:
+                    value = repair(str(body.get("action") or ""), _state_root(),
+                                   confirmed=body.get("confirmed") is True)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                return self._send_json(value)
+            if path in ("/api/automations/upsert", "/api/automations/preview",
+                        "/api/automations/enabled", "/api/automations/run"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(262144)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from .controlcenter import (automation_preview, automation_run_now,
+                                            automation_set_enabled, automation_upsert)
+                try:
+                    if path == "/api/automations/upsert":
+                        spec = body.get("spec")
+                        if not isinstance(spec, dict):
+                            return self._send_json({"error": "spec must be an object"}, 400)
+                        value = automation_upsert(spec, _state_root())
+                    elif path == "/api/automations/preview":
+                        spec = body.get("spec")
+                        if spec is not None and not isinstance(spec, dict):
+                            return self._send_json({"error": "spec must be an object"}, 400)
+                        value = automation_preview(
+                            spec, _state_root(),
+                            automation_id=str(body.get("automation_id") or "")[:80])
+                    elif path == "/api/automations/enabled":
+                        if not isinstance(body.get("enabled"), bool):
+                            return self._send_json({"error": "enabled must be boolean"}, 400)
+                        value = automation_set_enabled(
+                            str(body.get("automation_id") or "")[:80], body["enabled"],
+                            _state_root())
+                    else:
+                        if "confirmed" in body and not isinstance(body.get("confirmed"), bool):
+                            return self._send_json({"error": "confirmed must be boolean"}, 400)
+                        value = automation_run_now(
+                            str(body.get("automation_id") or "")[:80], _state_root(),
+                            confirmed=body.get("confirmed") is True)
+                except KeyError as exc:
+                    return self._send_json({"error": str(exc)}, 404)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                return self._send_json(value)
+            if path == "/api/memory/review":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(32768)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                if "confirmed" in body and not isinstance(body.get("confirmed"), bool):
+                    return self._send_json({"error": "confirmed must be boolean"}, 400)
+                from .controlcenter import memory_review
+                try:
+                    value = memory_review(
+                        body.get("memory_id"), str(body.get("action") or ""), _state_root(),
+                        note=str(body.get("note") or "")[:1000],
+                        confirmed=body.get("confirmed") is True)
+                except KeyError as exc:
+                    return self._send_json({"error": str(exc)}, 404)
+                except (TypeError, ValueError) as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                return self._send_json(value)
+            if path == "/api/security/risk/revoke":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                if "confirmed" in body and not isinstance(body.get("confirmed"), bool):
+                    return self._send_json({"error": "confirmed must be boolean"}, 400)
+                from .controlcenter import security_revoke_risk
+                try:
+                    value = security_revoke_risk(
+                        str(body.get("pattern") or ""), _state_root(),
+                        confirmed=body.get("confirmed") is True)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                return self._send_json(value)
             if path in ("/api/automation/webhook", "/api/automations/webhook"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2302,6 +2512,116 @@ class Handler(BaseHTTPRequestHandler):
                 ok = bb.start_background()
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
+            if path in ("/api/meetings/start", "/api/meetings/chunk", "/api/meetings/note",
+                        "/api/meetings/finish", "/api/meetings/retry", "/api/meetings/delete"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import meeting_reminders, meetings
+                store = meetings.MeetingStore()
+                query = urllib.parse.parse_qs(parsed.query)
+                try:
+                    if path == "/api/meetings/chunk":
+                        meeting_id = str((query.get("id") or [""])[0])
+                        seq = str((query.get("seq") or [""])[0])
+                        raw = self._read_bytes(meetings.MAX_CHUNK_BYTES)
+                        if raw is None:
+                            return self._send_json(
+                                {"error": "expected a non-empty bounded audio chunk"}, 400)
+                        return self._send_json(store.append_chunk(meeting_id, seq, raw))
+                    body = self._read_json(160_000)
+                    if not isinstance(body, dict):
+                        return self._send_json({"error": "expected JSON object"}, 400)
+                    if path == "/api/meetings/start":
+                        scheduled_event = None
+                        scheduled_event_id = str(body.get("scheduled_event_id") or "")
+                        if scheduled_event_id:
+                            scheduled_event = meeting_reminders.ReminderStore().get_event(
+                                scheduled_event_id)
+                        result = store.start(
+                            title=body.get("title") or "", agenda=body.get("agenda") or "",
+                            template=body.get("template") or "general",
+                            consent=body.get("consent") is True,
+                            mime_type=body.get("mime_type") or "audio/webm",
+                            ai_requested=body.get("ai_requested") is True,
+                            language=body.get("language") or "",
+                            scheduled_event_id=scheduled_event_id if scheduled_event else "",
+                            scheduled_series_id=(scheduled_event or {}).get("series_id") or "",
+                            scheduled_end_at=(scheduled_event or {}).get("end_at") or 0)
+                        if scheduled_event:
+                            try:
+                                meeting_reminders.ReminderStore().mark_engaged(
+                                    scheduled_event_id, kind="recording")
+                            except meeting_reminders.ReminderError:
+                                # The recording already exists and must not be hidden from the UI if
+                                # the calendar entry was concurrently removed.
+                                pass
+                        return self._send_json(result, 201)
+                    meeting_id = str(body.get("id") or "")
+                    if path == "/api/meetings/note":
+                        return self._send_json(store.save_notes(
+                            meeting_id, body.get("notes") or "", agenda=body.get("agenda")))
+                    if path == "/api/meetings/finish":
+                        result = store.finish(
+                            meeting_id, notes=body.get("notes") or "",
+                            duration_s=body.get("duration_s") or 0,
+                            ai_requested=body.get("ai_requested") is True)
+                        if result.get("status") == "processing":
+                            meetings.process_async(meeting_id, store=store)
+                        return self._send_json(result)
+                    if path == "/api/meetings/retry":
+                        result = store.mark_retry(meeting_id)
+                        meetings.process_async(meeting_id, store=store)
+                        return self._send_json(result)
+                    if path == "/api/meetings/delete":
+                        if body.get("confirm") is not True:
+                            return self._send_json(
+                                {"error": "explicit delete confirmation required"}, 400)
+                        return self._send_json({"ok": store.delete(meeting_id)})
+                except (meetings.MeetingError, meeting_reminders.ReminderError) as exc:
+                    return self._send_json({"error": str(exc)},
+                                           404 if "not found" in str(exc) else 400)
+            if path in ("/api/meetings/calendar/import", "/api/meetings/events/save",
+                        "/api/meetings/events/delete", "/api/meetings/reminders/preferences",
+                        "/api/meetings/reminders/series", "/api/meetings/reminders/claim",
+                        "/api/meetings/reminders/action"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import meeting_reminders
+                limit = meeting_reminders.MAX_ICS_BYTES + 100_000 if path.endswith("/import") else 160_000
+                body = self._read_json(limit)
+                if not isinstance(body, dict):
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                store = meeting_reminders.ReminderStore()
+                try:
+                    if path.endswith("/calendar/import"):
+                        return self._send_json(store.import_ics(body.get("ics") or ""), 201)
+                    if path.endswith("/events/save"):
+                        return self._send_json(store.save_event(
+                            event_id=body.get("id") or "", title=body.get("title") or "",
+                            start_at=body.get("start_at") or 0, end_at=body.get("end_at") or 0,
+                            agenda=body.get("agenda") or "", location=body.get("location") or "",
+                            join_url=body.get("join_url") or "",
+                            template=body.get("template") or "general"), 201)
+                    if path.endswith("/events/delete"):
+                        if body.get("confirm") is not True:
+                            return self._send_json(
+                                {"error": "explicit scheduled-meeting delete confirmation required"}, 400)
+                        return self._send_json({"ok": store.delete_event(str(body.get("id") or ""))})
+                    if path.endswith("/reminders/preferences"):
+                        return self._send_json({"ok": True, "preferences":
+                                                store.update_preferences(body)})
+                    if path.endswith("/reminders/series"):
+                        return self._send_json({"ok": True, "series": store.update_series(
+                            str(body.get("series_id") or ""), remind=body.get("remind"),
+                            template=body.get("template"), language=body.get("language"))})
+                    if path.endswith("/reminders/claim"):
+                        return self._send_json({"reminders": store.claim_due(
+                            now=body.get("now"), limit=body.get("limit") or 10)})
+                    return self._send_json(store.reminder_action(
+                        str(body.get("event_id") or ""), str(body.get("phase") or ""),
+                        str(body.get("action") or ""), minutes=body.get("minutes") or 5))
+                except meeting_reminders.ReminderError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
             if path in ("/api/record/start", "/api/record/stop", "/api/record/play",
                         "/api/record/reveal", "/api/record/delete"):
                 if not self._authed(parsed):
@@ -2780,6 +3100,56 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(data, 200, ctype)
         except FileNotFoundError:
             self._send_html(("missing %s" % name).encode(), 404, "text/plain; charset=utf-8")
+
+    def _serve_meeting_audio(self, meeting_id):
+        """Stream one private local recording, with byte ranges for the browser audio player."""
+        from . import meetings
+        path, mime, name = meetings.MeetingStore().audio_info(meeting_id)
+        size = os.path.getsize(path)
+        start, end = 0, max(0, size - 1)
+        status = 200
+        raw_range = str(self.headers.get("Range") or "").strip()
+        if raw_range:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", raw_range)
+            if not match or (not match.group(1) and not match.group(2)):
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not match.group(1):
+                count = min(size, int(match.group(2)))
+                start = max(0, size - count)
+            else:
+                start = int(match.group(1))
+                if match.group(2):
+                    end = min(end, int(match.group(2)))
+            if start < 0 or start >= size or end < start:
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            status = 206
+        length = max(0, end - start + 1)
+        self.send_response(status)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("Content-Disposition", 'inline; filename="%s"' % name.replace('"', ""))
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        self.end_headers()
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                block = f.read(min(1024 * 1024, remaining))
+                if not block:
+                    break
+                self.wfile.write(block)
+                remaining -= len(block)
 
     @staticmethod
     def _default_repo():
@@ -3753,13 +4123,48 @@ class Handler(BaseHTTPRequestHandler):
                 worker_spec = runner_reg.SPECS.get(runner_decision.runner)
                 resume_from = (_worker_session(sid, runner_decision.runner)
                                if qs.get("session", [""])[0] else None)
+                worker_approval_callback = None
+                if runner_decision.runner == "codex-app-server":
+                    from .inbox import VIS_INLINE, InboxStore, inbox_approver
+                    from .codex_app_server_runner import gate_approval_callback
+
+                    def _worker_permission_new(it):
+                        payload = _perm(it)
+                        _tx("permission", payload)
+                        Handler._mirror_pub(sid, "permission", payload)
+                        Handler._live_pub("permission", dict(payload, session=sid))
+                        Handler._notify_waiting(sid, it)
+
+                    worker_inbox = InboxStore(on_new=_worker_permission_new)
+                    Handler._inbox_open(sid, worker_inbox)
+                    worker_gate = default_gate(
+                        cwd, mode=gate_mode,
+                        commands=[verify_command] if gate_mode == "test" else None)
+                    worker_approval_callback = gate_approval_callback(
+                        worker_gate,
+                        inbox_approver(worker_inbox, sid, visibility=VIS_INLINE))
+
+                worker_steering = None
+                if worker_caps["steer"]:
+                    worker_steer_q = Handler._steer_open(sid)
+
+                    def _drain_worker_steer():
+                        out = []
+                        while True:
+                            try:
+                                out.append(worker_steer_q.get_nowait())
+                            except queue.Empty:
+                                return out
+                    worker_steering = _drain_worker_steer
                 try:
                     res = runner_slice.run_adhoc(
                         runner_decision, q, cwd,
                         timeout_s=(worker_spec.default_timeout_s
                                    if worker_spec is not None else None),
                         emit=_worker_emit,
+                        approval_callback=worker_approval_callback,
                         cancelled=lambda: Handler._run_cancelled(sid, run_id),
+                        steering=worker_steering,
                         history_note=(None if resume_from else _worker_history_note(history)),
                         resume_from=resume_from,
                         model=_worker_model("", decision, runner_req, worker_spec),

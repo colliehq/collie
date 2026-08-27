@@ -29,7 +29,10 @@ from . import plat
 from . import __version__
 
 REPO = os.environ.get("COLLIE_UPDATE_REPO", "colliehq/collie")
-API = "https://api.github.com/repos/%s/releases/latest" % REPO
+API_LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
+API_RELEASES = "https://api.github.com/repos/%s/releases?per_page=30" % REPO
+# Backwards-compatible name used by older embedders/tests.
+API = API_LATEST
 TEAM_ID = "58Y98W3QQK"          # the Developer ID the macOS builds are signed with
 WINDOWS_PUBLISHER_CN = "Daming Wu"  # Azure Artifact Signing identity used by release.yml
 APP_PATH = "/Applications/Collie.app"
@@ -50,7 +53,7 @@ def _read_update_journal(path=None):
         return {}
 
 
-def _write_update_journal(value, path=None):
+def _write_update_journal(value, path=None, *, _replace=None):
     """Atomically persist non-secret update/recovery metadata."""
     path = update_journal_path(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -61,7 +64,7 @@ def _write_update_journal(value, path=None):
             json.dump(value, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        (_replace or os.replace)(tmp, path)
     except Exception:
         try:
             os.remove(tmp)
@@ -150,24 +153,77 @@ def _ver(s):
     return tuple(int(n) for n in nums[:3]) + (0,) * (3 - len(nums[:3]))
 
 
-def latest():
+def _channel(value=None):
+    channel = str(value or os.environ.get("COLLIE_UPDATE_CHANNEL") or "stable").lower()
+    if channel not in ("stable", "beta"):
+        raise ValueError("update channel must be stable or beta")
+    return channel
+
+
+def _release_version(value):
+    """SemVer precedence for stable and pre-release update tags."""
+    match = re.fullmatch(
+        r"[vV]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?",
+        str(value or "").strip())
+    if not match:
+        return ()
+    pre = match.group(4)
+    parts = []
+    for item in pre.split(".") if pre else ():
+        parts.append((0, int(item)) if item.isdigit() else (1, item.lower()))
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)),
+            1 if pre is None else 0, tuple(parts))
+
+
+def _release_payload(value, channel):
+    if not isinstance(value, dict):
+        raise ValueError("release feed returned a non-object release")
+    assets = value.get("assets") or []
+    if not isinstance(assets, list):
+        raise ValueError("release feed returned invalid assets")
+    return {"tag": value.get("tag_name") or "",
+            "notes": (value.get("body") or "").strip(),
+            "url": value.get("html_url") or "", "channel": channel,
+            "prerelease": value.get("prerelease") is True,
+            "assets": {a["name"]: a["browser_download_url"] for a in assets
+                       if isinstance(a, dict) and isinstance(a.get("name"), str)
+                       and isinstance(a.get("browser_download_url"), str)},
+            # GitHub reports "sha256:<hex>" per asset. Windows also verifies the installer's
+            # Authenticode chain and publisher before execution; the digest remains necessary because
+            # it binds those signed bytes to this specific release rather than merely to Collie's
+            # signing identity.
+            "digests": {a["name"]: (a.get("digest") or "") for a in assets
+                        if isinstance(a, dict) and isinstance(a.get("name"), str)}}
+
+
+def latest(channel=None):
     """The newest published release. Raises on network or API failure — a silent 'you are up to
-    date' after a failed check is how machines stay on an old build for months."""
-    req = urllib.request.Request(API, headers={"User-Agent": "collie-update/1.0",
+    date' after a failed check is how machines stay on an old build for months.
+
+    ``stable`` uses GitHub's latest-release endpoint, which excludes prereleases.
+    ``beta`` considers both prereleases and stable releases and picks the greatest
+    semantic version, so beta users still receive a later stable build.
+    """
+    channel = _channel(channel)
+    endpoint = API_LATEST if channel == "stable" else API_RELEASES
+    req = urllib.request.Request(endpoint, headers={"User-Agent": "collie-update/1.0",
                                                "X-GitHub-Api-Version": "2022-11-28"})
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if tok:                                   # shared CI IPs hit the anonymous rate limit
         req.add_header("Authorization", "Bearer " + tok)
     with urllib.request.urlopen(req, timeout=20) as r:
         d = json.loads(r.read().decode("utf-8"))
-    return {"tag": d.get("tag_name") or "", "notes": (d.get("body") or "").strip(),
-            "url": d.get("html_url") or "",
-            "assets": {a["name"]: a["browser_download_url"] for a in (d.get("assets") or [])},
-            # GitHub reports "sha256:<hex>" per asset. Windows also verifies the installer's
-            # Authenticode chain and publisher before execution; the digest remains necessary because
-            # it binds those signed bytes to this specific release rather than merely to Collie's
-            # signing identity.
-            "digests": {a["name"]: (a.get("digest") or "") for a in (d.get("assets") or [])}}
+    if channel == "stable":
+        return _release_payload(d, channel)
+    if not isinstance(d, list):
+        raise ValueError("beta release feed returned a non-array response")
+    candidates = [row for row in d if isinstance(row, dict) and not row.get("draft")
+                  and _release_version(row.get("tag_name"))]
+    if not candidates:
+        return _release_payload({}, channel)
+    selected = max(candidates, key=lambda row: _release_version(row.get("tag_name")))
+    return _release_payload(selected, channel)
 
 
 def sha256_of(path):
@@ -310,11 +366,14 @@ def install_kind():
     return "pip"
 
 
-def check():
+def check(channel=None):
     """{'current', 'latest', 'newer': bool, ...}. Does not download anything."""
-    rel = latest()
+    rel = latest(channel)
+    current = _release_version(__version__)
+    candidate = _release_version(rel["tag"])
     return {"current": __version__, "latest": rel["tag"].lstrip("vV"),
-            "newer": _ver(rel["tag"]) > _ver(__version__),
+            "newer": bool(candidate and (not current or candidate > current)),
+            "channel": rel["channel"], "prerelease": rel["prerelease"],
             "kind": install_kind(), "notes": rel["notes"], "url": rel["url"],
             "assets": rel["assets"], "digests": rel["digests"]}
 

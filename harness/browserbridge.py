@@ -405,7 +405,9 @@ def _handler(bridge, enforce_host=True):
                 # has to be able to say "bridge up but your token is wrong" — which it cannot do if
                 # asking requires the very token that is wrong.
                 age = time.time() - bridge.last_poll
-                return self._json({"ok": True, "extension_connected": bridge.last_poll > 0 and age < 40,
+                from . import __version__ as backend_version
+                return self._json({"ok": True, "backend_version": backend_version,
+                                   "extension_connected": bridge.last_poll > 0 and age < 40,
                                    "extension_version": bridge.ext_version,
                                    "auth_required": not auth_off(),
                                    "rejected_unauthorized": bridge.rejected,

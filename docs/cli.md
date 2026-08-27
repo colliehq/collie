@@ -46,13 +46,17 @@ collie run "…" --runner auto        # choose per task, but only inside RUNNER_
 | `collie` | Collie's own harness. Default; also the fallback for every other value. |
 | `auto` | Choose per task from the members listed in `RUNNER_POOL`, and never from outside it. |
 | `codex-exec` | OpenAI Codex CLI (`codex exec --json`), under your existing `codex login`. |
+| `codex-sdk` | Official OpenAI Codex Python SDK in a sanitized background sidecar; optional `collie-harness[codex]`. |
+| `codex-app-server` | OpenAI Codex App Server (experimental local stdio JSON-RPC), with approval round-trips, steer, and interrupt. |
 | `claude-code` | Claude Code (`claude -p`), under your existing `claude login`. |
+| `pi-rpc` | Pi RPC with file tools only, native steer/follow-up/fork/compact, and no shell. |
 
 What does **not** change when you pick an external worker: the budget ceiling, the approval policy,
 the verification gate, the receipt, session persistence, and cancellation are all still Collie's.
 The worker saying it is done is not a completion signal — `verified` is written only by a host
-check that actually ran. What does change: the worker runs its own tools inside its own sandbox, so
-Collie cannot approve its individual actions, and its work is billed to *its* login.
+check that actually ran. What does change: the worker runs its own tools inside its own sandbox and
+its work is billed to *its* login. Only App Server currently has a tool-approval round-trip; other
+external routes deny approvals or omit shell.
 
 Persist a choice with `collie config RUNNER codex-exec`, and set the pool `auto` may draw from with
 `collie config RUNNER_POOL "collie,codex-exec"`. Listing an external worker in `RUNNER_POOL` is the
@@ -78,6 +82,11 @@ goal/scheduler control plane is disabled, and that its billing class is one Coll
 readback. Capabilities the latest report could not verify on this host are downgraded to unavailable
 rather than assumed, which is why the table describes your machine and not the design intent.
 
+Later-phase Prime and Hermes rows run only a read-only admission fingerprint against their
+documented programmatic CLI surface. A PASS there means “candidate binary/protocol recognized,” not
+“adapter enabled”; normal isolation, billing, framing, cancel, and live-turn columns remain gated.
+Pi is phase 2 and runs the normal offline conformance columns.
+
 See [Workers](runners.md) for the per-worker capability and boundary tables.
 
 ## Setup & configuration
@@ -96,6 +105,10 @@ See [Workers](runners.md) for the per-worker capability and boundary tables.
 | `collie library install \| enable \| disable \| rollback \| uninstall` | Operate the trusted extension lifecycle; activation and removal have explicit review boundaries. |
 | `collie library revoke <id> --digest <sha256> --reason "…" --yes` | Revoke one exact installed digest; active matching code is disabled fail-closed. |
 | `collie library connections \| audit` | List active data-only connection descriptors or inspect lifecycle audit records. |
+| `collie library publisher-payload \| publishers \| publisher-trust \| publisher-untrust` | Produce externally signable package bytes and manage exact local Ed25519 publisher-key trust. Publisher trust never approves authority scopes. |
+| `collie doctor [--no-probe]` | Diagnose version drift, durable recovery, credentials, services, and notification delivery without changing state. |
+| `collie resilience matrix [--report PATH]` | Run isolated network/restart/corruption/disk/tamper/process-kill fault injections without a model or network. |
+| `collie resilience soak --duration 12h --interval 5m --report PATH` | Repeat the fault matrix with an atomic, restartable checkpoint. |
 
 ## Desktop (Windows)
 

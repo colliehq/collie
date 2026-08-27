@@ -443,7 +443,7 @@ def test_probe_usable_requires_install_login_and_implementation():
 
 
 def test_surface_gate_is_phase_scoped_and_host_owned_surfaces_are_wired():
-    assert CURRENT_PHASE == 1
+    assert CURRENT_PHASE == 2
     assert EXTERNAL_ALLOWED_SURFACES[1] == ("run", "web", "pack", "mission-code")
     for phase, allowed in EXTERNAL_ALLOWED_SURFACES.items():
         assert set(allowed) <= set(SURFACES), phase
@@ -457,6 +457,8 @@ def test_canonical_types_whitelist_is_closed():
         "turn.started", "turn.yielded", "turn.failed", "turn.cancelled",
         "tool.started", "tool.completed", "file.changed", "message.completed",
         "approval.requested", "approval.resolved",
+        "interaction.requested", "interaction.resolved", "message.accepted",
+        "context.compacted",
         "usage.updated", "rate_limit.reached", "auth.required", "runner.error"})
     # deliberately not part of the vocabulary: Codex item.* and a separate
     # protocol error type (framing failures are runner.error like everything else)

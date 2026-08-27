@@ -14,12 +14,14 @@ Package layout::
     hooks.json
     ... every other file explicitly listed in manifest.files
 
-The deterministic SHA-256 printed by ``collie library validate`` is the provenance pin used for
-private/team distribution.  Public discovery and publisher signatures remain a distribution-layer
-concern; the runtime never treats an unpinned download as trusted merely because it installed.
+The deterministic SHA-256 printed by ``collie library validate`` remains the provenance pin used
+for private/team distribution.  Public packages may additionally carry an Ed25519 publisher
+signature.  A valid signature proves possession of a key; it becomes a publisher identity only
+after the operator explicitly trusts that exact publisher/key pair in the local trust store.
 """
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
@@ -50,6 +52,7 @@ _SECRET_REF_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,127}$")
 _TOP_KEYS = {
     "schema_version", "id", "name", "version", "publisher", "description", "license",
     "collie", "platforms", "files", "components", "permissions", "data", "verification",
+    "publisher_signature",
 }
 _COMPONENT_KEYS = {"skills", "hooks", "connections", "templates", "assets"}
 _PERMISSION_KEYS = {
@@ -63,10 +66,85 @@ _MAX_MANIFEST_BYTES = 256 * 1024
 _MAX_FILES = 512
 _MAX_FILE_BYTES = 32 * 1024 * 1024
 _MAX_PACKAGE_BYTES = 128 * 1024 * 1024
+_SIGNATURE_KEYS = {"algorithm", "key_id", "public_key", "signature"}
+_TRUST_SCHEMA = 1
 
 
 class ExtensionError(ValueError):
     """A reviewable package or lifecycle error."""
+
+
+def _publisher_statement(manifest: dict, file_hashes: dict[str, str]) -> bytes:
+    """Canonical bytes signed by a publisher (the signature field is excluded).
+
+    The normalized manifest binds identity, compatibility, components and every
+    declared authority scope.  Content hashes bind all non-manifest package
+    files.  The final package digest still includes the signature-bearing
+    manifest itself and remains the exact installation integrity pin.
+    """
+    return _json_bytes({
+        "format": "collie-publisher-signature-v1",
+        "manifest": manifest,
+        "content_sha256": {key: file_hashes[key] for key in sorted(file_hashes)},
+    })
+
+
+def _decode_signature_part(value, label: str, length: int) -> bytes:
+    text = str(value or "")
+    if len(text) > 512 or not text:
+        raise ExtensionError("publisher_signature.%s is missing or overlong" % label)
+    try:
+        raw = base64.b64decode(text.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise ExtensionError(
+            "publisher_signature.%s must be canonical base64" % label) from exc
+    if len(raw) != length or base64.b64encode(raw).decode("ascii") != text:
+        raise ExtensionError(
+            "publisher_signature.%s has the wrong length or encoding" % label)
+    return raw
+
+
+def _verify_publisher_signature(raw, manifest: dict,
+                                file_hashes: dict[str, str]) -> dict:
+    if raw in (None, {}):
+        return {"present": False, "verified": False, "algorithm": "",
+                "key_id": "", "public_key": "", "fingerprint": "",
+                "signature": ""}
+    if not isinstance(raw, dict):
+        raise ExtensionError("publisher_signature must be an object")
+    unknown = sorted(set(raw) - _SIGNATURE_KEYS)
+    if unknown:
+        raise ExtensionError("unsupported publisher_signature fields: %s" %
+                             ", ".join(unknown))
+    algorithm = str(raw.get("algorithm") or "")
+    key_id = str(raw.get("key_id") or "")
+    if algorithm != "ed25519":
+        raise ExtensionError("publisher_signature.algorithm must be ed25519")
+    if not _ID_RE.fullmatch(key_id):
+        raise ExtensionError("publisher_signature.key_id must be a stable lowercase id")
+    public_text = str(raw.get("public_key") or "")
+    signature_text = str(raw.get("signature") or "")
+    public_key = _decode_signature_part(public_text, "public_key", 32)
+    signature = _decode_signature_part(signature_text, "signature", 64)
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:
+        raise ExtensionError(
+            "signed extensions need cryptography; install 'collie-harness[extensions]'") from exc
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key).verify(
+            signature, _publisher_statement(manifest, file_hashes))
+    except InvalidSignature as exc:
+        raise ExtensionError("publisher signature does not match this package") from exc
+    except ValueError as exc:
+        raise ExtensionError("publisher public key is invalid") from exc
+    return {
+        "present": True, "verified": True, "algorithm": algorithm,
+        "key_id": key_id, "public_key": public_text,
+        "fingerprint": hashlib.sha256(public_key).hexdigest(),
+        "signature": signature_text,
+    }
 
 
 def _pid_alive(pid: int) -> bool:
@@ -489,13 +567,39 @@ def validate_package(source: str) -> dict:
         "verification": verification,
     }
     file_hashes = {rel: _file_sha256(_inside(root, rel)) for rel in expected}
+    content_hashes = {rel: file_hashes[rel] for rel in declared}
+    statement = _publisher_statement(normalized, content_hashes)
+    publisher_signature = _verify_publisher_signature(
+        manifest.get("publisher_signature"), normalized, content_hashes)
+    if publisher_signature["present"]:
+        normalized["publisher_signature"] = {
+            key: publisher_signature[key]
+            for key in ("algorithm", "key_id", "public_key", "signature")
+        }
     digest = package_digest(root, expected)
     # A data file becoming an active Skill/Hook is an authority change even when its bytes and
     # coarse host permissions are unchanged, so the full component mapping is scope material.
     scope_material = {"permissions": permissions, "components": components}
     return {"root": root, "manifest": normalized, "digest": digest,
             "scope_hash": hashlib.sha256(_json_bytes(scope_material)).hexdigest(),
-            "file_hashes": file_hashes, "files": expected}
+            "file_hashes": file_hashes, "files": expected,
+            "publisher_signature": publisher_signature,
+            "publisher_statement_sha256": hashlib.sha256(statement).hexdigest(),
+            "_publisher_statement": statement}
+
+
+def publisher_signing_payload(source: str) -> bytes:
+    """Return canonical bytes for an Ed25519 publisher signing tool.
+
+    The package must not already contain a signature.  Keeping private-key
+    handling outside Collie avoids turning a runtime trust store into a signing
+    key store; publishers can sign these bytes with their existing HSM or
+    release tooling and place the four public fields in the manifest.
+    """
+    report = validate_package(source)
+    if report["publisher_signature"]["present"]:
+        raise ExtensionError("remove publisher_signature before generating a new payload")
+    return bytes(report["_publisher_statement"])
 
 
 def scaffold_package(destination: str, ext_id: str, name: str, publisher: str) -> dict:
@@ -638,6 +742,7 @@ class ExtensionStore:
         self.root = os.path.join(state, "extensions")
         self.packages = os.path.join(self.root, "packages")
         self.registry_path = os.path.join(self.root, "registry.json")
+        self.publisher_trust_path = os.path.join(self.root, "publisher-trust.json")
         self.lock_path = os.path.join(self.root, ".lock")
 
     def _empty(self) -> dict:
@@ -695,6 +800,140 @@ class ExtensionStore:
                 if os.path.exists(tmp): os.unlink(tmp)
             except OSError: pass
 
+    def _load_publisher_trust(self) -> dict:
+        try:
+            data = _read_json(self.publisher_trust_path)
+        except FileNotFoundError:
+            return {"schema_version": _TRUST_SCHEMA, "publishers": {}}
+        except (OSError, ValueError) as exc:
+            raise ExtensionError("publisher trust store is unreadable: %s" % exc) from exc
+        if (not isinstance(data, dict) or data.get("schema_version") != _TRUST_SCHEMA
+                or not isinstance(data.get("publishers"), dict)):
+            raise ExtensionError("publisher trust store has an unsupported schema")
+        for publisher, row in data["publishers"].items():
+            if (not isinstance(publisher, str) or not isinstance(row, dict)
+                    or not isinstance(row.get("keys"), dict)):
+                raise ExtensionError("publisher trust store has an invalid publisher record")
+            for key_id, key in row["keys"].items():
+                if (not _ID_RE.fullmatch(str(key_id)) or not isinstance(key, dict)
+                        or not isinstance(key.get("public_key"), str)
+                        or not isinstance(key.get("fingerprint"), str)):
+                    raise ExtensionError("publisher trust store has an invalid key record")
+        return data
+
+    def _save_publisher_trust(self, data: dict) -> None:
+        os.makedirs(self.root, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix="publisher-trust-", suffix=".tmp", dir=self.root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
+                fh.write("\n"); fh.flush(); os.fsync(fh.fileno())
+            try: os.chmod(tmp, 0o600)
+            except OSError: pass
+            os.replace(tmp, self.publisher_trust_path)
+        finally:
+            try:
+                if os.path.exists(tmp): os.unlink(tmp)
+            except OSError: pass
+
+    @staticmethod
+    def _publisher_trusted(signature: dict, publisher: str, trust: dict) -> bool:
+        if not signature.get("verified"):
+            return False
+        keys = ((trust.get("publishers", {}).get(publisher) or {}).get("keys") or {})
+        key = keys.get(signature.get("key_id")) or {}
+        return bool(key.get("public_key") == signature.get("public_key")
+                    and key.get("fingerprint") == signature.get("fingerprint"))
+
+    def publishers(self) -> list[dict]:
+        trust = self._load_publisher_trust()
+        answer = []
+        for publisher, row in sorted(trust["publishers"].items()):
+            keys = []
+            for key_id, key in sorted((row.get("keys") or {}).items()):
+                keys.append({"key_id": key_id, "fingerprint": key.get("fingerprint"),
+                             "public_key": key.get("public_key"),
+                             "trusted_at": key.get("trusted_at")})
+            answer.append({"publisher": publisher, "keys": keys})
+        return answer
+
+    def trust_package_publisher(self, source: str, *, confirmed: bool = False) -> dict:
+        """Trust the exact publisher/key identity carried by a signed package."""
+        if not confirmed:
+            raise ExtensionError("trusting a publisher key requires explicit confirmation")
+        report = validate_package(source)
+        signature = report["publisher_signature"]
+        if not signature.get("verified"):
+            raise ExtensionError("package has no verified publisher signature")
+        publisher = report["manifest"]["publisher"]
+        with self._mutating() as registry:
+            trust = self._load_publisher_trust()
+            publisher_row = trust["publishers"].setdefault(publisher, {"keys": {}})
+            existing = publisher_row["keys"].get(signature["key_id"])
+            if existing and existing.get("public_key") != signature["public_key"]:
+                raise ExtensionError(
+                    "publisher key id is already bound to a different public key")
+            publisher_row["keys"][signature["key_id"]] = {
+                "public_key": signature["public_key"],
+                "fingerprint": signature["fingerprint"], "trusted_at": time.time(),
+            }
+            self._save_publisher_trust(trust)
+            for ext_id, ext in registry["extensions"].items():
+                if ext.get("publisher") != publisher:
+                    continue
+                for version, record in ext.get("versions", {}).items():
+                    saved = record.get("publisher_signature") or {}
+                    if (saved.get("key_id") == signature["key_id"]
+                            and saved.get("public_key") == signature["public_key"]
+                            and saved.get("verified") is True
+                            and record.get("trust_state") in
+                            ("unreviewed", "signature_verified_untrusted")):
+                        record["trust_state"] = "publisher_verified"
+                        self._audit(registry, "publisher-trust-applied", ext_id,
+                                    version, record.get("digest") or "",
+                                    {"publisher": publisher,
+                                     "key_id": signature["key_id"]})
+            self._audit(registry, "publisher-trust", "", detail={
+                "publisher": publisher, "key_id": signature["key_id"],
+                "fingerprint": signature["fingerprint"],
+            })
+        return {"publisher": publisher, "key_id": signature["key_id"],
+                "fingerprint": signature["fingerprint"], "trusted": True}
+
+    def untrust_publisher(self, publisher: str, key_id: str, *,
+                          confirmed: bool = False) -> dict:
+        if not confirmed:
+            raise ExtensionError("removing publisher trust requires explicit confirmation")
+        publisher, key_id = str(publisher or "").strip(), str(key_id or "").strip()
+        if not publisher or not _ID_RE.fullmatch(key_id):
+            raise ExtensionError("publisher and a valid key id are required")
+        with self._mutating() as registry:
+            trust = self._load_publisher_trust()
+            row = trust["publishers"].get(publisher) or {}
+            keys = row.get("keys") or {}
+            if key_id not in keys:
+                raise ExtensionError("publisher key is not trusted")
+            removed = keys.pop(key_id)
+            if not keys:
+                trust["publishers"].pop(publisher, None)
+            self._save_publisher_trust(trust)
+            for ext_id, ext in registry["extensions"].items():
+                if ext.get("publisher") != publisher:
+                    continue
+                for version, record in ext.get("versions", {}).items():
+                    saved = record.get("publisher_signature") or {}
+                    if (saved.get("key_id") == key_id
+                            and record.get("trust_state") == "publisher_verified"):
+                        record["trust_state"] = "signature_verified_untrusted"
+                        self._audit(registry, "publisher-trust-removed", ext_id,
+                                    version, record.get("digest") or "",
+                                    {"publisher": publisher, "key_id": key_id})
+            self._audit(registry, "publisher-untrust", "", detail={
+                "publisher": publisher, "key_id": key_id,
+                "fingerprint": removed.get("fingerprint"),
+            })
+        return {"publisher": publisher, "key_id": key_id, "trusted": False}
+
     @contextmanager
     def _mutating(self):
         with _PROCESS_LOCK, _Lock(self.lock_path):
@@ -730,7 +969,8 @@ class ExtensionStore:
                 "version": report["manifest"]["version"], "digest": report["digest"],
                 "scope_hash": report["scope_hash"], "diff": _scope_diff(current, report),
                 "permissions": report["manifest"]["permissions"],
-                "components": report["manifest"]["components"]}
+                "components": report["manifest"]["components"],
+                "publisher_signature": report["publisher_signature"]}
 
     def install(self, source: str, *, expected_digest: str = "", approve: bool = False) -> dict:
         report = validate_package(source)
@@ -742,6 +982,9 @@ class ExtensionStore:
         ext_id, version = manifest["id"], manifest["version"]
         destination = self._package_path(ext_id, version)
         with self._mutating() as data:
+            publisher_trusted = self._publisher_trusted(
+                report["publisher_signature"], manifest["publisher"],
+                self._load_publisher_trust())
             if report["digest"] in data.get("revocations", {}):
                 raise ExtensionError("this package digest is revoked")
             ext = data["extensions"].setdefault(ext_id, {
@@ -757,6 +1000,9 @@ class ExtensionStore:
                     raise ExtensionError(
                         "installed package fails integrity; disable and uninstall it before reinstalling")
                 changed = False
+                if publisher_trusted and existing.get("trust_state") in (
+                        "unreviewed", "signature_verified_untrusted"):
+                    existing["trust_state"] = "publisher_verified"; changed = True
                 if expected and existing.get("trust_state") != "digest_pinned":
                     existing["trust_state"] = "digest_pinned"; changed = True
                 if approve and not existing.get("approved"):
@@ -805,7 +1051,11 @@ class ExtensionStore:
                 "scope_hash": report["scope_hash"], "manifest": manifest,
                 "file_hashes": report["file_hashes"], "installed_at": time.time(),
                 "source": os.path.abspath(report["root"]),
+                "publisher_signature": report["publisher_signature"],
                 "trust_state": ("digest_pinned" if expected else
+                                "publisher_verified" if publisher_trusted else
+                                "signature_verified_untrusted"
+                                if report["publisher_signature"]["verified"] else
                                 "locally_reviewed" if approve else "unreviewed"),
                 "approved": bool(approve),
             }
@@ -813,7 +1063,8 @@ class ExtensionStore:
             ext.update(name=manifest["name"], publisher=manifest["publisher"],
                        description=manifest["description"])
             self._audit(data, "install", ext_id, version, report["digest"],
-                        {"approved": bool(approve), "pinned": bool(expected)})
+                        {"approved": bool(approve), "pinned": bool(expected),
+                         "publisher_verified": bool(publisher_trusted)})
         result = self.get(ext_id)
         # Operation metadata prevents callers from guessing which version this invocation handled.
         # In particular, an older reviewed package must never cause a newer pending version to be
@@ -840,6 +1091,11 @@ class ExtensionStore:
                                       key=lambda item: _semver(item[0]), reverse=True):
             row = {key: record.get(key) for key in
                    ("version", "digest", "scope_hash", "installed_at", "trust_state", "approved")}
+            signature = record.get("publisher_signature") or {}
+            row["publisher_signature"] = {
+                key: signature.get(key) for key in
+                ("present", "verified", "algorithm", "key_id", "fingerprint")
+            }
             review = record.get("manifest") or {}
             review_components = review.get("components") or {}
             row["permissions"] = review.get("permissions") or {}

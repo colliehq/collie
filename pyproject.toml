@@ -28,7 +28,9 @@ local = ["onnxruntime", "tokenizers", "huggingface-hub", "numpy"]
 fastembed = ["fastembed"]               # opt-in: jina-v3 / other fastembed models (jina is CC-BY-NC)
 browser = ["playwright"]
 claude = ["claude-agent-sdk>=0.2.136,<0.3"] # official Claude-plan runtime for overnight Missions
+codex = ["openai-codex"]                  # official SDK + its pinned Codex runtime
 remote = ["cryptography"]               # Collie Remote E2E. QR codes need nothing: harness/qr.py is stdlib
+extensions = ["cryptography"]           # Ed25519 publisher signatures and local publisher trust roots
 desktop = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real behind-the-icons
            "pyobjc-framework-WebKit; sys_platform == 'darwin'",     # desktop on macOS (window
            "pyobjc-framework-Quartz; sys_platform == 'darwin'"]     # levels + WKWebView, no Xcode)

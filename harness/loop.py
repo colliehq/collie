@@ -683,7 +683,10 @@ class Harness:
 
         from .gate import ALLOWING, Outcome
         try:
-            outcome = Outcome(str(outcome))
+            # TTY/Inbox approvers return the enum itself; API-style embedders often
+            # return its string value.  Accept both without stringifying an Enum to
+            # ``Outcome.ALLOW_ONCE`` (which is not one of the wire values).
+            outcome = outcome if isinstance(outcome, Outcome) else Outcome(str(outcome))
         except ValueError:
             outcome = Outcome.REJECT_ONCE     # an unparseable answer is not consent
         allowed = outcome in ALLOWING

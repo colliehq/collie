@@ -242,6 +242,33 @@ class RunnerSnapshot:
     invocation: int = 0
     started_at: float = 0.0
     finished_at: float = 0.0
+    terminal_state: str = ""  # completed | failed | cancelled | interrupted | waiting
+    pending_interactions: tuple[runner_specs.PendingInteraction, ...] = ()
+
+    def __post_init__(self) -> None:
+        pending: list[runner_specs.PendingInteraction] = []
+        for item in tuple(self.pending_interactions or ())[-256:]:
+            if isinstance(item, runner_specs.PendingInteraction):
+                pending.append(item)
+            elif isinstance(item, dict):
+                pending.append(runner_specs.PendingInteraction.from_dict(item))
+        object.__setattr__(self, "pending_interactions", tuple(pending))
+        state = str(self.terminal_state or "")
+        if state not in ("", "completed", "failed", "cancelled", "interrupted", "waiting"):
+            state = ""
+        if pending:
+            state = "waiting"
+            object.__setattr__(self, "settled", False)
+        elif not state:
+            if self.settled:
+                state = "completed"
+            elif self.cancelled:
+                state = "cancelled"
+            elif self.timed_out or self.recovery_required:
+                state = "interrupted"
+            elif self.error:
+                state = "failed"
+        object.__setattr__(self, "terminal_state", state)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -264,6 +291,9 @@ class RunnerSnapshot:
             "invocation": self.invocation,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "terminal_state": self.terminal_state,
+            "pending_interactions": [item.to_dict()
+                                     for item in self.pending_interactions],
         }
 
     @classmethod
@@ -284,6 +314,9 @@ class RunnerSnapshot:
         raw_events = value.get("events")
         raw_events = raw_events if isinstance(raw_events, (list, tuple)) else ()
         raw_events = raw_events[-_MAX_PERSISTED_EVENTS:]
+        raw_interactions = value.get("pending_interactions")
+        raw_interactions = (raw_interactions
+                            if isinstance(raw_interactions, (list, tuple)) else ())
         workspace = str(value.get("workspace") or "")
         workspace = (os.path.realpath(os.path.abspath(workspace))
                      if workspace and "\x00" not in workspace else "")
@@ -310,6 +343,11 @@ class RunnerSnapshot:
             invocation=_safe_counter(value.get("invocation")),
             started_at=_safe_float(value.get("started_at")),
             finished_at=_safe_float(value.get("finished_at")),
+            terminal_state=str(value.get("terminal_state") or ""),
+            pending_interactions=tuple(
+                runner_specs.PendingInteraction.from_dict(item)
+                for item in raw_interactions[-256:]
+                if isinstance(item, dict)),
         )
 
 
@@ -345,12 +383,28 @@ class ProcessRunner(Protocol):
 
 
 class AgentRunner(Protocol):
-    def start(self, prompt: str, workspace: str, *, timeout_s: float | None = None
+    def start(self, prompt: str | runner_specs.RunInput, workspace: str, *,
+              timeout_s: float | None = None
               ) -> RunnerSnapshot:
         ...
 
-    def resume(self, snapshot: RunnerSnapshot, prompt: str, *,
+    def resume(self, snapshot: RunnerSnapshot,
+               prompt: str | runner_specs.RunInput, *,
                timeout_s: float | None = None) -> RunnerSnapshot:
+        ...
+
+    def fork(self, snapshot: RunnerSnapshot, *,
+             timeout_s: float | None = None) -> RunnerSnapshot:
+        ...
+
+    def compact(self, snapshot: RunnerSnapshot, *,
+                timeout_s: float | None = None) -> RunnerSnapshot:
+        ...
+
+    def steer_current(self, message: str | runner_specs.RunInput) -> bool:
+        ...
+
+    def follow_up_current(self, message: str | runner_specs.RunInput) -> bool:
         ...
 
     def cancel_current(self) -> bool:
@@ -1183,12 +1237,11 @@ def _workspace(value: str) -> str:
     return root
 
 
-def _prompt(value: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("prompt must be non-empty")
-    if "\x00" in value:
-        raise ValueError("prompt contains a NUL byte")
-    return value
+def _prompt(value: Any) -> str:
+    turn_input = runner_specs.RunInput.from_value(value)
+    if turn_input.image_urls or turn_input.image_files:
+        raise ValueError("this runner accepts text only; image input was not sent")
+    return turn_input.text
 
 
 def _snapshot(snapshotter: Callable[[str], dict[str, Any]], workspace: str) -> dict[str, Any]:

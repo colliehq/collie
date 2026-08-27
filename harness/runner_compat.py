@@ -48,6 +48,7 @@ owner without a ``codex`` or ``claude`` binary anywhere on the host.
 from __future__ import annotations
 
 import json
+import base64
 import os
 import platform
 import re
@@ -163,6 +164,19 @@ _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]
 # One cell's error summary.  Long enough to name the assertion that failed,
 # short enough that a table of them is still a table.
 _DETAIL_LIMIT = 600
+
+# Later-phase adapters are visible before they are selectable.  This table is
+# deliberately small: it proves that the binary on PATH exposes the vendor's
+# documented *programmatic* entry point.  It is not a code-signing mechanism and
+# does not turn a phase-3 declaration into an enabled runner; the ordinary
+# framing, isolation, billing and live-turn columns must still pass after an
+# implementation is admitted.
+_ADMISSION_MARKERS: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]] = MappingProxyType({
+    "pi-rpc": (("--help",), ("--mode", "rpc")),
+    "prime-rpc": (("--help",), ("--mode", "rpc")),
+    "hermes-gateway": (("--help",), ("--tui", "acp")),
+    "hermes-acp": (("acp", "--help"), ("acp",)),
+})
 
 
 class SkipCheck(Exception):
@@ -284,6 +298,35 @@ def _capture(argv: list[str], *, env: Mapping[str, str] | None = None,
     return (completed.stdout or ""), (completed.stderr or ""), ""
 
 
+def _capture_cli(resolved: str, args: Iterable[str], *, env: Mapping[str, str],
+                 timeout_s: float = 30.0) -> tuple[str, str, str]:
+    """Read a CLI, including an npm ``.cmd`` shim on Windows.
+
+    ``CreateProcess`` cannot execute batch shims directly.  Python 3.14 also
+    quotes a list-valued ``cmd /c`` argument in a way ``cmd.exe`` treats as
+    literal backslashes, so this one Windows-only branch supplies the exact
+    command line to a fixed ``COMSPEC`` executable.  ``shell=True`` is never
+    used, and both the resolved path and arguments come from the closed adapter
+    manifest rather than task text.
+    """
+    argv = [resolved, *[str(arg) for arg in args]]
+    if os.name != "nt" or os.path.splitext(resolved)[1].lower() not in (".cmd", ".bat"):
+        return _capture(argv, env=env, timeout_s=timeout_s)
+    command = os.environ.get("COMSPEC") or os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
+    command_line = ('"%s" /d /s /c "%s"'
+                    % (command, subprocess.list2cmdline(argv)))
+    try:
+        completed = subprocess.run(
+            command_line, executable=command, env=dict(env),
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout_s,
+            **plat.no_window_kwargs())
+    except Exception as exc:
+        return "", "", "%s: %s" % (type(exc).__name__, exc)
+    return completed.stdout or "", completed.stderr or "", ""
+
+
 def _gated_output(argv: list[str], env: Mapping[str, str], cwd: str,
                   timeout_s: float = 60.0) -> ProcessOutcome:
     """Run ``argv`` through the *production* transport, not a test double.
@@ -338,6 +381,169 @@ class _FakeProcess:
     """Enough of a ``Popen`` for the runners' registration bookkeeping."""
 
     pid = 0
+
+
+class _ScriptedAppServerTransport:
+    """Minimal App Server peer for argv/control-plane conformance."""
+
+    def __init__(self, thread_id: str = "thr_collie_compat"):
+        from collections import deque
+        self.thread_id = thread_id
+        self.sent: list[dict[str, Any]] = []
+        self.incoming: Any = deque()
+        self._returncode = 0
+
+    @property
+    def returncode(self):
+        return self._returncode
+
+    @property
+    def stderr(self):
+        return ""
+
+    def send(self, message):
+        row = dict(message)
+        self.sent.append(row)
+        method = row.get("method")
+        if method == "initialize":
+            self.incoming.append({"id": row["id"], "result": {
+                "userAgent": "collie-conformance", "platformFamily": "test"}})
+        elif method in ("thread/start", "thread/resume"):
+            self.incoming.append({"id": row["id"], "result": {
+                "thread": {"id": self.thread_id}}})
+        elif method == "turn/start":
+            self.incoming.append({"id": row["id"], "result": {
+                "turn": {"id": "turn_compat", "status": "inProgress"}}})
+            self.incoming.append({"method": "turn/started", "params": {
+                "threadId": self.thread_id,
+                "turn": {"id": "turn_compat", "status": "inProgress"}}})
+            self.incoming.append({"method": "item/completed", "params": {
+                "threadId": self.thread_id, "turnId": "turn_compat",
+                "item": {"id": "message_compat", "type": "agentMessage",
+                         "text": "done", "phase": "final_answer"}}})
+            self.incoming.append({"method": "turn/completed", "params": {
+                "threadId": self.thread_id,
+                "turn": {"id": "turn_compat", "status": "completed"}}})
+
+    def receive(self, timeout_s):
+        if not self.incoming:
+            raise TimeoutError("scripted App Server has no queued message")
+        return self.incoming.popleft()
+
+    def terminate(self, timeout_s=5.0):
+        return True
+
+    def close(self):
+        return True
+
+
+class _ScriptedPiTransport:
+    """Minimal Pi RPC peer for offline argv/control-plane checks."""
+
+    def __init__(self, argv: Iterable[str]):
+        from collections import deque
+        self.argv = tuple(argv)
+        self.sent: list[dict[str, Any]] = []
+        self.incoming: Any = deque()
+        self.returncode = 0
+        self.stderr = ""
+        self.session_id = "pi_collie_compat"
+        for flag in ("--session-id", "--fork"):
+            if flag in self.argv and self.argv.index(flag) + 1 < len(self.argv):
+                self.session_id = self.argv[self.argv.index(flag) + 1]
+
+    def send(self, message):
+        row = dict(message)
+        self.sent.append(row)
+        kind = row.get("type")
+        if kind == "get_state":
+            data = {"sessionId": self.session_id}
+        elif kind == "prompt":
+            self.incoming.append({"type": "response", "id": row["id"],
+                                  "command": "prompt", "success": True})
+            self.incoming.append({"type": "agent_settled"})
+            return
+        elif kind == "get_session_stats":
+            data = {"tokens": {"input": 2, "output": 1}}
+        elif kind == "get_last_assistant_text":
+            data = {"text": "done"}
+        else:
+            data = {}
+        self.incoming.append({"type": "response", "id": row.get("id"),
+                              "command": kind, "success": True, "data": data})
+
+    def receive(self, timeout_s):
+        if not self.incoming:
+            raise TimeoutError("scripted Pi peer has no queued message")
+        return self.incoming.popleft()
+
+    def terminate(self, timeout_s=5.0):
+        return True
+
+    def close(self):
+        return True
+
+
+_APP_SERVER_CANCEL_PEER = r"""
+import json
+import os
+import sys
+import time
+
+marker = sys.argv[1]
+thread_id = "thr_collie_cancel"
+
+def emit(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    row = json.loads(line)
+    method = row.get("method")
+    if method == "initialize":
+        emit({"id": row["id"], "result": {"userAgent": "compat-peer"}})
+    elif method in ("thread/start", "thread/resume"):
+        emit({"id": row["id"], "result": {"thread": {"id": thread_id}}})
+    elif method == "turn/start":
+        emit({"id": row["id"], "result": {"turn": {"id": "turn_cancel"}}})
+        emit({"method": "turn/started", "params": {
+            "threadId": thread_id, "turn": {"id": "turn_cancel", "status": "inProgress"}}})
+        with open(marker, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+    elif method == "turn/interrupt":
+        # Deliberately do not acknowledge: Collie must escalate to its process
+        # owner and prove extinction instead of trusting a native cancel reply.
+        time.sleep(180)
+"""
+
+
+_PI_CANCEL_PEER = r"""
+import json
+import os
+import sys
+import time
+
+marker = sys.argv[1]
+
+def emit(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    row = json.loads(line)
+    kind = row.get("type")
+    if kind == "get_state":
+        emit({"type": "response", "id": row["id"], "command": kind,
+              "success": True, "data": {"sessionId": "pi_cancel_compat"}})
+    elif kind == "prompt":
+        emit({"type": "response", "id": row["id"], "command": kind,
+              "success": True})
+        with open(marker, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+    elif kind == "abort":
+        # Ignore native abort. Collie must escalate and prove tree extinction.
+        time.sleep(180)
+"""
 
 
 class _SleepTransport:
@@ -488,6 +694,62 @@ def check_probe(ctx: CheckContext) -> str:
         probe.installed, probe.version or "-", probe.login, blank.get("login"))
 
 
+def check_admission(ctx: CheckContext) -> str:
+    """Corroborate a declared adapter's CLI and documented protocol surface.
+
+    Current-phase runners already have a production probe and implementation, so
+    their admission evidence is the spec/probe pair.  A future runner is never
+    constructed here: only ``--version`` and ``--help`` are read, with stdin
+    closed and the same stripped child environment a real launch would receive.
+    That makes the check cheap enough for CI while keeping "binary found" very
+    different from "adapter enabled".
+    """
+    spec, probe = ctx.spec, ctx.probe
+    if spec.kind == "native":
+        return "native control row; adapter admission does not apply"
+    if spec.phase <= CURRENT_PHASE:
+        _expect(spec.caps.protocol.strip(), "%s declares no protocol" % spec.key)
+        if not probe.installed:
+            raise SkipCheck("not installed: %s" % spec.key)
+        _expect(probe.version.strip(), "%s is installed but reports no version" % spec.key)
+        return "current phase; protocol=%s version=%s" % (spec.caps.protocol, probe.version)
+
+    resolved = shutil.which(spec.binary) if spec.binary else ""
+    if not resolved:
+        raise SkipCheck("phase %d admission: binary not installed: %s"
+                        % (spec.phase, spec.binary or spec.key))
+    env, _receipt = runner_env.child_env(spec.env_policy)
+    declared_version = list(spec.version_argv or (spec.binary, "--version"))
+    version_args = declared_version[1:] if declared_version else ["--version"]
+    out, err, error = _capture_cli(
+        resolved, version_args, env=env, timeout_s=30.0)
+    if error:
+        raise CheckFailure("phase %d admission could not read version: %s"
+                           % (spec.phase, _scrub(error, 160)))
+    version = (out or err).strip().splitlines()
+    _expect(bool(version), "%s is installed but its version command was silent" % spec.key)
+
+    admission = _ADMISSION_MARKERS.get(spec.key)
+    if admission is None:
+        raise SkipCheck("phase %d admission has no reviewed protocol fingerprint for %s"
+                        % (spec.phase, spec.key))
+    help_argv, markers = admission
+    help_out, help_err, help_error = _capture_cli(
+        resolved, help_argv, env=env, timeout_s=30.0)
+    if help_error:
+        raise CheckFailure("phase %d admission could not read protocol help: %s"
+                           % (spec.phase, _scrub(help_error, 160)))
+    help_text = (help_out + "\n" + help_err).lower()
+    missing = [marker for marker in markers if marker.lower() not in help_text]
+    _expect(not missing,
+            "%s does not expose the reviewed %s surface; missing help marker(s): %s"
+            % (spec.key, spec.caps.protocol, ", ".join(missing)))
+    return ("phase %d candidate only; binary=%s version=%s; protocol markers=%s; "
+            "selection remains disabled" %
+            (spec.phase, os.path.basename(resolved), _scrub(version[0], 80),
+             ",".join(markers)))
+
+
 def check_env_hygiene(ctx: CheckContext) -> str:
     """A worker's environment is the allowlist and nothing else — proven in a real child."""
     spec = ctx.spec
@@ -625,6 +887,12 @@ def check_framing(ctx: CheckContext) -> str:
     if spec.kind == "native":
         raise SkipCheck("the native harness has no external frame transport")
 
+    if spec.key in ("codex-app-server", "pi-rpc"):
+        # Both adapters use the same owned bounded LFJSONL transport.  Protocol
+        # correlation is exercised by their runner-specific scripted peers;
+        # this column answers the byte-framing question once at the shared seam.
+        return _check_rpc_stdio_framing(ctx)
+
     workspace = ctx.workspace("frames")
     observations: list[str] = []
     for case, builder, expected in _framing_cases(spec.key):
@@ -663,6 +931,55 @@ def check_framing(ctx: CheckContext) -> str:
     # mapping from drifting apart before the translator is written.
     _expect("runner.error" in CANONICAL_TYPES,
             "runner.error is missing from CANONICAL_TYPES")
+    observations.append("LF-only framing keeps literal U+2028/U+2029 inside JSON strings")
+    return "; ".join(observations)
+
+
+def _check_rpc_stdio_framing(ctx: CheckContext) -> str:
+    """Exercise the real bounded stdio reader against byte-level JSONL cases."""
+    from .codex_app_server_runner import AppServerStdioTransport
+
+    valid = json.dumps({"method": "turn/started", "params": {
+        "text": "first\u2028second"}}, ensure_ascii=False)
+    cases = (
+        ("lf", (valid + "\n").encode("utf-8"), True),
+        ("crlf", (valid + "\r\n").encode("utf-8"), True),
+        ("chunked", (valid + "\n").encode("utf-8"), True),
+        ("u2028", (valid + "\n").encode("utf-8"), True),
+        ("no_trailing_lf", valid.encode("utf-8"), False),
+        ("invalid_json", b"{not json\n", False),
+        ("not_an_object", b"[1,2,3]\n", False),
+        ("nul_and_noise", b"\x00\x01binary noise\n", False),
+        ("empty", b"", False),
+    )
+    observations: list[str] = []
+    env, _receipt = runner_env.child_env("native")
+    workspace = ctx.workspace("appserver-frames")
+    for name, payload, should_pass in cases:
+        wire = base64.b64encode(payload).decode("ascii")
+        split = max(1, len(payload) // 2) if name == "chunked" else len(payload)
+        script = (
+            "import base64,sys,time;"
+            "b=base64.b64decode(sys.argv[1]);n=int(sys.argv[2]);"
+            "sys.stdout.buffer.write(b[:n]);sys.stdout.buffer.flush();"
+            "time.sleep(0.03);sys.stdout.buffer.write(b[n:]);sys.stdout.buffer.flush()"
+        )
+        transport = AppServerStdioTransport(
+            [sys.executable, "-u", "-c", script, wire, str(split)],
+            cwd=workspace, env=env, max_wire_chars=65_536)
+        passed = False
+        try:
+            message = transport.receive(5.0)
+            passed = isinstance(message, dict)
+        except (runner_specs.RunnerProtocolError, EOFError):
+            passed = False
+        finally:
+            transport.close()
+        _expect(passed == should_pass,
+                "%s: strict %s JSONL %s unexpectedly" %
+                (name, ctx.spec.key, "passed" if passed else "failed"))
+        observations.append("%s=%s" %
+                            (name, "settled" if passed else "error_event"))
     observations.append("LF-only framing keeps literal U+2028/U+2029 inside JSON strings")
     return "; ".join(observations)
 
@@ -783,6 +1100,39 @@ def _framing_cases(key: str):
             ("empty", out(""), "error"),
         ]
 
+    if key == "codex-sdk":
+        thread = "thr_codex_sdk_compat"
+        records = [
+            {"type": "thread.started", "thread_id": thread},
+            {"type": "collie.sdk.result", "status": "completed",
+             "thread_id": thread, "final_output": "done",
+             "usage": {"input_tokens": 3, "output_tokens": 1}},
+        ]
+        lines = [json.dumps(record) for record in records]
+
+        def out(text: str):
+            return lambda argv, stdin: ProcessOutcome(stdout=text, exit_code=0)
+
+        whole = "\n".join(lines) + "\n"
+        u2028_records = [dict(records[0]), dict(records[1])]
+        u2028_records[1]["final_output"] = "first\u2028second"
+        return [
+            ("lf", out(whole), "settled"),
+            ("crlf", out("\r\n".join(lines) + "\r\n"), "settled"),
+            ("no_trailing_lf", out("\n".join(lines)), "settled"),
+            ("chunked", out("".join(whole[i:i + 5]
+                                      for i in range(0, len(whole), 5))), "settled"),
+            ("u2028", out("\n".join(json.dumps(item, ensure_ascii=False)
+                                      for item in u2028_records)), "settled"),
+            ("invalid_json", out(lines[0] + "\n{not json\n" + lines[1]),
+             "error_event"),
+            ("not_an_object", out(lines[0] + "\n[1,2,3]\n" + lines[1]),
+             "error_event"),
+            ("nul_and_noise", out(lines[0] + "\n\x00\x01binary noise\n" + lines[1]),
+             "error_event"),
+            ("empty", out(""), "error"),
+        ]
+
     raise SkipCheck("no frame dialect is implemented for %s in this phase" % key)
 
 
@@ -795,6 +1145,11 @@ def check_double_control(ctx: CheckContext) -> str:
                 "the native harness must not declare a second control plane")
         return ("collie is the control plane; there is no second one to disable "
                 "(native_goal=False, native_scheduler=False)")
+
+    if spec.key == "codex-app-server":
+        return _check_app_server_double_control(ctx)
+    if spec.key == "pi-rpc":
+        return _check_pi_double_control(ctx)
 
     _expect(not caps.native_goal,
             "%s declares native_goal: phase 1 has no way to prove a goals surface "
@@ -826,6 +1181,82 @@ def check_double_control(ctx: CheckContext) -> str:
         resumed = "resume argv not reachable offline: %s" % _scrub(exc, 120)
     return "start argv checked (%d tokens); %s; confinement=%s" % (
         len(start_argv), resumed, caps.confinement)
+
+
+def _check_app_server_double_control(ctx: CheckContext) -> str:
+    """Prove App Server's goal surface exists but is never invoked by Collie."""
+    from .codex_app_server_runner import CodexAppServerRunner
+
+    workspace = ctx.workspace("appserver-argv")
+    transports: list[_ScriptedAppServerTransport] = []
+    launches: list[tuple[str, ...]] = []
+
+    def factory(argv, _cwd, _env):
+        launches.append(tuple(argv))
+        transport = _ScriptedAppServerTransport()
+        transports.append(transport)
+        return transport
+
+    runner = CodexAppServerRunner(
+        executable="codex", default_timeout_s=60.0,
+        transport_factory=factory, snapshotter=_StaticSnapshotter("d0"))
+    first = runner.start(_CANCEL_PROMPT, workspace)
+    second = runner.resume(first, _CANCEL_PROMPT)
+    _expect(first.settled and second.settled,
+            "scripted App Server start/resume did not settle")
+    for argv in launches:
+        _check_argv(ctx.spec.key, argv, resume=False)
+    methods = [str(row.get("method") or "")
+               for transport in transports for row in transport.sent]
+    _expect(not any(method.startswith("thread/goal/") for method in methods),
+            "App Server runner invoked its native goal control plane")
+    allowed = {"initialize", "initialized", "thread/start", "thread/resume",
+               "turn/start"}
+    unexpected = sorted({method for method in methods if method and method not in allowed})
+    _expect(not unexpected, "App Server runner invoked unexpected methods: %s"
+            % ", ".join(unexpected))
+    for transport in transports:
+        starts = [row for row in transport.sent
+                  if row.get("method") in ("thread/start", "thread/resume")]
+        _expect(starts and starts[0].get("params", {}).get("sandbox") == "workspace-write",
+                "App Server thread start/resume did not pin workspace-write")
+        _expect(starts[0].get("params", {}).get("approvalPolicy") == "on-request",
+                "App Server thread start/resume did not pin on-request approvals")
+    return ("start argv checked; resume argv checked; native thread/goal unused; "
+            "host extensions disabled; confinement=workspace-write")
+
+
+def _check_pi_double_control(ctx: CheckContext) -> str:
+    """Drive start/resume through Pi's real adapter and inspect both launches."""
+    from .pi_rpc_runner import PiRpcRunner
+
+    workspace = ctx.workspace("pi-argv")
+    launches: list[tuple[str, ...]] = []
+    transports: list[_ScriptedPiTransport] = []
+
+    def factory(argv, _cwd, _env):
+        launches.append(tuple(argv))
+        peer = _ScriptedPiTransport(argv)
+        transports.append(peer)
+        return peer
+
+    runner = PiRpcRunner(default_timeout_s=60.0, transport_factory=factory,
+                         snapshotter=_StaticSnapshotter("d0"))
+    first = runner.start(_CANCEL_PROMPT, workspace)
+    second = runner.resume(first, _CANCEL_PROMPT)
+    _expect(first.settled and second.settled,
+            "scripted Pi start/resume did not settle")
+    _expect(len(launches) == 2, "Pi did not produce start and resume launch lines")
+    _check_argv(ctx.spec.key, launches[0], resume=False)
+    _check_argv(ctx.spec.key, launches[1], resume=True)
+    sent_types = {str(row.get("type") or "")
+                  for peer in transports for row in peer.sent}
+    forbidden = sorted(sent_types.intersection(
+        {"set_model", "spawn", "schedule", "cron", "daemon"}))
+    _expect(not forbidden, "Pi invoked a second control plane: %s" %
+            ", ".join(forbidden))
+    return ("start argv checked; resume argv checked; extensions/skills/context "
+            "disabled; shell absent; confinement=tools-allowlist")
 
 
 def _settled_outcome(key: str, argv: tuple[str, ...]) -> ProcessOutcome:
@@ -880,6 +1311,22 @@ def _check_argv(key: str, argv: tuple[str, ...], *, resume: bool) -> None:
         else:
             _expect("--sandbox" in flags and "workspace-write" in argv,
                     "codex start argv does not pin --sandbox workspace-write")
+    elif key == "codex-app-server":
+        _expect(len(argv) >= 4 and argv[1:4] ==
+                ("app-server", "--stdio", "--strict-config"),
+                "App Server argv does not pin local stdio + strict config")
+        required = {
+            "mcp_servers={}", "plugins={}", 'web_search="disabled"',
+            "project_doc_max_bytes=0", "features.hooks=false",
+            "features.memories=false", "features.multi_agent=false",
+            "features.apps=false",
+        }
+        missing = sorted(required - set(overrides))
+        _expect(not missing, "App Server argv leaves host surfaces enabled: %s"
+                % ", ".join(missing))
+    elif key == "codex-sdk":
+        _expect(len(argv) == 2 and os.path.basename(argv[1]) == "codex_sdk_worker.py",
+                "Codex SDK does not launch the pinned isolated sidecar")
     elif key == "claude-code":
         _expect("--strict-mcp-config" in flags,
                 "claude argv does not exclude the user's MCP servers")
@@ -907,6 +1354,21 @@ def _check_argv(key: str, argv: tuple[str, ...], *, resume: bool) -> None:
                     "claude resume argv forks the session the snapshot names")
         _expect("bypasspermissions" not in joined.lower(),
                 "claude argv asks for bypassPermissions")
+    elif key == "pi-rpc":
+        required = {"--mode", "--tools", "--no-extensions", "--no-skills",
+                    "--no-prompt-templates", "--no-context-files", "--no-approve"}
+        missing = sorted(required - set(flags))
+        _expect(not missing, "Pi argv leaves host surfaces enabled: %s" %
+                ", ".join(missing))
+        _expect(argv[argv.index("--mode") + 1] == "rpc",
+                "Pi launch does not pin RPC mode")
+        tools = argv[argv.index("--tools") + 1].split(",")
+        _expect("bash" not in tools and "shell" not in tools,
+                "Pi tool allowlist enables an unreviewed shell")
+        _expect(set(tools) == {"read", "edit", "write", "grep", "find", "ls"},
+                "Pi tool allowlist drifted: %s" % ",".join(tools))
+        _expect("--session-id" in argv and "--fork" not in argv,
+                "Pi start/resume must address the exact session without forking")
 
 
 def check_billing(ctx: CheckContext) -> str:
@@ -942,6 +1404,10 @@ def check_cancel(ctx: CheckContext) -> str:
     if spec.kind == "native":
         raise SkipCheck("the native harness cancels through its own gate, not a "
                         "process tree it owns")
+    if spec.key == "codex-app-server":
+        return _check_app_server_cancel(ctx)
+    if spec.key == "pi-rpc":
+        return _check_pi_cancel(ctx)
 
     workspace = ctx.workspace("cancel")
     marker = os.path.join(workspace, "child.pid")
@@ -985,6 +1451,96 @@ def check_cancel(ctx: CheckContext) -> str:
             "the snapshot of a cancelled turn does not say it was cancelled")
     _expect(not snapshot.settled, "a cancelled turn was reported as settled")
     return "cancelled in %.2fs; tree extinction confirmed" % elapsed
+
+
+def _check_app_server_cancel(ctx: CheckContext) -> str:
+    """Run a real owned stdio peer that ignores interrupt, then escalate."""
+    from .codex_app_server_runner import AppServerStdioTransport, CodexAppServerRunner
+
+    workspace = ctx.workspace("appserver-cancel")
+    marker = os.path.join(workspace, "child.pid")
+
+    def factory(_argv, cwd, env):
+        return AppServerStdioTransport(
+            [sys.executable, "-u", "-c", _APP_SERVER_CANCEL_PEER, marker],
+            cwd=cwd, env=env)
+
+    runner = CodexAppServerRunner(
+        executable="codex", default_timeout_s=120.0,
+        transport_factory=factory, snapshotter=_StaticSnapshotter("d0"))
+    outcome: dict[str, Any] = {}
+
+    def turn():
+        try:
+            outcome["snapshot"] = runner.start(_CANCEL_PROMPT, workspace)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=turn, name="collie-appserver-cancel", daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and not os.path.isfile(marker):
+        if "error" in outcome:
+            raise outcome["error"]
+        time.sleep(.03)
+    _expect(os.path.isfile(marker), "the App Server cancel peer never reached turn/start")
+    began = time.monotonic()
+    confirmed = runner.cancel_current()
+    elapsed = time.monotonic() - began
+    worker.join(15.0)
+    _expect(confirmed, "App Server cancel did not confirm process-tree extinction")
+    _expect(elapsed <= 5.0, "App Server cancel took %.1fs" % elapsed)
+    _expect(not worker.is_alive(), "App Server turn remained alive after cancel")
+    snapshot = outcome.get("snapshot")
+    _expect(snapshot is not None and snapshot.cancelled,
+            "cancelled App Server turn produced no cancelled snapshot")
+    _expect(not snapshot.settled, "cancelled App Server turn was reported settled")
+    return "cancelled in %.2fs; native interrupt escalated; tree extinction confirmed" % elapsed
+
+
+def _check_pi_cancel(ctx: CheckContext) -> str:
+    """A Pi peer that ignores abort must be killed by the owned stdio tree."""
+    from .codex_app_server_runner import AppServerStdioTransport
+    from .pi_rpc_runner import PiRpcRunner
+
+    workspace = ctx.workspace("pi-cancel")
+    marker = os.path.join(workspace, "child.pid")
+
+    def factory(_argv, cwd, env):
+        return AppServerStdioTransport(
+            [sys.executable, "-u", "-c", _PI_CANCEL_PEER, marker],
+            cwd=cwd, env=env)
+
+    runner = PiRpcRunner(default_timeout_s=120.0, transport_factory=factory,
+                         snapshotter=_StaticSnapshotter("d0"))
+    outcome: dict[str, Any] = {}
+
+    def turn():
+        try:
+            outcome["snapshot"] = runner.start(_CANCEL_PROMPT, workspace)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=turn, name="collie-pi-cancel", daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and not os.path.isfile(marker):
+        if "error" in outcome:
+            raise outcome["error"]
+        time.sleep(.03)
+    _expect(os.path.isfile(marker), "the Pi cancel peer never received prompt")
+    began = time.monotonic()
+    confirmed = runner.cancel_current()
+    elapsed = time.monotonic() - began
+    worker.join(15.0)
+    _expect(confirmed, "Pi cancel did not confirm process-tree extinction")
+    _expect(elapsed <= 5.0, "Pi cancel took %.1fs" % elapsed)
+    _expect(not worker.is_alive(), "Pi turn remained alive after cancel")
+    snapshot = outcome.get("snapshot")
+    _expect(snapshot is not None and snapshot.cancelled,
+            "cancelled Pi turn produced no cancelled snapshot")
+    _expect(not snapshot.settled, "cancelled Pi turn was reported settled")
+    return "cancelled in %.2fs; native abort escalated; tree extinction confirmed" % elapsed
 
 
 def check_one_turn(ctx: CheckContext) -> str:
@@ -1096,6 +1652,10 @@ class Check:
 
 
 _CHECKS: tuple[Check, ...] = (
+    Check("admission", False,
+          "the binary exposes the reviewed vendor programmatic interface; this "
+          "does not by itself enable a later-phase adapter",
+          check_admission),
     Check("probe", False,
           "the probe row is well-formed, explains absence, and reads no login it "
           "was not pointed at",
@@ -1188,7 +1748,7 @@ def _row(key: str, *, live: bool, docker: bool, scratch_root: str,
             if docker and spec.kind != "native":
                 checks[name] = {"status": SKIP, "duration_ms": 0,
                                 "detail": "the Docker runtime arrives in phase 3"}
-            elif spec.phase > CURRENT_PHASE:
+            elif spec.phase > CURRENT_PHASE and name != "admission":
                 checks[name] = {"status": SKIP, "duration_ms": 0,
                                 "detail": "%s in this phase: %s arrives in phase %d"
                                           % (runner_specs.NOT_IMPLEMENTED_PREFIX,

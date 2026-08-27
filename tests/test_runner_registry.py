@@ -42,8 +42,8 @@ from harness.runner_specs import (
 
 
 PHASE_1_KEYS = ("collie", "codex-exec", "claude-code")
-ALL_KEYS = PHASE_1_KEYS + ("codex-app-server", "pi-rpc", "prime-rpc",
-                           "hermes-gateway", "hermes-acp")
+PHASE_2_KEYS = PHASE_1_KEYS + ("codex-sdk", "codex-app-server", "pi-rpc")
+ALL_KEYS = PHASE_2_KEYS + ("prime-rpc", "hermes-gateway", "hermes-acp")
 
 # Deliberately shaped like the real thing: an OAuth blob whose token would be
 # obvious in any output that leaked it.
@@ -153,8 +153,8 @@ def test_keys_closed_and_disjoint_from_providers():
         assert bool(spec.credential_family) == (spec.kind == "external")
 
 
-def test_option_keys_are_the_phase_one_runners():
-    assert runner_registry.option_keys() == PHASE_1_KEYS
+def test_option_keys_are_the_current_phase_runners():
+    assert runner_registry.option_keys() == PHASE_2_KEYS
     for key in runner_registry.option_keys():
         assert runner_registry.SPECS[key].phase <= CURRENT_PHASE
 
@@ -454,12 +454,19 @@ def test_placeholder_probe_launches_nothing(monkeypatch, empty_home, no_network)
 def test_make_runner_builds_the_declared_runner(installed_clis):
     from harness.agent_runners import CodexExecRunner
     from harness.claude_code_runner import ClaudeCodeRunner
+    from harness.codex_app_server_runner import CodexAppServerRunner
 
     codex = runner_registry.make_runner("codex-exec", model="gpt-5.6", timeout_s=30)
     assert isinstance(codex, CodexExecRunner)
     assert codex.model == "gpt-5.6"
     assert codex.default_timeout_s == 30
     assert codex.env_policy == runner_registry.SPECS["codex-exec"].env_policy
+
+    app_server = runner_registry.make_runner(
+        "codex-app-server", model="gpt-5.6", timeout_s=30)
+    assert isinstance(app_server, CodexAppServerRunner)
+    assert app_server.model == "gpt-5.6"
+    assert app_server.default_timeout_s == 30
 
     claude = runner_registry.make_runner("claude-code")
     assert isinstance(claude, ClaudeCodeRunner)

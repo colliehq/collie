@@ -173,6 +173,13 @@ Hermes 的计费路由同样要在 adapter probe 时核实。不从旧 provider 
 
 ## 统一 `AgentRunner` contract
 
+> 2026-08-26 implementation update: the production contract now includes typed `RunInput`,
+> `PendingInteraction`, `QueuedTurnMessage`, and `CapabilityHandshake`; snapshots distinguish
+> terminal state from a waiting interaction, and receipts retain the handshake and unresolved
+> interaction records. Codex SDK and Pi RPC are phase 2. Hermes Gateway has a container-only,
+> fixture-tested wire adapter but remains phase 3 until a constrained image/profile passes the full
+> host conformance matrix. The interface sketch below remains the longer-term async shape.
+
 建议 contract 保持小而严格，所有方法都带 `mission_id`、`runner_id` 和 idempotency key：
 
 ```python

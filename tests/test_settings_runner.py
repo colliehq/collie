@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from harness import settings
 
-RUNNER_OPTION_KEYS = ("collie", "auto", "codex-exec", "claude-code")
+RUNNER_OPTION_KEYS = (
+    "collie", "auto", "codex-exec", "claude-code", "codex-sdk",
+    "codex-app-server", "pi-rpc")
 
 
 def _row(key):

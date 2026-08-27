@@ -860,13 +860,13 @@ def cmd_update(args):
     """
     from . import update as up
     try:
-        info = up.check()
+        info = up.check(args.channel)
     except Exception as e:
         print("could not reach the release feed: %s" % e, file=sys.stderr)
         return 1
 
-    print("collie %s   latest %s   (installed via %s)"
-          % (info["current"], info["latest"] or "?", info["kind"]))
+    print("collie %s   latest %s   (channel %s, installed via %s)"
+          % (info["current"], info["latest"] or "?", info["channel"], info["kind"]))
     if not info["newer"]:
         print("already up to date." if info["latest"] else "no published release found.")
         return 0
@@ -876,7 +876,7 @@ def cmd_update(args):
         if line.strip():
             print("    " + line.strip()[:100])
     if not args.yes:
-        print("\n  install it with:  collie update --yes")
+        print("\n  install it with:  collie update --channel %s --yes" % info["channel"])
         return 0
 
     kind, assets = info["kind"], info["assets"]
@@ -1579,7 +1579,7 @@ def _worker_provider(decision):
 
 
 def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
-                   recorder=None):
+                   recorder=None, approval_callback=None):
     """One turn on the external worker `hd` chose — same RunResult, someone else's process."""
     from . import runner_registry as runner_reg
     from . import runner_slice
@@ -1595,7 +1595,7 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
     return runner_slice.run_adhoc(
         hd, args.task, cwd,
         timeout_s=(spec.default_timeout_s if spec is not None else None),
-        emit=emit, cancelled=None,
+        emit=emit, approval_callback=approval_callback, cancelled=None,
         history_note=(None if resume_from else _worker_history_note(history)),
         resume_from=resume_from, model=model, provider=_worker_provider(hd),
         task_id="adhoc", recorder=recorder)
@@ -1725,6 +1725,21 @@ def cmd_run(args):
                   "%s. Drop them, or use --runner collie." % hd.runner, file=sys.stderr)
             return 2
         h = _RunnerShim(runs_db)
+        worker_approval_callback = None
+        if hd.runner == "codex-app-server":
+            worker_gate_mode = (decision.intent if decision.intent in
+                                ("plan", "review", "test") else
+                                getattr(args, "mode", None))
+            worker_gate = default_gate(
+                cwd, worker_gate_mode,
+                commands=[verify_command] if decision.intent == "test" else None)
+            worker_approver = None
+            if has_approver:
+                from .approve import tty_approver
+                worker_approver = tty_approver(gate=worker_gate)
+            from .codex_app_server_runner import gate_approval_callback
+            worker_approval_callback = gate_approval_callback(
+                worker_gate, worker_approver)
     else:
         gate_mode = (decision.intent if decision.intent in ("plan", "review", "test")
                      else getattr(args, "mode", None))
@@ -1784,7 +1799,8 @@ def cmd_run(args):
         try:
             res = _run_on_worker(args, hd, decision, runner_req, h.emit,
                                  cwd=cwd, sid=sid, history=history,
-                                 recorder=h.recorder)
+                                 recorder=h.recorder,
+                                 approval_callback=worker_approval_callback)
         except ValueError as exc:
             # A --cwd that is not a directory, or an empty task. The slice checks
             # both before building a worker, so nothing was launched and nothing was
@@ -2124,9 +2140,75 @@ def cmd_activity(args):
     return 0 if (not args.health or value.get("ok")) else 1
 
 
+def cmd_doctor(args):
+    """Explain version drift, delivery stalls and recovery state without changing anything."""
+    from .doctor import repair, report
+    if args.repair:
+        try:
+            value = repair(args.repair, args.state_dir, confirmed=args.yes)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    else:
+        value = report(args.state_dir, probe_services=not args.no_probe)
+    print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+    return 0 if value.get("ok") else 1
+
+
+def cmd_resilience(args):
+    """Run isolated fault injection or a restartable soak campaign."""
+    from . import resilience
+
+    selected = [item.strip() for item in str(args.scenarios or "").split(",")
+                if item.strip()] or None
+    path = ""
+    if args.action == "scenarios":
+        for name in resilience.scenario_names():
+            print(name)
+        return 0
+    if args.action == "status":
+        path = os.path.abspath(args.report or os.path.expanduser(
+            "~/.collie/resilience-soak.json"))
+        try:
+            with open(path, encoding="utf-8") as handle:
+                report = json.load(handle)
+        except (OSError, ValueError) as exc:
+            print("no readable resilience report at %s: %s" % (path, exc),
+                  file=sys.stderr)
+            return 1
+    elif args.action == "matrix":
+        report = resilience.run_fault_matrix(
+            scenarios=selected, scratch_root=args.scratch_root)
+        if args.report:
+            path = resilience.write_report(args.report, report)
+    else:
+        path = os.path.abspath(args.report or os.path.expanduser(
+            "~/.collie/resilience-soak.json"))
+        report = resilience.run_soak(
+            duration_s=resilience.parse_duration(args.duration),
+            interval_s=resilience.parse_duration(args.interval),
+            report_path=path, scenarios=selected, scratch_root=args.scratch_root)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print("resilience %s · %s · %d passed · %d failed" % (
+            args.action, report.get("status", "unknown"),
+            int(report.get("passed", report.get("passed_cycles", 0)) or 0),
+            int(report.get("failed", report.get("failed_cycles", 0)) or 0)))
+        if path:
+            print("report: %s" % path)
+        for row in report.get("scenarios") or []:
+            print("  %-28s %-4s %s" % (
+                row.get("name", ""), row.get("status", ""), row.get("detail", "")))
+    return 0 if report.get("status") in ("PASS", "RUNNING") else 1
+
+
 def cmd_library(args):
     """Inspect and operate the digest-pinned local extension lifecycle."""
-    from .extensions import ExtensionError, ExtensionStore, scaffold_package, validate_package
+    from .extensions import (
+        ExtensionError, ExtensionStore, publisher_signing_payload,
+        scaffold_package, validate_package,
+    )
     store = ExtensionStore(args.state_dir or None)
     action, value = args.action, args.value
     try:
@@ -2141,12 +2223,33 @@ def cmd_library(args):
             result = {"connections": store.connections()}
         elif action == "audit":
             result = {"audit": store.audit(args.limit)}
+        elif action == "publishers":
+            result = {"publishers": store.publishers()}
+        elif action == "publisher-payload":
+            if not value:
+                raise ExtensionError("publisher-payload requires a local package directory")
+            import base64
+            import hashlib
+            payload = publisher_signing_payload(value)
+            result = {"format": "collie-publisher-signature-v1",
+                      "payload_base64": base64.b64encode(payload).decode("ascii"),
+                      "payload_sha256": hashlib.sha256(payload).hexdigest()}
+        elif action == "publisher-trust":
+            if not value:
+                raise ExtensionError("publisher-trust requires a signed package directory")
+            result = store.trust_package_publisher(value, confirmed=args.yes)
+        elif action == "publisher-untrust":
+            if not value:
+                raise ExtensionError("publisher-untrust requires the exact publisher name")
+            result = store.untrust_publisher(
+                value, args.key_id, confirmed=args.yes)
         elif action == "validate":
             if not value:
                 raise ExtensionError("validate requires a local package directory")
             report = validate_package(value)
             result = {key: report[key] for key in
-                      ("digest", "scope_hash", "manifest", "file_hashes")}
+                      ("digest", "scope_hash", "manifest", "file_hashes",
+                       "publisher_signature", "publisher_statement_sha256")}
         elif action == "plan":
             if not value:
                 raise ExtensionError("plan requires a local package directory")
@@ -3417,7 +3520,7 @@ def cmd_mcp(args):
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "runners", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit",
-        "activity", "recovery", "hooks", "supervisor", "automations", "library"}
+        "activity", "doctor", "resilience", "recovery", "hooks", "supervisor", "automations", "library"}
 
 
 def _setup_wizard(force=False):
@@ -3557,7 +3660,8 @@ def main(argv=None):
     pr.add_argument("--runner", default=None,
                     choices=[*_runner_option_keys(), "auto"],
                     help="worker that carries out the task: collie (own harness, default) "
-                         "| auto | codex-exec | claude-code; see `collie runners`")
+                         "| auto | codex-exec | codex-sdk | codex-app-server | claude-code | pi-rpc; "
+                         "see `collie runners`")
     pr.add_argument("--verify-command", default=None,
                     help="editable objective check for Test/Required (otherwise detect from repo)")
     pr.add_argument("--cwd", default=None); pr.add_argument("--project", default="demo")
@@ -3821,12 +3925,39 @@ def main(argv=None):
                       help="skip live HTTP probes when using --health")
     pact.set_defaults(fn=cmd_activity)
 
+    pdoc = sub.add_parser(
+        "doctor", help="diagnose version drift, stalled delivery, credentials and durable stores")
+    pdoc.add_argument("--state-dir", default=None)
+    pdoc.add_argument("--no-probe", action="store_true", help="skip local service probes")
+    pdoc.add_argument("--repair", choices=[
+        "test_notifications", "retry_dead_notifications", "reprobe_workers"], default="")
+    pdoc.add_argument("--yes", action="store_true",
+                      help="confirm the bounded repair named by --repair")
+    pdoc.set_defaults(fn=cmd_doctor)
+
+    pres = sub.add_parser(
+        "resilience", help="isolated fault matrix and restartable soak verification")
+    pres.add_argument("action", nargs="?", default="matrix",
+                      choices=["matrix", "soak", "status", "scenarios"])
+    pres.add_argument("--scenarios", default="",
+                      help="comma-separated subset; `resilience scenarios` lists names")
+    pres.add_argument("--duration", default="60s",
+                      help="soak duration such as 10m or 12h (default: 60s)")
+    pres.add_argument("--interval", default="60s",
+                      help="time between soak cycles (default: 60s)")
+    pres.add_argument("--report", default="", help="JSON checkpoint/report path")
+    pres.add_argument("--scratch-root", default=None,
+                      help="existing directory under which private temp fixtures are made")
+    pres.add_argument("--json", action="store_true")
+    pres.set_defaults(fn=cmd_resilience)
+
     plib = sub.add_parser(
         "library", help="trusted extensions: validate, install, review, enable, rollback, remove")
     plib.add_argument("action", nargs="?", default="list",
                       choices=["list", "show", "scaffold", "validate", "plan", "install", "enable",
                                "disable", "rollback", "uninstall", "revoke", "connections",
-                               "audit"])
+                               "audit", "publishers", "publisher-payload",
+                               "publisher-trust", "publisher-untrust"])
     plib.add_argument("value", nargs="?", default="",
                       help="local package directory (validate/plan/install) or extension id")
     plib.add_argument("--version", default="")
@@ -3834,6 +3965,8 @@ def main(argv=None):
                       help="stable reverse-domain id for scaffold")
     plib.add_argument("--name", default="", help="human-readable extension name for scaffold")
     plib.add_argument("--publisher", default="", help="publisher name for scaffold")
+    plib.add_argument("--key-id", default="",
+                      help="exact publisher key id for publisher-untrust")
     plib.add_argument("--digest", default="",
                       help="expected SHA-256 provenance pin (install) or exact digest (revoke)")
     plib.add_argument("--reason", default="", help="security reason for revoke")
@@ -3844,7 +3977,7 @@ def main(argv=None):
     plib.add_argument("--force", action="store_true",
                       help="allow uninstall of the active version; disable is safer")
     plib.add_argument("--yes", action="store_true",
-                      help="confirm uninstall or digest revocation")
+                      help="confirm uninstall, revocation, or publisher trust change")
     plib.add_argument("--limit", type=int, default=100)
     plib.add_argument("--state-dir", default="",
                       help="state root for this command; set COLLIE_STATE_DIR for runtime use")
@@ -4068,6 +4201,8 @@ def main(argv=None):
     pmb.set_defaults(fn=cmd_menubar)
 
     pup = sub.add_parser("update", help="check for a newer collie and install it (--yes to install)")
+    pup.add_argument("--channel", choices=["stable", "beta"], default=None,
+                     help="stable excludes prereleases; beta includes them (default: stable)")
     pup.add_argument("--yes", action="store_true", help="install it, not just report it")
     pup.set_defaults(fn=cmd_update)
 

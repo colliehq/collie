@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.22.0 — The control center closes the operations loop
+
+- Added local-first Meeting Notes with browser microphone/system-audio capture, live rough notes,
+  explicit per-meeting participant-consent confirmation, private local recordings, opt-in OpenAI
+  diarized transcription, configured-provider summaries, timestamp evidence, Markdown export, and
+  scoped deletion. Ordered idempotent chunks, durable finalization, restartable processing, and
+  source-preserving retry behavior keep interrupted recordings and failed AI work honest. Added
+  local `.ics` calendar import, recurring-event expansion, browser/in-app start and end reminders,
+  title-private notifications, series preferences, sensitive-meeting suppression, and meeting-audio
+  interruption prompts; reminders can prefill a note but can never start capture or reuse consent.
+- Added a unified Control Center for recovery, notification/service health, Automation Studio,
+  memory review, budgets, and permission posture, plus `collie doctor` diagnostics and bounded,
+  explicitly confirmed repairs.
+- Added an experimental local-stdio Codex App Server worker with bidirectional approvals, steer and
+  interrupt, strict host-configuration isolation, fail-closed server requests, process-tree
+  ownership, and offline protocol conformance. Added the official Codex Python SDK as an optional,
+  sanitized background sidecar with multimodal input, thread fork/resume, compaction, and usage.
+- Promoted Pi RPC to phase 2 with shell disabled, explicit file tools, native steer/follow-up,
+  resume/fork/compaction, usage/cost reporting, strict host-customization isolation, and abort-to-tree
+  escalation. Added a container-only Hermes Gateway wire adapter while keeping it phase-gated until
+  an isolated runtime passes conformance; Prime and Hermes remain unselectable.
+- Wired App Server approvals into Collie's normal CLI Gate and Web/phone Inbox, relayed Web
+  steering across the process-start race, and fixed TTY/Inbox enum outcomes that had been
+  conservatively misread as denials. Doctor's command probes are now windowless on Windows.
+- Added Ed25519 extension publisher signatures and a local explicit publisher-key trust store.
+  Publisher verification never approves a package's authority scopes, and signing keys remain
+  outside Collie. Added stable/beta update channels and a tokenless PyPI Trusted Publishing job for
+  stable tags.
+- Added `collie resilience matrix|soak|status`: isolated deterministic fault injection for network
+  loss, notification dead letters, daemon restart/lease fencing, corrupt durable JSON, disk-full
+  atomicity, update rollback requests, extension tampering, and owned process-tree cancellation.
+  Soak reports checkpoint after every cycle and resume after process restart or system sleep.
+- Expanded the release gate and documentation for the new worker, operations, extension trust, and
+  recovery surfaces. A real 8–12 hour soak remains an operator-run release qualification and is
+  never claimed merely because the restartable harness exists.
+- Added typed runner inputs/interactions/message delivery, capability handshakes in external
+  receipts, and a five-field Mission completion contract backed by stored verification evidence and
+  real artifact references. Added signed HTTPS webhook, authority-monotonic delegation envelope,
+  and bounded live-session supervision library boundaries without opening a network service.
+
 ## v0.21.32 — Browser control you can see and stop
 
 - Added a persistent current-page side chat, selection context menu, visible acting/paused presence,

@@ -18,7 +18,7 @@ import pytest
 
 from harness import runner_registry, runner_slice
 from harness.agent_runners import RunnerEvent, RunnerSnapshot
-from harness.runner_specs import HarnessDecision, RunnerProbe
+from harness.runner_specs import HarnessDecision, PendingInteraction, RunInput, RunnerProbe
 
 
 # The §C inventory, with a left boundary on the two short prefixes: a decision
@@ -142,6 +142,21 @@ def test_run_result_harness_is_runner_key(monkeypatch, workspace):
     assert runner_slice.receipt_of(res).runner == "codex-exec"
 
 
+def test_structured_input_reaches_multimodal_runner_without_losing_images(
+        monkeypatch, workspace):
+    runner = _FakeRunner("codex-sdk", result=_snapshot("codex-sdk", workspace))
+    _install(monkeypatch, codex_sdk=runner)
+    structured = RunInput("inspect this", image_urls=("data:image/png;base64,AA==",))
+
+    runner_slice.run_adhoc(_decision(runner="codex-sdk"), structured, workspace,
+                           history_note="continue the review")
+
+    prompt = runner.starts[0][0]
+    assert isinstance(prompt, RunInput)
+    assert prompt.image_urls == structured.image_urls
+    assert "continue the review" in prompt.text and "inspect this" in prompt.text
+
+
 def test_settled_is_not_verified(monkeypatch, workspace):
     runner = _FakeRunner("codex-exec", result=_snapshot("codex-exec", workspace))
     _install(monkeypatch, codex_exec=runner)
@@ -153,6 +168,81 @@ def test_settled_is_not_verified(monkeypatch, workspace):
     assert res.verified is False              # only the host verifier may set it
     assert receipt.settled is True
     assert "verified" not in receipt.to_dict()
+
+
+def test_receipt_carries_handshake_and_unresolved_interaction(monkeypatch, workspace):
+    interaction = PendingInteraction(
+        interaction_id="ask-1", runner="codex-exec", kind="user_input",
+        prompt="Choose a branch")
+    snapshot = _snapshot("codex-exec", workspace, settled=True,
+                         pending_interactions=(interaction,))
+    runner = _FakeRunner("codex-exec", result=snapshot)
+    _install(monkeypatch, codex_exec=runner)
+
+    receipt = runner_slice.receipt_of(
+        runner_slice.run_adhoc(_decision(), "t", workspace))
+
+    assert receipt.settled is False
+    assert receipt.interactions[0]["interaction_id"] == "ask-1"
+    assert receipt.capability_handshake["runner"] == "codex-exec"
+    assert receipt.capability_handshake["capabilities"]["protocol"] == \
+        "codex-exec-jsonl"
+
+
+def test_bidirectional_runner_receives_surface_approval_callback(monkeypatch, workspace):
+    class _ApprovalRunner(_FakeRunner):
+        def set_approval_callback(self, callback):
+            self.approval_callback = callback
+
+    runner = _ApprovalRunner(
+        "codex-app-server",
+        result=_snapshot("codex-app-server", workspace))
+    _install(monkeypatch, codex_app_server=runner)
+    callback = lambda kind, params: "decline"
+
+    runner_slice.run_adhoc(
+        _decision(runner="codex-app-server"), "t", workspace,
+        approval_callback=callback)
+
+    assert runner.approval_callback is callback
+
+
+def test_steer_waits_through_runner_launch_race(monkeypatch, workspace):
+    delivered = threading.Event()
+
+    class _SteerRunner(_FakeRunner):
+        active = False
+
+        def start(self, prompt, root, *, timeout_s=None):
+            self.starts.append((prompt, root))
+            self.active = True
+            assert delivered.wait(2.0), "queued steer was lost before launch"
+            return self._result
+
+        def steer_current(self, prompt):
+            if not self.active:
+                return False
+            self.steered = prompt
+            delivered.set()
+            return True
+
+    runner = _SteerRunner(
+        "codex-app-server",
+        result=_snapshot("codex-app-server", workspace))
+    _install(monkeypatch, codex_app_server=runner)
+    queued = ["use the smaller fix"]
+
+    def drain():
+        rows = list(queued)
+        queued.clear()
+        return rows
+
+    result = runner_slice.run_adhoc(
+        _decision(runner="codex-app-server"), "t", workspace,
+        steering=drain)
+
+    assert result.success is True
+    assert runner.steered == "use the smaller fix"
 
 
 def test_usage_is_translated_and_cost_needs_a_price(monkeypatch, workspace):
