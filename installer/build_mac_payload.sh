@@ -105,6 +105,20 @@ fi
 "$RES/python/bin/python3" -m pip install --quiet --no-warn-script-location ".[$EXTRAS]"
 echo "  collie:  installed via the staged interpreter"
 
+# A private companion package can be injected by a release workflow without committing it to the
+# public Collie repository. The wheel path is supplied through the environment so the normal public
+# build stays independent of collie-relay while a sealed tester bundle can carry its provider plugin.
+if [ -n "${COLLIE_RELAY_WHEEL:-}" ]; then
+  [ -f "$COLLIE_RELAY_WHEEL" ] || {
+    echo "  COLLIE_RELAY_WHEEL does not exist: $COLLIE_RELAY_WHEEL" >&2
+    exit 1
+  }
+  "$RES/python/bin/python3" -m pip install --quiet --no-deps --no-warn-script-location \
+      "$COLLIE_RELAY_WHEEL"
+  "$RES/python/bin/python3" -B -c \
+      "import collie_relay, importlib.metadata as m; print('  collie-relay:', m.version('collie-relay'))"
+fi
+
 rm -rf "$RES/python/lib/python$PYVER/test" "$RES/python/lib/python$PYVER/idlelib" \
        "$RES/python/lib/python$PYVER/tkinter" "$RES/python/share" 2>/dev/null || true
 

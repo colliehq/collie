@@ -293,8 +293,33 @@ jobs:
           # the payload builder asks the GitHub API which python-build-standalone release to use, and
           # an anonymous call from a shared runner IP gets rate-limited to a 403
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELAY_WHEEL_B64_1: ${{ secrets.RELAY_WHEEL_B64_1 }}
+          RELAY_WHEEL_B64_2: ${{ secrets.RELAY_WHEEL_B64_2 }}
+          RELAY_WHEEL_B64_3: ${{ secrets.RELAY_WHEEL_B64_3 }}
+          RELAY_WHEEL_B64_4: ${{ secrets.RELAY_WHEEL_B64_4 }}
         run: |
           set -euo pipefail
+          # collie-relay is personal/private infrastructure, so its wheel is supplied as four
+          # temporary encrypted repository-secret chunks. It never enters this public checkout or
+          # the Actions log; the secrets are deleted after the signed artifact is downloaded.
+          RELAY_WHEEL="$RUNNER_TEMP/collie_relay-0.1.3-py3-none-any.whl"
+          [ -n "$RELAY_WHEEL_B64_1" ] || { echo "::error::RELAY_WHEEL_B64_1 is missing"; exit 1; }
+          [ -n "$RELAY_WHEEL_B64_2" ] || { echo "::error::RELAY_WHEEL_B64_2 is missing"; exit 1; }
+          [ -n "$RELAY_WHEEL_B64_3" ] || { echo "::error::RELAY_WHEEL_B64_3 is missing"; exit 1; }
+          [ -n "$RELAY_WHEEL_B64_4" ] || { echo "::error::RELAY_WHEEL_B64_4 is missing"; exit 1; }
+          printf '%s%s%s%s' "$RELAY_WHEEL_B64_1" "$RELAY_WHEEL_B64_2" \
+              "$RELAY_WHEEL_B64_3" "$RELAY_WHEEL_B64_4" | base64 --decode > "$RELAY_WHEEL"
+          echo "015fd7e55bb5b0738b3c79a20ad4db440311ae23bbf05d0ddbfab8c80cb25e27  $RELAY_WHEEL" \
+              | shasum -a 256 -c -
+
+          export COLLIE_RELAY_WHEEL="$RELAY_WHEEL"
+          export COLLIE_RELAY_BUNDLE=1
+          export COLLIE_APP_NAME="Collie Relay"
+          export COLLIE_APP_BUNDLE_NAME="Collie Relay"
+          export COLLIE_BUNDLE_IDENTIFIER="run.collie.relay"
+          export COLLIE_DMG_FILENAME="Collie-Relay-0.22.0-arm64.dmg"
+          export COLLIE_DMG_VOLUME_NAME="Collie Relay"
+
           # Decided by what this hosted runner can actually do after importing the
           # release secrets, rather than by trusting that a non-empty secret was usable.
           args=(--bundle-python --dmg --arch arm64)
@@ -316,11 +341,13 @@ jobs:
             exit 1
           fi
           bash installer/build_mac.sh "${args[@]}"
-          mv installer/Output/Collie-*.dmg installer/Output/Collie-arm64.dmg
+          APP_PY="installer/Output/Collie Relay.app/Contents/Resources/python/bin/python3"
+          env -i PYTHONDONTWRITEBYTECODE=1 "$APP_PY" -B -c \
+              "import collie_relay, importlib.metadata as m; assert m.version('collie-relay') == '0.1.3'"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: macos-dmg-arm64
-          path: installer/Output/Collie-arm64.dmg
+          name: macos-relay-dmg-arm64
+          path: installer/Output/Collie-Relay-0.22.0-arm64.dmg
 
   vscode:
     needs: quality-gate

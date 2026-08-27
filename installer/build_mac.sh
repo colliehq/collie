@@ -21,7 +21,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"',open('harness/__init__.py').read()).group(1))")
-APP="installer/Output/Collie.app"
+APP_NAME="${COLLIE_APP_NAME:-Collie}"
+APP_BUNDLE_NAME="${COLLIE_APP_BUNDLE_NAME:-$APP_NAME}"
+BUNDLE_IDENTIFIER="${COLLIE_BUNDLE_IDENTIFIER:-run.collie.desktop}"
+DMG_FILENAME="${COLLIE_DMG_FILENAME:-Collie-$VERSION.dmg}"
+DMG_VOLUME_NAME="${COLLIE_DMG_VOLUME_NAME:-$APP_NAME}"
+APP="installer/Output/$APP_BUNDLE_NAME.app"
 SIGN=0; DMG=0; ALLOW_DEV=0; NOTARY_PROFILE=""; BUNDLE_PY=0; ARCH="$(uname -m)"; EXTRAS="local,tui,desktop,remote,claude"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -130,7 +135,73 @@ if [ "$BUNDLE_PY" = "1" ]; then
   fi
   # $0's own dir, resolved at run time: the app must work from /Applications, a dmg, or anywhere
   # the user dragged it, so nothing here may bake in a build-machine path.
-  cat > "$APP/Contents/MacOS/Collie" <<'LAUNCHER'
+  if [ "${COLLIE_RELAY_BUNDLE:-0}" = "1" ]; then
+    cat > "$APP/Contents/MacOS/Collie" <<'LAUNCHER'
+#!/bin/bash
+# First-run relay enrolment for the self-contained tester bundle. The pairing token is held only in
+# this process and piped on stdin, never placed on a command line or written into the application.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export COLLIE_BUNDLED=1
+export PYTHONDONTWRITEBYTECODE=1
+PY="$HERE/Resources/python/bin/Collie"
+[ -x "$PY" ] || PY="$HERE/Resources/python/bin/python3"
+
+prompt_token() {
+  /usr/bin/osascript <<'APPLESCRIPT'
+try
+  set answer to display dialog "Paste the pairing code sent by the owner of the relay.\n\n请粘贴 Relay 所有者发给你的配对码。" default answer "" with title "Collie Relay Setup" buttons {"Cancel", "Pair"} default button "Pair" cancel button "Cancel"
+  return text returned of answer
+on error number -128
+  return ""
+end try
+APPLESCRIPT
+}
+
+show_message() {
+  /usr/bin/osascript - "$1" "$2" <<'APPLESCRIPT' >/dev/null
+on run argv
+  display dialog (item 2 of argv) with title (item 1 of argv) buttons {"OK"} default button "OK"
+end run
+APPLESCRIPT
+}
+
+PROFILE="$HOME/.collie/relay.json"
+if [ ! -s "$PROFILE" ]; then
+  TOKEN="$(prompt_token)"
+  [ -n "$TOKEN" ] || exit 0
+  LOGIN_OUTPUT="$(printf '%s\n' "$TOKEN" | "$PY" -B -m collie_relay login 2>&1)"
+  LOGIN_RC=$?
+  TOKEN=""
+  unset TOKEN
+  if [ "$LOGIN_RC" -ne 0 ]; then
+    show_message "Collie Relay Setup" "Pairing failed. Ask for a fresh code and open Collie Relay again.\n\n配对失败。请索取新的配对码，然后重新打开 Collie Relay。\n\n$LOGIN_OUTPUT"
+    exit "$LOGIN_RC"
+  fi
+
+  USE_OUTPUT="$("$PY" -B -m collie_relay use relay 2>&1)"
+  USE_RC=$?
+  if [ "$USE_RC" -ne 0 ]; then
+    show_message "Collie Relay Setup" "The device paired, but Relay could not be selected.\n\n设备已配对，但无法启用 Relay。\n\n$USE_OUTPUT"
+    exit "$USE_RC"
+  fi
+
+  STATUS_OUTPUT="$("$PY" -B -m collie_relay status 2>&1)"
+  STATUS_RC=$?
+  if [ "$STATUS_RC" -eq 0 ]; then
+    show_message "Collie Relay Setup" "Pairing succeeded. Collie Relay will open now.\n\n配对成功，Collie Relay 即将打开。"
+  else
+    show_message "Collie Relay Setup" "Pairing was saved, but one of the Relay checks is not ready yet. Collie will still open; send the details below to the owner.\n\n配对已保存，但有一项检查尚未就绪。Collie 仍会打开；请把下面的信息发给所有者。\n\n$STATUS_OUTPUT"
+  fi
+else
+  # Keep the provider selected if another Collie installation changed the shared user setting.
+  "$PY" -B -m collie_relay use relay >/dev/null 2>&1 || true
+fi
+
+exec "$PY" -m harness.cli app "$@"
+LAUNCHER
+    echo "  launcher -> bundled runtime + relay first-run pairing"
+  else
+    cat > "$APP/Contents/MacOS/Collie" <<'LAUNCHER'
 #!/bin/bash
 # Bundle entry point — runs the private runtime inside this .app. No system Python involved.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -148,7 +219,8 @@ PY="$HERE/Resources/python/bin/Collie"
 [ -x "$PY" ] || PY="$HERE/Resources/python/bin/python3"
 exec "$PY" -m harness.cli app "$@"
 LAUNCHER
-  echo "  launcher -> bundled runtime"
+    echo "  launcher -> bundled runtime"
+  fi
 else
   COLLIE_BIN="$(command -v collie || echo "$PWD/.venv/bin/collie")"
   cat > "$APP/Contents/MacOS/Collie" <<LAUNCHER
@@ -168,9 +240,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>                  <string>Collie</string>
-  <key>CFBundleDisplayName</key>           <string>Collie</string>
-  <key>CFBundleIdentifier</key>            <string>run.collie.desktop</string>
+  <key>CFBundleName</key>                  <string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key>           <string>$APP_NAME</string>
+  <key>CFBundleIdentifier</key>            <string>$BUNDLE_IDENTIFIER</string>
   <key>CFBundleVersion</key>               <string>$VERSION</string>
   <key>CFBundleShortVersionString</key>    <string>$VERSION</string>
   <key>CFBundleExecutable</key>            <string>Collie</string>
@@ -187,7 +259,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-echo "  Info.plist: run.collie.desktop $VERSION"
+echo "  Info.plist: $BUNDLE_IDENTIFIER $VERSION"
 
 # ── sign. Hardened runtime is required for notarisation; it also blocks the JIT-ish tricks
 #    PyObjC does not need, so the desktop engine is unaffected. ───────────────────────────────────
@@ -323,10 +395,10 @@ fi
 
 # ── dmg ──────────────────────────────────────────────────────────────────────────────────────────
 if [ "$DMG" = "1" ]; then
-  DMG_PATH="installer/Output/Collie-$VERSION.dmg"
+  DMG_PATH="installer/Output/$DMG_FILENAME"
   STAGE=$(mktemp -d); cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
   rm -f "$DMG_PATH"
-  hdiutil create -volname "Collie" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH" >/dev/null
+  hdiutil create -volname "$DMG_VOLUME_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH" >/dev/null
   echo "  dmg: $DMG_PATH"
 
   # Sign the disk image itself, before notarising it. Notarisation and stapling both succeed on an
