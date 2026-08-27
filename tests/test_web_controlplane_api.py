@@ -48,6 +48,36 @@ def _raw_json(url, raw):
         return exc.code, json.loads(exc.read())
 
 
+def test_comfy_surface_and_control_plane_are_authenticated(web_server, monkeypatch):
+    from harness import comfy_integration
+
+    base, token, _ = web_server
+    expected = {
+        "cloud": {"configured": False, "connected": False},
+        "local": {"reachable": False, "mcp_installed": False},
+        "links": {},
+    }
+    monkeypatch.setattr(comfy_integration, "snapshot", lambda: expected)
+
+    with urllib.request.urlopen(base + "/comfy", timeout=8) as response:
+        page = response.read().decode("utf-8")
+    assert "Comfy × Collie" in page and "OFFICIAL MCP INTEGRATION" in page
+
+    code, denied = _json(base + "/api/comfy")
+    assert code == 403 and denied["error"] == "forbidden"
+    code, status = _json(base + "/api/comfy?token=" + token)
+    assert code == 200 and status == expected
+
+    code, denied = _json(base + "/api/comfy/local?token=" + token,
+                         method="POST", body={"confirmed": False})
+    assert code == 409 and "confirmed=true" in denied["error"]
+    monkeypatch.setattr(comfy_integration, "add_local_connection",
+                        lambda: {"ok": True, "server": "comfy-local"})
+    code, added = _json(base + "/api/comfy/local?token=" + token,
+                        method="POST", body={"confirmed": True})
+    assert code == 200 and added["server"] == "comfy-local"
+
+
 def test_browser_extension_bridge_auth_and_cors_are_narrow(web_server, monkeypatch):
     from harness import browserbridge
 

@@ -54,6 +54,7 @@ needs a specific boundary.
 | 🖥️ | **Desktop home** | Home, Missions, Pack, Library, Activity, and Needs You form the control plane; optional Ambient mode keeps status and handoff one gesture away. |
 | 🎬 | **Screen recorder** | `collie record` captures screen + camera + mic (Windows and macOS) — a built-in way to demo or document a run. |
 | 📝 | **Meeting notes** | Import a local calendar, get privacy-aware meeting prompts, record mic + meeting audio, jot guidance, and optionally create timestamp-cited transcripts, decisions, and action items. Reminders never start capture; explicit participant consent is required every time. |
+| 🎨 | **Comfy visual AI** | Connect Comfy's official Cloud MCP or detect a local ComfyUI service, inspect graph workflows, and run image, video, audio, or 3D jobs without copying a private Comfy API into Collie. |
 | 📱 | **Phone supervision** | Pair once, then follow runs, answer approvals, steer, stop, or start work from the phone. |
 | 🔌 | **Library & connections** | Install digest-pinned Skills, Hooks, connection descriptors, templates, and assets. Packages stay inert until their exact version and authority are approved; changes, revocation, or tampering fail closed. |
 

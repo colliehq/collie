@@ -1489,6 +1489,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("meetings.html", "text/html; charset=utf-8")
             if path == "/studio":
                 return self._serve_static("studio.html", "text/html; charset=utf-8")
+            if path == "/comfy":
+                return self._serve_static("comfy.html", "text/html; charset=utf-8")
             if path == "/remote":
                 return self._serve_static("remote.html", "text/html; charset=utf-8")
             if path == "/m":                          # mobile client (served to phones via the relay)
@@ -1595,6 +1597,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(capability_snapshot(_state_root(), os.getcwd()))
                 except (ExtensionError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     return self._send_json({"error": str(exc)}, 409)
+            if path == "/api/comfy":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .comfy_integration import snapshot as comfy_snapshot
+                return self._send_json(comfy_snapshot())
             if path in ("/api/activity", "/api/healthz", "/api/recovery", "/api/hooks",
                         "/api/doctor", "/api/control-center", "/api/automations",
                         "/api/recovery-center", "/api/memory/claims", "/api/budgets",
@@ -2295,6 +2302,21 @@ class Handler(BaseHTTPRequestHandler):
                         confirmed=body.get("confirmed") is True)
                     return self._send_json({"ok": True, "extension": result})
                 except (ExtensionError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                    return self._send_json({"error": str(exc)}, 409)
+            if path == "/api/comfy/local":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(4096)
+                if not isinstance(body, dict):
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                if body.get("confirmed") is not True:
+                    return self._send_json({
+                        "error": "confirmed=true is required before adding the local MCP executable"
+                    }, 409)
+                try:
+                    from .comfy_integration import add_local_connection
+                    return self._send_json(add_local_connection())
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     return self._send_json({"error": str(exc)}, 409)
             if path in ("/api/plan", "/api/plan/approve", "/api/review/handoff"):
                 if not self._authed(parsed):

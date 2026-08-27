@@ -61,6 +61,15 @@ def _builtins() -> list[dict]:
         browser_live = False
     desktop_on = _on(settings.get("DESKTOP_CONTROL", "off"))
     screen_on = _on(settings.get("SCREEN_CAPTURE", "off"))
+    try:
+        from .comfy_integration import snapshot as comfy_snapshot
+        comfy = comfy_snapshot()
+        comfy_cloud, comfy_local = comfy["cloud"], comfy["local"]
+        comfy_ready = bool(comfy_cloud.get("connected") or comfy_local.get("mcp_configured"))
+        comfy_tools = ((comfy_cloud.get("tools") if comfy_cloud.get("connected") else None)
+                       or comfy_local.get("mcp_tools") or 0)
+    except Exception:
+        comfy_ready, comfy_tools = False, 0
     return [
         {
             "id": "code-workspace", "name": "Files and code",
@@ -105,6 +114,12 @@ def _builtins() -> list[dict]:
             "id": "workflow-studio", "name": "Workflow Studio",
             "description": "Record a proven workflow, dry-run it, evaluate it, then approve it as a Skill.",
             "status": "ready", "tools": 1, "action": "studio",
+        },
+        {
+            "id": "comfy", "name": "Comfy visual AI",
+            "description": "Search models, nodes and templates, then build and run inspectable image, video, audio and 3D workflows through Comfy's official MCP.",
+            "status": "ready" if comfy_ready else "setup", "tools": comfy_tools,
+            "action": "comfy",
         },
     ]
 

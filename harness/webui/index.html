@@ -2513,6 +2513,7 @@
     "Screen awareness": "屏幕识别", "Capture a window or display so Collie can inspect visual results.": "捕获窗口或显示器，让 Collie 检查视觉结果。",
     "Meeting notes": "会议记录", "Record, transcribe, summarize, extract actions, and remind only when useful.": "录音、转写、总结、提取行动项，并只在有用时提醒。",
     "Workflow Studio": "工作流 Studio", "Record a proven workflow, dry-run it, evaluate it, then approve it as a Skill.": "录制已跑通的工作流，试运行并评估，再批准为 Skill。",
+    "Comfy visual AI": "Comfy 视觉 AI", "Search models, nodes and templates, then build and run inspectable image, video, audio and 3D workflows through Comfy's official MCP.": "通过 Comfy 官方 MCP 搜索模型、节点和模板，再构建并运行可检查的图像、视频、音频和 3D 工作流。",
     "Refresh": "刷新", "Close Library": "关闭能力库", "Loading installed extensions…": "正在加载已安装扩展…",
     "Refreshing installed extensions…": "正在刷新已安装扩展…", "Library unavailable": "能力库不可用",
     "The installed extension registry could not be read.": "无法读取已安装扩展注册表。",
@@ -2754,6 +2755,7 @@
     "Screen awareness": "螢幕辨識", "Capture a window or display so Collie can inspect visual results.": "擷取視窗或顯示器，讓 Collie 檢查視覺結果。",
     "Meeting notes": "會議記錄", "Record, transcribe, summarize, extract actions, and remind only when useful.": "錄音、轉寫、摘要、擷取行動項目，並只在有用時提醒。",
     "Workflow Studio": "工作流程 Studio", "Record a proven workflow, dry-run it, evaluate it, then approve it as a Skill.": "錄製已跑通的工作流程，試執行並評估，再批准為 Skill。",
+    "Comfy visual AI": "Comfy 視覺 AI", "Search models, nodes and templates, then build and run inspectable image, video, audio and 3D workflows through Comfy's official MCP.": "透過 Comfy 官方 MCP 搜尋模型、節點與範本，再建立並執行可檢查的圖像、影片、音訊與 3D 工作流程。",
     "Refresh": "重新整理", "Close Library": "關閉能力庫", "Loading installed extensions…": "正在載入已安裝擴充套件…",
     "Refreshing installed extensions…": "正在重新整理已安裝擴充套件…", "Library unavailable": "能力庫無法使用",
     "The installed extension registry could not be read.": "無法讀取已安裝擴充套件註冊表。",
@@ -5265,6 +5267,7 @@
         } else if (action === "missions") {
           setLibraryOpen(false); setProductNav("missions"); setMissionsOpen(true);
         } else if (action === "meetings") openEmbeddedSurface("Meeting notes", "/meetings?embedded=1");
+        else if (action === "comfy") openEmbeddedSurface("Comfy", "/comfy?embedded=1");
         else if (action === "studio" || kind === "workflow") openEmbeddedSurface("Studio", "/studio?embedded=1");
         else { setLibraryOpen(false); setProductNav("home"); $("input").focus(); }
       };
@@ -5444,6 +5447,14 @@
   };
   if ($("surfaceClose")) $("surfaceClose").onclick = function () { setEmbeddedSurfaceOpen(false); setProductNav("home"); };
   if ($("studioBtn")) $("studioBtn").onclick = function () { openEmbeddedSurface("Studio", "/studio?embedded=1"); };
+  window.addEventListener("message", function (event) {
+    if (event.origin !== location.origin || !event.data || event.data.type !== "collie:prefill") return;
+    var text = String(event.data.text || "").trim();
+    if (!text) return;
+    setEmbeddedSurfaceOpen(false); setProductNav("home"); $("pageTitle").textContent = t("Home");
+    var input = $("input"); input.value = text; input.dispatchEvent(new Event("input", { bubbles:true }));
+    input.focus(); input.setSelectionRange(text.length, text.length);
+  });
 
   // ---- delegate missions: NL goal -> a durable, supervised campaign ---------
   function missionResponse(r) {

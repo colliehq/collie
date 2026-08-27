@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Comfy — Collie</title>
+<style>
+  :root{color-scheme:light;--bg:#f6f6f3;--card:#fff;--line:#e3e3dd;--ink:#1d1d1b;
+    --dim:#777771;--brand:#35594a;--soft:#edf3ef;--good:#357a5d;--warn:#a66a15;--bad:#c4493d}
+  @media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#111310;--card:#1a1d19;
+    --line:#2c302b;--ink:#ecede9;--dim:#92978f;--brand:#8fb9a6;--soft:#202923;
+    --good:#72bd98;--warn:#d8a14c;--bad:#f07b70}}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.48 system-ui,-apple-system,"Segoe UI",sans-serif}.wrap{max-width:980px;margin:auto;padding:26px 20px 54px}
+  .back{display:inline-block;margin-bottom:17px;color:var(--dim);text-decoration:none}.back:hover{color:var(--ink)}
+  h1{margin:0;font-size:25px;letter-spacing:-.03em}.sub{max-width:70ch;margin:5px 0 24px;color:var(--dim)}
+  .hero{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:14px}
+  .hero .mark{display:inline-flex;align-items:center;gap:8px;color:var(--brand);font-weight:750;font-size:12px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--brand);box-shadow:12px 0 0 color-mix(in srgb,var(--brand) 65%,transparent),24px 0 0 color-mix(in srgb,var(--brand) 35%,transparent);margin-right:24px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:18px;min-width:0}
+  .card.full{grid-column:1/-1}.title{display:flex;align-items:center;gap:9px;margin-bottom:9px}.title h2{font-size:15px;margin:0}.pill{margin-left:auto;padding:3px 8px;border-radius:999px;background:var(--soft);color:var(--dim);font-size:11px;font-weight:700}.pill.good{color:var(--good)}.pill.warn{color:var(--warn)}.pill.bad{color:var(--bad)}
+  p{margin:7px 0;color:var(--dim)}.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin:14px 0;border-block:1px solid var(--line)}
+  .fact{padding:10px 5px}.fact b{display:block;font-size:15px}.fact span{font-size:11px;color:var(--dim)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}button,.button{appearance:none;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:8px 12px;font:650 13px/1.2 inherit;cursor:pointer;text-decoration:none}button:hover,.button:hover{border-color:var(--brand)}button.primary{background:var(--brand);border-color:var(--brand);color:#fff}button:disabled{cursor:default;opacity:.55}
+  .notice{min-height:1.5em;margin-top:10px;color:var(--dim);font-size:12px}.notice.bad{color:var(--bad)}
+  .tasks{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.task{text-align:left;padding:13px;background:var(--bg)}.task strong{display:block;margin-bottom:4px}.task span{display:block;color:var(--dim);font-size:12px;font-weight:450}
+  .truth{padding:12px 14px;border-left:3px solid var(--brand);background:var(--soft);border-radius:4px;color:var(--dim);font-size:12.5px}.truth strong{color:var(--ink)}
+  code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.device{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  :where(button,a):focus-visible{outline:3px solid #aab6ff;outline-offset:3px}
+  body.embedded .back,body.embedded .pagehead{display:none}body.embedded .wrap{padding:18px 20px 46px}
+  @media(max-width:720px){.grid,.tasks{grid-template-columns:1fr}.card.full{grid-column:auto}.hero{display:block}.facts{grid-template-columns:1fr}.fact{border-bottom:1px solid var(--line)}.fact:last-child{border:0}}
+</style>
+</head>
+<body>
+<script>if(new URLSearchParams(location.search).get("embedded")==="1")document.body.classList.add("embedded");</script>
+<main class="wrap">
+  <a class="back" href="/">← <span data-i="Back to Collie">Back to Collie</span></a>
+  <div class="pagehead"><h1>Comfy × Collie</h1><p class="sub" data-i="Build and run inspectable visual AI workflows through Comfy's official agent connection.">Build and run inspectable visual AI workflows through Comfy's official agent connection.</p></div>
+  <div class="hero">
+    <div><div class="mark"><i class="dot"></i><span data-i="OFFICIAL MCP INTEGRATION">OFFICIAL MCP INTEGRATION</span></div>
+      <p data-i="Collie uses Comfy's maintained MCP tools for templates, models, nodes, jobs and outputs instead of copying a private workflow API.">Collie uses Comfy's maintained MCP tools for templates, models, nodes, jobs and outputs instead of copying a private workflow API.</p></div>
+    <button id="refresh" data-i="Refresh">Refresh</button>
+  </div>
+
+  <section class="grid">
+    <article class="card">
+      <div class="title"><h2 data-i="Comfy Cloud">Comfy Cloud</h2><span class="pill warn" id="cloudPill" data-i="Checking…">Checking…</span></div>
+      <p data-i="The fastest way to try Comfy. OAuth connects Collie to Comfy's hosted workflow tools; new accounts receive trial runs.">The fastest way to try Comfy. OAuth connects Collie to Comfy's hosted workflow tools; new accounts receive trial runs.</p>
+      <div class="facts"><div class="fact"><b id="cloudAuth">—</b><span data-i="Authorization">Authorization</span></div><div class="fact"><b id="cloudTools">—</b><span data-i="Tools">Tools</span></div><div class="fact"><b>OAuth</b><span data-i="Secret handling">Secret handling</span></div></div>
+      <div class="row"><button class="primary" id="connectCloud" data-i="Connect Comfy Cloud">Connect Comfy Cloud</button><a class="button" id="openCloud" target="_blank" rel="noopener" data-i="Open canvas">Open canvas</a><a class="button" id="mcpDocs" target="_blank" rel="noopener" data-i="Official docs">Official docs</a></div>
+      <div class="notice" id="cloudNotice" role="status" aria-live="polite"></div>
+    </article>
+
+    <article class="card">
+      <div class="title"><h2 data-i="Local ComfyUI">Local ComfyUI</h2><span class="pill warn" id="localPill" data-i="Checking…">Checking…</span></div>
+      <p data-i="Use your own GPU and models. Collie detects the standard local server and can register Comfy's official local MCP when it is installed.">Use your own GPU and models. Collie detects the standard local server and can register Comfy's official local MCP when it is installed.</p>
+      <div class="facts"><div class="fact"><b id="localServer">—</b><span data-i="Server">Server</span></div><div class="fact"><b id="localCli">—</b><span>comfy-cli</span></div><div class="fact"><b id="localMcp">—</b><span>comfy-mcp</span></div></div>
+      <div class="device" id="localDevice"></div>
+      <div class="row"><button id="connectLocal" data-i="Connect local MCP">Connect local MCP</button><a class="button" id="openLocal" target="_blank" rel="noopener" data-i="Open local canvas">Open local canvas</a><a class="button" id="desktopDocs" target="_blank" rel="noopener" data-i="Install Comfy Desktop">Install Comfy Desktop</a></div>
+      <div class="notice" id="localNotice" role="status" aria-live="polite"></div>
+    </article>
+
+    <article class="card full">
+      <div class="title"><h2 data-i="Try these before the interview">Try these before the interview</h2></div>
+      <div class="truth"><strong data-i="The useful mental model:">The useful mental model:</strong> <span data-i="a Comfy workflow is an inspectable graph. Templates get you to a working graph quickly; nodes make every model, parameter and transformation explicit; partial execution lets unchanged branches stay cached.">a Comfy workflow is an inspectable graph. Templates get you to a working graph quickly; nodes make every model, parameter and transformation explicit; partial execution lets unchanged branches stay cached.</span></div>
+      <div class="tasks">
+        <button class="task" data-prompt="Use Comfy Cloud to search for a beginner-friendly text-to-image workflow template. Explain the important nodes and parameters before running anything."><strong data-i="1. Inspect a template">1. Inspect a template</strong><span data-i="Search first, then explain the graph.">Search first, then explain the graph.</span></button>
+        <button class="task" data-prompt="Use Comfy Cloud to create one simple interview-prep image with a pre-built template. Show me the chosen model, prompt, seed, steps and output, and do not build a workflow from scratch if a good template exists."><strong data-i="2. Run one image">2. Run one image</strong><span data-i="Change prompt and seed, then retrieve the output.">Change prompt and seed, then retrieve the output.</span></button>
+        <button class="task" data-prompt="Use Comfy Cloud to compare two visual AI workflow approaches for the same image request. Focus on graph structure, caching, reproducibility and where custom nodes create dependency risk. Do not spend credits unless I confirm."><strong data-i="3. Discuss tradeoffs">3. Discuss tradeoffs</strong><span data-i="Caching, reproducibility and custom-node risk.">Caching, reproducibility and custom-node risk.</span></button>
+      </div>
+      <div class="notice" id="promptNotice" role="status" aria-live="polite"></div>
+    </article>
+  </section>
+</main>
+<script>
+var CT=(document.querySelector('meta[name="collie-token"]')||{}).content||"",LANG="en",STATE=null;
+function q(path){return path+(path.indexOf("?")<0?"?":"&")+"token="+encodeURIComponent(CT)}
+function api(path,options){return fetch(q(path),options||{}).then(function(r){return r.json().catch(function(){return{}}).then(function(d){if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d})})}
+var ZH={"Back to Collie":"返回 Collie","Build and run inspectable visual AI workflows through Comfy's official agent connection.":"通过 Comfy 官方的 agent 连接构建并运行可检查的视觉 AI 工作流。","OFFICIAL MCP INTEGRATION":"官方 MCP 集成","Collie uses Comfy's maintained MCP tools for templates, models, nodes, jobs and outputs instead of copying a private workflow API.":"Collie 直接使用 Comfy 维护的模板、模型、节点、任务和输出工具，不复制一套私有工作流 API。","Refresh":"刷新","Comfy Cloud":"Comfy Cloud","Checking…":"检查中…","The fastest way to try Comfy. OAuth connects Collie to Comfy's hosted workflow tools; new accounts receive trial runs.":"最快的 Comfy 试用路径。OAuth 会把 Collie 接到官方托管工作流工具；新账户可获得试用次数。","Authorization":"授权","Tools":"工具","Secret handling":"密钥处理","Connect Comfy Cloud":"连接 Comfy Cloud","Open canvas":"打开画布","Official docs":"官方文档","Local ComfyUI":"本地 ComfyUI","Use your own GPU and models. Collie detects the standard local server and can register Comfy's official local MCP when it is installed.":"使用自己的 GPU 和模型。Collie 会检测标准本地服务，并在官方本地 MCP 已安装时完成注册。","Server":"服务","Connect local MCP":"连接本地 MCP","Open local canvas":"打开本地画布","Install Comfy Desktop":"安装 Comfy Desktop","Try these before the interview":"面试前完成这三件事","The useful mental model:":"最有用的理解方式：","a Comfy workflow is an inspectable graph. Templates get you to a working graph quickly; nodes make every model, parameter and transformation explicit; partial execution lets unchanged branches stay cached.":"Comfy 工作流是一张可检查的图。模板让你迅速得到可运行的图；节点让模型、参数和变换全部显式；局部执行会保留未变化分支的缓存。","1. Inspect a template":"1. 看懂一个模板","Search first, then explain the graph.":"先搜索，再解释图结构。","2. Run one image":"2. 真正生成一张图","Change prompt and seed, then retrieve the output.":"修改提示词和种子，再取回结果。","3. Discuss tradeoffs":"3. 能讲清取舍","Caching, reproducibility and custom-node risk.":"缓存、可复现性与自定义节点风险。","Connected":"已连接","Needs sign-in":"需要登录","Not configured":"未配置","Available":"可用","Not running":"未运行","Installed":"已安装","Missing":"未安装","Authorization window opened. Finish Comfy sign-in, then return here.":"授权窗口已打开。完成 Comfy 登录后回到这里。","Local MCP added. It becomes available on the next Collie run.":"本地 MCP 已添加，将在下一次 Collie 运行时可用。","Sent to Collie":"已发送给 Collie"};
+function t(s){return LANG.indexOf("zh")===0&&ZH[s]?ZH[s]:s}
+function applyI18n(){document.querySelectorAll("[data-i]").forEach(function(el){el.textContent=t(el.getAttribute("data-i"))})}
+function pill(el,state,label){el.className="pill "+state;el.textContent=t(label)}
+function render(s){STATE=s;var c=s.cloud||{},l=s.local||{};pill(document.getElementById("cloudPill"),c.connected?"good":c.configured?"warn":"warn",c.connected?"Connected":c.configured?"Needs sign-in":"Not configured");document.getElementById("cloudAuth").textContent=t(c.auth==="oauth"?"Connected":c.auth==="login-needed"?"Needs sign-in":"Not configured");document.getElementById("cloudTools").textContent=c.tools==null?"—":String(c.tools);document.getElementById("connectCloud").textContent=t(c.connected?"Connected":"Connect Comfy Cloud");document.getElementById("connectCloud").disabled=!!c.connected;document.getElementById("openCloud").href=c.app_url;document.getElementById("mcpDocs").href=(s.links||{}).mcp_docs;
+  pill(document.getElementById("localPill"),l.reachable?"good":"warn",l.reachable?"Available":"Not running");document.getElementById("localServer").textContent=t(l.reachable?"Available":"Not running");document.getElementById("localCli").textContent=t(l.cli_installed?"Installed":"Missing");document.getElementById("localMcp").textContent=t(l.mcp_installed?"Installed":"Missing");document.getElementById("connectLocal").disabled=!l.mcp_installed||l.mcp_configured;document.getElementById("openLocal").href=l.url;document.getElementById("desktopDocs").href=(s.links||{}).desktop_docs;var d=(l.devices||[])[0];document.getElementById("localDevice").textContent=d?(d.name+(d.vram_total?" · "+Math.round(d.vram_total/1073741824)+" GB VRAM":"")):""}
+function load(){return api("/api/comfy").then(render).catch(function(e){document.getElementById("cloudNotice").className="notice bad";document.getElementById("cloudNotice").textContent=e.message})}
+document.getElementById("refresh").onclick=load;
+document.getElementById("connectCloud").onclick=function(){var b=this;b.disabled=true;api("/api/mcp",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"connect",name:"comfy-cloud"})}).then(function(){document.getElementById("cloudNotice").textContent=t("Authorization window opened. Finish Comfy sign-in, then return here.");setTimeout(load,1200)}).catch(function(e){document.getElementById("cloudNotice").className="notice bad";document.getElementById("cloudNotice").textContent=e.message;b.disabled=false})};
+document.getElementById("connectLocal").onclick=function(){var b=this;b.disabled=true;api("/api/comfy/local",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({confirmed:true})}).then(function(){document.getElementById("localNotice").textContent=t("Local MCP added. It becomes available on the next Collie run.");return load()}).catch(function(e){document.getElementById("localNotice").className="notice bad";document.getElementById("localNotice").textContent=e.message;b.disabled=false})};
+document.querySelectorAll("[data-prompt]").forEach(function(button){button.onclick=function(){var text=button.getAttribute("data-prompt");if(window.parent!==window){window.parent.postMessage({type:"collie:prefill",text:text},location.origin);document.getElementById("promptNotice").textContent=t("Sent to Collie")}else{navigator.clipboard&&navigator.clipboard.writeText(text);location.href="/"}}});
+fetch(q("/api/settings")).then(function(r){return r.json()}).then(function(d){LANG=String(((d||{}).values||{}).LANG||navigator.language||"en").toLowerCase();applyI18n()}).catch(function(){LANG=(navigator.language||"en").toLowerCase();applyI18n()}).finally(load);
+setInterval(load,4000);
+</script>
+</body>
+</html>

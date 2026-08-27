@@ -13,6 +13,7 @@ is needed; and returns a receipt with scoped evidence.
 - :material-monitor: **[The desktop app](desktop.md)** — Home, Missions, Pack, Library, Activity, and Needs You
 - :material-shield-check: **[Operations & recovery](operations.md)** — doctor, Control Center, fault matrix, and soak
 - :material-puzzle: **[Extensions](extensions.md)** — build and install digest-pinned Library packages
+- :material-graph: **[Comfy visual AI](comfy.md)** — connect the official MCP or a local ComfyUI graph runtime
 
 </div>
 

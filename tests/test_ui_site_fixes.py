@@ -129,6 +129,7 @@ def test_missions_pack_and_studio_stay_in_the_native_application_shell():
     remote = read("harness/webui/remote.html")
     studio = read("harness/webui/studio.html")
     meetings = read("harness/webui/meetings.html")
+    comfy = read("harness/webui/comfy.html")
 
     assert 'id="missionsPanel"' in desktop and 'id="missionsGrid"' in desktop
     assert '"mission-list-card"' in desktop
@@ -139,7 +140,9 @@ def test_missions_pack_and_studio_stay_in_the_native_application_shell():
     assert 'openEmbeddedSurface("Pack", "/remote?embedded=1", "pack")' in desktop
     assert 'openEmbeddedSurface("Studio", "/studio?embedded=1")' in desktop
     assert 'openEmbeddedSurface("Meeting notes", "/meetings?embedded=1")' in desktop
-    for page in (remote, studio, meetings):
+    assert 'openEmbeddedSurface("Comfy", "/comfy?embedded=1")' in desktop
+    assert "collie:prefill" in desktop and "collie:prefill" in comfy
+    for page in (remote, studio, meetings, comfy):
         assert 'get("embedded")==="1"' in page
         assert "body.embedded" in page
 
