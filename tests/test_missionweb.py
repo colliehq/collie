@@ -101,7 +101,8 @@ def test_missions_listing():
     svc = _svc([R, C, P, H])
     svc.start("sell my car", autonomous=True)
     ms = svc.missions()
-    check(len(ms) == 1 and ms[0]["goal"] == "sell my car", "the mission is listed for the UI")
+    check(len(ms) == 1 and ms[0]["title"] == "sell my car" and "goal" not in ms[0],
+          "the mission list exposes a bounded title instead of the full internal goal")
     svc.close()
 
 

@@ -1464,6 +1464,14 @@ class Handler(BaseHTTPRequestHandler):
                     "site_access": settings.get("BROWSER_SITE_ACCESS", "all_except_sensitive"),
                     "sensitive_hosts": settings.get("BROWSER_SENSITIVE_HOSTS", ""),
                 })
+            if path == "/api/session-token":
+                # A desktop tab can outlive the windowless Web process.  Let only a direct
+                # loopback, same-origin page replace its stale per-process token without losing
+                # an unsent draft or its current surface.  Relay and LAN clients never receive it.
+                token = self._embed_token()
+                if not token:
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._send_json({"token": token, "boot": BOOT})
             if path in ("/", "/index.html"):
                 self._vscode_embed = self._vscode_embed_ok(parsed)
                 return self._serve_index()
@@ -1577,15 +1585,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._send_json({"approvals": Handler._inbox_pending_all()})
             if path == "/api/library":
-                # Installed extension metadata is operational state: keep it behind the same
-                # process token as Activity and Settings.  ExtensionStore already returns an
-                # allowlisted view (digest/trust/scopes/component counts, never package paths).
+                # The Library is the whole capability inventory, not merely the optional package
+                # registry.  Every constituent view is allowlisted and omits package/Skill paths.
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                from .extensions import ExtensionError, ExtensionStore
+                from .capability_library import snapshot as capability_snapshot
+                from .extensions import ExtensionError
                 try:
-                    return self._send_json({"extensions": ExtensionStore(_state_root()).list()})
-                except ExtensionError as exc:
+                    return self._send_json(capability_snapshot(_state_root(), os.getcwd()))
+                except (ExtensionError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     return self._send_json({"error": str(exc)}, 409)
             if path in ("/api/activity", "/api/healthz", "/api/recovery", "/api/hooks",
                         "/api/doctor", "/api/control-center", "/api/automations",
@@ -2259,6 +2267,35 @@ class Handler(BaseHTTPRequestHandler):
                 except ExtensionError as exc:
                     return self._send_json({"error": str(exc)}, 409)
                 return self._send_json({"ok": True, "action": action, "extension": result})
+            if path in ("/api/library/skill", "/api/library/package/preview",
+                        "/api/library/package/install"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(65536 if path.endswith("/skill") else 8192)
+                if not isinstance(body, dict):
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from .capability_library import create_skill, install_package, preview_package
+                from .extensions import ExtensionError
+                try:
+                    if path.endswith("/skill"):
+                        result = create_skill(
+                            _state_root(), name=body.get("name"),
+                            description=body.get("description"),
+                            instructions=body.get("instructions"))
+                        return self._send_json({"ok": True, "skill": result})
+                    if path.endswith("/preview"):
+                        return self._send_json({
+                            "ok": True,
+                            "preview": preview_package(_state_root(), body.get("source")),
+                        })
+                    if "confirmed" in body and not isinstance(body.get("confirmed"), bool):
+                        return self._send_json({"error": "confirmed must be true or false"}, 400)
+                    result = install_package(
+                        _state_root(), source=body.get("source"), digest=body.get("digest"),
+                        confirmed=body.get("confirmed") is True)
+                    return self._send_json({"ok": True, "extension": result})
+                except (ExtensionError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path in ("/api/plan", "/api/plan/approve", "/api/review/handoff"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

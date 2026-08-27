@@ -56,9 +56,11 @@
   audio{width:100%;height:42px}.summary h3{font-size:17px;text-transform:none;color:var(--ink);letter-spacing:0;margin:17px 0 8px}.summary p{margin:7px 0;line-height:1.5}.summary .task,.summary .bullet{padding:7px 9px;border-left:3px solid var(--brand);background:var(--bg);margin:6px 0;line-height:1.45}.plain{white-space:pre-wrap;line-height:1.55;color:var(--ink)}
   .transcript{display:grid;gap:7px;max-height:460px;overflow:auto}.seg{display:grid;grid-template-columns:78px 70px 1fr;gap:8px;padding:8px;border-radius:9px;background:var(--bg);font-size:13px;line-height:1.45}.seg time{color:var(--brand);font-variant-numeric:tabular-nums}.seg b{overflow:hidden;text-overflow:ellipsis}.processing-box{padding:16px;border-radius:12px;background:var(--brand2);color:var(--mut);font-size:13px}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin-right:8px;vertical-align:-2px}@keyframes spin{to{transform:rotate(360deg)}}
   @media(max-width:860px){.shell{padding:14px}.grid{grid-template-columns:1fr}.privacy{display:none}.seg{grid-template-columns:70px 55px 1fr}.reminder{grid-template-columns:1fr}.reminder-actions{justify-content:flex-start}}
+  body.embedded header{display:none}body.embedded .shell{max-width:1260px;padding-top:18px}
 </style>
 </head>
 <body>
+<script>if(new URLSearchParams(location.search).get("embedded")==="1")document.body.classList.add("embedded");</script>
 <div class="shell">
   <header>
     <div class="head-left"><button class="back" id="back" aria-label="Back">←</button><div class="title"><h1>Meeting Notes</h1><p>Get prompted. Choose deliberately. Never record silently.</p></div></div>

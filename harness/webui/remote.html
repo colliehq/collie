@@ -100,9 +100,12 @@
   .truthnote { padding-top:2px; }
   .pendcard { border-radius:11px; background:var(--card); }
   .toast { background:var(--card); }
+  body.embedded .back,body.embedded .wrap>h1,body.embedded .wrap>.sub{display:none}
+  body.embedded .wrap{max-width:980px;padding:18px 20px 46px}
 </style>
 </head>
 <body>
+<script>if(new URLSearchParams(location.search).get("embedded")==="1")document.body.classList.add("embedded");</script>
 <div class="wrap">
   <a class="back" href="/">← <span data-i="Back to Collie">Back to Collie</span></a>
   <h1><img src="logo.svg" alt="Collie"> <span data-i="Pack">Pack</span></h1>

@@ -3407,11 +3407,26 @@ class MissionService:
         return status.get("report") or {"error": "progress report unavailable"}
 
     def missions(self) -> list:
-        return [{"mission_id": m.mission_id, "goal": m.goal, "state": m.state,
-                 "result": m.result, "updated_at": m.updated_at,
-                 "controls": self.status(m.mission_id).get("controls", [])}
-                for m in reversed(self.store.list())
-                if self.store.runtime(m.mission_id).get("lane") != "specialist"]
+        rows = []
+        for m in reversed(self.store.list()):
+            if self.store.runtime(m.mission_id).get("lane") == "specialist":
+                continue
+            status = self.status(m.mission_id)
+            summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
+            # The list needs enough current state to be useful, but never the full internal
+            # campaign prompt in a giant button.  The complete goal remains in the detail view.
+            title = str(summary.get("title") or m.goal or "Untitled mission").strip()
+            rows.append({
+                "mission_id": m.mission_id,
+                "title": title[:240],
+                "state": m.state,
+                "updated_at": m.updated_at,
+                "current": str(summary.get("current") or "")[:320],
+                "next": str(summary.get("next") or "")[:320],
+                "coverage": summary.get("coverage"),
+                "controls": status.get("controls", []),
+            })
+        return rows
 
     def close(self):
         if self._closed:

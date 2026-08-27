@@ -966,6 +966,8 @@ class ExtensionStore:
         ext = data["extensions"].get(report["manifest"]["id"]) or {}
         current = (ext.get("versions") or {}).get(ext.get("active_version"))
         return {"id": report["manifest"]["id"], "name": report["manifest"]["name"],
+                "publisher": report["manifest"]["publisher"],
+                "description": report["manifest"]["description"],
                 "version": report["manifest"]["version"], "digest": report["digest"],
                 "scope_hash": report["scope_hash"], "diff": _scope_diff(current, report),
                 "permissions": report["manifest"]["permissions"],

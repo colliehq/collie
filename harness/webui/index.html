@@ -877,10 +877,93 @@
     padding: 34px 20px; text-align: center; color: var(--muted); background: var(--surface); }
   .library-empty strong { display: block; margin-bottom: 5px; color: var(--ink); font-size: 14px; }
   .library-empty code { font: 11px var(--mono); }
+  .library-head-actions .primary { color:var(--on-accent); border-color:var(--pine); background:var(--pine); }
+  .library-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0; margin:0 0 18px;
+    border-block:1px solid var(--line); }
+  .library-stat { padding:11px 8px; color:var(--muted); font-size:10.5px; }
+  .library-stat b { display:block; color:var(--ink); font:700 18px var(--mono); }
+  .library-section { margin-top:20px; }
+  .library-section-head { display:flex; align-items:baseline; gap:8px; margin:0 0 9px; }
+  .library-section-head h3 { margin:0; color:var(--ink); font-size:14px; }
+  .library-section-head span { color:var(--faint); font-size:11px; }
+  .capability-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .capability-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:5px 10px; min-width:0;
+    border:1px solid var(--line); border-radius:10px; background:var(--surface); padding:12px; }
+  .capability-name { color:var(--ink); font-weight:650; font-size:13px; }
+  .capability-description { grid-column:1/-1; color:var(--muted); font-size:11.5px; line-height:1.45; }
+  .capability-meta { grid-column:1/-1; display:flex; align-items:center; gap:7px; color:var(--faint);
+    font:10px var(--mono); }
+  .capability-status { align-self:start; border-radius:999px; padding:3px 7px; color:var(--muted);
+    background:var(--surface-2); font:10px var(--mono); }
+  .capability-status.ready { color:var(--meadow); background:var(--meadow-bg); }
+  .capability-status.permission,.capability-status.setup { color:#9a651a;
+    background:color-mix(in srgb,var(--amber) 14%,var(--surface)); }
+  .capability-card button { justify-self:start; grid-column:1/-1; border:0; padding:3px 0; color:var(--pine);
+    background:transparent; cursor:pointer; font:600 11px var(--sans); }
+  .library-add { margin:0 0 18px; border:1px solid var(--line); border-radius:12px; background:var(--surface); padding:14px; }
+  .library-add[hidden],.library-add-form[hidden],.library-preview[hidden] { display:none; }
+  .library-add-head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .library-add-head strong { flex:1; }
+  .library-add-close { border:0!important; background:transparent!important; font-size:18px!important; }
+  .library-add-choices { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; }
+  .library-add-choice { min-height:76px; text-align:left; border:1px solid var(--line); border-radius:9px;
+    padding:9px; color:var(--ink); background:var(--surface-2); cursor:pointer; }
+  .library-add-choice strong { display:block; margin-bottom:3px; font-size:12px; }
+  .library-add-choice span { display:block; color:var(--muted); font-size:10.5px; line-height:1.35; }
+  .library-add-form { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; padding-top:12px;
+    border-top:1px solid var(--line); }
+  .library-add-form label { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:10.5px; }
+  .library-add-form label.wide { grid-column:1/-1; }
+  .library-add-form input,.library-add-form textarea { width:100%; border:1px solid var(--line); border-radius:8px;
+    padding:8px; color:var(--ink); background:var(--surface-2); font:12px var(--sans); }
+  .library-add-form textarea { min-height:100px; resize:vertical; }
+  .library-add-actions { grid-column:1/-1; display:flex; align-items:center; gap:7px; }
+  .library-add-actions button { border:1px solid var(--line); border-radius:8px; padding:7px 10px;
+    background:var(--surface); color:var(--ink); cursor:pointer; }
+  .library-add-actions button.primary { color:var(--on-accent); border-color:var(--pine); background:var(--pine); }
+  .library-preview { grid-column:1/-1; border:1px solid var(--line); border-radius:8px; padding:10px;
+    background:var(--surface-2); color:var(--muted); font-size:11px; line-height:1.5; }
+  .library-preview code { overflow-wrap:anywhere; color:var(--ink); font:10px var(--mono); }
+
+  .missions-panel,.surface-panel { flex:1; min-height:0; overflow:auto; background:var(--bg); }
+  .missions-panel[hidden],.surface-panel[hidden] { display:none; }
+  .missions-inner { width:min(980px,100%); margin:0 auto; padding:28px 28px 40px; }
+  .missions-head,.surface-head { display:flex; align-items:flex-start; gap:10px; padding-bottom:14px;
+    border-bottom:1px solid var(--line); }
+  .missions-head-copy { flex:1; min-width:0; }
+  .missions-head h2 { margin:0; color:var(--ink); font-size:22px; }
+  .missions-head p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+  .missions-head button,.surface-head button { border:1px solid var(--line); border-radius:8px; padding:6px 9px;
+    color:var(--muted); background:var(--surface); cursor:pointer; }
+  .missions-notice { min-height:18px; margin:11px 0; color:var(--muted); font-size:12px; }
+  .missions-notice.bad { color:var(--coral); }
+  .missions-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  .mission-list-card { min-width:0; border:1px solid var(--line); border-radius:10px; padding:13px;
+    background:var(--surface); cursor:pointer; text-align:left; color:inherit; }
+  .mission-list-card:hover { border-color:color-mix(in srgb,var(--pine) 48%,var(--line)); }
+  .mission-list-top { display:flex; align-items:center; gap:7px; }
+  .mission-list-id { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    color:var(--faint); font:10px var(--mono); }
+  .mission-list-title { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+    margin:9px 0 6px; color:var(--ink); font-weight:650; font-size:13px; line-height:1.35; }
+  .mission-list-current { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+    min-height:32px; color:var(--muted); font-size:11.5px; line-height:1.4; }
+  .mission-list-foot { display:flex; align-items:center; gap:8px; margin-top:10px; color:var(--faint); font:10px var(--mono); }
+  .mission-list-foot span:first-child { flex:1; }
+  .surface-panel { display:flex; flex-direction:column; overflow:hidden; }
+  .surface-head { flex:none; align-items:center; padding:8px 12px; background:var(--surface); }
+  .surface-head strong { flex:1; color:var(--ink); font-size:12px; }
+  .surface-frame { width:100%; flex:1; min-height:0; border:0; background:var(--bg); }
   @media (max-width: 760px) {
     .library-panel { padding: 18px 12px 24px; }
     .library-grid { grid-template-columns: 1fr; }
     .library-head { align-items: stretch; flex-direction: column; }
+    .library-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .capability-grid,.missions-grid { grid-template-columns:1fr; }
+    .library-add-choices { grid-template-columns:1fr 1fr; }
+    .library-add-form { grid-template-columns:1fr; }
+    .library-add-form label.wide { grid-column:auto; }
+    .missions-inner { padding:18px 12px 24px; }
   }
   .model-trigger {
     appearance: none; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
@@ -1570,9 +1653,10 @@
   .modal-foot { padding:10px 16px; background:var(--surface); }
 
   /* Library and Activity are pages, never drawers stacked under a conversation. */
-  .library-panel,.activity-panel { flex:1; min-height:0; overflow:auto; border-top:0; background:var(--bg); }
-  .library-inner,.activity-inner { max-width:980px; margin:0 auto; padding:28px 28px 40px; }
-  .library-head,.activity-head { padding-bottom:14px; border-bottom:1px solid var(--line); }
+  .library-panel,.activity-panel,.missions-panel,.surface-panel { flex:1; min-height:0; border-top:0; background:var(--bg); }
+  .library-panel,.activity-panel,.missions-panel { overflow:auto; }
+  .library-inner,.activity-inner,.missions-inner { max-width:980px; margin:0 auto; padding:28px 28px 40px; }
+  .library-head,.activity-head,.missions-head { padding-bottom:14px; border-bottom:1px solid var(--line); }
   .library-head h2 { font-size:22px; }
   .library-grid,.activity-grid { gap:8px; }
   .library-card,.activity-lane { border-radius:10px; box-shadow:none; }
@@ -1644,10 +1728,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m18 6 3-3M18 3h3v3"/></svg>
         <span data-i18n="Missions">Missions</span>
       </button>
-      <a class="side-nav-item" id="navPack" href="/remote">
+      <button type="button" class="side-nav-item" id="navPack">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="12" height="9" rx="2"/><path d="M7 17h4M9 13v4M17 9h4v10h-7v-4"/></svg>
         <span data-i18n="Pack">Pack</span>
-      </a>
+      </button>
       <button type="button" class="side-nav-item" id="navLibrary">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h5v16H5zM14 4h5v16h-5z"/><path d="M7 8h1M16 8h1"/></svg>
         <span data-i18n="Library">Library</span>
@@ -1735,9 +1819,9 @@
           <button class="tbtn" id="meetingBtn" title="Meeting notes" aria-label="Meeting notes">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10a2 2 0 0 1 2 2v14l-3-2-3 2-3-2-3 2V5a2 2 0 0 1 2-2z"/><path d="M9 8h6M9 12h4"/></svg>
           </button>
-          <a class="tbtn" id="studioBtn" href="/studio" title="Studio — workflows, migrations and review" aria-label="Open Studio">
+          <button type="button" class="tbtn" id="studioBtn" title="Studio — workflows, migrations and review" aria-label="Open Studio">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h3M14 13h2"/></svg>
-          </a>
+          </button>
           <button class="tbtn" id="recordBtn" title="Screen record (webcam bubble + mic)" aria-label="Screen record" data-i18n-title="Screen record (webcam bubble + mic)" data-i18n-aria-label="Screen record">
             <svg id="recordIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/></svg>
           </button>
@@ -1771,18 +1855,68 @@
       </div>
     </div>
 
+    <section class="missions-panel" id="missionsPanel" role="region" aria-label="Missions" data-i18n-aria-label="Missions" hidden>
+      <div class="missions-inner">
+        <div class="missions-head">
+          <div class="missions-head-copy"><h2 data-i18n="Missions">Missions</h2>
+            <p data-i18n="Durable work, summarized by current state instead of raw internal instructions.">Durable work, summarized by current state instead of raw internal instructions.</p></div>
+          <button type="button" id="missionsRefresh" data-i18n="Refresh">Refresh</button>
+          <button type="button" id="missionsClose" data-i18n-aria-label="Close Missions" aria-label="Close Missions">×</button>
+        </div>
+        <div class="missions-notice" id="missionsNotice" role="status" aria-live="polite"></div>
+        <div class="missions-grid" id="missionsGrid"><div class="library-empty" data-i18n="Loading missions…">Loading missions…</div></div>
+      </div>
+    </section>
+
+    <section class="surface-panel" id="surfacePanel" role="region" aria-label="Collie tool" hidden>
+      <div class="surface-head"><strong id="surfaceTitle">Collie</strong>
+        <button type="button" id="surfaceReload" data-i18n-aria-label="Refresh page" aria-label="Refresh page">↻</button>
+        <button type="button" id="surfaceExternal" data-i18n-aria-label="Open in browser" aria-label="Open in browser">↗</button>
+        <button type="button" id="surfaceClose" data-i18n-aria-label="Close page" aria-label="Close page">×</button></div>
+      <iframe class="surface-frame" id="surfaceFrame" title="Collie tool"></iframe>
+    </section>
+
     <section class="library-panel" id="libraryPanel" role="region" aria-label="Library" data-i18n-aria-label="Library" hidden>
       <div class="library-inner">
         <div class="library-head">
           <div class="library-head-copy">
             <h2 data-i18n="Library">Library</h2>
-            <p data-i18n="Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.">Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.</p>
+            <p data-i18n="Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.">Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.</p>
           </div>
-          <div class="library-head-actions"><button type="button" id="libraryRefresh" data-i18n="Refresh">Refresh</button>
+          <div class="library-head-actions"><button type="button" class="primary" id="libraryAdd" data-i18n="Add capability">Add capability</button>
+            <button type="button" id="libraryRefresh" data-i18n="Refresh">Refresh</button>
             <button type="button" id="libraryClose" data-i18n-aria-label="Close Library" aria-label="Close Library">×</button></div>
         </div>
         <div class="library-notice" id="libraryNotice" role="status" aria-live="polite"></div>
-        <div class="library-grid" id="libraryGrid"><div class="library-empty" data-i18n="Loading installed extensions…">Loading installed extensions…</div></div>
+        <div class="library-add" id="libraryAddPanel" hidden>
+          <div class="library-add-head"><strong data-i18n="Add a capability">Add a capability</strong>
+            <span data-i18n="Choose where it comes from. External packages are previewed before installation.">Choose where it comes from. External packages are previewed before installation.</span>
+            <button type="button" class="library-add-close" id="libraryAddClose" aria-label="Close" data-i18n-aria-label="Close">×</button></div>
+          <div class="library-add-choices">
+            <button type="button" class="library-add-choice" data-library-add="skill"><strong data-i18n="Create a Skill">Create a Skill</strong><span data-i18n="Write reusable instructions directly in Collie.">Write reusable instructions directly in Collie.</span></button>
+            <button type="button" class="library-add-choice" data-library-add="package"><strong data-i18n="Import local package">Import local package</strong><span data-i18n="Preview digest and authority, then install.">Preview digest and authority, then install.</span></button>
+            <button type="button" class="library-add-choice" data-library-add="connection"><strong data-i18n="Add a connection">Add a connection</strong><span data-i18n="Connect an app or MCP server with scoped tools.">Connect an app or MCP server with scoped tools.</span></button>
+            <button type="button" class="library-add-choice" data-library-add="workflow"><strong data-i18n="Record a workflow">Record a workflow</strong><span data-i18n="Turn a proven run into an evaluated Skill.">Turn a proven run into an evaluated Skill.</span></button>
+          </div>
+          <form class="library-add-form" id="librarySkillForm" hidden>
+            <label><span data-i18n="Skill name">Skill name</span><input id="librarySkillName" maxlength="120" required placeholder="release-checklist"></label>
+            <label><span data-i18n="When should Collie use it?">When should Collie use it?</span><input id="librarySkillDescription" maxlength="500" required></label>
+            <label class="wide"><span data-i18n="Instructions">Instructions</span><textarea id="librarySkillInstructions" maxlength="32000" required></textarea></label>
+            <div class="library-add-actions"><button type="submit" class="primary" data-i18n="Create Skill">Create Skill</button><span id="librarySkillStatus"></span></div>
+          </form>
+          <form class="library-add-form" id="libraryPackageForm" hidden>
+            <label class="wide"><span data-i18n="Local package folder">Local package folder</span><input id="libraryPackageSource" maxlength="4096" required placeholder="C:\path\to\collie-extension"></label>
+            <div class="library-add-actions"><button type="submit" data-i18n="Preview package">Preview package</button><span id="libraryPackageStatus"></span></div>
+            <div class="library-preview" id="libraryPackagePreview" hidden></div>
+            <div class="library-add-actions" id="libraryPackageInstallRow" hidden><button type="button" class="primary" id="libraryPackageInstall" data-i18n="Install and enable exact digest">Install and enable exact digest</button></div>
+          </form>
+        </div>
+        <div class="library-summary" id="librarySummary"></div>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Built in">Built in</h3><span data-i18n="Available on this computer">Available on this computer</span></div><div class="capability-grid" id="libraryBuiltins"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Skills">Skills</h3><span data-i18n="Reusable instructions loaded on demand">Reusable instructions loaded on demand</span></div><div class="capability-grid" id="librarySkills"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Connections">Connections</h3><span data-i18n="Apps and services with scoped tools">Apps and services with scoped tools</span></div><div class="capability-grid" id="libraryConnections"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Recorded workflows">Recorded workflows</h3><span data-i18n="Drafts and approved workflow Skills">Drafts and approved workflow Skills</span></div><div class="capability-grid" id="libraryWorkflows"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Extension packages">Extension packages</h3><span data-i18n="Digest-pinned capabilities with declared authority">Digest-pinned capabilities with declared authority</span></div><div class="library-grid" id="libraryGrid"><div class="library-empty" data-i18n="Loading capability library…">Loading capability library…</div></div></section>
       </div>
     </section>
 
@@ -2200,6 +2334,31 @@
   // CSRF token injected same-origin by the server; sent on every state-changing / agent-running
   // request so a drive-by page (which can't read this same-origin HTML) can't trigger them.
   var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
+  var TOKEN_REFRESH = null;
+  function tokenizedPath(path) {
+    return path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT);
+  }
+  function refreshSessionToken() {
+    if (TOKEN_REFRESH) return TOKEN_REFRESH;
+    TOKEN_REFRESH = fetch("/api/session-token", { cache:"no-store", credentials:"same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (d) {
+        if (!d || !d.token) throw new Error("process token unavailable");
+        CT = d.token; return CT;
+      }).finally(function () { TOKEN_REFRESH = null; });
+    return TOKEN_REFRESH;
+  }
+  function authenticatedFetch(path, options, retried) {
+    return fetch(tokenizedPath(path), options || {}).then(function (r) {
+      if (r.status !== 403 || retried) return r;
+      return refreshSessionToken().then(function () {
+        return fetch(tokenizedPath(path), options || {});
+      });
+    });
+  }
+  // Desktop windows are long-lived while the windowless Web process may be upgraded underneath
+  // them. Keep the token fresh without reloading the page or discarding an unsent message.
+  window.setInterval(function () { refreshSessionToken().catch(function () {}); }, 15000);
   // Shared modal focus management. Each dialog remembers the control that opened it, receives a
   // useful initial focus, traps Tab while visible, and restores focus on close. Keeping this in one
   // place prevents the onboarding/settings/recording/model dialogs from drifting apart again.
@@ -2308,6 +2467,52 @@
     "idle": "空闲", "running": "运行中", "stopping": "正在停止",
     "Auto — Collie chooses per task": "自动 — Collie 按任务选择", "task-aware routing": "按任务智能路由",
     "Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.": "已安装的技能、连接、钩子、模板与资源。启用某个版本，即明确批准该版本的精确摘要与声明权限。",
+    "Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.": "Collie 可以使用的一切：内置能力、技能、连接、已录制工作流和已审查的扩展包。",
+    "Add capability": "添加能力", "Add a capability": "添加一项能力",
+    "Choose where it comes from. External packages are previewed before installation.": "选择能力来源；外部包会先预览，再安装。",
+    "Create a Skill": "新建 Skill", "Write reusable instructions directly in Collie.": "直接在 Collie 中编写可复用指令。",
+    "Import local package": "导入本地能力包", "Preview digest and authority, then install.": "先查看摘要与权限，再确认安装。",
+    "Add a connection": "添加连接", "Connect an app or MCP server with scoped tools.": "连接应用或 MCP 服务器，并使用权限明确的工具。",
+    "Record a workflow": "录制工作流", "Turn a proven run into an evaluated Skill.": "把已经跑通的流程变成经过评估的 Skill。",
+    "Skill name": "Skill 名称", "When should Collie use it?": "Collie 应该在什么情况下使用？", "Instructions": "指令",
+    "Create Skill": "创建 Skill", "Local package folder": "本地能力包文件夹", "Preview package": "预览能力包",
+    "Install and enable exact digest": "安装并启用此精确摘要", "Built in": "内置能力",
+    "Available on this computer": "这台电脑当前可用", "Skills": "技能", "Reusable instructions loaded on demand": "按需加载的可复用指令",
+    "Connections": "连接", "Apps and services with scoped tools": "提供权限明确工具的应用与服务",
+    "Recorded workflows": "已录制工作流", "Drafts and approved workflow Skills": "工作流草稿与已批准的 Skill",
+    "Extension packages": "扩展能力包", "Digest-pinned capabilities with declared authority": "固定摘要并声明权限的能力",
+    "Loading capability library…": "正在加载能力库…", "Built-ins": "内置", "Workflows": "工作流", "Extensions": "扩展包",
+    "ready": "可用", "setup": "需要连接", "permission": "需要授权", "off": "已关闭", "tools": "个工具",
+    "Open": "打开", "Configure": "配置", "Review": "查看", "No Skills found": "尚未发现 Skill",
+    "Create one here or import an extension package.": "可以在这里新建，或导入扩展能力包。",
+    "No connections yet": "尚未添加连接", "Add an app or MCP server.": "添加一个应用或 MCP 服务器。",
+    "No recorded workflows yet": "尚未录制工作流", "Use Studio to turn a proven run into a Skill.": "使用 Studio 把已经跑通的流程变成 Skill。",
+    "No extension packages installed": "尚未安装扩展能力包", "Built-in capabilities and Skills above are still available.": "上方内置能力和 Skill 仍然可以使用。",
+    "Skill created.": "Skill 已创建。", "Package preview failed:": "能力包预览失败：", "Skill creation failed:": "Skill 创建失败：",
+    "Package installed and enabled.": "能力包已安装并启用。", "Package installation failed:": "能力包安装失败：",
+    "Review this exact package before enabling it.": "启用前请审查这个精确能力包。",
+    "Publisher": "发布者", "Permissions": "权限", "Components": "组件", "No host permissions declared": "未声明主机权限",
+    "Durable work, summarized by current state instead of raw internal instructions.": "持续任务按当前状态摘要展示，不再暴露冗长的内部指令。",
+    "Draft": "草稿", "Queued": "已排队", "Running": "运行中", "Waiting": "等待中", "Paused": "已暂停",
+    "Review required": "需要审查", "Verified against contract": "已按完成条件验证",
+    "Completed without independent verification": "已完成但未经独立验证", "Failed": "失败",
+    "Recovery required": "需要恢复", "Reconciling": "正在核对", "Cancelled": "已取消", "Pausing": "正在暂停",
+    "Close Missions": "关闭持续任务", "Loading missions…": "正在加载持续任务…", "Refreshing missions…": "正在刷新持续任务…",
+    "No missions yet": "尚无持续任务", "Start one from Home with /mission followed by the outcome.": "回到主页，输入 /mission 和目标即可启动。",
+    "Mission list could not refresh:": "持续任务列表刷新失败：", "Current": "当前", "updated": "更新于",
+    "Refresh page": "刷新页面", "Open in browser": "在浏览器打开", "Close page": "关闭页面",
+    "Creating…": "正在创建…", "Installing…": "正在安装…", "Refreshing capability library…": "正在刷新能力库…",
+    "Unknown": "未知", "Untitled mission": "未命名持续任务", "Validating…": "正在验证…", "events": "个事件",
+    "just now": "刚刚", "untrusted project source": "未信任的项目来源", "project": "当前项目", "collie": "Collie",
+    "claude": "Claude", "extension or custom": "扩展或自定义目录", "work identity": "工作身份",
+    "Files and code": "文件与代码", "Read, search, edit, run checks, plan work, and rewind local changes.": "读取、搜索、编辑、运行检查、规划工作，并回退本地修改。",
+    "Durable missions": "持续任务", "Keep longer work moving across waits, retries, specialists, and recovery.": "让较长任务跨越等待、重试、专家分工和恢复持续推进。",
+    "Memory and verification": "记忆与验证", "Recall reviewed facts and return checks with explicit scope and evidence.": "召回已审查事实，并交回范围与证据明确的检查结果。",
+    "Signed-in browser": "已登录浏览器", "Research and work in the Chrome sessions already signed in on this computer.": "在这台电脑已经登录的 Chrome 会话中研究和工作。",
+    "Desktop apps": "桌面应用", "Operate native application controls, windows, keyboard, mouse, and clipboard.": "操作原生应用控件、窗口、键盘、鼠标和剪贴板。",
+    "Screen awareness": "屏幕识别", "Capture a window or display so Collie can inspect visual results.": "捕获窗口或显示器，让 Collie 检查视觉结果。",
+    "Meeting notes": "会议记录", "Record, transcribe, summarize, extract actions, and remind only when useful.": "录音、转写、总结、提取行动项，并只在有用时提醒。",
+    "Workflow Studio": "工作流 Studio", "Record a proven workflow, dry-run it, evaluate it, then approve it as a Skill.": "录制已跑通的工作流，试运行并评估，再批准为 Skill。",
     "Refresh": "刷新", "Close Library": "关闭能力库", "Loading installed extensions…": "正在加载已安装扩展…",
     "Refreshing installed extensions…": "正在刷新已安装扩展…", "Library unavailable": "能力库不可用",
     "The installed extension registry could not be read.": "无法读取已安装扩展注册表。",
@@ -2504,6 +2709,51 @@
     "idle": "閒置", "running": "執行中", "stopping": "正在停止",
     "Auto — Collie chooses per task": "自動 — Collie 依任務選擇", "task-aware routing": "依任務智慧路由",
     "Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.": "已安裝的技能、連線、鉤子、範本與資源。啟用某個版本，即明確批准該版本的精確摘要與聲明權限。",
+    "Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.": "Collie 可以使用的一切：內建能力、技能、連線、已錄製工作流程和已審查的擴充套件。",
+    "Add capability": "新增能力", "Add a capability": "新增一項能力",
+    "Choose where it comes from. External packages are previewed before installation.": "選擇能力來源；外部套件會先預覽，再安裝。",
+    "Create a Skill": "新增 Skill", "Write reusable instructions directly in Collie.": "直接在 Collie 中編寫可重複使用的指令。",
+    "Import local package": "匯入本機能力套件", "Preview digest and authority, then install.": "先查看摘要與權限，再確認安裝。",
+    "Add a connection": "新增連線", "Connect an app or MCP server with scoped tools.": "連接應用程式或 MCP 伺服器，並使用權限明確的工具。",
+    "Record a workflow": "錄製工作流程", "Turn a proven run into an evaluated Skill.": "把已跑通的流程變成經過評估的 Skill。",
+    "Skill name": "Skill 名稱", "When should Collie use it?": "Collie 應該在什麼情況下使用？", "Instructions": "指令",
+    "Create Skill": "建立 Skill", "Local package folder": "本機能力套件資料夾", "Preview package": "預覽能力套件",
+    "Install and enable exact digest": "安裝並啟用此精確摘要", "Built in": "內建能力", "Available on this computer": "這台電腦目前可用",
+    "Skills": "技能", "Reusable instructions loaded on demand": "依需求載入的可重複使用指令",
+    "Connections": "連線", "Apps and services with scoped tools": "提供權限明確工具的應用程式與服務",
+    "Recorded workflows": "已錄製工作流程", "Drafts and approved workflow Skills": "工作流程草稿與已批准的 Skill",
+    "Extension packages": "擴充能力套件", "Digest-pinned capabilities with declared authority": "固定摘要並聲明權限的能力",
+    "Loading capability library…": "正在載入能力庫…", "Built-ins": "內建", "Workflows": "工作流程", "Extensions": "擴充套件",
+    "ready": "可用", "setup": "需要連線", "permission": "需要授權", "off": "已關閉", "tools": "個工具",
+    "Open": "開啟", "Configure": "設定", "Review": "查看", "No Skills found": "尚未發現 Skill",
+    "Create one here or import an extension package.": "可以在這裡新增，或匯入擴充能力套件。",
+    "No connections yet": "尚未新增連線", "Add an app or MCP server.": "新增一個應用程式或 MCP 伺服器。",
+    "No recorded workflows yet": "尚未錄製工作流程", "Use Studio to turn a proven run into a Skill.": "使用 Studio 把已跑通的流程變成 Skill。",
+    "No extension packages installed": "尚未安裝擴充能力套件", "Built-in capabilities and Skills above are still available.": "上方內建能力和 Skill 仍然可以使用。",
+    "Skill created.": "Skill 已建立。", "Package preview failed:": "能力套件預覽失敗：", "Skill creation failed:": "Skill 建立失敗：",
+    "Package installed and enabled.": "能力套件已安裝並啟用。", "Package installation failed:": "能力套件安裝失敗：",
+    "Review this exact package before enabling it.": "啟用前請審查這個精確能力套件。", "Publisher": "發佈者", "Permissions": "權限", "Components": "元件", "No host permissions declared": "未聲明主機權限",
+    "Durable work, summarized by current state instead of raw internal instructions.": "持續任務依目前狀態摘要顯示，不再暴露冗長的內部指令。",
+    "Draft": "草稿", "Queued": "已排隊", "Running": "執行中", "Waiting": "等待中", "Paused": "已暫停",
+    "Review required": "需要審查", "Verified against contract": "已依完成條件驗證",
+    "Completed without independent verification": "已完成但未經獨立驗證", "Failed": "失敗",
+    "Recovery required": "需要復原", "Reconciling": "正在核對", "Cancelled": "已取消", "Pausing": "正在暫停",
+    "Close Missions": "關閉持續任務", "Loading missions…": "正在載入持續任務…", "Refreshing missions…": "正在重新整理持續任務…",
+    "No missions yet": "尚無持續任務", "Start one from Home with /mission followed by the outcome.": "回到首頁，輸入 /mission 和目標即可啟動。",
+    "Mission list could not refresh:": "持續任務清單重新整理失敗：", "Current": "目前", "updated": "更新於",
+    "Refresh page": "重新整理頁面", "Open in browser": "在瀏覽器開啟", "Close page": "關閉頁面",
+    "Creating…": "正在建立…", "Installing…": "正在安裝…", "Refreshing capability library…": "正在重新整理能力庫…",
+    "Unknown": "未知", "Untitled mission": "未命名持續任務", "Validating…": "正在驗證…", "events": "個事件",
+    "just now": "剛剛", "untrusted project source": "未信任的專案來源", "project": "目前專案", "collie": "Collie",
+    "claude": "Claude", "extension or custom": "擴充套件或自訂目錄", "work identity": "工作身分",
+    "Files and code": "檔案與程式碼", "Read, search, edit, run checks, plan work, and rewind local changes.": "讀取、搜尋、編輯、執行檢查、規劃工作，並回復本機修改。",
+    "Durable missions": "持續任務", "Keep longer work moving across waits, retries, specialists, and recovery.": "讓較長任務跨越等待、重試、專家分工和復原持續推進。",
+    "Memory and verification": "記憶與驗證", "Recall reviewed facts and return checks with explicit scope and evidence.": "召回已審查事實，並交回範圍與證據明確的檢查結果。",
+    "Signed-in browser": "已登入瀏覽器", "Research and work in the Chrome sessions already signed in on this computer.": "在這台電腦已登入的 Chrome 工作階段中研究和工作。",
+    "Desktop apps": "桌面應用程式", "Operate native application controls, windows, keyboard, mouse, and clipboard.": "操作原生應用程式控制項、視窗、鍵盤、滑鼠和剪貼簿。",
+    "Screen awareness": "螢幕辨識", "Capture a window or display so Collie can inspect visual results.": "擷取視窗或顯示器，讓 Collie 檢查視覺結果。",
+    "Meeting notes": "會議記錄", "Record, transcribe, summarize, extract actions, and remind only when useful.": "錄音、轉寫、摘要、擷取行動項目，並只在有用時提醒。",
+    "Workflow Studio": "工作流程 Studio", "Record a proven workflow, dry-run it, evaluate it, then approve it as a Skill.": "錄製已跑通的工作流程，試執行並評估，再批准為 Skill。",
     "Refresh": "重新整理", "Close Library": "關閉能力庫", "Loading installed extensions…": "正在載入已安裝擴充套件…",
     "Refreshing installed extensions…": "正在重新整理已安裝擴充套件…", "Library unavailable": "能力庫無法使用",
     "The installed extension registry could not be read.": "無法讀取已安裝擴充套件註冊表。",
@@ -4817,7 +5067,9 @@
   }
   function setActivityOpen(open) {
     if (!activityPanel) return;
-    if (open && typeof setLibraryOpen === "function") setLibraryOpen(false);
+    if (open && typeof setLibraryOpen === "function") {
+      setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
+    }
     activityPanel.hidden = !open;
     $("scroll").hidden = !!open; $("composer").hidden = !!open;
     $("scrollDownBtn").hidden = !!open;
@@ -4839,7 +5091,7 @@
   function libraryRequest(path, body) {
     var options = body == null ? {} : { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) };
-    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT), options)
+    return authenticatedFetch(path, options)
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) {
         if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
       }); });
@@ -4972,14 +5224,80 @@
       });
     }
   }
+  function libraryEmpty(parent, title, copy) {
+    parent.textContent = "";
+    var empty = document.createElement("div"); empty.className = "library-empty";
+    var strong = document.createElement("strong"); strong.textContent = t(title);
+    empty.appendChild(strong); empty.appendChild(document.createTextNode(t(copy)));
+    parent.appendChild(empty);
+  }
+  function libraryStatusLabel(status) {
+    return t({ ready:"ready", setup:"setup", permission:"permission", off:"off" }[status] || status || "setup");
+  }
+  function libraryCapabilityCard(row, kind) {
+    var card = document.createElement("article"); card.className = "capability-card";
+    var name = document.createElement("div"); name.className = "capability-name";
+    name.textContent = t(row.name || row.id || "Unknown"); card.appendChild(name);
+    var badge = document.createElement("span"); badge.className = "capability-status " + (row.status || "ready");
+    badge.textContent = libraryStatusLabel(row.status || "ready"); card.appendChild(badge);
+    var description = document.createElement("div"); description.className = "capability-description";
+    description.textContent = t(row.description || (kind === "connection" ? "Apps and services with scoped tools" : ""));
+    card.appendChild(description);
+    var meta = document.createElement("div"); meta.className = "capability-meta";
+    var bits = [];
+    if (row.origin) bits.push(t(row.origin));
+    if (row.kind) bits.push(t(row.kind));
+    if (row.tools != null) bits.push(Number(row.tools) + " " + t("tools"));
+    if (row.event_count != null) bits.push(Number(row.event_count) + " " + t("events"));
+    if (row.status && kind === "workflow") bits.push(t(row.status));
+    if (row.trusted === false) bits.push(t("untrusted project source"));
+    meta.textContent = bits.join(" · "); card.appendChild(meta);
+    var action = row.action || "";
+    if (action || kind === "connection" || kind === "workflow") {
+      var button = document.createElement("button"); button.type = "button";
+      button.textContent = t(action.indexOf("settings") === 0 || kind === "connection" ? "Configure" :
+        kind === "workflow" ? "Open" : "Open");
+      button.onclick = function () {
+        if (kind === "connection" || action === "settings-tools") {
+          setLibraryOpen(false); setProductNav("home"); openSettings(kind === "connection" ? "mcp" : "caps");
+        } else if (action === "settings-capabilities") {
+          setLibraryOpen(false); setProductNav("home"); openSettings("devices");
+        } else if (action === "missions") {
+          setLibraryOpen(false); setProductNav("missions"); setMissionsOpen(true);
+        } else if (action === "meetings") openEmbeddedSurface("Meeting notes", "/meetings?embedded=1");
+        else if (action === "studio" || kind === "workflow") openEmbeddedSurface("Studio", "/studio?embedded=1");
+        else { setLibraryOpen(false); setProductNav("home"); $("input").focus(); }
+      };
+      card.appendChild(button);
+    }
+    return card;
+  }
+  function renderCapabilityRows(id, rows, kind, emptyTitle, emptyCopy) {
+    var box = $(id); if (!box) return; box.textContent = "";
+    if (!(rows || []).length) { libraryEmpty(box, emptyTitle, emptyCopy); return; }
+    rows.forEach(function (row) { box.appendChild(libraryCapabilityCard(row, kind)); });
+  }
+  function renderLibrarySummary(summary) {
+    var box = $("librarySummary"); if (!box) return; box.textContent = "";
+    [["Built-ins","builtins"],["Skills","skills"],["Connections","connections"],
+     ["Workflows","workflows"],["Extensions","extensions"]].forEach(function (entry) {
+      var item = document.createElement("div"); item.className = "library-stat";
+      var count = document.createElement("b"); count.textContent = Number((summary || {})[entry[1]] || 0);
+      item.appendChild(count); item.appendChild(document.createTextNode(t(entry[0]))); box.appendChild(item);
+    });
+  }
+  function renderLibraryInventory(payload) {
+    renderLibrarySummary(payload.summary || {});
+    renderCapabilityRows("libraryBuiltins", payload.builtins || [], "builtin", "No capabilities found", "Collie could not read its built-in capability index.");
+    renderCapabilityRows("librarySkills", payload.skills || [], "skill", "No Skills found", "Create one here or import an extension package.");
+    renderCapabilityRows("libraryConnections", payload.connections || [], "connection", "No connections yet", "Add an app or MCP server.");
+    renderCapabilityRows("libraryWorkflows", payload.workflows || [], "workflow", "No recorded workflows yet", "Use Studio to turn a proven run into a Skill.");
+    renderLibrary(payload.extensions || []);
+  }
   function renderLibrary(extensions) {
     var grid = $("libraryGrid"); grid.textContent = "";
     if (!(extensions || []).length) {
-      var empty = document.createElement("div"); empty.className = "library-empty";
-      empty.innerHTML = "<strong>" + esc(t("No extensions installed")) + "</strong>" +
-        esc(t("Validate and install a local package with")) + " <code>collie library install</code>, " +
-        esc(t("then review its exact digest here before enabling it."));
-      grid.appendChild(empty); return;
+      libraryEmpty(grid, "No extension packages installed", "Built-in capabilities and Skills above are still available."); return;
     }
     extensions.forEach(function (extension) {
       var versions = extension.versions || [], card = document.createElement("article"); card.className = "library-card";
@@ -5014,9 +5332,9 @@
   }
   function loadLibrary() {
     if (!libraryPanel || libraryPanel.hidden) return Promise.resolve();
-    libraryNotice(t("Refreshing installed extensions…"));
+    libraryNotice(t("Refreshing capability library…"));
     return libraryRequest("/api/library").then(function (payload) {
-      renderLibrary(payload.extensions || []); libraryNotice("");
+      renderLibraryInventory(payload || {}); libraryNotice("");
     }).catch(function (error) {
       libraryNotice(t("Library could not refresh:") + " " + ((error && error.message) || error || t("Unavailable")), true);
       var grid = $("libraryGrid"); if (grid && !grid.querySelector(".library-card"))
@@ -5025,9 +5343,76 @@
       throw error;
     });
   }
+  var libraryPackageReview = null;
+  function setLibraryAddMode(mode) {
+    $("librarySkillForm").hidden = mode !== "skill";
+    $("libraryPackageForm").hidden = mode !== "package";
+    if (mode === "connection") {
+      $("libraryAddPanel").hidden = true; setLibraryOpen(false); setProductNav("home"); openSettings("mcp");
+    } else if (mode === "workflow") {
+      $("libraryAddPanel").hidden = true; openEmbeddedSurface("Studio", "/studio?embedded=1");
+    } else {
+      var first = mode === "skill" ? $("librarySkillName") : $("libraryPackageSource");
+      if (first) window.setTimeout(function () { first.focus(); }, 0);
+    }
+  }
+  if ($("libraryAdd")) $("libraryAdd").onclick = function () {
+    $("libraryAddPanel").hidden = !$("libraryAddPanel").hidden;
+    if (!$("libraryAddPanel").hidden) setLibraryAddMode("skill");
+  };
+  if ($("libraryAddClose")) $("libraryAddClose").onclick = function () { $("libraryAddPanel").hidden = true; };
+  document.querySelectorAll("[data-library-add]").forEach(function (button) {
+    button.onclick = function () { setLibraryAddMode(button.getAttribute("data-library-add")); };
+  });
+  if ($("librarySkillForm")) $("librarySkillForm").onsubmit = function (event) {
+    event.preventDefault(); var status = $("librarySkillStatus"), submit = event.submitter;
+    if (submit) submit.disabled = true; status.textContent = t("Creating…");
+    libraryRequest("/api/library/skill", {
+      name: $("librarySkillName").value, description: $("librarySkillDescription").value,
+      instructions: $("librarySkillInstructions").value
+    }).then(function () {
+      status.textContent = t("Skill created."); $("librarySkillForm").reset(); return loadLibrary();
+    }).catch(function (error) { status.textContent = t("Skill creation failed:") + " " + error.message; })
+      .finally(function () { if (submit) submit.disabled = false; });
+  };
+  function packagePermissionText(permissions) {
+    var rows = libraryPermissionTokens(permissions || {}); return rows.length ? rows.join("; ") : t("No host permissions declared");
+  }
+  if ($("libraryPackageForm")) $("libraryPackageForm").onsubmit = function (event) {
+    event.preventDefault(); var status = $("libraryPackageStatus"), submit = event.submitter;
+    if (submit) submit.disabled = true; status.textContent = t("Validating…");
+    libraryPackageReview = null; $("libraryPackagePreview").hidden = true; $("libraryPackageInstallRow").hidden = true;
+    var source = $("libraryPackageSource").value;
+    libraryRequest("/api/library/package/preview", { source:source }).then(function (out) {
+      libraryPackageReview = { source:source, preview:out.preview || {} }; var p = libraryPackageReview.preview;
+      var box = $("libraryPackagePreview"); box.textContent = "";
+      var title = document.createElement("strong"); title.textContent = (p.name || p.id || t("Extension packages")) + " · " + (p.version || ""); box.appendChild(title);
+      [["Publisher",p.publisher],["Digest",p.digest],["Permissions",packagePermissionText(p.permissions)],
+       ["Components",Object.keys(p.components || {}).map(function (key) { return key + ": " + (p.components[key] || []).length; }).join("; ") || "—"]]
+        .forEach(function (row) { var line = document.createElement("div"); line.appendChild(document.createTextNode(t(row[0]) + ": "));
+          var value = document.createElement(row[0] === "Digest" ? "code" : "span"); value.textContent = row[1] || "—"; line.appendChild(value); box.appendChild(line); });
+      var note = document.createElement("div"); note.textContent = t("Review this exact package before enabling it."); box.appendChild(note);
+      box.hidden = false; $("libraryPackageInstallRow").hidden = false; status.textContent = "";
+    }).catch(function (error) { status.textContent = t("Package preview failed:") + " " + error.message; })
+      .finally(function () { if (submit) submit.disabled = false; });
+  };
+  if ($("libraryPackageInstall")) $("libraryPackageInstall").onclick = function () {
+    if (!libraryPackageReview) return; var p = libraryPackageReview.preview, button = this;
+    var message = t("Install and enable exact digest") + "?\n\n" + (p.name || p.id || "") + " " + (p.version || "") +
+      "\n\n" + t("SHA-256 digest:") + "\n" + (p.digest || "") + "\n\n" + t("Permissions") + ":\n" + packagePermissionText(p.permissions);
+    if (!window.confirm(message)) return;
+    button.disabled = true; $("libraryPackageStatus").textContent = t("Installing…");
+    libraryRequest("/api/library/package/install", { source:libraryPackageReview.source,
+      digest:p.digest, confirmed:true }).then(function () {
+        $("libraryPackageStatus").textContent = t("Package installed and enabled.");
+        libraryPackageReview = null; $("libraryPackagePreview").hidden = true; $("libraryPackageInstallRow").hidden = true;
+        return loadLibrary();
+      }).catch(function (error) { $("libraryPackageStatus").textContent = t("Package installation failed:") + " " + error.message; })
+      .finally(function () { button.disabled = false; });
+  };
   function setLibraryOpen(open) {
     if (!libraryPanel) return;
-    if (open) { setActivityOpen(false); setRunDetailsOpen(false); }
+    if (open) { setActivityOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setRunDetailsOpen(false); }
     libraryPanel.hidden = !open; $("scroll").hidden = !!open; $("composer").hidden = !!open;
     $("scrollDownBtn").hidden = !!open;
     if (open) loadLibrary().catch(function () {});
@@ -5037,6 +5422,29 @@
     setLibraryOpen(false); if (typeof setProductNav === "function") setProductNav("home");
   };
 
+  // ---- Embedded first-party surfaces keep the native Collie shell and navigation ----
+  var surfacePanel = $("surfacePanel"), surfacePath = "";
+  function setEmbeddedSurfaceOpen(open) {
+    if (!surfacePanel) return;
+    if (open) { setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setRunDetailsOpen(false); }
+    surfacePanel.hidden = !open; $("scroll").hidden = !!open; $("composer").hidden = !!open;
+    $("scrollDownBtn").hidden = !!open;
+  }
+  function openEmbeddedSurface(title, path, nav) {
+    surfacePath = path; $("surfaceTitle").textContent = t(title);
+    var frame = $("surfaceFrame"); if (frame.getAttribute("src") !== path) frame.setAttribute("src", path);
+    setEmbeddedSurfaceOpen(true); setProductNav(nav || "surface"); $("pageTitle").textContent = t(title);
+    var more = $("topbarMore"); if (more) more.removeAttribute("open");
+  }
+  if ($("surfaceReload")) $("surfaceReload").onclick = function () {
+    var frame = $("surfaceFrame"); if (frame && frame.contentWindow) frame.contentWindow.location.reload();
+  };
+  if ($("surfaceExternal")) $("surfaceExternal").onclick = function () {
+    if (surfacePath) window.open(surfacePath.replace(/[?&]embedded=1(?:&|$)/, ""), "_blank", "noopener");
+  };
+  if ($("surfaceClose")) $("surfaceClose").onclick = function () { setEmbeddedSurfaceOpen(false); setProductNav("home"); };
+  if ($("studioBtn")) $("studioBtn").onclick = function () { openEmbeddedSurface("Studio", "/studio?embedded=1"); };
+
   // ---- delegate missions: NL goal -> a durable, supervised campaign ---------
   function missionResponse(r) {
     return r.json().catch(function () { return {}; }).then(function (d) {
@@ -5045,14 +5453,13 @@
     });
   }
   function missionPost(path, body) {
-    return fetch(path + "?token=" + encodeURIComponent(CT), {
+    return authenticatedFetch(path, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {})
     }).then(missionResponse);
   }
   function missionGet(path) {
-    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT))
-      .then(missionResponse);
+    return authenticatedFetch(path).then(missionResponse);
   }
   function missionCopyReport(report, button) {
     var text = (report && report.markdown) || "";
@@ -5154,6 +5561,7 @@
     }).catch(function (e) { missionError(card, e, "Could not create the mission"); });
   }
   function showMission(mid, openReport) {
+    setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     var card = newMissionCard();
     card.querySelector(".mbody").textContent = t("loading mission…");
     missionGet("/api/mission?id=" + encodeURIComponent(mid)).then(function (st) {
@@ -5164,20 +5572,52 @@
       }
     }).catch(function (e) { missionError(card, e, "Could not load the mission"); });
   }
-  function showMissions() {
-    var card = newMissionCard(), b = card.querySelector(".mbody");
-    b.textContent = t("loading missions…");
-    missionGet("/api/missions").then(function (out) {
-      b.textContent = "";
-      var rows = (out && out.missions) || [];
-      if (!rows.length) { b.textContent = t("No missions yet. Try /mission <goal>."); return; }
-      rows.forEach(function (m) {
-        var btn = document.createElement("button"); btn.className = "mbtn";
-        btn.textContent = missionStateLabel(m.state) + " · " + m.mission_id + " · " + m.goal;
-        btn.onclick = function () { showMission(m.mission_id); };
-        b.appendChild(btn);
-      });
+  var missionsPanel = $("missionsPanel");
+  function missionListAge(value) {
+    var seconds = Math.max(0, Math.floor(Date.now() / 1000 - Number(value || 0)));
+    if (seconds < 60) return t("just now");
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m";
+    if (seconds < 86400) return Math.floor(seconds / 3600) + "h";
+    return Math.floor(seconds / 86400) + "d";
+  }
+  function renderMissionList(rows) {
+    var grid = $("missionsGrid"); grid.textContent = "";
+    if (!(rows || []).length) { libraryEmpty(grid, "No missions yet", "Start one from Home with /mission followed by the outcome."); return; }
+    rows.forEach(function (mission) {
+      var card = document.createElement("button"); card.type = "button"; card.className = "mission-list-card";
+      var top = document.createElement("div"); top.className = "mission-list-top";
+      top.appendChild(mchip(missionStateLabel(mission.state), "state-" + (mission.state || "unknown")));
+      var id = document.createElement("span"); id.className = "mission-list-id"; id.textContent = mission.mission_id || ""; top.appendChild(id); card.appendChild(top);
+      var title = document.createElement("div"); title.className = "mission-list-title"; title.textContent = mission.title || t("Untitled mission"); card.appendChild(title);
+      var current = document.createElement("div"); current.className = "mission-list-current";
+      current.textContent = mission.current || mission.next || t("Ready"); card.appendChild(current);
+      var foot = document.createElement("div"); foot.className = "mission-list-foot";
+      var coverage = mission.coverage || {}, progress = document.createElement("span");
+      progress.textContent = coverage.total ? t("Coverage") + " " + Number(coverage.closed || 0) + "/" + Number(coverage.total || 0) : t("Current");
+      var updated = document.createElement("span"); updated.textContent = t("updated") + " " + missionListAge(mission.updated_at); foot.appendChild(progress); foot.appendChild(updated); card.appendChild(foot);
+      card.onclick = function () { showMission(mission.mission_id); }; grid.appendChild(card);
     });
+  }
+  function loadMissions() {
+    if (!missionsPanel || missionsPanel.hidden) return Promise.resolve();
+    $("missionsNotice").textContent = t("Refreshing missions…"); $("missionsNotice").classList.remove("bad");
+    return missionGet("/api/missions").then(function (out) {
+      renderMissionList((out && out.missions) || []); $("missionsNotice").textContent = "";
+    }).catch(function (error) {
+      $("missionsNotice").textContent = t("Mission list could not refresh:") + " " + ((error && error.message) || error);
+      $("missionsNotice").classList.add("bad"); throw error;
+    });
+  }
+  function setMissionsOpen(open) {
+    if (!missionsPanel) return;
+    if (open) { setActivityOpen(false); setLibraryOpen(false); setEmbeddedSurfaceOpen(false); setRunDetailsOpen(false); }
+    missionsPanel.hidden = !open; $("scroll").hidden = !!open; $("composer").hidden = !!open;
+    $("scrollDownBtn").hidden = !!open; if (open) loadMissions().catch(function () {});
+  }
+  if ($("missionsRefresh")) $("missionsRefresh").onclick = function () { loadMissions().catch(function () {}); };
+  if ($("missionsClose")) $("missionsClose").onclick = function () { setMissionsOpen(false); setProductNav("home"); };
+  function showMissions() {
+    setMissionsOpen(true); setProductNav("missions");
   }
   function missionHelp() {
     var card = newMissionCard();
@@ -6175,23 +6615,24 @@
     document.querySelectorAll(".side-nav-item").forEach(function (node) {
       node.classList.toggle("on", node.id === "nav" + id.charAt(0).toUpperCase() + id.slice(1));
     });
-    var titles = { home: "Home", missions: "Missions", library: "Library", activity: "Activity", needsYou: "Needs You" };
+    var titles = { home: "Home", missions: "Missions", pack: "Pack", library: "Library", activity: "Activity", needsYou: "Needs You" };
     var title = $("pageTitle"); if (title && titles[id]) title.textContent = t(titles[id]);
   }
   function newThread() {
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null;
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
-    setProductNav("home"); setActivityOpen(false); setLibraryOpen(false);
+    setProductNav("home"); setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     loadSessions(); $("input").focus();
   }
   $("newChat").onclick = newThread;
   $("navHome").onclick = newThread;
-  $("navMissions").onclick = function () { newThread(); setProductNav("missions"); showMissions(); };
+  $("navMissions").onclick = function () { setProductNav("missions"); setMissionsOpen(true); };
+  $("navPack").onclick = function () { openEmbeddedSurface("Pack", "/remote?embedded=1", "pack"); };
   $("navLibrary").onclick = function () { setProductNav("library"); setLibraryOpen(true); };
-  $("navActivity").onclick = function () { setLibraryOpen(false); setProductNav("activity"); setActivityOpen(true); };
+  $("navActivity").onclick = function () { setProductNav("activity"); setActivityOpen(true); };
   $("needsYouNav").onclick = function () {
-    setLibraryOpen(false);
+    setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     var ids = typeof GLOBAL_PERMS === "undefined" ? [] : Object.keys(GLOBAL_PERMS);
     var id = ids.length ? ids[0] : "", rec = id ? GLOBAL_PERMS[id] : null;
     if (!rec) return;
@@ -7501,7 +7942,7 @@
   });
 
   var meetingBtn = document.getElementById("meetingBtn");
-  if (meetingBtn) meetingBtn.onclick = function () { window.location.href = "/meetings"; };
+  if (meetingBtn) meetingBtn.onclick = function () { openEmbeddedSurface("Meeting notes", "/meetings?embedded=1"); };
 
   // --- record panel: window/screen/region + live webcam preview + recordings list ---------------
   (function () {

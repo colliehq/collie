@@ -222,7 +222,13 @@ def test_library_snapshot_and_lifecycle_actions_are_authenticated_and_explicit(
     code, denied = _json(base + "/api/library")
     assert code == 403 and denied["error"] == "forbidden"
     code, listing = _json(base + "/api/library?token=" + token)
-    assert code == 200 and listing == {"extensions": [row]}
+    assert code == 200 and listing["extensions"] == [row]
+    assert listing["builtins"] and listing["summary"]["builtins"] == len(listing["builtins"])
+    assert set(listing["add_actions"]) == {
+        "create_skill", "import_package", "add_connection", "record_workflow"}
+    assert isinstance(listing["skills"], list)
+    assert isinstance(listing["connections"], list)
+    assert isinstance(listing["workflows"], list)
 
     code, denied = _json(base + "/api/library/action", "POST", {
         "action": "enable", "id": row["id"], "version": "1.2.0", "approve": True})
@@ -241,6 +247,65 @@ def test_library_snapshot_and_lifecycle_actions_are_authenticated_and_explicit(
         ("enable", "example.release", "1.2.0", True),
         ("uninstall", "example.release", "1.2.0", False),
     ]
+
+
+def test_library_can_create_a_skill_without_overwriting_existing_bytes(web_server):
+    base, token, state = web_server
+    payload = {
+        "name": "Release Checklist",
+        "description": "Use when preparing a reviewed release.",
+        "instructions": "Inspect the current version, run tests, and report the exact evidence.",
+    }
+    code, denied = _json(base + "/api/library/skill", "POST", payload)
+    assert code == 403 and denied["error"] == "forbidden"
+
+    code, created = _json(base + "/api/library/skill?token=" + token, "POST", payload)
+    assert code == 200 and created["skill"]["name"] == "release-checklist"
+    path = state / "skills" / "release-checklist" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    assert "name: release-checklist" in text
+    assert "Use when preparing a reviewed release." in text
+    assert "run tests" in text
+
+    code, duplicate = _json(base + "/api/library/skill?token=" + token, "POST", payload)
+    assert code == 409 and "already exists" in duplicate["error"]
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_library_package_import_requires_previewed_digest_and_confirmation(
+        web_server, monkeypatch):
+    from harness import capability_library
+
+    base, token, _ = web_server
+    digest = "d" * 64
+    calls = []
+    monkeypatch.setattr(capability_library, "preview_package", lambda root, source: {
+        "id": "example.safe", "name": "Safe helper", "publisher": "Example",
+        "version": "1.0.0", "digest": digest, "permissions": {"network": []},
+        "components": {"skills": ["skills/safe/SKILL.md"]},
+    })
+    monkeypatch.setattr(capability_library, "install_package",
+                        lambda root, source, digest, confirmed=False:
+                        calls.append((source, digest, confirmed)) or {
+                            "id": "example.safe", "enabled": True, "active_version": "1.0.0"})
+
+    code, preview = _json(base + "/api/library/package/preview?token=" + token, "POST", {
+        "source": "C:/reviewed/package"})
+    assert code == 200 and preview["preview"]["digest"] == digest
+
+    code, invalid = _json(base + "/api/library/package/install?token=" + token, "POST", {
+        "source": "C:/reviewed/package", "digest": digest, "confirmed": "yes"})
+    assert code == 400 and "confirmed" in invalid["error"]
+    code, installed = _json(base + "/api/library/package/install?token=" + token, "POST", {
+        "source": "C:/reviewed/package", "digest": digest, "confirmed": True})
+    assert code == 200 and installed["extension"]["enabled"] is True
+    assert calls == [("C:/reviewed/package", digest, True)]
+
+
+def test_loopback_page_can_refresh_a_rotated_process_token(web_server):
+    base, token, _ = web_server
+    code, value = _json(base + "/api/session-token")
+    assert code == 200 and value["token"] == token and value["boot"]
 
 
 def test_vscode_embed_headers_require_the_exact_high_entropy_process_token(

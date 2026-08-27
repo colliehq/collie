@@ -124,6 +124,42 @@ def test_library_is_a_real_digest_and_authority_lifecycle_surface():
     assert 'force=False' in server and 'force=True' not in server.split('if path == "/api/library/action"', 1)[1].split('if path ', 1)[0]
 
 
+def test_missions_pack_and_studio_stay_in_the_native_application_shell():
+    desktop = read("harness/webui/index.html")
+    remote = read("harness/webui/remote.html")
+    studio = read("harness/webui/studio.html")
+    meetings = read("harness/webui/meetings.html")
+
+    assert 'id="missionsPanel"' in desktop and 'id="missionsGrid"' in desktop
+    assert '"mission-list-card"' in desktop
+    assert 'm.goal' not in desktop.split("function showMissions()", 1)[1].split(
+        "function missionHelp()", 1)[0]
+    assert 'id="surfacePanel"' in desktop and 'id="surfaceFrame"' in desktop
+    assert '<button type="button" class="side-nav-item" id="navPack">' in desktop
+    assert 'openEmbeddedSurface("Pack", "/remote?embedded=1", "pack")' in desktop
+    assert 'openEmbeddedSurface("Studio", "/studio?embedded=1")' in desktop
+    assert 'openEmbeddedSurface("Meeting notes", "/meetings?embedded=1")' in desktop
+    for page in (remote, studio, meetings):
+        assert 'get("embedded")==="1"' in page
+        assert "body.embedded" in page
+
+
+def test_library_inventory_and_add_flows_are_first_class_ui():
+    desktop = read("harness/webui/index.html")
+    server = read("harness/webapp.py")
+
+    for node in ("librarySummary", "libraryBuiltins", "librarySkills", "libraryConnections",
+                 "libraryWorkflows", "libraryAdd", "librarySkillForm", "libraryPackageForm"):
+        assert f'id="{node}"' in desktop
+    for path in ("/api/library/skill", "/api/library/package/preview",
+                 "/api/library/package/install", "/api/session-token"):
+        assert path in desktop or path in server
+    assert "authenticatedFetch" in desktop and "refreshSessionToken" in desktop
+    assert "confirmed:true" in desktop
+    assert 'openSettings("mcp")' in desktop
+    assert "renderLibraryInventory" in desktop
+
+
 def test_pack_page_reports_operational_state_without_inventing_device_presence():
     page = read("harness/webui/remote.html")
 
