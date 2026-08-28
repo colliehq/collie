@@ -356,6 +356,21 @@ def _public_health(raw):
                  if row.get(k) is not None}
                 for row in (work.get("recovery_required") or []) if isinstance(row, dict)]
     supervisor = raw.get("supervisor") if isinstance(raw.get("supervisor"), dict) else {}
+    public_supervisor = {k: supervisor.get(k) for k in
+                         ("installed", "enabled", "running", "status", "mode", "task_name",
+                          "last_result") if supervisor.get(k) is not None}
+    # Task Scheduler registration says whether recovery is installed, not whether its current
+    # process is alive.  The supervisor heartbeat is the authoritative runtime fact and is already
+    # part of this allowlisted health snapshot.  Without joining the two, Pack displayed
+    # "Supervisor · Stopped" beside five fresh workers that only that supervisor could be keeping
+    # alive.  A stale heartbeat remains visibly stale; it is never promoted to running.
+    supervisor_beat = heartbeats.get("supervisor") or {}
+    if supervisor_beat:
+        supervisor_running = (supervisor_beat.get("state") == "running" and
+                              supervisor_beat.get("fresh") is True)
+        public_supervisor["running"] = supervisor_running
+        public_supervisor["status"] = ("running" if supervisor_running else
+                                       (supervisor_beat.get("state") or "stale"))
     services_raw = raw.get("services") if isinstance(raw.get("services"), dict) else {}
     services = {}
     if isinstance(services_raw.get("web"), dict):
@@ -384,9 +399,7 @@ def _public_health(raw):
         "ok": bool(raw.get("ok")), "status": raw.get("status") or "unknown", "at": raw.get("at"),
         "workers": workers, "heartbeats": heartbeats,
         "services": services, "credentials": credentials, "queues": queues,
-        "supervisor": {k: supervisor.get(k) for k in
-                       ("installed", "enabled", "running", "status", "mode", "task_name",
-                        "last_result") if supervisor.get(k) is not None},
+        "supervisor": public_supervisor,
         "work": {"interactive_active": work.get("interactive_active", 0),
                  "missions_active": work.get("missions_active", 0),
                  "task_runs_active": work.get("task_runs_active", 0),
@@ -1903,8 +1916,15 @@ class Handler(BaseHTTPRequestHandler):
                 # `collie` is what THIS process started and can therefore actually stop, which is the
                 # one a stop button may be offered for.
                 mine = dt.playing_here().get("track")
+                # The always-open app polls this endpoint every four seconds only to paint its own
+                # stoppable audio pill. Do not launch a PowerShell GSMTC query for a field that caller
+                # discards. System media remains available to deliberate callers via system=1 (and
+                # the desktop "system" intent calls dt.nowplaying() directly).
+                query = urllib.parse.parse_qs(parsed.query)
+                system_track = (dt.nowplaying()
+                                if query.get("system", [""])[0] == "1" else None)
                 return self._send_json({
-                    "track": dt.nowplaying(),
+                    "track": system_track,
                     # `ok` so this object is the same shape /api/desktop/play returns — one type on
                     # the client for "what is playing", rather than two that differ by one field.
                     "collie": ({"ok": True, "title": mine.get("title"),
@@ -2303,6 +2323,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"ok": True, "extension": result})
                 except (ExtensionError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     return self._send_json({"error": str(exc)}, 409)
+            if path == "/api/comfy/refresh":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                try:
+                    from .comfy_integration import refresh_connections
+                    result = refresh_connections()
+                    return self._send_json(result)
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path == "/api/comfy/local":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2612,13 +2641,7 @@ class Handler(BaseHTTPRequestHandler):
                             # Warm the tool cache while authorized, so the panel can show a real
                             # count instead of "unknown" right after a successful login.
                             try:
-                                conn = mcpclient._get_conn(nm, c)
-                                tools = [{"name": t.get("name"), "description": t.get("description", ""),
-                                          "inputSchema": t.get("inputSchema") or t.get("input_schema")}
-                                         for t in conn.list_tools() if t.get("name")]
-                                cache = mcpclient._read_cache()
-                                cache[nm] = {"hash": mcpclient._cfg_hash(c), "tools": tools}
-                                mcpclient._write_cache(cache)
+                                mcpclient.refresh_server(nm)
                             except Exception:
                                 pass
                         except Exception as exc:
@@ -4706,7 +4729,7 @@ class Handler(BaseHTTPRequestHandler):
                 "model": res.model, "prefix_tokens": res.prefix_tokens,
                 "input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
                 "total_tokens": res.total_tokens, "turns": res.turns,
-                "max_turns": getattr(h, "max_turns", None),
+                "max_turns": getattr(h, "max_turns", None) or None,
                 "tool_calls": res.tool_calls, "wall_ms": res.wall_ms,
                 "cost_usd": res.cost_usd,
                 "effort": decision.effort, "speed": decision.speed,

@@ -934,6 +934,31 @@ def test_ordinary_tool_error_still_settles(tmp_path):
     assert snapshot.error == ""
 
 
+def test_windows_acl_refused_patch_is_not_a_clean_settle(tmp_path):
+    """The native sandbox's ACL denial is policy failure, not a context miss.
+
+    Codex 0.149.0 used the generic apply_patch verification prefix for both, but
+    the Windows error text and errno distinguish a workspace it cannot open from
+    a patch whose expected lines simply did not match.
+    """
+    outcome = _complete(text="I could not modify hello.py")
+    refused = ProcessOutcome(
+        stdout=outcome.stdout,
+        stderr=("ERROR codex_core::tools::router: error=apply_patch verification "
+                "failed: C:\\fixture\\hello.py: Access is denied. (os error 5)\n"),
+        exit_code=0)
+    runner = CodexExecRunner(process_runner=FakeProcessRunner(refused),
+                             snapshotter=Snapshots("same", "same"))
+
+    snapshot = runner.start("edit the file", str(tmp_path))
+
+    assert snapshot.settled is False
+    assert snapshot.mutated is False
+    assert "refused every write" in snapshot.error
+    assert "Access is denied" in snapshot.error
+    assert snapshot.recovery_required is False
+
+
 def test_resume_argv_keeps_sandbox_override(tmp_path):
     """`exec resume` has no --sandbox flag, so both bounds ride on -c."""
     process = FakeProcessRunner(_complete(), _complete(thread=False))

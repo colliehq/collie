@@ -243,8 +243,8 @@ SCHEMA = [
      "hint_zh": "把缺失授权放入 Needs You，同时继续不依赖它的 Mission 工作；只有所有剩余路径都依赖"
                 "该授权时，整个 Mission 才暂停。"},
 
-    {"group": "Limits", "key": "MAX_TURNS", "label": "Max turns", "type": "number", "default": "50", "min": "1", "max": "120",
-     "hint": "Hard cap on tool/response turns for one message before collie stops and reports back. Info-hunt + build tasks routinely need 20-30; subscription routes still have plan limits and may have separate billing rules."},
+    {"group": "Limits", "key": "MAX_TURNS", "label": "Turn cap (optional)", "type": "number", "default": "0", "min": "0", "max": "120",
+     "hint": "Optional hard cap on tool/response turns for one message. 0 = unlimited; provider, token/cost budgets and the Stop button still apply."},
     {"group": "Limits", "key": "MAX_COST", "label": "Budget: stop past $", "type": "number", "default": "0", "min": "0", "step": "0.01",
      "hint": "Abort a run once metered spend crosses this many dollars. 0 = no budget cap. (Subscription providers cost $0 regardless.)"},
     {"group": "Limits", "key": "MAX_TOTAL_TOKENS", "label": "Budget: stop past tokens", "type": "number", "default": "0", "min": "0",
@@ -311,7 +311,7 @@ _ZH = {
     "RECENCY_HALFLIFE": {"label": "时效半衰期(天)", "hint": "新记忆有轻度加权,每 N 天减半——端口会换、决定会翻,新事实用来破平。相关性仍占主导。0 = 关闭时间加权。"},
     "RERANK": {"label": "重排器(cross-encoder)", "hint": "召回候选与查询联合重打分,top-k 更准。更精确,每轮略慢。"},
     "DISTILL": {"label": "把对话蒸馏成记忆", "hint": "边跑边把长轮次总结为紧凑事实,未来召回更便宜更准。"},
-    "MAX_TURNS": {"label": "最大轮数", "hint": "单条消息的工具/回复轮数硬上限。信息搜寻+构建类任务常要 20-30;订阅计费下多轮 $0,调高是安全的。"},
+    "MAX_TURNS": {"label": "轮数上限(可选)", "hint": "单条消息的工具/回复轮数硬上限。0 = 不限轮数；模型提供方限制、token/费用预算和停止按钮仍然有效。"},
     "MAX_COST": {"label": "预算:超过 $ 即停", "hint": "按量计费花费越线即中止。0 = 不设上限。(订阅提供方恒为 $0。)"},
     "MAX_TOTAL_TOKENS": {"label": "预算:超过 tokens 即停", "hint": "总 tokens(入+出)越线即中止。0 = 不设上限。"},
     "REDACT_SECRETS": {"label": "向模型输入脱敏密钥", "hint": "工具输出中发现的 API key、token、私钥块在发给任何云厂商前替换为 {{SECRET:…}} 占位符;工具执行时替换回真值,部署/curl 鉴权等流程不受影响。仅当任务确实需要模型看到明文密钥时才关。"},

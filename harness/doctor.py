@@ -137,8 +137,20 @@ def report(state_root: str | None = None, *, probe_services: bool = True,
                              str(rollback.get("last_error") or "startup checks failed")[:300]))
 
     databases = []
-    for name in ("ops.db", "jobs.db", "tasktree.db", "automations.db", "memory.db", "runs.db"):
-        path = os.path.join(root, name)
+    # Durable control-plane stores live directly under ~/.collie, while conversation memory and
+    # run history use the relocatable data directory shared with the CLI.  Treating every database
+    # as a root-level file made healthy installed copies report memory.db and runs.db as missing.
+    # Keep the public names stable; only their on-disk lookup differs.
+    database_paths = {
+        "ops.db": "ops.db",
+        "jobs.db": "jobs.db",
+        "tasktree.db": "tasktree.db",
+        "automations.db": "automations.db",
+        "memory.db": os.path.join("data", "memory.db"),
+        "runs.db": os.path.join("data", "runs.db"),
+    }
+    for name, relative_path in database_paths.items():
+        path = os.path.join(root, relative_path)
         databases.append({"name": name, "present": os.path.isfile(path),
                           "bytes": os.path.getsize(path) if os.path.isfile(path) else 0})
     severity = {"ok": 0, "warning": 1, "needs_you": 2, "error": 3}

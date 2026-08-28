@@ -107,3 +107,79 @@ def test_library_promotes_comfy_without_hiding_existing_capabilities(monkeypatch
     assert comfy["status"] == "ready" and comfy["tools"] == 27
     assert comfy["action"] == "comfy"
     assert {row["id"] for row in rows} >= {"code-workspace", "meetings", "comfy"}
+
+
+def test_disabled_comfy_connections_are_not_reported_ready(monkeypatch):
+    from harness import capability_library, comfy_integration
+
+    monkeypatch.setattr(comfy_integration, "_local_server", lambda: {
+        "reachable": True, "url": comfy_integration.LOCAL_APP_URL,
+    })
+    monkeypatch.setattr(comfy_integration, "_mcp_row", lambda name: {
+        "name": name, "auth": "oauth" if name == "comfy-cloud" else "none",
+        "enabled": False, "tools": 41,
+    } if name in ("comfy-cloud", "comfy-local") else None)
+    monkeypatch.setattr(comfy_integration.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(comfy_integration, "_configured_local_bins", lambda: (False, False))
+
+    status = comfy_integration.snapshot()
+    assert status["cloud"]["connected"] is False
+    assert status["local"]["mcp_enabled"] is False
+    row = next(item for item in capability_library._builtins() if item["id"] == "comfy")
+    assert row["status"] == "setup" and row["tools"] == 0
+
+
+def test_refresh_connections_reports_each_server_without_exposing_config(monkeypatch):
+    from harness import comfy_integration, mcpclient
+
+    monkeypatch.setattr(mcpclient, "_load_config", lambda: {
+        "comfy-cloud": {"url": comfy_integration.CLOUD_MCP_URL},
+        "comfy-local": {"command": "C:/private/comfy-mcp.exe"},
+    })
+    monkeypatch.setattr(mcpclient, "refresh_server", lambda name: [
+        {"name": "tool-%s" % name},
+    ])
+    monkeypatch.setattr(comfy_integration, "snapshot", lambda: {"safe": True})
+
+    result = comfy_integration.refresh_connections()
+    assert result["ok"] is True
+    assert result["refreshed"] == [
+        {"server": "comfy-cloud", "tools": 1},
+        {"server": "comfy-local", "tools": 1},
+    ]
+    assert "private" not in json.dumps(result)
+
+
+def test_refresh_connections_skips_disabled_servers(monkeypatch):
+    from harness import comfy_integration, mcpclient
+
+    monkeypatch.setattr(mcpclient, "_load_config", lambda: {
+        "comfy-cloud": {"url": comfy_integration.CLOUD_MCP_URL, "enabled": False},
+        "comfy-local": {"command": "comfy-mcp"},
+    })
+    called = []
+    monkeypatch.setattr(mcpclient, "refresh_server", lambda name: called.append(name) or [])
+    monkeypatch.setattr(comfy_integration, "snapshot", lambda: {"safe": True})
+
+    result = comfy_integration.refresh_connections()
+    assert called == ["comfy-local"]
+    assert result["ok"] is True
+
+
+def test_refresh_connections_reports_failure_without_leaking_config(monkeypatch):
+    from harness import comfy_integration, mcpclient
+
+    monkeypatch.setattr(mcpclient, "_load_config", lambda: {
+        "comfy-local": {"command": "C:/private/comfy-mcp.exe"},
+    })
+    monkeypatch.setattr(
+        mcpclient, "refresh_server",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("server unavailable")))
+    monkeypatch.setattr(comfy_integration, "snapshot", lambda: {"safe": True})
+
+    result = comfy_integration.refresh_connections()
+    assert result["ok"] is False
+    assert result["errors"] == [{
+        "server": "comfy-local", "error": "RuntimeError: server unavailable",
+    }]
+    assert "private" not in str(result)

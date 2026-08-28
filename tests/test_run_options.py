@@ -20,18 +20,18 @@ def test_plan_is_a_prompt_role_not_a_quality_or_verification_alias():
     got = configure_run_options(h, intent="plan", quality="balanced", verification="auto")
     assert got == {"intent": "plan", "quality": "balanced", "verification": "auto"}
     assert h.mode == "plan" and h.force_edit is False
-    assert h.max_turns == 40 and h.verify_gate is False
+    assert h.max_turns == 0 and h.turn_target == 40 and h.verify_gate is False
 
 
 def test_thorough_and_required_are_independent_axes():
     thorough = harness_stub()
     configure_run_options(thorough, quality="thorough", verification="auto")
-    assert thorough.max_turns == 50 and thorough.verify_max == 4
+    assert thorough.max_turns == 0 and thorough.turn_target == 50 and thorough.verify_max == 4
     assert thorough.verify_gate is False and thorough.require_assert is False
 
     required = harness_stub()
     configure_run_options(required, quality="balanced", verification="required")
-    assert required.max_turns == 40
+    assert required.max_turns == 0 and required.turn_target == 40
     assert required.self_verify is True
     assert required.verify_gate is True and required.require_assert is True
     assert required.verify_max == 4
@@ -46,8 +46,9 @@ def test_quality_targets_differ_but_never_widen_a_user_hard_cap():
     capped._max_turns_hard_cap = 5
     configure_run_options(capped, quality="thorough")
 
-    assert (balanced.max_turns, thorough.max_turns) == (40, 50)
-    assert capped.max_turns == 5
+    assert (balanced.max_turns, thorough.max_turns) == (0, 0)
+    assert (balanced.turn_target, thorough.turn_target) == (40, 50)
+    assert capped.max_turns == 5 and capped.turn_target == 50
 
 
 def test_thorough_respects_the_real_max_turns_environment_cap(monkeypatch, tmp_path):
@@ -59,6 +60,20 @@ def test_thorough_respects_the_real_max_turns_environment_cap(monkeypatch, tmp_p
     try:
         configure_run_options(h, quality="thorough")
         assert h._max_turns_hard_cap == 5 and h.max_turns == 5
+    finally:
+        h.memory.close(); h.recorder.close()
+
+
+def test_zero_turn_environment_value_means_no_hard_cap(monkeypatch, tmp_path):
+    from harness import cli
+
+    monkeypatch.setenv("COLLIE_MAX_TURNS", "0")
+    monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
+    h = cli.make_harness(str(tmp_path), provider="mock", project="turn-unlimited", embed="hash")
+    try:
+        assert h._max_turns_hard_cap is None
+        configure_run_options(h, quality="balanced")
+        assert h.max_turns == 0 and h.turn_target == 40
     finally:
         h.memory.close(); h.recorder.close()
 

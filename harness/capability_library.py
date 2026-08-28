@@ -65,9 +65,11 @@ def _builtins() -> list[dict]:
         from .comfy_integration import snapshot as comfy_snapshot
         comfy = comfy_snapshot()
         comfy_cloud, comfy_local = comfy["cloud"], comfy["local"]
-        comfy_ready = bool(comfy_cloud.get("connected") or comfy_local.get("mcp_configured"))
+        comfy_ready = bool(comfy_cloud.get("connected") or (
+            comfy_local.get("mcp_configured") and comfy_local.get("mcp_enabled", True)))
         comfy_tools = ((comfy_cloud.get("tools") if comfy_cloud.get("connected") else None)
-                       or comfy_local.get("mcp_tools") or 0)
+                       or (comfy_local.get("mcp_tools")
+                           if comfy_local.get("mcp_enabled", True) else None) or 0)
     except Exception:
         comfy_ready, comfy_tools = False, 0
     return [

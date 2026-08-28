@@ -456,6 +456,25 @@ def test_execute_code_windows_job_refuses_explicit_breakaway():
         " print('BREAKAWAY_BLOCKED', getattr(e, 'winerror', None))")
     assert "BREAKAWAY_BLOCKED 5" in out and "BREAKAWAY_ALLOWED" not in out, out
 
+
+def test_execute_code_windows_bypasses_the_venv_redirector(monkeypatch):
+    """The redirector can spawn the real interpreter before Job assignment."""
+    if os.name != "nt":
+        return
+    from harness import progtool
+
+    monkeypatch.setattr(progtool.sys, "executable", r"C:\venv\Scripts\python.exe")
+    monkeypatch.setattr(progtool.sys, "_base_executable", r"C:\Python312\python.exe")
+
+    assert progtool._isolated_python_executable() == r"C:\Python312\python.exe"
+
+    monkeypatch.setattr(progtool.sys, "_base_executable", None)
+    assert progtool._isolated_python_executable() == r"C:\venv\Scripts\python.exe"
+
+    with monkeypatch.context() as local:
+        local.setattr(progtool.os, "name", "posix")
+        assert progtool._isolated_python_executable() == r"C:\venv\Scripts\python.exe"
+
 def test_execute_code_isolated_imports_and_repo_local_imports():
     """PYTHON* cannot inject startup code, while an ordinary local module remains importable."""
     with tempfile.TemporaryDirectory(prefix="collie_progtool_imports_") as work, \

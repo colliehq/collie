@@ -95,10 +95,22 @@ _POLICY_REFUSALS = (
 
 def _policy_refusal(stderr: str) -> str:
     """Return the first policy-refusal line Codex logged, or "" if there is none."""
-    for line in (stderr or "").splitlines():
+    text = stderr or ""
+    for line in text.splitlines():
         lowered = line.lower()
         if any(marker in lowered for marker in _POLICY_REFUSALS):
             return _clean_error(line.strip(), limit=300)
+    # Native Windows sandbox failures currently take a different route: Codex
+    # reaches apply_patch, but the sandboxed token cannot open the workspace and
+    # logs a verification failure carrying Win32 ERROR_ACCESS_DENIED.  An
+    # ordinary context mismatch also says "apply_patch verification failed", so
+    # require both halves before calling this a refusal.  Reproduced with Codex
+    # CLI 0.149.0 on Windows 11 on 2026-08-27, both through this runner and by
+    # invoking the same isolated argv directly.
+    lowered = text.lower()
+    if ("apply_patch verification failed" in lowered
+            and ("access is denied" in lowered or "os error 5" in lowered)):
+        return _clean_error(text, limit=300)
     return ""
 
 

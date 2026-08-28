@@ -11,8 +11,14 @@ the authorization, credits, models, jobs, and generated outputs. Collie stores t
 credential in its local MCP credential store and never exposes it through the Comfy status API.
 
 Once connected, Comfy tools remain in Collie's deferred tool tier. The model sees their names first
-and loads exact schemas only when a task needs them. External-action approval still applies to MCP
-calls; connecting Comfy does not grant blanket permission to spend credits or run jobs.
+and loads exact schemas only when a task needs them. Read-only hints from the pinned official Cloud
+endpoint let known search and inspection operations run without an unnecessary approval. Submitting
+work, spending credits, or changing remote state remains an external action and still requires
+approval; connecting Comfy does not grant blanket permission.
+
+Use **Refresh tools** after Comfy adds or changes MCP operations. This performs a live `tools/list`
+against each enabled Comfy connection and atomically replaces Collie's schema cache, so a Collie
+restart is no longer needed just to discover a server update.
 
 ## Local ComfyUI
 
@@ -24,6 +30,21 @@ If the official `comfy-mcp` executable is already installed, **Connect local MCP
 absolute executable path. Installation is deliberately separate: opening the surface never runs
 `pip`, downloads models, or mutates an unrelated Python environment. ComfyUI itself must be running
 before the local MCP can execute workflows.
+
+Long-running local generation and lifecycle calls use deadlines matched to the official tool's own
+timeout instead of Collie's ordinary 60-second MCP deadline. Images returned as MCP content are fed
+back through Collie's existing multimodal context, allowing the next model turn to inspect the
+result rather than seeing a base64 blob. The official local server does not currently publish MCP
+risk annotations, so Collie keeps a reviewed first-party policy: searches, inspection, validation,
+job/download polling, and local free image generation do not interrupt an ordinary project run.
+Writing outputs is quiet only inside the active project. Spending credits, cancelling work, changing
+the Comfy installation, installing nodes, exposing a server, or running an arbitrary workflow still
+asks. **Allow for this run** scopes repeated approval to that exact Comfy tool and connection.
+
+Collie still fails closed when a server asks for interactive MCP elicitation during a tool call.
+Supporting that safely requires a resumable, user-visible approval exchange rather than an automatic
+answer. MCP progress notifications are also not yet surfaced in the Library; job-status tools remain
+the supported way to monitor long operations.
 
 ## A useful first exercise
 

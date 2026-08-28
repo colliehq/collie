@@ -136,6 +136,16 @@ def test_survives_a_reopen(tmp_path):
         s2.close()
 
 
+def test_add_and_read_ignore_columns_from_a_newer_inbox_schema(store):
+    store.db.execute("ALTER TABLE inbox_items ADD COLUMN future_detail TEXT NOT NULL DEFAULT ''")
+    store.db.commit()
+
+    item = store.add("s1", tool="generate_image", call_id="future-schema")
+
+    assert item.pending
+    assert store.get(item.id).tool == "generate_image"
+
+
 def test_orphans_are_closed_when_a_run_ends(store):
     store.add("s1", tool="a")
     store.add("s1", tool="b")

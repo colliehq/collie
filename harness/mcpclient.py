@@ -115,6 +115,62 @@ _CACHE = os.path.expanduser("~/.collie/mcp_cache.json")
 _TOKENS = os.path.expanduser("~/.collie/mcp_tokens.json")   # OAuth tokens for remote servers (0600)
 _CALL_TIMEOUT = float(os.environ.get("COLLIE_MCP_TIMEOUT", "60"))
 _INIT_TIMEOUT = float(os.environ.get("COLLIE_MCP_INIT_TIMEOUT", "30"))
+_MAX_CALL_TIMEOUT = float(os.environ.get("COLLIE_MCP_MAX_TIMEOUT", "900"))
+_MAX_INLINE_IMAGE_B64 = int(os.environ.get("COLLIE_MCP_MAX_IMAGE_B64", str(16 * 1024 * 1024)))
+
+# These official local tools wait longer than Collie's ordinary MCP deadline when their own
+# ``timeout_seconds`` argument is omitted.  The client deadline must sit outside the server's or a
+# healthy generation is reported as failed while it keeps running in the stdio child.  Explicit
+# timeout_seconds values work for every MCP server and are still capped so a bad schema/argument
+# cannot park a run indefinitely.
+_COMFY_LOCAL_DEFAULT_TIMEOUTS = {
+    "run_workflow": 125.0,
+    "generate_image": 615.0,
+    "partner_generate": 615.0,
+    "run_template": 615.0,
+    "job": 180.0,
+    "launch_comfyui": 180.0,
+    "restart_comfyui": 240.0,
+    "update_comfyui": 615.0,
+    "switch_comfyui_version": 615.0,
+    "install_node": 615.0,
+    "download_model": 615.0,
+}
+
+_ANNOTATION_BOOL_KEYS = (
+    "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint",
+)
+
+# A readOnlyHint is still just server-provided metadata.  Pin both the endpoint and the known
+# operation name before using it to relax Collie's default approval policy.  This also means a
+# stale or hand-edited cache cannot turn submit_workflow into an approval-free call.
+_COMFY_CLOUD_READONLY_TOOLS = frozenset({
+    "get_job_status", "wait_for_job", "get_output", "get_queue",
+    "get_batch_status", "get_batch_output", "wait_for_batch",
+    "get_prompting_guide", "get_creative_technique",
+    "search_models", "search_nodes", "get_node",
+    "search_templates", "get_catalog_overview", "get_template",
+    "cql", "get_template_schema", "apply_slots", "estimate_credits",
+    "list_saved_workflows", "get_saved_workflow", "get_usage_report",
+    "get_billing_activity",
+})
+
+# The official local server predates MCP annotations, so its advertised schemas currently carry no
+# readOnlyHint/destructiveHint at all.  Keep a host-owned, name-pinned policy for the operations whose
+# descriptions and contracts are unambiguously observational.  Unknown/new local tools stay external
+# until reviewed, which preserves the MCP fail-closed default without asking before every status poll.
+_COMFY_LOCAL_READONLY_TOOLS = frozenset({
+    "server_info", "auth_status", "list_partner_models", "partner_model_schema",
+    "system_stats", "get_logs", "discover", "which",
+    "search_templates", "get_template", "nodes", "node_dependencies", "workflow_deps",
+    "search_models", "validate_workflow", "list_workflow_slots", "list_workflow_notes",
+})
+_COMFY_LOCAL_WRITE_PATHS = {
+    "emit_partner_workflow": "out_path",
+    "fetch_template": "out_path",
+    "fetch_outputs": "out_dir",
+}
+_COMFY_LOCAL_EXEC_TOOLS = frozenset({"generate_image", "free_memory"})
 
 _POOL: dict = {}                 # server name -> _MCPConnection (lazy, reused within a process)
 _POOL_LOCK = threading.Lock()
@@ -404,6 +460,57 @@ def _write_cache(cache):
         os.replace(tmp, _CACHE)
     except OSError:
         pass
+
+
+def _tool_record(tool):
+    """The bounded part of a tools/list row Collie needs after the connection is closed.
+
+    Tool annotations used to be discarded here.  Comfy Cloud publishes useful read-only and
+    destructive hints, so preserve the standard booleans while dropping arbitrary extension data.
+    They remain hints: only MCPTool._trusted_risk() decides whether a known first-party endpoint may
+    use one to relax Collie's conservative default.
+    """
+    annotations = tool.get("annotations") if isinstance(tool, dict) else None
+    safe_annotations = {}
+    if isinstance(annotations, dict):
+        for key in _ANNOTATION_BOOL_KEYS:
+            if isinstance(annotations.get(key), bool):
+                safe_annotations[key] = annotations[key]
+        if isinstance(annotations.get("title"), str):
+            safe_annotations["title"] = annotations["title"][:160]
+    return {
+        "name": tool.get("name"),
+        "description": str(tool.get("description") or "")[:4000],
+        "inputSchema": tool.get("inputSchema") or tool.get("input_schema"),
+        **({"annotations": safe_annotations} if safe_annotations else {}),
+    }
+
+
+def _tool_timeout(server, tool, args):
+    timeout = _CALL_TIMEOUT
+    if server in ("comfy-local", "comfy-mcp"):
+        timeout = max(timeout, _COMFY_LOCAL_DEFAULT_TIMEOUTS.get(tool, timeout))
+    if isinstance(args, dict) and args.get("timeout_seconds") is not None:
+        try:
+            timeout = max(timeout, float(args["timeout_seconds"]) + 15.0)
+        except (TypeError, ValueError):
+            pass
+    return max(1.0, min(_MAX_CALL_TIMEOUT, timeout))
+
+
+def _paged_tool_list(fetch):
+    """Collect a bounded tools/list cursor sequence for either MCP transport."""
+    out, cursor, seen = [], None, set()
+    for _ in range(100):
+        result = fetch({"cursor": cursor} if cursor else {}) or {}
+        rows = result.get("tools") or []
+        if isinstance(rows, list):
+            out.extend(row for row in rows if isinstance(row, dict))
+        cursor = result.get("nextCursor") or result.get("next_cursor")
+        if not cursor or cursor in seen or len(out) >= 10_000:
+            break
+        seen.add(cursor)
+    return out[:10_000]
 
 
 # ---------------------------------------------------------------- remote transport (Streamable HTTP)
@@ -809,11 +916,13 @@ class _HTTPConnection:
 
     def list_tools(self):
         self.connect()
-        return self._request("tools/list", {}, _INIT_TIMEOUT).get("tools", []) or []
+        return _paged_tool_list(
+            lambda params: self._request("tools/list", params, _INIT_TIMEOUT))
 
-    def call_tool(self, tool, arguments):
+    def call_tool(self, tool, arguments, timeout=None):
         self.connect()
-        return self._request("tools/call", {"name": tool, "arguments": arguments or {}}, _CALL_TIMEOUT)
+        return self._request("tools/call", {"name": tool, "arguments": arguments or {}},
+                             timeout or _CALL_TIMEOUT)
 
     def close(self):
         self._initialized = False
@@ -921,12 +1030,13 @@ class _MCPConnection:
 
     def list_tools(self):
         self.connect()
-        result = self._request("tools/list", {}, _INIT_TIMEOUT)
-        return result.get("tools", []) or []
+        return _paged_tool_list(
+            lambda params: self._request("tools/list", params, _INIT_TIMEOUT))
 
-    def call_tool(self, tool, arguments):
+    def call_tool(self, tool, arguments, timeout=None):
         self.connect()
-        result = self._request("tools/call", {"name": tool, "arguments": arguments or {}}, _CALL_TIMEOUT)
+        result = self._request("tools/call", {"name": tool, "arguments": arguments or {}},
+                               timeout or _CALL_TIMEOUT)
         return result
 
     def alive(self):
@@ -952,10 +1062,18 @@ def _make_conn(name, cfg):
 
 
 def _get_conn(name, cfg):
+    fingerprint = _cfg_hash(cfg)
     with _POOL_LOCK:
         c = _POOL.get(name)
-        if c is None or not c.alive():
+        stale = c is not None and getattr(c, "_collie_cfg_hash", None) != fingerprint
+        if c is None or stale or not c.alive():
+            if stale:
+                try:
+                    c.close()
+                except Exception:
+                    pass
             c = _make_conn(name, cfg)
+            c._collie_cfg_hash = fingerprint
             _POOL[name] = c
     return c
 
@@ -970,7 +1088,22 @@ def close_all():
 atexit.register(close_all)   # never leak a spawned MCP server past the collie process
 
 
-def _fmt_result(result):
+def refresh_server(name):
+    """Re-list one enabled server and atomically replace its cached tool contract."""
+    cfg = _load_config().get(name)
+    if not isinstance(cfg, dict):
+        raise ValueError("no MCP server named %r" % name)
+    if not enabled(cfg):
+        raise ValueError("MCP server %r is switched off" % name)
+    conn = _get_conn(name, cfg)
+    tools = [_tool_record(t) for t in conn.list_tools() if t.get("name")]
+    cache = _read_cache()
+    cache[name] = {"hash": _cfg_hash(cfg), "tools": tools, "refreshed_at": int(time.time())}
+    _write_cache(cache)
+    return tools
+
+
+def _fmt_result(result, ctx=None):
     """MCP tools/call result -> plain text for the model. content is a list of {type,text|...}."""
     if not isinstance(result, dict):
         return str(result)
@@ -979,39 +1112,133 @@ def _fmt_result(result):
     else:
         prefix = ""
     parts = []
+    attached = 0
     for block in result.get("content", []) or []:
         if not isinstance(block, dict):
             parts.append(str(block)); continue
         if block.get("type") == "text":
             parts.append(block.get("text", ""))
+        elif block.get("type") == "image":
+            data = block.get("data")
+            media_type = str(block.get("mimeType") or block.get("mime_type") or "image/png")
+            valid = (isinstance(data, str) and media_type.startswith("image/")
+                     and len(data) <= _MAX_INLINE_IMAGE_B64 and attached < 8)
+            if valid:
+                try:
+                    base64.b64decode(data, validate=True)
+                except (ValueError, TypeError):
+                    valid = False
+            images = getattr(ctx, "images", None) if ctx is not None else None
+            if valid and isinstance(images, list):
+                images.append({"type": "image", "media_type": media_type, "data": data,
+                               "label": "MCP output from %s" % getattr(ctx, "project", "Comfy"),
+                               "source": "MCP image"})
+                attached += 1
+                parts.append("[image attached: %s]" % media_type)
+            else:
+                parts.append("[image returned but not attached: %s]" % media_type)
+        elif block.get("type") == "audio":
+            media_type = str(block.get("mimeType") or block.get("mime_type") or "audio")
+            parts.append("[audio returned: %s; this Collie surface cannot attach audio yet]" % media_type)
         elif block.get("type") == "resource":
             r = block.get("resource", {})
             parts.append(r.get("text") or ("[resource %s]" % r.get("uri", "")))
         else:
             parts.append(json.dumps(block)[:500])
-    body = "\n".join(p for p in parts if p) or json.dumps(result)[:800]
+    structured = result.get("structuredContent") or result.get("structured_content")
+    body = "\n".join(p for p in parts if p)
+    if not body and structured is not None:
+        body = json.dumps(structured, ensure_ascii=False)[:16_000]
+    body = body or json.dumps(result, ensure_ascii=False)[:800]
     return prefix + body
 
 
 class MCPTool(Tool):
     tier = "deferred"
 
-    def __init__(self, server, cfg, tool_name, description, input_schema):
+    def __init__(self, server, cfg, tool_name, description, input_schema, annotations=None):
         # namespaced so two servers can expose a same-named tool without colliding
         self.name = "mcp__%s__%s" % (server, tool_name)
         self._server = server
         self._cfg = cfg
         self._remote = tool_name
+        self._annotations = dict(annotations or {})
         self.description = (description or ("MCP tool %s" % tool_name))[:1000]
         self.schema = input_schema or {"type": "object", "properties": {}}
 
     def run(self, args, ctx):
         try:
             conn = _get_conn(self._server, self._cfg)
-            result = conn.call_tool(self._remote, args if isinstance(args, dict) else {})
+            call_args = args if isinstance(args, dict) else {}
+            result = conn.call_tool(
+                self._remote, call_args, timeout=_tool_timeout(self._server, self._remote, call_args))
         except Exception as e:
             return "ERROR: mcp call %s failed: %s: %s" % (self.name, type(e).__name__, e)
-        return _fmt_result(result)
+        return _fmt_result(result, ctx)
+
+    def _official_comfy_local(self):
+        if self._server not in ("comfy-local", "comfy-mcp"):
+            return False
+        command = str(self._cfg.get("command") or "")
+        return os.path.basename(command).lower() in ("comfy-mcp", "comfy-mcp.exe")
+
+    def _local_target_is_this_machine(self):
+        remote_keys = ("COMFYUI_URL", "COMFYUI_HOST")
+        cfg_env = self._cfg.get("env") if isinstance(self._cfg.get("env"), dict) else {}
+        return not any(str(cfg_env.get(key) or os.environ.get(key) or "").strip()
+                       for key in remote_keys)
+
+    def _trusted_risk(self, args=None):
+        """Host-owned risk policy for pinned official Comfy MCP connections."""
+        args = args if isinstance(args, dict) else {}
+        official = CATALOG["comfy-cloud"]["url"]
+        if (self._server == "comfy-cloud" and self._cfg.get("url") == official
+                and self._remote in _COMFY_CLOUD_READONLY_TOOLS
+                and self._annotations.get("readOnlyHint") is True):
+            return "read"
+        if not self._official_comfy_local():
+            return None
+        if self._remote in _COMFY_LOCAL_READONLY_TOOLS:
+            return "read"
+        if self._remote == "job" and str(args.get("action") or "status").lower() in (
+                "status", "error", "wait", "watch", "queue"):
+            return "read"
+        if self._remote == "download" and str(args.get("action") or "status").lower() in (
+                "status", "wait"):
+            return "read"
+        if self._remote == "project" and str(args.get("action") or "status").lower() == "status":
+            return "read"
+        if self._remote == "set_workflow_slot" and args.get("stdout", True) is not False:
+            return "read"
+        if self._remote == "vary_workflow" and not args.get("out_dir"):
+            return "read"
+        if self._remote in _COMFY_LOCAL_WRITE_PATHS:
+            return "write_local"
+        if self._remote == "set_workflow_slot" and args.get("stdout", True) is False:
+            return "write_local"
+        if (self._remote in _COMFY_LOCAL_EXEC_TOOLS
+                and self._local_target_is_this_machine()):
+            return "exec"
+        return None
+
+    def _local_write_path(self, args):
+        """The path mutated by a trusted local MCP write, for Gate root scoping."""
+        if not self._official_comfy_local() or not isinstance(args, dict):
+            return None
+        field = _COMFY_LOCAL_WRITE_PATHS.get(self._remote)
+        if self._remote == "set_workflow_slot" and args.get("stdout", True) is False:
+            field = "workflow_path"
+        if not field:
+            return None
+        return str(args.get(field) or "") or None
+
+    def _trusted_target(self):
+        """A concrete run-scoped approval target for official consequential Comfy calls."""
+        if self._server == "comfy-cloud" and self._cfg.get("url") == CATALOG["comfy-cloud"]["url"]:
+            return CATALOG["comfy-cloud"]["url"]
+        if self._official_comfy_local():
+            return "local ComfyUI"
+        return None
 
 
 # --------------------------------------------------------------- managing servers (agent-facing) --
@@ -1038,21 +1265,16 @@ def _register_live(registry, name, cfg):
     if registry is None:
         return "It will be available on the next collie run."
     try:
-        conn = _get_conn(name, cfg)
-        tools = [{"name": t.get("name"), "description": t.get("description", ""),
-                  "inputSchema": t.get("inputSchema") or t.get("input_schema")}
-                 for t in conn.list_tools() if t.get("name")]
+        tools = refresh_server(name)
     except Exception as e:
         return ("Could not list its tools yet (%s: %s) — if it is a remote server this usually means "
                 "it needs `collie mcp login %s` first. The config is saved either way."
                 % (type(e).__name__, e, name))
     if not tools:
         return "It connected but exposes no tools."
-    cache = _read_cache()
-    cache[name] = {"hash": _cfg_hash(cfg), "tools": tools}
-    _write_cache(cache)
     for t in tools:
-        registry.register(MCPTool(name, cfg, t["name"], t.get("description", ""), t.get("inputSchema")))
+        registry.register(MCPTool(name, cfg, t["name"], t.get("description", ""),
+                                  t.get("inputSchema"), t.get("annotations")))
     return ("%d tools are live NOW (no restart): %s. They are deferred — call load_tools with a name "
             "to get its schema." % (len(tools), ", ".join("mcp__%s__%s" % (name, t["name"])
                                                           for t in tools[:8])))
@@ -1084,6 +1306,24 @@ class MCPStatusTool(Tool):
             bits.append("%s tools" % ("unknown, not listed yet" if s["tools"] is None else s["tools"]))
             out.append("%s: %s" % (s["name"], " · ".join(bits)))
         return "\n".join(out)
+
+
+class MCPRefreshTool(Tool):
+    name, tier = "mcpctl_refresh", "always"
+    description = ("Refresh one configured MCP server's cached tool names, schemas and annotations. "
+                   "Use this after the server was upgraded or its advertised tools changed. It only "
+                   "reads tools/list and updates Collie's local cache; a new Collie run picks up the "
+                   "replacement contract. Args: name.")
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+
+    def run(self, args, ctx):
+        name = str((args if isinstance(args, dict) else {}).get("name", "")).strip()
+        try:
+            tools = refresh_server(name)
+        except Exception as exc:
+            return "ERROR: could not refresh %r: %s: %s" % (name, type(exc).__name__, exc)
+        return ("Refreshed %r: %d tools cached. New and removed tools take effect on the next "
+                "Collie run." % (name, len(tools)))
 
 
 class MCPAddTool(Tool):
@@ -1247,7 +1487,8 @@ class MCPRemoveTool(Tool):
 def register_mcp_management(registry):
     """The manage-MCP tools. Registered ALWAYS, including when no server is configured — `mcpctl_add`
     with nothing set up yet is the case that matters most."""
-    for t in (MCPStatusTool(), MCPAddTool(), MCPConnectTool(), MCPSetEnabledTool(), MCPRemoveTool()):
+    for t in (MCPStatusTool(), MCPRefreshTool(), MCPAddTool(), MCPConnectTool(),
+              MCPSetEnabledTool(), MCPRemoveTool()):
         registry.register(t)
     return True
 
@@ -1270,16 +1511,14 @@ def register_mcp_servers(registry):
         if tools is None:                       # cache miss / config changed -> list once, then cache
             try:
                 conn = _get_conn(name, cfg)
-                tools = [{"name": t.get("name"), "description": t.get("description", ""),
-                          "inputSchema": t.get("inputSchema") or t.get("input_schema")}
-                         for t in conn.list_tools() if t.get("name")]
-                cache[name] = {"hash": h, "tools": tools}
+                tools = [_tool_record(t) for t in conn.list_tools() if t.get("name")]
+                cache[name] = {"hash": h, "tools": tools, "refreshed_at": int(time.time())}
                 dirty = True
             except Exception:
                 continue                        # a broken/unavailable server just contributes nothing
         for t in tools:
             registry.register(MCPTool(name, cfg, t["name"], t.get("description", ""),
-                                      t.get("inputSchema")))
+                                      t.get("inputSchema"), t.get("annotations")))
             n += 1
     if dirty:
         _write_cache(cache)

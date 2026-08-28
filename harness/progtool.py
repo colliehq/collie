@@ -267,6 +267,22 @@ def _child_env(port: int, token: str) -> dict:
     return env
 
 
+def _isolated_python_executable() -> str:
+    """Return a Windows interpreter that cannot outrun Job assignment via a venv launcher.
+
+    Windows virtual environments use a tiny redirector executable.  Starting that redirector and
+    assigning it to a Job leaves a race in which it can spawn the real interpreter before the
+    redirector is assigned; the stdin gate then protects a process outside Collie's Job.  CPython
+    exposes the trusted base interpreter specifically as ``sys._base_executable``.  execute_code is
+    isolated and needs no venv packages, so launching the base interpreter closes that race.
+    """
+    if os.name == "nt":
+        base = getattr(sys, "_base_executable", None)
+        if isinstance(base, str) and base:
+            return base
+    return sys.executable
+
+
 def _rpc_host_ok(host):
     """Accept only loopback Host headers: this RPC exposes collie's real tools (bash/edit),
     so a non-loopback Host (DNS-rebinding) or a forged remote request must be refused."""
@@ -396,7 +412,7 @@ class ExecuteCodeTool(Tool):
                     # killing the whole task after a normal script return.
                     spawn_kw["start_new_session"] = True
                 proc = subprocess.Popen(
-                    [sys.executable, "-I", "-u", path], cwd=ctx.cwd,
+                    [_isolated_python_executable(), "-I", "-u", path], cwd=ctx.cwd,
                     env=_child_env(port, token), stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, **spawn_kw)
                 # User code is blocked on the preamble gate while the Windows Job Object is

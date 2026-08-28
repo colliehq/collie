@@ -760,8 +760,20 @@
   .wc-trust span { display:inline-flex; align-items:center; gap:6px; }
   .wc-trust span::before { content:""; width:4px; height:4px; border-radius:50%; background:var(--pine); }
   @media (max-width: 620px) { .wc-examples { grid-template-columns: 1fr; } }
-  .workpanel { border-top: 1px solid var(--line); background: var(--surface); }
+  /* Run details is a bottom drawer, not a second page.  Bound its share of the viewport so a
+     short/high-DPI desktop window always leaves the conversation usable; the drawer owns its
+     overflow instead of squeezing `.scroll` down to a sliver. */
+  .workpanel { flex: 0 0 auto; box-sizing: border-box; height: min(38vh, 360px);
+    min-height: min(210px, 38vh); border-top: 1px solid var(--line); background: var(--surface);
+    overflow: auto; overscroll-behavior: contain; }
   .workpanel[hidden] { display: none; }
+  .wphead { position: sticky; top: 0; z-index: 4; display: flex; align-items: center;
+    min-height: 38px; padding: 7px 22px; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb,var(--surface) 94%,transparent); backdrop-filter: blur(10px); }
+  .wphead strong { flex: 1; color: var(--ink); font-size: 12px; }
+  .wphead button { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid var(--line);
+    border-radius: 7px; background: var(--surface-2); color: var(--muted); cursor: pointer; font-size: 17px; }
+  .wphead button:hover { color: var(--ink); border-color: var(--pine); }
   .activity-panel { border-top: 1px solid var(--line); background: var(--surface); max-height: 44vh;
     overflow: auto; padding: 12px 22px 16px; }
   .activity-panel[hidden] { display: none; }
@@ -1921,6 +1933,8 @@
     </section>
 
     <section class="workpanel" id="workpanel" role="region" aria-label="run details" data-i18n-aria-label="run details" hidden>
+      <div class="wphead"><strong data-i18n="run details">run details</strong>
+        <button type="button" id="workpanelClose" aria-label="Close" data-i18n-aria-label="Close">×</button></div>
       <div class="wpbody">
         <!-- receipt : the honest token / $ / time tally (the gate itself lives in the
              sidebar's bottom-left corner; the runbar summary above mirrors its state) -->
@@ -2935,7 +2949,8 @@
     "Screen record (webcam bubble + mic)":"屏幕录制（摄像头浮窗与麦克风）","Screen record":"屏幕录制",
     "Close activity":"关闭活动面板","Scroll to latest":"滚动到最新内容","Commands":"命令",
     "Message Collie":"给 Collie 发消息","Attach image (or paste / drop one)":"附加图片（也可粘贴或拖放）",
-    "Attach image":"附加图片","Send":"发送","detecting a repository check…":"正在检测仓库检查命令…",
+    "Attach image":"附加图片","Send":"发送","Allow once":"仅允许这一次","Allow for this run":"本次任务内允许",
+    "Don’t allow":"不允许","detecting a repository check…":"正在检测仓库检查命令…",
     "Proposed verification command":"建议的验证命令",
     "Saved default":"已保存的默认值","Use the worker selected in Settings":"使用设置中选择的工作进程",
     "Checking installation and login…":"正在检查安装与登录状态…",
@@ -2980,7 +2995,7 @@
     "steering request failed":"追加指令请求失败","steering unavailable":"无法追加指令","stopping…":"正在停止…","target page":"目标页面",
     "the run emitted its final canceled verdict":"运行已返回最终取消结果","the run finished before cancellation took effect":"运行在取消生效前已经结束",
     "the run registry confirmed the canceled verdict":"运行注册表已确认取消结果","this setting is held by an environment variable — ":"此设置由环境变量控制——",
-    "tools":"工具","unavailable":"不可用","updating mission…":"正在更新任务…","waiting for the run's final canceled verdict":"正在等待运行的最终取消结果",
+    "tool":"个工具","tools":"个工具","event":"个事件","events":"个事件","unavailable":"不可用","updating mission…":"正在更新任务…","waiting for the run's final canceled verdict":"正在等待运行的最终取消结果",
     "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
   });
   Object.assign(ZHTW, {
@@ -2991,7 +3006,8 @@
     "Screen record (webcam bubble + mic)":"螢幕錄製（攝影機浮動視窗與麥克風）","Screen record":"螢幕錄製",
     "Close activity":"關閉活動面板","Scroll to latest":"捲動到最新內容","Commands":"命令",
     "Message Collie":"傳訊息給 Collie","Attach image (or paste / drop one)":"附加圖片（也可貼上或拖放）",
-    "Attach image":"附加圖片","Send":"傳送","detecting a repository check…":"正在偵測儲存庫檢查命令…",
+    "Attach image":"附加圖片","Send":"傳送","Allow once":"僅允許這一次","Allow for this run":"本次任務內允許",
+    "Don’t allow":"不允許","detecting a repository check…":"正在偵測儲存庫檢查命令…",
     "Proposed verification command":"建議的驗證命令",
     "Saved default":"已儲存的預設值","Use the worker selected in Settings":"使用設定中選擇的工作程序",
     "Checking installation and login…":"正在檢查安裝與登入狀態…",
@@ -3036,7 +3052,7 @@
     "steering request failed":"追加指令請求失敗","steering unavailable":"無法追加指令","stopping…":"正在停止…","target page":"目標頁面",
     "the run emitted its final canceled verdict":"執行已傳回最終取消結果","the run finished before cancellation took effect":"執行在取消生效前已經結束",
     "the run registry confirmed the canceled verdict":"執行註冊表已確認取消結果","this setting is held by an environment variable — ":"此設定由環境變數控制——",
-    "tools":"工具","unavailable":"無法使用","updating mission…":"正在更新任務…","waiting for the run's final canceled verdict":"正在等待執行的最終取消結果",
+    "tool":"項工具","tools":"項工具","event":"個事件","events":"個事件","unavailable":"無法使用","updating mission…":"正在更新任務…","waiting for the run's final canceled verdict":"正在等待執行的最終取消結果",
     "will run with":"將使用","worker failed":"工作程序失敗","worker settled":"工作程序已結束","More worker events omitted":"已省略更多工作程序事件"
   });
   var I18N = {
@@ -3624,7 +3640,8 @@
     errs = errs || {};
     return servers.map(function (s) {
       var badges = '<span class="mcp-badge">' + setEsc(s.kind) + "</span>";
-      badges += '<span class="mcp-badge">' + (s.tools == null ? "? " + t("tools") : s.tools + " " + t("tools")) + "</span>";
+      badges += '<span class="mcp-badge">' + (s.tools == null ? "? " + t("tools") :
+        libraryQuantity(s.tools, "tool", "tools")) + "</span>";
       if (s.auth === "login-needed") badges += '<span class="mcp-badge warn">' + setEsc(t("not signed in")) + "</span>";
       else if (s.auth === "oauth") badges += '<span class="mcp-badge">' + setEsc(t("signed in")) + "</span>";
       else if (s.auth === "header") badges += '<span class="mcp-badge">' + setEsc(t("static token")) + "</span>";
@@ -4205,7 +4222,9 @@
   }
   runDetailsButton.addEventListener("click", function () {
     setRunDetailsOpen(workPanel.hidden);
+    var more = $("topbarMore"); if (more) more.open = false;
   });
+  $("workpanelClose").addEventListener("click", function () { setRunDetailsOpen(false); });
 
   // ---- retractable sidebar (cc/codex/ChatGPT-style), persisted ----------
   var appEl = document.querySelector(".app");
@@ -4288,8 +4307,10 @@
     if (!plan || !plan.id || shownRunPlan === plan.id) return;
     shownRunPlan = plan.id;
     var summary = runPlanSummary(plan), limitations = (plan.limitations || []).map(t).join("; ");
-    traceStep("◇", t("Run plan"), summary, limitations, "plan");
-    addEvent("meta", "flag", t("Run plan"), summary);
+    // Run setup is useful provenance in the details drawer, but it is not work performed by the
+    // agent and should not occupy the conversation as a fake "Plan" step on every message.
+    addEvent("meta", "flag", t("Run setup"),
+             summary + (limitations ? " · " + limitations : ""));
   }
   function setReceipt(r) {
     if (!r || !Object.keys(r).length) setDecision(null);
@@ -4388,11 +4409,12 @@
     var none = tl.querySelector(".none"); if (none) none.remove();
     var row = document.createElement("div");
     row.className = "ev tool ask";
-    var btns = '<button data-a="allow">Allow</button>';
+    var btns = '<button data-a="allow">' + esc(t("Allow once")) + '</button>';
     // "Always" only when a rule can actually be pinned to something concrete. Offering it
     // otherwise would be a button that quietly means "just this once".
-    if (d.rule_offer) btns += ' <button data-a="always">Always: ' + esc(d.rule_offer) + '</button>';
-    btns += ' <button data-a="deny">Don\'t</button>';
+    if (d.rule_offer) btns += ' <button data-a="always" title="' + esc(d.rule_offer) + '">' +
+      esc(t("Allow for this run")) + '</button>';
+    btns += ' <button data-a="deny">' + esc(t("Don’t allow")) + '</button>';
     row.innerHTML =
       '<span class="ico">' + ICON["flag"] + '</span>' +
       '<span class="lead"><div class="name">' + esc(d.title || ("Run " + (d.tool || "") + "?")) + '</div>' +
@@ -5236,6 +5258,10 @@
   function libraryStatusLabel(status) {
     return t({ ready:"ready", setup:"setup", permission:"permission", off:"off" }[status] || status || "setup");
   }
+  function libraryQuantity(value, singular, plural) {
+    var count = Number(value);
+    return count + " " + t(count === 1 ? singular : plural);
+  }
   function libraryCapabilityCard(row, kind) {
     var card = document.createElement("article"); card.className = "capability-card";
     var name = document.createElement("div"); name.className = "capability-name";
@@ -5249,8 +5275,8 @@
     var bits = [];
     if (row.origin) bits.push(t(row.origin));
     if (row.kind) bits.push(t(row.kind));
-    if (row.tools != null) bits.push(Number(row.tools) + " " + t("tools"));
-    if (row.event_count != null) bits.push(Number(row.event_count) + " " + t("events"));
+    if (row.tools != null) bits.push(libraryQuantity(row.tools, "tool", "tools"));
+    if (row.event_count != null) bits.push(libraryQuantity(row.event_count, "event", "events"));
     if (row.status && kind === "workflow") bits.push(t(row.status));
     if (row.trusted === false) bits.push(t("untrusted project source"));
     meta.textContent = bits.join(" · "); card.appendChild(meta);
@@ -5581,6 +5607,14 @@
         var report = card.querySelector(".mreport");
         if (report) report.open = true;
       }
+      // The list card may have been below the fold.  Clicking it scrolls the Missions panel to
+      // that row, then newMissionCard() briefly follows the tiny "loading" card to the bottom.
+      // Once the real (often very tall) detail replaces that placeholder, keeping the old scroll
+      // offset strands the user halfway through the audit trail with the state and summary above
+      // the viewport.  Reveal the start of the finished card after layout instead.
+      requestAnimationFrame(function () {
+        if (card.scrollIntoView) card.scrollIntoView({ block: "start", behavior: "instant" });
+      });
     }).catch(function (e) { missionError(card, e, "Could not load the mission"); });
   }
   var missionsPanel = $("missionsPanel");
@@ -8124,7 +8158,7 @@
     }
 
     function poll() {
-      fetch("/api/desktop/nowplaying?token=" + encodeURIComponent(CT))
+      fetch("/api/desktop/nowplaying?collie_only=1&token=" + encodeURIComponent(CT))
         .then(function (r) { return r.json(); })
         .then(function (d) { paint(d && d.collie); }).catch(function () {});
     }

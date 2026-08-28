@@ -9,6 +9,7 @@ cannot mistake for success.
     python tests/test_browserbridge.py
 """
 import json
+import io
 import os
 import sys
 import threading
@@ -55,6 +56,107 @@ def ok(data):
 
 
 CTX = types.SimpleNamespace(cwd=".", project="t", images=[])
+
+
+def test_extension_folder_is_revealed_only_for_an_interactive_manual_start():
+    class TTY:
+        def isatty(self):
+            return True
+
+    old_stdin = bb.sys.stdin
+    old_supervised = os.environ.get("COLLIE_SUPERVISED")
+    try:
+        bb.sys.stdin = TTY()
+        os.environ.pop("COLLIE_SUPERVISED", None)
+        check(bb._interactive_extension_setup(),
+              "a manual terminal start may reveal the extension folder")
+        os.environ["COLLIE_SUPERVISED"] = "1"
+        check(not bb._interactive_extension_setup(),
+              "a supervised restart never reveals the extension folder")
+        os.environ.pop("COLLIE_SUPERVISED", None)
+        bb.sys.stdin = io.StringIO()
+        check(not bb._interactive_extension_setup(),
+              "a hidden/non-interactive start never reveals the extension folder")
+        class BrokenTTY:
+            def isatty(self):
+                raise OSError("detached stdin")
+        bb.sys.stdin = BrokenTTY()
+        check(not bb._interactive_extension_setup(),
+              "a detached stdin fails closed instead of opening a file-manager window")
+    finally:
+        bb.sys.stdin = old_stdin
+        if old_supervised is None:
+            os.environ.pop("COLLIE_SUPERVISED", None)
+        else:
+            os.environ["COLLIE_SUPERVISED"] = old_supervised
+
+
+def test_background_serve_does_not_open_the_extension_folder():
+    """Exercise the real startup branch, not only its TTY predicate.
+
+    A supervised/on-demand bridge still has to bind and begin waiting for the
+    extension; the only behavior suppressed is the unsolicited Explorer/Finder
+    window.  Keep every long-lived component fake so this runs in both the
+    script gate and pytest without leaving a port or thread behind.
+    """
+    from harness import plat
+
+    saved = {
+        "auth_off": bb.auth_off,
+        "server": bb.ThreadingHTTPServer,
+        "thread": bb.threading.Thread,
+        "await": bb._await_extension,
+        "interactive": bb._interactive_extension_setup,
+        "translocated": plat.translocated,
+        "is_macos": plat.is_macos,
+        "reveal": plat.reveal_in_file_manager,
+    }
+    calls = []
+
+    class Server:
+        def __init__(self, address, handler):
+            self.address, self.handler = address, handler
+
+        def serve_forever(self):
+            calls.append("serve")
+
+    class Thread:
+        def __init__(self, *, target, daemon):
+            self.target, self.daemon = target, daemon
+
+        def start(self):
+            self.target()
+
+    try:
+        bb.auth_off = lambda: True
+        bb.ThreadingHTTPServer = Server
+        bb.threading.Thread = Thread
+        bb._await_extension = lambda bridge: calls.append("await")
+        bb._interactive_extension_setup = lambda: False
+        plat.translocated = lambda: False
+        plat.is_macos = lambda: False
+        plat.reveal_in_file_manager = lambda path: calls.append(("reveal", path)) or True
+
+        bb.serve(port=8765, managed_browser=False)
+
+        check(calls[:2] == ["serve", "await"],
+              "a hidden bridge still starts and waits for its extension")
+        check(not any(isinstance(item, tuple) and item[0] == "reveal" for item in calls),
+              "a hidden bridge does not open Explorer/Finder during startup")
+
+        bb._interactive_extension_setup = lambda: True
+        bb.serve(port=8766, managed_browser=False)
+        check(any(isinstance(item, tuple) and item[0] == "reveal" for item in calls),
+              "an explicit terminal start retains the extension-folder install affordance")
+    finally:
+        bb.auth_off = saved["auth_off"]
+        bb.ThreadingHTTPServer = saved["server"]
+        bb.threading.Thread = saved["thread"]
+        bb._await_extension = saved["await"]
+        bb._interactive_extension_setup = saved["interactive"]
+        plat.translocated = saved["translocated"]
+        plat.is_macos = saved["is_macos"]
+        plat.reveal_in_file_manager = saved["reveal"]
 
 
 # --- spaces: two runs, two tabs -------------------------------------------------------------------

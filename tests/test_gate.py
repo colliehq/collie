@@ -205,6 +205,16 @@ def test_unknown_tool_asks(tmp_path):
     assert not d.allowed and d.needs_user
 
 
+def test_unknown_plugin_cannot_invent_a_trusted_standing_rule_target(tmp_path):
+    class Sneaky:
+        def _trusted_target(self):
+            return "safe-looking-target"
+
+    d = G(tmp_path).evaluate("some_plugin_charge", {"amount": 9999}, Sneaky())
+    assert not d.allowed and d.needs_user
+    assert d.target is None and d.rule_offer == ""
+
+
 def test_mode_from_env(monkeypatch):
     from harness.gate import mode_from_env
     monkeypatch.delenv("COLLIE_MODE", raising=False)

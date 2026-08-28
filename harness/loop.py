@@ -9,6 +9,7 @@
 from __future__ import annotations
 import ast
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -924,15 +925,30 @@ class Harness:
         critic_rounds = 0
         hook_stop_rounds = 0
         best_diff, rollback_rounds = "", 0   # white-flag guard (see ROLLBACK_NUDGE)
-        # Convergence thresholds scale WITH max_turns, so they must stay above the solve-turn
+        # Quality supplies a convergence target, not necessarily a hard stop.  Interactive runs use
+        # max_turns=0 (unlimited) while still getting the same useful commit/verify nudges; bounded
+        # automation, benchmark and explicitly capped runs keep their finite range.
+        try:
+            turn_cap = max(0, int(self.max_turns or 0))
+        except (TypeError, ValueError, OverflowError):
+            turn_cap = 0
+        try:
+            turn_target = max(1, int(getattr(self, "turn_target", 0) or turn_cap or 50))
+        except (TypeError, ValueError, OverflowError):
+            turn_target = turn_cap or 50
+
+        def _has_next_turn(turn):
+            return not turn_cap or turn < turn_cap - 1
+
+        # Convergence thresholds scale WITH the quality target, so they must stay above the solve-turn
         # distribution (rebench: resolved median 23, so a 0.55 ratio -> force_at 27 sits just above
         # it). Env-tunable for the force_at-ratio study (COLLIE_FORCE_RATIO / COLLIE_HARD_RATIO).
         _fr = float(getattr(self, "force_ratio", None) or
                     os.environ.get("COLLIE_FORCE_RATIO", "0.55"))
         _hr = float(getattr(self, "hard_ratio", None) or
                     os.environ.get("COLLIE_HARD_RATIO", "0.76"))
-        force_at = max(3, int(self.max_turns * _fr))    # soft nudge to converge
-        hard_at = max(force_at + 2, int(self.max_turns * _hr))  # then remove explore tools
+        force_at = max(3, int(turn_target * _fr))    # soft nudge to converge
+        hard_at = max(force_at + 2, int(turn_target * _hr))  # then remove explore tools
         budget_hit = False
         canceled = False
         # Ran out of turns, as opposed to deciding it was finished. Every voluntary ending leaves the
@@ -941,7 +957,7 @@ class Harness:
         # afterwards and both reported the same word: "done".
         turns_exhausted = False
         try:
-            for turn in range(self.max_turns):
+            for turn in (range(turn_cap) if turn_cap else itertools.count()):
                 call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
                 if call_cap and model_calls >= call_cap:
                     budget_hit = True
@@ -1039,7 +1055,7 @@ class Harness:
                         comp.error_detail or comp.text or "", comp.error_status,
                         getattr(comp, "error_code", ""))
                     if (cls == "overflow" and not overflow_tried and self.overflow_recovery
-                            and turn < self.max_turns - 1):
+                            and _has_next_turn(turn)):
                         overflow_tried = overflow_now = True
                         session["_overflow_shrink"] = True   # composer shrinks the history next build
                         self.recorder.log_turn(rid, turn, "overflow",
@@ -1230,7 +1246,7 @@ class Harness:
                             self.provider.max_tokens = min(32768, cur * 2)
                     except (TypeError, ValueError):
                         pass
-                    if trunc_rounds >= 3 or turn >= self.max_turns - 1:
+                    if trunc_rounds >= 3 or not _has_next_turn(turn):
                         # give up retrying: surface a partial plain answer (with a marker), else error
                         if not comp.tool_calls and (comp.text or "").strip():
                             answer = comp.text
@@ -1510,8 +1526,9 @@ class Harness:
                         if record_result and getattr(ctx, "images", None):
                             for img in ctx.images:
                                 label = img.get("label") or "screen"
+                                source = img.get("source") or "screenshot"
                                 session["messages"].append({"role": "user", "content": [
-                                    {"type": "text", "text": "[screenshot: %s]" % label},
+                                    {"type": "text", "text": "[%s: %s]" % (source, label)},
                                     {"type": "image",
                                      "media_type": img.get("media_type", "image/png"),
                                      "data": img["data"]}]})
@@ -1654,7 +1671,7 @@ class Harness:
                     # (then hard tool-restriction at hard_at does the structural forcing;
                     # re-injecting every turn just accumulated duplicate identical messages).
                     if (self.force_edit and not did_edit and not edit_forced
-                            and turn + 1 >= force_at and turn < self.max_turns - 1):
+                            and turn + 1 >= force_at and _has_next_turn(turn)):
                         session["messages"].append(
                             {"role": "user", "content": EDIT_FORCE_NUDGE})
                         edit_forced = True
@@ -1663,7 +1680,7 @@ class Harness:
                     # need the same change — proactive, not "please go grep".
                     elif (self.force_edit and did_edit and not multifile_hinted
                           and last_edit_text and self.registry.get("code_search")
-                          and turn < self.max_turns - 1):
+                          and _has_next_turn(turn)):
                         from .codeindex import related_locations
                         # k=8, not 4: a real gold sibling (pylint-4551 writer.py) can sit at
                         # rank ~6, invisible at k=4. More candidates cost one message; the
@@ -1712,7 +1729,7 @@ class Harness:
                         # non-empty edit state existed — rescue turn(s) first (the spin window
                         # re-arms, so the model gets a bounded second chance to land something)
                         if (rollback_rounds < 1 and best_diff
-                                and turn < self.max_turns - 1 and _tree_empty(self.cwd)):
+                                and _has_next_turn(turn) and _tree_empty(self.cwd)):
                             session["messages"].append(
                                 {"role": "user", "content": ROLLBACK_NUDGE})
                             rollback_rounds += 1
@@ -1725,7 +1742,7 @@ class Harness:
                 # Don't accept "done" after an edit until a reproduction actually ran on the
                 # FIXED code (turn >= last edit) and its last run didn't error. Bounded so a
                 # stubborn model can't spin; falls back to the old one-shot nudge when gate off.
-                if self.self_verify and did_edit and turn < self.max_turns - 1:
+                if self.self_verify and did_edit and _has_next_turn(turn):
                     if self.verify_gate:
                         # assert-mode: a print-only repro (no `assert`) is NOT verification —
                         # the wrong-output-doesn't-raise hole. Decision lives in verifier.py.
@@ -1751,14 +1768,14 @@ class Harness:
 
                 # the model wants to finish. If it never edited on a fix task, don't
                 # accept the empty result — push it to make the change.
-                if (self.force_edit and not did_edit and turn < self.max_turns - 1):
+                if (self.force_edit and not did_edit and _has_next_turn(turn)):
                     session["messages"].append({"role": "assistant", "content": comp.text})
                     session["messages"].append({"role": "user", "content": EDIT_FORCE_NUDGE})
                     res.turns = turn + 1
                     continue
 
                 # edited and finishing: coverage pass for multi-file fixes.
-                if self.force_edit and did_edit and turn < self.max_turns - 1:
+                if self.force_edit and did_edit and _has_next_turn(turn):
                     if self.coverage_gate and self.registry.get("code_search"):
                         # RECOMPUTE against the grown edited_files (the one-shot hint only used
                         # the first edit's exclude set, so already-edited siblings never got
@@ -1796,7 +1813,7 @@ class Harness:
                 local_exhausted = _budget_exceeded(
                     self.provider.model, total,
                     bool(getattr(self.provider, "subscription_only", False)))
-                if (self.critic and did_edit and turn < self.max_turns - 1
+                if (self.critic and did_edit and _has_next_turn(turn)
                         and critic_rounds < self.critic_max
                         and (not getattr(self, "max_model_calls", 0) or
                              model_calls < int(self.max_model_calls))
@@ -1829,7 +1846,7 @@ class Harness:
                 # the model was deciding to finish, honor it instead of stopping — same gate pattern
                 # as verify/coverage. Guard BEFORE draining so a steer typed on the LAST turn stays
                 # queued for the next REPL prompt rather than vanishing.
-                if turn < self.max_turns - 1:
+                if _has_next_turn(turn):
                     steers = self._drain_steering()
                     if steers:
                         txt = "\n".join(steers)
@@ -1844,7 +1861,7 @@ class Harness:
                 # white-flag guard (voluntary finish): the model says done but the tree holds
                 # ZERO net changes after edits happened — it reverted itself (sphinx-10435).
                 if (self.force_edit and did_edit and rollback_rounds < 1 and best_diff
-                        and turn < self.max_turns - 1 and _tree_empty(self.cwd)):
+                        and _has_next_turn(turn) and _tree_empty(self.cwd)):
                     session["messages"].append({"role": "assistant", "content": comp.text})
                     session["messages"].append({"role": "user", "content": ROLLBACK_NUDGE})
                     rollback_rounds += 1
@@ -1861,7 +1878,7 @@ class Harness:
                 }, subject=self.project)
                 if stop_hook is not None and not stop_hook.allowed:
                     reason = stop_hook.reason or "completion policy says work remains"
-                    if turn < self.max_turns - 1 and hook_stop_rounds < 3:
+                    if _has_next_turn(turn) and hook_stop_rounds < 3:
                         session["messages"].append({"role": "assistant", "content": comp.text})
                         session["messages"].append({"role": "user", "content":
                             "A trusted completion hook blocked stopping: %s\n"
@@ -1875,7 +1892,7 @@ class Harness:
                 res.turns = turn + 1
                 break
             else:
-                turns_exhausted = True
+                turns_exhausted = bool(turn_cap)
 
             # mechanical white-flag restore (the belt to ROLLBACK_NUDGE's braces): every rescue
             # is spent and the tree is STILL empty — put the last non-empty edit state back.
@@ -1950,7 +1967,7 @@ class Harness:
                 # The cost ceiling has always said so; the turn ceiling never did, so a summary
                 # written mid-task read as a finished report — including when no check had run.
                 answer += ("\n\n_[stopped: ran out of turns (%d) — this task was NOT finished, and "
-                           "nothing above was necessarily verified]_" % self.max_turns)
+                           "nothing above was necessarily verified]_" % turn_cap)
             # A turn ceiling is a normal, predeclared product outcome, not a transport/provider
             # fault. Surface it structurally so an evaluator can classify the attempt as a valid
             # unresolved result even if a partial patch was left behind.

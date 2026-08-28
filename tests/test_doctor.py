@@ -41,6 +41,26 @@ def test_doctor_does_not_warn_about_disabled_remote_transport(tmp_path, monkeypa
     assert not any(value.startswith("stale-heartbeat:") for value in ids)
 
 
+def test_doctor_reports_cli_data_databases_from_the_data_directory(tmp_path, monkeypatch):
+    from harness import doctor
+
+    monkeypatch.setattr(doctor, "_command_version", lambda path: {
+        "path": "collie", "version": "0.22.0", "ok": True, "error": ""})
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: "collie")
+    monkeypatch.setattr("harness.supervisor.query_windows",
+                        lambda **_: {"installed": False, "mode": "none"})
+    monkeypatch.setattr("harness.supervisor.remote_notifications_enabled", lambda: False)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "memory.db").write_bytes(b"memory")
+    (data / "runs.db").write_bytes(b"runs")
+
+    result = doctor.report(str(tmp_path), probe_services=False, now=400)
+    databases = {row["name"]: row for row in result["databases"]}
+    assert databases["memory.db"] == {"name": "memory.db", "present": True, "bytes": 6}
+    assert databases["runs.db"] == {"name": "runs.db", "present": True, "bytes": 4}
+
+
 def test_doctor_repairs_are_bounded_and_confirmation_is_exact(tmp_path):
     from harness.doctor import repair
     from harness.ops import OpsStore

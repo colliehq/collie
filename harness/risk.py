@@ -61,6 +61,7 @@ _BASE: dict[str, RiskClass] = {
     "load_tools": RiskClass.READ,
     "plan": RiskClass.READ,
     "mcpctl_status": RiskClass.READ,
+    "mcpctl_refresh": RiskClass.READ,
     # web_fetch/web_search leave the machine, but only to READ a public URL: no
     # session, no cookies, nothing mutated. Gating them would stop ordinary
     # research and buy nothing — the injection risk they DO carry is already
@@ -166,7 +167,7 @@ RiskOverrides = Callable[[str], Optional["RiskClass"]]
 
 
 def classify(tool_name: str, tool: Any = None,
-             overrides: Optional[RiskOverrides] = None) -> RiskClass:
+             overrides: Optional[RiskOverrides] = None, args: Optional[dict] = None) -> RiskClass:
     """The effective risk of a call.
 
     Order: user-local override > the table above > a glob rule > the tool's own
@@ -182,6 +183,18 @@ def classify(tool_name: str, tool: Any = None,
     base = _BASE.get(tool_name)
     if base is not None:
         return base
+    # MCP annotations are advisory and an arbitrary server must not classify itself down from the
+    # fail-closed mcp__* rule. MCPTool accepts readOnlyHint only after pinning the connection to a
+    # catalogued first-party endpoint (currently Comfy Cloud); no plugin/self-declared `.risk` gets
+    # this path.
+    try:
+        from .mcpclient import MCPTool
+        if isinstance(tool, MCPTool):
+            trusted = tool._trusted_risk(args)
+            if trusted is not None:
+                return RiskClass(trusted)
+    except (ImportError, TypeError, ValueError):
+        pass
     best, best_score = None, -1
     for pattern, risk in _PATTERNS:
         if fnmatch.fnmatchcase(tool_name, pattern):

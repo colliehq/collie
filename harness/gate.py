@@ -126,7 +126,7 @@ class Gate:
     # -- the decision -------------------------------------------------------
     def evaluate(self, tool_name: str, args: dict, tool: Any = None) -> Decision:
         args = args or {}
-        risk = classify(tool_name, tool, self.risk_overrides)
+        risk = classify(tool_name, tool, self.risk_overrides, args)
         d = lambda ok, why, **kw: Decision(ok, why, risk=risk.value, **kw)   # noqa: E731
 
         if not is_consequential(risk):
@@ -152,6 +152,21 @@ class Gate:
         # a mis-resolved path is an accident, and an accident does not care about mode.
         if risk is RiskClass.WRITE_LOCAL:
             path = args.get("path")
+            if path is None:
+                resolver = getattr(tool, "_local_write_path", None)
+                if callable(resolver):
+                    try:
+                        path = resolver(args)
+                    except Exception:
+                        # A trusted tool-specific resolver is the only evidence
+                        # that an argument such as ``out_dir`` remains inside the
+                        # project.  Treating its failure as "no path supplied"
+                        # let Project mode fall through to the ordinary local-write
+                        # allowance.  Fail closed at the point where that evidence
+                        # disappeared; unattended Auto cannot ask, other modes may
+                        # offer one explicit approval for this call.
+                        return d(False, "write target could not be resolved",
+                                 needs_user=self.mode is not Mode.AUTO)
             if path is not None and not self._under_root(str(path)):
                 if self.mode is Mode.AUTO:
                     return d(False, "path is outside the writable roots: %s" % path)
@@ -176,7 +191,14 @@ class Gate:
             return d(False, "writing files needs approval", needs_user=True)
 
         # -- external -------------------------------------------------------
-        target = target_for(tool_name, args, self.origin_lookup)
+        target = None
+        try:
+            from .mcpclient import MCPTool
+            if isinstance(tool, MCPTool):
+                target = tool._trusted_target()
+        except (ImportError, TypeError, ValueError):
+            target = None
+        target = target or target_for(tool_name, args, self.origin_lookup)
         if tool_name == "browser_open" and target:
             from .browserpolicy import navigation_allowed_without_prompt
             if navigation_allowed_without_prompt(

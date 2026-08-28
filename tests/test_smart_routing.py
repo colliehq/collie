@@ -35,6 +35,20 @@ def test_route_kind_and_explicit_intent_have_clear_precedence():
     assert explicit.intent == "review" and explicit.sources["intent"] == "user"
 
 
+def test_ordinary_chat_does_not_auto_enter_plan_but_explicit_plan_still_wins():
+    from harness.router import resolve_run_decision
+
+    automatic = resolve_run_decision(
+        "Explain why this behaves this way", "codex-oauth", route_kind="chat")
+    explicit = resolve_run_decision(
+        "Explain why this behaves this way", "codex-oauth", route_kind="chat",
+        intent="plan", explicit_axes=["intent"])
+
+    assert automatic.route_kind == "chat" and automatic.intent == "build"
+    assert automatic.sources["intent"] == "router"
+    assert explicit.intent == "plan" and explicit.sources["intent"] == "user"
+
+
 def test_recent_failure_escalates_auto_model_without_crossing_provider():
     from harness.router import resolve_run_decision
 

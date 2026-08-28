@@ -54,6 +54,216 @@ def test_loop_error_not_answer_not_memory():
     assert not any("ERROR(" in m for m in h.memory.remembered), "error must never be consolidated to memory"
 
 
+def test_zero_turn_cap_means_unlimited_not_zero_turns():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="unlimited_turns", embed="hash")
+    h.max_turns = 0
+    h.turn_target = 40
+    h.provider = _ScriptProvider([Completion(text="finished", stop_reason="end_turn")])
+
+    res = h.run("unlimited_turns", "do it", consolidate=False)
+
+    assert res.answer == "finished" and res.turns == 1
+    assert not res.turns_exhausted
+
+
+def test_invalid_turn_cap_and_target_fail_to_safe_defaults():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="invalid_turn_limits", embed="hash")
+    h.max_turns = "not-an-integer"
+    h.turn_target = "also-not-an-integer"
+    h.provider = _ScriptProvider([Completion(text="finished", stop_reason="end_turn")])
+
+    res = h.run("invalid_turn_limits", "do it", consolidate=False)
+
+    assert res.answer == "finished" and res.turns == 1
+    assert not res.turns_exhausted
+
+
+def test_tool_images_keep_their_source_label_in_the_next_model_turn():
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+    from harness.risk import RiskClass
+    from harness.tools import Tool
+
+    class ImageTool(Tool):
+        name, tier, risk = "test_image_source", "always", RiskClass.READ
+
+        def run(self, _args, ctx):
+            ctx.images.append({
+                "media_type": "image/png", "data": "AAAA",
+                "label": "render", "source": "MCP image",
+            })
+            return "rendered"
+
+    seen = {}
+
+    def finish(messages):
+        # Inspect the canonical blocks exactly as the provider receives them;
+        # opaque multimodal payloads need not be JSON-round-trippable here.
+        seen["messages"] = list(messages)
+        return Completion(text="done", stop_reason="end_turn")
+
+    h = make_harness(os.getcwd(), provider="mock", project="image_source", embed="hash")
+    h.max_turns = 3
+    h.force_edit = False
+    h.self_verify = False
+    h.registry.register(ImageTool())
+    h.provider = _ScriptProvider([
+        Completion(tool_calls=[ToolCall("img1", "test_image_source", {})],
+                   stop_reason="tool_use"),
+        finish,
+    ])
+
+    res = h.run("image_source", "render", consolidate=False)
+
+    assert "messages" in seen, (res.error, res.answer, res.messages, h.provider.calls)
+    image_turns = [m["content"] for m in seen["messages"]
+                   if m.get("role") == "user" and isinstance(m.get("content"), list)]
+    assert res.answer == "done"
+    assert any(turn[0].get("text") == "[MCP image: render]" for turn in image_turns)
+
+
+def test_unlimited_run_honours_three_stop_hook_repairs_then_fails_closed():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    class Hooks:
+        pending = ()
+
+        def dispatch(self, event, _payload, subject=""):
+            denied = event == "Stop"
+            return types.SimpleNamespace(
+                allowed=not denied,
+                reason="release evidence missing" if denied else "",
+                receipts=(), additional_context=())
+
+    h = make_harness(os.getcwd(), provider="mock", project="stop_hook", embed="hash")
+    h.max_turns = 0
+    h.turn_target = 4
+    h.force_edit = False
+    h.self_verify = False
+    h.hooks = Hooks()
+    h.provider = _ScriptProvider([
+        Completion(text="premature finish", stop_reason="end_turn"),
+    ])
+
+    res = h.run("stop_hook", "finish safely", consolidate=False)
+
+    assert h.provider.calls == 4
+    assert "completion blocked by lifecycle hook" in res.error
+    assert "release evidence missing" in res.error
+
+
+def test_force_edit_nudge_stops_at_a_real_finite_last_turn():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="force_edit_cap", embed="hash")
+    h.max_turns = 2
+    h.turn_target = 2
+    h.force_edit = True
+    h.self_verify = False
+    h.provider = _ScriptProvider([
+        Completion(text="done without editing", stop_reason="end_turn"),
+    ])
+
+    res = h.run("force_edit_cap", "make the requested edit", consolidate=False)
+
+    assert h.provider.calls == 2
+    assert res.answer == "done without editing" and res.turns == 2
+
+
+def test_critic_is_not_started_after_an_edit_on_the_finite_last_turn():
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+
+    with tempfile.TemporaryDirectory(prefix="critic_last_turn_") as cwd:
+        path = os.path.join(cwd, "result.txt")
+        h = make_harness(cwd, provider="mock", project="critic_last_turn", embed="hash")
+        h.max_turns = 2
+        h.turn_target = 2
+        h.force_edit = False
+        h.self_verify = False
+        h.critic = True
+        h.critic_fn = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("critic must not start without a next repair turn"))
+        h.provider = _ScriptProvider([
+            Completion(tool_calls=[ToolCall(
+                "write1", "write_file", {"path": path, "content": "done\n"})],
+                stop_reason="tool_use"),
+            Completion(text="finished", stop_reason="end_turn"),
+        ])
+
+        res = h.run("critic_last_turn", "write the result", consolidate=False)
+
+        assert h.provider.calls == 2 and res.answer == "finished"
+        assert os.path.exists(path)
+
+
+def test_critic_limit_zero_skips_review_when_a_repair_turn_is_available():
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+
+    with tempfile.TemporaryDirectory(prefix="critic_limit_zero_") as cwd:
+        path = os.path.join(cwd, "result.txt")
+        h = make_harness(cwd, provider="mock", project="critic_limit_zero", embed="hash")
+        h.max_turns = 3
+        h.turn_target = 3
+        h.force_edit = False
+        h.self_verify = False
+        h.critic = True
+        h.critic_max = 0
+        h.critic_fn = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("critic must respect a zero-round limit"))
+        h.provider = _ScriptProvider([
+            Completion(tool_calls=[ToolCall(
+                "write1", "write_file", {"path": path, "content": "done\n"})],
+                stop_reason="tool_use"),
+            Completion(text="finished", stop_reason="end_turn"),
+        ])
+
+        res = h.run("critic_limit_zero", "write the result", consolidate=False)
+
+        assert h.provider.calls == 2 and res.answer == "finished"
+        assert os.path.exists(path)
+
+
+def test_successful_critic_review_allows_completion(monkeypatch):
+    from harness import loop
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+
+    reviews = []
+    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd: "diff --git a/result.txt b/result.txt\n")
+    with tempfile.TemporaryDirectory(prefix="critic_success_") as cwd:
+        path = os.path.join(cwd, "result.txt")
+        h = make_harness(cwd, provider="mock", project="critic_success", embed="hash")
+        h.max_turns = 3
+        h.turn_target = 3
+        h.force_edit = False
+        h.self_verify = False
+        h.critic = True
+        h.critic_max = 1
+        h.critic_fn = lambda issue, diff, review_cwd: (
+            reviews.append((issue, diff, review_cwd)) or (True, "looks good"))
+        h.provider = _ScriptProvider([
+            Completion(tool_calls=[ToolCall(
+                "write1", "write_file", {"path": path, "content": "done\n"})],
+                stop_reason="tool_use"),
+            Completion(text="finished", stop_reason="end_turn"),
+        ])
+
+        res = h.run("critic_success", "write the result", consolidate=False)
+
+        assert h.provider.calls == 2 and res.answer == "finished"
+        assert reviews == [(h.critic_issue, "diff --git a/result.txt b/result.txt\n", cwd)]
+
+
 def test_user_prompt_and_resumed_history_are_redacted_before_model_and_checkpoint(monkeypatch):
     from harness import loop
     from harness.cli import make_harness

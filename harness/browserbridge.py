@@ -22,6 +22,7 @@ import json
 import mimetypes
 import os
 import queue
+import sys
 import threading
 import time
 import urllib.parse
@@ -33,6 +34,22 @@ from . import plat
 from .tools import Tool
 
 DEFAULT_PORT = 8677
+
+
+def _interactive_extension_setup():
+    """True only when a person explicitly started the bridge from a terminal.
+
+    The supervisor and the hidden on-demand launcher restart this service as ordinary background
+    maintenance.  Revealing ``browser_ext`` from those paths leaks setup UI onto the desktop every
+    time the worker is restarted.  Keep the useful drag-to-install affordance for an interactive
+    ``collie browser-bridge`` command, but make background starts visually silent.
+    """
+    if os.environ.get("COLLIE_SUPERVISED") == "1":
+        return False
+    try:
+        return bool(sys.stdin.isatty())
+    except (AttributeError, OSError):
+        return False
 
 
 # ---------------------------------------------------------------------------- auth -----------
@@ -603,8 +620,8 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
                 hints.append("on your clipboard")
             except Exception:
                 pass
-        if plat.reveal_in_file_manager(ext_dir):
-            hints.append("and showing in a Finder window you can drag it straight from")
+        if _interactive_extension_setup() and plat.reveal_in_file_manager(ext_dir):
+            hints.append("and showing in a file-manager window you can drag it straight from")
         if hints:
             print("       (%s)" % " ".join(hints), flush=True)
         print("", flush=True)

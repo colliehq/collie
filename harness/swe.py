@@ -324,6 +324,11 @@ def _spawn_investigative_critic(provider, model):
     misses a diff-only glance cannot, while staying independent of the author's (possibly wrong) read."""
     def critic(issue, diff, cwd):
         try:
+            # Import at the call boundary to avoid the cli -> swe circular import.  The similarly
+            # named local import in predict_collie() is not visible inside this closure; without
+            # this import every critic launch raised NameError and the fail-open handler below
+            # silently treated the review as successful.
+            from .cli import make_harness
             ch = make_harness(cwd, provider=provider, model=model, project="critic", code_search=True)
             ch.max_turns = int(os.environ.get("COLLIE_CRITIC_TURNS", "14"))
             ch.self_verify = False

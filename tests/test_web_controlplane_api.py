@@ -62,6 +62,7 @@ def test_comfy_surface_and_control_plane_are_authenticated(web_server, monkeypat
     with urllib.request.urlopen(base + "/comfy", timeout=8) as response:
         page = response.read().decode("utf-8")
     assert "Comfy × Collie" in page and "OFFICIAL MCP INTEGRATION" in page
+    assert 'id="refreshTools"' in page and 'api("/api/comfy/refresh"' in page
 
     code, denied = _json(base + "/api/comfy")
     assert code == 403 and denied["error"] == "forbidden"
@@ -76,6 +77,94 @@ def test_comfy_surface_and_control_plane_are_authenticated(web_server, monkeypat
     code, added = _json(base + "/api/comfy/local?token=" + token,
                         method="POST", body={"confirmed": True})
     assert code == 200 and added["server"] == "comfy-local"
+
+    code, denied = _json(base + "/api/comfy/refresh", method="POST", body={})
+    assert code == 403 and denied["error"] == "forbidden"
+    monkeypatch.setattr(comfy_integration, "refresh_connections", lambda: {
+        "ok": True, "refreshed": [{"server": "comfy-cloud", "tools": 41}],
+        "errors": [], "status": expected,
+    })
+    code, refreshed = _json(base + "/api/comfy/refresh?token=" + token,
+                            method="POST", body={})
+    assert code == 200 and refreshed["refreshed"][0]["tools"] == 41
+
+    monkeypatch.setattr(
+        comfy_integration, "refresh_connections",
+        lambda: (_ for _ in ()).throw(RuntimeError("refresh failed")))
+    code, failed = _json(base + "/api/comfy/refresh?token=" + token,
+                         method="POST", body={})
+    assert code == 409 and failed["error"] == "refresh failed"
+
+
+def test_mcp_login_thread_warms_cache_and_publishes_failure(web_server, monkeypatch):
+    from harness import mcpclient, webapp
+
+    base, token, _ = web_server
+    config = {"srv": {"url": "https://example.test/mcp"}}
+    monkeypatch.setattr(mcpclient, "_load_config", lambda: config)
+    webapp._MCP_LOGIN_BUSY.clear()
+    webapp._MCP_LOGIN_ERR.clear()
+    completed = threading.Event()
+    calls = []
+
+    monkeypatch.setattr(mcpclient, "login", lambda name, cfg: calls.append(("login", name, cfg)))
+
+    def refresh(name):
+        calls.append(("refresh", name))
+        completed.set()
+        return [{"name": "read"}]
+
+    monkeypatch.setattr(mcpclient, "refresh_server", refresh)
+    code, started = _json(
+        base + "/api/mcp?token=" + token, method="POST",
+        body={"action": "login", "name": "srv"})
+    assert code == 200 and started == {"ok": True, "started": True}
+    assert completed.wait(3)
+    assert calls == [("login", "srv", config["srv"]), ("refresh", "srv")]
+    assert "srv" not in webapp._MCP_LOGIN_BUSY
+    assert "srv" not in webapp._MCP_LOGIN_ERR
+
+    failed = threading.Event()
+
+    def reject(_name, _cfg):
+        failed.set()
+        raise RuntimeError("oauth secret must-not-leak")
+
+    monkeypatch.setattr(mcpclient, "login", reject)
+    code, started = _json(
+        base + "/api/mcp?token=" + token, method="POST",
+        body={"action": "login", "name": "srv"})
+    assert code == 200 and started["started"] is True
+    assert failed.wait(3)
+    for _ in range(100):
+        if "srv" not in webapp._MCP_LOGIN_BUSY:
+            break
+        threading.Event().wait(.01)
+    assert "srv" not in webapp._MCP_LOGIN_BUSY
+    assert "RuntimeError" in webapp._MCP_LOGIN_ERR["srv"]
+    webapp._MCP_LOGIN_ERR.clear()
+
+
+def test_nowplaying_poll_is_cheap_unless_system_media_is_requested(web_server, monkeypatch):
+    from harness import desktop
+
+    base, _, _ = web_server
+    system_calls = []
+    monkeypatch.setattr(desktop, "playing_here", lambda: {"track": {
+        "title": "Local track", "uploader": "Collie", "duration": 42,
+    }})
+    monkeypatch.setattr(
+        desktop, "nowplaying",
+        lambda: system_calls.append(True) or {"title": "System track"})
+
+    code, cheap = _json(base + "/api/desktop/nowplaying")
+    assert code == 200 and cheap["track"] is None
+    assert cheap["collie"]["title"] == "Local track" and cheap["collie"]["stoppable"]
+    assert system_calls == []
+
+    code, full = _json(base + "/api/desktop/nowplaying?system=1")
+    assert code == 200 and full["track"] == {"title": "System track"}
+    assert system_calls == [True]
 
 
 def test_browser_extension_bridge_auth_and_cors_are_narrow(web_server, monkeypatch):
@@ -162,11 +251,13 @@ def test_activity_health_and_hooks_are_authenticated_and_content_safe(
         "ok": True, "status": "ok", "at": 1,
         "workers": {"web": {"state": "running", "fresh": True, "detail": {"task": secret}}},
         "heartbeats": {"worker:web": {"state": "running", "fresh": True,
-                                        "detail": {"prompt": secret}}},
+                                        "detail": {"prompt": secret}},
+                       "supervisor": {"state": "running", "fresh": True,
+                                      "detail": {"prompt": secret}}},
         "services": {"web": {"ok": True, "detail": secret}},
         "credentials": [{"name": "codex-oauth", "state": "ok", "token": secret}],
         "queues": {"notifications": {"pending": 1, "payload": secret}},
-        "supervisor": {"installed": False},
+        "supervisor": {"installed": True},
         "work": {"interactive_active": 1, "missions_active": 1, "task_runs_active": 1,
         "automations_active": 1, "recovery_required": []},
         "activity_errors": {"task_runs": secret}})
@@ -179,6 +270,8 @@ def test_activity_health_and_hooks_are_authenticated_and_content_safe(
     assert secret not in json.dumps(activity)
     code, health = _json(base + "/api/healthz?token=" + token)
     assert code == 200 and health["workers"]["web"]["fresh"] is True
+    assert health["supervisor"]["running"] is True
+    assert health["supervisor"]["status"] == "running"
     assert secret not in json.dumps(health)
 
     # Hook status is inspect-only. Unreviewed exact bytes stay pending.

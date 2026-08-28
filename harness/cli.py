@@ -243,9 +243,8 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
         provider, model, effort=effort, speed=speed,
         subscription_only=bool(subscription_only))
     h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project)
-    # Run presets may choose a lower everyday/deep-work target, but this value is a user-owned
-    # HARD ceiling.  Keep it separately from ``max_turns`` so selecting Thorough can never turn a
-    # five-turn safety limit into a forty-eight-turn run.
+    # Interactive runs have no implicit turn ceiling.  A positive COLLIE_MAX_TURNS remains an
+    # explicit user-owned hard cap; zero means unlimited.
     h._max_turns_hard_cap = None
     h.gate = gate                             # None = ungated (benchmarks, delegate child, embedded)
     if gate is not None:                      # record decisions only where there is a gate making them
@@ -257,8 +256,10 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     try:                                      # Settings-panel turn limit (env/JSON), else keep default
         mt = os.environ.get("COLLIE_MAX_TURNS")
         if mt:
-            h.max_turns = max(1, min(120, int(mt)))
-            h._max_turns_hard_cap = h.max_turns
+            configured_cap = int(mt)
+            if configured_cap > 0:
+                h.max_turns = max(1, min(120, configured_cap))
+                h._max_turns_hard_cap = h.max_turns
     except (TypeError, ValueError):
         pass
     return h
@@ -303,12 +304,14 @@ def configure_run_options(h, intent="build", quality="balanced", verification="a
         # restricted gate/post-check; Plan and Review are inspection artifacts.
         h.self_verify = False
 
-    # These are preset TARGETS, never permission to widen the Settings-panel hard cap. Applying the
-    # Balanced target here too is important: Pack builds harnesses directly and used to leave both
-    # Balanced and Thorough at Harness's 50-turn default, making its quality selector a no-op.
+    # Quality still controls the convergence target (when to stop exploring and commit), but it is
+    # not a stop condition.  Ordinary interactive work runs until the model finishes, the user
+    # cancels, or a real provider/token/cost boundary is reached.  A positive Settings-panel value
+    # remains an explicit hard cap for people who want one.
     target_turns = {"quick": 24, "balanced": 40, "thorough": 50}[quality]
+    h.turn_target = target_turns
     hard_cap = getattr(h, "_max_turns_hard_cap", None)
-    h.max_turns = min(target_turns, int(hard_cap)) if hard_cap is not None else target_turns
+    h.max_turns = int(hard_cap) if hard_cap is not None else 0
 
     # Thorough is the honest successor to the old "Extreme Herding" depth preset.  It also buys
     # additional repair room. It does not itself claim that a check passed; that is the independent
@@ -328,7 +331,7 @@ def configure_run_options(h, intent="build", quality="balanced", verification="a
 
 
 _TURN_OPTION_FIELDS = (
-    "mode", "force_edit", "self_verify", "max_turns", "verify_max",
+    "mode", "force_edit", "self_verify", "max_turns", "turn_target", "verify_max",
     "verify_gate", "require_assert",
 )
 
@@ -392,7 +395,7 @@ def apply_turn_decision(h, decision, gate=None):
     if not hasattr(h, "_turn_option_baseline"):
         defaults = {
             "mode": "act", "force_edit": False, "self_verify": True,
-            "max_turns": 50, "verify_max": 2, "verify_gate": False,
+            "max_turns": 50, "turn_target": 50, "verify_max": 2, "verify_gate": False,
             "require_assert": False,
         }
         h._turn_option_baseline = {
@@ -2558,11 +2561,13 @@ def cmd_runners(args):
     benchmark adapters Collie is *compared against*, and a worker Collie *delegates
     to* is the opposite relationship. Two names, two meanings.
 
-    Three actions, all read-only except the report file `compat --report` writes:
-    `list` (the table), `probe` (one runner's row in full) and `compat` (the
-    conformance matrix from `runner_compat`). Without `--live` nothing is asked of a
-    CLI beyond `--version`; `--live` additionally runs each tool's own status command,
-    which is the only way a billing route becomes evidenced rather than assumed.
+    Three actions: `list` (the table), `probe` (one runner's row in full) and
+    `compat` (the conformance matrix from `runner_compat`). Without `--live`
+    nothing is asked of a CLI beyond local metadata and protocol checks. For
+    `probe`, `--live` additionally runs the tool's own status command. For
+    `compat`, it also runs real one-turn/resume/usage checks that can spend tokens.
+    Compatibility results update this host's selector evidence unless `--no-apply`
+    is supplied; `--report` also writes explicit JSON and Markdown copies.
     """
     action = (getattr(args, "action", None) or "list").strip()
     if action == "probe":
@@ -3485,13 +3490,7 @@ def cmd_mcp(args):
             return 1
         print("✓ authorized %s — refreshing tool cache…" % args.name)
         try:                                    # re-list now that we're authorized, so tools cache warms
-            cache = mc._read_cache()
-            conn = mc._get_conn(args.name, cfg)
-            tools = [{"name": t.get("name"), "description": t.get("description", ""),
-                      "inputSchema": t.get("inputSchema") or t.get("input_schema")}
-                     for t in conn.list_tools() if t.get("name")]
-            cache[args.name] = {"hash": mc._cfg_hash(cfg), "tools": tools}
-            mc._write_cache(cache)
+            tools = mc.refresh_server(args.name)
             print("  %d tools available" % len(tools))
         except Exception as e:
             print("  (authorized, but tool list failed: %s)" % e)
@@ -3504,8 +3503,7 @@ def cmd_mcp(args):
         return 0
     if args.action == "tools":
         try:
-            conn = mc._get_conn(args.name, cfg)
-            tools = conn.list_tools()
+            tools = mc.refresh_server(args.name)
         except Exception as e:
             print("list failed: %s" % e)
             return 1
@@ -3513,6 +3511,8 @@ def cmd_mcp(args):
             print("  mcp__%s__%s — %s" % (args.name, t.get("name"), (t.get("description") or "")[:70]))
         if not tools:
             print("  (no tools)")
+        else:
+            print("  refreshed Collie's cached tool contract")
         return 0
     return 0
 
@@ -4058,8 +4058,8 @@ def main(argv=None):
                      choices=["list", "probe", "compat"])
     prn.add_argument("key", nargs="?", default="", help="runner key (probe)")
     prn.add_argument("--live", action="store_true",
-                     help="also run each CLI's own status command (spends nothing, but "
-                          "it is the only evidence of which plan pays)")
+                     help="probe: run the CLI status check; compat: also run real, "
+                          "token-spending one-turn/resume/usage checks")
     prn.add_argument("--json", action="store_true", help="machine-readable output")
     prn.add_argument("--runners", default="", metavar="A,B",
                      help="compat: which runners to test (default: all)")

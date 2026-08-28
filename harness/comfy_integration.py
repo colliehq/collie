@@ -92,11 +92,13 @@ def snapshot() -> dict:
     configured_mcp, configured_cli = _configured_local_bins()
     local_server = _local_server()
     cloud_auth = str((cloud or {}).get("auth") or "not-configured")
+    cloud_enabled = bool((cloud or {}).get("enabled", True)) if cloud is not None else False
+    local_enabled = bool((local or {}).get("enabled", True)) if local is not None else False
     return {
         "cloud": {
             "configured": cloud is not None,
-            "connected": cloud_auth in {"oauth", "header", "none"},
-            "enabled": bool((cloud or {}).get("enabled", True)),
+            "connected": cloud_enabled and cloud_auth in {"oauth", "header", "none"},
+            "enabled": cloud_enabled,
             "auth": cloud_auth,
             "tools": (cloud or {}).get("tools"),
             "mcp_url": CLOUD_MCP_URL,
@@ -105,12 +107,33 @@ def snapshot() -> dict:
         "local": {
             **local_server,
             "mcp_configured": local is not None,
+            "mcp_enabled": local_enabled,
             "mcp_tools": (local or {}).get("tools"),
             "cli_installed": bool(comfy_cli) or configured_cli,
             "mcp_installed": bool(comfy_mcp) or configured_mcp,
         },
         "links": {"desktop_docs": DESKTOP_DOCS_URL, "mcp_docs": MCP_DOCS_URL},
     }
+
+
+def refresh_connections() -> dict:
+    """Refresh configured Comfy tool contracts and return bounded public results."""
+    from . import mcpclient
+
+    configured = mcpclient._load_config()
+    names = [name for name in ("comfy-cloud", "comfy-local", "comfy-mcp")
+             if isinstance(configured.get(name), dict)
+             and mcpclient.enabled(configured[name])]
+    refreshed, errors = [], []
+    for name in names:
+        try:
+            tools = mcpclient.refresh_server(name)
+            refreshed.append({"server": name, "tools": len(tools)})
+        except Exception as exc:
+            errors.append({"server": name, "error": "%s: %s" % (
+                type(exc).__name__, str(exc)[:300])})
+    return {"ok": not errors, "refreshed": refreshed, "errors": errors,
+            "status": snapshot()}
 
 
 def add_local_connection() -> dict:

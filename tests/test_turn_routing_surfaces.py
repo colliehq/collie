@@ -87,9 +87,10 @@ def test_reused_harness_keeps_stores_and_resets_gate_between_turns(monkeypatch):
         _max_turns_hard_cap=None,
     )
 
-    plan = cli.resolve_turn_decision("Explain this function", "codex-oauth")
-    cli.apply_turn_decision(h, plan, gate)
-    assert gate.mode is Mode.PLAN and h.mode == "plan"
+    chat = cli.resolve_turn_decision("Explain this function", "codex-oauth")
+    cli.apply_turn_decision(h, chat, gate)
+    assert chat.route_kind == "chat" and chat.intent == "build"
+    assert gate.mode is Mode.PROJECT and h.mode == "act"
 
     build = cli.resolve_turn_decision(
         "Fix the security race condition", "codex-oauth", route_kind="code")

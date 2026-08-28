@@ -48,6 +48,20 @@ def test_library_and_activity_replace_the_conversation_instead_of_stacking():
     assert library.index("setActivityOpen(false)") < library.index("libraryPanel.hidden = !open")
 
 
+def test_run_details_is_a_bounded_closeable_drawer_not_a_conversation_blocker():
+    desktop = read("harness/webui/index.html")
+
+    assert 'id="workpanelClose"' in desktop
+    workpanel_css = re.search(r"\.workpanel\s*\{([^}]+)\}", desktop)
+    assert workpanel_css
+    assert "height: min(38vh, 360px)" in workpanel_css.group(1)
+    assert "overflow: auto" in workpanel_css.group(1)
+    assert '$("workpanelClose").addEventListener("click"' in desktop
+    assert 'more.open = false' in desktop
+    assert 't("Allow once")' in desktop and 't("Allow for this run")' in desktop
+    assert 'title="\' + esc(d.rule_offer)' in desktop
+
+
 def test_every_run_surface_uses_the_server_cancel_contract():
     for name in ("index.html", "mobile.html", "ambient.html", "wallpaper.html"):
         page = read(f"harness/webui/{name}")
@@ -141,10 +155,17 @@ def test_missions_pack_and_studio_stay_in_the_native_application_shell():
     assert 'openEmbeddedSurface("Studio", "/studio?embedded=1")' in desktop
     assert 'openEmbeddedSurface("Meeting notes", "/meetings?embedded=1")' in desktop
     assert 'openEmbeddedSurface("Comfy", "/comfy?embedded=1")' in desktop
+    mission_detail = desktop.split("function showMission(mid, openReport)", 1)[1].split(
+        "var missionsPanel", 1)[0]
+    assert 'card.scrollIntoView({ block: "start", behavior: "instant" })' in mission_detail
     assert "collie:prefill" in desktop and "collie:prefill" in comfy
     for page in (remote, studio, meetings, comfy):
         assert 'get("embedded")==="1"' in page
         assert "body.embedded" in page
+    assert 'localConnected?"Connected"' in comfy
+    assert 'localConnected?"Connected":"Connect local MCP"' in comfy
+    assert ".hero>.row{flex:0 0 auto;flex-wrap:nowrap;margin-top:0}" in comfy
+    assert ".hero>.row{flex-wrap:wrap;margin-top:12px}" in comfy
 
 
 def test_library_inventory_and_add_flows_are_first_class_ui():
@@ -161,6 +182,8 @@ def test_library_inventory_and_add_flows_are_first_class_ui():
     assert "confirmed:true" in desktop
     assert 'openSettings("mcp")' in desktop
     assert "renderLibraryInventory" in desktop
+    assert 'libraryQuantity(row.tools, "tool", "tools")' in desktop
+    assert 'libraryQuantity(row.event_count, "event", "events")' in desktop
 
 
 def test_pack_page_reports_operational_state_without_inventing_device_presence():
@@ -440,7 +463,10 @@ def test_desktop_shows_the_resolved_server_run_plan_and_worker_limits():
     assert 'showRunPlan(d.run_plan)' in page
     assert 'shownRunPlan === plan.id' in page
     assert '(plan.limitations || []).map(t).join("; ")' in page
-    assert '.trace-step.plan' in page
+    show_plan = page.split("function showRunPlan(plan)", 1)[1].split("function setReceipt", 1)[0]
+    assert "traceStep(" not in show_plan, "run setup belongs in details, not the conversation"
+    assert 'addEvent("meta", "flag", t("Run setup")' in show_plan
+    assert 'limitations ? " · " + limitations' in show_plan
     assert 'runCanSteer = !!((d.worker_capabilities || {}).steer)' in page
     assert 'This worker cannot be steered — stop it or wait' in page
     assert 'liveRuns[currentSession].state = d.canceled ? "canceled"' in page

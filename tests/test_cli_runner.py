@@ -500,6 +500,17 @@ def test_runners_compat_writes_report(tmp_path, capsys):
 
 
 # --- parser -----------------------------------------------------------------
+def test_runners_live_help_discloses_compat_token_spend(capsys):
+    """Help must distinguish the free probe from live model conformance turns."""
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["runners", "--help"])
+
+    assert stopped.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "token-spending" in help_text
+    assert "spends nothing" not in help_text
+
+
 def test_run_parser_offers_only_arrived_runners(tmp_path):
     """`--runner` choices come from the registry and include the current phase.
 

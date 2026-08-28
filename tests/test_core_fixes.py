@@ -228,7 +228,7 @@ def test_pack_quality_presets_and_context_reach_every_candidate(monkeypatch, tmp
         self_verify, verify_max, verify_gate, require_assert = False, 2, False, False
 
         def run(self, task_id, task, history=None, **kwargs):
-            seen.append((self.max_turns, task, history))
+            seen.append((self.max_turns, self.turn_target, task, history))
             return Result()
 
     monkeypatch.setattr(catalog, "preflight", lambda members: [])
@@ -244,8 +244,8 @@ def test_pack_quality_presets_and_context_reach_every_candidate(monkeypatch, tmp
     pack.run_pack(message, str(tmp_path), n=1, provider="mock", quality="thorough",
                   history=history)
 
-    assert [row[0] for row in seen] == [40, 50]
-    assert all(row[1] == message and row[2] == history for row in seen)
+    assert [(row[0], row[1]) for row in seen] == [(0, 40), (0, 50)]
+    assert all(row[2] == message and row[3] == history for row in seen)
 
 
 def test_pack_budget_is_one_serial_aggregate_not_n_copies(monkeypatch, tmp_path):

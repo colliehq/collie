@@ -259,7 +259,11 @@ def resolve_run_decision(text: str, provider: str, model: str | None = None,
         resolved_intent = "build"
         sources["intent"] = "implied-user-choice"
     else:
-        resolved_intent = "plan" if kind == "chat" else "build"
+        # Plan is a user-requested read-only contract, not the default shape of every question.
+        # Route kind still drives model/depth selection and keeps consequential work fenced, while
+        # ordinary chat stays in the normal run so a diagnosis can continue into a requested fix
+        # without an artificial Plan handoff.  Explicit Plan/Review/Test choices still win above.
+        resolved_intent = "build"
         sources["intent"] = "router"
     reasons.append("intent: %s (%s)" % (resolved_intent, sources["intent"]))
 

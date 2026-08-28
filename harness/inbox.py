@@ -149,7 +149,10 @@ class InboxStore:
         with self._lock:
             try:
                 self.db.execute(
-                    "INSERT INTO inbox_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    """INSERT INTO inbox_items(
+                       id,session,kind,title,body,tool,target,risk,rule_offer,state,
+                       resolution,visibility,call_id,created_at,resolved_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (item.id, item.session, item.kind, item.title, item.body, item.tool,
                      item.target, item.risk, item.rule_offer, item.state, item.resolution,
                      item.visibility, item.call_id, item.created_at, item.resolved_at))
@@ -255,7 +258,11 @@ class InboxStore:
 
     @staticmethod
     def _row(r):
-        return InboxItem(**{k: r[k] for k in r.keys()}) if r is not None else None
+        # inbox.db is shared by installed builds and development worktrees.  A newer build may add
+        # durable approval metadata columns; an older reader must neither fail inserts because the
+        # table is wider nor pass unknown keys into this version's dataclass.
+        known = InboxItem.__dataclass_fields__
+        return InboxItem(**{k: r[k] for k in r.keys() if k in known}) if r is not None else None
 
     def close(self):
         try:

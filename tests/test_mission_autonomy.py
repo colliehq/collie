@@ -566,9 +566,19 @@ def test_hard_deadline_closes_followups_and_runs_final_verification(tmp_path):
                 "status": "scheduled", "attempts": 1}
     create_mission(
         store, "deadline", "stop and verify at the deadline",
-        case={"_campaign_coverage": coverage, "pending_followups": [followup]},
+        case={
+            "_campaign_coverage": coverage,
+            "pending_followups": [followup],
+            "pending_authorizations": [{
+                "id": "nonblocking-fact", "kind": "missing_fact",
+                "summary": "A separate channel lacks its account fact.",
+                "blocking": False,
+            }],
+        },
         leash=world_leash(expires=now - 1))
     calls = []
+    action_rows_before = actions.list()
+    receipts_before = actions.receipts()
     driver = MissionDriver(
         store, actions, lambda *_: calls.append(True) or {"action": "needs_human"}, [],
         goal_verifier=lambda *_: Verdict(
@@ -583,7 +593,10 @@ def test_hard_deadline_closes_followups_and_runs_final_verification(tmp_path):
     assert case["_campaign_coverage"][0]["status"] == "completed"
     assert case["_campaign_coverage"][1]["status"] == "exhausted"
     assert case["_campaign_coverage"][1]["blocker_kind"] == "deadline"
+    assert case["pending_authorizations"][0]["blocking"] is False
     assert case["resolved_followups"][-1]["status"] == "deadline_elapsed"
+    assert actions.list() == action_rows_before
+    assert actions.receipts() == receipts_before
     assert any(e["name"] == "deadline_reached"
                for e in store.events("deadline", 20))
     store.close()
