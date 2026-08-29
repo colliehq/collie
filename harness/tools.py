@@ -877,6 +877,10 @@ _GATED_CAPS = {
     "mcp_manage": ("MCP_MANAGE", "MCP server management",
                    "add, re-enable and delete MCP servers — which means granting collie whatever "
                    "tools those servers expose, under your credentials for remote ones"),
+    "mcp_discovery": ("MCP_DISCOVERY", "Public MCP discovery",
+                      "search the public MCP Registry using only locally-derived, allowlisted "
+                      "capability labels; the raw goal, project names, files and conversation are "
+                      "never included in that request"),
 }
 
 
@@ -916,7 +920,8 @@ def default_registry(code_search: bool = False,
     from .plantool import PlanTool          # multi-step task tracking (CC TodoWrite / Hermes todo)
     from .checkpoint import UndoTool         # roll back file edits made this session
     for t in (ReadFileTool(), WriteFileTool(), EditFileTool(), BashTool(), GrepTool(),
-              GlobTool(), MemorySearchTool(), RememberTool(), PlanTool(), UndoTool()):
+              GlobTool(), MemorySearchTool(), RememberTool(), PlanTool(), UndoTool(),
+              EnableCapabilityTool()):
         r.register(t)
     if code_search:                              # semantic repo navigation (embedding)
         from .codeindex import register_code_search
@@ -951,7 +956,6 @@ def default_registry(code_search: bool = False,
         from .native import register_native, backend as _native_backend
         if _native_backend() is not None:          # Windows (UIA) or macOS (System Events); None on Linux
             register_native(r)
-            r.register(EnableCapabilityTool())     # just-in-time consent seam for gated capabilities
     except Exception:
         pass
     # Eyes. Registered alongside the desktop hand and gated the same way (always visible, refuses

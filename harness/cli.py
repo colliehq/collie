@@ -3843,21 +3843,58 @@ def cmd_config(args):
 def cmd_mcp(args):
     from . import mcpclient as mc
     servers = mc._load_config()
+    if args.action == "recommend":
+        goal = " ".join(part for part in (args.name, args.value) if part).strip()
+        if not goal:
+            print('usage: collie mcp recommend "what you want to accomplish" [--registry]')
+            return 1
+        from .mcp_discovery import recommend
+        out = recommend(goal, include_registry=bool(getattr(args, "registry", False)),
+                        refresh=bool(getattr(args, "refresh", False)), max_results=5)
+        if getattr(args, "json", False):
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+            return 0
+        needs = ", ".join(row["label"] for row in out.get("needs", [])) or "not recognized"
+        print("Local capability match: %s" % needs)
+        print("Raw goal shared: no")
+        if out.get("registry_searched"):
+            print("Public Registry terms: %s" % (", ".join(out.get("registry_terms", [])) or "none"))
+            print("Registry entries are community metadata, not security reviews.")
+        for index, row in enumerate(out.get("recommendations", []), 1):
+            remote = (row.get("remote") or {}).get("url") or "no remote endpoint"
+            print("  %d. %s [%s]" % (index, row.get("label") or row.get("name"),
+                                      row.get("trust_level") or "unreviewed"))
+            print("     %s" % (row.get("reason") or row.get("description") or ""))
+            print("     %s" % remote)
+            print("     id: %s" % row.get("id"))
+        if not out.get("recommendations"):
+            print("  (no match; try --registry to send only the generic labels above)")
+        return 0
+    if args.action == "connect-candidate":
+        if not args.name:
+            print("usage: collie mcp connect-candidate <registry:id@version> --yes")
+            return 1
+        if not getattr(args, "yes", False):
+            print("refused: inspect the exact endpoint from `mcp recommend --registry` and pass --yes")
+            return 1
+        try:
+            candidate, name, _cfg, tools = mc.connect_registry_candidate(args.name)
+        except Exception as exc:
+            print("connection failed: %s" % exc)
+            return 1
+        print("connected %s as %s (%d tools)" % (candidate.get("label"), name, len(tools)))
+        print("  community Registry listing; unknown tool effects remain external-write")
+        return 0
     if args.action == "list":
         if not servers:
             # An empty list used to end at "add one with a url-or-command", which is a strange thing
             # to ask of the screen whose job is to say what exists. Name what can be connected with
             # one word and no URL at all.
             print("(no MCP servers configured)")
-            print("  connect one in a single step — signs in through your browser, no token to find:")
-            print("    " + "  ".join(sorted(k for k, v in mc.CATALOG.items()
-                                            if not v.get("byo_client"))))
+            print("  connect a reviewed endpoint — current OAuth support is checked when pressed:")
+            print("    " + "  ".join(sorted(mc.CATALOG)))
             print("  e.g. `collie mcp connect linear`")
-            # Listed apart rather than mixed in: they are one press plus an OAuth app you have to
-            # create, and finding that out by pressing is the thing this line exists to prevent.
-            print("  these need an OAuth app of your own (no dynamic client registration):")
-            print("    " + "  ".join(sorted(k for k, v in mc.CATALOG.items()
-                                            if v.get("byo_client"))))
+            print('  discover by outcome: `collie mcp recommend "sync my calendar" --registry`')
             print("  anything else: `collie mcp add <name> <https://url | shell command>`")
             return 0
         for s in mc.status():
@@ -3880,7 +3917,7 @@ def cmd_mcp(args):
             return 1
         name = hit["name"]
         cfg = servers.get(name)
-        if hit.get("byo_client") and not (cfg or {}).get("client_id"):
+        if mc.catalog_connection_mode(hit, cfg) == "manual":
             # Before adding anything: a server in the config that can never sign in is worse than
             # no server, because the list then says it is one Sign-in press away.
             print(mc.byo_client_help(name, hit["label"], hit["url"]))
@@ -4766,15 +4803,22 @@ def main(argv=None):
     # mcp: manage MCP servers. `connect <name>` is the one to reach for — for a service in the
     # catalog it fills in the address AND does the browser handshake, which is the whole setup.
     # The rest: list configured ones, OAuth-login to a remote, logout, or list tools.
-    pmcp = sub.add_parser("mcp", help="manage MCP servers (connect | list | add | remove | enable | "
-                                      "disable | login | logout | tools)")
-    pmcp.add_argument("action", choices=["connect", "list", "add", "remove", "enable", "disable",
-                                         "login", "logout", "tools"])
+    pmcp = sub.add_parser("mcp", help="recommend, connect, and manage remote MCP capabilities")
+    pmcp.add_argument("action", choices=["recommend", "connect", "connect-candidate", "list",
+                                         "add", "remove", "enable", "disable", "login", "logout",
+                                         "tools"])
     pmcp.add_argument("name", nargs="?", default="")
     pmcp.add_argument("value", nargs="?", default="",
                       help="for `add`: an https:// URL (remote server) or a shell command (stdio). "
                            "Omit it for a service collie already knows: `collie mcp add slack`")
     pmcp.add_argument("--force", action="store_true", help="for `add`: overwrite an existing server")
+    pmcp.add_argument("--registry", action="store_true",
+                      help="for `recommend`: search public metadata with generic labels only")
+    pmcp.add_argument("--refresh", action="store_true",
+                      help="for `recommend --registry`: refresh the local metadata cache")
+    pmcp.add_argument("--json", action="store_true", help="for `recommend`: emit JSON")
+    pmcp.add_argument("--yes", action="store_true",
+                      help="for `connect-candidate`: confirm the exact unreviewed Registry entry")
     pmcp.set_defaults(fn=cmd_mcp)
 
     args = p.parse_args(argv)

@@ -937,6 +937,19 @@
   .library-preview { grid-column:1/-1; border:1px solid var(--line); border-radius:8px; padding:10px;
     background:var(--surface-2); color:var(--muted); font-size:11px; line-height:1.5; }
   .library-preview code { overflow-wrap:anywhere; color:var(--ink); font:10px var(--mono); }
+  .library-discovery-consent { grid-column:1/-1; display:flex!important; flex-direction:row!important;
+    align-items:flex-start; gap:7px!important; padding:8px 10px; border-radius:8px; background:var(--surface-2); }
+  .library-discovery-consent input { width:auto!important; margin-top:2px; }
+  .mcp-recommendations { grid-column:1/-1; display:grid; gap:8px; }
+  .mcp-recommendation { border:1px solid var(--line); border-radius:9px; padding:10px;
+    background:var(--surface-2); color:var(--muted); font-size:11px; line-height:1.45; }
+  .mcp-recommendation-head { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
+  .mcp-recommendation-head strong { color:var(--ink); font-size:12px; flex:1; }
+  .mcp-recommendation code { display:block; margin:5px 0; overflow-wrap:anywhere; color:var(--ink); }
+  .mcp-recommendation button { border:1px solid var(--pine); border-radius:7px; padding:6px 9px;
+    color:var(--on-accent); background:var(--pine); cursor:pointer; }
+  .library-local-advanced { grid-column:1/-1; color:var(--muted); font-size:11px; }
+  .library-local-advanced .library-add-choices { margin-top:8px; }
 
   .missions-panel,.surface-panel { flex:1; min-height:0; overflow:auto; background:var(--bg); }
   .missions-panel[hidden],.surface-panel[hidden] { display:none; }
@@ -2019,7 +2032,7 @@
         <div class="library-head">
           <div class="library-head-copy">
             <h2 data-i18n="Library">Library</h2>
-            <p data-i18n="Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.">Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.</p>
+            <p data-i18n="Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.">Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.</p>
           </div>
           <div class="library-head-actions"><button type="button" class="primary" id="libraryAdd" data-i18n="Add capability">Add capability</button>
             <button type="button" id="libraryRefresh" data-i18n="Refresh">Refresh</button>
@@ -2028,14 +2041,25 @@
         <div class="library-notice" id="libraryNotice" role="status" aria-live="polite"></div>
         <div class="library-add" id="libraryAddPanel" hidden>
           <div class="library-add-head"><strong data-i18n="Add a capability">Add a capability</strong>
-            <span data-i18n="Choose where it comes from. External packages are previewed before installation.">Choose where it comes from. External packages are previewed before installation.</span>
+            <span data-i18n="Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.">Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.</span>
             <button type="button" class="library-add-close" id="libraryAddClose" aria-label="Close" data-i18n-aria-label="Close">×</button></div>
           <div class="library-add-choices">
-            <button type="button" class="library-add-choice" data-library-add="skill"><strong data-i18n="Create a Skill">Create a Skill</strong><span data-i18n="Write reusable instructions directly in Collie.">Write reusable instructions directly in Collie.</span></button>
-            <button type="button" class="library-add-choice" data-library-add="package"><strong data-i18n="Import local package">Import local package</strong><span data-i18n="Preview digest and authority, then install.">Preview digest and authority, then install.</span></button>
-            <button type="button" class="library-add-choice" data-library-add="connection"><strong data-i18n="Add a connection">Add a connection</strong><span data-i18n="Connect an app or MCP server with scoped tools.">Connect an app or MCP server with scoped tools.</span></button>
+            <button type="button" class="library-add-choice" data-library-add="connection"><strong data-i18n="Find a connection">Find a connection</strong><span data-i18n="Start from an outcome; prefer reviewed remote MCP endpoints.">Start from an outcome; prefer reviewed remote MCP endpoints.</span></button>
             <button type="button" class="library-add-choice" data-library-add="workflow"><strong data-i18n="Record a workflow">Record a workflow</strong><span data-i18n="Turn a proven run into an evaluated Skill.">Turn a proven run into an evaluated Skill.</span></button>
+            <button type="button" class="library-add-choice" data-library-add="custom-connection"><strong data-i18n="Custom remote MCP">Custom remote MCP</strong><span data-i18n="Add an endpoint you already trust and control.">Add an endpoint you already trust and control.</span></button>
           </div>
+          <form class="library-add-form" id="libraryConnectionForm" hidden>
+            <label class="wide"><span data-i18n="What outcome needs a new service?">What outcome needs a new service?</span><textarea id="libraryConnectionGoal" maxlength="4000" required placeholder="Keep my calendar conflict-free and prepare each meeting"></textarea></label>
+            <label class="library-discovery-consent"><input type="checkbox" id="libraryRegistrySearch"><span data-i18n="If the reviewed catalog has no match, search the public MCP Registry. Only generic labels such as calendar or music leave this computer; results are unreviewed.">If the reviewed catalog has no match, search the public MCP Registry. Only generic labels such as calendar or music leave this computer; results are unreviewed.</span></label>
+            <div class="library-add-actions"><button type="submit" class="primary" data-i18n="Recommend connections">Recommend connections</button><span id="libraryConnectionStatus"></span></div>
+            <div class="mcp-recommendations" id="libraryConnectionResults"></div>
+          </form>
+          <details class="library-local-advanced"><summary data-i18n="Local and advanced extension formats">Local and advanced extension formats</summary>
+            <div class="library-add-choices">
+              <button type="button" class="library-add-choice" data-library-add="skill"><strong data-i18n="Create a local Skill">Create a local Skill</strong><span data-i18n="Compatibility path for reviewed local instructions; not the public ecosystem.">Compatibility path for reviewed local instructions; not the public ecosystem.</span></button>
+              <button type="button" class="library-add-choice" data-library-add="package"><strong data-i18n="Import local package">Import local package</strong><span data-i18n="Preview digest and host authority before installation.">Preview digest and host authority before installation.</span></button>
+            </div>
+          </details>
           <form class="library-add-form" id="librarySkillForm" hidden>
             <label><span data-i18n="Skill name">Skill name</span><input id="librarySkillName" maxlength="120" required placeholder="release-checklist"></label>
             <label><span data-i18n="When should Collie use it?">When should Collie use it?</span><input id="librarySkillDescription" maxlength="500" required></label>
@@ -2050,11 +2074,13 @@
           </form>
         </div>
         <div class="library-summary" id="librarySummary"></div>
-        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Built in">Built in</h3><span data-i18n="Available on this computer">Available on this computer</span></div><div class="capability-grid" id="libraryBuiltins"></div></section>
-        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Skills">Skills</h3><span data-i18n="Reusable instructions loaded on demand">Reusable instructions loaded on demand</span></div><div class="capability-grid" id="librarySkills"></div></section>
         <section class="library-section"><div class="library-section-head"><h3 data-i18n="Connections">Connections</h3><span data-i18n="Apps and services with scoped tools">Apps and services with scoped tools</span></div><div class="capability-grid" id="libraryConnections"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Built in core">Built in core</h3><span data-i18n="Privacy, memory, authority, orchestration and local execution">Privacy, memory, authority, orchestration and local execution</span></div><div class="capability-grid" id="libraryBuiltins"></div></section>
         <section class="library-section"><div class="library-section-head"><h3 data-i18n="Recorded workflows">Recorded workflows</h3><span data-i18n="Drafts and approved workflow Skills">Drafts and approved workflow Skills</span></div><div class="capability-grid" id="libraryWorkflows"></div></section>
-        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Extension packages">Extension packages</h3><span data-i18n="Digest-pinned capabilities with declared authority">Digest-pinned capabilities with declared authority</span></div><div class="library-grid" id="libraryGrid"><div class="library-empty" data-i18n="Loading capability library…">Loading capability library…</div></div></section>
+        <details class="library-section library-local-advanced"><summary data-i18n="Local compatibility and advanced extensions">Local compatibility and advanced extensions</summary>
+          <div class="library-section-head"><h3 data-i18n="Local Skills">Local Skills</h3><span data-i18n="Reviewed instructions, not the public capability ecosystem">Reviewed instructions, not the public capability ecosystem</span></div><div class="capability-grid" id="librarySkills"></div>
+          <div class="library-section-head"><h3 data-i18n="Extension packages">Extension packages</h3><span data-i18n="Digest-pinned capabilities with declared host authority">Digest-pinned capabilities with declared host authority</span></div><div class="library-grid" id="libraryGrid"><div class="library-empty" data-i18n="Loading capability library…">Loading capability library…</div></div>
+        </details>
       </div>
     </section>
 
@@ -3088,6 +3114,34 @@
   // Strings introduced by operational surfaces are kept in one additive block
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
+    "Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.":"Collie 的本机核心，加上你选择信任的远程服务。领域功能通过受限 MCP 连接提供，而不是不断扩大宿主程序。",
+    "Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.":"先描述想要的结果。Collie 会推荐最小的远程连接组合，绝不会静默安装。",
+    "Find a connection":"查找连接","Start from an outcome; prefer reviewed remote MCP endpoints.":"从结果出发，优先使用已审阅的远程 MCP 端点。",
+    "Custom remote MCP":"自定义远程 MCP","Add an endpoint you already trust and control.":"添加你已经信任并控制的端点。",
+    "What outcome needs a new service?":"什么结果需要新的服务？",
+    "If the reviewed catalog has no match, search the public MCP Registry. Only generic labels such as calendar or music leave this computer; results are unreviewed.":"如果已审阅目录没有匹配项，则搜索公共 MCP Registry。只有 calendar、music 这类通用标签会离开本机；搜索结果未经审阅。",
+    "Recommend connections":"推荐连接","Local and advanced extension formats":"本机与高级扩展格式",
+    "Create a local Skill":"创建本机 Skill","Compatibility path for reviewed local instructions; not the public ecosystem.":"用于已审阅本机指令的兼容路径；它不是公共生态。",
+    "Preview digest and host authority before installation.":"安装前预览摘要和宿主权限。",
+    "Built in core":"内置核心","Privacy, memory, authority, orchestration and local execution":"隐私、记忆、权限、编排与本机执行",
+    "Local compatibility and advanced extensions":"本机兼容与高级扩展","Local Skills":"本机 Skills",
+    "Reviewed instructions, not the public capability ecosystem":"已审阅的指令，而非公共能力生态",
+    "Digest-pinned capabilities with declared host authority":"固定摘要并声明宿主权限的能力",
+    "Endpoint":"端点","No remote endpoint":"没有远程端点","Trust":"信任","Repository":"代码仓库",
+    "Data":"数据","Effects":"影响","Warnings":"警告",
+    "Connecting does not grant standing authority to external-write tools.":"建立连接不会向外部写入工具授予长期权限。",
+    "Starting connection…":"正在启动连接…","Connection is already in progress.":"连接已在进行中。",
+    "Connection started. Finish provider sign-in in the browser; Collie will keep it scoped.":"连接已启动。请在浏览器完成服务商登录；Collie 会维持权限边界。",
+    "Connection failed:":"连接失败：","No matching remote connection found":"未找到匹配的远程连接",
+    "Try a more specific outcome.":"请尝试描述更具体的结果。","Name the app or kind of information involved.":"请指出涉及的应用或信息类型。",
+    "Connected":"已连接","Review only":"仅审阅","Review and connect":"审阅并连接","Matching locally…":"正在本机匹配…",
+    "Checking privacy-safe public metadata…":"正在检查保护隐私的公共元数据…","no private text":"不包含私密文本",
+    "Allow future public MCP Registry searches?":"允许今后搜索公共 MCP Registry 吗？",
+    "Only these generic labels will be sent:":"只会发送以下通用标签：",
+    "Your original request stays on this computer. Registry results are unreviewed.":"你的原始请求留在本机。Registry 结果未经审阅。",
+    "Public search cancelled":"已取消公共搜索",
+    "No connection was made. Review an exact endpoint to continue.":"尚未建立任何连接。请审阅准确端点后继续。",
+    "Recommendation failed:":"推荐失败：",
     "Toggle sidebar":"切换侧栏","Stop the music Collie is playing":"停止 Collie 正在播放的音乐",
     "Rewind the files to before a run":"将文件回退到运行前","Rewind files":"回退文件",
     "Activity & health":"活动与健康","Activity and health":"活动与健康",
@@ -3147,6 +3201,34 @@
     "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
   });
   Object.assign(ZHTW, {
+    "Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.":"Collie 的本機核心，加上你選擇信任的遠端服務。領域功能透過受限 MCP 連線提供，而不是不斷擴大宿主程式。",
+    "Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.":"先描述想要的結果。Collie 會推薦最小的遠端連線組合，絕不會靜默安裝。",
+    "Find a connection":"尋找連線","Start from an outcome; prefer reviewed remote MCP endpoints.":"從結果出發，優先使用已審閱的遠端 MCP 端點。",
+    "Custom remote MCP":"自訂遠端 MCP","Add an endpoint you already trust and control.":"新增你已經信任並控制的端點。",
+    "What outcome needs a new service?":"什麼結果需要新的服務？",
+    "If the reviewed catalog has no match, search the public MCP Registry. Only generic labels such as calendar or music leave this computer; results are unreviewed.":"如果已審閱目錄沒有符合項目，則搜尋公共 MCP Registry。只有 calendar、music 這類通用標籤會離開本機；搜尋結果未經審閱。",
+    "Recommend connections":"推薦連線","Local and advanced extension formats":"本機與進階擴充格式",
+    "Create a local Skill":"建立本機 Skill","Compatibility path for reviewed local instructions; not the public ecosystem.":"用於已審閱本機指令的相容路徑；它不是公共生態。",
+    "Preview digest and host authority before installation.":"安裝前預覽摘要和宿主權限。",
+    "Built in core":"內建核心","Privacy, memory, authority, orchestration and local execution":"隱私、記憶、權限、編排與本機執行",
+    "Local compatibility and advanced extensions":"本機相容與進階擴充","Local Skills":"本機 Skills",
+    "Reviewed instructions, not the public capability ecosystem":"已審閱的指令，而非公共能力生態",
+    "Digest-pinned capabilities with declared host authority":"固定摘要並聲明宿主權限的能力",
+    "Endpoint":"端點","No remote endpoint":"沒有遠端端點","Trust":"信任","Repository":"程式碼倉庫",
+    "Data":"資料","Effects":"影響","Warnings":"警告",
+    "Connecting does not grant standing authority to external-write tools.":"建立連線不會向外部寫入工具授予長期權限。",
+    "Starting connection…":"正在啟動連線…","Connection is already in progress.":"連線已在進行中。",
+    "Connection started. Finish provider sign-in in the browser; Collie will keep it scoped.":"連線已啟動。請在瀏覽器完成服務商登入；Collie 會維持權限邊界。",
+    "Connection failed:":"連線失敗：","No matching remote connection found":"未找到符合的遠端連線",
+    "Try a more specific outcome.":"請嘗試描述更具體的結果。","Name the app or kind of information involved.":"請指出涉及的應用程式或資訊類型。",
+    "Connected":"已連線","Review only":"僅審閱","Review and connect":"審閱並連線","Matching locally…":"正在本機比對…",
+    "Checking privacy-safe public metadata…":"正在檢查保護隱私的公共中繼資料…","no private text":"不包含私密文字",
+    "Allow future public MCP Registry searches?":"允許今後搜尋公共 MCP Registry 嗎？",
+    "Only these generic labels will be sent:":"只會傳送以下通用標籤：",
+    "Your original request stays on this computer. Registry results are unreviewed.":"你的原始請求留在本機。Registry 結果未經審閱。",
+    "Public search cancelled":"已取消公共搜尋",
+    "No connection was made. Review an exact endpoint to continue.":"尚未建立任何連線。請審閱準確端點後繼續。",
+    "Recommendation failed:":"推薦失敗：",
     "Toggle sidebar":"切換側欄","Stop the music Collie is playing":"停止 Collie 正在播放的音樂",
     "Rewind the files to before a run":"將檔案回復到執行前","Rewind files":"回復檔案",
     "Activity & health":"活動與健康","Activity and health":"活動與健康",
@@ -3519,7 +3601,7 @@
     { id: "brains", label: "Brains & routing", zh: "模型与路由",
       keys: ["PROVIDER", "MODEL", "REASONING_EFFORT", "RUNNER", "RUNNER_POOL"] },
     { id: "caps", label: "Capabilities", zh: "能力",
-      keys: ["WEBSEARCH", "BROWSER_BRIDGE", "PLAN_FIRST", "MCP_MANAGE"] },
+      keys: ["WEBSEARCH", "BROWSER_BRIDGE", "PLAN_FIRST", "MCP_MANAGE", "MCP_DISCOVERY"] },
     { id: "devices", label: "Desktop & devices", zh: "桌面与设备",
       keys: ["WALLPAPER", "DESKTOP_CONTROL", "SCREEN_CAPTURE", "REMOTE"] },
     { id: "mcp", label: "Connections", zh: "连接",
@@ -5604,7 +5686,8 @@
       body: JSON.stringify(body) };
     return authenticatedFetch(path, options)
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) {
-        if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
+        if (!r.ok) { var error = new Error((d && d.error) || ("HTTP " + r.status));
+          error.status = r.status; error.payload = d || {}; throw error; } return d;
       }); });
   }
   function libraryNotice(message, bad) {
@@ -5863,23 +5946,100 @@
   function setLibraryAddMode(mode) {
     $("librarySkillForm").hidden = mode !== "skill";
     $("libraryPackageForm").hidden = mode !== "package";
-    if (mode === "connection") {
+    $("libraryConnectionForm").hidden = mode !== "connection";
+    if (mode === "custom-connection") {
       $("libraryAddPanel").hidden = true; setLibraryOpen(false); setProductNav("home"); openSettings("mcp");
     } else if (mode === "workflow") {
       $("libraryAddPanel").hidden = true; openEmbeddedSurface("Studio", "/studio?embedded=1");
     } else {
-      var first = mode === "skill" ? $("librarySkillName") : $("libraryPackageSource");
+      var first = mode === "connection" ? $("libraryConnectionGoal") :
+        mode === "skill" ? $("librarySkillName") : $("libraryPackageSource");
       if (first) window.setTimeout(function () { first.focus(); }, 0);
     }
   }
   if ($("libraryAdd")) $("libraryAdd").onclick = function () {
     $("libraryAddPanel").hidden = !$("libraryAddPanel").hidden;
-    if (!$("libraryAddPanel").hidden) setLibraryAddMode("skill");
+    if (!$("libraryAddPanel").hidden) setLibraryAddMode("connection");
   };
   if ($("libraryAddClose")) $("libraryAddClose").onclick = function () { $("libraryAddPanel").hidden = true; };
   document.querySelectorAll("[data-library-add]").forEach(function (button) {
     button.onclick = function () { setLibraryAddMode(button.getAttribute("data-library-add")); };
   });
+  function mcpRecommendationReview(row) {
+    var lines = [row.label || row.name || row.id, "", t("Endpoint") + ": " +
+      (((row.remote || {}).url) || t("No remote endpoint")), t("Trust") + ": " +
+      (row.trust_level || "community_unreviewed")];
+    if (row.repository) lines.push(t("Repository") + ": " + row.repository);
+    if ((row.data || []).length) lines.push("", t("Data") + ":", row.data.join("\n"));
+    if ((row.effects || []).length) lines.push("", t("Effects") + ":", row.effects.join("\n"));
+    if ((row.warnings || []).length) lines.push("", t("Warnings") + ":", row.warnings.join("\n"));
+    lines.push("", t("Connecting does not grant standing authority to external-write tools."));
+    return lines.join("\n");
+  }
+  function connectMCPRecommendation(row, button) {
+    if (!window.confirm(mcpRecommendationReview(row))) return;
+    button.disabled = true; $("libraryConnectionStatus").textContent = t("Starting connection…");
+    var body = row.source === "collie_curated" ? { action:"connect", name:row.name } :
+      { action:"connect_candidate", candidate_id:row.id, confirmed:true };
+    libraryRequest("/api/mcp", body).then(function (out) {
+      $("libraryConnectionStatus").textContent = out.busy ? t("Connection is already in progress.") :
+        t("Connection started. Finish provider sign-in in the browser; Collie will keep it scoped.");
+      window.setTimeout(function () { loadLibrary().catch(function () {}); }, 1800);
+    }).catch(function (error) {
+      $("libraryConnectionStatus").textContent = t("Connection failed:") + " " + error.message;
+      button.disabled = false;
+    });
+  }
+  function renderMCPRecommendations(payload) {
+    var box = $("libraryConnectionResults"); box.textContent = "";
+    var rows = payload.recommendations || [];
+    if (!rows.length) { libraryEmpty(box, "No matching remote connection found",
+      payload.recognized ? "Try a more specific outcome." : "Name the app or kind of information involved."); return; }
+    rows.forEach(function (row) {
+      var card = document.createElement("article"); card.className = "mcp-recommendation";
+      var head = document.createElement("div"); head.className = "mcp-recommendation-head";
+      var title = document.createElement("strong"); title.textContent = row.label || row.name || row.id;
+      var trust = document.createElement("span"); trust.className = "library-badge";
+      trust.textContent = t(row.trust_level || "community_unreviewed"); head.appendChild(title); head.appendChild(trust);
+      card.appendChild(head);
+      var reason = document.createElement("div"); reason.textContent = row.reason || row.description || ""; card.appendChild(reason);
+      var endpoint = document.createElement("code"); endpoint.textContent = ((row.remote || {}).url) || t("No remote endpoint"); card.appendChild(endpoint);
+      var details = document.createElement("div"); details.textContent = [
+        (row.data || []).length ? t("Data") + ": " + row.data.join("; ") : "",
+        (row.effects || []).length ? t("Effects") + ": " + row.effects.join("; ") : "",
+        (row.warnings || []).join("; ")].filter(Boolean).join(" · "); card.appendChild(details);
+      var button = document.createElement("button"); button.type = "button";
+      button.textContent = row.connection_state === "ready" ? t("Connected") :
+        row.installability === "review_only" ? t("Review only") : t("Review and connect");
+      button.disabled = row.connection_state === "ready" || row.installability === "review_only";
+      button.onclick = function () { connectMCPRecommendation(row, button); }; card.appendChild(button); box.appendChild(card);
+    });
+  }
+  function requestMCPRecommendations(goal, publicSearch, confirmed) {
+    return libraryRequest("/api/mcp/recommend", { goal:goal, search_registry:publicSearch,
+      confirm_public_search:confirmed === true, max_results:5 });
+  }
+  if ($("libraryConnectionForm")) $("libraryConnectionForm").onsubmit = function (event) {
+    event.preventDefault(); var goal = $("libraryConnectionGoal").value.trim(), submit = event.submitter;
+    if (!goal) return; if (submit) submit.disabled = true;
+    $("libraryConnectionStatus").textContent = t("Matching locally…"); $("libraryConnectionResults").textContent = "";
+    requestMCPRecommendations(goal, false, false).then(function (local) {
+      if ((local.recommendations || []).length || !$("libraryRegistrySearch").checked) return local;
+      $("libraryConnectionStatus").textContent = t("Checking privacy-safe public metadata…");
+      return requestMCPRecommendations(goal, true, false).catch(function (error) {
+        var payload = error.payload || {};
+        if (!payload.consent_required) throw error;
+        var terms = (payload.generic_terms || []).join(", ") || t("no private text");
+        if (!window.confirm(t("Allow future public MCP Registry searches?") + "\n\n" +
+            t("Only these generic labels will be sent:") + " " + terms + "\n" +
+            t("Your original request stays on this computer. Registry results are unreviewed."))) throw new Error(t("Public search cancelled"));
+        return requestMCPRecommendations(goal, true, true);
+      });
+    }).then(function (out) { renderMCPRecommendations(out || {});
+      $("libraryConnectionStatus").textContent = t("No connection was made. Review an exact endpoint to continue.");
+    }).catch(function (error) { $("libraryConnectionStatus").textContent = t("Recommendation failed:") + " " + error.message; })
+      .finally(function () { if (submit) submit.disabled = false; });
+  };
   if ($("librarySkillForm")) $("librarySkillForm").onsubmit = function (event) {
     event.preventDefault(); var status = $("librarySkillStatus"), submit = event.submitter;
     if (submit) submit.disabled = true; status.textContent = t("Creating…");

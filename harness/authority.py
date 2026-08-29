@@ -529,6 +529,14 @@ def intent_for(tool_name: str, args: Optional[dict], *, risk: str = "", target: 
     if lower_name == "mcpctl_connect":
         return ActionIntent("connect", Effect.COMMIT, target=target,
                             connection_id=str(args.get("name") or ""))
+    if lower_name == "mcpctl_connect_candidate":
+        return ActionIntent("connect", Effect.COMMIT, target=target,
+                            connection_id=str(args.get("candidate_id") or ""),
+                            reason="public Registry candidates are unreviewed capability expansion")
+    if lower_name == "mcpctl_recommend":
+        return ActionIntent("observe", Effect.OBSERVE, target="MCP Registry" if
+                            args.get("search_registry") is True else "local MCP catalog",
+                            reversible=True)
     if lower_name in ("mcpctl_add", "mcpctl_remove"):
         return ActionIntent("connect", Effect.COMMIT, target=target,
                             connection_id=str(args.get("name") or ""))

@@ -19,7 +19,7 @@
 ---
 
 Collie gives you one persistent personal intelligence at the front door and a **Pack** underneath:
-models, specialist agents, skills, app connections, and devices. Its local operations core keeps
+models, specialist agents, remote MCP connections, and devices. Its local operations core keeps
 desktop, terminal, IDE, phone, browser, and messaging surfaces in the same durable context instead
 of creating disconnected chats.
 
@@ -64,7 +64,7 @@ needs a specific boundary.
 | 📱 | **Phone supervision** | Pair once, then follow runs, answer approvals, steer, stop, or start work from the phone. |
 | 🧠 | **Private procedural memory** | Learn repeated workflows from content-free local action metadata. Raw observations never sync; suggestions require review and accepted routines start with zero authority. |
 | ☁️ | **Optional Online layer** | Pair devices, sync sealed project memory and learned-workflow derivatives plus restrictive policy, share reviewed MCP connections, hand Missions to local nodes, and build schedules/reports. Cloud LLM use stays off unless a bounded task explicitly opts in. |
-| 🔌 | **Library & connections** | Install digest-pinned Skills, Hooks, connection descriptors, templates, and assets. Packages stay inert until their exact version and authority are approved; changes, revocation, or tampering fail closed. |
+| 🔌 | **Remote-MCP-first Library** | Describe an outcome, rank existing and reviewed remote connections locally, then optionally search public Registry metadata using generic labels only. Community results are unreviewed; executable local MCP packages are never one-click installed. |
 
 ## Where it runs
 

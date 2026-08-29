@@ -104,6 +104,11 @@ def test_mcp_tools_default_to_external():
     assert R.classify("mcp__fs__read_file") is RiskClass.EXTERNAL
 
 
+def test_mcp_discovery_is_read_but_connecting_a_candidate_is_external():
+    assert R.classify("mcpctl_recommend") is RiskClass.READ
+    assert R.classify("mcpctl_connect_candidate") is RiskClass.EXTERNAL
+
+
 def test_override_wins_over_table():
     """A user who trusts a server can relax it; that is the only way down."""
     assert R.classify("bash") is RiskClass.EXEC

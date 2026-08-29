@@ -16,6 +16,7 @@ const publicFiles = [
   "robots.txt",
   "sitemap.xml",
   "site-version.json",
+  "oauth-client-metadata.json",
   "_redirects",
 ];
 const cspPlaceholder = "__COLLIE_INLINE_SCRIPT_HASHES__";

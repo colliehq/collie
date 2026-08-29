@@ -1824,9 +1824,11 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     from . import mcpclient
                     have = {x.get("name") for x in mcpclient.status()}
+                    from .mcp_discovery import status as discovery_status
                     return self._send_json({"servers": mcpclient.status(),
                                             "config": mcpclient._CONFIG,
                                             "errors": dict(_MCP_LOGIN_ERR),
+                                            "discovery": discovery_status(),
                                             # The services you can connect without knowing anything.
                                             # Adding one used to mean already having its URL, which
                                             # is a strange thing to demand of the screen whose job is
@@ -2711,6 +2713,39 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_checkpoint_restore()
+            if path == "/api/mcp/recommend":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(16384)
+                if body is None:
+                    return self._send_json({"error": "expected object"}, 400)
+                goal = str(body.get("goal") or "").strip()[:4000]
+                if not goal:
+                    return self._send_json({"error": "goal required"}, 400)
+                public = body.get("search_registry") is True
+                from . import settings
+                if public and str(settings.all_values().get("MCP_DISCOVERY", "off")).lower() \
+                        not in ("1", "on", "true"):
+                    if body.get("confirm_public_search") is not True:
+                        from .mcp_discovery import infer_needs
+                        intent = infer_needs(goal)
+                        return self._send_json({
+                            "error": "public Registry search needs one-time consent",
+                            "consent_required": True,
+                            "generic_terms": intent.get("registry_terms", []),
+                            "raw_goal_shared": False,
+                        }, 409)
+                    # The checked disclosure is persistent, so future recommendations do not nag.
+                    # It authorizes generic-label discovery only, never connection or installation.
+                    settings.update({"MCP_DISCOVERY": "on"})
+                    settings.apply()
+                from .mcp_discovery import recommend
+                try:
+                    return self._send_json(recommend(
+                        goal, include_registry=public, refresh=body.get("refresh") is True,
+                        max_results=max(1, min(int(body.get("max_results") or 5), 10))))
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path == "/api/mcp":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2764,8 +2799,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not hit:
                         return self._send_json({"error": "not a known service — use Add with a URL"}, 400)
                     name = hit["name"]
-                    if (hit.get("byo_client")
-                            and not (mcpclient._load_config().get(name) or {}).get("client_id")):
+                    current_cfg = mcpclient._load_config().get(name) or {}
+                    if mcpclient.catalog_connection_mode(hit, current_cfg) == "manual":
                         # Refuse before adding it. Otherwise the press adds a server, the handshake
                         # dies on "no client_id", and the panel shows a service that looks one
                         # Sign-in away from working and never will be.
@@ -2776,6 +2811,36 @@ class Handler(BaseHTTPRequestHandler):
                         if err:
                             return self._send_json({"error": err}, 400)
                     action = "login"                      # fall through to the browser handshake
+                if action == "connect_candidate":
+                    if body.get("confirmed") is not True:
+                        return self._send_json(
+                            {"error": "confirmed=true required after reviewing the exact endpoint"},
+                            400)
+                    candidate_id = str(body.get("candidate_id") or "").strip()[:500]
+                    try:
+                        candidate, name, _cfg = mcpclient.prepare_registry_candidate(candidate_id)
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                        return self._send_json({"error": str(exc)}, 400)
+                    if name in _MCP_LOGIN_BUSY:
+                        return self._send_json({"ok": True, "busy": True, "name": name})
+                    _MCP_LOGIN_ERR.pop(name, None)
+                    _MCP_LOGIN_BUSY.add(name)
+
+                    def _run_candidate(cid=candidate_id, nm=name):
+                        try:
+                            mcpclient.connect_registry_candidate(cid)
+                        except Exception as exc:
+                            _MCP_LOGIN_ERR[nm] = _public_error(exc)
+                        finally:
+                            _MCP_LOGIN_BUSY.discard(nm)
+
+                    threading.Thread(target=_run_candidate, daemon=True).start()
+                    return self._send_json({
+                        "ok": True, "started": True, "name": name,
+                        "candidate": {"id": candidate.get("id"),
+                                      "label": candidate.get("label"),
+                                      "trust_level": candidate.get("trust_level")},
+                    })
                 if action == "login":
                     cfg = mcpclient._load_config().get(name)
                     if not cfg:

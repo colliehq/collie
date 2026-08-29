@@ -104,6 +104,7 @@ def test_mcp_login_thread_warms_cache_and_publishes_failure(web_server, monkeypa
     monkeypatch.setattr(mcpclient, "_load_config", lambda: config)
     webapp._MCP_LOGIN_BUSY.clear()
     webapp._MCP_LOGIN_ERR.clear()
+
     completed = threading.Event()
     calls = []
 
@@ -143,6 +144,76 @@ def test_mcp_login_thread_warms_cache_and_publishes_failure(web_server, monkeypa
     assert "srv" not in webapp._MCP_LOGIN_BUSY
     assert "RuntimeError" in webapp._MCP_LOGIN_ERR["srv"]
     webapp._MCP_LOGIN_ERR.clear()
+
+
+def test_mcp_recommendation_is_authenticated_local_first_and_consent_bounded(
+        web_server, monkeypatch):
+    from harness import mcp_discovery, settings
+
+    base, token, _ = web_server
+    calls = []
+
+    def recommend(goal, include_registry=False, refresh=False, max_results=5):
+        calls.append((goal, include_registry, refresh, max_results))
+        return {"recognized": True, "recommendations": [], "raw_goal_shared": False,
+                "registry_searched": include_registry}
+
+    monkeypatch.setattr(mcp_discovery, "recommend", recommend)
+    monkeypatch.setattr(settings, "all_values", lambda: {"MCP_DISCOVERY": "off"})
+    updates = []
+    monkeypatch.setattr(settings, "update", lambda values: updates.append(values) or values)
+    monkeypatch.setattr(settings, "apply", lambda: None)
+
+    payload = {"goal": "Schedule ACME secret calendar meetings"}
+    code, denied = _json(base + "/api/mcp/recommend", "POST", payload)
+    assert code == 403 and denied["error"] == "forbidden"
+
+    code, local = _json(base + "/api/mcp/recommend?token=" + token, "POST", payload)
+    assert code == 200 and local["raw_goal_shared"] is False
+    assert calls == [(payload["goal"], False, False, 5)]
+
+    public_payload = dict(payload, search_registry=True)
+    code, consent = _json(base + "/api/mcp/recommend?token=" + token, "POST", public_payload)
+    assert code == 409 and consent["consent_required"] is True
+    assert consent["raw_goal_shared"] is False and "calendar" in consent["generic_terms"]
+    assert "ACME" not in json.dumps(consent)
+
+    public_payload["confirm_public_search"] = True
+    code, public = _json(base + "/api/mcp/recommend?token=" + token, "POST", public_payload)
+    assert code == 200 and public["registry_searched"] is True
+    assert updates == [{"MCP_DISCOVERY": "on"}]
+    assert calls[-1] == (payload["goal"], True, False, 5)
+
+
+def test_mcp_registry_candidate_requires_exact_confirmation_and_connects_in_background(
+        web_server, monkeypatch):
+    from harness import mcpclient, webapp
+
+    base, token, _ = web_server
+    candidate = {"id": "registry:io.example/calendar@1.0.0", "label": "Calendar",
+                 "trust_level": "community_unreviewed"}
+    cfg = {"url": "https://mcp.example.test/mcp"}
+    completed = threading.Event()
+    calls = []
+    monkeypatch.setattr(mcpclient, "prepare_registry_candidate",
+                        lambda cid: (candidate, "registry-calendar-abc", cfg))
+
+    def connect(cid):
+        calls.append(cid); completed.set(); return candidate, "registry-calendar-abc", cfg, []
+
+    monkeypatch.setattr(mcpclient, "connect_registry_candidate", connect)
+    webapp._MCP_LOGIN_BUSY.clear(); webapp._MCP_LOGIN_ERR.clear()
+
+    body = {"action": "connect_candidate", "candidate_id": candidate["id"]}
+    code, refused = _json(base + "/api/mcp?token=" + token, "POST", body)
+    assert code == 400 and "confirmed=true" in refused["error"]
+    assert calls == []
+
+    body["confirmed"] = True
+    code, started = _json(base + "/api/mcp?token=" + token, "POST", body)
+    assert code == 200 and started["started"] is True
+    assert started["candidate"]["trust_level"] == "community_unreviewed"
+    assert completed.wait(3) and calls == [candidate["id"]]
 
 
 def test_nowplaying_poll_is_cheap_unless_system_media_is_requested(web_server, monkeypatch):

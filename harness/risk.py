@@ -62,6 +62,9 @@ _BASE: dict[str, RiskClass] = {
     "plan": RiskClass.READ,
     "mcpctl_status": RiskClass.READ,
     "mcpctl_refresh": RiskClass.READ,
+    # Recommendation is local catalog matching, with an optional read-only public Registry query.
+    # It never persists a server or starts OAuth; connecting is a separate external action below.
+    "mcpctl_recommend": RiskClass.READ,
     # web_fetch/web_search leave the machine, but only to READ a public URL: no
     # session, no cookies, nothing mutated. Gating them would stop ordinary
     # research and buy nothing — the injection risk they DO carry is already
@@ -130,6 +133,7 @@ _BASE: dict[str, RiskClass] = {
     # description already says it "requires their explicit agreement first"; now that is
     # enforced rather than asked of the model.
     "mcpctl_connect": RiskClass.EXTERNAL,
+    "mcpctl_connect_candidate": RiskClass.EXTERNAL,
     "mcpctl_remove": RiskClass.EXTERNAL,
     # Asymmetry worth naming: tools.py's capability layer deliberately leaves turning a
     # server OFF ungated ("being able to disable a misbehaving server should never need a

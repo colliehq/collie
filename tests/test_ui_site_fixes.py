@@ -178,7 +178,8 @@ def test_library_inventory_and_add_flows_are_first_class_ui():
     server = read("harness/webapp.py")
 
     for node in ("librarySummary", "libraryBuiltins", "librarySkills", "libraryConnections",
-                 "libraryWorkflows", "libraryAdd", "librarySkillForm", "libraryPackageForm"):
+                 "libraryWorkflows", "libraryAdd", "librarySkillForm", "libraryPackageForm",
+                 "libraryConnectionForm", "libraryConnectionGoal", "libraryConnectionResults"):
         assert f'id="{node}"' in desktop
     for path in ("/api/library/skill", "/api/library/package/preview",
                  "/api/library/package/install", "/api/session-token"):
@@ -186,6 +187,10 @@ def test_library_inventory_and_add_flows_are_first_class_ui():
     assert "authenticatedFetch" in desktop and "refreshSessionToken" in desktop
     assert "confirmed:true" in desktop
     assert 'openSettings("mcp")' in desktop
+    assert "/api/mcp/recommend" in desktop and 'action:"connect_candidate"' in desktop
+    assert "Only these generic labels will be sent" in desktop
+    assert "community_unreviewed" in desktop and "Review and connect" in desktop
+    assert 'setLibraryAddMode("connection")' in desktop
     assert "renderLibraryInventory" in desktop
     assert 'libraryQuantity(row.tools, "tool", "tools")' in desktop
     assert 'libraryQuantity(row.event_count, "event", "events")' in desktop

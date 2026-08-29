@@ -29,10 +29,16 @@ workers, devices, and services behind that relationship.
 ### Product, platform, and surface are different things
 
 - **Product:** a personal AI operations system for delegating real outcomes.
-- **Platform strategy:** an open ecosystem of brains, skills, connections, devices, and workers.
+- **Platform strategy:** a remote-MCP-first ecosystem of connections, brains, devices, and workers;
+  local Skills remain a reviewed procedural compatibility format, not the public integration market.
 - **Primary surface:** the desktop is Collie's home and control plane.
 - **Runtime:** a supervised local service owns durable work, policy, evidence, and recovery.
 - **Other entrances:** CLI, IDE, browser, phone, and messaging clients enter the same runtime.
+
+Surface priorities and target profiles are evidence-backed in
+[`HARNESS_SURFACE_RESEARCH_2026.md`](HARNESS_SURFACE_RESEARCH_2026.md). Desktop supervises, CLI
+provides full-fidelity execution, IDE supplies context and review, and mobile handles monitoring and
+handoff. None owns a separate copy of the Mission.
 
 “AI ecosystem” describes the platform strategy. It is not a sufficient customer promise by itself.
 People adopt Collie to finish work with less supervision and more accountability, not to acquire an
@@ -190,15 +196,20 @@ immediate work.
 
 Library answers: **What can Collie learn or connect to?**
 
-Use four sections:
+Lead with the outcome and remote Connections. Use four sections:
 
-- **Skills:** reusable procedures.
-- **Connections:** apps, accounts, MCP servers, browsers, and data sources.
+- **Connections:** reviewed remote MCP endpoints first, then explicitly unreviewed public Registry
+  results; apps, accounts, browsers, and data sources are represented through scoped tools.
+- **Built-in core:** memory, privacy, authority, orchestration, evidence, and local execution.
 - **Templates:** reviewed Mission recipes with explicit inputs, outputs, and verification contracts.
-- **Discover:** installable ecosystem packages only when provenance and permissions can be shown.
+- **Local/advanced:** existing Skills and digest-pinned packages for compatibility and controlled
+  deployment, never the default public ecosystem route.
 
-Installation must show capability requests before activation. “Installed” does not mean “trusted,”
-and a Skill must never silently widen a Leash or grant itself a Connection.
+Discovery must classify the user's private goal locally, search with generic labels only after one
+disclosure, and mark Registry metadata as unreviewed. Connection must show endpoint, data and effects
+before activation. “Connected” does not mean “trusted,” and a Skill or MCP server must never silently
+widen a Leash or grant itself another Connection. The complete boundary is in
+[`MCP_ECOSYSTEM_BOUNDARY.md`](MCP_ECOSYSTEM_BOUNDARY.md).
 
 ### Activity
 

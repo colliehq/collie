@@ -1,0 +1,18 @@
+{
+  "client_id": "https://collie.run/oauth-client-metadata.json",
+  "client_name": "Collie",
+  "client_uri": "https://collie.run/",
+  "logo_uri": "https://collie.run/collie-logo.png",
+  "redirect_uris": [
+    "http://localhost:8898/callback",
+    "http://127.0.0.1:8898/callback"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "token_endpoint_auth_method": "none"
+}

@@ -106,6 +106,14 @@ confirmation that participants were informed and consented. Collie automates you
 your request — the way tools like Playwright, AutoHotkey, or an RPA runner do — and never acts on
 anyone else's system.
 
+MCP recommendations first classify the requested outcome entirely on the device. Collie's reviewed
+catalog needs no discovery request. Public MCP Registry search is off until one disclosed consent;
+after that, only allowlisted generic labels such as `calendar`, `github`, or `music` are sent. The
+original request, project names, paths, URLs, searches, and conversation are not included. Public
+metadata is cached under `~/.collie` and can be deleted with the rest of local state. Connecting a
+recommended provider is a separate exact-endpoint action and sends data later only when one of that
+provider's tools is actually used.
+
 ## Data you can delete
 
 Collie's local state (settings, memory, sessions, meeting schedules, meeting recordings/notes,
