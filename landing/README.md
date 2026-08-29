@@ -3,6 +3,25 @@
 The canonical source for the static landing page and its Cloudflare Pages Function. Do not deploy
 the archived `C:\workspace\collie-web` copy.
 
+## Product and homepage versioning
+
+The homepage belongs in this product repository because its promises are part of the product
+contract. It should not be copied into one repository per release or duplicated in the private
+Online service repository:
+
+- every product release tag freezes `landing/`, including the exact homepage and privacy notice;
+- `site-version.json` records the source product version, positioning/content version, privacy
+  notice version, and the public availability stage of each product layer;
+- the root `collie.run` deployment represents the current stable public release; feature branches
+  use Cloudflare preview deployments until their availability labels are ready for stable;
+- a private Online repository may own service code, operations pages, and authenticated account
+  screens, but the public Collie/Online promise remains here so it cannot drift from the client;
+- historical copy is recovered from the matching Git tag or release artifact instead of being
+  manually maintained as another homepage.
+
+`build.mjs` fails when the manifest, package version, homepage version, or privacy-notice version
+disagree. Update those values deliberately whenever positioning or data behavior changes.
+
 ## Safe build boundary
 
 Run `npm run build` in this directory. The build script recreates `dist/` from an explicit allowlist,

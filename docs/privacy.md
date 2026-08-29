@@ -5,10 +5,12 @@ is built to keep your data with you.
 
 ## App telemetry
 
-The Collie app has **no Collie account, sign-up, advertising, usage analytics, telemetry, or crash
-reporting.** It does not send usage events home. Data leaves your machine only when a feature you
-choose inherently needs a network destination, as described below. The collie.run website and the
-optional hosted phone relay are separate services with limited data flows described here.
+The open-source local core needs **no Collie account or sign-up** and has no advertising, usage
+analytics, telemetry, or crash reporting. It does not send usage events home. The optional Collie
+Online preview uses an account only when you choose Connected Mode. Data leaves your machine only
+when a feature you choose inherently needs a network destination, as described below. The
+collie.run website, Collie Online, and the optional hosted phone relay are separate services with
+limited data flows described here.
 
 ## Where your data goes when you use a feature
 
@@ -36,6 +38,15 @@ feature inherently requires:
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,
   request timing, and approximate message sizes. Pairing requires a code shown on your own screen
   plus your approval on the desktop.
+- **Collie Online / Connected Mode (opt-in).** If you sign in and pair devices, selected sealed
+  project memory, restrictive policy, learned-workflow derivatives, shared-connection envelopes,
+  and Mission payloads are end-to-end encrypted between your devices. The service necessarily
+  processes account, workspace/project, device, timing, presence, lease, and approximate-size
+  metadata to route and coordinate them. Raw outside-AI observations, browser-history summaries,
+  and typed personal events are not uploaded by this build. Data explicitly classified
+  `cloud_indexed` is server-readable and outside the sealed-content guarantee; choosing that class
+  or optional Cloud Light processing is a separate, visible decision. Your devices remain the
+  execution authority and cloud delivery never grants a Mission permission to act locally.
 - **"Ask Collie" chat on collie.run (optional).** Nothing is sent until you submit the website form.
   Your question and up to six recent messages from that demo go to Cloudflare Workers AI. For abuse
   prevention, the service processes your network address through a secret-keyed one-way function to

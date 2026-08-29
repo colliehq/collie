@@ -647,10 +647,16 @@ def test_readme_surfaces_table_is_contiguous():
 def test_landing_build_is_an_explicit_allowlist_and_rate_limit_is_atomic():
     package = json.loads(read("landing/package.json"))
     build = read("landing/build.mjs")
+    site_version = json.loads(read("landing/site-version.json"))
     config = read("landing/wrangler.toml")
     chat = read("landing/functions/api/chat.js")
     assert package["scripts"]["build"] == "node build.mjs"
     assert "publicFiles" in build and '"_headers"' in build and "index.draft.html" not in build and "_preview.html" not in build
+    assert '"site-version.json"' in build
+    assert "source_product_version must match harness.__version__" in build
+    assert site_version["content_version"] == "personal-intelligence-v1"
+    assert site_version["features"]["personal_intelligence"] == "preview"
+    assert site_version["features"]["collie_online"] == "preview"
     assert 'pages_build_output_dir = "dist"' in config
     assert "RATE_LIMITER" in config and "durable_objects.bindings" in config and "kv_namespaces" not in config
     assert "...parsed.history" in chat and "MAX_HISTORY_MESSAGES = 6" in chat
@@ -665,6 +671,23 @@ def test_landing_has_local_privacy_and_404_pages():
     assert "does not write questions or answers to R2, KV, or Durable Object content storage" in privacy
     assert "developers.cloudflare.com/workers-ai/platform/data-usage/" in privacy
     assert 'meta name="robots" content="noindex"' in not_found
+
+
+def test_landing_positioning_and_versions_follow_the_product_release():
+    page = read("landing/index.html")
+    privacy = read("landing/privacy.html")
+    manifest = json.loads(read("landing/site-version.json"))
+    package_source = read("harness/__init__.py")
+    package_version = re.search(r'^__version__\s*=\s*["\']([^"\']+)', package_source,
+                                flags=re.MULTILINE).group(1)
+
+    assert manifest["source_product_version"] == package_version
+    assert f'data-site-version="{manifest["content_version"]}"' in page
+    assert (f'data-privacy-notice-version="{manifest["privacy_notice_version"]}"'
+            in privacy)
+    assert "An AI that learns" in page and "how you work" in page
+    assert "local-first personal intelligence" in page
+    assert "browsing patterns alone never create a life event" in page
 
 
 class _InlineHandlerParser(HTMLParser):

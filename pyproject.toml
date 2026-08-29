@@ -7,7 +7,7 @@ name = "collie-harness"
 # single source of truth: harness/__init__.py __version__ (read via [tool.setuptools.dynamic] below).
 # the installer reads the same value at build time (iscc /DAppVer=...), so a version lives in one place.
 dynamic = ["version"]
-description = "A personal AI operations system for durable missions across models, tools, apps, and devices."
+description = "A private, local-first personal intelligence system for workflows across models, apps, and devices."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

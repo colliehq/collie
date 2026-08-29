@@ -1,21 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-site-version="personal-intelligence-v1">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Collie — your personal AI operations system</title>
-<meta name="description" content="Give Collie an outcome. It chooses the brain, tools, skills, workers, and device; keeps the mission moving; asks when authority is needed; and returns scoped evidence. Runs across your devices, with no Collie account or telemetry.">
+<title>Collie — private personal intelligence for your digital life</title>
+<meta name="description" content="Collie is a local-first personal AI that coordinates work across your computer and devices, learns the workflows you choose to share, and helps before every need becomes another prompt.">
 <link rel="icon" href="collie-logo.svg" type="image/svg+xml">
 <link rel="canonical" href="https://collie.run/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Collie">
 <meta property="og:url" content="https://collie.run/">
-<meta property="og:title" content="Collie — your personal AI operations system">
-<meta property="og:description" content="One Collie at the front door, a Pack underneath. Give it an outcome; it keeps the mission moving and returns scoped evidence.">
+<meta property="og:title" content="Collie — private personal intelligence for your digital life">
+<meta property="og:description" content="A local-first AI home that learns your workflows, coordinates models, apps, and devices, and keeps you in control of memory and action.">
 <meta property="og:image" content="https://collie.run/collie-logo.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Collie — your personal AI operations system">
-<meta name="twitter:description" content="Give it an outcome. Collie chooses the brain, keeps the mission moving, and returns scoped evidence.">
+<meta name="twitter:title" content="Collie — private personal intelligence for your digital life">
+<meta name="twitter:description" content="A local-first AI home that learns your workflows and helps before every need becomes another prompt.">
 <meta name="twitter:image" content="https://collie.run/collie-logo.png">
 <meta name="theme-color" content="#0B0C11">
 <script type="application/ld+json">
@@ -32,7 +32,7 @@
   "license": "https://opensource.org/licenses/MIT",
   "isAccessibleForFree": true,
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "description": "An open-source personal AI operations system that coordinates models, agents, skills, app connections, and devices around durable missions, explicit authority, and scoped evidence.",
+  "description": "An open-source, local-first personal intelligence system that coordinates models, apps, and devices, learns reviewable workflows, and keeps memory and authority under the user's control.",
   "sameAs": ["https://github.com/colliehq/collie"]
 }
 </script>
@@ -174,6 +174,9 @@
   .stp .big{font-size:34px; font-weight:720; color:var(--accent); letter-spacing:-0.03em}
   .stp h3{font-size:20px; font-weight:660; margin:12px 0 8px}
   .stp p{color:var(--muted); font-size:15px}
+  .stp .stage{display:inline-flex;margin-top:14px;padding:4px 9px;border:1px solid var(--line-2);border-radius:999px;color:var(--faint);font:11px var(--mono);letter-spacing:.03em;text-transform:uppercase}
+  .stp .stage.live{color:var(--ok)}
+  .stp .stage.preview{color:var(--warm)}
 
   /* ---------- trust strip ---------- */
   .trust{display:grid; grid-template-columns:repeat(4,1fr); gap:20px; text-align:center}
@@ -237,8 +240,8 @@
 <header><div class="in">
   <div class="brand"><img src="collie-logo.svg" alt=""><span>Collie</span></div>
   <nav>
-    <a class="wide" href="#see">Ecosystem</a>
-    <a class="wide" href="#how">How it works</a>
+    <a class="wide" href="#see">What it understands</a>
+    <a class="wide" href="#how">System</a>
     <a class="wide" href="https://github.com/colliehq/collie">GitHub</a>
     <button id="theme" type="button" title="Use light theme" aria-label="Use light theme" aria-pressed="false">◐</button>
     <a href="#get" class="dl">Download</a>
@@ -249,13 +252,13 @@
   <!-- HERO -->
   <section class="hero"><div class="halo"></div><div class="wrap hero-grid">
     <div class="hero-l">
-      <span class="pill"><b>New</b> one Collie at the front door · a Pack underneath</span>
-      <h1>Your AI home for <span class="g">getting things done</span>.</h1>
-      <p class="sub">Describe the outcome. Collie chooses the <b>brain, tools, skills, workers, and device</b>, keeps the mission moving, asks when it needs your authority, and returns <b>scoped evidence</b>.</p>
+      <span class="pill"><b>Preview</b> private personal intelligence · local first</span>
+      <h1>An AI that learns <span class="g">how you work</span>.</h1>
+      <p class="sub">Collie lives on your computer, brings your <b>models, apps, browser, files, and devices</b> into one private context, and turns the workflows you choose to share into <b>reviewable suggestions, reminders, and durable missions</b>.</p>
       <div class="cta">
         <a class="btn" href="#get">↓ Get Collie — it's free</a>
-        <a class="btn ghost" href="#see">See what it can do</a>
-        <span class="note">Desktop-first · model-agnostic · packaged for Windows &amp; Apple silicon · Linux via pip</span>
+        <a class="btn ghost" href="#see">See the system</a>
+        <span class="note">Available now: local Missions and desktop control · Personal intelligence and Online: preview</span>
       </div>
     </div>
 
@@ -264,19 +267,19 @@
         <div class="app-bar">
           <span class="dots"><i></i><i></i><i></i></span>
           <span class="ttl"><img src="collie-logo.svg" alt="">Rowan · Collie</span>
-          <span class="ctx">MISSION · RUNNING</span>
+          <span class="ctx">PERSONAL · PREVIEW</span>
         </div>
         <div class="app-body" role="log" aria-live="polite" aria-relevant="additions">
-          <div class="msg you"><span class="who">You</span><div class="bub">Compare the best CRM options for our team and give me a decision brief</div></div>
+          <div class="msg you"><span class="who">You</span><div class="bub">Help me plan today without missing anything important</div></div>
           <div class="msg col">
             <span class="who">Collie</span>
             <div class="acts">
-              <div class="act"><i class="i">✓</i> Built a run plan <span class="dim">· research + browser</span></div>
-              <div class="act"><i class="i">✓</i> Compared 6 options <span class="dim">· pricing, workflow, security</span></div>
-              <div class="act"><i class="i">✓</i> Checked primary sources <span class="dim">· 9 links recorded</span></div>
-              <div class="act"><i class="i">✓</i> Saved the brief <span class="dim">· decision + tradeoffs</span></div>
+              <div class="act"><i class="i">✓</i> Combined local Missions and reminders</div>
+              <div class="act"><i class="i">✓</i> Found a schedule conflict <span class="dim">· needs your choice</span></div>
+              <div class="act"><i class="i">✓</i> Kept a repeated workflow ready <span class="dim">· review first</span></div>
+              <div class="act"><i class="i">✓</i> Attached sources and confidence</div>
             </div>
-            <div class="done"><img src="collie-logo.svg" alt="">Mission complete · receipt ready</div>
+            <div class="done"><img src="collie-logo.svg" alt="">Daily plan ready · nothing acted without you</div>
           </div>
         </div>
         <form class="app-input" id="askForm" autocomplete="off">
@@ -293,56 +296,56 @@
     </div>
   </div></section>
 
-  <!-- WHAT YOU CAN ASK -->
+  <!-- WHAT COLLIE CAN UNDERSTAND -->
   <section class="band" id="see">
     <div class="wrap lead-h">
-      <div class="eye">ONE COLLIE · MANY BRAINS, SKILLS, APPS, AND DEVICES</div>
-      <h2>Code, browser, apps, and devices. One mission.</h2>
-      <p>Desktop is Collie's home. The runtime underneath keeps durable work, permissions, handoffs, and evidence together no matter where you enter.</p>
+      <div class="eye">ONE PRIVATE CONTEXT · EVERY SURFACE YOU CHOOSE</div>
+      <h2>It should not wait for every need to become a prompt.</h2>
+      <p>With sources you explicitly connect, Collie can understand what needs attention, learn repeated workflows locally, and offer the next useful step without silently giving itself permission to act. Calendar, message, order, and delivery reminders require their own connected evidence; browsing patterns alone never create a life event.</p>
     </div>
     <div class="marq">
       <div class="track">
+        <span class="chip"><span class="q">›</span>Show me what needs attention today<span class="tag">reminders</span></span>
+        <span class="chip"><span class="q">›</span>Spot the conflict before my next meeting<span class="tag">calendar</span></span>
+        <span class="chip"><span class="q">›</span>Turn my release routine into a workflow<span class="tag">local activity</span></span>
+        <span class="chip"><span class="q">›</span>Continue this Mission on my home computer<span class="tag">devices</span></span>
         <span class="chip"><span class="q">›</span>Fix the checkout bug — and show me the checks<span class="tag">code</span></span>
-        <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
-        <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
-        <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
-        <span class="chip"><span class="q">›</span>Clean up and organize my Downloads folder<span class="tag">files</span></span>
         <!-- duplicate for seamless loop -->
+        <span class="chip"><span class="q">›</span>Show me what needs attention today<span class="tag">reminders</span></span>
+        <span class="chip"><span class="q">›</span>Spot the conflict before my next meeting<span class="tag">calendar</span></span>
+        <span class="chip"><span class="q">›</span>Turn my release routine into a workflow<span class="tag">local activity</span></span>
+        <span class="chip"><span class="q">›</span>Continue this Mission on my home computer<span class="tag">devices</span></span>
         <span class="chip"><span class="q">›</span>Fix the checkout bug — and show me the checks<span class="tag">code</span></span>
-        <span class="chip"><span class="q">›</span>Renew the staging cert and open the dashboard<span class="tag">browser</span></span>
-        <span class="chip"><span class="q">›</span>Pull my orders from the portal into a spreadsheet<span class="tag">web</span></span>
-        <span class="chip"><span class="q">›</span>Get this old project running on my machine<span class="tag">setup</span></span>
-        <span class="chip"><span class="q">›</span>Clean up and organize my Downloads folder<span class="tag">files</span></span>
       </div>
       <div class="track rev">
-        <span class="chip"><span class="q">›</span>Rename this project everywhere in the code<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Surface the message I should answer first<span class="tag">connected source</span></span>
+        <span class="chip"><span class="q">›</span>Tell me when a verified delivery changes<span class="tag">orders</span></span>
         <span class="chip"><span class="q">›</span>Summarize these 40 PDFs into one note<span class="tag">files</span></span>
-        <span class="chip"><span class="q">›</span>Fill out this application form with my details<span class="tag">web</span></span>
-        <span class="chip"><span class="q">›</span>Find every place this function is used<span class="tag">code</span></span>
-        <span class="chip"><span class="q">›</span>Download my invoices and total them up<span class="tag">web</span></span>
-        <span class="chip"><span class="q">›</span>Rename this project everywhere in the code<span class="tag">code</span></span>
+        <span class="chip"><span class="q">›</span>Open the music app and play my focus mix<span class="tag">desktop</span></span>
+        <span class="chip"><span class="q">›</span>Prepare the next step, but ask before sending<span class="tag">authority</span></span>
+        <span class="chip"><span class="q">›</span>Surface the message I should answer first<span class="tag">connected source</span></span>
+        <span class="chip"><span class="q">›</span>Tell me when a verified delivery changes<span class="tag">orders</span></span>
         <span class="chip"><span class="q">›</span>Summarize these 40 PDFs into one note<span class="tag">files</span></span>
-        <span class="chip"><span class="q">›</span>Fill out this application form with my details<span class="tag">web</span></span>
-        <span class="chip"><span class="q">›</span>Find every place this function is used<span class="tag">code</span></span>
-        <span class="chip"><span class="q">›</span>Download my invoices and total them up<span class="tag">web</span></span>
+        <span class="chip"><span class="q">›</span>Open the music app and play my focus mix<span class="tag">desktop</span></span>
+        <span class="chip"><span class="q">›</span>Prepare the next step, but ask before sending<span class="tag">authority</span></span>
       </div>
     </div>
   </section>
 
-  <!-- HOW SIMPLE -->
+  <!-- PRODUCT LAYERS -->
   <section class="how" id="how"><div class="in">
-    <div class="stp"><div class="big">1</div><h3>Describe the outcome</h3><p>Start from desktop, terminal, IDE, phone, or browser. They all enter the same mission history.</p></div>
-    <div class="stp"><div class="big">2</div><h3>Collie assembles the Pack</h3><p>It chooses a run plan across models, tools, skills, apps, and devices—then asks before crossing a sensitive boundary.</p></div>
-    <div class="stp"><div class="big">3</div><h3>Receive a scoped receipt</h3><p>See the result, the checks that actually ran, the scope they cover, and anything that remains unverified.</p></div>
+    <div class="stp"><div class="big">1</div><h3>Local operations core</h3><p>Durable Missions coordinate models, tools, browser, files, and desktop actions. Checks, permissions, recovery, and receipts stay in one control plane.</p><span class="stage live">available</span></div>
+    <div class="stp"><div class="big">2</div><h3>Personal intelligence</h3><p>Optional local observation and connected sources become compressed signals, reviewable memory, suggested routines, and evidence-backed reminders—not raw surveillance logs.</p><span class="stage preview">preview</span></div>
+    <div class="stp"><div class="big">3</div><h3>Collie Online</h3><p>An optional encrypted coordination layer carries selected memory, policy, and Missions across your devices. Your machines remain the execution endpoints.</p><span class="stage preview">preview</span></div>
   </div></section>
 
   <!-- TRUST -->
   <section class="band"><div class="wrap">
     <div class="trust">
-      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div><h4>Uses your real browser</h4><p>Signed into your accounts — it does what you'd do, in your own session.</p></div>
-    <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></div><h4>Verification you control</h4><p>Auto asks for a relevant check after edits. Required makes an executed passing assertion a hard finish gate.</p></div>
-      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg></div><h4>Runs on your machine</h4><p>Stored locally. Task context goes only to the model provider you choose — or stays local with Ollama.</p></div>
-      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M3 8h18M8 21h8"/></svg></div><h4>Windows, Mac &amp; Linux</h4><p>Packaged installers for Windows and Apple-silicon Macs; a single pip command on Linux.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div><h4>Raw observation stays local</h4><p>Outside-AI learning is off by default. Raw activity is device-only; only compressed derivatives may sync. Task context goes only to the model provider you choose — or stays local with Ollama.</p></div>
+    <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></div><h4>Suggestions are not authority</h4><p>A learned routine starts with zero execution permission. You review it before it can become an automation.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg></div><h4>Cloud cannot read sealed content</h4><p>Optional Online sync is end-to-end encrypted for sealed payloads. The service handles only the routing metadata it needs.</p></div>
+      <div class="t"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M3 8h18M8 21h8"/></svg></div><h4>Verification you control</h4><p>Auto asks for a relevant check after edits. Required makes an executed passing assertion a hard finish gate. Reminders retain source and confidence.</p></div>
     </div>
   </div></section>
 
@@ -351,7 +354,7 @@
     <div class="lead-h" style="margin-bottom:26px">
       <div class="eye">GET COLLIE</div>
       <h2>Free, and installed in a minute.</h2>
-      <p>Pick your system — we already guessed it below.</p>
+      <p>Packaged installers for Windows and Apple-silicon Macs, plus a single pip command on Linux. Pick your system — we already guessed it below.</p>
     </div>
     <div class="dlcard">
       <div class="top"><img src="collie-logo.svg" alt=""><div><div class="t">Collie</div><div class="s" data-version>Latest release · free · MIT · open-source</div></div></div>
@@ -396,8 +399,8 @@
 </main>
 
 <footer><div class="in">
-  <span>Collie · <a href="https://collie.run">collie.run</a> · free &amp; open-source (MIT) · runs locally</span>
-  <span class="r"><a href="https://github.com/colliehq/collie">GitHub</a><a href="https://github.com/colliehq/collie/releases">Downloads</a><a href="https://colliehq.github.io/collie/">Docs</a><a href="/privacy.html">Privacy</a></span>
+  <span>Collie · local-first personal intelligence · core is free &amp; open-source (MIT)</span>
+  <span class="r"><a href="https://github.com/colliehq/collie">GitHub</a><a href="https://github.com/colliehq/collie/releases">Downloads</a><a href="https://colliehq.github.io/collie/">Docs</a><a href="/privacy.html">Privacy</a><a href="/site-version.json">Site version</a></span>
 </div></footer>
 
 <script>

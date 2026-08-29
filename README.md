@@ -5,9 +5,9 @@
 <h1 align="center">Collie</h1>
 
 <p align="center">
-  <b>Your personal AI operations system, running across your devices.</b><br>
-  <sub>Give Collie an outcome. It chooses the brain, tools, skills, workers, and device; keeps the
-  mission moving; asks when authority is needed; and returns a scoped evidence receipt.</sub>
+  <b>Your private, local-first personal intelligence system.</b><br>
+  <sub>Collie learns the workflows you choose to share, coordinates work across your computer and
+  devices, and helps before every need becomes another disconnected prompt.</sub>
 </p>
 
 <p align="center">
@@ -18,9 +18,10 @@
 
 ---
 
-Collie gives you one persistent AI at the front door and a **Pack** underneath: models, specialist
-agents, skills, app connections, and devices. Desktop, terminal, IDE, phone, browser, and messaging
-surfaces all enter the same mission runtime instead of creating disconnected chats.
+Collie gives you one persistent personal intelligence at the front door and a **Pack** underneath:
+models, specialist agents, skills, app connections, and devices. Its local operations core keeps
+desktop, terminal, IDE, phone, browser, and messaging surfaces in the same durable context instead
+of creating disconnected chats.
 
 It runs close to your real environment, so it can work in your signed-in browser, desktop, screen,
 files, and code. Local mode needs no Collie account and has no product telemetry. Optional Connected
@@ -32,6 +33,10 @@ checks cover, the permissions used, and what remains unverified. A passing check
 named contract—not a claim that every property of the result is proven.
 
 ## Why it's different
+
+**Memory lives inside the workflow.** Optional outside-AI learning turns content-free local activity
+and separately connected sources into reviewable habits, suggested routines, and evidence-backed
+reminders. Raw observations stay on the device, and a learned routine begins with zero authority.
 
 **Mission-first, not chat-first.** A Mission survives waits, retries, restarts, and handoffs. `Needs
 You` is a global inbox for decisions that require authority, rather than a question buried in an old

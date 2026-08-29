@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "content_version": "personal-intelligence-v1",
+  "source_product_version": "0.22.0",
+  "public_download_channel": "latest-stable",
+  "positioning": "local-first private personal intelligence",
+  "privacy_notice_version": "outside-ai-observation-v1",
+  "features": {
+    "local_mission_runtime": "available",
+    "desktop_control": "available",
+    "personal_intelligence": "preview",
+    "collie_online": "preview"
+  },
+  "versioning": "This manifest and the landing source are frozen by each product release tag."
+}

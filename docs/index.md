@@ -1,8 +1,8 @@
 # Collie
 
-**Your personal AI operations system, running across your devices.** Give Collie an outcome. It
-chooses the brain, tools, skills, workers, and device; keeps the Mission moving; asks when authority
-is needed; and returns a receipt with scoped evidence.
+**Your private, local-first personal intelligence system.** Collie learns the workflows you choose
+to share, coordinates work across your computer and devices, asks when authority is needed, and
+keeps source and verification evidence attached to the result.
 
 <div class="grid cards" markdown>
 
@@ -18,6 +18,10 @@ is needed; and returns a receipt with scoped evidence.
 </div>
 
 ## Why it's different
+
+**Memory lives inside the workflow.** Optional outside-AI learning turns content-free local activity
+and separately connected sources into reviewable habits, suggested routines, and evidence-backed
+reminders. Raw observations stay on the device, and a learned routine begins with zero authority.
 
 **Mission-first, not chat-first.** Desktop, terminal, IDE, phone, and browser enter the same durable
 Mission history. Work can survive waits, retries, restarts, and handoffs; decisions that need your
@@ -62,7 +66,7 @@ green gate without that scope is only a confidence symbol; it is not an accounta
   optional local embedder.
 - **Model-agnostic.** Claude, GPT/Codex, Gemini, DeepSeek, Qwen, a local Ollama model — same harness,
   so any delta is the harness, not the model.
-- **Runs locally, no telemetry, no account.**
+- **Runs locally with no telemetry or account; Online is separately opt-in.**
 
 ## Where to go next
 

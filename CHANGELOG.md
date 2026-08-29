@@ -2,6 +2,12 @@
 
 ## v0.22.0 — The control center closes the operations loop
 
+- Added versioned, opt-in outside-AI learning with Off, Activity only, and Personal intelligence
+  modes; content-free local observation; separately permissioned, locally reduced browser-history
+  signals; reviewable procedural suggestions; typed evidence-backed reminders; and explicit
+  device-only/raw versus sealed-derivative sync boundaries. Repositioned the public product around
+  this private local-first intelligence layer while keeping Missions as its execution control plane,
+  and made each release tag freeze a validated homepage/privacy content manifest.
 - Added local-first Meeting Notes with browser microphone/system-audio capture, live rough notes,
   explicit per-meeting participant-consent confirmation, private local recordings, opt-in OpenAI
   diarized transcription, configured-provider summaries, timestamp evidence, Markdown export, and
