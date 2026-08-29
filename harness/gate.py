@@ -48,6 +48,16 @@ from .risk import (
     is_consequential,
     target_for,
 )
+from .authority import (
+    ActionIntent,
+    AuthorityContext,
+    AuthorityDecision,
+    AuthorityEngine,
+    RequestAuthority,
+    GrantScope,
+    intent_dict,
+    intent_for,
+)
 
 # Shell metacharacters that turn one allowlisted command into several. An allowlist entry
 # runs WITHOUT asking, so prefix matching alone is unsafe: an entry for `git status` would
@@ -73,15 +83,24 @@ READ_ONLY_MODES = frozenset({Mode.PLAN, Mode.REVIEW})
 
 
 class Outcome(str, Enum):
-    """Deliberately the four values of ACP's PermissionOptionKind, so the editor
-    adapter is a pass-through and Zed/JetBrains/neovim render their native prompt."""
+    """Approval answers.
+
+    The original four map directly to ACP. The scoped values are Collie-native and
+    degrade to one-call acceptance when an external editor cannot render them.
+    """
     ALLOW_ONCE = "allow_once"
     ALLOW_ALWAYS = "allow_always"      # mints a (tool, target) rule for this run
+    ALLOW_MISSION = "allow_mission"
+    ALLOW_WORKFLOW = "allow_workflow"
+    ALLOW_PROJECT = "allow_project"
+    ALLOW_CONNECTION = "allow_connection"
     REJECT_ONCE = "reject_once"
     REJECT_ALWAYS = "reject_always"    # stop asking for this tool; deny for this run
 
 
-ALLOWING = frozenset({Outcome.ALLOW_ONCE, Outcome.ALLOW_ALWAYS})
+ALLOWING = frozenset({Outcome.ALLOW_ONCE, Outcome.ALLOW_ALWAYS,
+                      Outcome.ALLOW_MISSION, Outcome.ALLOW_WORKFLOW,
+                      Outcome.ALLOW_PROJECT, Outcome.ALLOW_CONNECTION})
 
 
 @dataclass
@@ -100,6 +119,13 @@ class Decision:
     # for a parked approval, so a reconnecting surface finds the same question rather
     # than asking a second time.
     call_id: str = ""
+    # Authority v2 describes the intended result rather than only the tool's reach.
+    effect: str = ""
+    action: str = ""
+    authorization_basis: str = ""
+    notify: bool = False
+    intent: dict = field(default_factory=dict)
+    grant_options: tuple[str, ...] = ()
 
 
 @dataclass
@@ -119,9 +145,42 @@ class Gate:
     # page still pass through the normal external-action gate below.
     browser_site_access: str = "ask_every_site"
     browser_sensitive_hosts: tuple = field(default_factory=tuple)
+    # Outcome-based authorization is the default user experience.  The legacy
+    # risk/path checks above it remain fail-closed and continue to protect read-only,
+    # test, path-scope, and unattended Auto modes.
+    authority_enabled: bool = True
+    authority_mode: str = "hands_off"
+    authority_engine: Optional[AuthorityEngine] = None
+    authority_context: AuthorityContext = field(default_factory=AuthorityContext)
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd).expanduser().resolve()
+        if self.authority_engine is None:
+            self.authority_engine = AuthorityEngine()
+        self.authority_context.mode = self.authority_mode
+
+    def begin_request(self, user_message: Any, *, project: str = "",
+                      mission_id: str = "", workflow_id: str = "") -> None:
+        """Compile authority from one authenticated user message.
+
+        Surfaces call this once per user turn. Tool/page/model output must never reach
+        this method; the Harness deliberately invokes it before any model call.
+        """
+        self.authority_context = AuthorityContext(
+            request=RequestAuthority.compile(user_message), project=str(project or ""),
+            mission_id=str(mission_id or ""), workflow_id=str(workflow_id or ""),
+            mode=self.authority_mode)
+
+    def extend_request(self, user_message: Any) -> None:
+        """Add authenticated mid-run steering without accepting model/tool text."""
+        extra = RequestAuthority.compile(user_message)
+        current = self.authority_context.request
+        self.authority_context.request = RequestAuthority(
+            actions=frozenset(set(current.actions) | set(extra.actions)),
+            recipients=tuple(dict.fromkeys(current.recipients + extra.recipients)),
+            # The basis identifies both authenticated messages without retaining either.
+            request_sha256=(current.request_sha256[:32] + extra.request_sha256[:32]),
+            explicit=current.explicit or extra.explicit)
 
     # -- the decision -------------------------------------------------------
     def evaluate(self, tool_name: str, args: dict, tool: Any = None) -> Decision:
@@ -205,14 +264,44 @@ class Gate:
                     self.browser_site_access, target, self.browser_sensitive_hosts):
                 return d(True, "allowed by persistent browser site-access policy",
                          rule="browser site access → %s" % target, target=target)
+            # Site access is also a privacy boundary: opening a sensitive logged-in
+            # origin exposes its contents to the configured model. A generic preparation
+            # allowance must not silently override the user's navigation policy.
+            return d(False, "browser site-access policy requires approval for %s" % target,
+                     needs_user=True, target=target,
+                     rule_offer=self.standing_rule_offer(tool_name, target) or "")
         if target and (tool_name, target) in self.session_rules:
             rule = "%s → %s" % (tool_name, target)
             return d(True, "allowed by rule: " + rule, rule=rule, target=target)
+        if self.mode is Mode.INTERACTIVE:
+            return d(False, "interactive mode reviews every consequential action",
+                     needs_user=True, target=target,
+                     rule_offer=self.standing_rule_offer(tool_name, target) or "")
+        if self.authority_enabled and self.authority_engine is not None:
+            intent = intent_for(tool_name, args, risk=risk.value, target=target or "", tool=tool)
+            result = self.authority_engine.decide(intent, self.authority_context)
+            common = {
+                "target": target,
+                "effect": intent.effect.value,
+                "action": intent.action,
+                "authorization_basis": result.basis,
+                "intent": intent_dict(intent),
+                "grant_options": self._grant_options(intent),
+            }
+            if result.decision in (AuthorityDecision.ALLOW_SILENT,
+                                   AuthorityDecision.ALLOW_NOTIFY):
+                return d(True, result.reason, notify=result.decision is AuthorityDecision.ALLOW_NOTIFY,
+                         rule=("authority: " + result.basis) if result.basis else "", **common)
+            if result.decision is AuthorityDecision.DENY:
+                return d(False, result.reason, **common)
+            return d(False, result.reason, needs_user=True,
+                     rule_offer=self.standing_rule_offer(tool_name, target) or "", **common)
         return d(False, "acts outside this machine", needs_user=True, target=target,
-                 rule_offer=self.standing_rule_offer(tool_name, target) or "")
+                  rule_offer=self.standing_rule_offer(tool_name, target) or "")
 
     # -- outcomes -----------------------------------------------------------
-    def apply_outcome(self, outcome: "Outcome", tool_name: str, target: Optional[str]) -> None:
+    def apply_outcome(self, outcome: "Outcome", tool_name: str, target: Optional[str],
+                      decision: Optional[Decision] = None) -> None:
         """Record what the human chose, so the rest of the run honours it."""
         if outcome is Outcome.ALLOW_ALWAYS:
             # A rule needs something concrete to be pinned to. Without a target
@@ -222,6 +311,63 @@ class Gate:
                 self.session_rules.add((tool_name, target))
         elif outcome is Outcome.REJECT_ALWAYS:
             self.session_denied.add(tool_name)
+        elif outcome in (Outcome.ALLOW_MISSION, Outcome.ALLOW_WORKFLOW,
+                         Outcome.ALLOW_PROJECT, Outcome.ALLOW_CONNECTION):
+            if decision is None or not decision.intent or self.authority_engine is None \
+                    or self.authority_engine.store is None:
+                raise ValueError("persistent authority needs a bounded action intent and store")
+            raw = decision.intent
+            try:
+                intent = ActionIntent(
+                    action=str(raw.get("action") or ""), effect=raw.get("effect"),
+                    target=str(raw.get("target") or target or ""),
+                    account=str(raw.get("account") or ""),
+                    recipients=tuple(raw.get("recipients") or ()),
+                    resource=str(raw.get("resource") or ""),
+                    connection_id=str(raw.get("connection_id") or ""),
+                    amount=raw.get("amount"), currency=str(raw.get("currency") or ""),
+                    reversible=bool(raw.get("reversible")),
+                    confidence=float(raw.get("confidence") or 0),
+                    reason=str(raw.get("reason") or ""))
+            except (TypeError, ValueError):
+                raise ValueError("invalid bounded action intent")
+            offered = set(decision.grant_options or ())
+            wanted = {
+                Outcome.ALLOW_MISSION: GrantScope.MISSION,
+                Outcome.ALLOW_WORKFLOW: GrantScope.WORKFLOW,
+                Outcome.ALLOW_PROJECT: GrantScope.PROJECT,
+                Outcome.ALLOW_CONNECTION: GrantScope.CONNECTION,
+            }[outcome]
+            if wanted.value not in offered:
+                raise ValueError("the requested grant scope was not offered")
+            recipients = intent.recipients or self.authority_context.request.recipients
+            self.authority_engine.store.add(
+                scope=wanted, action=intent.action,
+                project=self.authority_context.project if wanted in (
+                    GrantScope.PROJECT, GrantScope.WORKFLOW, GrantScope.MISSION) else "",
+                mission_id=self.authority_context.mission_id if wanted is GrantScope.MISSION else "",
+                workflow_id=self.authority_context.workflow_id if wanted is GrantScope.WORKFLOW else "",
+                connection_id=intent.connection_id if wanted is GrantScope.CONNECTION else "",
+                target=intent.target, account=intent.account, recipients=recipients,
+                max_amount=intent.amount, currency=intent.currency,
+                source="approval")
+
+    def _grant_options(self, intent: ActionIntent) -> tuple[str, ...]:
+        """Scopes the current card may truthfully mint."""
+        if intent.effect.value != "commit" or not intent.action \
+                or intent.action == "external_change" or self.authority_engine is None \
+                or self.authority_engine.store is None:
+            return ()
+        out = []
+        if self.authority_context.mission_id:
+            out.append(GrantScope.MISSION.value)
+        if self.authority_context.workflow_id:
+            out.append(GrantScope.WORKFLOW.value)
+        if self.authority_context.project:
+            out.append(GrantScope.PROJECT.value)
+        if intent.connection_id:
+            out.append(GrantScope.CONNECTION.value)
+        return tuple(out)
 
     def standing_rule_offer(self, tool_name: str, target: Optional[str]) -> Optional[str]:
         """The rule an "always" answer would create, or None when the call cannot

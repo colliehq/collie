@@ -91,6 +91,12 @@
     <div class="site-h" id="policyNote" style="margin-top:6px">Clicks, typing, sends, payments and deletes keep separate approval.</div>
   </div>
 
+  <div class="site" id="reachBox">
+    <div class="site-h"><b>Autonomous browser reach</b></div>
+    <div class="site-h" id="reachNote" style="margin-top:5px">Checking site access…</div>
+    <button id="reachGrant" style="margin-top:7px;width:100%">Enable across websites</button>
+  </div>
+
   <div class="site" id="tokenBox">
     <div class="site-h">Bridge token · <span id="tokState">—</span></div>
     <div style="display:flex;gap:6px;margin-top:6px">
@@ -107,8 +113,8 @@
 
   <label class="toggle" for="hiFi">
     <input type="checkbox" id="hiFi">
-    <span class="tg-text"><b>High-fidelity input <span style="font-weight:400">(default)</span></b>
-      <span>Real clicks via chrome.debugger — for sites that ignore synthetic ones (eBay, banking).
+    <span class="tg-text"><b id="hiFiTitle">High-fidelity input <span style="font-weight:400">(Power build)</span></b>
+      <span id="hiFiNote">Real clicks via chrome.debugger — for sites that ignore synthetic ones (eBay, banking).
       Shows a debug banner while active.</span></span>
   </label>
 

@@ -1,13 +1,16 @@
 param(
-  [string]$Output = ""
+  [string]$Output = "",
+  [switch]$Power
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $source = [IO.Path]::GetFullPath((Join-Path $repoRoot "harness\browser_ext"))
+$manifestSource = if ($Power) { "manifest.json" } else { "manifest.store.json" }
 if (-not $Output) {
-  $version = (Get-Content -LiteralPath (Join-Path $source "manifest.json") -Raw | ConvertFrom-Json).version
-  $Output = Join-Path $repoRoot ("dist\collie-browser-bridge-{0}.zip" -f $version)
+  $version = (Get-Content -LiteralPath (Join-Path $source $manifestSource) -Raw | ConvertFrom-Json).version
+  $flavor = if ($Power) { "power" } else { "store" }
+  $Output = Join-Path $repoRoot ("dist\collie-browser-bridge-{0}-{1}.zip" -f $flavor, $version)
 }
 $outputFull = [IO.Path]::GetFullPath($Output)
 $outputDir = Split-Path -Parent $outputFull
@@ -20,13 +23,14 @@ if (-not $stage.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
 }
 
 $files = @(
-  "manifest.json", "background.js", "shadow.js", "presence.js",
+  "background.js", "shadow.js", "presence.js",
   "popup.html", "popup.js", "sidepanel.html", "sidepanel.js",
   "icon16.png", "icon48.png", "icon128.png"
 )
 
 try {
   New-Item -ItemType Directory -Path $stage | Out-Null
+  Copy-Item -LiteralPath (Join-Path $source $manifestSource) -Destination (Join-Path $stage "manifest.json")
   foreach ($name in $files) {
     $item = Join-Path $source $name
     if (-not (Test-Path -LiteralPath $item -PathType Leaf)) { throw "Missing extension asset: $name" }

@@ -1,7 +1,7 @@
 # Operations, recovery, and resilience
 
 The Control Center makes Collie's durable background state inspectable in one place. Open
-`collie web`, then choose **Control Center** to move between recovery, Automation Studio, memory,
+`collie web`, then choose **Control Center** to move between Connected Mode, recovery, Automation Studio, memory,
 budgets, and permissions. These views summarize metadata and counts; notification bodies, prompts,
 credentials, and private model output are not copied into health reports.
 

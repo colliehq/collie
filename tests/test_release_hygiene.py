@@ -268,16 +268,16 @@ def test_payload_build_fails_closed_and_verifies_code_metadata_and_assets():
     assert 'pip install --upgrade --no-build-isolation --no-warn-script-location' in script
 
 
-def test_formal_installer_payloads_include_claude_agent_sdk_by_default():
+def test_formal_installer_payloads_include_online_and_claude_by_default():
     windows = (ROOT / "installer" / "build_payload.ps1").read_text(encoding="utf-8")
     mac_payload = (ROOT / "installer" / "build_mac_payload.sh").read_text(
         encoding="utf-8")
     mac = (ROOT / "installer" / "build_mac.sh").read_text(encoding="utf-8")
 
-    assert '"$repo[local,remote,claude]"' in windows
+    assert '"$repo[local,remote,online,claude]"' in windows
     assert '"claude_agent_sdk"' in windows
-    assert 'EXTRAS="${3:-local,tui,desktop,remote,claude}"' in mac_payload
-    assert 'EXTRAS="local,tui,desktop,remote,claude"' in mac
+    assert 'EXTRAS="${3:-local,tui,desktop,remote,online,claude}"' in mac_payload
+    assert 'EXTRAS="local,tui,desktop,remote,online,claude"' in mac
     assert '"claude": ["claude_agent_sdk"]' in mac
     assert 'build_mac_payload.sh "$APP" "$ARCH" "$EXTRAS"' in mac
 

@@ -219,6 +219,26 @@ def test_http_json_boundary_rejects_nonstandard_numbers_and_non_objects(web_serv
         assert code == 400
         assert result["queued"] is False
 
+
+def test_ide_context_handoff_is_authenticated_bounded_and_one_shot(web_server):
+    from harness import webapp
+
+    base, token, _ = web_server
+    body = {"items": [{"kind": "selection", "path": "src/app.ts", "startLine": 7,
+                       "endLine": 9, "content": "const value = 1;"}]}
+    code, denied = _json(base + "/api/ide/context", "POST", body)
+    assert code == 403 and denied["error"] == "forbidden"
+    code, saved = _json(base + "/api/ide/context?token=" + token, "POST", body)
+    assert code == 200 and len(saved["id"]) == 16
+    assert webapp.Handler._ide_context_take(saved["id"]) == body["items"]
+    assert webapp.Handler._ide_context_take(saved["id"]) is None
+
+    code, bounded = _json(base + "/api/ide/context?token=" + token, "POST", {
+        "items": [{"path": "too-large.ts", "content": "x" * 70_000}]})
+    assert code == 200
+    stored = webapp.Handler._ide_context_take(bounded["id"])
+    assert len(stored[0]["content"]) == 64_000
+
     class Sink:
         _send_json = webapp.Handler._send_json
 
@@ -304,9 +324,10 @@ def test_pending_approvals_snapshot_is_authenticated_and_only_lists_live_items(
         assert snapshot == {"approvals": [{
             "id": first.id, "session": "session-a", "tool": "browser_click",
             "body": "button: Publish v1.4.0", "title": "Publish release?",
-            "target": "https://example.test/release", "risk": "external write",
-            "rule_offer": "", "state": "pending",
-        }]}
+                "target": "https://example.test/release", "risk": "external write",
+                "rule_offer": "", "effect": "", "action": "",
+                "authorization_basis": "", "grant_options": [], "state": "pending",
+            }]}
     finally:
         webapp.Handler._inbox_close("session-a")
 
@@ -456,6 +477,13 @@ def test_vscode_embed_headers_require_the_exact_high_entropy_process_token(
     assert "frame-ancestors vscode-webview: https://*.vscode-cdn.net" in csp
     assert "frame-ancestors 'self'" not in csp
 
+    # The editor-area project map is the only additional reviewed IDE document.  It receives the
+    # same exact per-process check; this does not become a wildcard for the other HTML surfaces.
+    map_embedded = headers("/map?ide=1&vscode_embed=" + secret)
+    assert map_embedded.get("X-Frame-Options") is None
+    map_csp = map_embedded.get("Content-Security-Policy", "")
+    assert "frame-ancestors vscode-webview: https://*.vscode-cdn.net" in map_csp
+
     # The token grants no general header bypass: every non-index document remains same-origin.
     remote = headers("/remote?vscode_embed=" + secret)
     assert remote.get("X-Frame-Options") == "SAMEORIGIN"
@@ -553,6 +581,92 @@ def test_control_center_automation_and_memory_workflows_are_authenticated(web_se
     code, reviewed = _json(base + "/api/memory/review?token=" + token, "POST", {
         "memory_id": claim_id, "action": "attest", "note": "checked", "confirmed": True})
     assert code == 200 and reviewed["claim"]["status"] == "attested"
+
+
+def test_procedural_memory_api_requires_auth_and_explicit_review(web_server):
+    import time
+    from harness.procedure_memory import ProcedureMemory
+
+    base, token, state = web_server
+    project = str(state / "repo")
+    (state / "repo").mkdir()
+    with ProcedureMemory(str(state / "procedural-memory.db")) as store:
+        now = time.time()
+        for session, offset in (("a", 0), ("b", 100)):
+            store.observe(session=session, project=project, app="browser",
+                          action="browser_navigate", object_kind="web",
+                          object_ref="https://example.test/private?q=secret",
+                          observed_at=now + offset)
+            store.observe(session=session, project=project, app="terminal",
+                          action="shell", object_kind="command",
+                          object_ref="pytest --token secret", observed_at=now + offset + 1)
+
+    code, denied = _json(base + "/api/procedures")
+    assert code == 403 and denied["error"] == "forbidden"
+    code, found = _json(base + "/api/procedures/discover?token=" + token, "POST",
+                        {"project": project, "min_support": 2})
+    assert code == 200 and found["candidates"]
+    candidate_id = max(found["candidates"], key=lambda row: len(row["sequence"]))["candidate_id"]
+    code, refused = _json(base + "/api/procedures/review?token=" + token, "POST",
+                          {"id": candidate_id, "action": "accept"})
+    assert code == 409 and "confirmed=true" in refused["error"]
+    code, accepted = _json(base + "/api/procedures/review?token=" + token, "POST", {
+        "id": candidate_id, "action": "accept", "confirm": True})
+    assert code == 200 and accepted["candidate"]["status"] == "accepted"
+    code, snapshot = _json(base + "/api/procedures?token=" + token)
+    assert code == 200 and snapshot["guarantees"]["raw_sync"] is False
+    assert snapshot["workflows"][0]["authority_scope"] == "none"
+    assert "secret" not in json.dumps(snapshot["events"])
+
+
+def test_authority_grant_revoke_api_is_authenticated_and_exact(web_server):
+    from harness.authority import AuthorityStore, GrantScope
+
+    base, token, state = web_server
+    store = AuthorityStore(str(state / "authority.db"))
+    grant = store.add(scope=GrantScope.PROJECT, action="publish", project="collie")
+    store.close()
+    code, denied = _json(base + "/api/security/authority/revoke", "POST",
+                         {"id": grant.id, "confirmed": True})
+    assert code == 403 and denied["error"] == "forbidden"
+    code, removed = _json(base + "/api/security/authority/revoke?token=" + token, "POST",
+                          {"id": grant.id, "confirmed": True})
+    assert code == 200 and removed["removed"] is True
+
+
+def test_online_control_surface_is_authenticated_and_token_free(web_server):
+    base, token, _state = web_server
+    code, denied = _json(base + "/api/online")
+    assert code == 403 and denied["error"] == "forbidden"
+    code, value = _json(base + "/api/online?token=" + token)
+    assert code == 200 and value["mode"] == "local" and value["cloud_llm_default"] == "off"
+    assert "access_token" not in json.dumps(value) and "refresh_token" not in json.dumps(value)
+    code, denied = _json(base + "/api/online/action", "POST", {"action": "logout", "confirmed": True})
+    assert code == 403
+    code, local = _json(base + "/api/online/action?token=" + token, "POST",
+                        {"action": "logout", "confirmed": True})
+    assert code == 200 and local["mode"] == "local"
+
+
+def test_online_first_project_action_is_authenticated_and_bounded(web_server, monkeypatch):
+    from harness import onlinecontrol
+
+    base, token, _state = web_server
+    seen = {}
+
+    def fake_create(path, **values):
+        seen.update(values)
+        return {"ok": True, "project": {"project_id": "p1", "name": values["name"]}}
+
+    monkeypatch.setattr(onlinecontrol, "create_project", fake_create)
+    body = {"action": "create_project", "name": "Shared work",
+            "local_project": "collie", "memory_data_class": "sealed"}
+    code, denied = _json(base + "/api/online/action", "POST", body)
+    assert code == 403 and denied["error"] == "forbidden"
+    code, value = _json(base + "/api/online/action?token=" + token, "POST", body)
+    assert code == 200 and value["project"]["project_id"] == "p1"
+    assert seen == {"name": "Shared work", "local_project": "collie",
+                    "memory_data_class": "sealed", "cwd": ""}
 
 
 def test_specialist_tree_inspect_steer_cancel_and_no_task_leak(web_server, tmp_path):

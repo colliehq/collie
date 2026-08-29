@@ -306,7 +306,8 @@ var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New
   "Personal AI operations system":"个人 AI 运营系统","Your personal AI operations system":"你的个人 AI 运营系统",
   "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨文件、浏览器、桌面和长期任务持续工作。",
   "Ready":"就绪","Running":"运行中","Needs you":"等你决定","Connecting…":"连接中…","Loading…":"加载中…","Unavailable":"无法连接","Advanced":"高级设置",
-  "Approval required":"需要你的批准","Allow once":"仅允许一次","Always":"始终允许","Deny":"拒绝",
+  "Approval required":"需要你的批准","Allow once":"仅允许一次","Always":"本次运行内允许","Deny":"拒绝",
+  "This Mission":"本 Mission 内允许","This workflow":"此工作流内允许","This project":"此项目内允许","This connection":"此连接内允许",
   "Sending…":"正在发送…","Allowed":"已允许","Denied":"已拒绝","Already answered elsewhere":"已在其他设备处理",
   "Could not send":"发送失败，请重试","Continued elsewhere":"任务已从其他设备继续","Run ended":"任务已结束",
   "No chats yet":"还没有对话","Could not load chats":"无法加载对话","Could not open this chat":"无法打开此对话","Live run status unavailable":"实时运行状态不可用","From chat":"来自对话","turn":"轮","turns":"轮","Desktop is running…":"桌面正在运行…",
@@ -363,7 +364,8 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "Personal AI operations system":"個人 AI 營運系統","Your personal AI operations system":"你的個人 AI 營運系統",
   "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨檔案、瀏覽器、桌面和長期任務持續工作。",
   "Ready":"就緒","Running":"執行中","Needs you":"等你決定","Connecting…":"連線中…","Loading…":"載入中…","Unavailable":"無法連線","Advanced":"進階設定",
-  "Approval required":"需要你的核准","Allow once":"僅允許一次","Always":"永遠允許","Deny":"拒絕",
+  "Approval required":"需要你的核准","Allow once":"僅允許一次","Always":"本次執行內允許","Deny":"拒絕",
+  "This Mission":"本 Mission 內允許","This workflow":"此工作流程內允許","This project":"此專案內允許","This connection":"此連線內允許",
   "Sending…":"正在傳送…","Allowed":"已允許","Denied":"已拒絕","Already answered elsewhere":"已在其他裝置處理",
   "Could not send":"傳送失敗，請重試","Continued elsewhere":"任務已從其他裝置繼續","Run ended":"任務已結束",
   "No chats yet":"尚無對話","Could not load chats":"無法載入對話","Could not open this chat":"無法開啟此對話","Live run status unavailable":"即時執行狀態不可用","From chat":"來自對話","turn":"輪","turns":"輪","Desktop is running…":"桌面正在執行…",
@@ -703,8 +705,11 @@ function addPermission(data,sessionId){
   if(originSession&&originSession!==currentSession){var origin=document.createElement('div');origin.className='permission-body';origin.textContent=t('From chat')+' '+originSession.slice(0,8);card.appendChild(origin);}
   if(data.body){var body=document.createElement('div');body.className='permission-body';body.textContent=data.body;card.appendChild(body);}
   if(data.target){var target=document.createElement('div');target.className='permission-target';target.textContent=data.target;card.appendChild(target);}
-  var actions=document.createElement('div');actions.className='permission-actions'+(data.rule_offer?'':' two');
-  [{answer:'allow',label:t('Allow once'),cls:'allow'},{answer:'always',label:t('Always'),cls:'always',optional:true},{answer:'deny',label:t('Deny'),cls:'deny'}].forEach(function(spec){
+  var actions=document.createElement('div');actions.className='permission-actions';
+  var specs=[{answer:'allow',label:t('Allow once'),cls:'allow'},{answer:'always',label:t('Always'),cls:'always',optional:true}];
+  var labels={mission:'This Mission',workflow:'This workflow',project:'This project',connection:'This connection'};
+  (Array.isArray(data.grant_options)?data.grant_options:[]).forEach(function(scope){if(labels[scope])specs.push({answer:scope,label:t(labels[scope]),cls:'always'});});
+  specs.push({answer:'deny',label:t('Deny'),cls:'deny'});specs.forEach(function(spec){
     if(spec.optional&&!data.rule_offer)return;var b=document.createElement('button');b.type='button';b.className=spec.cls;b.textContent=spec.label;
     if(spec.answer==='always'&&data.rule_offer)b.title=String(data.rule_offer);b.onclick=function(){answerPermission(data.id,spec.answer);};actions.appendChild(b);
   });

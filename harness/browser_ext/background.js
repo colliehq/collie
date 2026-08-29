@@ -2,6 +2,9 @@
 // Long-polls the collie bridge for commands and runs them in the active tab using the user's
 // real, logged-in session. The continuous /poll fetch keeps the MV3 worker alive between commands.
 const BRIDGE = "http://127.0.0.1:8677";
+const EXTENSION_PERMISSIONS = (chrome.runtime.getManifest().permissions || []);
+const HAS_DEBUGGER_PERMISSION = EXTENSION_PERMISSIONS.includes("debugger") && !!chrome.debugger;
+const HAS_DOWNLOADS_PERMISSION = EXTENSION_PERMISSIONS.includes("downloads") && !!chrome.downloads;
 
 // --- spaces: one lane of work, one tab -----------------------------------------------------------
 // Every browser_* command names a SPACE (default "default") and each space owns its own tab, so two
@@ -92,8 +95,14 @@ function presenceState(name, rec) {
 
 async function sendPresence(name, rec) {
   if (!rec || rec.tabId == null || !(await tabExists(rec.tabId))) return;
-  try { await chrome.tabs.sendMessage(rec.tabId, { type: "collie:presence", state: presenceState(name, rec) }); }
-  catch (e) {}
+  const message = { type: "collie:presence", state: presenceState(name, rec) };
+  try { await chrome.tabs.sendMessage(rec.tabId, message); return; } catch (e) {}
+  // The store build has no always-on content script. Inject the visible presence/takeover sensor
+  // only into a tab the user has granted (activeTab or optional site access), then retry once.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: rec.tabId }, files: ["presence.js"] });
+    await chrome.tabs.sendMessage(rec.tabId, message);
+  } catch (e) {}
 }
 
 async function setSpacePresence(name, state, action, reason) {
@@ -166,6 +175,17 @@ async function tabExists(id) {
   try { await chrome.tabs.get(id); return true; } catch (e) { return false; }
 }
 
+async function closeOwnedTabs(rec) {
+  if (!rec || !rec.owned) return [];
+  const ids = [...new Set((Array.isArray(rec.ownedTabIds) ? rec.ownedTabIds : [rec.tabId])
+    .filter((id) => Number.isInteger(id)))];
+  const closed = [];
+  for (const id of ids) {
+    try { await chrome.tabs.remove(id); closed.push(id); } catch (e) {}
+  }
+  return closed;
+}
+
 // Is this tab already spoken for by ANOTHER space? Adopting one twice would recreate the collision
 // spaces exist to prevent, so the caller is told rather than quietly given a shared tab.
 async function spaceHolding(tabId, except) {
@@ -197,7 +217,7 @@ async function targetTab(create, opts) {
   } else {
     fresh = await chrome.tabs.create({ url: "about:blank", active: false });
   }
-  await setSpace(name, { tabId: fresh.id, owned: true });
+  await setSpace(name, { tabId: fresh.id, owned: true, ownedTabIds: [fresh.id] });
   return fresh;
 }
 
@@ -366,40 +386,115 @@ function pagePointLabel(labelText) {
           label: (el.getAttribute("aria-label") || labelText || "").trim().slice(0, 80) };
 }
 
-// Injected (MAIN world): show a visible pointer that GLIDES to (x,y) and pulses a ring — so you can
-// watch Collie operate the page instead of things just changing on their own. Self-contained.
-function pageCursor(x, y) {
-  const D = document, ID = "__collieCursor";
-  let c = D.getElementById(ID);
-  if (!c) {
-    c = D.createElement("div"); c.id = ID;
-    c.style.cssText = "position:fixed;left:0;top:0;z-index:2147483647;width:26px;height:26px;margin:-3px 0 0 -3px;" +
-      "pointer-events:none;opacity:0;will-change:transform,opacity;" +
-      "transition:transform .32s cubic-bezier(.22,.61,.36,1),opacity .25s;" +
-      "filter:drop-shadow(0 1px 3px rgba(0,0,0,.5));" +
-      "background:center/contain no-repeat url(\"data:image/svg+xml;utf8," +
-      "<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 24 24'>" +
-      "<path d='M4 2l6.5 17 2.4-6.8L20 9.5z' fill='%23ffffff' stroke='%23202020' stroke-width='1.4' stroke-linejoin='round'/></svg>\")";
-    (D.body || D.documentElement).appendChild(c);
+// Injected (MAIN world): move a page-isolated visible pointer to (x,y), and resolve only after it
+// ARRIVES. Short moves use a compact eased "scoot"; long moves follow a viewport-bounded asymmetric
+// Bézier curve. Small bounded variations in tempo and bend keep repeated motions from looking
+// mechanical, while the final sample always lands on the exact target. The physical CDP click waits
+// for this promise, so the visible hand and the actual input no
+// longer disagree.  This is intentionally self-contained because chrome.scripting serializes only
+// this function body.
+async function pageCursor(x, y, pulse) {
+  const D = document, ID = "__collieCursorHostV2";
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || 0));
+  const rand = () => {
+    try {
+      const sample = new Uint32Array(1);
+      crypto.getRandomValues(sample);
+      return sample[0] / 4294967296;
+    } catch (e) { return Math.random(); }
+  };
+  x = clamp(x, 0, innerWidth); y = clamp(y, 0, innerHeight);
+  let host = D.getElementById(ID), state = host && host.__collieCursorState;
+  if (!host || !host.isConnected || !state || !state.cursor || !state.root) {
+    if (host) host.remove();
+    host = D.createElement("div"); host.id = ID;
+    host.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
+    const root = host.attachShadow({ mode: "closed" });
+    const cursor = D.createElement("div");
+    cursor.style.cssText = "position:absolute;left:0;top:0;width:26px;height:28px;opacity:0;" +
+      "pointer-events:none;will-change:transform,opacity,filter;transform-origin:4px 3px;" +
+      "filter:drop-shadow(0 1px 2px rgba(0,0,0,.62)) drop-shadow(0 0 8px rgba(48,180,127,.36));";
+    cursor.innerHTML = "<svg xmlns='http://www.w3.org/2000/svg' width='26' height='28' viewBox='0 0 26 28' aria-hidden='true'>" +
+      "<path d='M3 2.5 11.2 24l3.15-8.35 8.25-3.45z' fill='white' stroke='#111715' stroke-width='1.65' stroke-linejoin='round'/></svg>";
+    root.appendChild(cursor); (D.documentElement || D.body).appendChild(host);
+    state = { root, cursor, x: Math.round(innerWidth * .58), y: Math.round(innerHeight * .55),
+              raf: 0, finish: null, sequence: 0, fade: 0 };
+    try { Object.defineProperty(host, "__collieCursorState", { value: state }); }
+    catch (e) { host.__collieCursorState = state; }
   }
-  requestAnimationFrame(function () { c.style.opacity = "1"; c.style.transform = "translate(" + x + "px," + y + "px)"; });
-  setTimeout(function () {                                   // click ring, timed to when the pointer arrives
-    const r = D.createElement("div");
-    r.style.cssText = "position:fixed;left:" + x + "px;top:" + y + "px;z-index:2147483646;width:16px;height:16px;" +
-      "margin:-8px 0 0 -8px;border-radius:50%;pointer-events:none;border:2px solid rgba(70,200,140,.95);" +
-      "transform:scale(.3);opacity:1;transition:transform .5s ease-out,opacity .5s;";
-    (D.body || D.documentElement).appendChild(r);
-    requestAnimationFrame(function () { r.style.transform = "scale(2.6)"; r.style.opacity = "0"; });
-    setTimeout(function () { r.remove(); }, 520);
-  }, 300);
-  // MAIN and isolated extension worlds share the DOM but not JS globals.  A
-  // DOM stamp prevents an older world's timer from hiding a newer movement.
-  const stamp = String(Date.now()) + Math.random();
-  c.setAttribute("data-collie-move", stamp);
-  setTimeout(function () {
-    if (c.getAttribute("data-collie-move") === stamp) c.style.opacity = "0";
-  }, 2600);
-  return true;
+  state.sequence += 1;
+  const sequence = state.sequence;
+  if (state.raf) cancelAnimationFrame(state.raf);
+  if (state.finish) { state.finish(false); state.finish = null; }
+  if (state.fade) clearTimeout(state.fade);
+  const sx = state.x, sy = state.y, dx = x - sx, dy = y - sy;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const tempo = .88 + rand() * .24;
+  const duration = Math.max(165, Math.min(650, (150 + distance * .34) * tempo));
+  const curved = distance > 190;
+  const sign = rand() < .5 ? 1 : -1;
+  const bend = (curved
+    ? Math.min(124, Math.max(30, distance * (.13 + rand() * .10)))
+    : Math.min(10, Math.max(1.5, distance * (.025 + rand() * .035)))) * sign;
+  const length = distance || 1, nx = -dy / length, ny = dx / length;
+  const cx = clamp((sx + x) / 2 + nx * bend, 18, Math.max(18, innerWidth - 18));
+  const cy = clamp((sy + y) / 2 + ny * bend, 18, Math.max(18, innerHeight - 18));
+  const tail = .34 + rand() * .42;
+  const c1x = clamp(sx + dx * .30 + nx * bend, 18, Math.max(18, innerWidth - 18));
+  const c1y = clamp(sy + dy * .30 + ny * bend, 18, Math.max(18, innerHeight - 18));
+  const c2x = clamp(sx + dx * .72 + nx * bend * tail, 18, Math.max(18, innerWidth - 18));
+  const c2y = clamp(sy + dy * .72 + ny * bend * tail, 18, Math.max(18, innerHeight - 18));
+  state.cursor.style.opacity = "1";
+  const landed = await new Promise((resolve) => {
+    state.finish = resolve;
+    const began = performance.now();
+    const frame = (now) => {
+      if (sequence !== state.sequence) return resolve(false);
+      const raw = Math.min(1, Math.max(0, (now - began) / duration));
+      // A critically damped-looking ease. It stops exactly at the target rather than wobbling over
+      // the control, which keeps the visual arrival receipt honest.
+      const t = 1 - Math.pow(1 - raw, 3);
+      let px, py, tx, ty;
+      if (curved) {
+        const q = 1 - t;
+        px = q * q * q * sx + 3 * q * q * t * c1x + 3 * q * t * t * c2x + t * t * t * x;
+        py = q * q * q * sy + 3 * q * q * t * c1y + 3 * q * t * t * c2y + t * t * t * y;
+        tx = 3 * q * q * (c1x - sx) + 6 * q * t * (c2x - c1x) + 3 * t * t * (x - c2x);
+        ty = 3 * q * q * (c1y - sy) + 6 * q * t * (c2y - c1y) + 3 * t * t * (y - c2y);
+      } else {
+        const q = 1 - t;
+        px = q * q * sx + 2 * q * t * cx + t * t * x;
+        py = q * q * sy + 2 * q * t * cy + t * t * y;
+        tx = 2 * q * (cx - sx) + 2 * t * (x - cx);
+        ty = 2 * q * (cy - sy) + 2 * t * (y - cy);
+      }
+      const angle = distance < .5 ? 0 : Math.max(-26, Math.min(26, Math.atan2(ty, tx) * 180 / Math.PI * .18));
+      const stretch = 1 + Math.sin(raw * Math.PI) * Math.min(.14, distance / 4200);
+      state.cursor.style.transform = "translate3d(" + (px - 3).toFixed(2) + "px," +
+        (py - 3).toFixed(2) + "px,0) rotate(" + angle.toFixed(2) + "deg) scale(" +
+        stretch.toFixed(3) + "," + (2 - stretch).toFixed(3) + ")";
+      state.x = px; state.y = py;
+      if (raw < 1) state.raf = requestAnimationFrame(frame);
+      else { state.raf = 0; state.x = x; state.y = y; state.finish = null; resolve(true); }
+    };
+    state.raf = requestAnimationFrame(frame);
+  });
+  if (landed && pulse !== false && sequence === state.sequence) {
+    const ring = D.createElement("div");
+    ring.style.cssText = "position:absolute;left:" + x + "px;top:" + y + "px;width:16px;height:16px;" +
+      "margin:-8px 0 0 -8px;border-radius:50%;pointer-events:none;border:2px solid rgba(54,190,132,.95);" +
+      "transform:scale(.3);opacity:1;transition:transform .48s ease-out,opacity .48s;";
+    state.root.appendChild(ring);
+    requestAnimationFrame(() => { ring.style.transform = "scale(2.7)"; ring.style.opacity = "0"; });
+    setTimeout(() => ring.remove(), 520);
+  }
+  // Keep the pointer parked long enough for a human to see where Collie landed and for a
+  // subsequent screenshot to record it.  The next action cancels this timer and moves the same
+  // pointer, so this does not add latency or leave a trail of stale cursors.
+  state.fade = setTimeout(() => {
+    if (sequence === state.sequence && state.cursor) state.cursor.style.opacity = "0";
+  }, 6000);
+  return { arrived: landed, x, y, path: curved ? "curve" : "scoot", duration: Math.round(duration) };
 }
 
 function pageType(selector, text, submit) {
@@ -1052,6 +1147,56 @@ function pageAdvanceInfo(ref) {
   return { allowed: true, label, role, tag, href: href.slice(0, 300), editable };
 }
 
+// Describe the effect of an exact snapshot ref without clicking it. The host's
+// Authority v2 gate uses this read-only preflight so a bare ref such as `e7` does
+// not hide whether the control means Open menu, Send, Buy, or CAPTCHA. Keep it
+// self-contained: chrome.scripting serializes only this function body.
+function pageIntentInfo(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected)
+    return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+  const label = (el.getAttribute("aria-label") || el.innerText || el.value ||
+                 el.getAttribute("title") || ref || "").trim().slice(0, 160);
+  const role = (el.getAttribute("role") || "").toLowerCase();
+  const tag = (el.tagName || "").toLowerCase();
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  const link = tag === "a" ? el : (el.closest ? el.closest("a") : null);
+  const href = link ? String(link.getAttribute("href") || link.href || "") : "";
+  const meta = [label, role, tag, type, href, el.id || "", el.getAttribute("name") || "",
+                el.getAttribute("data-testid") || ""].join(" ");
+  const base = { label, role, tag, type, href: href.slice(0, 300) };
+  if (el.disabled || el.getAttribute("aria-disabled") === "true")
+    return Object.assign(base, { error: "ref " + ref + " is disabled" });
+  if (/(captcha|recaptcha|hcaptcha|human.?verification|verify.?you.?are.?human|security.?challenge)/i.test(meta))
+    return Object.assign(base, { effect: "restricted", action: "person_verification",
+                                 reason: "CAPTCHA or human verification requires Needs You" });
+  if (/(pay|buy|purchase|checkout|place\s+order|subscribe|付款|支付|购买|購買|结账|結帳|下单|下單|订阅|訂閱)/i.test(meta))
+    return Object.assign(base, { effect: "restricted", action: "purchase",
+                                 reason: "spending requires a bounded grant" });
+  if (/(change|reset).{0,20}(password|passkey|mfa|2fa)|grant.{0,12}admin|修改密码|修改密碼|重置密码|重設密碼|管理员|管理員/i.test(meta))
+    return Object.assign(base, { effect: "restricted", action: "security_change",
+                                 reason: "account security changes require the person" });
+  if (link && (link.hasAttribute("download") ||
+      /(?:^|\b)(download|export|save\s+(?:file|copy)|下载|下載|导出|匯出)(?:\b|$)/i.test(meta)))
+    return Object.assign(base, { effect: "commit", action: "download", reversible: true });
+  if (type === "file")
+    return Object.assign(base, { effect: "commit", action: "upload", reversible: false });
+  let action = "";
+  if (/(?:^|\b)(send)(?:\b|$)|发送|發送|发给|發給/i.test(label)) action = "send";
+  else if (/(?:^|\b)(publish|post|release|deploy)(?:\b|$)|发布|發佈|发帖|發帖|上线|上線/i.test(label)) action = "publish";
+  else if (/(?:^|\b)(submit|save|confirm|apply)(?:\b|$)|提交|保存|确认|確認|申请|申請/i.test(label)) action = "submit";
+  else if (/(?:^|\b)merge(?:\b|$)|合并|合併/i.test(label)) action = "merge";
+  else if (/(?:^|\b)invite(?:\b|$)|邀请|邀請/i.test(label)) action = "invite";
+  else if (/(?:^|\b)(delete|remove|unsubscribe|deactivate)(?:\b|$)|删除|刪除|移除|退订|退訂/i.test(label)) action = "delete";
+  else if (/(?:^|\b)(register|sign\s*up|create\s+(?:an?\s+)?account)(?:\b|$)|注册|註冊|创建账号|建立帳號/i.test(label)) action = "register";
+  else if (/(?:^|\b)(authorize|approve|grant\s+access|allow\s+access)(?:\b|$)|授权|授權|批准/i.test(label)) action = "grant_access";
+  if (!action && href && /(?:^|[/?&=])(?:logout|signout|unsubscribe|delete|remove|deactivate|activate|verify|confirm)(?:[/?&=]|$)/i.test(href))
+    action = "submit";
+  if (action) return Object.assign(base, { effect: "commit", action, reversible: false });
+  return Object.assign(base, { effect: "prepare", action: "navigate", reversible: true });
+}
+
 function pageTypeRef(ref, text, submit) {
   const m = window.__collieRefs;
   const el = m && m.get ? m.get(ref) : null;
@@ -1268,8 +1413,9 @@ async function evalExpr(expr) {
 // - session overrides live in storage.session   (cleared when the browser closes = "just this session")
 // Off only when EXPLICITLY disabled (popup, `mode` command, or dismissing the debug banner).
 async function trustedGlobal() {
+  if (!HAS_DEBUGGER_PERMISSION) return false;
   try { const s = await chrome.storage.local.get("trustedInput"); return s.trustedInput !== false; }
-  catch (e) { return true; }
+  catch (e) { return HAS_DEBUGGER_PERMISSION; }
 }
 function originOf(tab) { try { return new URL(tab.url).origin; } catch (e) { return ""; } }
 
@@ -1298,6 +1444,7 @@ async function setSiteMode(origin, scope) {
 }
 
 function dbgAttach(tabId) {
+  if (!HAS_DEBUGGER_PERMISSION) return Promise.reject(new Error("high-fidelity input is available only in the local Power build"));
   return new Promise((resolve, reject) => {
     chrome.debugger.attach({ tabId }, "1.3", () => {
       const e = chrome.runtime.lastError;
@@ -1306,6 +1453,7 @@ function dbgAttach(tabId) {
   });
 }
 function dbgSend(tabId, method, params) {
+  if (!HAS_DEBUGGER_PERMISSION) return Promise.reject(new Error("Chrome debugger permission is not available in this build"));
   return new Promise((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params || {}, (res) => {
       const e = chrome.runtime.lastError;
@@ -1314,6 +1462,7 @@ function dbgSend(tabId, method, params) {
   });
 }
 function dbgDetach(tabId) {
+  if (!HAS_DEBUGGER_PERMISSION) return Promise.resolve();
   return new Promise((resolve) => {
     try { chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(); }); }
     catch (e) { resolve(); }
@@ -1323,7 +1472,7 @@ function dbgDetach(tabId) {
 // steady banner instead of a flashing one, and faster. onDetach fires when the tab closes OR the user
 // clicks the banner's "Cancel": we treat an explicit cancel as "turn high-fidelity off" and respect it.
 let dbgTab = null;
-chrome.debugger.onDetach.addListener((src, reason) => {
+if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onDetach.addListener((src, reason) => {
   if (src && src.tabId === dbgTab) dbgTab = null;
   // Every child session died with the attachment; keeping their ids would hand out dead handles.
   if (src && src.tabId != null) frameSessions.delete(src.tabId);
@@ -1467,7 +1616,7 @@ async function trustedChooseUpload(ref, text, selector, paths) {
 const frameSessions = new Map();       // tabId -> Map(targetId -> {sessionId, targetId, url})
 let frameIndex = null;                 // { tabId, frames: [{tag, sessionId, targetId, url}] }
 
-chrome.debugger.onEvent.addListener((src, method, params) => {
+if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onEvent.addListener((src, method, params) => {
   if (!src || src.tabId == null || !params) return;
   if (method === "Target.attachedToTarget" && params.sessionId) {
     const info = params.targetInfo || {};
@@ -1676,6 +1825,7 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
       if (pt2 && !pt2.error && pt2.inView) pt = pt2;
       const x = off.x + pt.x, y = off.y + pt.y;
       try {
+        try { await execMain(pageCursor, [x, y, true]); } catch (e) {}
         await agentInput(tabId, kind === "type" ? 2000 : 1400);
         await ensureAttached(tabId);
         const b = { x, y, button: "left" };
@@ -1780,7 +1930,7 @@ async function trustedClick(text, selector) {
   const pt = await exec(pagePoint, [text || "", selector || ""]);
   if (!pt || pt.error) return pt || { error: "no element for " + (selector || text) };
   if (!pt.inView) return { error: "element found but off-screen after scroll — cannot place a real click there" };
-  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
+  try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}  // wait for the visible hand to arrive
   try {
     await agentInput(tab.id);
     await ensureAttached(tab.id);
@@ -1808,7 +1958,7 @@ async function trustedType(selector, text, submit) {
   const pt = await exec(pagePoint, ["", selector]);
   if (!pt || pt.error) return pt || { error: "no field " + selector };
   if (!pt.inView) return { error: "field '" + selector + "' off-screen after scroll — cannot type there" };
-  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
+  try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
   try {
     await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
@@ -1845,7 +1995,7 @@ async function trustedTypeLabel(label, text, submit) {
   const pt = await exec(pagePointLabel, [label]);
   if (!pt || pt.error) return pt || { error: "no field labeled " + label };
   if (!pt.inView) return { error: "field '" + label + "' off-screen after scroll — cannot type there" };
-  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
+  try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
   try {
     await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
@@ -1882,7 +2032,7 @@ async function trustedClickRef(ref) {
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no element for ref " + ref };
   if (!pt.inView) return { error: "element " + ref + " off-screen after scroll — cannot place a real click there" };
-  try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
+  try { await execMain(pageCursor, [pt.x, pt.y, true]); } catch (e) {}  // wait for the visible hand to arrive
   try {
     await agentInput(tab.id);
     await ensureAttached(tab.id);
@@ -1928,7 +2078,7 @@ async function trustedTypeRef(ref, text, submit) {
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no field for ref " + ref };
   if (!pt.inView) return { error: "field " + ref + " off-screen after scroll — cannot type there" };
-  try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
+  try { await execMain(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
   try {
     await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
@@ -2154,7 +2304,7 @@ async function doHover(target) {
     try {
       await agentInput(tab.id);
       await ensureAttached(tab.id);
-      await execMain(pageCursor, [pt.x, pt.y]);
+      await execMain(pageCursor, [pt.x, pt.y, false]);
       await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: pt.x, y: pt.y, buttons: 0 });
       await sleep(350);                       // menus open on a timer; give it one
       return { hovered: pt.label, trusted: true };
@@ -2219,8 +2369,7 @@ async function doClickAt(x, y) {
   try {
     await agentInput(tab.id);
     await ensureAttached(tab.id);
-    await execMain(pageCursor, [x, y]);
-    await sleep(320);
+    await execMain(pageCursor, [x, y, true]);
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: x, y: y, buttons: 0 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mousePressed", x: x, y: y, button: "left", buttons: 1, clickCount: 1 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseReleased", x: x, y: y, button: "left", buttons: 0, clickCount: 1 });
@@ -2337,6 +2486,140 @@ function pageViewport() {
   return { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 };
 }
 
+// Downloads are browser-owned I/O, so a successful DOM click proves only that the request was
+// dispatched.  Listen before the click, then follow the concrete Chrome download item through
+// complete/interrupted.  This is the same distinction uploads already make between "attached" and
+// "submitted": no more reporting a file as downloaded merely because a link accepted a click.
+function startDownloadWatch() {
+  if (!HAS_DOWNLOADS_PERMISSION || !chrome.downloads.onCreated) return null;
+  let finish = null, stopped = false;
+  const promise = new Promise((resolve) => { finish = resolve; });
+  const listener = (item) => {
+    if (stopped || !item || !Number.isInteger(item.id)) return;
+    stopped = true;
+    try { chrome.downloads.onCreated.removeListener(listener); } catch (e) {}
+    finish(item);
+  };
+  chrome.downloads.onCreated.addListener(listener);
+  return {
+    promise,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      try { chrome.downloads.onCreated.removeListener(listener); } catch (e) {}
+      finish(null);
+    }
+  };
+}
+
+// A click can legitimately continue in a new tab (OAuth, checkout, documentation, social compose).
+// Watch only while an agent click is in flight and only accept a tab whose opener is the exact tab
+// this space owns.  A global "latest tab wins" listener would let an unrelated user-created tab
+// steal the agent lane.
+function startChildTabWatch(parentTabId) {
+  if (parentTabId == null || !chrome.tabs || !chrome.tabs.onCreated) return null;
+  let finish = null, stopped = false, expiry = 0, tabListener = null, navigationListener = null;
+  const promise = new Promise((resolve) => { finish = resolve; });
+  const cleanup = () => {
+    if (expiry) clearTimeout(expiry);
+    try { if (tabListener) chrome.tabs.onCreated.removeListener(tabListener); } catch (e) {}
+    try {
+      if (navigationListener && chrome.webNavigation && chrome.webNavigation.onCreatedNavigationTarget)
+        chrome.webNavigation.onCreatedNavigationTarget.removeListener(navigationListener);
+    } catch (e) {}
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    cleanup();
+    finish(null);
+  };
+  const accept = async (tabId, known) => {
+    if (stopped || !Number.isInteger(tabId)) return;
+    stopped = true;
+    cleanup();
+    if (known) return finish(known);
+    try { finish(await chrome.tabs.get(tabId)); } catch (e) { finish(null); }
+  };
+  tabListener = (tab) => {
+    if (tab && tab.openerTabId === parentTabId) accept(tab.id, tab);
+  };
+  navigationListener = (details) => {
+    if (details && details.sourceTabId === parentTabId) accept(details.tabId, null);
+  };
+  chrome.tabs.onCreated.addListener(tabListener);
+  if (chrome.webNavigation && chrome.webNavigation.onCreatedNavigationTarget)
+    chrome.webNavigation.onCreatedNavigationTarget.addListener(navigationListener);
+  expiry = setTimeout(stop, 2500);
+  return {
+    parentTabId,
+    promise,
+    stop
+  };
+}
+
+async function finishChildTabWatch(watch, timeoutMs, spaceName) {
+  if (!watch) return null;
+  const timer = new Promise((resolve) => setTimeout(() => resolve(null), Math.max(100, timeoutMs || 1000)));
+  const child = await Promise.race([watch.promise, timer]);
+  watch.stop();
+  if (!child) return null;
+  const rec = await getSpace(spaceName);
+  if (!rec || rec.tabId !== watch.parentTabId || rec.paused) return null;
+  const held = await spaceHolding(child.id, spaceName);
+  if (held) return { error: "new tab is already held by space '" + held + "'" };
+  rec.tabId = child.id;
+  rec.openedFrom = watch.parentTabId;
+  // When Collie created the parent, every child produced by its own click belongs to the same
+  // disposable lane.  Keep the lineage so finalize closes all of it, not just the newest tab.
+  if (rec.owned) {
+    const ids = Array.isArray(rec.ownedTabIds) ? rec.ownedTabIds : [watch.parentTabId];
+    rec.ownedTabIds = [...new Set(ids.concat([child.id]))];
+  }
+  await setSpace(spaceName, rec);
+  await sendPresence(spaceName, rec);
+  const deadline = Date.now() + 10000;
+  let live = child;
+  while (live && live.status !== "complete" && Date.now() < deadline) {
+    await sleep(120);
+    try { live = await chrome.tabs.get(child.id); } catch (e) { live = null; }
+  }
+  return { adopted: true, tab_id: child.id, opener_tab_id: watch.parentTabId,
+           title: (live && live.title) || child.title || "",
+           url: (live && live.url) || child.url || "" };
+}
+
+async function finishDownloadWatch(watch, timeoutMs) {
+  if (!watch) return { observed: false, status: "unavailable",
+                       note: "the extension has no downloads permission" };
+  const timer = new Promise((resolve) => setTimeout(() => resolve(null), Math.max(500, timeoutMs || 5000)));
+  let item = await Promise.race([watch.promise, timer]);
+  watch.stop();
+  if (!item) return { observed: false, status: "not_observed",
+                      note: "the click produced no Chrome download item" };
+  const deadline = Date.now() + 10000;
+  while (item.state === "in_progress" && Date.now() < deadline) {
+    await sleep(120);
+    try {
+      const rows = await chrome.downloads.search({ id: item.id });
+      if (rows && rows[0]) item = rows[0];
+    } catch (e) { break; }
+  }
+  const out = {
+    observed: true,
+    id: item.id,
+    status: item.state || "unknown",
+    filename: String(item.filename || "").slice(0, 1000),
+    bytes_received: Number(item.bytesReceived) || 0,
+    total_bytes: Number(item.totalBytes) || 0,
+    exists: item.exists !== false,
+    danger: item.danger || "unknown"
+  };
+  if (item.error) out.error = item.error;
+  if (item.state === "in_progress") out.note = "download started but did not finish within 10 seconds";
+  return out;
+}
+
 // Decide trusted vs synthetic for THIS step: a command can force it (trusted:true/false), otherwise
 // resolve the per-origin authorization (session -> permanent -> global default ON).
 async function wantTrusted(cmd) {
@@ -2349,7 +2632,7 @@ async function wantTrusted(cmd) {
 async function syntheticClick(text, selector) {
   const pt = await exec(pagePoint, [text || "", selector || ""]);
   if (pt && !pt.error && pt.inView) {
-    try { await exec(pageCursor, [pt.x, pt.y]); await sleep(320); } catch (e) {}
+    try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
   }
   return await exec(pageClick, [text || "", selector || ""]);
 }
@@ -2357,7 +2640,7 @@ async function syntheticClick(text, selector) {
 async function syntheticClickRef(ref) {
   const pt = await execMain(pagePointRef, [ref]);
   if (pt && !pt.error && pt.inView) {
-    try { await execMain(pageCursor, [pt.x, pt.y]); await sleep(320); } catch (e) {}
+    try { await execMain(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
   }
   return await execMain(pageClickRef, [ref]);
 }
@@ -2368,7 +2651,7 @@ async function syntheticType(ref, selector, label, text, submit) {
   else if (label) pt = await exec(pagePointLabel, [label]);
   else if (selector) pt = await exec(pagePoint, ["", selector]);
   if (pt && !pt.error && pt.inView) {
-    try { await (ref ? execMain(pageCursor, [pt.x, pt.y]) : exec(pageCursor, [pt.x, pt.y])); await sleep(320); }
+    try { await (ref ? execMain(pageCursor, [pt.x, pt.y, true]) : exec(pageCursor, [pt.x, pt.y, true])); }
     catch (e) {}
   }
   if (ref) return await execMain(pageTypeRef, [ref, text, !!submit]);
@@ -2454,8 +2737,8 @@ async function runStep(cmd) {
       if (cmd.close) {
         if (!rec.owned) return { released: true, closed: false,
                                  note: "the claim on that tab is dropped, but it was YOUR tab, not one collie opened, so it was left open" };
-        try { await chrome.tabs.remove(rec.tabId); } catch (e) {}
-        return { released: true, closed: true };
+        const closed = await closeOwnedTabs(rec);
+        return { released: true, closed: closed.length > 0, closed_tab_ids: closed };
       }
       return { released: true, closed: false };
     }
@@ -2492,11 +2775,13 @@ async function runStep(cmd) {
     }
     if (cmd.action === "scroll") return await execMain(pageScroll, [cmd.to || "", cmd.by || 0, cmd.ref || ""]);
     if (cmd.action === "mode") {   // read/set high-fidelity input from the bridge/CLI
-      if (typeof cmd.trusted === "boolean") await chrome.storage.local.set({ trustedInput: cmd.trusted });
+      if (typeof cmd.trusted === "boolean" && HAS_DEBUGGER_PERMISSION)
+        await chrome.storage.local.set({ trustedInput: cmd.trusted });
       if (cmd.origin && cmd.scope) await setSiteMode(cmd.origin, cmd.scope);
       const t = await targetTab(false);
       const origin = t ? originOf(t) : "";
-      return { global: await trustedGlobal(), origin, effective: await trustedForOrigin(origin),
+      return { available: HAS_DEBUGGER_PERMISSION, global: await trustedGlobal(), origin,
+               effective: await trustedForOrigin(origin),
                configured_origin: cmd.origin || "",
                configured_effective: cmd.origin ? await trustedForOrigin(cmd.origin) : undefined };
     }
@@ -2508,16 +2793,28 @@ async function runStep(cmd) {
     if (cmd.action === "drag")
       return await doDrag(cmd.from || {}, cmd.to || {}, cmd.steps);
     if (cmd.action === "click") {
+      const clickTab = await activeTab();
+      const childWatch = startChildTabWatch(clickTab && clickTab.id);
       // A point on the screen is its own addressing mode — for a canvas, a map, a chart, anything
       // whose target is not an element. The reply says what was under the point, because otherwise
       // "clicked (400,300)" is a claim with nothing behind it.
       if (typeof cmd.x === "number" && typeof cmd.y === "number" && !cmd.ref && !cmd.text && !cmd.selector) {
         const r = await doClickAt(cmd.x, cmd.y);
         await sleep(600);
-        return { click: r, page: await exec(pageRead, []) };
+        const child = await finishChildTabWatch(childWatch, 150, curSpace);
+        const out = { click: r, page: await exec(pageRead, []) };
+        if (child) out.opened_tab = child;
+        return out;
       }
       let r;
       const fref = splitFrameRef(cmd.ref);
+      let downloadWatch = null;
+      if (cmd.ref && !fref) {
+        try {
+          const intent = await execMain(pageIntentInfo, [cmd.ref]);
+          if (intent && intent.action === "download") downloadWatch = startDownloadWatch();
+        } catch (e) {}
+      }
       if (fref) {                                     // a ref from inside a cross-origin iframe
         const tab = await activeTab();
         if (!tab) return { error: NO_TAB };
@@ -2529,7 +2826,11 @@ async function runStep(cmd) {
                                      : await syntheticClick(cmd.text || "", cmd.selector || "");
       }
       await sleep(800);
-      return { click: r, page: await exec(pageRead, []) };
+      const child = await finishChildTabWatch(childWatch, 150, curSpace);
+      const out = { click: r, page: await exec(pageRead, []) };
+      if (child) out.opened_tab = child;
+      if (downloadWatch) out.download = await finishDownloadWatch(downloadWatch, 5000);
+      return out;
     }
     if (cmd.action === "advance") {
       if (!cmd.ref || splitFrameRef(cmd.ref))
@@ -2537,11 +2838,22 @@ async function runStep(cmd) {
       const info = await execMain(pageAdvanceInfo, [cmd.ref]);
       if (!info || info.error || !info.allowed)
         return { advance: info || { error: "could not classify the target" } };
+      const advanceTab = await activeTab();
+      const childWatch = startChildTabWatch(advanceTab && advanceTab.id);
       const clicked = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref)
                                                : await syntheticClickRef(cmd.ref);
       await sleep(500);
       if (clicked && clicked.error) return { advance: clicked };
-      return { advance: Object.assign({}, info, clicked || {}), page: await exec(pageRead, []) };
+      const child = await finishChildTabWatch(childWatch, 150, curSpace);
+      const out = { advance: Object.assign({}, info, clicked || {}), page: await exec(pageRead, []) };
+      if (child) out.opened_tab = child;
+      return out;
+    }
+    if (cmd.action === "intent") {
+      if (!cmd.ref || splitFrameRef(cmd.ref))
+        return { intent: { error: "intent preflight currently requires a top-page snapshot ref" } };
+      const info = await execMain(pageIntentInfo, [cmd.ref]);
+      return { intent: info || { error: "could not classify the target" } };
     }
     if (cmd.action === "type") {
       let r;
@@ -2698,10 +3010,12 @@ async function handle(cmd) {
     if (!rec) return { finalized: false, note: "space '" + curSpace + "' has no tab" };
     await dropSpace(curSpace);
     let closed = false;
+    let closedTabIds = [];
     if (cmd.close_owned && rec.owned) {
-      try { await chrome.tabs.remove(rec.tabId); closed = true; } catch (e) {}
+      closedTabIds = await closeOwnedTabs(rec);
+      closed = closedTabIds.length > 0;
     }
-    return { finalized: true, released: true, closed,
+    return { finalized: true, released: true, closed, closed_tab_ids: closedTabIds,
              note: rec.owned ? (closed ? "Collie's tab was closed" : "Collie's tab was left open")
                              : "Your tab was released and left open" };
   }

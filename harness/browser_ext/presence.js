@@ -2,6 +2,7 @@
 // This runs in Chrome's isolated extension world: the page cannot call these
 // handlers or forge a trusted Resume. Resume exists only in extension UI.
 (() => {
+  if (document.getElementById("__colliePresenceHost")) return;
   let current = null;
   let suppressUntil = 0;
   let lastTakeover = 0;

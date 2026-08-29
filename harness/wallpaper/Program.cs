@@ -374,7 +374,10 @@ class CollieWallpaper : Form
             Form f = new Form();
             f.Text = "Collie";
             f.StartPosition = FormStartPosition.CenterScreen;
-            f.ClientSize = new Size(1100, 780);
+            // The Map's project selector plus source drawer needs a real editor-sized surface. The
+            // old 1100px child window forced both controls and a remembered 600px drawer into half a
+            // canvas, which looked like a broken split view even though WebGL was healthy.
+            f.ClientSize = new Size(1280, 820);
             f.BackColor = Color.Black;
             f.Icon = AppIcon();
             WebView2 w = new WebView2();

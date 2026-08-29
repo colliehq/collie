@@ -638,7 +638,9 @@ class Harness:
         if d.allowed:
             if d.rule:
                 self._emit("gate", name=tc.name, decision="allowed", rule=d.rule,
-                           risk=d.risk)
+                           risk=d.risk, effect=d.effect, action=d.action,
+                           authorization_basis=d.authorization_basis,
+                           notify=d.notify)
             # Consequential AND unprompted is the case the audit exists for: the row has to
             # be able to answer "why was I not asked about that?". Reads are not recorded —
             # they have no side effect to account for, and drowning the log in them is how
@@ -669,7 +671,9 @@ class Harness:
 
         d.call_id = tc.id           # the idempotency key a parked approval is filed under
         self._emit("gate", name=tc.name, decision="asking", risk=d.risk,
-                   target=d.target, reason=d.reason, rule_offer=d.rule_offer)
+                   target=d.target, reason=d.reason, rule_offer=d.rule_offer,
+                   effect=d.effect, action=d.action,
+                   grant_options=list(d.grant_options or ()))
         try:
             outcome = self.approve(tc.name, tc.args, d)
         except Exception as e:
@@ -699,7 +703,7 @@ class Harness:
                        risk=d.risk, target=d.target)
             return reason
         try:
-            self.gate.apply_outcome(outcome, tc.name, d.target)
+            self.gate.apply_outcome(outcome, tc.name, d.target, decision=d)
         except Exception as exc:
             reason = "the permission decision could not be persisted (%s: %s)" % (
                 type(exc).__name__, exc)
@@ -725,7 +729,10 @@ class Harness:
                 cwd=self.cwd, tool=tc.name, risk=decision.risk,
                 target=decision.target or "", stage=stage, outcome=outcome,
                 reason=reason if reason is not None else decision.reason,
-                rule=decision.rule, args=tc.args)
+                rule=decision.rule, args=tc.args,
+                effect=getattr(decision, "effect", ""),
+                action=getattr(decision, "action", ""),
+                authorization_basis=getattr(decision, "authorization_basis", ""))
             return True
         except Exception:
             return False
@@ -821,6 +828,10 @@ class Harness:
                                else str(user_msg or ""))
         safe_user_msg = (_redact.redact_obj(normalized_user_msg, self._secret_vault)
                          if _redact_on else normalized_user_msg)
+        # The authenticated user's message is the only model-adjacent text allowed to
+        # create Authority v2 grants. This happens before provider/tool output exists.
+        if self.gate is not None and hasattr(self.gate, "begin_request"):
+            self.gate.begin_request(safe_user_msg, project=self.project, mission_id=task_id)
         rid = self.recorder.start_run(task_id, "collie", self.provider.model,
                                       self.provider.name, note="v" + __version__)
         res = RunResult(run_id=rid, task_id=task_id, harness="collie",
@@ -983,6 +994,8 @@ class Harness:
                 steers = self._drain_steering()
                 if steers:
                     txt = "\n".join(steers)
+                    if self.gate is not None and hasattr(self.gate, "extend_request"):
+                        self.gate.extend_request(txt)
                     session["messages"].append({"role": "user", "content": txt})
                     res.steer_count += 1
                     self._emit("steer", text=txt[:200])
@@ -1447,9 +1460,12 @@ class Harness:
                                     previous_broker = getattr(ctx, "tool_broker", None)
                                     inner_broker = _make_inner_broker(tc.id)
                                     ctx.tool_broker = inner_broker
+                                    previous_call_id = ctx.tool_call_id
+                                    ctx.tool_call_id = tc.id
                                     try:
                                         out = tool.run(run_args, ctx)
                                     finally:
+                                        ctx.tool_call_id = previous_call_id
                                         if had_broker:
                                             ctx.tool_broker = previous_broker
                                         else:
@@ -1462,9 +1478,12 @@ class Harness:
                                         if not str(out).startswith("ERROR"):
                                             out = "ERROR: %s\n%s" % (res.error, out)
                                 else:
+                                    previous_call_id = ctx.tool_call_id
+                                    ctx.tool_call_id = tc.id
                                     try:
                                         out = tool.run(run_args, ctx)
                                     finally:
+                                        ctx.tool_call_id = previous_call_id
                                         if end_effect is not None:
                                             end_effect()
                             except Exception as e:
@@ -1850,6 +1869,8 @@ class Harness:
                     steers = self._drain_steering()
                     if steers:
                         txt = "\n".join(steers)
+                        if self.gate is not None and hasattr(self.gate, "extend_request"):
+                            self.gate.extend_request(txt)
                         session["messages"].append({"role": "assistant", "content": comp.text})
                         session["messages"].append({"role": "user", "content": txt})
                         res.steer_count += 1

@@ -68,12 +68,39 @@ function eq(name, got, want) {
 {
   const manifest = JSON.parse(fs.readFileSync(
     path.join(__dirname, '..', 'harness', 'browser_ext', 'manifest.json'), 'utf8'));
+  const storeManifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'harness', 'browser_ext', 'manifest.store.json'), 'utf8'));
   const scripts = (manifest.content_scripts || []).flatMap((row) => row.js || []);
   t('the visible presence/takeover sensor ships as an isolated content script', scripts.includes('presence.js'));
   t('the extension declares a real side panel', manifest.side_panel && manifest.side_panel.default_path === 'sidepanel.html');
   t('selection/page entry points have context-menu permission', (manifest.permissions || []).includes('contextMenus'));
+  t('store install keeps high-fidelity debugger and verified-download support',
+    (storeManifest.permissions || []).includes('debugger') &&
+    (storeManifest.permissions || []).includes('downloads') &&
+    (storeManifest.permissions || []).includes('webNavigation') &&
+    !(storeManifest.permissions || []).includes('tabs') &&
+    !(storeManifest.host_permissions || []).includes('<all_urls>'));
+  t('power install can verify downloads too', (manifest.permissions || []).includes('downloads'));
+  t('store asks for broad website reach only as an optional runtime grant',
+    (storeManifest.optional_host_permissions || []).includes('http://*/*') &&
+    (storeManifest.optional_host_permissions || []).includes('https://*/*') &&
+    !(storeManifest.content_scripts || []).length);
+  t('debugger-dependent listeners are guarded in the shared service worker',
+    /if \(HAS_DEBUGGER_PERMISSION\) chrome\.debugger\.onDetach/.test(src) &&
+    /if \(HAS_DEBUGGER_PERMISSION\) chrome\.debugger\.onEvent/.test(src));
   t('Chrome debugger cancellation becomes a hard pause',
     /reason === "canceled_by_user"[\s\S]{0,300}pauseSpacesForTab/.test(src));
+  t('download clicks wait for a concrete Chrome download receipt',
+    /function startDownloadWatch\(/.test(src) && /function finishDownloadWatch\(/.test(src) &&
+    /out\.download = await finishDownloadWatch/.test(src));
+  t('agent clicks adopt only exact opener child tabs and retain owned lineage',
+    /function startChildTabWatch\(parentTabId\)/.test(src) &&
+    /tab\.openerTabId === parentTabId/.test(src) && /sourceTabId === parentTabId/.test(src) &&
+    /rec\.ownedTabIds/.test(src) && /out\.opened_tab = child/.test(src));
+  t('visible pointer has independent scoot and bounded-curve paths',
+    /path: curved \? "curve" : "scoot"/.test(src) && /const curved = distance > 190/.test(src) &&
+    /crypto\.getRandomValues/.test(src) && /const tempo = \.88 \+ rand\(\) \* \.24/.test(src) &&
+    /await execMain\(pageCursor, \[pt\.x, pt\.y, true\]\)/.test(src));
   t('a paused CDP path refuses synthetic fallback',
     /const stopped = pausedResult\(tab\.id\); if \(stopped\) return stopped;[\s\S]{0,180}synthetic/.test(src));
   const presence = fs.readFileSync(path.join(__dirname, '..', 'harness', 'browser_ext', 'presence.js'), 'utf8');
@@ -410,6 +437,24 @@ function run(root, max, opts, frames) {
   t('a final Publish control is refused before click', !!api.pageAdvanceInfo('e2').error);
   t('CAPTCHA controls are refused before click', !!api.pageAdvanceInfo('e3').error);
   t('Start a post may open a reversible composer', api.pageAdvanceInfo('e4').allowed === true);
+}
+
+{
+  const menu = el('button', { text: 'Filters' });
+  const send = el('button', { text: 'Send' });
+  const buy = el('button', { text: 'Buy now' });
+  const captcha = el('button', { attrs: { 'aria-label': 'Verify you are human' }, text: 'Continue' });
+  const download = el('a', { attrs: { href: '/receipt', download: '' }, text: 'Receipt' });
+  const win = { __collieRefs: new Map([['e1', menu], ['e2', send], ['e3', buy], ['e4', captcha],
+                                       ['e5', download]]) };
+  const api = new Function('window', grab('function pageIntentInfo(ref)') +
+    '\nreturn { pageIntentInfo };')(win);
+  t('intent preflight calls ordinary navigation preparation', api.pageIntentInfo('e1').effect === 'prepare');
+  t('intent preflight identifies Send as a commit', api.pageIntentInfo('e2').action === 'send' && api.pageIntentInfo('e2').effect === 'commit');
+  t('intent preflight identifies commerce as restricted', api.pageIntentInfo('e3').effect === 'restricted');
+  t('intent preflight keeps CAPTCHA person-bound', api.pageIntentInfo('e4').action === 'person_verification');
+  t('intent preflight identifies a browser download as a local commit',
+    api.pageIntentInfo('e5').action === 'download' && api.pageIntentInfo('e5').effect === 'commit');
 }
 
 {

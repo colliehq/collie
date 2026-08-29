@@ -91,17 +91,31 @@
   button { background:var(--bg); border-radius:8px; }
   button.primary { background:var(--brand2); }
   .packidentity { margin-bottom:12px; }
-  .packidentity img { width:38px; height:38px; filter:none; }
+  .packidentity img { width:38px; height:38px; filter:grayscale(1) contrast(1.05); }
   .packstats { gap:0; margin:0 0 14px; border-block:1px solid var(--line); }
   .packstat { padding:10px 7px; border:0; border-radius:0; background:transparent; }
   .packstat b { font-size:16px; }
   .packlane,.activitylane { border-radius:8px; }
   .packrow,.activityrow { padding-block:7px; }
   .truthnote { padding-top:2px; }
+  .packboundary { display:grid; grid-template-columns:180px minmax(0,1fr); gap:14px; margin:2px 0 16px;
+    padding:12px 0; border-block:1px solid var(--line); }
+  .packboundary strong { font-size:12px; }
+  .packboundary span { color:var(--dim); font-size:11.5px; line-height:1.5; }
+  .packtopology { display:grid; grid-template-columns:minmax(0,1fr) 34px minmax(0,1.2fr) 34px minmax(0,1fr);
+    align-items:stretch; gap:0; margin:4px 0 14px; }
+  .packtopology-node { min-width:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+  .packtopology-node strong { display:block; margin-bottom:3px; font-size:12px; }
+  .packtopology-node span,.packtopology-node small { display:block; color:var(--dim); font-size:10.5px; line-height:1.45; }
+  .packtopology-node.hub { background:var(--ink); border-color:var(--ink); color:var(--card); }
+  .packtopology-node.hub span,.packtopology-node.hub small { color:color-mix(in srgb,var(--card) 68%,transparent); }
+  .packtopology-node.hub small { margin-top:7px; padding-top:7px; border-top:1px solid color-mix(in srgb,var(--card) 20%,transparent); }
+  .packtopology-arrow { display:grid; place-items:center; color:var(--dim); font-size:16px; }
   .pendcard { border-radius:11px; background:var(--card); }
   .toast { background:var(--card); }
   body.embedded .back,body.embedded .wrap>h1,body.embedded .wrap>.sub{display:none}
   body.embedded .wrap{max-width:980px;padding:18px 20px 46px}
+  @media(max-width:620px){.packboundary{grid-template-columns:1fr;gap:4px}.packtopology{grid-template-columns:1fr;gap:7px}.packtopology-arrow{transform:rotate(90deg);height:14px}}
 </style>
 </head>
 <body>
@@ -109,26 +123,35 @@
 <div class="wrap">
   <a class="back" href="/">← <span data-i="Back to Collie">Back to Collie</span></a>
   <h1><img src="logo.svg" alt="Collie"> <span data-i="Pack">Pack</span></h1>
-  <div class="sub" data-i="See which Collies and workers are available, what they are carrying, and which phones can supervise this device.">See which Collies and workers are available, what they are carrying, and which phones can supervise this device.</div>
+  <div class="sub">Your approved devices and workers. Cloud coordinates availability; every device keeps its own execution authority.</div>
 
   <div class="card" id="packcard">
-    <h2><span data-i="Pack now">Pack now</span> <span id="packhealth" class="pill idle" role="status" aria-live="polite" data-i="Loading…">Loading…</span></h2>
+    <h2><span>Pack overview</span> <span id="packhealth" class="pill idle" role="status" aria-live="polite" data-i="Loading…">Loading…</span></h2>
     <div class="packerr" id="packerr" role="alert" aria-live="assertive"></div>
+    <div class="packtopology" aria-label="Pack trust and coordination model">
+      <div class="packtopology-node"><strong>Control devices</strong><span>Sign assignments, mandates and scoped approvals.</span></div>
+      <div class="packtopology-arrow" aria-hidden="true">→</div>
+      <div class="packtopology-node hub"><strong>Collie Online</strong><span id="packcoordstatus">Checking coordinator…</span><small>Routes presence, encrypted sync and queues. Holds no endpoint execution authority.</small></div>
+      <div class="packtopology-arrow" aria-hidden="true">→</div>
+      <div class="packtopology-node"><strong>Execution endpoints</strong><span>Pull, verify and enforce their own Authority policy.</span></div>
+    </div>
     <div class="packidentity"><img id="packavatar" src="/api/avatar.png" alt="">
       <div><div class="packwho" id="packwho">Collie</div><div class="packmeta" id="packdevice" data-i="Checking this device…">Checking this device…</div>
         <div class="packmeta" id="packmodel" data-i="Checking provider and model…">Checking provider and model…</div></div></div>
+    <div class="packboundary"><strong>Cloud coordinates. Devices decide.</strong>
+      <span>Each Collie pulls endpoint-signed assignments over an outbound connection, verifies their scope, and enforces its own Authority. Online cannot open an inbound shell or grant itself new device permissions.</span></div>
     <div class="packstats">
-      <div class="packstat"><b id="statInteractive">—</b><span data-i="Interactive">Interactive</span></div>
+      <div class="packstat"><b id="statDevices">—</b><span>Devices</span></div>
       <div class="packstat"><b id="statMissions">—</b><span data-i="Missions">Missions</span></div>
       <div class="packstat"><b id="statSpecialists">—</b><span data-i="Specialists">Specialists</span></div>
       <div class="packstat"><b id="statAutomations">—</b><span data-i="Automations">Automations</span></div>
       <div class="packstat"><b id="statNeeds">—</b><span data-i="Needs You">Needs You</span></div>
     </div>
     <div class="packgrid">
-      <section class="packlane"><h3 data-i="Available here">Available here</h3><div class="packrows" id="packmembers"><div class="packempty" data-i="Loading availability…">Loading availability…</div></div></section>
+      <section class="packlane"><h3>Endpoints &amp; local workers</h3><div class="packrows" id="packmembers"><div class="packempty" data-i="Loading availability…">Loading availability…</div></div></section>
       <section class="packlane"><h3 data-i="Active assignments">Active assignments</h3><div class="packrows" id="packassignments"><div class="packempty" data-i="Loading assignments…">Loading assignments…</div></div></section>
     </div>
-    <div class="truthnote" data-i="Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.">Worker freshness is reported by local heartbeats. A paired phone is a supervision surface, not another worker.</div>
+    <div class="truthnote">Availability comes from bounded heartbeats. A connected endpoint is not remotely controllable until it accepts an endpoint-signed assignment under its own Authority policy.</div>
   </div>
 
   <div class="card" id="activitycard">
@@ -149,7 +172,7 @@
   </div>
 
   <div class="card" id="paircard">
-    <h2><span data-i="Remote supervision">Remote supervision</span> <span id="statuspill" class="pill idle" role="status" aria-live="polite">…</span></h2>
+    <h2><span>Local phone supervision</span> <span id="statuspill" class="pill idle" role="status" aria-live="polite">…</span></h2>
     <div class="pairgrid">
       <div class="pendcard" id="pendingbox" role="region" aria-label="Pending pairing request" data-i-aria="Pending pairing request" aria-live="assertive" hidden>
         <div class="pwho" id="pwho"></div>
@@ -337,7 +360,7 @@ function renderRemoteActivity(activity,health,failures){var pill=document.getEle
   var issues=(failures||[]).filter(function(name){return name==='activity'||name==='health';}),lanes=Object.keys(activity.errors||{}).concat(Object.keys((health&&health.activity_errors)||{}));if(lanes.length)issues.push(t('Some operational lanes are unavailable')+': '+lanes.join(', '));activityNotice(issues.join(' · '),issues.length>0);}
 function renderPack(parts,failures){
   var identity=parts.identity||{},caps=parts.capabilities||{},health=parts.health,activity=parts.activity,
-      approvals=parts.approvals, pill=document.getElementById('packhealth');
+      approvals=parts.approvals,online=parts.online||{},pill=document.getElementById('packhealth');
   if(!health){pill.className='pill off';pill.textContent=t('Unavailable');}
   else if(health.status==='needs_you'){pill.className='pill idle';pill.textContent=t('Needs You');}
   else if(health.ok){pill.className='pill on';pill.textContent=t('Available');}
@@ -351,8 +374,14 @@ function renderPack(parts,failures){
     t('Device identity unavailable');
   document.getElementById('packmodel').textContent=caps.provider?
     caps.provider+' · '+(caps.model||t('Provider default')):t('Provider and model unavailable');
+  var onlineNodes=online.nodes||[],onlineDevice=(online.device||{}).id||'',trustedDevices=online.trusted_devices||{},trustedIds={};
+  (Array.isArray(trustedDevices)?trustedDevices:[]).forEach(function(row){trustedIds[String(row.device_id||'')]=true;});
+  document.getElementById('packcoordstatus').textContent=online.mode==='connected'?
+    'Connected · '+onlineNodes.length+' endpoint'+(onlineNodes.length===1?'':'s')+' registered · '+Object.keys(trustedIds).length+' trusted signer'+(Object.keys(trustedIds).length===1?'':'s'):
+    'Optional coordinator · not connected';
   var work=(health&&health.work)||{};
-  [['statInteractive','interactive_active'],['statMissions','missions_active'],['statSpecialists','task_runs_active'],['statAutomations','automations_active']].forEach(function(pair){
+  document.getElementById('statDevices').textContent=online.mode==='connected'?Math.max(1,onlineNodes.length):'1';
+  [['statMissions','missions_active'],['statSpecialists','task_runs_active'],['statAutomations','automations_active']].forEach(function(pair){
     document.getElementById(pair[0]).textContent=health?Number(work[pair[1]]||0):'—';
   });
   document.getElementById('statNeeds').textContent=approvals?Number((approvals.approvals||[]).length):'—';
@@ -370,19 +399,27 @@ function renderPack(parts,failures){
     var supervisor=health.supervisor||{};
     if(supervisor.installed)packRow(members,t('Supervisor'),t('Local coordination service'),supervisor.running?t('Responding'):activityStateLabel(supervisor.status||'stopped'),!supervisor.running);
   }
+  if(online.mode==='connected'){
+    onlineNodes.filter(function(node){return !onlineDevice||!String(node.id||'').endsWith(':'+onlineDevice);}).forEach(function(node){
+      var deviceId=String(node.id||'').split(':').pop(),trust=trustedIds[deviceId]?'trusted signer':'directory only';
+      packRow(members,node.name||node.id,(node.kind||'device')+' · '+trust+' · '+(node.capabilities||[]).join(', '),
+        node.status==='online'?t('Responding'):activityStateLabel(node.status||'offline'),node.status!=='online');
+    });
+  }
 
   var assignments=document.getElementById('packassignments');assignments.textContent='';var rows=[];
   (activity&&activity.sessions||[]).forEach(function(row){if(activeTask(row.state))rows.push({name:row.session_id,meta:t('Interactive'),state:row.state});});
   (activity&&activity.missions||[]).forEach(function(row){if(activeMission(row.state))rows.push({name:row.mission_id,meta:t('Mission'),state:row.state});});
   (activity&&activity.task_runs||[]).forEach(function(row){if(activeTask(row.status))rows.push({name:row.run_id,meta:row.role||'specialist',state:row.status});});
   (activity&&activity.automations||[]).forEach(function(row){if(activeTask(row.state))rows.push({name:row.automation_id+' · '+row.execution_id,meta:t('Automation'),state:row.state});});
+  (online.missions||[]).forEach(function(row){if(activeMission(row.state))rows.push({name:row.name||row.id,meta:'Signed Online mission',state:row.state});});
   rows.slice(0,12).forEach(function(row){packRow(assignments,row.name,row.meta,activityStateLabel(row.state),/failed|stale|recovery/.test(row.state||''));});
   if(!rows.length){var empty=document.createElement('div');empty.className='packempty';empty.textContent=activity?t('No active assignments.'):t('Assignments unavailable.');assignments.appendChild(empty);}
   else if(rows.length>12){var more=document.createElement('div');more.className='packempty';more.textContent=t('{n} more active assignments').replace('{n}',rows.length-12);assignments.appendChild(more);}
   renderRemoteActivity(activity,health,failures);
 }
 function loadPack(){
-  var specs=[['identity','/api/whoami'],['capabilities','/api/run-capabilities'],['health','/api/healthz'],['activity','/api/activity'],['approvals','/api/approvals']];
+  var specs=[['identity','/api/whoami'],['capabilities','/api/run-capabilities'],['health','/api/healthz'],['activity','/api/activity'],['approvals','/api/approvals'],['online','/api/online']];
   return Promise.all(specs.map(function(spec){return getJson(spec[1]).then(function(value){return {key:spec[0],value:value};})
     .catch(function(){return {key:spec[0],error:true};});})).then(function(results){var parts={},failures=[];
       results.forEach(function(result){if(result.error)failures.push(result.key);else parts[result.key]=result.value;});renderPack(parts,failures);});

@@ -304,7 +304,7 @@ def gate_approval_callback(gate: Any, approver: Callable[..., Any] | None = None
         except Exception:
             return "decline"
         try:
-            gate.apply_outcome(outcome, tool_name, decision.target)
+            gate.apply_outcome(outcome, tool_name, decision.target, decision=decision)
         except Exception:
             return "decline"
         if outcome not in ALLOWING:

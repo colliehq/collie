@@ -136,6 +136,25 @@ async function refreshSiteAccess() {
 }
 
 // --- high-fidelity (chrome.debugger) input: global default + per-site override -------------------
+const HAS_DEBUGGER_PERMISSION = (chrome.runtime.getManifest().permissions || []).includes("debugger");
+const OPTIONAL_WEB_ORIGINS = ["http://*/*", "https://*/*"];
+
+async function refreshReach() {
+  let granted = false;
+  try { granted = await chrome.permissions.contains({ origins: OPTIONAL_WEB_ORIGINS }); } catch (e) {}
+  $("reachGrant").hidden = granted;
+  $("reachNote").textContent = granted
+    ? "Enabled. Collie-created tabs can continue across site navigations."
+    : "Optional. The current tab works after you invoke Collie; grant this only for autonomous multi-site runs.";
+}
+
+$("reachGrant").addEventListener("click", async () => {
+  let granted = false;
+  try { granted = await chrome.permissions.request({ origins: OPTIONAL_WEB_ORIGINS }); } catch (e) {}
+  $("reachNote").textContent = granted ? "Enabled for websites." : "Not enabled; current-tab mode remains available.";
+  await refreshReach();
+});
+
 async function activeOrigin() {
   try {
     const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -157,6 +176,13 @@ async function setSite(origin, scope) {
 }
 
 async function refreshMode() {
+  if (!HAS_DEBUGGER_PERMISSION) {
+    $("hiFi").checked = false; $("hiFi").disabled = true;
+    $("hiFiTitle").textContent = "High-fidelity input · local Power build only";
+    $("hiFiNote").textContent = "The Web Store build uses normal browser scripting and does not request debugger access.";
+    document.querySelectorAll("#siteSeg button").forEach((b) => { b.disabled = true; });
+    return;
+  }
   const g = (await chrome.storage.local.get("trustedInput")).trustedInput;
   $("hiFi").checked = g !== false;                    // default ON
   const origin = await activeOrigin();
@@ -173,6 +199,7 @@ async function refreshMode() {
 }
 
 $("hiFi").addEventListener("change", async (e) => {
+  if (!HAS_DEBUGGER_PERMISSION) return;
   await chrome.storage.local.set({ trustedInput: e.target.checked });
 });
 [...document.querySelectorAll("#siteSeg button")].forEach((b) =>
@@ -232,3 +259,4 @@ refresh();
 refreshMode();
 refreshToken();
 refreshSiteAccess();
+refreshReach();

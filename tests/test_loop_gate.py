@@ -166,15 +166,16 @@ def test_the_approver_never_sees_a_restored_secret(tmp_path, monkeypatch):
     h._secret_vault = {"deadbeef": REAL}
 
     got = []
-    h.registry.register(_spy("browser_type", got))
-    h.provider = _ScriptProvider(_calls(("browser_type", {"text": "{{SECRET:deadbeef}}"})))
+    h.registry.register(_spy("browser_click", got))
+    h.provider = _ScriptProvider(_calls(("browser_click", {
+        "text": "Send {{SECRET:deadbeef}}"})))
     _run(h)
 
     assert seen, "the approver was never consulted — this test would pass vacuously"
     assert REAL not in repr(seen), (
         "the real credential reached the approval prompt: %r" % seen)
-    assert seen["text"] == "{{SECRET:deadbeef}}"
-    assert got and got[0]["text"] == REAL, (
+    assert seen["text"] == "Send {{SECRET:deadbeef}}"
+    assert got and got[0]["text"] == "Send " + REAL, (
         "the TOOL still needs the real value — only the approval path sees the placeholder")
 
 
@@ -314,17 +315,17 @@ def test_execute_code_inner_authorization_re_redacts_restored_secrets(tmp_path):
     h = _exec_code_h(tmp_path, Gate(cwd=tmp_path))
     h.approve = approver
     h._secret_vault = {"deadbeef": real}
-    h.registry.register(_spy("browser_type", received))
+    h.registry.register(_spy("browser_click", received))
     h.provider = _ScriptProvider(_calls(("execute_code", {
-        "code": ('print(tool("browser_type", '
-                 'text="{{SECRET:deadbeef}}"))'),
+        "code": ('print(tool("browser_click", '
+                 'text="Send {{SECRET:deadbeef}}"))'),
     })))
 
     _run(h)
 
-    assert seen["text"] == "{{SECRET:deadbeef}}"
+    assert seen["text"] == "Send {{SECRET:deadbeef}}"
     assert real not in repr(seen)
-    assert received and received[0]["text"] == real
+    assert received and received[0]["text"] == "Send " + real
 
 
 def test_execute_code_redacts_structured_inner_results_before_hooks(tmp_path):
@@ -425,10 +426,10 @@ def test_execute_code_late_approval_cannot_fire_or_mint_a_rule(tmp_path):
     gate = Gate(cwd=tmp_path)
     h = _exec_code_h(tmp_path, gate)
     h.approve = approver
-    h.registry.register(_spy("browser_type", received))
+    h.registry.register(_spy("browser_click", received))
     h.provider = _ScriptProvider(_calls(("execute_code", {
         "timeout": 1,
-        "code": 'print(tool("browser_type", text="must not type late"))',
+        "code": 'print(tool("browser_click", ref="must-not-click-late"))',
     })))
     holder = {}
     worker = threading.Thread(target=lambda: holder.setdefault("result", _run(h)), daemon=True)
@@ -513,5 +514,4 @@ def test_authorization_happens_before_any_execution(tmp_path):
     h.provider = _ScriptProvider(_calls(("browser_click", {"ref": "a"}),
                                         ("browser_type", {"text": "b"})))
     _run(h)
-    assert order == ["ask:browser_click", "ask:browser_type",
-                     "run:browser_click", "run:browser_type"], order
+    assert order == ["ask:browser_click", "run:browser_click", "run:browser_type"], order

@@ -2,10 +2,9 @@
   "manifest_version": 3,
   "name": "Collie Browser Bridge",
   "version": "3.8",
-  "description": "Ask Collie about the current page and let it navigate, read, click, and type in your real signed-in Chrome through a local bridge.",
+  "description": "Use Collie with the page you choose and optionally grant broader reach for autonomous browser work.",
   "permissions": [
     "scripting",
-    "tabs",
     "activeTab",
     "alarms",
     "storage",
@@ -17,8 +16,11 @@
   ],
   "host_permissions": [
     "http://127.0.0.1/*",
-    "http://localhost/*",
-    "<all_urls>"
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -26,28 +28,13 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["shadow.js"],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": true
-    },
-    {
-      "matches": ["<all_urls>"],
-      "js": ["presence.js"],
-      "run_at": "document_start",
-      "all_frames": false
-    }
-  ],
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
     "128": "icon128.png"
   },
   "action": {
-    "default_title": "collie bridge — status",
+    "default_title": "Collie bridge — status",
     "default_icon": {
       "16": "icon16.png",
       "48": "icon48.png",

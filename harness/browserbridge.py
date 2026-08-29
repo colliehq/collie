@@ -1161,6 +1161,31 @@ class BrowserClick(Tool):
         "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"},
         "x": {"type": "number"}, "y": {"type": "number"}}}
 
+    def _collie_intent(self, args):
+        """Resolve an opaque snapshot ref before the gate decides.
+
+        This is a read-only extension preflight. Text/selector clicks retain the
+        host classifier; coordinates and unresolved refs remain conservative.
+        """
+        ref = str((args or {}).get("ref") or "").strip()
+        if not ref:
+            return None
+        try:
+            from .authority import ActionIntent, Effect
+            res = _call({"action": "intent", "ref": ref}, timeout=8)
+            data = _data(res) or {}
+            info = data.get("intent") if isinstance(data.get("intent"), dict) else data
+            if not isinstance(info, dict) or info.get("error"):
+                return None
+            effect = Effect(str(info.get("effect") or "commit"))
+            return ActionIntent(
+                action=str(info.get("action") or "external_change"), effect=effect,
+                resource=str(info.get("label") or "")[:300],
+                reversible=bool(info.get("reversible")), confidence=1.0,
+                reason=str(info.get("reason") or "")[:500], metadata={"ref": ref})
+        except Exception:
+            return None
+
     def run(self, args, ctx):
         res = _call({"action": "click", "ref": args.get("ref"),
                      "text": args.get("text"), "selector": args.get("selector"),

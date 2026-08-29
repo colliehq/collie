@@ -1,16 +1,25 @@
 # Chrome Web Store release checklist
 
-The store build is the same Manifest V3 extension used for local development, minus machine-local
-credentials. Run `installer/package_browser_extension.ps1`; do not zip the live directory by hand.
+The Web Store and local Power builds deliberately have different permission envelopes. Run
+`installer/package_browser_extension.ps1` for the store build. Add `-Power` only for the sideloaded
+Power build; do not zip the live directory by hand.
 
 ## Permission rationale
 
-- `tabs`, `activeTab`, `scripting`, and `<all_urls>` let Collie read and act in the tab the user handed
-  over or in a tab Collie created. The host permission also lets the extension reach the loopback
-  bridge. Site navigation permission is separate from action-time approval.
-- `debugger` provides real `isTrusted` pointer and keyboard input on sites that reject synthetic
-  events, reaches cross-origin frames, and supports file inputs. The user can cancel Chrome's debug
-  banner; cancellation hard-pauses the controlled tab.
+- The store build installs with `activeTab` and `scripting`, plus loopback host access. Invoking the
+  extension grants the current tab temporarily. Persistent `http://*/*` and `https://*/*` reach is an
+  optional runtime grant behind **Enable across websites**; it is never an install-time grant.
+- The store build does not request `tabs`, `<all_urls>`, or all-page content-script access. Its
+  presence sensor is injected only into a granted, controlled tab.
+- Both builds request `debugger`: no-focus trusted input, cross-origin-frame support, and full-page
+  capture are core browser-control features, not dormant future access. Chrome does not permit this
+  permission to be optional, so the store listing must explain the visible debugging banner and the
+  extension must attach only around an active browser session/action. Canceling the banner hard-pauses
+  the controlled tab.
+- Both builds request `downloads` so a download action returns Chrome's concrete started/completed/
+  interrupted receipt. A DOM click alone is never reported as a finished download.
+- Both builds request `webNavigation` so OAuth and `noopener` child tabs can be correlated with the
+  exact Collie-controlled source tab. The extension does not use it to collect browsing history.
 - `storage` persists the bridge token, input-fidelity overrides, browser site-access preference, and
   per-session tab ownership. `alarms` keeps the Manifest V3 bridge poll recoverable after suspension.
 - `sidePanel` and `contextMenus` provide Ask Collie for the current page or selected text.
@@ -21,11 +30,13 @@ with pages the user/agent opens. `token.txt` and legacy `auth.js` must never be 
 ## Before upload
 
 1. Run `node tests/browser_ext_test.js` and `python -m pytest tests/test_browserbridge.py -q`.
-2. Run the package script and inspect the zip listing. Confirm there is no token, auth file, source
-   map, log, or user data.
+2. Run the package script and inspect the zip listing. Confirm `manifest.json` has the justified
+   `debugger`, `downloads`, and `webNavigation` permissions but no `tabs`, `<all_urls>`, required broad host permission,
+   token, auth file, source map, log, or user data.
 3. Load the staged zip unpacked in a clean Chrome profile. Verify popup connection state, side chat,
-   selection context menu, cursor/presence pill, Stop, physical takeover, Resume, and debugger-cancel
-   pause behavior.
+   selection context menu, optional website grant, cursor/presence pill, Stop, physical takeover,
+   and Resume. Test debugger-cancel pause behavior and a complete/interrupted download receipt in
+   both builds.
 4. Exercise the three navigation policies. Under the recommended policy, an ordinary documentation
    site opens silently and a bank/payment/crypto site still asks. Verify that clicking Send/Buy/Delete
    still produces an action-time approval on both kinds of site.

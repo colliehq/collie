@@ -15,6 +15,7 @@ import subprocess     # module-level: cmd_uninstall (tccutil) and _collie_procs 
                       # inside except-blocks that were silently swallowing the NameError
 import sys
 import tempfile
+import time
 
 from . import __version__
 from .providers import make_provider
@@ -200,9 +201,19 @@ def default_gate(cwd, mode=None, commands=None):
     sensitive = tuple(x.strip() for x in
                       str(_sget("BROWSER_SENSITIVE_HOSTS", "") or "").split(",")
                       if x.strip())
+    approval_mode = str(_sget("MISSION_APPROVAL_MODE", "smart") or "smart").strip().lower()
+    authority_mode = "review" if approval_mode == "review" else "hands_off"
+    authority_engine = None
+    try:
+        from .authority import AuthorityEngine, default_store
+        authority_engine = AuthorityEngine(default_store())
+    except Exception:
+        # An unwritable local state directory removes durable grants, never the gate.
+        pass
     g = Gate(cwd=cwd, mode=chosen, allowed_commands=allowed,
              browser_site_access=site_access,
-             browser_sensitive_hosts=sensitive)
+             browser_sensitive_hosts=sensitive,
+             authority_mode=authority_mode, authority_engine=authority_engine)
     try:                       # user-local risk overrides (mainly to relax MCP's default)
         from .overrides import RiskOverrideStore
         g.risk_overrides = RiskOverrideStore().resolver()
@@ -2792,12 +2803,447 @@ def cmd_mem(args):
     return 0
 
 
+def cmd_routine(args):
+    """Inspect and review locally learned workflows. Nothing here auto-executes."""
+    from .procedure_memory import ProcedureMemory
+    path = os.path.join(_state_dir(), "procedural-memory.db")
+    project = os.path.abspath(args.project) if args.project else None
+    try:
+        with ProcedureMemory(path) as store:
+            if args.action == "status":
+                value = store.snapshot(project=project, event_limit=args.limit)
+                value["events"] = value["events"][:5]
+            elif args.action == "discover":
+                value = {"candidates": store.discover(
+                    project=project or os.path.abspath(os.getcwd()),
+                    min_support=args.min_support)}
+            elif args.action == "candidates":
+                value = {"candidates": store.search_candidates(
+                    args.query, status=args.status or None, limit=args.limit)
+                    if args.query else store.list_candidates(
+                        status=args.status or None, project=project, limit=args.limit)}
+            elif args.action == "events":
+                value = {"events": store.list_events(project=project, limit=args.limit),
+                         "data_class": "device_only", "syncable": False}
+            elif args.action == "workflows":
+                value = {"workflows": store.list_workflows(
+                    project=project, status=args.status or None, limit=args.limit)}
+            elif args.action in ("accept", "dismiss"):
+                value = store.review(args.id, args.action, confirmed=args.yes, note=args.note)
+            elif args.action in ("pause", "resume"):
+                value = {"privacy": store.update_privacy(paused=args.action == "pause")}
+            elif args.action in ("exclude", "include"):
+                if not args.app:
+                    raise ValueError("--app is required")
+                value = {"privacy": store.update_privacy(
+                    exclude_app=args.app if args.action == "exclude" else "",
+                    include_app=args.app if args.action == "include" else "")}
+            elif args.action == "retention":
+                value = {"privacy": store.update_privacy(retention_days=args.days)}
+            elif args.action == "purge":
+                value = {"deleted_events": store.purge_events(confirmed=args.yes)}
+            else:
+                raise ValueError("unknown routine action")
+    except (KeyError, ValueError) as exc:
+        print("Collie routine error: %s" % exc)
+        return 2
+    if args.json:
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+        return 0
+    if args.action == "status":
+        print("Procedural memory: %s · raw=device_only · sync=derived sealed only" %
+              ("paused" if value["privacy"].get("paused") else "observing"))
+        print("  %d candidates · %d accepted workflows · %d recent events shown" %
+              (len(value["candidates"]), len(value["workflows"]), len(value["events"])))
+        return 0
+    rows = value.get("candidates") if isinstance(value, dict) else None
+    if rows is not None:
+        for row in rows:
+            print("  %s [%-9s] support=%d  %s" % (
+                row["candidate_id"], row["status"], row["support"], row["title"]))
+        if not rows:
+            print("(no learned workflow candidates)")
+    elif isinstance(value, dict) and "workflows" in value:
+        for row in value["workflows"]:
+            print("  %s [%-8s] authority=%s  %s" % (
+                row["workflow_id"], row["status"], row["authority_scope"], row["title"]))
+        if not value["workflows"]:
+            print("(no accepted learned workflows)")
+    elif isinstance(value, dict) and "events" in value:
+        for row in value["events"]:
+            print("  %s  %-12s %-24s %s" % (
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(row["observed_at"])),
+                row["app"], row["action"], row["object_ref"]))
+        if not value["events"]:
+            print("(no local observations)")
+    else:
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _state_dir():
     """Where the delegate's durable state lives (~/.collie, overridable for tests
     via COLLIE_STATE_DIR). Matches the actions.py/jobs.py defaults."""
     d = os.environ.get("COLLIE_STATE_DIR") or os.path.expanduser("~/.collie")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def cmd_online(args):
+    """Optional Connected Mode. Local Collie remains fully usable without this command."""
+    import time as _time
+    import urllib.parse
+    import webbrowser as _webbrowser
+    from .online import (ConnectionBrokerClient, DeviceEnrollmentClient, OnlineClient,
+                         OnlineError, OnlineStore, generate_device_key)
+
+    store = OnlineStore(os.path.join(_state_dir(), "online.db"))
+    try:
+        action = args.action
+        if action == "status":
+            profile = store.profile()
+            if profile is None:
+                print("Local mode · no Collie account is connected (all local features still work).")
+                return 0
+            tokens = store.tokens()
+            print("Connected mode · %s · device %s (%s)" % (
+                profile.user_id, profile.device_name, profile.device_id))
+            print("  service: %s" % profile.base_url)
+            print("  workspace: %s · projects %d · connections %d · pending sync %d" % (
+                profile.workspace_id, len(store.projects()), len(store.connections()),
+                len(store.pending(500))))
+            print("  access expires: %s" % tokens.get("access_expires_at", 0))
+            return 0
+        if action == "login":
+            if store.connected() and not args.replace:
+                print("This device is already connected. Use --replace to pair it again.")
+                return 1
+            key = generate_device_key()
+            client = DeviceEnrollmentClient(args.server)
+            enrollment = client.start(args.device_name, public_key=key["public_key"])
+            url = enrollment.get("verification_uri_complete") or enrollment["verification_uri"]
+            print("Open %s" % url)
+            print("Confirm that this device shows code: %s" % enrollment["user_code"])
+            if not args.no_browser:
+                _webbrowser.open(url)
+            if args.no_wait:
+                print("Pairing started. It expires if it is not approved in the browser.")
+                return 0
+            deadline = _time.time() + max(30, int(enrollment.get("expires_in") or 600))
+            interval = max(2, min(int(enrollment.get("interval") or 3), 10))
+            while _time.time() < deadline:
+                result = client.poll(enrollment)
+                if result is not None:
+                    profile = client.finish(store, enrollment, result)
+                    try:
+                        summary = OnlineClient(store).sync_once()
+                    except OnlineError:
+                        summary = {"mode": "connected", "pushed": 0, "pulled": 0}
+                    print("Connected %s as device %s. sync=%s" % (
+                        profile.user_id, profile.device_name, json.dumps(summary, ensure_ascii=False)))
+                    return 0
+                _time.sleep(interval)
+            print("Device pairing expired; nothing was connected.")
+            return 1
+        if action == "logout":
+            profile = store.profile()
+            if profile is None:
+                print("Already in Local mode.")
+                return 0
+            if not args.local_only:
+                try:
+                    OnlineClient(store).revoke_device(profile.device_id)
+                except OnlineError as exc:
+                    if not args.force:
+                        print("Could not revoke the server session: %s" % exc)
+                        print("Use --force to remove this device's local session anyway.")
+                        return 1
+            store.disconnect(forget_mirror=args.forget_mirror)
+            print("Signed out on this device.%s" %
+                  (" Local mirror deleted." if args.forget_mirror else " Local mirror kept."))
+            return 0
+        if action in ("key-export", "key-import"):
+            from .online import export_seal_key, import_seal_key
+            if action == "key-export":
+                if not args.yes:
+                    print("This reveals the recovery key that decrypts sealed Online objects. "
+                          "Re-run with --yes only in a private terminal.")
+                    return 1
+                print(export_seal_key(store.path))
+                return 0
+            if not args.name:
+                print("usage: collie online key-import 'collie-seal-v1:…'")
+                return 1
+            import_seal_key(args.name, store.path)
+            print("Sealed-sync recovery key imported on this device.")
+            return 0
+        if not store.connected():
+            print("This command needs Connected Mode. Run `collie online login` first.")
+            return 1
+        client = OnlineClient(store)
+        if action in ("devices", "device-revoke"):
+            if action == "devices":
+                rows = client.devices()
+                if not rows:
+                    print("(no paired devices)")
+                current = store.profile().device_id
+                for row in rows:
+                    print("  %s %-22s last=%s%s%s" % (
+                        str(row.get("id", ""))[:36], row.get("name", "")[:22],
+                        row.get("last_seen_at", 0), " · current" if row.get("id") == current else "",
+                        " · revoked" if row.get("revoked_at") else ""))
+                return 0
+            device_id = args.device_id or args.name
+            if not device_id:
+                print("usage: collie online device-revoke DEVICE_ID"); return 1
+            client.revoke_device(device_id)
+            if device_id == store.profile().device_id:
+                store.disconnect()
+                print("Revoked this device and returned to Local mode.")
+            else:
+                print("Revoked device %s." % device_id)
+            return 0
+        if action in ("workspaces", "workspace-create", "workspace-use",
+                      "workspace-members", "workspace-member-add"):
+            current = store.profile().workspace_id
+            if action == "workspaces":
+                rows = client.workspaces()
+                for row in rows:
+                    print("  %s %-24s %-8s %-8s%s" % (
+                        row.get("id", ""), row.get("name", "")[:24], row.get("kind", ""),
+                        row.get("role", ""), " · active" if row.get("id") == current else ""))
+                return 0
+            if action == "workspace-create":
+                if not args.name:
+                    print("usage: collie online workspace-create 'Team name'"); return 1
+                row = client._request("POST", "/v1/workspaces", {"name": args.name})["workspace"]
+                print("Created team workspace %s · %s." % (row.get("id"), row.get("name")))
+                return 0
+            workspace_id = args.workspace_id or (args.name if action == "workspace-use" else "") or current
+            if action == "workspace-use":
+                profile = client.switch_workspace(workspace_id)
+                summary = OnlineClient(store).sync_once()
+                print("Active workspace is now %s. sync=%s" % (
+                    profile.workspace_id, json.dumps(summary, ensure_ascii=False)))
+                return 0
+            path = "/v1/workspaces/%s/members" % urllib.parse.quote(workspace_id, safe="")
+            if action == "workspace-members":
+                rows = client._request("GET", path).get("members") or []
+                for row in rows:
+                    print("  %-36s %-8s %s" % (
+                        row.get("user_id", ""), row.get("role", ""), row.get("display_name", "")))
+                return 0
+            if not args.user_id:
+                print("workspace-member-add needs --user-id"); return 1
+            row = client._request("POST", path, {"user_id": args.user_id, "role": args.role})["member"]
+            print("Workspace member %s · %s." % (row.get("user_id"), row.get("role")))
+            return 0
+        if action == "sync":
+            from .onlinesync import sync_all
+            print(json.dumps(sync_all(store, limit=args.limit), ensure_ascii=False, indent=2))
+            return 0
+        if action in ("project-create", "project-link"):
+            local_project = args.local_project or os.path.basename(os.path.abspath(args.cwd or os.getcwd())) or "default"
+            memory_db = _paths()[0]
+            if action == "project-create":
+                project_name = args.name or local_project
+                payload = {"name": project_name}
+                if args.project_id:
+                    payload["project_id"] = args.project_id
+                row = client._request("POST", "/v1/projects", payload)["project"]
+                store.upsert_project(row["id"], row["name"], role=row.get("role") or "owner")
+                project_id = row["id"]
+            else:
+                project_id = args.project_id
+                if not project_id:
+                    print("project-link needs --project-id"); return 1
+            binding = store.bind_project(
+                project_id, local_project, memory_db, cwd=args.cwd or os.getcwd(),
+                memory_data_class=args.memory_class)
+            print("Linked Online project %s to local project %s (%s memory)." % (
+                binding["project_id"], binding["local_project"], binding["memory_data_class"]))
+            return 0
+        if action in ("project-members", "project-member-add"):
+            if not args.project_id:
+                print("%s needs --project-id" % action); return 1
+            path = "/v1/projects/%s/members" % urllib.parse.quote(args.project_id, safe="")
+            if action == "project-members":
+                rows = client._request("GET", path).get("members") or []
+                for row in rows:
+                    print("  %-36s %-8s %s" % (
+                        row.get("user_id", ""), row.get("role", ""), row.get("display_name", "")))
+                return 0
+            if not args.user_id:
+                print("project-member-add needs --user-id"); return 1
+            row = client._request("POST", path, {"user_id": args.user_id, "role": args.role})["member"]
+            print("Project member %s · %s." % (row.get("user_id"), row.get("role")))
+            return 0
+        if action in ("trusted-devices", "trust-device", "untrust-device"):
+            from .online_node import OnlineNode
+            node = OnlineNode(store, name=args.device_name)
+            if action == "trusted-devices":
+                for row in node.trusted_devices():
+                    print("  %-24s %-14s %s" % (
+                        row.get("name", "")[:24], row.get("source", ""),
+                        (row.get("public_key") or "")[:16] + "…"))
+                return 0
+            if not args.device_id:
+                print("%s needs --device-id" % action); return 1
+            if action == "untrust-device":
+                print("Removed local trust pin." if node.untrust_device(args.device_id)
+                      else "No local trust pin existed.")
+                return 0
+            if not args.public_key:
+                print("trust-device needs --public-key from an out-of-band verified device"); return 1
+            row = node.trust_device(args.device_id, args.public_key, name=args.name or args.device_id)
+            print("Trusted %s for endpoint-signed Mission handoff." % row["name"])
+            return 0
+        if action in ("nodes", "node-once", "node-serve"):
+            if action == "nodes":
+                rows = client._request("GET", "/v1/nodes").get("nodes") or []
+                if not rows:
+                    print("(no execution nodes have checked in)")
+                for row in rows:
+                    print("  %-20s %-8s %-8s %s" % (
+                        row.get("name", "")[:20], row.get("kind", ""), row.get("status", ""),
+                        ", ".join(row.get("capabilities") or [])))
+                return 0
+            from .online_node import OnlineNode, local_mission_executor
+            node = OnlineNode(store, name=args.device_name, kind=args.kind,
+                              capabilities=args.capability, lease_seconds=args.lease_seconds)
+            def show(value):
+                print(json.dumps(value, ensure_ascii=False, indent=2))
+            try:
+                node.serve(local_mission_executor(_state_dir()), interval=args.poll,
+                           once=action == "node-once", on_result=show)
+            except KeyboardInterrupt:
+                print("\nOnline node stopped.")
+            return 0
+        if action == "missions":
+            rows = client._request("GET", "/v1/missions").get("missions") or []
+            if not rows:
+                print("(no Online Missions)")
+            for row in rows:
+                print("  %-36s %-12s %s" % (row.get("id", ""), row.get("state", ""),
+                                              row.get("goal", "")[:70]))
+            return 0
+        if action == "mission-submit":
+            if not args.name or not args.project_id:
+                print("usage: collie online mission-submit '<goal>' --project-id ID")
+                return 1
+            try:
+                payload = json.loads(args.payload) if args.payload else {}
+                if not isinstance(payload, dict):
+                    raise ValueError("payload must be an object")
+            except (ValueError, json.JSONDecodeError) as exc:
+                print("bad --payload JSON: %s" % exc); return 1
+            if args.cloud_task:
+                payload.update(task=args.cloud_task, input=args.input or args.name)
+            from .online_node import OnlineNode
+            node = OnlineNode(store, name=args.device_name, capabilities=args.capability)
+            row = node.submit(project_id=args.project_id, goal=args.name, payload=payload,
+                              required_capabilities=args.require,
+                              fallback=args.fallback, data_class=args.data_class,
+                              cloud_budget_tokens=args.cloud_budget,
+                              target_device_id=args.target_device_id)
+            print("Queued %s · %s · fallback=%s" % (row.get("id"), row.get("state"), row.get("fallback")))
+            return 0
+        if action in ("schedules", "schedule-add"):
+            if action == "schedules":
+                rows = client._request("GET", "/v1/schedules").get("schedules") or []
+                if not rows:
+                    print("(no schedules)")
+                for row in rows:
+                    print("  %-20s %-8s next=%s  %s" % (
+                        str(row.get("id", ""))[:20], row.get("cadence", ""),
+                        row.get("next_run_at", 0), row.get("name", "")))
+                return 0
+            if not args.name or not args.project_id or not args.at:
+                print("usage: collie online schedule-add '<goal>' --project-id ID --at ISO|EPOCH")
+                return 1
+            try:
+                import datetime as _dt
+                next_run = int(args.at)
+            except ValueError:
+                try:
+                    value = args.at.replace("Z", "+00:00")
+                    next_run = int(_dt.datetime.fromisoformat(value).timestamp())
+                except ValueError:
+                    print("--at must be a Unix timestamp or ISO-8601 time"); return 1
+            from .online_node import OnlineNode
+            node = OnlineNode(store, name=args.device_name, capabilities=args.capability)
+            row = node.schedule(
+                project_id=args.project_id, name=args.title or args.name, next_run_at=next_run,
+                cadence=args.cadence, interval=args.interval, timezone=args.timezone,
+                goal=args.name, required_capabilities=args.require, fallback=args.fallback,
+                data_class=args.data_class, cloud_budget_tokens=args.cloud_budget,
+                target_device_id=args.target_device_id)
+            print("Scheduled %s · %s · next=%s" % (row.get("id"), row.get("cadence"), row.get("next_run_at")))
+            return 0
+        if action == "report":
+            path = "/v1/reports/daily?date=%s" % urllib.parse.quote(args.date or "", safe="")
+            if args.project_id:
+                path += "&project_id=" + urllib.parse.quote(args.project_id, safe="")
+            print(client._request("GET", path).get("markdown") or "(empty report)")
+            return 0
+        if action in ("journal", "journal-add"):
+            if action == "journal":
+                rows = client._request("GET", "/v1/journal").get("entries") or []
+                if not rows:
+                    print("(no journal entries)")
+                for row in rows:
+                    print("  %s  %-24s %s" % (row.get("day", ""), row.get("title", "")[:24],
+                                               row.get("body", "")[:80]))
+                return 0
+            if not args.name:
+                print("usage: collie online journal-add '<body>' [--title ...]")
+                return 1
+            row = client._request("POST", "/v1/journal", {
+                "project_id": args.project_id, "day": args.date, "title": args.title,
+                "body": args.name})["entry"]
+            print("Journal entry %s saved for %s" % (row.get("id"), row.get("day")))
+            return 0
+        broker = ConnectionBrokerClient(client)
+        if action == "connections":
+            rows = broker.list(refresh_cache=True)
+            if not rows:
+                print("(no shared connections)")
+            for row in rows:
+                print("  %-24s %-10s %-14s %-16s %d tools  %s" % (
+                    row.get("name", "")[:24], row.get("scope", ""), row.get("transport", ""), row.get("status", ""),
+                    len(row.get("manifest") or []), row.get("id", "")))
+            return 0
+        if action == "share-mcp":
+            if not args.name:
+                print("usage: collie online share-mcp <configured-name> --yes")
+                return 1
+            overrides = {}
+            for raw in args.effect or []:
+                if "=" not in raw:
+                    print("bad --effect; expected TOOL=observe|prepare|act|commit|restricted")
+                    return 1
+                name, effect = raw.split("=", 1)
+                overrides[name.strip()] = effect.strip()
+            if not args.yes:
+                print("This will end-to-end seal only the named MCP's remote credential and pin "
+                      "it to the current endpoint and reviewed tool manifest.")
+                print("Provider logins (Claude Code/Codex), browser cookies, and every other MCP "
+                      "remain local. Online stores ciphertext; approved endpoints invoke directly. "
+                      "Re-run with --yes after reviewing the named connection.")
+                return 1
+            row = broker.publish_local_mcp(
+                args.name, scope=args.scope, project_id=args.project_id,
+                effect_overrides=overrides or None)
+            print("Shared %s · %s · %s" % (row.get("name"), row.get("status"), row.get("id")))
+            print("Run `collie online sync`; devices holding your sealed-sync key can use it without "
+                  "another MCP login.")
+            return 0
+        return 1
+    except (OnlineError, ValueError) as exc:
+        print("Collie Online error: %s" % exc)
+        return 1
+    finally:
+        store.close()
 
 
 def cmd_inbox(args):
@@ -3520,7 +3966,8 @@ def cmd_mcp(args):
 CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "runners", "dashboard", "mem", "acp",
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit",
-        "activity", "doctor", "resilience", "recovery", "hooks", "supervisor", "automations", "library"}
+        "activity", "doctor", "resilience", "recovery", "hooks", "supervisor", "automations", "library",
+        "online", "routine"}
 
 
 def _setup_wizard(force=False):
@@ -3905,6 +4352,83 @@ def main(argv=None):
     pib.add_argument("id", nargs="?", default="")
     pib.add_argument("--limit", type=int, default=50)
     pib.set_defaults(fn=cmd_inbox)
+
+    prt = sub.add_parser(
+        "routine", help="private procedural memory: discover and review repeated workflows")
+    prt.add_argument("action", nargs="?", default="status",
+                     choices=["status", "discover", "candidates", "events", "workflows",
+                              "accept", "dismiss", "pause", "resume", "exclude", "include",
+                              "retention", "purge"])
+    prt.add_argument("id", nargs="?", default="", help="candidate id for accept/dismiss")
+    prt.add_argument("--project", default="", help="limit to one local project directory")
+    prt.add_argument("--status", choices=["proposed", "accepted", "dismissed", "disabled"],
+                     default="")
+    prt.add_argument("--query", default="", help="locally search workflow candidates")
+    prt.add_argument("--app", default="", help="application name for exclude/include")
+    prt.add_argument("--days", type=int, default=30, help="raw observation retention days")
+    prt.add_argument("--min-support", type=int, default=2,
+                     help="distinct sessions required before suggesting a workflow")
+    prt.add_argument("--limit", type=int, default=50)
+    prt.add_argument("--note", default="")
+    prt.add_argument("--yes", action="store_true",
+                     help="confirm candidate review or deletion of raw observations")
+    prt.add_argument("--json", action="store_true")
+    prt.set_defaults(fn=cmd_routine)
+
+    pon = sub.add_parser(
+        "online", help="optional Connected Mode: account/device sync and shared MCP connections")
+    pon.add_argument("action", nargs="?", default="status",
+                     choices=["status", "login", "logout", "sync", "connections", "share-mcp",
+                              "devices", "device-revoke", "workspaces", "workspace-create",
+                              "workspace-use", "workspace-members", "workspace-member-add",
+                              "nodes", "node-once", "node-serve", "missions", "mission-submit",
+                              "schedules", "schedule-add", "report", "journal", "journal-add",
+                              "trusted-devices", "trust-device", "untrust-device",
+                              "key-export", "key-import", "project-create", "project-link",
+                              "project-members", "project-member-add"])
+    pon.add_argument("name", nargs="?", default="", help="MCP name, Mission goal, or journal body")
+    pon.add_argument("--server", default=os.environ.get("COLLIE_ONLINE_URL", "https://api.collie.run"))
+    pon.add_argument("--device-name", default=os.environ.get("COMPUTERNAME") or
+                     os.environ.get("HOSTNAME") or "This device")
+    pon.add_argument("--replace", action="store_true", help="replace an existing local pairing")
+    pon.add_argument("--no-browser", action="store_true", help="print the pairing URL without opening it")
+    pon.add_argument("--no-wait", action="store_true", help="start pairing without polling for completion")
+    pon.add_argument("--local-only", action="store_true", help="logout locally without revoking the cloud device")
+    pon.add_argument("--force", action="store_true", help="logout locally if server revocation is unavailable")
+    pon.add_argument("--forget-mirror", action="store_true", help="also delete downloaded Online objects")
+    pon.add_argument("--limit", type=int, default=100)
+    pon.add_argument("--scope", choices=["personal", "project"], default="personal")
+    pon.add_argument("--project-id", default="")
+    pon.add_argument("--workspace-id", default="")
+    pon.add_argument("--device-id", default="")
+    pon.add_argument("--target-device-id", default="", help="endpoint bound to a Mission or schedule")
+    pon.add_argument("--public-key", default="", help="out-of-band verified Ed25519 device key")
+    pon.add_argument("--user-id", default="")
+    pon.add_argument("--role", choices=["admin", "member", "guest"], default="member")
+    pon.add_argument("--local-project", default="", help="local Collie memory project to bind")
+    pon.add_argument("--cwd", default="", help="local workspace path for a project binding")
+    pon.add_argument("--memory-class", choices=["sealed", "cloud_indexed"], default="sealed")
+    pon.add_argument("--capability", action="append", default=[], help="additional capability this node has")
+    pon.add_argument("--require", action="append", default=[], help="capability required by a Mission")
+    pon.add_argument("--kind", choices=["device", "home"], default="device")
+    pon.add_argument("--lease-seconds", type=int, default=90)
+    pon.add_argument("--poll", type=float, default=5)
+    pon.add_argument("--fallback", choices=["wait", "home_node", "cloud_light"], default="wait")
+    pon.add_argument("--data-class", choices=["cloud_indexed", "sealed"], default="cloud_indexed")
+    pon.add_argument("--cloud-budget", type=int, default=0)
+    pon.add_argument("--cloud-task", choices=["summarize", "classify", "extract", "draft"], default="")
+    pon.add_argument("--input", default="")
+    pon.add_argument("--payload", default="", help="Mission payload JSON")
+    pon.add_argument("--at", default="", help="schedule start as ISO-8601 or Unix seconds")
+    pon.add_argument("--cadence", choices=["once", "daily", "weekly"], default="once")
+    pon.add_argument("--interval", type=int, default=1)
+    pon.add_argument("--timezone", default="UTC")
+    pon.add_argument("--date", default="", help="daily report/journal date YYYY-MM-DD")
+    pon.add_argument("--title", default="")
+    pon.add_argument("--effect", action="append", default=[], metavar="TOOL=EFFECT",
+                     help="override a manifest tool effect after review; repeatable")
+    pon.add_argument("--yes", action="store_true", help="confirm uploading this named MCP credential")
+    pon.set_defaults(fn=cmd_online)
 
     pau = sub.add_parser("audit", help="what the gate decided, and under which rule")
     pau.add_argument("--limit", type=int, default=40)

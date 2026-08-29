@@ -106,3 +106,23 @@ def test_security_center_lists_and_revokes_exact_standing_override(tmp_path):
         raise AssertionError("standing-authority revoke needs confirmation")
     assert security_revoke_risk(
         "mcp__files__read_*", str(tmp_path), confirmed=True)["removed"] is True
+
+
+def test_security_center_lists_and_revokes_authority_grant(tmp_path):
+    from harness.authority import AuthorityStore, GrantScope
+    from harness.controlcenter import security_revoke_grant, security_snapshot
+
+    store = AuthorityStore(str(tmp_path / "authority.db"))
+    grant = store.add(scope=GrantScope.PROJECT, action="publish", project="collie",
+                      target="https://example.test")
+    store.close()
+    listed = security_snapshot(str(tmp_path))["authority_grants"]
+    assert listed == [{
+        "id": grant.id, "scope": "project", "action": "publish", "project": "collie",
+        "mission_id": "", "workflow_id": "", "connection_id": "",
+        "target": "https://example.test", "account": "", "recipients": [],
+        "max_amount": None, "currency": "", "expires_at": 0,
+        "created_at": grant.created_at, "source": "user",
+    }]
+    assert security_revoke_grant(grant.id, str(tmp_path), confirmed=True)["removed"] is True
+    assert security_snapshot(str(tmp_path))["authority_grants"] == []

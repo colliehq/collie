@@ -289,6 +289,41 @@ def memory_review(memory_id: int, action: str, path=None, *, note: str = "",
     return {"ok": True, "claim": _public_claim(reviewed)}
 
 
+def procedure_snapshot(path=None, *, project: str | None = None,
+                       event_limit: int = 50) -> dict:
+    from .procedure_memory import ProcedureMemory
+    with ProcedureMemory(os.path.join(_root(path), "procedural-memory.db")) as store:
+        value = store.snapshot(project=project, event_limit=event_limit)
+    value["at"] = time.time()
+    return value
+
+
+def procedure_discover(path=None, *, project: str | None = None,
+                       min_support: int = 2) -> dict:
+    from .procedure_memory import ProcedureMemory
+    with ProcedureMemory(os.path.join(_root(path), "procedural-memory.db")) as store:
+        candidates = store.discover(project=project, min_support=min_support)
+    return {"ok": True, "candidates": candidates}
+
+
+def procedure_review(candidate_id: str, action: str, path=None, *, note: str = "",
+                     confirmed: bool = False) -> dict:
+    from .procedure_memory import ProcedureMemory
+    with ProcedureMemory(os.path.join(_root(path), "procedural-memory.db")) as store:
+        candidate = store.review(candidate_id, action, confirmed=confirmed, note=note)
+    return {"ok": True, "candidate": candidate}
+
+
+def procedure_privacy(path=None, *, enabled=None, paused=None, retention_days=None,
+                      exclude_app: str = "", include_app: str = "") -> dict:
+    from .procedure_memory import ProcedureMemory
+    with ProcedureMemory(os.path.join(_root(path), "procedural-memory.db")) as store:
+        privacy = store.update_privacy(
+            enabled=enabled, paused=paused, retention_days=retention_days,
+            exclude_app=exclude_app, include_app=include_app)
+    return {"ok": True, "privacy": privacy}
+
+
 def budget_snapshot(path=None, *, live_quota: bool = False) -> dict:
     """Aggregate content-free Mission, automation, run-history and quota usage."""
     root = _root(path)
@@ -364,6 +399,7 @@ def security_snapshot(path=None) -> dict:
     from .extensions import ExtensionStore
     from .overrides import RiskOverrideStore
     from .workidentity import public_connections
+    from .authority import AuthorityStore
 
     values = settings.all_values()
     try:
@@ -376,6 +412,24 @@ def security_snapshot(path=None) -> dict:
     except Exception:
         extensions, extension_connections = [], []
     risk = RiskOverrideStore(os.path.join(root, "risk_overrides.json"))
+    grants = []
+    authority = None
+    try:
+        authority = AuthorityStore(os.path.join(root, "authority.db"))
+        grants = [{
+            "id": row.id, "scope": row.scope.value, "action": row.action,
+            "project": row.project, "mission_id": row.mission_id,
+            "workflow_id": row.workflow_id, "connection_id": row.connection_id,
+            "target": row.target, "account": row.account,
+            "recipients": list(row.recipients), "max_amount": row.max_amount,
+            "currency": row.currency, "expires_at": row.expires_at,
+            "created_at": row.created_at, "source": row.source,
+        } for row in authority.list()]
+    except (OSError, sqlite3.Error, ValueError):
+        grants = []
+    finally:
+        if authority is not None:
+            authority.close()
     return {
         "at": time.time(),
         "browser": {"site_access": values.get("BROWSER_SITE_ACCESS", "all_except_sensitive"),
@@ -383,6 +437,7 @@ def security_snapshot(path=None) -> dict:
                         values.get("BROWSER_SENSITIVE_HOSTS", "")).split(",") if item.strip()]},
         "risk_overrides": [{"pattern": row.pattern, "risk": row.risk.value}
                            for row in risk.list()],
+        "authority_grants": grants,
         "mcp": servers, "work_identities": public_connections(root),
         "extension_connections": extension_connections,
         "extensions": [{"id": row.get("id"), "name": row.get("name"),
@@ -403,6 +458,21 @@ def security_revoke_risk(pattern: str, path=None, *, confirmed: bool = False) ->
         raise ValueError("an exact risk-override pattern is required")
     store = RiskOverrideStore(os.path.join(_root(path), "risk_overrides.json"))
     return {"ok": True, "pattern": pattern, "removed": bool(store.unset(pattern))}
+
+
+def security_revoke_grant(grant_id: str, path=None, *, confirmed: bool = False) -> dict:
+    """Revoke one exact Authority v2 grant."""
+    from .authority import AuthorityStore
+    if not confirmed:
+        raise ValueError("confirmed=true is required to revoke standing authority")
+    grant_id = str(grant_id or "").strip()
+    if not grant_id or len(grant_id) > 64:
+        raise ValueError("an exact authority grant id is required")
+    store = AuthorityStore(os.path.join(_root(path), "authority.db"))
+    try:
+        return {"ok": True, "id": grant_id, "removed": bool(store.revoke(grant_id))}
+    finally:
+        store.close()
 
 
 def snapshot(path=None) -> dict:

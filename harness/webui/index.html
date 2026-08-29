@@ -803,6 +803,7 @@
     background: var(--surface); color: var(--muted); padding: 4px 7px; cursor: pointer; font: 10.5px var(--sans); }
   .activity-empty { color: var(--faint); padding: 8px 2px; font-size: 11.5px; }
   .control-tabs { display:flex; gap:5px; overflow-x:auto; margin:0 0 12px; padding-bottom:2px; }
+  .control-tabs[hidden] { display:none; }
   .control-tabs button { flex:none; border:1px solid var(--line); border-radius:999px; padding:6px 10px;
     background:var(--surface-2); color:var(--muted); font:600 11px var(--sans); cursor:pointer; }
   .control-tabs button.on { color:var(--pine); border-color:color-mix(in srgb,var(--pine) 45%,var(--line));
@@ -1154,6 +1155,16 @@
   .attach svg { width: 17px; height: 17px; }
   .attach-strip { max-width: 980px; margin: 0 auto 8px; display: flex; gap: 8px; flex-wrap: wrap; }
   .attach-strip[hidden] { display: none; }
+  .ide-context-strip { max-width:980px; margin:0 auto 8px; display:flex; gap:6px; flex-wrap:wrap; }
+  .ide-context-strip[hidden] { display:none; }
+  .ide-context-chip { min-width:0; max-width:min(320px,100%); display:flex; align-items:center; gap:6px;
+    padding:5px 7px 5px 9px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2);
+    color:var(--muted); font:11px var(--mono); }
+  .ide-context-chip .ctx-kind { color:var(--pine); text-transform:uppercase; font-size:9px; letter-spacing:.06em; }
+  .ide-context-chip .ctx-label { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .ide-context-chip .ctx-rm { flex:none; width:18px; height:18px; padding:0; border:0; border-radius:5px;
+    background:transparent; color:var(--faint); cursor:pointer; line-height:18px; }
+  .ide-context-chip .ctx-rm:hover { color:var(--coral); background:var(--surface); }
   .thumb { position: relative; width: 56px; height: 56px; border-radius: 9px; overflow: hidden;
            border: 1px solid var(--line); background: var(--surface-2); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -1604,6 +1615,10 @@
     padding:6px 6px 6px 11px; box-shadow:0 1px 1px rgba(0,0,0,.02); }
   .composer .inner:focus-within { box-shadow:0 0 0 2px color-mix(in srgb,var(--pine) 15%,transparent); }
   .hint { max-width:840px; margin-top:5px; font-size:10px; }
+  body.ide-embed .topbar-tools [data-desktop-only], body.ide-embed #meetingBtn,
+  body.ide-embed #recordBtn { display:none !important; }
+  body.ide-embed .composer { padding-bottom:9px; }
+  body.ide-embed .hint { opacity:.7; }
 
   /* Run setup is a real sheet.  All axes remain present but become scan-friendly columns. */
   .mode-menu { position:fixed; inset:64px 18px 92px auto; width:min(760px,calc(100vw - 36px));
@@ -1673,6 +1688,100 @@
   .library-grid,.activity-grid { gap:8px; }
   .library-card,.activity-lane { border-radius:10px; box-shadow:none; }
 
+  /* Online is a first-class product page. It keeps the quiet shell but gives connection state,
+     onboarding and local-first boundaries enough visual hierarchy to be understood at a glance. */
+  .online-nav-status { width:7px; height:7px; margin-left:auto; border-radius:50%;
+    background:var(--line); box-shadow:0 0 0 3px transparent; }
+  .online-nav-status.connected { background:var(--meadow); box-shadow:0 0 0 3px var(--meadow-bg); }
+  .activity-panel.online-page .activity-inner { max-width:1120px; }
+  .activity-panel.online-page .activity-head { border-bottom:0; padding-bottom:6px; }
+  .activity-panel.online-page .activity-head strong { font-size:22px; letter-spacing:-.025em; }
+  .activity-panel.online-page .control-summary { max-width:720px; margin:0 0 18px; font-size:12.5px; line-height:1.55; }
+  .activity-panel.online-page .activity-grid.online-dashboard { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:10px; }
+  .online-hero { position:relative; grid-column:1/-1; min-height:230px; display:grid;
+    grid-template-columns:minmax(0,1.35fr) minmax(250px,.65fr); gap:26px; overflow:hidden;
+    padding:28px; border:1px solid color-mix(in srgb,var(--pine) 20%,var(--line));
+    border-radius:18px; background:linear-gradient(135deg,var(--surface),color-mix(in srgb,var(--meadow-bg) 58%,var(--surface))); }
+  .online-hero-copy { position:relative; z-index:1; align-self:center; }
+  .online-eyebrow { margin-bottom:9px; color:var(--pine); font:700 10px var(--mono);
+    letter-spacing:.11em; text-transform:uppercase; }
+  .online-hero h2 { max-width:650px; margin:0; color:var(--ink); font-size:clamp(28px,4vw,44px);
+    line-height:1.04; letter-spacing:-.05em; text-wrap:balance; }
+  .online-hero p { max-width:660px; margin:13px 0 0; color:var(--muted); font-size:13.5px; line-height:1.62; }
+  .online-hero-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; }
+  .online-button { min-height:38px; border:1px solid var(--line); border-radius:9px; padding:0 13px;
+    background:var(--surface); color:var(--ink); font:600 12px var(--sans); cursor:pointer; }
+  .online-button:hover { border-color:var(--pine); }
+  .online-button.primary { border-color:var(--ink); background:var(--ink); color:var(--surface); }
+  .online-button.quiet { border-color:transparent; background:transparent; color:var(--muted); }
+  .online-orbit { position:relative; min-height:174px; display:grid; place-items:center; align-self:center; }
+  .online-orbit:before,.online-orbit:after { content:""; position:absolute; width:152px; height:152px;
+    border:1px solid color-mix(in srgb,var(--pine) 23%,transparent); border-radius:50%; }
+  .online-orbit:after { width:220px; height:220px; border-color:color-mix(in srgb,var(--pine) 12%,transparent); }
+  .online-core { position:relative; z-index:2; width:86px; height:86px; display:grid; place-items:center;
+    border-radius:27px; background:var(--pine); color:var(--on-accent); box-shadow:0 20px 42px color-mix(in srgb,var(--pine) 25%,transparent); }
+  .online-core svg { width:40px; height:40px; }
+  .online-node { position:absolute; z-index:3; width:34px; height:34px; display:grid; place-items:center;
+    border:1px solid var(--line); border-radius:11px; background:var(--surface); color:var(--pine);
+    box-shadow:0 8px 24px rgba(0,0,0,.06); font:700 10px var(--mono); }
+  .online-node.a { top:13px; right:32px; }.online-node.b { bottom:14px; left:25px; }
+  .online-node.c { bottom:4px; right:25px; }
+  .online-trust { grid-column:1/-1; display:grid; grid-template-columns:repeat(3,1fr);
+    border:1px solid var(--line); border-radius:12px; background:var(--surface); overflow:hidden; }
+  .online-trust-item { display:flex; align-items:center; gap:9px; min-height:54px; padding:10px 13px; color:var(--muted); font-size:11px; }
+  .online-trust-item + .online-trust-item { border-left:1px solid var(--line); }
+  .online-trust-item i { width:7px; height:7px; flex:none; border-radius:50%; background:var(--meadow); box-shadow:0 0 0 3px var(--meadow-bg); }
+  .online-trust-item strong { display:block; color:var(--ink); font-size:11.5px; }
+  .online-onboarding { grid-column:span 7; padding:20px; border:1px solid var(--line); border-radius:14px; background:var(--surface); }
+  .online-onboarding-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:15px; }
+  .online-onboarding h3,.online-section h3 { margin:0; color:var(--ink); font-size:14px; }
+  .online-onboarding-head p { margin:4px 0 0; color:var(--muted); font-size:11.5px; }
+  .online-progress { color:var(--pine); font:700 10px var(--mono); }
+  .online-step { display:grid; grid-template-columns:25px minmax(0,1fr); gap:10px; padding:10px 0; border-top:1px solid var(--line-2); }
+  .online-step:first-of-type { border-top:0; }
+  .online-step-num { width:23px; height:23px; display:grid; place-items:center; border:1px solid var(--line);
+    border-radius:50%; color:var(--muted); font:700 10px var(--mono); }
+  .online-step.done .online-step-num { border-color:var(--meadow); background:var(--meadow-bg); color:var(--pine); }
+  .online-step strong { display:block; color:var(--ink); font-size:12px; }
+  .online-step p { margin:2px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }
+  .online-bind-form { grid-column:1/-1; display:grid; grid-template-columns:minmax(0,1fr) 155px auto;
+    gap:7px; margin-top:9px; }
+  .online-bind-form input,.online-bind-form select { min-width:0; height:37px; border:1px solid var(--line);
+    border-radius:8px; padding:0 9px; background:var(--surface-2); color:var(--ink); font:11.5px var(--sans); }
+  .online-card { grid-column:span 5; display:grid; grid-template-columns:repeat(2,1fr); gap:8px;
+    padding:20px; border:1px solid var(--line); border-radius:14px; background:var(--surface); }
+  .online-card-title { grid-column:1/-1; color:var(--muted); font:700 10px var(--mono); letter-spacing:.08em; text-transform:uppercase; }
+  .online-stat { padding:12px; border-radius:10px; background:var(--surface-2); }
+  .online-stat b { display:block; color:var(--ink); font-size:22px; letter-spacing:-.04em; }
+  .online-stat span { color:var(--muted); font-size:10.5px; }
+  .online-section { grid-column:span 6; min-width:0; border:1px solid var(--line); border-radius:14px;
+    background:var(--surface); overflow:hidden; }
+  .online-section-head { display:flex; align-items:center; gap:9px; min-height:47px; padding:11px 14px; border-bottom:1px solid var(--line); }
+  .online-section-head span { margin-left:auto; color:var(--muted); font:10px var(--mono); }
+  .online-section .activity-rows { padding:5px 12px; }
+  .online-section .activity-row { min-height:40px; }
+  .online-section .activity-empty { padding:17px 14px; }
+  .online-footnote { grid-column:1/-1; display:flex; align-items:flex-start; gap:8px; padding:6px 2px;
+    color:var(--faint); font-size:10.5px; line-height:1.5; }
+  .online-footnote svg { width:14px; height:14px; flex:none; color:var(--pine); }
+  .online-local { width:min(720px,100%); padding-top:22px; }
+  .online-local h2 { max-width:620px; margin:0; color:var(--ink); font-size:32px; line-height:1.08;
+    letter-spacing:-.045em; text-wrap:balance; }
+  .online-local-lede { max-width:620px; margin:12px 0 20px; color:var(--muted); font-size:13px; line-height:1.6; }
+  .online-local-action { margin-bottom:34px; }
+  .online-local-list { border-top:1px solid var(--line); }
+  .online-local-row { display:grid; grid-template-columns:145px minmax(0,1fr); gap:18px;
+    padding:15px 0; border-bottom:1px solid var(--line); }
+  .online-local-row strong { color:var(--ink); font-size:12px; }
+  .online-local-row span { color:var(--muted); font-size:12px; line-height:1.5; }
+  .online-local-boundary { display:flex; align-items:flex-start; gap:9px; margin-top:22px;
+    color:var(--faint); font-size:11px; line-height:1.5; }
+  .online-local-boundary svg { width:15px; height:15px; flex:none; color:var(--ink); }
+  .activity-panel.online-page .online-hero { min-height:0; grid-template-columns:1fr; padding:21px;
+    border-radius:12px; background:var(--surface); }
+  .activity-panel.online-page .online-hero h2 { font-size:27px; }
+  .activity-panel.online-page .online-orbit { display:none; }
+
   /* First run: one recommended row, then compact alternatives. */
   .ob-overlay { padding:18px; background:color-mix(in srgb,var(--bg) 82%,transparent); backdrop-filter:blur(8px); }
   .ob-card { width:min(520px,96vw); padding:22px; border-radius:16px; }
@@ -1706,11 +1815,24 @@
     .mode-menu-head,.mode-auto-note { grid-column:1; }
     .set-overview-grid { display:block; }
     .set-overview-card + .set-overview-card { margin-left:0; border-top:1px solid var(--line-2); }
+    .online-hero { grid-template-columns:1fr; min-height:0; }
+    .online-orbit { display:none; }
+    .online-onboarding,.online-card,.online-section { grid-column:1/-1; }
   }
   @media (max-width:620px) {
     .wc-card { grid-template-columns:1fr; gap:1px; }
     .wc-trust { display:none; }
     .topbar-tools { position:fixed; top:48px; right:8px; }
+    .activity-panel.online-page .activity-inner { padding:20px 14px 32px; }
+    .online-hero { padding:21px 18px; border-radius:14px; }
+    .online-hero h2 { font-size:30px; }
+    .online-trust { grid-template-columns:1fr; }
+    .online-trust-item + .online-trust-item { border-left:0; border-top:1px solid var(--line); }
+    .online-onboarding,.online-card { padding:16px; }
+    .online-bind-form { grid-template-columns:1fr; }
+    .online-local { padding-top:12px; }
+    .online-local h2 { font-size:27px; }
+    .online-local-row { grid-template-columns:1fr; gap:4px; }
   }
 </style>
 
@@ -1743,6 +1865,10 @@
       <button type="button" class="side-nav-item" id="navPack">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="12" height="9" rx="2"/><path d="M7 17h4M9 13v4M17 9h4v10h-7v-4"/></svg>
         <span data-i18n="Pack">Pack</span>
+      </button>
+      <button type="button" class="side-nav-item" id="navOnline">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 18.5h11a4 4 0 0 0 .6-7.96A6.4 6.4 0 0 0 5.7 9.3a4.6 4.6 0 0 0 .8 9.2Z"/><path d="M9 14h6M12 11v6"/></svg>
+        <span data-i18n="Online">Online</span><span class="online-nav-status" id="onlineNavStatus" title="Not connected"></span>
       </button>
       <button type="button" class="side-nav-item" id="navLibrary">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h5v16H5zM14 4h5v16h-5z"/><path d="M7 8h1M16 8h1"/></svg>
@@ -1981,7 +2107,7 @@
 
     <section class="activity-panel" id="activityPanel" role="region" aria-label="Activity and health" data-i18n-aria-label="Activity and health" hidden>
       <div class="activity-inner">
-        <div class="activity-head"><strong>Control Center</strong><span class="activity-health" id="activityHealth">loading</span>
+        <div class="activity-head"><strong id="activityTitle">Control Center</strong><span class="activity-health" id="activityHealth">loading</span>
           <span class="spacer"></span><button type="button" id="activityRefresh">Refresh</button>
           <button type="button" id="activityClose" aria-label="Close activity" data-i18n-aria-label="Close activity">×</button></div>
         <div class="control-tabs" id="controlTabs" role="tablist" aria-label="Control Center">
@@ -1989,6 +2115,7 @@
           <button type="button" data-control-tab="recovery">Recovery</button>
           <button type="button" data-control-tab="automations">Automations</button>
           <button type="button" data-control-tab="memory">Memory</button>
+          <button type="button" data-control-tab="procedures">Habits</button>
           <button type="button" data-control-tab="budgets">Budgets</button>
           <button type="button" data-control-tab="security">Permissions</button>
         </div>
@@ -2005,6 +2132,7 @@
     <!-- composer -->
     <div class="composer" id="composer">
       <div class="attach-strip" id="attachStrip" hidden></div>
+      <div class="ide-context-strip" id="ideContextStrip" aria-label="Attached IDE context" hidden></div>
       <div class="inner">
         <div class="slash-menu" id="slashMenu" role="listbox" aria-label="Commands" data-i18n-aria-label="Commands" hidden>
           <button type="button" class="slash-option" role="option" data-command="/mission ">
@@ -2345,6 +2473,24 @@
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+  var IDE_QUERY = new URLSearchParams(location.search);
+  var IDE_EMBED = IDE_QUERY.has("vscode_embed");
+  var IDE_SURFACE = IDE_QUERY.get("surface") || "";
+  var IDE_PREFS = { followUpQueueMode: IDE_QUERY.get("followup") === "steer" ? "steer" : "queue",
+                    autoFocus: false };
+  if (IDE_EMBED) document.body.classList.add("ide-embed", "ide-" + (IDE_SURFACE || "sidebar"));
+  function focusComposer(userRequested) {
+    var input = $("input");
+    if (!input || (IDE_EMBED && !userRequested && !IDE_PREFS.autoFocus)) return false;
+    input.focus(); return true;
+  }
+  if (IDE_EMBED && $("mapBtn")) {
+    $("mapBtn").removeAttribute("target");
+    $("mapBtn").addEventListener("click", function (event) {
+      event.preventDefault();
+      window.parent.postMessage({type:"collie:openMap"}, "*");
+    });
+  }
   // CSRF token injected same-origin by the server; sent on every state-changing / agent-running
   // request so a drive-by page (which can't read this same-origin HTML) can't trigger them.
   var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
@@ -2475,7 +2621,7 @@
     return "en";
   }
   var ZH = {
-    "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Library": "能力库", "Activity": "活动", "Worker": "工作进程", "Service": "服务",
+    "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Online": "在线协作", "Library": "能力库", "Activity": "活动", "Worker": "工作进程", "Service": "服务",
     "Needs You": "需要你", "New task": "新任务", "Recent work": "最近工作",
     "No sessions yet.": "还没有对话。", "Loading model…": "正在加载模型…", "Model unavailable": "模型不可用",
     "idle": "空闲", "running": "运行中", "stopping": "正在停止",
@@ -2718,7 +2864,7 @@
   // Traditional Chinese (Taiwan idiom). Generated from ZH via OpenCC s2twp — 設定/儲存/載入/訊息/
   // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
   var ZHTW = {
-    "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Library": "能力庫", "Activity": "活動", "Worker": "工作程序", "Service": "服務",
+    "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Online": "線上協作", "Library": "能力庫", "Activity": "活動", "Worker": "工作程序", "Service": "服務",
     "Needs You": "需要你", "New task": "新任務", "Recent work": "最近工作",
     "No sessions yet.": "還沒有對話。", "Loading model…": "正在載入模型…", "Model unavailable": "模型無法使用",
     "idle": "閒置", "running": "執行中", "stopping": "正在停止",
@@ -2949,7 +3095,9 @@
     "Screen record (webcam bubble + mic)":"屏幕录制（摄像头浮窗与麦克风）","Screen record":"屏幕录制",
     "Close activity":"关闭活动面板","Scroll to latest":"滚动到最新内容","Commands":"命令",
     "Message Collie":"给 Collie 发消息","Attach image (or paste / drop one)":"附加图片（也可粘贴或拖放）",
-    "Attach image":"附加图片","Send":"发送","Allow once":"仅允许这一次","Allow for this run":"本次任务内允许",
+    "Attach image":"附加图片","Send":"发送","Allow once":"仅允许这一次","Allow for this run":"本次运行内允许",
+    "Allow for this Mission":"本 Mission 内允许","Allow for this workflow":"此工作流内允许",
+    "Allow for this project":"此项目内允许","Allow for this connection":"此连接内允许",
     "Don’t allow":"不允许","detecting a repository check…":"正在检测仓库检查命令…",
     "Proposed verification command":"建议的验证命令",
     "Saved default":"已保存的默认值","Use the worker selected in Settings":"使用设置中选择的工作进程",
@@ -3006,7 +3154,9 @@
     "Screen record (webcam bubble + mic)":"螢幕錄製（攝影機浮動視窗與麥克風）","Screen record":"螢幕錄製",
     "Close activity":"關閉活動面板","Scroll to latest":"捲動到最新內容","Commands":"命令",
     "Message Collie":"傳訊息給 Collie","Attach image (or paste / drop one)":"附加圖片（也可貼上或拖放）",
-    "Attach image":"附加圖片","Send":"傳送","Allow once":"僅允許這一次","Allow for this run":"本次任務內允許",
+    "Attach image":"附加圖片","Send":"傳送","Allow once":"僅允許這一次","Allow for this run":"本次執行內允許",
+    "Allow for this Mission":"本 Mission 內允許","Allow for this workflow":"此工作流程內允許",
+    "Allow for this project":"此專案內允許","Allow for this connection":"此連線內允許",
     "Don’t allow":"不允許","detecting a repository check…":"正在偵測儲存庫檢查命令…",
     "Proposed verification command":"建議的驗證命令",
     "Saved default":"已儲存的預設值","Use the worker selected in Settings":"使用設定中選擇的工作程序",
@@ -4371,9 +4521,9 @@
   // through addEvent, because this one is not a record of something that happened — it is
   // a question, and the run stays suspended until it is answered from here, from a phone,
   // or from the desktop. Whoever answers first wins; the rest see the row settle.
-  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, PERMISSION_EPOCH = 0;
+  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, ONLINE_NEEDS = 0, PERMISSION_EPOCH = 0;
   function updateNeedsYou() {
-    var n = Object.keys(GLOBAL_PERMS || {}).length, nav = $("needsYouNav"), count = $("needsYouCount");
+    var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
     nav.hidden = n === 0; count.textContent = String(n);
     if (!n && nav.classList.contains("on") && typeof setProductNav === "function") setProductNav("home");
@@ -4414,6 +4564,13 @@
     // otherwise would be a button that quietly means "just this once".
     if (d.rule_offer) btns += ' <button data-a="always" title="' + esc(d.rule_offer) + '">' +
       esc(t("Allow for this run")) + '</button>';
+    var grants = Array.isArray(d.grant_options) ? d.grant_options : [];
+    var grantLabels = { mission: "Allow for this Mission", workflow: "Allow for this workflow",
+      project: "Allow for this project", connection: "Allow for this connection" };
+    grants.forEach(function (scope) {
+      if (grantLabels[scope]) btns += ' <button data-a="' + esc(scope) + '">' +
+        esc(t(grantLabels[scope])) + '</button>';
+    });
     btns += ' <button data-a="deny">' + esc(t("Don’t allow")) + '</button>';
     row.innerHTML =
       '<span class="ico">' + ICON["flag"] + '</span>' +
@@ -4550,6 +4707,16 @@
       }).join("");
     }
     block.innerHTML = '<div class="dhead">' + esc(path || "(edit)") + '</div>';
+    var head = block.querySelector(".dhead");
+    if (IDE_EMBED && path && head) {
+      head.setAttribute("role", "button"); head.tabIndex = 0;
+      head.title = "Open this change in the editor diff view";
+      var review = function () { window.parent.postMessage({ type:"collie:reviewFile", path:String(path) }, "*"); };
+      head.onclick = review;
+      head.onkeydown = function (event) {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); review(); }
+      };
+    }
     pre.innerHTML = lines(oldStr, "-", "del") + lines(newStr, "+", "add");
     block.appendChild(pre);
     d.appendChild(block);
@@ -4998,6 +5165,48 @@
             note:note,confirmed:true}).then(loadActivity); });
     }));
   }
+  function renderProcedures(data) {
+    var privacy = data.privacy || {}, candidates = data.candidates || [];
+    var pending = candidates.filter(function (row) { return row.status === "proposed"; });
+    $("activityHealth").textContent = privacy.paused ? "paused" : pending.length + " suggestions";
+    $("activityHealth").classList.toggle("bad", false);
+    $("controlSummary").textContent =
+      "Collie learns action shapes locally, never screen or typed content. Raw observations stay on this device; only sealed derivatives can sync.";
+    var grid = $("activityGrid"); grid.textContent = "";
+    var controls = document.createElement("div"); controls.className = "control-actions";
+    var discover = document.createElement("button"); discover.textContent = "Find repeated workflows";
+    discover.onclick = function () { return activityPost("/api/procedures/discover", {min_support:2})
+      .then(function () { activityNotice("Local workflow discovery finished.", false); loadActivity(); })
+      .catch(function (e) { activityNotice(e.message, true); }); };
+    var pause = document.createElement("button"); pause.textContent = privacy.paused ? "Resume learning" : "Pause learning";
+    pause.onclick = function () { return activityPost("/api/procedures/privacy",
+      {paused:!privacy.paused}).then(loadActivity); };
+    controls.appendChild(discover); controls.appendChild(pause); grid.appendChild(controls);
+    grid.appendChild(activityLane("Suggestions", candidates, function (row, candidate) {
+      activityText(row, candidate.title, candidate.status);
+      activityDetail(row, candidate.support + " sessions · " +
+        Math.round(100 * Number(candidate.confidence || 0)) + "% confidence · no execution authority");
+      if (candidate.status === "proposed") {
+        activityAction(row, "Accept", function () {
+          if (!window.confirm("Keep this learned workflow? It will still have no execution authority.")) return;
+          return activityPost("/api/procedures/review",
+            {id:candidate.candidate_id,action:"accept",confirm:true}).then(loadActivity); });
+        activityAction(row, "Dismiss", function () {
+          if (!window.confirm("Dismiss this workflow suggestion?")) return;
+          return activityPost("/api/procedures/review",
+            {id:candidate.candidate_id,action:"dismiss",confirm:true}).then(loadActivity); });
+      }
+    }));
+    grid.appendChild(activityLane("Accepted workflows", data.workflows || [], function (row, workflow) {
+      activityText(row, workflow.title, workflow.status);
+      activityDetail(row, "Authority: " + workflow.authority_scope +
+        " · sealed derivative · execution remains review-gated");
+    }));
+    grid.appendChild(activityLane("Recent local observations", data.events || [], function (row, event) {
+      activityText(row, event.app + " · " + event.action, "device only");
+      activityDetail(row, event.object_kind + (event.object_ref ? " · " + event.object_ref : ""));
+    }));
+  }
   function meterRow(row, id, used, limit, suffix) {
     var pct = limit > 0 ? Math.min(100, Math.round(100 * used / limit)) : 0;
     activityText(row, id, used + " / " + limit + (suffix || ""));
@@ -5047,6 +5256,13 @@
       activityAction(row, "Revoke", function () { if (!window.confirm("Revoke standing authority for " + rule.pattern + "?")) return;
         return activityPost("/api/security/risk/revoke", {pattern:rule.pattern,confirmed:true}).then(loadActivity); });
     }));
+    grid.appendChild(activityLane("Authority grants", data.authority_grants || [], function (row, grant) {
+      activityText(row, grant.action + " · " + grant.scope, grant.project || grant.connection_id || "personal");
+      var bounds = [grant.target, grant.account, (grant.recipients || []).join(", ")].filter(Boolean).join(" · ");
+      activityDetail(row, bounds || "bounded by the original action intent");
+      activityAction(row, "Revoke", function () { if (!window.confirm("Revoke this " + grant.scope + " authorization?")) return;
+        return activityPost("/api/security/authority/revoke", {id:grant.id,confirmed:true}).then(loadActivity); });
+    }));
     grid.appendChild(activityLane("MCP connections", data.mcp || [], function (row, item) {
       activityText(row, item.name, item.enabled === false ? "disabled" : item.auth || item.status || "configured");
     }));
@@ -5059,6 +5275,227 @@
         return item.permissions[key] === true || (Array.isArray(item.permissions[key]) && item.permissions[key].length); }).join(", "));
     }));
   }
+  var onlinePairTimer = 0;
+  function pollOnlinePairing() {
+    clearTimeout(onlinePairTimer);
+    activityPost("/api/online/action", {action:"poll_pairing"}).then(function (value) {
+      if (value.pending) {
+        activityNotice("Waiting for browser approval of " + ((value.pairing || {}).user_code || "the device") + "…", false);
+        onlinePairTimer = setTimeout(pollOnlinePairing, 3000);
+      } else {
+        activityNotice("This device is connected. Project and connection metadata are synced.", false);
+        loadActivity();
+      }
+    }).catch(function (error) { activityNotice(error.message || String(error), true); });
+  }
+  function updateOnlineNavState(data) {
+    var node = $("onlineNavStatus"), connected = data && data.mode === "connected";
+    if (!node) return;
+    node.classList.toggle("connected", !!connected);
+    node.title = connected ? "Connected on this device" : "Not connected";
+  }
+  function startOnlinePairing() {
+    var popup = window.open("about:blank", "_blank");
+    return activityPost("/api/online/action", {action:"start_pairing"}).then(function (pairing) {
+      var url = pairing.verification_uri_complete || pairing.verification_uri;
+      if (popup) popup.location = url; else window.open(url, "_blank");
+      activityNotice("Compare and approve code " + pairing.user_code + " in the browser.", false);
+      pollOnlinePairing(); loadActivity();
+    }).catch(function (error) {
+      if (popup) popup.close();
+      activityNotice(error.message || String(error), true);
+    });
+  }
+  function onlineSection(title, items, draw, emptyText) {
+    var section = document.createElement("section"); section.className = "online-section";
+    var head = document.createElement("div"); head.className = "online-section-head";
+    var heading = document.createElement("h3"); heading.textContent = title; head.appendChild(heading);
+    var count = document.createElement("span"); count.textContent = (items || []).length; head.appendChild(count);
+    section.appendChild(head);
+    if (!(items || []).length) {
+      var empty = document.createElement("div"); empty.className = "activity-empty";
+      empty.textContent = emptyText; section.appendChild(empty); return section;
+    }
+    var rows = document.createElement("div"); rows.className = "activity-rows";
+    (items || []).forEach(function (item) {
+      var row = document.createElement("div"); row.className = "activity-row";
+      draw(row, item); rows.appendChild(row);
+    });
+    section.appendChild(rows); return section;
+  }
+  function onlineStep(number, title, detail, done) {
+    var row = document.createElement("div"); row.className = "online-step" + (done ? " done" : "");
+    var badge = document.createElement("span"); badge.className = "online-step-num"; badge.textContent = done ? "✓" : number;
+    var copy = document.createElement("div"), strong = document.createElement("strong"), text = document.createElement("p");
+    strong.textContent = title; text.textContent = detail; copy.appendChild(strong); copy.appendChild(text);
+    row.appendChild(badge); row.appendChild(copy); return row;
+  }
+  function renderOnlineLocal(data, grid) {
+    grid.classList.remove("online-dashboard");
+    var surface = document.createElement("section"); surface.className = "online-local";
+    var title = document.createElement("h2"); title.textContent = "Keep selected work in sync.";
+    var lede = document.createElement("p"); lede.className = "online-local-lede";
+    lede.textContent = "Connect an optional account when you want the same projects, reviewed connections and handoffs on another device.";
+    var action = document.createElement("div"); action.className = "online-local-action";
+    var connect = document.createElement("button"); connect.className = "online-button primary";
+    connect.textContent = data.pairing && data.pairing.user_code ? "Continue device approval" : "Connect this device";
+    connect.onclick = data.pairing && data.pairing.verification_uri_complete ?
+      function () { window.open(data.pairing.verification_uri_complete, "_blank"); pollOnlinePairing(); } :
+      startOnlinePairing;
+    action.appendChild(connect);
+    var list = document.createElement("div"); list.className = "online-local-list";
+    [
+      ["Projects","Sync only the project memory you explicitly bind."],
+      ["Connections","Reuse reviewed MCP logins as endpoint-bound ciphertext; browser and model-provider sessions never move."],
+      ["Handoff","Let an approved device pick up signed work under its own local permissions."]
+    ].forEach(function (item) {
+      var row = document.createElement("div"); row.className = "online-local-row";
+      var label = document.createElement("strong"), copy = document.createElement("span");
+      label.textContent = item[0]; copy.textContent = item[1]; row.appendChild(label); row.appendChild(copy); list.appendChild(row);
+    });
+    var boundary = document.createElement("div"); boundary.className = "online-local-boundary";
+    boundary.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 6v6c0 5 3.4 8 8 9 4.6-1 8-4 8-9V6l-8-3Z"/></svg>' +
+      '<span>Cloud coordinates; endpoints decide. Collie opens no inbound shell and executes only signed work that passes this device\'s Authority policy.</span>';
+    surface.appendChild(title); surface.appendChild(lede); surface.appendChild(action);
+    surface.appendChild(list); surface.appendChild(boundary); grid.appendChild(surface);
+  }
+  function renderOnline(data) {
+    var connected = data.mode === "connected";
+    updateOnlineNavState(data);
+    $("activityHealth").textContent = connected ? "connected" : "not connected";
+    $("activityHealth").classList.remove("bad");
+    $("controlSummary").textContent = connected ?
+      "This device shares selected project context and reviewed connections. Models and complex execution stay local by default." :
+      "An account is optional. Local Collie remains complete; connect only for device, project and MCP sharing.";
+    var grid = $("activityGrid"); grid.textContent = "";
+    ONLINE_NEEDS = (data.missions || []).filter(function (item) { return item.state === "needs_user"; }).length;
+    updateNeedsYou();
+    if (!connected) {
+      renderOnlineLocal(data, grid);
+      return;
+    }
+
+    var hero = document.createElement("section"); hero.className = "online-hero";
+    hero.innerHTML = '<div class="online-hero-copy"><div class="online-eyebrow">Collie Online · Local-first</div>' +
+      '<h2></h2><p></p><div class="online-hero-actions"></div></div>' +
+      '<div class="online-orbit" aria-hidden="true"><div class="online-node a">MCP</div><div class="online-node b">PC</div>' +
+      '<div class="online-node c">AI</div><div class="online-core"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<path d="M13 29h23a8 8 0 0 0 1-15.9A12 12 0 0 0 14 11a9 9 0 0 0-1 18Z"/><path d="M19 24h10M24 19v10"/></svg></div></div>';
+    hero.querySelector(".online-eyebrow").textContent = "Connected device";
+    hero.querySelector("h2").textContent = (data.device || {}).name || "This device";
+    hero.querySelector("p").textContent =
+      "Selected project context and reviewed connections can sync. Models, provider sessions and final authorization stay on the device.";
+    var heroActions = hero.querySelector(".online-hero-actions");
+    var sync = document.createElement("button"); sync.className = "online-button primary"; sync.textContent = "Sync now";
+    sync.onclick = function () { return activityPost("/api/online/action", {action:"sync"})
+      .then(function () { activityNotice("Online state synced.", false); loadActivity(); }); };
+    heroActions.appendChild(sync);
+    var logout = document.createElement("button"); logout.className = "online-button"; logout.textContent = "Disconnect this device";
+    logout.onclick = function () { if (!window.confirm("Revoke this device session? This device and its local mirror will keep working.")) return;
+      return activityPost("/api/online/action", {action:"logout",confirmed:true})
+        .then(function () { activityNotice("Device disconnected; local data was kept.", false); loadActivity(); }); };
+    heroActions.appendChild(logout);
+    grid.appendChild(hero);
+
+    var trust = document.createElement("div"); trust.className = "online-trust";
+    [
+      [connected ? "Selected sync is on" : "This device stands alone", connected ? "Only bound projects cross devices" : "No account or cloud dependency"],
+      ["Cloud LLM is " + (data.cloud_llm_default || "off"), "Simple cloud tasks require an explicit route"],
+      ["Secrets stay scoped", "Provider sessions and device-only data do not sync"]
+    ].forEach(function (item) {
+      var node = document.createElement("div"); node.className = "online-trust-item";
+      var dot = document.createElement("i"), copy = document.createElement("div"), strong = document.createElement("strong");
+      strong.textContent = item[0]; copy.appendChild(strong); copy.appendChild(document.createTextNode(item[1]));
+      node.appendChild(dot); node.appendChild(copy); trust.appendChild(node);
+    });
+    grid.appendChild(trust);
+
+    var bindings = data.project_bindings || [], setupDone = connected ? 2 + (bindings.length ? 1 : 0) : 0;
+    var onboarding = document.createElement("section"); onboarding.className = "online-onboarding";
+    var onboardingHead = document.createElement("div"); onboardingHead.className = "online-onboarding-head";
+    var onboardingCopy = document.createElement("div"), onboardingTitle = document.createElement("h3"), onboardingText = document.createElement("p");
+    onboardingTitle.textContent = setupDone === 3 ? "Online is ready" : "Finish Online setup";
+    onboardingText.textContent = setupDone === 3 ? "This device has a project-scoped sync boundary." : "Three small steps; core Collie never waits for them.";
+    onboardingCopy.appendChild(onboardingTitle); onboardingCopy.appendChild(onboardingText);
+    var progress = document.createElement("span"); progress.className = "online-progress"; progress.textContent = setupDone + " / 3";
+    onboardingHead.appendChild(onboardingCopy); onboardingHead.appendChild(progress); onboarding.appendChild(onboardingHead);
+    onboarding.appendChild(onlineStep("1", "Connect an optional account",
+      connected ? "Account session is active on this device." : "Use Google, GitHub, Facebook or an email link.", connected));
+    onboarding.appendChild(onlineStep("2", "Approve this device",
+      connected ? ((data.device || {}).name || "This device") + " has a revocable device session." :
+      (data.pairing && data.pairing.user_code ? "Waiting for approval of " + data.pairing.user_code + "." : "Confirm a short comparison code in your browser."), connected));
+    onboarding.appendChild(onlineStep("3", "Bind the first project",
+      bindings.length ? bindings[0].local_project + " uses " + (bindings[0].memory_data_class || "sealed") + " sync." :
+      "Choose exactly which local project context may cross devices.", bindings.length > 0));
+    if (connected && !bindings.length) {
+      var form = document.createElement("form"); form.className = "online-bind-form";
+      var name = document.createElement("input"); name.required = true; name.maxLength = 200;
+      name.placeholder = "Project name"; name.setAttribute("aria-label", "Project name");
+      var privacy = document.createElement("select"); privacy.setAttribute("aria-label", "Project memory privacy");
+      [["sealed","Sealed · recommended"],["cloud_indexed","Cloud indexed"]].forEach(function (option) {
+        var node = document.createElement("option"); node.value = option[0]; node.textContent = option[1]; privacy.appendChild(node);
+      });
+      var create = document.createElement("button"); create.className = "online-button primary"; create.type = "submit"; create.textContent = "Create & link";
+      form.appendChild(name); form.appendChild(privacy); form.appendChild(create);
+      form.onsubmit = function (event) {
+        event.preventDefault(); create.disabled = true; create.textContent = "Creating…";
+        activityPost("/api/online/action", {action:"create_project",name:name.value,
+          local_project:name.value,memory_data_class:privacy.value}).then(function () {
+          activityNotice("Project created and linked to this device.", false); loadActivity();
+        }).catch(function (error) {
+          activityNotice(error.message || String(error), true); create.disabled = false; create.textContent = "Create & link";
+        });
+      };
+      onboarding.appendChild(form);
+    }
+    grid.appendChild(onboarding);
+
+    var metrics = document.createElement("section"); metrics.className = "online-card";
+    var metricsTitle = document.createElement("div"); metricsTitle.className = "online-card-title"; metricsTitle.textContent = connected ? "Connected workspace" : "Available after connection";
+    metrics.appendChild(metricsTitle);
+    [["Projects",(data.projects || []).length],["Bound here",bindings.length],
+      ["MCP",(data.connections || []).length],["Devices",(data.nodes || []).length + (connected ? 1 : 0)]].forEach(function (item) {
+        var stat = document.createElement("div"); stat.className = "online-stat";
+        var value = document.createElement("b"), label = document.createElement("span");
+        value.textContent = item[1]; label.textContent = item[0]; stat.appendChild(value); stat.appendChild(label); metrics.appendChild(stat);
+      });
+    grid.appendChild(metrics);
+
+    grid.appendChild(onlineSection("Projects", data.projects || [], function (row, item) {
+      var binding = bindings.filter(function (candidate) { return candidate.project_id === (item.project_id || item.id); })[0];
+      activityText(row, item.name, binding ? binding.memory_data_class : (item.role || "member"));
+      activityDetail(row, binding ? "Linked on this device as " + binding.local_project : "Available to link on this device");
+    }, connected ? "Create the first shared project above." : "Connect an account to create or join shared projects."));
+    var devices = (data.nodes || []).slice();
+    if (connected) devices.unshift({name:(data.device || {}).name || "This device",status:"connected",kind:"Collie client",capabilities:[]});
+    grid.appendChild(onlineSection("Devices & execution nodes", devices, function (row, item) {
+      activityText(row, item.name || item.id, item.status || "offline");
+      activityDetail(row, (item.kind || "device") + ((item.capabilities || []).length ? " · " + item.capabilities.join(", ") : ""));
+    }, connected ? "No additional execution nodes are online." : "Approved devices and optional local execution nodes appear here."));
+    grid.appendChild(onlineSection("Shared MCP connections", data.connections || [], function (row, item) {
+      activityText(row, item.name, item.status || "configured");
+      activityDetail(row, (item.scope || "personal") + " · " + ((item.manifest || []).length) + " reviewed tools");
+    }, connected ? "No reviewed connections are shared yet." : "Connect once to reuse reviewed MCP access across approved devices."));
+    var scheduled = (data.missions || []).map(function (item) {
+      var copy = Object.assign({}, item); copy._onlineKind = "mission"; return copy;
+    }).concat((data.schedules || []).map(function (item) {
+      var copy = Object.assign({}, item); copy._onlineKind = "schedule"; return copy;
+    }));
+    grid.appendChild(onlineSection("Missions & schedules", scheduled, function (row, item) {
+      if (item._onlineKind === "schedule") {
+        activityText(row, item.name || item.id, item.cadence || "once");
+        activityDetail(row, item.next_run_at ? "Next: " + new Date(item.next_run_at * 1000).toLocaleString() : "Schedule finished");
+      } else {
+        activityText(row, item.name || item.id || "Online mission", item.state || "queued");
+        activityDetail(row, item.state === "needs_user" ? "Needs You: inspect and reconcile before continuing." :
+          (item.lease_node_id ? "Running on " + item.lease_node_id : item.fallback || "Waiting for an eligible local node"));
+      }
+    }, connected ? "Cross-device schedules and mission handoffs appear here." : "Generate schedules and daily reports after connecting this device."));
+    var note = document.createElement("div"); note.className = "online-footnote";
+    note.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 6v6c0 5 3.4 8 8 9 4.6-1 8-4 8-9V6l-8-3Z"/></svg>' +
+      '<span>Sealed content is encrypted before upload. Device-only and secret classes never enter Online sync. Cloud LLM routing remains off until a task explicitly opts in.</span>';
+    grid.appendChild(note);
+  }
   function setControlTab(tab) {
     currentControlTab = tab || "overview";
     Array.prototype.forEach.call(document.querySelectorAll("[data-control-tab]"), function (button) {
@@ -5069,6 +5506,7 @@
     button.onclick = function () { setControlTab(button.dataset.controlTab); }; });
   function loadActivity() {
     if (!activityPanel || activityPanel.hidden) return Promise.resolve();
+    $("activityGrid").classList.toggle("online-dashboard", currentControlTab === "online");
     $("activityHealth").textContent = "loading";
     activityNotice(""); var requests, render;
     if (currentControlTab === "overview") {
@@ -5077,10 +5515,14 @@
       render = function (values) { renderOverview(values[0],values[1],values[2],values[3]); };
     } else if (currentControlTab === "recovery") {
       requests = activityGet("/api/recovery-center"); render = renderRecovery;
+    } else if (currentControlTab === "online") {
+      requests = activityGet("/api/online"); render = renderOnline;
     } else if (currentControlTab === "automations") {
       requests = activityGet("/api/automations"); render = renderAutomations;
     } else if (currentControlTab === "memory") {
       requests = activityGet("/api/memory/claims"); render = renderMemory;
+    } else if (currentControlTab === "procedures") {
+      requests = activityGet("/api/procedures"); render = renderProcedures;
     } else if (currentControlTab === "budgets") {
       requests = activityGet("/api/budgets"); render = renderBudgets;
     } else { requests = activityGet("/api/security"); render = renderSecurity; }
@@ -5088,6 +5530,22 @@
       .catch(function (error) { $("activityHealth").textContent = error.message || "unavailable";
         $("activityHealth").classList.add("bad");
         activityNotice("Activity could not refresh: " + (error.message || error || "unavailable"), true); });
+  }
+  var activityPageMode = "activity";
+  function setActivityMode(mode) {
+    activityPageMode = mode === "online" ? "online" : "activity";
+    activityPanel.classList.toggle("online-page", activityPageMode === "online");
+    $("activityTitle").textContent = activityPageMode === "online" ? "Collie Online" : "Control Center";
+    $("controlTabs").hidden = activityPageMode === "online";
+    if (activityPageMode === "online") currentControlTab = "online";
+    else if (currentControlTab === "online") currentControlTab = "overview";
+    Array.prototype.forEach.call(document.querySelectorAll("[data-control-tab]"), function (button) {
+      button.classList.toggle("on", button.dataset.controlTab === currentControlTab); });
+  }
+  function openOnlinePage() {
+    setActivityMode("online");
+    if (typeof setProductNav === "function") setProductNav("online");
+    setActivityOpen(true);
   }
   function setActivityOpen(open) {
     if (!activityPanel) return;
@@ -5101,7 +5559,9 @@
     activityButton.setAttribute("aria-expanded", open ? "true" : "false"); if (open) loadActivity();
   }
   if (activityButton) activityButton.onclick = function () {
-    var opening = activityPanel.hidden; setActivityOpen(opening);
+    var opening = activityPanel.hidden || activityPageMode !== "activity";
+    if (opening) setActivityMode("activity");
+    setActivityOpen(opening);
     if (typeof setProductNav === "function") setProductNav(opening ? "activity" : "home");
   };
   if ($("activityClose")) $("activityClose").onclick = function () {
@@ -6660,26 +7120,31 @@
     document.querySelectorAll(".side-nav-item").forEach(function (node) {
       node.classList.toggle("on", node.id === "nav" + id.charAt(0).toUpperCase() + id.slice(1));
     });
-    var titles = { home: "Home", missions: "Missions", pack: "Pack", library: "Library", activity: "Activity", needsYou: "Needs You" };
+    var titles = { home: "Home", missions: "Missions", pack: "Pack", online: "Online", library: "Library", activity: "Activity", needsYou: "Needs You" };
     var title = $("pageTitle"); if (title && titles[id]) title.textContent = t(titles[id]);
   }
-  function newThread() {
+  function newThread(userRequestedFocus) {
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null;
+    queuedFollowUps = []; clearAttached(); clearManualIdeContexts();
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     setProductNav("home"); setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
-    loadSessions(); $("input").focus();
+    loadSessions(); focusComposer(userRequestedFocus === true);
   }
-  $("newChat").onclick = newThread;
-  $("navHome").onclick = newThread;
+  $("newChat").onclick = function () { newThread(true); };
+  $("navHome").onclick = function () { newThread(true); };
   $("navMissions").onclick = function () { setProductNav("missions"); setMissionsOpen(true); };
   $("navPack").onclick = function () { openEmbeddedSurface("Pack", "/remote?embedded=1", "pack"); };
+  $("navOnline").onclick = openOnlinePage;
   $("navLibrary").onclick = function () { setProductNav("library"); setLibraryOpen(true); };
-  $("navActivity").onclick = function () { setProductNav("activity"); setActivityOpen(true); };
+  $("navActivity").onclick = function () { setActivityMode("activity"); setProductNav("activity"); setActivityOpen(true); };
   $("needsYouNav").onclick = function () {
     setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     var ids = typeof GLOBAL_PERMS === "undefined" ? [] : Object.keys(GLOBAL_PERMS);
     var id = ids.length ? ids[0] : "", rec = id ? GLOBAL_PERMS[id] : null;
+    if (!rec && ONLINE_NEEDS) {
+      openOnlinePage(); return;
+    }
     if (!rec) return;
     if (rec.session && rec.session !== currentSession) openSession(rec.session);
     if (!PERM_ROWS[id]) addPermission(rec.data, rec.session);
@@ -6689,6 +7154,14 @@
       if (row && row.scrollIntoView) row.scrollIntoView({ behavior:"smooth", block:"center" });
     }, 0);
   };
+  function pollOnlineNeeds() {
+    authenticatedFetch("/api/online").then(function (r) { return r.ok ? r.json() : {}; }).then(function (data) {
+      ONLINE_NEEDS = (data.missions || []).filter(function (item) { return item.state === "needs_user"; }).length;
+      updateOnlineNavState(data);
+      updateNeedsYou();
+    }).catch(function () {});
+  }
+  pollOnlineNeeds(); window.setInterval(pollOnlineNeeds, 10000);
 
   // Starter cards in the empty state: click one to drop a ready-made prompt into the composer (so a
   // first-timer sees what Collie is FOR). Delegated on #log so it works for both the initial welcome
@@ -6807,6 +7280,92 @@
     });
   }
   function clearAttached() { attached = []; renderAttached(); }
+
+  // ---- IDE context ------------------------------------------------------
+  // VS Code sends only user-visible chips through the authenticated parent bridge.  Automatic
+  // context is the active file/selection; explicit context is added by an editor command and stays
+  // until one run consumes it.  No host message focuses the composer unless it explicitly asks to.
+  var ideAutomaticContext = null, ideManualContexts = [], queuedFollowUps = [];
+  function contextKey(item) {
+    return [item.kind || "file", item.fsPath || item.path || item.label || "",
+            item.startLine || "", item.endLine || ""].join(":");
+  }
+  function cleanContextItem(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    var item = {}, stringCaps = {kind:32,label:240,path:4096,fsPath:4096,content:64000};
+    Object.keys(stringCaps).forEach(function (key) {
+      if (typeof raw[key] === "string" && raw[key]) item[key] = raw[key].slice(0, stringCaps[key]);
+    });
+    ["startLine","endLine"].forEach(function (key) {
+      if (Number.isInteger(raw[key]) && raw[key] > 0) item[key] = raw[key];
+    });
+    return (item.path || item.label || item.content) ? item : null;
+  }
+  function ideContextItems() {
+    var out = [], seen = {};
+    [ideAutomaticContext].concat(ideManualContexts).forEach(function (item) {
+      if (!item) return; var key = contextKey(item); if (seen[key]) return;
+      seen[key] = true; out.push(item);
+    });
+    return out.slice(0, 24);
+  }
+  function renderIdeContexts() {
+    var strip = $("ideContextStrip"); if (!strip) return;
+    var items = ideContextItems(); strip.hidden = !items.length; strip.textContent = "";
+    items.forEach(function (item) {
+      var chip = document.createElement("div"); chip.className = "ide-context-chip";
+      var where = item.startLine ? (":" + item.startLine + (item.endLine && item.endLine !== item.startLine ? "-" + item.endLine : "")) : "";
+      chip.innerHTML = '<span class="ctx-kind"></span><span class="ctx-label"></span><button type="button" class="ctx-rm" title="Remove context" aria-label="Remove context">×</button>';
+      chip.querySelector(".ctx-kind").textContent = item.kind || "file";
+      chip.querySelector(".ctx-label").textContent = (item.path || item.label || "context") + where;
+      chip.title = (item.fsPath || item.path || item.label || "context") + where;
+      chip.querySelector(".ctx-rm").onclick = function () {
+        if (item === ideAutomaticContext) ideAutomaticContext = null;
+        else ideManualContexts = ideManualContexts.filter(function (entry) { return contextKey(entry) !== contextKey(item); });
+        renderIdeContexts();
+      };
+      strip.appendChild(chip);
+    });
+  }
+  function clearManualIdeContexts() { ideManualContexts = []; renderIdeContexts(); }
+  function restoreIdeContexts(items) {
+    ideManualContexts = (items || []).map(cleanContextItem).filter(Boolean); renderIdeContexts();
+  }
+  function uploadIdeContexts(items) {
+    if (!items || !items.length) return Promise.resolve("");
+    return fetch("/api/ide/context?token=" + encodeURIComponent(CT), {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({items:items})
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok || !d || typeof d.id !== "string" || !d.id)
+          throw new Error((d && d.error) || ("HTTP " + r.status));
+        return d.id;
+      });
+    });
+  }
+  if (IDE_EMBED) window.addEventListener("message", function (event) {
+    if (event.source !== window.parent) return;
+    var message = event.data; if (!message || typeof message !== "object") return;
+    if (message.type === "collie:ide-context") {
+      ideAutomaticContext = cleanContextItem(message.active); renderIdeContexts();
+    } else if (message.type === "collie:add-context") {
+      (message.items || []).slice(0, 24).forEach(function (raw) {
+        var item = cleanContextItem(raw); if (item) ideManualContexts.push(item);
+      });
+      if (typeof message.draft === "string" && message.draft && !$("input").value) {
+        $("input").value = message.draft.slice(0, 64000);
+        $("input").dispatchEvent(new Event("input", {bubbles:true}));
+      }
+      renderIdeContexts();
+    } else if (message.type === "collie:new-thread") {
+      newThread();
+    } else if (message.type === "collie:preferences" && message.preferences) {
+      IDE_PREFS.followUpQueueMode = message.preferences.followUpQueueMode === "steer" ? "steer" : "queue";
+      IDE_PREFS.autoFocus = message.preferences.autoFocus === true;
+    } else if (message.type === "collie:focus-composer") {
+      $("input").focus();
+    }
+  });
   function addFile(file) {
     if (!file || !/^image\//.test(file.type)) return;
     if (file.size > 15 * 1024 * 1024) { addErr("image too large (>15MB)"); return; }
@@ -6955,11 +7514,29 @@
     if (window.setRunSetupLocked) window.setRunSetupLocked(routePending || running);
   }
 
-  function send() {
+  function queueFollowUp(q, contexts, imgs) {
+    queuedFollowUps.push({ session:currentSession, q:q, contexts:(contexts || []).slice(0,24), imgs:(imgs || []).slice(0,8) });
+    $("input").value = ""; $("input").style.height = "auto"; clearAttached(); clearManualIdeContexts();
+    addEvent("meta", "clock", "follow-up queued", q.length > 140 ? q.slice(0, 140) + "…" : q);
+  }
+  function drainQueuedFollowUp() {
+    if (running || routePending || !queuedFollowUps.length) return;
+    var next = queuedFollowUps[0], input = $("input");
+    if (next.session && currentSession !== next.session) return;
+    queuedFollowUps.shift();
+    input.value = next.q; input.dispatchEvent(new Event("input", {bubbles:true}));
+    attached = (next.imgs || []).slice(0,8); renderAttached();
+    restoreIdeContexts(next.contexts || []);
+    window.setTimeout(function () { if (!running && !routePending) send(); }, 0);
+  }
+
+  function send(followUpOverride) {
     if (routePending) return;
     var input = $("input");
     var q = input.value.trim();
     var imgs = attached.slice();
+    var manualContextCount = ideManualContexts.length;
+    var contexts = ideContextItems();
     // Mission control is an out-of-band command, even while an interactive run
     // is streaming. Never feed pause/cancel to the model as steering text.
     if (/^\/(?:mission|delegate)(?:\s|$)/i.test(q)) {
@@ -6968,10 +7545,14 @@
       handleMissionCommand(q);
       return;
     }
-    // While a run streams, a send STEERS it — the message is queued and delivered at the next turn
-    // boundary (Claude Code model), NOT a new run. Text-only for now; images still start fresh runs.
+    // Follow-ups default to a separate queued turn so a background worker never has its current
+    // instruction silently rewritten. Ctrl/Cmd+Shift+Enter flips Queue/Steer for one send.
     if (running) {
       if (!q || !currentSession) return;   // nothing to steer, or the run hasn't reported its id yet
+      var mode = followUpOverride || IDE_PREFS.followUpQueueMode || "queue";
+      if (imgs.length || manualContextCount || mode === "queue") {
+        queueFollowUp(q, contexts, imgs); return;
+      }
       if (!runCanSteer) {
         addEvent("meta", "flag", t("steering unavailable"),
           t("This worker cannot accept instructions until its current turn finishes."));
@@ -6997,10 +7578,10 @@
     input.value = ""; input.style.height = "auto";
     var userTextEl = addMsg("user", q, imgs); // show text + attached image thumbnails
     var userMsgEl = userTextEl && userTextEl.closest ? userTextEl.closest(".msg") : null;
-    clearAttached();
+    clearAttached(); clearManualIdeContexts();
     // The classifying head handles only chat/code. Mission is slash-command-only.
     if (forced) runConfig.route_kind = forced;
-    if (forced || imgs.length) { runStream(q, imgs, runConfig, runSession, userMsgEl); return; }
+    if (forced || imgs.length) { runStream(q, imgs, runConfig, runSession, userMsgEl, contexts); return; }
     var routeHint = addRoutingHint();
     var thisRoute = ++routeToken; setRoutePending(true);
     missionPost("/api/route", { text: q }).then(function (d) {
@@ -7008,20 +7589,23 @@
       setRoutePending(false);
       if (routeHint && routeHint.remove) routeHint.remove();
       if (d && d.error === "model_unavailable") {
+        input.value = q; input.dispatchEvent(new Event("input", { bubbles:true }));
+        attached = imgs.slice(); renderAttached(); restoreIdeContexts(contexts);
         addErr(t("model unavailable — set a working provider in Settings")); return;
       }
       if (d && (d.kind === "chat" || d.kind === "code")) runConfig.route_kind = d.kind;
-      runStream(q, imgs, runConfig, runSession, userMsgEl);
+      runStream(q, imgs, runConfig, runSession, userMsgEl, contexts);
     }).catch(function () {          // the local server itself is unreachable -> let the stream surface it
       if (thisRoute !== routeToken) return;
       setRoutePending(false);
-      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs, runConfig, runSession, userMsgEl);
+      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs, runConfig, runSession, userMsgEl, contexts);
     });
   }
 
   // the interactive stream run (chat/code) — extracted so the classifying head can gate it
-  function runStream(q, imgs, runConfig, runSession, userMsgEl) {
+  function runStream(q, imgs, runConfig, runSession, userMsgEl, contexts) {
     var input = $("input");
+    contexts = Array.isArray(contexts) ? contexts.slice(0,24) : [];
     addPending();                       // live "thinking" bubble in the conversation
     scrollDown(true);                   // sending always jumps to the latest
 
@@ -7037,8 +7621,9 @@
     $("sendIcon").innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
     // The start frame names the selected worker's actual steering capability.
     input.placeholder = t("Waiting for worker capabilities…");
-    // upload any attached images first (-> ids), then open the stream referencing them
-    var launch = function (imgIds) {
+    // Upload binary and IDE context attachments before opening the EventSource. Source text stays
+    // out of the URL; only short-lived opaque ids cross the stream request.
+    var launch = function (imgIds, contextIds) {
     if (thisLaunch !== streamLaunchToken || !running) return;
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false,
         packCardEl = null, packRows = [];
@@ -7059,9 +7644,10 @@
               (runConfig.route_kind ? "&route_kind=" + encodeURIComponent(runConfig.route_kind) : "") +
               (runConfig.verify_command ? "&verify_command=" + encodeURIComponent(runConfig.verify_command) : "") +
               (runConfig.verify_source ? "&verify_source=" + encodeURIComponent(runConfig.verify_source) : "") +
-              "&token=" + encodeURIComponent(CT) +
-              (imgIds && imgIds.length ? "&imgs=" + imgIds.join(",") : "") +
-              (runSession ? "&session=" + encodeURIComponent(runSession) : "");
+               "&token=" + encodeURIComponent(CT) +
+               (imgIds && imgIds.length ? "&imgs=" + imgIds.join(",") : "") +
+               (contextIds && contextIds.length ? "&ctx=" + contextIds.join(",") : "") +
+               (runSession ? "&session=" + encodeURIComponent(runSession) : "");
     if (strategy === "pack") {
       var pn = runConfig.n, pchk = runConfig.check, papply = runConfig.apply;
       url += "&n=" + encodeURIComponent(pn) + (pchk ? "&check=" + encodeURIComponent(pchk) : "") +
@@ -7079,9 +7665,10 @@
       currentSession = d.session;
       currentRun = d.run || null;
       runCanSteer = !!((d.worker_capabilities || {}).steer);
-      input.placeholder = t(runCanSteer ?
+      input.placeholder = t((IDE_PREFS.followUpQueueMode || "queue") === "queue" ?
+        "Follow up while the worker runs — Enter queues" : (runCanSteer ?
         "Steer while the worker runs — Enter to send" :
-        "This worker cannot be steered — stop it or wait");
+        "Follow up while the worker runs — Enter queues"));
       // Exact baseline for interrupt recovery: user-turns in the thread BEFORE this run. Once this
       // run's answer is saved the file holds one more user turn than this, which is how recovery
       // tells "the answer landed" from "the file is just stale mid-run".
@@ -7359,6 +7946,7 @@
       finishStreamUI();
       if (!d.error && !d.canceled) loadHandoffArtifact(d.session, intent);
       loadSessions();
+      window.setTimeout(drainQueuedFollowUp, 0);
     });
 
     es.onerror = function () {
@@ -7381,25 +7969,22 @@
       finishStreamUI();
     };
     };   // close launch()
-    // Upload every attachment before opening the stream. A partial or failed upload must never be
-    // disguised as a text-only run: restore the exact draft and let the user retry knowingly.
-    if (imgs.length) {
-      Promise.all(imgs.map(uploadImg))
-        .then(function (ids) { launch(ids); })
-        .catch(function (err) {
-          if (thisLaunch !== streamLaunchToken || !running) return;
-          if (curMsg) curMsg.remove();
-          if (userMsgEl && userMsgEl.isConnected) userMsgEl.remove();
-          curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
-          input.value = q; input.style.height = "auto";
-          try { input.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
-          attached = imgs.slice(); renderAttached();
-          addErr(t("Image upload failed — no run was started.") +
-                 (err && err.message ? " " + err.message : ""));
-          setGate("idle", t("Image upload failed — no run was started."));
-          finishStreamUI(); input.focus();
-        });
-    } else launch([]);
+    // A partial upload must never be disguised as a context-free run: restore the exact draft.
+    Promise.all([Promise.all(imgs.map(uploadImg)), uploadIdeContexts(contexts)])
+      .then(function (uploaded) { launch(uploaded[0], uploaded[1] ? [uploaded[1]] : []); })
+      .catch(function (err) {
+        if (thisLaunch !== streamLaunchToken || !running) return;
+        if (curMsg) curMsg.remove();
+        if (userMsgEl && userMsgEl.isConnected) userMsgEl.remove();
+        curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
+        input.value = q; input.style.height = "auto";
+        try { input.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+        attached = imgs.slice(); renderAttached(); restoreIdeContexts(contexts);
+        addErr("Attachment upload failed — no run was started." +
+               (err && err.message ? " " + err.message : ""));
+        setGate("idle", "Attachment upload failed — no run was started.");
+        finishStreamUI(); focusComposer(false);
+      });
   }
 
   $("send").onclick = function () { if (running) cancelRun(); else send(); };
@@ -7983,6 +8568,11 @@
       }
       if (e.key === "Escape") { e.preventDefault(); slashMenu.hidden = true; return; }
     }
+    if (e.key === "Enter" && e.shiftKey && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      var opposite = (IDE_PREFS.followUpQueueMode || "queue") === "queue" ? "steer" : "queue";
+      send(opposite); return;
+    }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
@@ -8176,6 +8766,6 @@
   })();
 
   loadSessions();
-  input.focus();
+  focusComposer(false);
 })();
 </script>

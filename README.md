@@ -23,7 +23,8 @@ agents, skills, app connections, and devices. Desktop, terminal, IDE, phone, bro
 surfaces all enter the same mission runtime instead of creating disconnected chats.
 
 It runs close to your real environment, so it can work in your signed-in browser, desktop, screen,
-files, and code. There is no Collie account or product telemetry. Task context goes only to the
+files, and code. Local mode needs no Collie account and has no product telemetry. Optional Connected
+Mode adds an account only when you choose cross-device/team features. Task context goes only to the
 model provider and external services you explicitly connect.
 
 Completion is accountable, not magical. Collie records the checks it actually ran, the scope those
@@ -56,6 +57,8 @@ needs a specific boundary.
 | 📝 | **Meeting notes** | Import a local calendar, get privacy-aware meeting prompts, record mic + meeting audio, jot guidance, and optionally create timestamp-cited transcripts, decisions, and action items. Reminders never start capture; explicit participant consent is required every time. |
 | 🎨 | **Comfy visual AI** | Connect Comfy's official Cloud MCP or detect a local ComfyUI service, inspect graph workflows, and run image, video, audio, or 3D jobs without copying a private Comfy API into Collie. |
 | 📱 | **Phone supervision** | Pair once, then follow runs, answer approvals, steer, stop, or start work from the phone. |
+| 🧠 | **Private procedural memory** | Learn repeated workflows from content-free local action metadata. Raw observations never sync; suggestions require review and accepted routines start with zero authority. |
+| ☁️ | **Optional Online layer** | Pair devices, sync sealed project memory and learned-workflow derivatives plus restrictive policy, share reviewed MCP connections, hand Missions to local nodes, and build schedules/reports. Cloud LLM use stays off unless a bounded task explicitly opts in. |
 | 🔌 | **Library & connections** | Install digest-pinned Skills, Hooks, connection descriptors, templates, and assets. Packages stay inert until their exact version and authority are approved; changes, revocation, or tampering fail closed. |
 
 ## Where it runs
@@ -104,11 +107,13 @@ collie                             # the terminal chat (TUI) opens
 ```
 
 No account, no telemetry, and the core has **zero third-party dependencies** — `mock` and `ollama`
-run without any key, and memory works out of the box on BM25 keyword recall.
+run without any key, and memory works out of the box on BM25 keyword recall. **Collie Online is
+optional**: Local mode is complete; Connected Mode adds paired devices, project/memory/policy sync,
+shared reviewed MCP connections, schedules, reports, and local-node Mission handoff.
 
-Optional extras: `pip install ".[local,tui,search]"` — `local` (semantic memory: granite-107m via
+Optional extras: `pip install ".[local,tui,search,online]"` — `local` (semantic memory: granite-107m via
 onnxruntime, ~55MB, multilingual), `tui` (rich terminal chat), `search` (keyless web search), `acp`
-(editor protocol), `browser` (Playwright — only for `collie browser-bridge --browser`, a managed
+(editor protocol), `online` (device signing and sealed Connected Mode sync), `browser` (Playwright — only for `collie browser-bridge --browser`, a managed
 Chromium with the extension preloaded, for CI or when you'd rather not use your own Chrome). Per-OS
 setup — especially the real-browser bridge (`collie browser-bridge` + `harness/browser_ext/`) — is in
 **[docs/PLATFORMS.md](docs/PLATFORMS.md)**.
@@ -137,6 +142,15 @@ collie loop --goal "get the suite passing" --until "pytest -q" --max 8
 collie pack "fix the failing test" -n 3 --check "pytest -q" --apply
 
 collie acp                 # serve as an ACP agent (an editor spawns this over stdio)
+
+# optional Connected Mode (requires the `online` extra)
+collie online login
+collie online project-create "My project" --local-project my-project
+collie online sync
+collie online node-serve                 # this machine may claim compatible Online Missions
+# optional team: create/switch a workspace, then add known Collie user IDs
+collie online workspace-create "My team"
+collie online workspace-use --workspace-id WORKSPACE_ID
 ```
 
 Providers: `mock`, `ollama`, `anthropic`, `claude-agent-sdk`, `anthropic-oauth`, and OpenAI-compatible presets
@@ -184,12 +198,15 @@ it draws a line and asks before crossing it. Every tool declares how far it reac
 | **read** | no side effects | never asks |
 | **write_local** | changes files here | inside your directory: goes ahead |
 | **exec** | runs commands here | inside your directory: goes ahead |
-| **external** | **leaves this machine** — your logged-in browser, your desktop, an MCP server | **asks, every time** |
+| **external** | **leaves this machine** — your logged-in browser, your desktop, an MCP server | classified by outcome; asks only at an ungranted commit/person boundary |
 
 **Running `collie` in your repo is the consent** for the middle two. That is the whole point of the
 default `project` mode: an agent that interrupts every `pytest` is not usable, and asking about work
-you already asked for is theatre. What you did *not* consent to by launching it is `browser_click`
-sending mail under your cookies — so that asks.
+you already asked for is theatre. Authority v2 classifies an external outcome as `observe`,
+`prepare`, `act`, `commit`, or `restricted`: reads and preparation are quiet, routine reversible
+work is notified, and an exact Send/Publish the authenticated user explicitly requested does not ask
+a second time. Drafting never authorizes sending; page text, MCP output, and model prose can never
+create authority.
 
 ```bash
 collie -p "fix the bug"                  # project (default)
@@ -201,7 +218,9 @@ collie risk                              # what collie can reach, grouped by how
 
 Three things worth knowing:
 
-- **"Always allow" is pinned to a target, never to a tool.** Approving clicks on
+- **A standing grant is bounded by the result.** Mission/workflow/project/connection grants bind
+  action, target, account, recipients and amount where applicable, and remain visible/revocable in
+  Control Center. The legacy **"Always allow" is pinned to a target, never to a tool.** Approving clicks on
   `http://localhost:5173` does not approve clicks on your bank — the rule is
   `browser_click → http://localhost:5173`, the origin is re-read live on every call, and it lasts
   one run. There is deliberately no way to express "always allow browser_click".
@@ -209,7 +228,10 @@ Three things worth knowing:
   machine, the question goes to the Inbox and the run *suspends*; your phone gets a nudge, and you
   answer from there, from the browser, or with `collie inbox allow <id>`. One record, so whoever
   answers first is the one that counts. With no surface at all (piped, CI), off-machine calls are
-  refused with a reason the model can work around — never run because no one objected.
+  refused with a reason the model can work around — never run because no one objected. Connected,
+  authorized email/SMS verification-code inboxes are the narrow exception: the dedicated primitive
+  can read and fill a code without putting it in prompts or logs. CAPTCHA, biometric, passkey,
+  hardware-key, legal and identity-attestation challenges remain **Needs You**.
 - **Only you can widen anything.** A repo's `.collie/allow.toml` is inert until you `collie trust`
   that exact directory; a persona can only *narrow* what you allowed; and the risk overrides have
   no tool and no config hook, because something collie loaded must never be able to reclassify

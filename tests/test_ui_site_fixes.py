@@ -100,7 +100,7 @@ def test_ecosystem_shell_exposes_missions_pack_library_and_global_approvals():
     ambient = read("harness/webui/ambient.html")
     server = read("harness/webapp.py")
 
-    for node in ("navHome", "navMissions", "navPack", "navLibrary", "navActivity", "needsYouNav"):
+    for node in ("navHome", "navMissions", "navPack", "navOnline", "navLibrary", "navActivity", "needsYouNav"):
         assert f'id="{node}"' in desktop
     assert 'data-fill="/mission "' in desktop
     assert 'id="slashMenu"' in desktop and 'data-command="/mission --review "' in desktop
@@ -113,6 +113,11 @@ def test_ecosystem_shell_exposes_missions_pack_library_and_global_approvals():
     assert 'permissionLive.addEventListener("permission_resolved"' in desktop
     assert "if (!PENDING_PERMS[d.id]) return" in desktop
     assert 'settle("sending…")' not in desktop
+    assert '$("navOnline").onclick = openOnlinePage' in desktop
+    assert 'hero.className = "online-hero"' in desktop and 'action:"create_project"' in desktop
+    assert 'data-control-tab="online"' not in desktop
+    assert "Stay in Local mode" not in desktop
+    assert "Cloud coordinates; endpoints decide." in desktop
 
     assert "/api/approve" in mobile
     assert '"permission","permission_resolved","done"' in mobile
@@ -191,9 +196,11 @@ def test_pack_page_reports_operational_state_without_inventing_device_presence()
 
     assert "<title>Pack — Collie</title>" in page and 'id="packcard"' in page
     for endpoint in ("/api/whoami", "/api/run-capabilities", "/api/healthz",
-                     "/api/activity", "/api/approvals", "/api/remote/status"):
+                     "/api/activity", "/api/approvals", "/api/remote/status", "/api/online"):
         assert endpoint in page
     assert 'id="packmembers"' in page and 'id="packassignments"' in page
+    assert 'class="packtopology"' in page and "Holds no endpoint execution authority" in page
+    assert "endpoint-signed assignment" in page and "inbound shell" in page
     assert "Worker freshness is reported by local heartbeats" in page
     assert "Paired · live reachability not reported" in page
     assert 'colspan="4"' in page and "pendingError(" in page
@@ -408,7 +415,7 @@ def test_run_configuration_is_snapshotted_and_mobile_drawer_is_modal():
     mobile = read("harness/webui/mobile.html")
 
     assert "var runConfig = readRunConfig(), runSession = currentSession" in desktop
-    assert "runStream(q, imgs, runConfig, runSession, userMsgEl)" in desktop
+    assert "runStream(q, imgs, runConfig, runSession, userMsgEl, contexts)" in desktop
     assert "if (thisLaunch !== streamLaunchToken || !running) return" in desktop
     assert "if (routePending) return" in desktop
     assert 'typeof d.id !== "string"' in desktop
@@ -441,6 +448,15 @@ def test_untrusted_map_and_wallpaper_labels_are_text_not_markup():
     assert 'sel.innerHTML' not in map_page
     assert 'typeof THREE==="undefined"' in map_page
     assert 'id="fileSearch"' in map_page and 'id="fileList"' in map_page
+    assert 'type:"collie:openFile"' in map_page
+    assert 'data-ide="1"' in map_page
+    assert 'QS.has("vscode_embed")' in map_page
+    assert '@media(min-width:701px) and (max-width:1200px)' in map_page
+    assert 'innerWidth>1200' in map_page
+    assert "function homeDistance()" in map_page
+    assert 'next.set("vscode_embed",embed)' in map_page
+    wallpaper_host = read("harness/wallpaper/Program.cs")
+    assert "new Size(1280, 820)" in wallpaper_host
     assert "function safeHttpUrl" in wallpaper
     assert 'replace(/[&<>"\']/g' in wallpaper
     assert 'rel="noopener noreferrer"' in wallpaper

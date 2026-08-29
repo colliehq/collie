@@ -2,9 +2,12 @@
 
 `collie.iss` builds **`Collie-Setup.exe`**: a single file a non-technical user double-clicks to get
 Collie — a real desktop app with a Start-menu/desktop icon, no Python, no terminal, no `pip`, no PATH
-surgery. Everything ships inside: an embeddable CPython with `collie-harness[local]` (semantic memory
-included), the WebView2-based desktop window and live-wallpaper engine, the browser extension, and
-the WebView2 bootstrapper.
+surgery. Everything ships inside: an embeddable CPython with
+`collie-harness[local,remote,online,claude]` (semantic memory, Remote, optional Connected Mode, and
+the Claude runner included), the WebView2-based desktop window and live-wallpaper engine, the
+browser extension, and the WebView2 bootstrapper. The hosted Online control plane remains a
+separate reviewed deployment artifact; no cloud credentials or production configuration are
+placed in an end-user installer.
 
 | Audience | Path |
 |---|---|
@@ -18,6 +21,7 @@ the WebView2 bootstrapper.
 | `collie.iss` | The Inno Setup script: branded wizard, a custom card-style language page (33 languages, Simplified Chinese up front), tasks, uninstall. |
 | `build.ps1` | **The one command to build the exe.** Reads the version, generates art + language data, stages the payload, compiles. |
 | `build_payload.ps1` | Recreates `payload/` — the embeddable-Python runtime with collie installed. Called by `build.ps1`; idempotent. |
+| `build_local_bundle.ps1` | Builds an unpublished research bundle: wheel/sdist, VSIX, browser bridge, and the complete Online deployment reference; optionally the Windows installer. |
 | `make_art.py` | Generates the wizard's star-map branding BMPs from the logo (reproducible). |
 | `gen_langs.py` | Emits `languages.iss` + `langdata.iss` and normalizes vendored translations into warning-clean `lang_compat/` files for the installed Inno version. Edit the `CHIPS`/`MORE` lists here to change which languages are offered. |
 | `gen_zhtw.py` | Regenerates the webui's Traditional-Chinese dict from the Simplified one via OpenCC (maintainer tool). |
@@ -37,6 +41,10 @@ Generated/large paths (`payload/`, `Output/`, `art/`, `languages.iss`, `langdata
 
 powershell -File installer\build.ps1                 # -> installer\Output\Collie-Setup.exe
 powershell -File installer\build.ps1 -CleanPayload   # also rebuild the bundled runtime
+
+# local review bundle; does not deploy or publish anything
+powershell -File installer\build_local_bundle.ps1
+powershell -File installer\build_local_bundle.ps1 -IncludeInstaller
 ```
 
 The version comes from `harness/__init__.py` (single source of truth) and is passed to `iscc` as

@@ -30,6 +30,7 @@ browser = ["playwright"]
 claude = ["claude-agent-sdk>=0.2.136,<0.3"] # official Claude-plan runtime for overnight Missions
 codex = ["openai-codex"]                  # official SDK + its pinned Codex runtime
 remote = ["cryptography"]               # Collie Remote E2E. QR codes need nothing: harness/qr.py is stdlib
+online = ["cryptography"]               # device signing + sealed connected-mode envelopes
 extensions = ["cryptography"]           # Ed25519 publisher signatures and local publisher trust roots
 desktop = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real behind-the-icons
            "pyobjc-framework-WebKit; sys_platform == 'darwin'",     # desktop on macOS (window

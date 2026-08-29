@@ -450,6 +450,20 @@ def test_reversible_advance_uses_only_an_exact_ref_and_surfaces_refusal():
         bb._call = real
 
 
+def test_browser_click_resolves_snapshot_ref_intent_before_gate():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"intent": {"effect": "commit", "action": "send",
+                                         "label": "Send", "reversible": False}}))
+        intent = bb.BrowserClick()._collie_intent({"ref": "e22"})
+        check(stub.sent[0] == {"action": "intent", "ref": "e22"},
+              "opaque ref is classified by the live extension")
+        check(intent.action == "send" and intent.effect.value == "commit",
+              "the host receives a structured commit rather than a bare ref")
+    finally:
+        bb._call = real
+
+
 # --- the rest of a hand: keys, hover, drag, a bare point ----------------------------------------------
 def test_press_passes_key_and_modifiers_through():
     real = bb._call

@@ -114,6 +114,10 @@ class ToolCtx:
     # Undo is more narrowly scoped than project memory. Web runs set this to their session id so
     # two chats in the same repository cannot consume each other's journal.
     checkpoint_scope: str = ""
+    # The provider-authored call id currently crossing the execution boundary. Cloud-routed
+    # tools derive their idempotency key from it, so a resumed/replayed turn cannot perform the
+    # same external action twice. It is set only around Tool.run() and is never model-controlled.
+    tool_call_id: str = ""
 
 
 class Tool:
@@ -964,6 +968,13 @@ def default_registry(code_search: bool = False,
         from .mcpclient import register_mcp_management, register_mcp_servers
         register_mcp_management(r)      # always — mcpctl_add matters most when nothing is set up yet
         register_mcp_servers(r)
+    except Exception:
+        pass
+    # Reviewed Collie Online connections are cached as public metadata only. Their credentials
+    # remain in the cloud Vault; registering these tools never reads or copies a token locally.
+    try:
+        from .mcpbroker import register_broker_connections
+        register_broker_connections(r)
     except Exception:
         pass
     # the load-on-demand seam only earns its always-on slot when there's something deferred to load

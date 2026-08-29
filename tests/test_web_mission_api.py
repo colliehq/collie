@@ -111,7 +111,7 @@ def test_mission_api_is_authed_persistent_and_manageable(monkeypatch, tmp_path):
 
 def test_web_ui_keeps_mission_out_of_the_model_router():
     html = open(webapp.INDEX_HTML, encoding="utf-8").read()
-    send_pos = html.index("function send()")
+    send_pos = html.index("function send(followUpOverride)")
     command_pos = html.index("handleMissionCommand(q)", send_pos)
     steer_pos = html.index("if (running)", send_pos)
     assert command_pos < steer_pos, "mission control must be intercepted before steering"

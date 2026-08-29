@@ -10,6 +10,7 @@ import pytest
 
 from harness.gate import Gate, Mode, Outcome
 from harness.risk import RiskClass
+from harness.authority import AuthorityEngine, AuthorityStore
 
 
 def G(tmp_path, **kw):
@@ -54,6 +55,26 @@ def test_project_mode_asks_on_external(tmp_path):
     d = G(tmp_path).evaluate("browser_click", {"ref": "e1"})
     assert not d.allowed and d.needs_user
     assert d.risk == RiskClass.EXTERNAL.value
+
+
+def test_explicit_user_send_is_authority_and_project_grant_survives_gate(tmp_path):
+    store = AuthorityStore(str(tmp_path / "authority.db"))
+    g = G(tmp_path, authority_engine=AuthorityEngine(store))
+    g.begin_request("Send this update to alice@example.com", project="collie", mission_id="m1")
+    direct = g.evaluate("browser_click", {"text": "Send"})
+    assert direct.allowed and direct.action == "send"
+    # A draft-only turn asks at Send, then the user may bind that exact action/target
+    # to the project instead of answering every future Mission.
+    g.begin_request("Draft an update for alice@example.com", project="collie", mission_id="m2")
+    asked = g.evaluate("browser_click", {"text": "Send"})
+    assert not asked.allowed and "project" in asked.grant_options
+    g.apply_outcome(Outcome.ALLOW_PROJECT, "browser_click", asked.target, decision=asked)
+
+    fresh = G(tmp_path, authority_engine=AuthorityEngine(store))
+    fresh.begin_request("Send the routine update to alice@example.com", project="collie", mission_id="m3")
+    allowed = fresh.evaluate("browser_click", {"text": "Send"})
+    assert allowed.allowed and allowed.authorization_basis == "stored grant"
+    store.close()
 
 
 def test_extra_roots_are_writable(tmp_path, tmp_path_factory):

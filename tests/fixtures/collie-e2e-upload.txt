@@ -1,0 +1,2 @@
+collie-e2e-upload-marker
+This is a harmless local file used to verify the real browser upload path.
