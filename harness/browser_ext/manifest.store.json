@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Collie Browser Bridge",
-  "version": "3.8",
+  "version": "3.9",
   "description": "Use Collie with the page you choose and optionally grant broader reach for autonomous browser work.",
   "permissions": [
     "scripting",
@@ -13,6 +13,9 @@
     "webNavigation",
     "sidePanel",
     "contextMenus"
+  ],
+  "optional_permissions": [
+    "history"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",

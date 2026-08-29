@@ -69,7 +69,7 @@ def test_rejected_claim_remains_auditable_but_never_recalled():
     root, memory = _memory()
     try:
         rid = memory.propose(
-            "production password is hunter2", project="repo", source="agent_tool",
+            "production deployment window is Saturday", project="repo", source="agent_tool",
             evidence="agent observation", provenance="run:4")
         assert memory.reject(
             rid, evidence="unsupported agent assertion", source="reviewer",
@@ -83,10 +83,37 @@ def test_rejected_claim_remains_auditable_but_never_recalled():
         assert claim["review_provenance"] == "review:8"
         assert claim["review_evidence"] == "unsupported agent assertion"
         assert claim["reviewed_at"] == 2345
-        assert memory.recall("production password", project="repo") == []
+        assert memory.recall("production deployment window", project="repo") == []
         assert [c["id"] for c in memory.list_claims("rejected", "repo")] == [rid]
         assert not memory.reject(rid), "rejection is terminal and idempotent"
         assert not memory.promote(rid), "a rejected claim cannot bypass a fresh review"
+    finally:
+        memory.close()
+        root.cleanup()
+
+
+def test_secret_shaped_claim_is_declined_before_it_becomes_durable():
+    root, memory = _memory()
+    try:
+        assert memory.propose(
+            "production password is hunter2", project="repo", source="agent_tool") == -1
+        assert memory.list_claims(project="repo") == []
+    finally:
+        memory.close()
+        root.cleanup()
+
+
+def test_secret_shaped_evidence_is_redacted_even_when_fact_is_safe():
+    root, memory = _memory()
+    try:
+        memory.propose(
+            "the deploy check failed", project="repo",
+            evidence="production password is hunter2",
+            provenance={"api_key": "sk-this-is-a-long-test-key"})
+        claim = memory.list_claims(project="repo")[0]
+        wire = json.dumps(claim)
+        assert "hunter2" not in wire and "sk-this" not in wire
+        assert "REDACTED" in wire
     finally:
         memory.close()
         root.cleanup()

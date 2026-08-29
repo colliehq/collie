@@ -18,7 +18,10 @@ the caller (or a consolidation model) must merge/evict. That is the LLM-in-loop
 GC that stops the 118-file balloon.
 """
 from __future__ import annotations
+import hashlib
 import json
+import math
+import re
 import secrets
 import sqlite3
 import time
@@ -32,11 +35,39 @@ from .embeddings import EmbeddingProvider, make_embedding, cosine
 # paths) makes that trust boundary auditable.
 RECALLABLE_STATUSES = frozenset(("active", "attested", "verified"))
 MEMORY_STATUSES = RECALLABLE_STATUSES | frozenset(("proposed", "rejected", "invalidated"))
+MAX_FACT_CHARS = 8_000
+MAX_KEYS_CHARS = 1_000
+_SECRET_PLACEHOLDER = re.compile(r"\{\{SECRET:[0-9a-f]{8}\}\}", re.I)
+_SECRET_STATEMENT = re.compile(
+    r"(?i)\b(?:password|passcode|pin|api[_ -]?key|access[_ -]?token|auth[_ -]?token|"
+    r"client[_ -]?secret|secret[_ -]?key)\b\s*(?:is|=|:)\s*['\"]?([^\s,'\";]+)")
+_NON_VALUES = frozenset({
+    "missing", "unset", "invalid", "expired", "required", "redacted", "[redacted]",
+    "stored", "managed", "rotated", "unknown", "none", "null", "true", "false",
+})
 
 
 def _now() -> int:
     # NOTE: time.time() is fine here; determinism handled by callers/tests.
     return int(time.time())
+
+
+def _contains_secret(value: str) -> bool:
+    """Conservative credential check for data that would otherwise become durable."""
+    text = str(value or "")
+    if _SECRET_PLACEHOLDER.search(text):
+        return True
+    try:
+        from .runner_specs import redact_text
+        if redact_text(text, max(len(text) + 1, 16_000)) != text:
+            return True
+    except Exception:
+        pass
+    for match in _SECRET_STATEMENT.finditer(text):
+        candidate = match.group(1).strip().lower()
+        if candidate not in _NON_VALUES and len(candidate) >= 4:
+            return True
+    return False
 
 
 class BlockOverflow(Exception):
@@ -228,6 +259,8 @@ class SqliteMemory:
         self.db.commit()
 
     def core_blocks(self, scopes: list[str]) -> list[sqlite3.Row]:
+        if not scopes:
+            return []
         q = ",".join("?" * len(scopes))
         return self.db.execute(
             "SELECT * FROM blocks WHERE scope IN (%s) ORDER BY scope, label" % q,
@@ -314,10 +347,27 @@ class SqliteMemory:
         """
         if status not in MEMORY_STATUSES:
             raise ValueError("invalid memory status: %s" % status)
-        source = str(source or "host")
+        text = str(text or "").strip()
+        keys = str(keys or "").strip()
+        project = str(project or "global")
+        scope = str(scope or project)
+        if not text:
+            return -1
+        # Secrets have a dedicated credential boundary. Even a quarantined or
+        # rejected claim remains durable bytes, so it must never enter memory.
+        if _contains_secret(text) or _contains_secret(keys):
+            return -1
+        if len(text) > MAX_FACT_CHARS or len(keys) > MAX_KEYS_CHARS:
+            return -1
+        if len(project) > 500 or len(scope) > 500:
+            raise ValueError("memory project and scope must be at most 500 characters")
+        importance = float(importance)
+        if not math.isfinite(importance):
+            raise ValueError("memory importance must be finite")
+        importance = max(0.0, min(1.0, importance))
+        source = str(source or "host")[:200]
         evidence = _metadata_text(evidence)
         provenance = _metadata_text(provenance)
-        scope = str(scope or project)
         # EXTRACTION: distil noisy/raw input into a clean atomic fact before storing
         # (Mem0/A-MEM lesson — raw turns retrieve worse than distilled facts). Opt-in.
         if self.distiller:
@@ -325,17 +375,29 @@ class SqliteMemory:
                 d = self.distiller(text, keys)
                 if d is None:
                     return -1          # distiller judged it not worth storing (chit-chat)
-                text = d
+                text = str(d).strip()
             except Exception:
                 pass
+        if (not text or len(text) > MAX_FACT_CHARS or _contains_secret(text)):
+            return -1
         vec = self.embedder.embed(text + " " + keys, kind="passage") if self.embedder else []
         # A proposal must not supersede anything before review. If proposal B replaced A and B
         # were later rejected, a verified A would remain hidden behind the rejected row forever.
         # Accepted host writes may still consolidate within the accepted set.
-        near_id, sim = self._nearest(
-            vec, project, RECALLABLE_STATUSES, embed_model=self.embed_model,
-            scope=scope) \
-            if (consolidate and vec and status in RECALLABLE_STATUSES) else (None, 0.0)
+        exact = None
+        if consolidate and status in RECALLABLE_STATUSES:
+            exact = self.db.execute(
+                """SELECT id FROM facts WHERE project=? AND scope=? AND text=? AND keys=?
+                   AND superseded_by IS NULL AND status IN (%s)
+                   ORDER BY id DESC LIMIT 1""" %
+                ",".join("?" * len(RECALLABLE_STATUSES)),
+                (project, scope, text, keys, *RECALLABLE_STATUSES)).fetchone()
+        near_id, sim = ((int(exact["id"]), 1.0) if exact else
+                        self._nearest(
+                            vec, project, RECALLABLE_STATUSES,
+                            embed_model=self.embed_model, scope=scope)
+                        if (consolidate and vec and status in RECALLABLE_STATUSES)
+                        else (None, 0.0))
         emb = json.dumps(vec)
         cur = self.db.execute(
             """INSERT INTO facts(project,text,keys,importance,access_count,
@@ -586,9 +648,12 @@ class SqliteMemory:
         sq = ",".join("?" * len(statuses))
         scope_q = ",".join("?" * len(scopes))
         rows = []
+        terms = _query_terms(query)
+        if not terms:
+            return []
         if self.has_fts:
             try:
-                match = " OR ".join(_fts_terms(query)) or query
+                match = " OR ".join('"%s"' % term for term in terms[:12])
                 rows = self.db.execute(
                     """SELECT f.id, bm25(facts_fts) AS score
                        FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
@@ -602,7 +667,7 @@ class SqliteMemory:
             except sqlite3.OperationalError:
                 pass
         # LIKE fallback: match ANY of the first few query tokens (not just the first word)
-        toks = [t for t in query.strip().split() if len(t) > 2][:4] or [query.strip()]
+        toks = [term for term in terms if len(term) > 2][:4] or terms[:4]
         clause = " OR ".join(["text LIKE ? OR keys LIKE ?"] * len(toks))
         params = [project, *statuses, *scopes]
         for t in toks:
@@ -653,6 +718,9 @@ class SqliteMemory:
                pool: int = 50, statuses=None, *, allowed_scopes=None) -> list[dict]:
         """Hybrid: BM25 + dense cosine, fused with Reciprocal Rank Fusion."""
         project = str(project or "global")
+        query = str(query or "").strip()
+        if not query or not re.search(r"[A-Za-z0-9_\u4e00-\u9fff]", query):
+            return []
         statuses = self._statuses(statuses)
         scopes = self._allowed_scopes(project, allowed_scopes)
         if not scopes:
@@ -702,19 +770,22 @@ class SqliteMemory:
             half = float(_settings.get("RECENCY_HALFLIFE", "90") or 0)
         except Exception:
             half = 90.0
-        if half > 0:
-            now = _now()
-            rescored = []
-            for pos, (rid, _s) in enumerate(ranked):
-                r = by_id.get(rid)
-                age_days = max(0, now - ((r["created_at"] if r else None) or now)) / 86400.0
-                boost = 1.0 + 0.5 * (0.5 ** (age_days / half))
-                # Multiply the ACTUAL fused/reranker relevance score by the recency boost (≤1.5x), so
-                # relevance keeps dominating and margins are preserved. Rebuilding on pure rank position
-                # (1/(60+pos)) threw away the relevance gaps, letting a fresh low-relevance distractor
-                # leapfrog the true top hit — and, since top-k truncation runs after this, evict it.
-                rescored.append((rid, float(_s) * boost))
-            ranked = sorted(rescored, key=lambda x: x[1], reverse=True)
+        now = _now()
+        trust_boost = {"active": 1.0, "attested": 1.03, "verified": 1.06}
+        rescored = []
+        for rid, relevance in ranked:
+            row = by_id.get(rid)
+            boost = 1.0
+            if row is not None and half > 0:
+                age_days = max(0, now - (row["created_at"] or now)) / 86400.0
+                boost *= 1.0 + 0.5 * (0.5 ** (age_days / half))
+            if row is not None:
+                importance = max(0.0, min(1.0, float(row["importance"] or 0.5)))
+                boost *= 0.9 + 0.2 * importance
+                boost *= trust_boost.get(row["status"], 1.0)
+            # Relevance remains dominant; importance/trust are deliberately mild.
+            rescored.append((rid, float(relevance) * boost))
+        ranked = sorted(rescored, key=lambda x: x[1], reverse=True)
         ranked = ranked[:k]
 
         out = []
@@ -723,6 +794,7 @@ class SqliteMemory:
             if r:
                 out.append({"id": rid, "text": r["text"], "keys": r["keys"],
                             "score": round(float(score), 4), "status": r["status"],
+                            "importance": r["importance"],
                             "source": r["source"], "evidence": r["evidence"],
                             "provenance": r["provenance"], "scope": r["scope"],
                             "review_source": r["review_source"],
@@ -744,10 +816,29 @@ def _metadata_text(value) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return value
-    if isinstance(value, (dict, list, tuple, bool, int, float)):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return str(value)
+        text = value
+    elif isinstance(value, (dict, list, tuple, bool, int, float)):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    else:
+        text = str(value)
+    try:
+        from .runner_specs import redact_text
+        text = redact_text(text, max(len(text) + 1, 16_000))
+    except Exception:
+        pass
+    text = _SECRET_STATEMENT.sub(
+        lambda match: match.group(0).replace(match.group(1), "[REDACTED]"), text)
+    if len(text) <= 8_000:
+        return text
+    return json.dumps({
+        "truncated": True,
+        "sha256": hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(),
+    }, sort_keys=True, separators=(",", ":"))
+
+
+def _query_terms(query: str) -> list[str]:
+    return [token for token in re.findall(
+        r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", str(query or "")) if len(token) > 1]
 
 
 def _fts_terms(query: str) -> list[str]:
@@ -757,9 +848,7 @@ def _fts_terms(query: str) -> list[str]:
     help (strict@10 59% vs 62% baseline on 29 real queries; the dense leg already carries
     Chinese, extra bigram candidates only displaced strict hits). Revisit only if
     Chinese-keyword misses show up in practice."""
-    import re
-    toks = re.findall(r"[A-Za-z0-9_]+|[一-鿿]+", query)
-    return ['"%s"' % t for t in toks if len(t) > 1][:12]
+    return ['"%s"' % term for term in _query_terms(query)[:12]]
 
 
 def rrf(rank_lists: list[list[int]], k: int = 60) -> list[tuple[int, float]]:

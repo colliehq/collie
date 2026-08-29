@@ -292,8 +292,12 @@ def memory_review(memory_id: int, action: str, path=None, *, note: str = "",
 def procedure_snapshot(path=None, *, project: str | None = None,
                        event_limit: int = 50) -> dict:
     from .procedure_memory import ProcedureMemory
-    with ProcedureMemory(os.path.join(_root(path), "procedural-memory.db")) as store:
+    root = _root(path)
+    with ProcedureMemory(os.path.join(root, "procedural-memory.db")) as store:
         value = store.snapshot(project=project, event_limit=event_limit)
+    from .personal_events import PersonalEventStore
+    with PersonalEventStore(os.path.join(root, "personal-intelligence.db")) as personal:
+        value["personal"] = personal.snapshot()
     value["at"] = time.time()
     return value
 
@@ -315,13 +319,84 @@ def procedure_review(candidate_id: str, action: str, path=None, *, note: str = "
 
 
 def procedure_privacy(path=None, *, enabled=None, paused=None, retention_days=None,
-                      exclude_app: str = "", include_app: str = "") -> dict:
+                      observation_mode=None, consent=False, derived_sync_enabled=None,
+                      ambient_enabled=None, ambient_sample_seconds=None,
+                      ambient_retention_days=None, exclude_app: str = "",
+                      include_app: str = "") -> dict:
     from .procedure_memory import ProcedureMemory
-    with ProcedureMemory(os.path.join(_root(path), "procedural-memory.db")) as store:
+    root = _root(path)
+    with ProcedureMemory(os.path.join(root, "procedural-memory.db")) as store:
         privacy = store.update_privacy(
             enabled=enabled, paused=paused, retention_days=retention_days,
+            observation_mode=observation_mode, consent=consent,
+            derived_sync_enabled=derived_sync_enabled,
+            ambient_enabled=ambient_enabled,
+            ambient_sample_seconds=ambient_sample_seconds,
+            ambient_retention_days=ambient_retention_days,
             exclude_app=exclude_app, include_app=include_app)
+    if observation_mode == "off":
+        from .personal_events import PersonalEventStore
+        with PersonalEventStore(os.path.join(root, "personal-intelligence.db")) as personal:
+            source = personal.get_source("browser_history")
+            if source and source["enabled"]:
+                personal.configure_source(
+                    "browser_history", enabled=False,
+                    permission_state=source["permission_state"])
     return {"ok": True, "privacy": privacy}
+
+
+def personal_snapshot(path=None) -> dict:
+    from .personal_events import PersonalEventStore
+    root = _root(path)
+    with PersonalEventStore(os.path.join(root, "personal-intelligence.db")) as store:
+        value = store.snapshot()
+    from .procedure_memory import ProcedureMemory
+    with ProcedureMemory(os.path.join(root, "procedural-memory.db")) as procedures:
+        value["observation"] = procedures.settings()
+    value["at"] = time.time()
+    return value
+
+
+def personal_source(source_id: str, path=None, *, kind=None, enabled=None,
+                    permission_state=None, scopes=None, confirmed=False,
+                    purge=False) -> dict:
+    from .personal_events import PersonalEventStore
+    from .procedure_memory import OBSERVATION_CONSENT_VERSION, ProcedureMemory
+    root = _root(path)
+    with ProcedureMemory(os.path.join(root, "procedural-memory.db")) as procedures:
+        privacy = procedures.settings(refresh=True)
+    if enabled and privacy.get("observation_mode") != "personal":
+        raise ValueError("personal observation mode must be enabled first")
+    with PersonalEventStore(os.path.join(root, "personal-intelligence.db")) as store:
+        source = store.configure_source(
+            source_id, kind=kind, enabled=enabled, permission_state=permission_state,
+            scopes=scopes, consent_version=OBSERVATION_CONSENT_VERSION,
+            confirmed=confirmed, purge=purge)
+    return {"ok": True, "source": source}
+
+
+def personal_history(items, path=None) -> dict:
+    from .personal_events import PersonalEventStore
+    from .procedure_memory import ProcedureMemory
+    root = _root(path)
+    with ProcedureMemory(os.path.join(root, "procedural-memory.db")) as procedures:
+        if procedures.settings(refresh=True).get("observation_mode") != "personal":
+            raise ValueError("personal observation mode is not enabled")
+    with PersonalEventStore(os.path.join(root, "personal-intelligence.db")) as store:
+        result = store.ingest_browser_history(items)
+    return {"ok": True, **result}
+
+
+def personal_event(value, path=None, *, confirmed=False) -> dict:
+    from .personal_events import PersonalEventStore
+    from .procedure_memory import ProcedureMemory
+    root = _root(path)
+    with ProcedureMemory(os.path.join(root, "procedural-memory.db")) as procedures:
+        if procedures.settings(refresh=True).get("observation_mode") != "personal":
+            raise ValueError("personal observation mode is not enabled")
+    with PersonalEventStore(os.path.join(root, "personal-intelligence.db")) as store:
+        event = store.upsert_event(value, confirmed=confirmed)
+    return {"ok": True, "event": event}
 
 
 def budget_snapshot(path=None, *, live_quota: bool = False) -> dict:

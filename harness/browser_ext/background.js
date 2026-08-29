@@ -3060,6 +3060,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return { state: presenceState(found.name, rec) };
     }
     if (message.type === "collie:get-bridge-token") return { token: await bridgeToken() };
+    if (message.type === "collie:sync-personal-history") return await syncPersonalHistory();
     return null;
   };
   run().then(sendResponse).catch((error) => sendResponse({ error: String(error) }));
@@ -3114,6 +3115,123 @@ async function bridgeToken() {
     __token = typeof s.collieToken === "string" ? s.collieToken : "";
   } catch (e) { __token = ""; }
   return __token;
+}
+
+// --- privacy-compressed history learning ---------------------------------------------------------
+// The raw chrome.history result lives only in this function. Before the first loopback request it is
+// collapsed to origin + time bucket + small counters; titles, paths, queries and searches are never
+// sent to Collie, written to extension storage, or uploaded.
+let __historySyncing = false;
+
+async function personalWebAuth() {
+  const saved = Number((await chrome.storage.local.get("collieWebPort")).collieWebPort || 0);
+  const ports = [];
+  if (saved >= 8787 && saved <= 8798) ports.push(saved);
+  for (let port = 8787; port <= 8798; port++) if (!ports.includes(port)) ports.push(port);
+  const secret = await bridgeToken();
+  if (!secret) throw new Error("bridge token missing");
+  for (const port of ports) {
+    try {
+      const response = await fetch("http://127.0.0.1:" + port + "/api/browser/bridge-auth", {
+        headers: { Authorization: "Bearer " + secret }, cache: "no-store"
+      });
+      if (!response.ok) continue;
+      const auth = await response.json();
+      if (!auth.token) continue;
+      await chrome.storage.local.set({ collieWebPort: port });
+      return { base: "http://127.0.0.1:" + port, token: auth.token };
+    } catch (e) {}
+  }
+  // The browser bridge can start Web without displaying a window. This is ordinary background
+  // continuity after consent, not a new data grant.
+  try {
+    const started = await fetch(BRIDGE + "/web/start", { method: "POST", headers: await bridgeHeaders({
+      "content-type": "application/json"
+    }), body: "{}" });
+    const detail = await started.json();
+    if (!started.ok || !detail.ok) throw new Error(detail.error || "web start failed");
+    const port = Number(detail.port || 8787);
+    await chrome.storage.local.set({ collieWebPort: port });
+    const response = await fetch("http://127.0.0.1:" + port + "/api/browser/bridge-auth", {
+      headers: { Authorization: "Bearer " + secret }, cache: "no-store"
+    });
+    const auth = await response.json();
+    if (response.ok && auth.token) return { base: "http://127.0.0.1:" + port, token: auth.token };
+  } catch (e) {}
+  throw new Error("Collie Web is unavailable");
+}
+
+async function purgePersonalHistory() {
+  const auth = await personalWebAuth();
+  const response = await fetch(auth.base + "/api/personal/source?token=" +
+    encodeURIComponent(auth.token), { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_id: "browser_history", enabled: false,
+      permission_state: "revoked", purge: true }) });
+  if (!response.ok) {
+    const value = await response.json().catch(() => ({}));
+    throw new Error(value.error || "history-summary purge failed");
+  }
+  await chrome.storage.local.set({ colliePersonalPurgePending: false });
+}
+
+async function syncPersonalHistory() {
+  if (__historySyncing) return { ok: true, skipped: "already_running" };
+  __historySyncing = true;
+  try {
+    const pending = !!(await chrome.storage.local.get(
+      "colliePersonalPurgePending")).colliePersonalPurgePending;
+    if (pending) {
+      try { await purgePersonalHistory(); }
+      catch (e) { return { ok: false, skipped: "purge_pending", error: String(e) }; }
+    }
+    const enabled = !!(await chrome.storage.local.get("colliePersonalHistory")).colliePersonalHistory;
+    const granted = await chrome.permissions.contains({ permissions: ["history"] });
+    if (!enabled || !granted || !chrome.history) return { ok: true, skipped: "not_enabled" };
+    const auth = await personalWebAuth();
+    const stateResponse = await fetch(auth.base + "/api/personal?token=" +
+      encodeURIComponent(auth.token), { cache: "no-store" });
+    const state = await stateResponse.json().catch(() => ({}));
+    const source = (state.sources || []).find((item) => item.source_id === "browser_history");
+    if (!stateResponse.ok || !state.observation || state.observation.observation_mode !== "personal" ||
+        !source || !source.enabled) {
+      await chrome.storage.local.set({ colliePersonalHistory: false });
+      return { ok: true, skipped: "disabled_in_collie" };
+    }
+    const raw = await chrome.history.search({ text: "", startTime: Date.now() - 14 * 86400000,
+                                              maxResults: 2000 });
+    const compressed = new Map();
+    for (const item of raw) {
+      let origin = "";
+      try {
+        const url = new URL(item.url || "");
+        if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+        origin = url.origin;
+      } catch (e) { continue; }
+      const stamp = Number(item.lastVisitTime || 0);
+      if (!stamp) continue;
+      const day = new Date(stamp).toLocaleDateString("en-CA");
+      const key = day + "\n" + origin;
+      const current = compressed.get(key) || {
+        origin, last_visit_at: stamp, visit_count: 0, typed_count: 0
+      };
+      current.last_visit_at = Math.max(current.last_visit_at, stamp);
+      current.visit_count = Math.min(10000, current.visit_count + Math.max(1, Number(item.visitCount || 1)));
+      current.typed_count = Math.min(10000, current.typed_count + Math.max(0, Number(item.typedCount || 0)));
+      compressed.set(key, current);
+    }
+    // Release the only raw references before making a network call. The endpoint is loopback and
+    // receives only the compressed array below.
+    raw.length = 0;
+    const response = await fetch(auth.base + "/api/personal/history?token=" +
+      encodeURIComponent(auth.token), { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ items: Array.from(compressed.values()).slice(0, 2000) }) });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(value.error || "history summary rejected");
+    await chrome.storage.local.set({ colliePersonalHistoryLastSync: Date.now() });
+    return value;
+  } finally {
+    __historySyncing = false;
+  }
 }
 
 // The bridge leaves the token in this extension's own directory, which only this extension can read
@@ -3215,6 +3333,13 @@ async function pollOnce() {
 }
 
 chrome.alarms.create("colliePoll", { periodInMinutes: 0.5 });  // survive-suspension backstop
-chrome.alarms.onAlarm.addListener(function (a) { if (a.name === "colliePoll") pollOnce(); });
-chrome.runtime.onStartup.addListener(function () { pollOnce(); });  // restart when the SW revives
+chrome.alarms.create("colliePersonalHistory", { periodInMinutes: 30 });
+chrome.alarms.onAlarm.addListener(function (a) {
+  if (a.name === "colliePoll") pollOnce();
+  if (a.name === "colliePersonalHistory") syncPersonalHistory().catch(function () {});
+});
+chrome.runtime.onStartup.addListener(function () {
+  pollOnce();
+  syncPersonalHistory().catch(function () {});
+});  // restart when the SW revives
 pollOnce();

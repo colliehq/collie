@@ -53,6 +53,35 @@ def test_privacy_pause_and_sensitive_apps_are_skipped(tmp_path):
         assert store.list_events() == []
 
 
+def test_outside_ai_modes_require_one_consent_and_reconsent_after_revocation(tmp_path):
+    with ProcedureMemory(str(tmp_path / "procedures.db")) as store:
+        assert store.settings()["observation_mode"] == "off"
+        with pytest.raises(ValueError, match="consent"):
+            store.update_privacy(observation_mode="personal")
+        with pytest.raises(ValueError, match="consent"):
+            store.update_privacy(ambient_enabled=True)
+        enabled = store.update_privacy(observation_mode="personal", consent=True)
+        assert enabled["observation_mode"] == "personal"
+        assert enabled["ambient_enabled"] is True
+        # Moving within the already disclosed data boundary is silent.
+        assert store.update_privacy(observation_mode="activity")["observation_mode"] == "activity"
+        disabled = store.update_privacy(observation_mode="off")
+        assert disabled["ambient_enabled"] is False
+        receipts = store.consent_receipts()
+        assert [row["action"] for row in receipts[:3]] == [
+            "revoked", "mode_changed", "granted"]
+        assert all(len(row["disclosure_digest"]) == 64 for row in receipts)
+        with pytest.raises(ValueError, match="consent"):
+            store.update_privacy(observation_mode="activity")
+
+
+def test_logical_ambient_project_is_not_rewritten_as_a_filesystem_path(tmp_path):
+    with ProcedureMemory(str(tmp_path / "procedures.db")) as store:
+        store.update_privacy(observation_mode="activity", consent=True)
+        store.observe(session="a", project="@ambient", app="editor", action="focus")
+        assert store.list_events()[0]["project"] == "@ambient"
+
+
 def test_repeated_sequences_become_reviewable_zero_authority_workflows(tmp_path):
     project = str(tmp_path / "repo")
     os.makedirs(project)

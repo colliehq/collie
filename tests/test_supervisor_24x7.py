@@ -256,6 +256,7 @@ def test_slack_worker_adopts_fresh_legacy_heartbeat_then_takes_over(tmp_path):
 
 def test_load_config_discovers_slack_added_after_initial_install(tmp_path):
     cfg = supervisor.default_config(str(tmp_path), python="old-python")
+    cfg["workers"] = [row for row in cfg["workers"] if row["name"] != "ambient"]
     supervisor.save_config(cfg, str(tmp_path / "supervisor.json"))
     launcher = tmp_path / "slack-Rowan.pyw"
     launcher.write_text(
@@ -263,6 +264,8 @@ def test_load_config_discovers_slack_added_after_initial_install(tmp_path):
         encoding="utf-8")
 
     loaded = supervisor.load_config(str(tmp_path / "supervisor.json"), python="new-python")
+    ambient = next(item for item in loaded["workers"] if item["name"] == "ambient")
+    assert ambient["argv"][0] == "new-python"
     rowan = next(item for item in loaded["workers"] if item["name"] == "slack-rowan")
     assert rowan["argv"][0] == "new-python"
     assert rowan["adopt_heartbeat"] == "slack:rowan"

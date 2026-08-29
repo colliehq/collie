@@ -5166,14 +5166,28 @@
     }));
   }
   function renderProcedures(data) {
-    var privacy = data.privacy || {}, candidates = data.candidates || [];
+    var privacy = data.privacy || {}, candidates = data.candidates || [], personal = data.personal || {};
     var pending = candidates.filter(function (row) { return row.status === "proposed"; });
-    $("activityHealth").textContent = privacy.paused ? "paused" : pending.length + " suggestions";
+    var mode = privacy.observation_mode || "off";
+    $("activityHealth").textContent = privacy.paused ? "paused" : mode + " · " + pending.length + " suggestions";
     $("activityHealth").classList.toggle("bad", false);
     $("controlSummary").textContent =
-      "Collie learns action shapes locally, never screen or typed content. Raw observations stay on this device; only sealed derivatives can sync.";
+      "Outside-AI learning is one-time opt-in. Browser history is reduced locally to origin/time/count summaries; raw URLs, titles, paths and searches are never stored or uploaded.";
     var grid = $("activityGrid"); grid.textContent = "";
     var controls = document.createElement("div"); controls.className = "control-actions";
+    [["off","Off"],["activity","Activity only"],["personal","Personal intelligence"]].forEach(function (choice) {
+      var button = document.createElement("button");
+      button.textContent = (mode === choice[0] ? "✓ " : "") + choice[1];
+      button.onclick = function () {
+        var consent = choice[0] !== "off";
+        if (consent && mode === "off" && !window.confirm(
+          "Enable continuous local learning outside Collie? Collie will observe app identity and system activity; Personal intelligence may use separately connected sources. Raw browsing records stay local and are compressed immediately. You can turn this off and delete summaries at any time.")) return;
+        return activityPost("/api/procedures/privacy", {
+          observation_mode:choice[0],consent:consent
+        }).then(loadActivity);
+      };
+      controls.appendChild(button);
+    });
     var discover = document.createElement("button"); discover.textContent = "Find repeated workflows";
     discover.onclick = function () { return activityPost("/api/procedures/discover", {min_support:2})
       .then(function () { activityNotice("Local workflow discovery finished.", false); loadActivity(); })
@@ -5182,6 +5196,19 @@
     pause.onclick = function () { return activityPost("/api/procedures/privacy",
       {paused:!privacy.paused}).then(loadActivity); };
     controls.appendChild(discover); controls.appendChild(pause); grid.appendChild(controls);
+    var history = (personal.sources || []).filter(function (source) {
+      return source.source_id === "browser_history"; })[0] || {};
+    grid.appendChild(activityLane("Personal sources", [history], function (row, source) {
+      activityText(row, "Browser history", source.enabled ? "connected" : "off");
+      activityDetail(row, source.enabled ?
+        "Background learning is active · 14-day compressed summaries · raw history never stored · upload off" :
+        "Enable Personal intelligence, then use the Collie browser-extension popup for Chrome's one-time permission.");
+    }));
+    grid.appendChild(activityLane("Upcoming reminders", personal.reminders || [], function (row, reminder) {
+      activityText(row, reminder.title, reminder.state);
+      activityDetail(row, reminder.event_type + " · " + new Date(1000 * reminder.at).toLocaleString() +
+        " · confidence " + Math.round(100 * Number(reminder.confidence || 0)) + "% · notify only");
+    }));
     grid.appendChild(activityLane("Suggestions", candidates, function (row, candidate) {
       activityText(row, candidate.title, candidate.status);
       activityDetail(row, candidate.support + " sessions · " +

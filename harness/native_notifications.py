@@ -21,6 +21,7 @@ import time
 
 _LOCK = threading.RLock()
 _SERVICE = None
+_PERSONAL_SERVICE = None
 _MAX_TEXT = 500
 
 
@@ -174,6 +175,70 @@ class MeetingReminderService:
                 "recent": receipts[-10:]}
 
 
+class PersonalReminderService:
+    """Deliver evidence-backed personal reminders; never performs the underlying action."""
+
+    def __init__(self, store=None, *, interval=30.0):
+        from .personal_events import PersonalEventStore
+        self.store = store or PersonalEventStore()
+        self.interval = max(10.0, min(300.0, float(interval)))
+        self._stop = threading.Event()
+        self._thread = None
+        self.last_tick = 0.0
+        self.last_error = ""
+
+    def tick(self, *, now=None):
+        self.last_tick = time.time()
+        try:
+            from .procedure_memory import ProcedureMemory
+            root = os.path.dirname(self.store.path)
+            with ProcedureMemory(os.path.join(root, "procedural-memory.db")) as procedures:
+                privacy = procedures.settings(refresh=True)
+            if privacy.get("observation_mode") != "personal" or privacy.get("paused"):
+                self.last_error = ""
+                return []
+            out = []
+            labels = {"possibly_delayed": "may be delayed", "overdue": "is overdue",
+                      "soon": "is coming up"}
+            for reminder in self.store.claim_notifications(now=now, limit=10):
+                result = notify(
+                    "Collie reminder", "%s %s." % (
+                        _text(reminder.get("title"), 180),
+                        labels.get(reminder.get("state"), "needs attention")))
+                self.store.complete_notification(reminder["notification_key"], result)
+                out.append(dict(result, event_id=reminder["event_id"],
+                                state=reminder["state"]))
+            self.last_error = next((row.get("error", "") for row in out
+                                    if not row.get("ok")), "")
+            return out
+        except Exception as exc:
+            self.last_error = "%s: %s" % (type(exc).__name__, _text(exc, 240))
+            return []
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            self.tick()
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return False
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="collie-personal-reminders", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self):
+        self._stop.set()
+        return True
+
+    def status(self):
+        return {"available": available(), "backend": platform_backend(),
+                "running": bool(self._thread and self._thread.is_alive()),
+                "last_tick": self.last_tick, "last_error": self.last_error,
+                "recent": self.store.notification_receipts(limit=10)}
+
+
 def ensure_started() -> MeetingReminderService:
     global _SERVICE
     with _LOCK:
@@ -190,3 +255,20 @@ def ensure_started() -> MeetingReminderService:
 
 def service() -> MeetingReminderService:
     return ensure_started()
+
+
+def ensure_personal_started() -> PersonalReminderService:
+    global _PERSONAL_SERVICE
+    with _LOCK:
+        from .personal_events import PersonalEventStore
+        wanted = PersonalEventStore()
+        if (_PERSONAL_SERVICE is None or
+                os.path.normcase(_PERSONAL_SERVICE.store.path) != os.path.normcase(wanted.path)):
+            if _PERSONAL_SERVICE is not None:
+                _PERSONAL_SERVICE.stop()
+                _PERSONAL_SERVICE.store.close()
+            _PERSONAL_SERVICE = PersonalReminderService(store=wanted)
+        else:
+            wanted.close()
+        _PERSONAL_SERVICE.start()
+        return _PERSONAL_SERVICE

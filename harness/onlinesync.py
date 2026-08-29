@@ -51,6 +51,10 @@ def _stage_memory(store: OnlineStore, binding: dict) -> int:
             # A personal/global scope never becomes team/project memory by accident.
             if str(claim.get("scope") or "") != local_project:
                 continue
+            # A downloaded replica is not a new local author. Re-uploading it under
+            # every device id creates an exponential echo as more devices join.
+            if str(claim.get("source") or "").startswith("collie-online:"):
+                continue
             object_id = "memory:%s:%s" % (profile.device_id, claim["id"])
             content = {key: claim.get(key) for key in
                        ("text", "keys", "importance", "created_at", "status", "evidence",
@@ -88,6 +92,8 @@ def _stage_procedures(store: OnlineStore, binding: dict) -> dict:
         candidates = procedures.list_candidates(project=local_cwd) if local_cwd else []
         workflows = procedures.list_workflows(project=local_cwd) if local_cwd else []
         for candidate in candidates:
+            if str(candidate.get("origin_device_id") or "") not in ("", profile.device_id):
+                continue
             object_id = "procedure-candidate:%s:%s" % (
                 profile.device_id, candidate["candidate_id"])
             content = {key: candidate.get(key) for key in (
@@ -103,6 +109,8 @@ def _stage_procedures(store: OnlineStore, binding: dict) -> dict:
                       content=content)
             changed["procedure_candidates"] += 1
         for workflow in workflows:
+            if str(workflow.get("origin_device_id") or "") not in ("", profile.device_id):
+                continue
             object_id = "learned-workflow:%s:%s" % (
                 profile.device_id, workflow["workflow_id"])
             content = {key: workflow.get(key) for key in (
@@ -174,7 +182,7 @@ def _imports_table(store: OnlineStore) -> None:
 
 def apply_remote(store: OnlineStore) -> dict:
     _imports_table(store)
-    profile = store.profile(); imported = invalidated = policies = routines = workflows = 0
+    profile = store.profile(); imported = invalidated = policies = routines = workflows = rejected = 0
     for binding in store.project_bindings():
         project_id, local_project = binding["project_id"], binding["local_project"]
         for obj in store.list_objects(project_id=project_id, include_deleted=True):
@@ -200,13 +208,19 @@ def apply_remote(store: OnlineStore) -> dict:
                 local["project"] = binding.get("cwd") or local_project
                 procedures = ProcedureMemory(_procedure_path(binding))
                 try:
-                    if obj.object_type == "procedure_candidate":
-                        procedures.upsert_synced_candidate(local)
-                        routines += 1
-                    else:
-                        # Authority is forced to none again by the local import seam.
-                        procedures.upsert_synced_workflow(local)
-                        workflows += 1
+                    try:
+                        if obj.object_type == "procedure_candidate":
+                            procedures.upsert_synced_candidate(local)
+                            routines += 1
+                        else:
+                            # Authority is forced to none again by the local import seam.
+                            procedures.upsert_synced_workflow(local)
+                            workflows += 1
+                    except (TypeError, ValueError, OverflowError):
+                        # One malformed encrypted object cannot wedge all memory sync.
+                        # Recording its version prevents a permanent retry loop; a newer
+                        # corrected version remains eligible.
+                        rejected += 1
                 finally:
                     procedures.close()
                 store.db.execute("""INSERT INTO online_procedure_imports(
@@ -254,7 +268,8 @@ def apply_remote(store: OnlineStore) -> dict:
                 memory.close()
     return {"memories_imported": imported, "memories_invalidated": invalidated,
             "policies_narrowed": policies, "procedure_candidates_imported": routines,
-            "learned_workflows_imported": workflows}
+            "learned_workflows_imported": workflows,
+            "procedure_objects_rejected": rejected}
 
 
 def sync_all(store: OnlineStore, *, limit: int = 100) -> dict:

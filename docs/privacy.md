@@ -46,9 +46,38 @@ feature inherently requires:
   loads no analytics or tracking beacon.
 
 Local features — driving your logged-in browser, arranging your desktop, controlling other apps,
-processing meeting reminders, recording your screen, and recording a meeting with AI processing
-disabled — run **entirely on your own computer**. Their output stays local unless you send it
-somewhere yourself.
+processing personal intelligence and meeting reminders, recording your screen, and recording a
+meeting with AI processing disabled — run **entirely on your own computer**. Their output stays local
+unless you send it somewhere yourself.
+
+### Outside-AI learning and Personal intelligence
+
+Outside-AI learning is **off by default** and has three visible modes: Off, Activity only, and
+Personal intelligence. Enabling it requires one affirmative, versioned consent. Collie records the
+consent version and time locally so the choice is auditable. It then runs quietly in the background;
+it does not ask again for each sample. Turning the mode off stops collection, records withdrawal,
+and requires fresh consent before it can be enabled again.
+
+Activity-only mode stores foreground executable identity, coarse duration, idle/session boundaries,
+and an allowlist of operating-system sleep/resume/start/stop event IDs. It does not store window
+titles, keystrokes, clipboard contents, screenshots, document paths, command lines, or system-log
+messages. Raw activity observations expire locally (seven days by default) and never sync.
+
+Browser-history learning is a separate optional source inside Personal intelligence. One click shows
+this disclosure and requests Chrome's native optional `history` permission. After that, the extension
+can refresh in the background without repeated prompts. Each refresh reads at most the most recent
+14 days and reduces records in memory to web origin, local day/hour bucket, visit count, and typed
+count. Page titles, URL paths, query strings, searches, and raw history records are discarded before
+the extension sends anything to Collie's authenticated loopback service. Collie retains no more than
+40 top origins per day for 14 days; those local summaries are not uploaded. Disconnecting the source
+revokes the optional Chrome permission and deletes its summaries.
+
+Browsing is only a habit signal. Visiting a store or tracking page is never treated as proof of a
+purchase. Delivery, reservation, bill, appointment, renewal, and follow-up reminders require a typed
+event with source evidence and confidence (or an explicitly confirmed manual entry), and reminders
+have notification-only authority. This build does not upload personal-history summaries or these
+personal events. Any future cross-device derivative sync is a separate setting and must preserve
+end-to-end encryption; changing that data practice will require a new prominent disclosure.
 
 The browser extension's current-page side chat sends the question plus the displayed page title,
 URL, and any text you explicitly selected to the model provider configured in your local Collie.

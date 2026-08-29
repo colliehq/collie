@@ -619,6 +619,55 @@ def test_procedural_memory_api_requires_auth_and_explicit_review(web_server):
     assert "secret" not in json.dumps(snapshot["events"])
 
 
+def test_personal_intelligence_api_has_one_time_consent_and_local_compression(web_server):
+    import time
+
+    base, token, _state = web_server
+    code, denied = _json(base + "/api/personal")
+    assert code == 403 and denied["error"] == "forbidden"
+    code, refused = _json(base + "/api/procedures/privacy?token=" + token, "POST", {
+        "observation_mode": "personal"})
+    assert code in (400, 409) and "consent" in refused["error"]
+    code, enabled = _json(base + "/api/procedures/privacy?token=" + token, "POST", {
+        "observation_mode": "personal", "consent": True})
+    assert code == 200 and enabled["privacy"]["observation_mode"] == "personal"
+
+    code, refused = _json(base + "/api/personal/source?token=" + token, "POST", {
+        "source_id": "browser_history", "enabled": True,
+        "permission_state": "granted"})
+    assert code in (400, 409) and "consent" in refused["error"]
+    code, connected = _json(base + "/api/personal/source?token=" + token, "POST", {
+        "source_id": "browser_history", "enabled": True,
+        "permission_state": "granted", "confirm": True,
+        "scopes": ["origin", "time_bucket", "count"]})
+    assert code == 200 and connected["source"]["enabled"] is True
+    code, ingested = _json(base + "/api/personal/history?token=" + token, "POST", {
+        "items": [{"url": "https://shop.example/orders/secret?token=x",
+                   "lastVisitTime": int(time.time() * 1000), "visit_count": 3}]})
+    assert code == 200 and ingested["raw_stored"] is False
+    code, snapshot = _json(base + "/api/personal?token=" + token)
+    assert code == 200
+    wire = json.dumps(snapshot)
+    assert "https://shop.example" in wire
+    assert "orders/secret" not in wire and "token=x" not in wire
+    assert snapshot["guarantees"]["browser_history_can_create_order"] is False
+
+    code, email = _json(base + "/api/personal/source?token=" + token, "POST", {
+        "source_id": "primary_email", "kind": "email", "enabled": True,
+        "permission_state": "granted", "confirm": True, "scopes": ["orders"]})
+    assert code == 200 and email["source"]["kind"] == "email"
+    code, event = _json(base + "/api/personal/event?token=" + token, "POST", {
+        "event": {"event_type": "order_shipment", "title": "Package",
+                  "status": "shipped", "expected_at": int(time.time()) - 30,
+                  "source_id": "primary_email", "source_kind": "email",
+                  "source_ref": "message-9", "evidence_digest": "c" * 64,
+                  "confidence": 0.93}})
+    assert code == 200 and event["event"]["source_ref_digest"] != "message-9"
+    code, snapshot = _json(base + "/api/personal?token=" + token)
+    assert code == 200 and snapshot["reminders"][0]["state"] == "possibly_delayed"
+    assert snapshot["reminders"][0]["authority_scope"] == "notify_only"
+
+
 def test_authority_grant_revoke_api_is_authenticated_and_exact(web_server):
     from harness.authority import AuthorityStore, GrantScope
 

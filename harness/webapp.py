@@ -1566,7 +1566,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/sessions":
                 return self._serve_sessions(urllib.parse.parse_qs(parsed.query))
             if path in ("/api/session/timeline", "/api/plan/graph", "/api/workflows",
-                        "/api/procedures",
+                        "/api/procedures", "/api/personal",
                         "/api/workflow", "/api/migrations", "/api/annotations",
                         "/api/meetings/reminders/native/status"):
                 if not self._authed(parsed):
@@ -1593,6 +1593,9 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send_json(procedure_snapshot(
                             project=str(query.get("project", [""])[0] or "") or None,
                             event_limit=int(query.get("limit", ["50"])[0])))
+                    if path == "/api/personal":
+                        from .controlcenter import personal_snapshot
+                        return self._send_json(personal_snapshot())
                     if path == "/api/workflow":
                         from .workflow_capture import WorkflowStore
                         return self._send_json(WorkflowStore().get(
@@ -2176,6 +2179,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/pair":
                 return self._serve_pair_exchange()
             if (path.startswith("/api/workflows/") or path.startswith("/api/procedures/") or
+                    path.startswith("/api/personal/") or
                     path.startswith("/api/migrations/") or
                     path.startswith("/api/annotations/") or
                     path in ("/api/session/fork", "/api/session/handoff",
@@ -2204,10 +2208,37 @@ class Handler(BaseHTTPRequestHandler):
                             value = procedure_privacy(
                                 enabled=body.get("enabled"), paused=body.get("paused"),
                                 retention_days=body.get("retention_days"),
+                                observation_mode=body.get("observation_mode"),
+                                consent=body.get("consent") is True,
+                                derived_sync_enabled=body.get("derived_sync_enabled"),
+                                ambient_enabled=body.get("ambient_enabled"),
+                                ambient_sample_seconds=body.get("ambient_sample_seconds"),
+                                ambient_retention_days=body.get("ambient_retention_days"),
                                 exclude_app=str(body.get("exclude_app") or ""),
                                 include_app=str(body.get("include_app") or ""))
                         else:
                             return self._send_json({"error": "unknown procedure action"}, 404)
+                        return self._send_json(value)
+                    if path.startswith("/api/personal/"):
+                        from .controlcenter import (personal_event, personal_history,
+                                                    personal_source)
+                        action = path.rsplit("/", 1)[-1]
+                        if action == "source":
+                            value = personal_source(
+                                str(body.get("source_id") or ""),
+                                kind=str(body.get("kind") or "") or None,
+                                enabled=body.get("enabled"),
+                                permission_state=body.get("permission_state"),
+                                scopes=body.get("scopes") if isinstance(body.get("scopes"), list) else [],
+                                confirmed=body.get("confirm") is True,
+                                purge=body.get("purge") is True)
+                        elif action == "history":
+                            value = personal_history(body.get("items"))
+                        elif action == "event":
+                            value = personal_event(
+                                body.get("event"), confirmed=body.get("confirm") is True)
+                        else:
+                            return self._send_json({"error": "unknown personal action"}, 404)
                         return self._send_json(value)
                     if path.startswith("/api/workflows/"):
                         from .workflow_capture import WorkflowStore
@@ -5087,8 +5118,9 @@ def bind_server(port=8787):
         try:
             httpd = ThreadingHTTPServer(("127.0.0.1", cand), Handler)
             try:
-                from .native_notifications import ensure_started
+                from .native_notifications import ensure_personal_started, ensure_started
                 ensure_started()
+                ensure_personal_started()
             except Exception:
                 pass
             return httpd, cand
@@ -5159,8 +5191,9 @@ def main(argv=None, on_bound=None):
         return 1
     start_mission_ticker()
     try:
-        from .native_notifications import ensure_started
+        from .native_notifications import ensure_personal_started, ensure_started
         ensure_started()
+        ensure_personal_started()
     except Exception as exc:
         print("collie meeting reminders: background service unavailable: %s" % exc, flush=True)
     # a nicer local URL than a bare loopback IP: browsers resolve any *.localhost name to the

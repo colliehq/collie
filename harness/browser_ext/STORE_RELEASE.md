@@ -23,13 +23,17 @@ Power build; do not zip the live directory by hand.
 - `storage` persists the bridge token, input-fidelity overrides, browser site-access preference, and
   per-session tab ownership. `alarms` keeps the Manifest V3 bridge poll recoverable after suspension.
 - `sidePanel` and `contextMenus` provide Ask Collie for the current page or selected text.
+- `history` is an optional runtime permission behind the popup's one-time Personal intelligence
+  disclosure. After consent, a background refresh reduces the last 14 days in extension memory to
+  origin/time/count summaries. It never sends or stores raw URLs, titles, paths, queries, or searches;
+  disconnecting revokes the permission and deletes local summaries.
 
 No remotely hosted code is loaded. The extension communicates only with loopback Collie services and
 with pages the user/agent opens. `token.txt` and legacy `auth.js` must never be present in a release zip.
 
 ## Before upload
 
-1. Run `node tests/browser_ext_test.js` and `python -m pytest tests/test_browserbridge.py -q`.
+1. Run `node tests/browser_ext_test.js` and `python -m pytest tests/test_browserbridge.py tests/test_personal_events.py -q`.
 2. Run the package script and inspect the zip listing. Confirm `manifest.json` has the justified
    `debugger`, `downloads`, and `webNavigation` permissions but no `tabs`, `<all_urls>`, required broad host permission,
    token, auth file, source map, log, or user data.
@@ -44,6 +48,9 @@ with pages the user/agent opens. `token.txt` and legacy `auth.js` must never be 
    `finalize close=true` closes only a Collie-owned tab.
 6. Publish the repository privacy-policy URL and use the exact permission rationale above in the
    store privacy form. Store signing/upload remains a human publisher action.
+7. In a clean profile, verify the Personal intelligence disclosure appears before Chrome's history
+   warning, consent is requested only once, background refresh survives extension suspension, and
+   Disconnect both removes the optional permission and clears `/api/personal` browsing patterns.
 
 ## Release assets
 

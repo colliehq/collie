@@ -118,6 +118,17 @@
       Shows a debug banner while active.</span></span>
   </label>
 
+  <div class="site" id="personalBox">
+    <div class="site-h"><b>Personal intelligence · <span id="historyState">off</span></b></div>
+    <div class="site-h" id="historyNote" style="margin-top:5px;line-height:1.45">
+      One-time opt-in. Collie reads history in the background, sends only origin/time-bucket/count
+      summaries to this computer, and never stores or uploads raw URLs, page titles, paths, or searches.
+    </div>
+    <button id="historyToggle" style="margin-top:7px;width:100%">Enable once</button>
+    <div class="site-h" style="margin-top:6px"><a href="https://colliehq.github.io/collie/privacy/"
+      target="_blank" rel="noreferrer" style="color:var(--accent)">Full privacy details</a></div>
+  </div>
+
   <div class="site">
     <div class="site-h">This site's input fidelity · <span id="siteOrigin">—</span></div>
     <div class="seg" id="siteSeg">

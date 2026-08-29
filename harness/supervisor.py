@@ -237,6 +237,10 @@ def default_config(root: str | None = None, python: str | None = None) -> dict:
         WorkerSpec("automations", [python, "-m", "harness.automations", "daemon",
                                     "--interval", "5", "--state-dir", root],
                    critical=False, startup_grace_s=15).as_dict(),
+        # The worker is safe to keep alive while observation is off: it polls the
+        # local setting and records nothing until a versioned one-time consent exists.
+        WorkerSpec("ambient", [python, "-m", "harness.ambient", "--state-dir", root],
+                   critical=False, startup_grace_s=15).as_dict(),
         WorkerSpec("bridge", [python, "-m", "harness.cli", "browser-bridge", "--port", "8677"],
                    critical=False, probe_url="http://127.0.0.1:8677/health").as_dict(),
     ]
@@ -297,14 +301,15 @@ def load_config(path: str | None = None, *, python: str | None = None) -> dict:
             value.get("schema") != SCHEMA):
         raise ValueError("unsupported supervisor config schema")
     value = _normalize_config(value)
-    # A dog can opt into Slack after supervisor.json was first created. Discover only those
-    # generated launchers on every supervisor start, preserving every existing worker setting.
-    # This also lets the supervisor adopt pre-supervisor listeners during an upgrade.
+    # A dog can opt into Slack after supervisor.json was first created, and newer
+    # releases can add privacy-idle workers such as ambient. Merge only missing
+    # generated workers, preserving every existing worker setting.
     root = state_dir(value.get("state_dir") or os.path.dirname(path))
     known = {item["name"] for item in value["workers"]}
     generated = default_config(root, python or sys.executable)
     for item in generated["workers"]:
-        if item["name"].startswith("slack-") and item["name"] not in known:
+        if ((item["name"].startswith("slack-") or item["name"] == "ambient") and
+                item["name"] not in known):
             value["workers"].append(item)
             known.add(item["name"])
     return value

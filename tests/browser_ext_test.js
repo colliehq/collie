@@ -81,6 +81,11 @@ function eq(name, got, want) {
     !(storeManifest.permissions || []).includes('tabs') &&
     !(storeManifest.host_permissions || []).includes('<all_urls>'));
   t('power install can verify downloads too', (manifest.permissions || []).includes('downloads'));
+  t('history is an optional one-time runtime grant in both builds',
+    (manifest.optional_permissions || []).includes('history') &&
+    (storeManifest.optional_permissions || []).includes('history') &&
+    !(manifest.permissions || []).includes('history') &&
+    !(storeManifest.permissions || []).includes('history'));
   t('store asks for broad website reach only as an optional runtime grant',
     (storeManifest.optional_host_permissions || []).includes('http://*/*') &&
     (storeManifest.optional_host_permissions || []).includes('https://*/*') &&

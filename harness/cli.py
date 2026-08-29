@@ -2832,6 +2832,24 @@ def cmd_routine(args):
                 value = store.review(args.id, args.action, confirmed=args.yes, note=args.note)
             elif args.action in ("pause", "resume"):
                 value = {"privacy": store.update_privacy(paused=args.action == "pause")}
+            elif args.action == "mode":
+                mode = str(args.id or "").strip().lower()
+                value = {"privacy": store.update_privacy(
+                    observation_mode=mode, consent=args.yes)}
+                if mode == "off":
+                    from .personal_events import PersonalEventStore
+                    with PersonalEventStore(os.path.join(
+                            _state_dir(), "personal-intelligence.db")) as personal:
+                        source = personal.get_source("browser_history")
+                        if source and source["enabled"]:
+                            personal.configure_source(
+                                "browser_history", enabled=False,
+                                permission_state=source["permission_state"])
+            elif args.action == "personal":
+                from .personal_events import PersonalEventStore
+                with PersonalEventStore(os.path.join(
+                        _state_dir(), "personal-intelligence.db")) as personal:
+                    value = personal.snapshot()
             elif args.action in ("exclude", "include"):
                 if not args.app:
                     raise ValueError("--app is required")
@@ -2851,8 +2869,9 @@ def cmd_routine(args):
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return 0
     if args.action == "status":
-        print("Procedural memory: %s · raw=device_only · sync=derived sealed only" %
-              ("paused" if value["privacy"].get("paused") else "observing"))
+        print("Procedural memory: %s · outside-AI=%s · raw=device_only · sync=derived sealed only" %
+              (("paused" if value["privacy"].get("paused") else "observing"),
+               value["privacy"].get("observation_mode", "off")))
         print("  %d candidates · %d accepted workflows · %d recent events shown" %
               (len(value["candidates"]), len(value["workflows"]), len(value["events"])))
         return 0
@@ -4357,9 +4376,11 @@ def main(argv=None):
         "routine", help="private procedural memory: discover and review repeated workflows")
     prt.add_argument("action", nargs="?", default="status",
                      choices=["status", "discover", "candidates", "events", "workflows",
+                              "mode", "personal",
                               "accept", "dismiss", "pause", "resume", "exclude", "include",
                               "retention", "purge"])
-    prt.add_argument("id", nargs="?", default="", help="candidate id for accept/dismiss")
+    prt.add_argument("id", nargs="?", default="",
+                     help="candidate id for accept/dismiss, or off/activity/personal for mode")
     prt.add_argument("--project", default="", help="limit to one local project directory")
     prt.add_argument("--status", choices=["proposed", "accepted", "dismissed", "disabled"],
                      default="")

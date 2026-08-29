@@ -135,6 +135,85 @@ async function refreshSiteAccess() {
   }
 }
 
+// --- one-time personal-intelligence consent ------------------------------------------------------
+async function personalPost(auth, path, body) {
+  const response = await fetch(WEB + path + "?token=" + encodeURIComponent(auth.token), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+  });
+  const value = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(value.error || "Collie rejected the personal-data setting");
+  return value;
+}
+
+async function refreshPersonal() {
+  let granted = false;
+  try { granted = await chrome.permissions.contains({ permissions: ["history"] }); } catch (e) {}
+  let enabled = !!(await chrome.storage.local.get("colliePersonalHistory")).colliePersonalHistory;
+  if (enabled && granted) {
+    try {
+      const auth = await getWebToken();
+      const response = await fetch(WEB + "/api/personal?token=" + encodeURIComponent(auth.token),
+                                   { cache: "no-store" });
+      const state = await response.json();
+      const source = (state.sources || []).find((item) => item.source_id === "browser_history");
+      enabled = !!(response.ok && state.observation &&
+        state.observation.observation_mode === "personal" && source && source.enabled);
+      if (!enabled) await chrome.storage.local.set({ colliePersonalHistory: false });
+    } catch (e) { enabled = false; }
+  }
+  $("historyState").textContent = granted && enabled ? "on" : "off";
+  $("historyToggle").textContent = granted && enabled ? "Disconnect and delete summaries" : "Enable once";
+  if (granted && enabled) {
+    $("historyNote").textContent = "Running quietly in the background. Only compressed origin/time/count summaries stay on this computer; raw history is never stored or uploaded.";
+  }
+}
+
+$("historyToggle").addEventListener("click", async () => {
+  $("historyToggle").disabled = true;
+  let newlyGranted = false;
+  try {
+    const already = await chrome.permissions.contains({ permissions: ["history"] });
+    const enabled = !!(await chrome.storage.local.get("colliePersonalHistory")).colliePersonalHistory;
+    if (already && enabled) {
+      // Withdrawal takes effect in the extension first, even if the local Web process is briefly
+      // unavailable. A durable pending bit makes the summary purge retry in the background.
+      await chrome.storage.local.set({ colliePersonalHistory: false,
+        colliePersonalPurgePending: true });
+      try { await chrome.permissions.remove({ permissions: ["history"] }); } catch (e) {}
+      const auth = await getWebToken();
+      await personalPost(auth, "/api/personal/source", { source_id: "browser_history",
+        enabled: false, permission_state: "revoked", purge: true });
+      await chrome.storage.local.set({ colliePersonalPurgePending: false });
+    } else {
+      const auth = await getWebToken();
+      // This click is the product's prominent, affirmative consent. Chrome immediately follows it
+      // with the native permission warning; neither prompt is repeated during background use.
+      const granted = await chrome.permissions.request({ permissions: ["history"] });
+      if (!granted) throw new Error("Chrome history permission was not granted");
+      newlyGranted = !already;
+      await personalPost(auth, "/api/procedures/privacy", {
+        observation_mode: "personal", consent: true
+      });
+      await personalPost(auth, "/api/personal/source", { source_id: "browser_history",
+        enabled: true, permission_state: "granted", scopes: ["origin", "time_bucket", "count"],
+        confirm: true });
+      await chrome.storage.local.set({ colliePersonalHistory: true,
+        colliePersonalPurgePending: false });
+      const synced = await chrome.runtime.sendMessage({ type: "collie:sync-personal-history" });
+      if (synced && synced.error) throw new Error(synced.error);
+    }
+  } catch (e) {
+    if (newlyGranted) {
+      try { await chrome.permissions.remove({ permissions: ["history"] }); } catch (ignored) {}
+      await chrome.storage.local.set({ colliePersonalHistory: false });
+    }
+    $("historyNote").textContent = "Could not change history learning: " + e.message;
+  } finally {
+    $("historyToggle").disabled = false;
+    await refreshPersonal();
+  }
+});
+
 // --- high-fidelity (chrome.debugger) input: global default + per-site override -------------------
 const HAS_DEBUGGER_PERMISSION = (chrome.runtime.getManifest().permissions || []).includes("debugger");
 const OPTIONAL_WEB_ORIGINS = ["http://*/*", "https://*/*"];
@@ -260,3 +339,4 @@ refreshMode();
 refreshToken();
 refreshSiteAccess();
 refreshReach();
+refreshPersonal();
