@@ -92,8 +92,10 @@ public class CollieCap {
   public static string Needle = "";
   public static string Seen = "";
 
-  // Substring match on the visible title, skipping tool windows and minimised ones. Same "match by
-  // title" contract the desktop_* tools use, so a title from desktop_apps works here unchanged.
+  // Substring match on the visible title, skipping tool windows and minimised ones. Keep the first
+  // partial match as a fallback but continue enumerating so an exact title wins. Without that,
+  // asking for "Collie" can capture "Jane - Collie - Slack" instead of the Collie app itself.
+  // This keeps the desktop_* title contract while making a precise request actually precise.
   public static bool Visit(IntPtr h, IntPtr p) {
     if (!IsWindowVisible(h) || IsIconic(h)) return true;
     int n = GetWindowTextLength(h); if (n < 1) return true;
@@ -104,7 +106,10 @@ public class CollieCap {
     if ((r.R - r.L) < 48 || (r.B - r.T) < 48) return true;
     if (Seen.Length < 900) Seen += t + "\n";
     if (Needle.Length > 0 && t.IndexOf(Needle, StringComparison.OrdinalIgnoreCase) >= 0) {
-      Found = h; FoundTitle = t; return false;
+      if (String.Equals(t, Needle, StringComparison.OrdinalIgnoreCase)) {
+        Found = h; FoundTitle = t; return false;
+      }
+      if (Found == IntPtr.Zero) { Found = h; FoundTitle = t; }
     }
     return true;
   }

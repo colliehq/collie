@@ -35,6 +35,48 @@ def test_first_party_surfaces_share_the_quiet_interface_contract():
     assert "The map stays immersive" in explorer
 
 
+def test_desktop_defaults_to_plain_language_and_progressively_discloses_advanced_surfaces():
+    desktop = read("harness/webui/index.html")
+
+    # One obvious starting action; Home remains as an internal route without duplicating New task.
+    assert 'id="newChat"' in desktop
+    assert re.search(r'id="navHome"\s+hidden', desktop)
+    assert 'id="sideMore"' in desktop
+    more = desktop.split('id="sideMore"', 1)[1].split('</details>', 1)[0]
+    for node in ("navPack", "navOnline", "navActivity"):
+        assert f'id="{node}"' in more
+    for label in ("Tasks", "Apps & connections", "Devices & team", "Sync & cloud"):
+        assert f'data-i18n="{label}"' in desktop
+    assert 'data-i18n="Loading tasks…"' in desktop
+    assert 'data-i18n-aria-label="Close Apps & connections"' in desktop
+    task_panel = desktop.split('id="missionsPanel"', 1)[1].split('</section>', 1)[0]
+    assert "missions" not in re.sub(r'id="missions[^\"]*"|class="[^\"]*missions[^\"]*"', "", task_panel).lower()
+
+    # The empty state speaks in user outcomes. Internal routing and proof nouns stay available
+    # after work begins, but are not prerequisites for submitting the first request.
+    welcome = desktop.split('id="welcome"', 1)[1].split('</div>\n      </div>\n    </div>', 1)[0]
+    assert "Tell Collie what you want done." in welcome
+    for example in ("Plan my day", "Handle it in my apps", "Research and decide", "Build or fix something"):
+        assert example in welcome
+    for jargon in ("brain, tools, skills and workers", 'data-fill="/mission "'):
+        assert jargon not in welcome
+    assert '.gate[data-state="idle"] { display:none; }' in desktop
+    assert '#statePill:not(.live) { display:none; }' in desktop
+
+    # Model choice and system surfaces still exist, one layer down.
+    tools = desktop.split('class="topbar-tools"', 1)[1].split('</div>\n      </details>', 1)[0]
+    assert 'id="modelTrigger"' in tools
+    assert '["pack", "online", "activity"].indexOf(id)' in desktop
+
+    # Extension internals are behind an advanced disclosure; the default path starts from intent.
+    add_panel = desktop.split('id="libraryAddPanel"', 1)[1].split('</div>\n        <div class="library-summary"', 1)[0]
+    default_path, advanced = add_panel.split('data-i18n="Other ways to extend Collie"', 1)
+    assert 'id="libraryConnectionForm"' in default_path and "Find matching apps" in default_path
+    assert "Custom remote MCP" not in default_path and "Create a local Skill" not in default_path
+    assert "Custom remote MCP" in advanced and "Create a local Skill" in advanced
+    assert 'loc.textContent = t("On this computer")' in desktop
+
+
 def test_library_and_activity_replace_the_conversation_instead_of_stacking():
     desktop = read("harness/webui/index.html")
     activity = desktop.split("function setActivityOpen(open)", 1)[1].split("if (activityButton)", 1)[0]
@@ -102,7 +144,7 @@ def test_ecosystem_shell_exposes_missions_pack_library_and_global_approvals():
 
     for node in ("navHome", "navMissions", "navPack", "navOnline", "navLibrary", "navActivity", "needsYouNav"):
         assert f'id="{node}"' in desktop
-    assert 'data-fill="/mission "' in desktop
+    assert 'class="wc-card" data-fill="/mission "' not in desktop
     assert 'id="slashMenu"' in desktop and 'data-command="/mission --review "' in desktop
     assert "function updateSlashMenu()" in desktop and "chooseSlash(opts[slashIndex])" in desktop
     assert '"MISSION_APPROVAL_MODE"' in desktop
@@ -192,7 +234,8 @@ def test_library_inventory_and_add_flows_are_first_class_ui():
     assert "community_unreviewed" in desktop and "Review and connect" in desktop
     assert 'setLibraryAddMode("connection")' in desktop
     assert "renderLibraryInventory" in desktop
-    assert 'libraryQuantity(row.tools, "tool", "tools")' in desktop
+    assert 'kind === "connection" ? "action" : "tool"' in desktop
+    assert 'kind === "connection" ? "actions" : "tools"' in desktop
     assert 'libraryQuantity(row.event_count, "event", "events")' in desktop
 
 

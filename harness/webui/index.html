@@ -184,6 +184,14 @@
                                place-items:center; border-radius:999px; font:700 10px var(--mono);
                                color:var(--on-accent); background:var(--coral); }
   .side-nav-item[hidden] { display:none; }
+  .side-more { margin:0; }
+  .side-more > summary { list-style:none; }
+  .side-more > summary::-webkit-details-marker { display:none; }
+  .side-more > summary .side-more-chev { width:13px; height:13px; margin-left:auto; color:var(--faint);
+    transition:transform .15s; }
+  .side-more[open] > summary .side-more-chev { transform:rotate(180deg); }
+  .side-more-items { display:flex; flex-direction:column; gap:2px; padding:2px 0 0 16px; }
+  .side-more-items .side-nav-item { font-size:12.5px; }
   .side-section-rule { height:1px; background:var(--line-2); margin:0 16px 10px; }
 
   .side .lbl {
@@ -260,6 +268,7 @@
     border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
     display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2);
   }
+  #statePill:not(.live) { display:none; }
   /* The now-playing control. A button, not a label: the whole thing is the off switch, so there is
      nothing to aim at and no second step. Reads as a status pill until you hover it, then as an
      action — which is what it is. */
@@ -471,6 +480,9 @@
     padding: 10px 12px 10px 14px;
     transition: border-color .4s, background .4s;
   }
+  /* An empty proof box teaches a new user a product noun before there is anything to inspect.
+     Reveal the receipt only once work has actually started or finished. */
+  .gate[data-state="idle"] { display:none; }
   .gate::before {
     content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
     background: var(--faint); transition: background .4s;
@@ -891,7 +903,7 @@
   .library-empty strong { display: block; margin-bottom: 5px; color: var(--ink); font-size: 14px; }
   .library-empty code { font: 11px var(--mono); }
   .library-head-actions .primary { color:var(--on-accent); border-color:var(--pine); background:var(--pine); }
-  .library-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0; margin:0 0 18px;
+  .library-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0; margin:0 0 18px;
     border-block:1px solid var(--line); }
   .library-stat { padding:11px 8px; color:var(--muted); font-size:10.5px; }
   .library-stat b { display:block; color:var(--ink); font:700 18px var(--mono); }
@@ -915,10 +927,14 @@
     background:transparent; cursor:pointer; font:600 11px var(--sans); }
   .library-add { margin:0 0 18px; border:1px solid var(--line); border-radius:12px; background:var(--surface); padding:14px; }
   .library-add[hidden],.library-add-form[hidden],.library-preview[hidden] { display:none; }
-  .library-add-head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
-  .library-add-head strong { flex:1; }
-  .library-add-close { border:0!important; background:transparent!important; font-size:18px!important; }
+  .library-add-head { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 8px;
+    align-items:start; margin-bottom:10px; }
+  .library-add-head strong { grid-column:1; font-size:14px; }
+  .library-add-head > span { grid-column:1; color:var(--muted); font-size:11.5px; line-height:1.45; }
+  .library-add-close { grid-column:2; grid-row:1/3; border:0!important; background:transparent!important;
+    font-size:18px!important; }
   .library-add-choices { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; }
+  .library-add > .library-add-choices { grid-template-columns:minmax(0,420px); }
   .library-add-choice { min-height:76px; text-align:left; border:1px solid var(--line); border-radius:9px;
     padding:9px; color:var(--ink); background:var(--surface-2); cursor:pointer; }
   .library-add-choice strong { display:block; margin-bottom:3px; font-size:12px; }
@@ -1604,6 +1620,9 @@
     padding:9px; border:1px solid var(--line); border-radius:11px; background:var(--raise);
     box-shadow:var(--shadow-lg); }
   .topbar-tools .tbtn { border-color:var(--line); background:var(--surface); }
+  .topbar-tools .model-trigger { grid-column:1/-1; width:100%; max-width:none; justify-content:flex-start;
+    border-color:var(--line); background:var(--surface); padding:0 9px; }
+  .topbar-tools .model-trigger-chev { margin-left:auto; }
 
   .scroll { background:var(--bg); }
   .thread-log { max-width:840px; }
@@ -1614,10 +1633,13 @@
   .wc-presence { font-size:12px; color:var(--muted); }
   .wc-title { font-size:clamp(25px,3.2vw,34px); letter-spacing:-.035em; }
   .wc-sub { max-width:52ch; margin-top:8px; font-size:14px; line-height:1.55; }
-  .wc-examples { display:flex; flex-direction:column; gap:2px; max-width:560px; margin:24px 0 0; }
-  .wc-card { display:grid; grid-template-columns:170px 1fr; align-items:baseline; gap:12px;
-    padding:9px 10px; border:0; border-radius:8px; background:transparent; }
-  .wc-card:hover { transform:none; box-shadow:none; border-color:transparent; background:var(--surface-2); }
+  .wc-examples { display:flex; flex-direction:column; gap:4px; max-width:580px; margin:24px 0 0; }
+  .wc-card { display:grid; grid-template-columns:164px 1fr auto; align-items:baseline; gap:12px;
+    padding:10px 11px; border:1px solid transparent; border-radius:9px; background:transparent; }
+  .wc-card::after { content:"\2192"; color:var(--faint); font-size:14px; opacity:.5; transform:translateX(0);
+    transition:opacity .12s,transform .12s; }
+  .wc-card:hover { transform:none; box-shadow:none; border-color:var(--line-2); background:var(--surface-2); }
+  .wc-card:hover::after,.wc-card:focus-visible::after { opacity:1; transform:translateX(2px); }
   .wc-card .wc-ct { font-size:13px; }
   .wc-card .wc-cd { margin:0; font-size:11.5px; }
   .wc-trust { margin-top:22px; padding-top:12px; border-top:1px solid var(--line-2); }
@@ -1833,7 +1855,9 @@
     .online-onboarding,.online-card,.online-section { grid-column:1/-1; }
   }
   @media (max-width:620px) {
-    .wc-card { grid-template-columns:1fr; gap:1px; }
+    .wc-card { grid-template-columns:minmax(0,1fr) auto; gap:1px 8px; }
+    .wc-card .wc-cd { grid-column:1; }
+    .wc-card::after { grid-column:2; grid-row:1/3; align-self:center; }
     .wc-trust { display:none; }
     .topbar-tools { position:fixed; top:48px; right:8px; }
     .activity-panel.online-page .activity-inner { padding:20px 14px 32px; }
@@ -1867,37 +1891,46 @@
     </button>
 
     <nav class="side-nav" aria-label="Collie">
-      <button type="button" class="side-nav-item on" id="navHome">
+      <button type="button" class="side-nav-item on" id="navHome" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11.5 12 4l9 7.5V21h-6v-6H9v6H3z"/></svg>
         <span data-i18n="Home">Home</span>
       </button>
       <button type="button" class="side-nav-item" id="navMissions">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m18 6 3-3M18 3h3v3"/></svg>
-        <span data-i18n="Missions">Missions</span>
-      </button>
-      <button type="button" class="side-nav-item" id="navPack">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="12" height="9" rx="2"/><path d="M7 17h4M9 13v4M17 9h4v10h-7v-4"/></svg>
-        <span data-i18n="Pack">Pack</span>
-      </button>
-      <button type="button" class="side-nav-item" id="navOnline">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 18.5h11a4 4 0 0 0 .6-7.96A6.4 6.4 0 0 0 5.7 9.3a4.6 4.6 0 0 0 .8 9.2Z"/><path d="M9 14h6M12 11v6"/></svg>
-        <span data-i18n="Online">Online</span><span class="online-nav-status" id="onlineNavStatus" title="Not connected"></span>
+        <span data-i18n="Tasks">Tasks</span>
       </button>
       <button type="button" class="side-nav-item" id="navLibrary">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h5v16H5zM14 4h5v16h-5z"/><path d="M7 8h1M16 8h1"/></svg>
-        <span data-i18n="Library">Library</span>
-      </button>
-      <button type="button" class="side-nav-item" id="navActivity">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V9M10 18V5M16 18v-7M22 18V2"/></svg>
-        <span data-i18n="Activity">Activity</span>
+        <span data-i18n="Apps & connections">Apps &amp; connections</span>
       </button>
       <button type="button" class="side-nav-item" id="needsYouNav" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a7 7 0 0 0-7 7v4l-2 3h18l-2-3v-4a7 7 0 0 0-7-7Z"/><path d="M9 20h6"/></svg>
         <span data-i18n="Needs You">Needs You</span><span class="side-badge" id="needsYouCount">0</span>
       </button>
+      <details class="side-more" id="sideMore">
+        <summary class="side-nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>
+          <span data-i18n="More">More</span>
+          <svg class="side-more-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg>
+        </summary>
+        <div class="side-more-items">
+          <button type="button" class="side-nav-item" id="navPack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="12" height="9" rx="2"/><path d="M7 17h4M9 13v4M17 9h4v10h-7v-4"/></svg>
+            <span data-i18n="Devices & team">Devices &amp; team</span>
+          </button>
+          <button type="button" class="side-nav-item" id="navOnline">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 18.5h11a4 4 0 0 0 .6-7.96A6.4 6.4 0 0 0 5.7 9.3a4.6 4.6 0 0 0 .8 9.2Z"/><path d="M9 14h6M12 11v6"/></svg>
+            <span data-i18n="Sync & cloud">Sync &amp; cloud</span><span class="online-nav-status" id="onlineNavStatus" title="Not connected"></span>
+          </button>
+          <button type="button" class="side-nav-item" id="navActivity">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V9M10 18V5M16 18v-7M22 18V2"/></svg>
+            <span data-i18n="System activity">System activity</span>
+          </button>
+        </div>
+      </details>
     </nav>
     <div class="side-section-rule"></div>
-    <div class="lbl" data-i18n="Recent work">Recent work</div>
+    <div class="lbl" data-i18n="Recent">Recent</div>
     <div class="threads" id="threads"><div class="empty" data-i18n="No sessions yet.">No sessions yet.</div></div>
 
     <!-- verification gate: compact, pinned bottom-left. Same ids/state machine as
@@ -1940,11 +1973,6 @@
         <span class="np-stop">Stop</span>
       </button>
       <div class="spacer"></div>
-      <button type="button" class="model-trigger" id="modelTrigger" title="Switch model (Ctrl/⌘ K)" aria-haspopup="dialog" aria-controls="modelOverlay" aria-expanded="false">
-        <span class="model-trigger-dot"></span>
-        <span class="model-trigger-label" id="modelTriggerLabel" data-i18n="Loading model…">Loading model…</span>
-        <svg class="model-trigger-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
-      </button>
       <!-- Rewind. Hidden unless a snapshot actually exists: an undo button that cannot undo is
            worse than no button, because the user relies on it BEFORE letting the agent run. -->
       <button class="tbtn" id="rewindBtn" title="Rewind the files to before a run" aria-label="Rewind files" data-i18n-title="Rewind the files to before a run" data-i18n-aria-label="Rewind files" hidden>
@@ -1955,6 +1983,11 @@
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
         </summary>
         <div class="topbar-tools" aria-label="More tools">
+          <button type="button" class="model-trigger" id="modelTrigger" title="Switch model (Ctrl/⌘ K)" aria-haspopup="dialog" aria-controls="modelOverlay" aria-expanded="false">
+            <span class="model-trigger-dot"></span>
+            <span class="model-trigger-label" id="modelTriggerLabel" data-i18n="Loading model…">Loading model…</span>
+            <svg class="model-trigger-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
           <button class="tbtn" id="runDetailsBtn" title="run details" aria-label="run details" data-i18n-title="run details" data-i18n-aria-label="run details" aria-controls="workpanel" aria-expanded="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
           </button>
@@ -1990,32 +2023,32 @@
             <div><div class="wc-kicker" data-collie-kicker>COLLIE · THIS COMPUTER</div>
             <div class="wc-presence" data-i18n="Ready to work">Ready to work</div></div></div>
           <div class="wc-title" data-i18n="What should we get done?">What should we get done?</div>
-          <div class="wc-sub" data-i18n="Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.">Describe the outcome. Collie chooses the brain, tools, skills and workers, keeps the mission moving, and returns the evidence.</div>
+          <div class="wc-sub" data-i18n="Tell Collie what you want done. It can work across your files and apps, ask when it needs you, and show what it completed.">Tell Collie what you want done. It can work across your files and apps, ask when it needs you, and show what it completed.</div>
           <div class="wc-examples">
-            <button type="button" class="wc-card" data-fill="Build or change this project from end to end, then show me what you checked.">
-              <div class="wc-ct" data-i18n="Build or change something">Build or change something</div><div class="wc-cd" data-i18n="Create, edit and test across the project.">Create, edit and test across the project.</div></button>
+            <button type="button" class="wc-card" data-fill="Review my calendar and important messages, then help me make a conflict-free plan for today. Ask before sending or changing anything.">
+              <div class="wc-ct" data-i18n="Plan my day">Plan my day</div><div class="wc-cd" data-i18n="Review what matters and make a conflict-free plan.">Review what matters and make a conflict-free plan.</div></button>
+            <button type="button" class="wc-card" data-fill="Use the apps already open on this computer to help me complete this outcome: ">
+              <div class="wc-ct" data-i18n="Handle it in my apps">Handle it in my apps</div><div class="wc-cd" data-i18n="Work across the signed-in apps on this computer.">Work across the signed-in apps on this computer.</div></button>
             <button type="button" class="wc-card" data-fill="Research this question, compare the strongest options, and recommend a decision with sources.">
               <div class="wc-ct" data-i18n="Research and decide">Research and decide</div><div class="wc-cd" data-i18n="Investigate, compare and return a sourced recommendation.">Investigate, compare and return a sourced recommendation.</div></button>
-            <button type="button" class="wc-card" data-fill="Use the apps already open on this computer to complete this outcome: ">
-              <div class="wc-ct" data-i18n="Work across apps">Work across apps</div><div class="wc-cd" data-i18n="Use your signed-in browser and desktop tools.">Use your signed-in browser and desktop tools.</div></button>
-            <button type="button" class="wc-card" data-fill="/mission ">
-              <div class="wc-ct" data-i18n="Start a durable mission">Start a durable mission</div><div class="wc-cd" data-i18n="Keep moving across waits, retries and handoffs.">Keep moving across waits, retries and handoffs.</div></button>
+            <button type="button" class="wc-card" data-fill="Build or change this project from end to end, test the result, and show me what changed.">
+              <div class="wc-ct" data-i18n="Build or fix something">Build or fix something</div><div class="wc-cd" data-i18n="Change files, test the result, and show what changed.">Change files, test the result, and show what changed.</div></button>
           </div>
-          <div class="wc-trust"><span data-i18n="Runs on this device">Runs on this device</span><span data-i18n="Asks only when your input is required">Asks only when your input is required</span><span data-i18n="Returns scoped evidence">Returns scoped evidence</span></div>
+          <div class="wc-trust"><span data-i18n="Your information stays on this computer unless a task needs a service you connect.">Your information stays on this computer unless a task needs a service you connect.</span></div>
         </div>
       </div>
     </div>
 
-    <section class="missions-panel" id="missionsPanel" role="region" aria-label="Missions" data-i18n-aria-label="Missions" hidden>
+    <section class="missions-panel" id="missionsPanel" role="region" aria-label="Tasks" data-i18n-aria-label="Tasks" hidden>
       <div class="missions-inner">
         <div class="missions-head">
-          <div class="missions-head-copy"><h2 data-i18n="Missions">Missions</h2>
-            <p data-i18n="Durable work, summarized by current state instead of raw internal instructions.">Durable work, summarized by current state instead of raw internal instructions.</p></div>
+          <div class="missions-head-copy"><h2 data-i18n="Tasks">Tasks</h2>
+            <p data-i18n="Longer work that keeps moving across waits, retries, and restarts.">Longer work that keeps moving across waits, retries, and restarts.</p></div>
           <button type="button" id="missionsRefresh" data-i18n="Refresh">Refresh</button>
-          <button type="button" id="missionsClose" data-i18n-aria-label="Close Missions" aria-label="Close Missions">×</button>
+          <button type="button" id="missionsClose" data-i18n-aria-label="Close Tasks" aria-label="Close Tasks">×</button>
         </div>
         <div class="missions-notice" id="missionsNotice" role="status" aria-live="polite"></div>
-        <div class="missions-grid" id="missionsGrid"><div class="library-empty" data-i18n="Loading missions…">Loading missions…</div></div>
+        <div class="missions-grid" id="missionsGrid"><div class="library-empty" data-i18n="Loading tasks…">Loading tasks…</div></div>
       </div>
     </section>
 
@@ -2027,35 +2060,32 @@
       <iframe class="surface-frame" id="surfaceFrame" title="Collie tool"></iframe>
     </section>
 
-    <section class="library-panel" id="libraryPanel" role="region" aria-label="Library" data-i18n-aria-label="Library" hidden>
+    <section class="library-panel" id="libraryPanel" role="region" aria-label="Apps &amp; connections" data-i18n-aria-label="Apps & connections" hidden>
       <div class="library-inner">
         <div class="library-head">
           <div class="library-head-copy">
-            <h2 data-i18n="Library">Library</h2>
-            <p data-i18n="Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.">Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.</p>
+            <h2 data-i18n="Apps & connections">Apps &amp; connections</h2>
+            <p data-i18n="Connect the services Collie can use for you. You review access before anything is connected.">Connect the services Collie can use for you. You review access before anything is connected.</p>
           </div>
-          <div class="library-head-actions"><button type="button" class="primary" id="libraryAdd" data-i18n="Add capability">Add capability</button>
+          <div class="library-head-actions"><button type="button" class="primary" id="libraryAdd" data-i18n="Connect an app">Connect an app</button>
             <button type="button" id="libraryRefresh" data-i18n="Refresh">Refresh</button>
-            <button type="button" id="libraryClose" data-i18n-aria-label="Close Library" aria-label="Close Library">×</button></div>
+            <button type="button" id="libraryClose" data-i18n-aria-label="Close Apps & connections" aria-label="Close Apps &amp; connections">×</button></div>
         </div>
         <div class="library-notice" id="libraryNotice" role="status" aria-live="polite"></div>
         <div class="library-add" id="libraryAddPanel" hidden>
-          <div class="library-add-head"><strong data-i18n="Add a capability">Add a capability</strong>
-            <span data-i18n="Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.">Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.</span>
+          <div class="library-add-head"><strong data-i18n="Connect an app">Connect an app</strong>
+            <span data-i18n="Tell Collie what you want to do. It suggests the smallest set of services and asks before connecting.">Tell Collie what you want to do. It suggests the smallest set of services and asks before connecting.</span>
             <button type="button" class="library-add-close" id="libraryAddClose" aria-label="Close" data-i18n-aria-label="Close">×</button></div>
-          <div class="library-add-choices">
-            <button type="button" class="library-add-choice" data-library-add="connection"><strong data-i18n="Find a connection">Find a connection</strong><span data-i18n="Start from an outcome; prefer reviewed remote MCP endpoints.">Start from an outcome; prefer reviewed remote MCP endpoints.</span></button>
-            <button type="button" class="library-add-choice" data-library-add="workflow"><strong data-i18n="Record a workflow">Record a workflow</strong><span data-i18n="Turn a proven run into an evaluated Skill.">Turn a proven run into an evaluated Skill.</span></button>
-            <button type="button" class="library-add-choice" data-library-add="custom-connection"><strong data-i18n="Custom remote MCP">Custom remote MCP</strong><span data-i18n="Add an endpoint you already trust and control.">Add an endpoint you already trust and control.</span></button>
-          </div>
           <form class="library-add-form" id="libraryConnectionForm" hidden>
-            <label class="wide"><span data-i18n="What outcome needs a new service?">What outcome needs a new service?</span><textarea id="libraryConnectionGoal" maxlength="4000" required placeholder="Keep my calendar conflict-free and prepare each meeting"></textarea></label>
-            <label class="library-discovery-consent"><input type="checkbox" id="libraryRegistrySearch"><span data-i18n="If the reviewed catalog has no match, search the public MCP Registry. Only generic labels such as calendar or music leave this computer; results are unreviewed.">If the reviewed catalog has no match, search the public MCP Registry. Only generic labels such as calendar or music leave this computer; results are unreviewed.</span></label>
-            <div class="library-add-actions"><button type="submit" class="primary" data-i18n="Recommend connections">Recommend connections</button><span id="libraryConnectionStatus"></span></div>
+            <label class="wide"><span data-i18n="What do you want Collie to do?">What do you want Collie to do?</span><textarea id="libraryConnectionGoal" maxlength="4000" required placeholder="Keep my calendar conflict-free and prepare each meeting"></textarea></label>
+            <label class="library-discovery-consent"><input type="checkbox" id="libraryRegistrySearch"><span data-i18n="If Collie's reviewed apps have no match, also search a public app directory. Only general categories such as calendar or music leave this computer; outside results are not reviewed.">If Collie's reviewed apps have no match, also search a public app directory. Only general categories such as calendar or music leave this computer; outside results are not reviewed.</span></label>
+            <div class="library-add-actions"><button type="submit" class="primary" data-i18n="Find matching apps">Find matching apps</button><span id="libraryConnectionStatus"></span></div>
             <div class="mcp-recommendations" id="libraryConnectionResults"></div>
           </form>
-          <details class="library-local-advanced"><summary data-i18n="Local and advanced extension formats">Local and advanced extension formats</summary>
+          <details class="library-local-advanced"><summary data-i18n="Other ways to extend Collie">Other ways to extend Collie</summary>
             <div class="library-add-choices">
+              <button type="button" class="library-add-choice" data-library-add="workflow"><strong data-i18n="Record a workflow">Record a workflow</strong><span data-i18n="Turn a proven run into a reusable workflow.">Turn a proven run into a reusable workflow.</span></button>
+              <button type="button" class="library-add-choice" data-library-add="custom-connection"><strong data-i18n="Custom remote MCP">Custom remote MCP</strong><span data-i18n="Add an endpoint you already trust and control.">Add an endpoint you already trust and control.</span></button>
               <button type="button" class="library-add-choice" data-library-add="skill"><strong data-i18n="Create a local Skill">Create a local Skill</strong><span data-i18n="Compatibility path for reviewed local instructions; not the public ecosystem.">Compatibility path for reviewed local instructions; not the public ecosystem.</span></button>
               <button type="button" class="library-add-choice" data-library-add="package"><strong data-i18n="Import local package">Import local package</strong><span data-i18n="Preview digest and host authority before installation.">Preview digest and host authority before installation.</span></button>
             </div>
@@ -2074,9 +2104,9 @@
           </form>
         </div>
         <div class="library-summary" id="librarySummary"></div>
-        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Connections">Connections</h3><span data-i18n="Apps and services with scoped tools">Apps and services with scoped tools</span></div><div class="capability-grid" id="libraryConnections"></div></section>
-        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Built in core">Built in core</h3><span data-i18n="Privacy, memory, authority, orchestration and local execution">Privacy, memory, authority, orchestration and local execution</span></div><div class="capability-grid" id="libraryBuiltins"></div></section>
-        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Recorded workflows">Recorded workflows</h3><span data-i18n="Drafts and approved workflow Skills">Drafts and approved workflow Skills</span></div><div class="capability-grid" id="libraryWorkflows"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="Connected apps">Connected apps</h3><span data-i18n="Services Collie can use for you">Services Collie can use for you</span></div><div class="capability-grid" id="libraryConnections"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="On this computer">On this computer</h3><span data-i18n="Private memory, local files, desktop control, and safety">Private memory, local files, desktop control, and safety</span></div><div class="capability-grid" id="libraryBuiltins"></div></section>
+        <section class="library-section"><div class="library-section-head"><h3 data-i18n="My automations">My automations</h3><span data-i18n="Workflows you have chosen to reuse">Workflows you have chosen to reuse</span></div><div class="capability-grid" id="libraryWorkflows"></div></section>
         <details class="library-section library-local-advanced"><summary data-i18n="Local compatibility and advanced extensions">Local compatibility and advanced extensions</summary>
           <div class="library-section-head"><h3 data-i18n="Local Skills">Local Skills</h3><span data-i18n="Reviewed instructions, not the public capability ecosystem">Reviewed instructions, not the public capability ecosystem</span></div><div class="capability-grid" id="librarySkills"></div>
           <div class="library-section-head"><h3 data-i18n="Extension packages">Extension packages</h3><span data-i18n="Digest-pinned capabilities with declared host authority">Digest-pinned capabilities with declared host authority</span></div><div class="library-grid" id="libraryGrid"><div class="library-empty" data-i18n="Loading capability library…">Loading capability library…</div></div>
@@ -3114,6 +3144,35 @@
   // Strings introduced by operational surfaces are kept in one additive block
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
+    "Tasks":"任务","Apps & connections":"应用与连接","More":"更多",
+    "Close Tasks":"关闭任务","Loading tasks…":"正在加载任务…","Refreshing tasks…":"正在刷新任务…",
+    "No tasks yet":"还没有任务","Start a longer task from Home. Collie will keep its progress here.":"从主页开始一项较长任务。Collie 会在这里持续记录进度。",
+    "Close Apps & connections":"关闭应用与连接","Refreshing apps and connections…":"正在刷新应用与连接…",
+    "Apps & connections could not refresh:":"应用与连接刷新失败：",
+    "Devices & team":"设备与协作","Sync & cloud":"同步与云端","System activity":"系统活动","Recent":"最近",
+    "On this computer":"在这台电脑上",
+    "Tell Collie what you want done. It can work across your files and apps, ask when it needs you, and show what it completed.":"告诉 Collie 你想完成什么。它可以操作你的文件和应用，只在需要你时询问，并展示完成了什么。",
+    "Plan my day":"安排今天","Review what matters and make a conflict-free plan.":"查看重要事项，并制定一个不冲突的计划。",
+    "Handle it in my apps":"在我的应用里处理","Work across the signed-in apps on this computer.":"在这台电脑已登录的应用之间完成工作。",
+    "Build or fix something":"构建或修复","Change files, test the result, and show what changed.":"修改文件、测试结果，并展示变更。",
+    "Your information stays on this computer unless a task needs a service you connect.":"你的信息会留在这台电脑上，除非任务需要使用你连接的服务。",
+    "Longer work that keeps moving across waits, retries, and restarts.":"持续推进需要等待、重试或跨重启完成的工作。",
+    "Connect the services Collie can use for you. You review access before anything is connected.":"连接 Collie 可以替你使用的服务。任何连接建立前都由你审阅访问权限。",
+    "Connect an app":"连接应用",
+    "Tell Collie what you want to do. It suggests the smallest set of services and asks before connecting.":"告诉 Collie 你想做什么。它会推荐最少的服务组合，并在连接前询问你。",
+    "Find the right app":"找到合适的应用","Describe what you want to do; Collie suggests reviewed services.":"描述你想做什么；Collie 会推荐已审阅的服务。",
+    "What do you want Collie to do?":"你想让 Collie 做什么？","Other ways to extend Collie":"其他扩展 Collie 的方式",
+    "Find matching apps":"查找匹配的应用",
+    "If Collie's reviewed apps have no match, also search a public app directory. Only general categories such as calendar or music leave this computer; outside results are not reviewed.":"如果 Collie 已审阅的应用没有匹配项，也可以搜索公共应用目录。只有日历、音乐这类通用类别会离开本机；外部结果未经审阅。",
+    "Allow future public app directory searches?":"允许今后搜索公共应用目录吗？",
+    "Your original request stays on this computer. Public results are not reviewed.":"你的原始请求会留在这台电脑上。公共搜索结果未经审阅。",
+    "Turn a proven run into a reusable workflow.":"把已经跑通的过程变成可复用的工作流。",
+    "Connected apps":"已连接的应用","Services Collie can use for you":"Collie 可以替你使用的服务",
+    "Private memory, local files, desktop control, and safety":"私密记忆、本机文件、桌面控制与安全保护",
+    "My automations":"我的自动化","Workflows you have chosen to reuse":"你选择重复使用的工作流",
+    "Connected service Collie can use when you ask.":"你提出需要时，Collie 可以使用的已连接服务。",
+    "action":"项操作","actions":"项操作","Connect an app to use it with Collie.":"连接一个应用，即可让 Collie 使用它。",
+    "Create a reusable workflow after a task works the way you want.":"任务按你的预期跑通后，可以把它变成可复用的工作流。",
     "Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.":"Collie 的本机核心，加上你选择信任的远程服务。领域功能通过受限 MCP 连接提供，而不是不断扩大宿主程序。",
     "Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.":"先描述想要的结果。Collie 会推荐最小的远程连接组合，绝不会静默安装。",
     "Find a connection":"查找连接","Start from an outcome; prefer reviewed remote MCP endpoints.":"从结果出发，优先使用已审阅的远程 MCP 端点。",
@@ -3201,6 +3260,35 @@
     "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
   });
   Object.assign(ZHTW, {
+    "Tasks":"任務","Apps & connections":"應用程式與連線","More":"更多",
+    "Close Tasks":"關閉任務","Loading tasks…":"正在載入任務…","Refreshing tasks…":"正在重新整理任務…",
+    "No tasks yet":"還沒有任務","Start a longer task from Home. Collie will keep its progress here.":"從首頁開始一項較長任務。Collie 會在這裡持續記錄進度。",
+    "Close Apps & connections":"關閉應用程式與連線","Refreshing apps and connections…":"正在重新整理應用程式與連線…",
+    "Apps & connections could not refresh:":"應用程式與連線重新整理失敗：",
+    "Devices & team":"裝置與協作","Sync & cloud":"同步與雲端","System activity":"系統活動","Recent":"最近",
+    "On this computer":"在這台電腦上",
+    "Tell Collie what you want done. It can work across your files and apps, ask when it needs you, and show what it completed.":"告訴 Collie 你想完成什麼。它可以操作你的檔案和應用程式，只在需要你時詢問，並展示完成了什麼。",
+    "Plan my day":"安排今天","Review what matters and make a conflict-free plan.":"查看重要事項，並制定一個不衝突的計畫。",
+    "Handle it in my apps":"在我的應用程式裡處理","Work across the signed-in apps on this computer.":"在這台電腦已登入的應用程式之間完成工作。",
+    "Build or fix something":"構建或修復","Change files, test the result, and show what changed.":"修改檔案、測試結果，並展示變更。",
+    "Your information stays on this computer unless a task needs a service you connect.":"你的資訊會留在這台電腦上，除非任務需要使用你連線的服務。",
+    "Longer work that keeps moving across waits, retries, and restarts.":"持續推進需要等待、重試或跨重新啟動完成的工作。",
+    "Connect the services Collie can use for you. You review access before anything is connected.":"連接 Collie 可以替你使用的服務。任何連線建立前都由你審閱存取權限。",
+    "Connect an app":"連接應用程式",
+    "Tell Collie what you want to do. It suggests the smallest set of services and asks before connecting.":"告訴 Collie 你想做什麼。它會推薦最少的服務組合，並在連線前詢問你。",
+    "Find the right app":"找到合適的應用程式","Describe what you want to do; Collie suggests reviewed services.":"描述你想做什麼；Collie 會推薦已審閱的服務。",
+    "What do you want Collie to do?":"你想讓 Collie 做什麼？","Other ways to extend Collie":"其他擴充 Collie 的方式",
+    "Find matching apps":"尋找符合的應用程式",
+    "If Collie's reviewed apps have no match, also search a public app directory. Only general categories such as calendar or music leave this computer; outside results are not reviewed.":"如果 Collie 已審閱的應用程式沒有符合項目，也可以搜尋公共應用程式目錄。只有行事曆、音樂這類通用類別會離開本機；外部結果未經審閱。",
+    "Allow future public app directory searches?":"允許今後搜尋公共應用程式目錄嗎？",
+    "Your original request stays on this computer. Public results are not reviewed.":"你的原始請求會留在這台電腦上。公共搜尋結果未經審閱。",
+    "Turn a proven run into a reusable workflow.":"把已經跑通的過程變成可重複使用的工作流程。",
+    "Connected apps":"已連線的應用程式","Services Collie can use for you":"Collie 可以替你使用的服務",
+    "Private memory, local files, desktop control, and safety":"私密記憶、本機檔案、桌面控制與安全保護",
+    "My automations":"我的自動化","Workflows you have chosen to reuse":"你選擇重複使用的工作流程",
+    "Connected service Collie can use when you ask.":"你提出需要時，Collie 可以使用的已連線服務。",
+    "action":"項操作","actions":"項操作","Connect an app to use it with Collie.":"連接一個應用程式，即可讓 Collie 使用它。",
+    "Create a reusable workflow after a task works the way you want.":"任務依你的預期跑通後，可以把它變成可重複使用的工作流程。",
     "Collie's local core plus the remote services you choose to trust. Domain features come from scoped MCP connections instead of growing the host.":"Collie 的本機核心，加上你選擇信任的遠端服務。領域功能透過受限 MCP 連線提供，而不是不斷擴大宿主程式。",
     "Describe the outcome first. Collie recommends the smallest remote connection set and never installs it silently.":"先描述想要的結果。Collie 會推薦最小的遠端連線組合，絕不會靜默安裝。",
     "Find a connection":"尋找連線","Start from an outcome; prefer reviewed remote MCP endpoints.":"從結果出發，優先使用已審閱的遠端 MCP 端點。",
@@ -3520,7 +3608,10 @@
       el.textContent = name.toUpperCase() + " · " + String(machine).toUpperCase();
     });
     var loc = $("collieLocation");
-    if (loc) loc.textContent = [machine, COLLIE_IDENTITY.os].filter(Boolean).join(" · ") || t("this computer");
+    if (loc) {
+      loc.textContent = t("On this computer");
+      loc.title = [machine, COLLIE_IDENTITY.os].filter(Boolean).join(" · ");
+    }
     var avatarUrl = COLLIE_IDENTITY.avatar || "/api/avatar.png";
     document.querySelectorAll("[data-collie-avatar]").forEach(function (img) {
       img.src = COLLIE_IDENTITY.avatarFailedFor === avatarUrl ? "/logo.svg" : avatarUrl;
@@ -5837,15 +5928,17 @@
     var name = document.createElement("div"); name.className = "capability-name";
     name.textContent = t(row.name || row.id || "Unknown"); card.appendChild(name);
     var badge = document.createElement("span"); badge.className = "capability-status " + (row.status || "ready");
-    badge.textContent = libraryStatusLabel(row.status || "ready"); card.appendChild(badge);
+    badge.textContent = kind === "connection" && (row.status || "ready") === "ready" ?
+      t("Connected") : libraryStatusLabel(row.status || "ready"); card.appendChild(badge);
     var description = document.createElement("div"); description.className = "capability-description";
-    description.textContent = t(row.description || (kind === "connection" ? "Apps and services with scoped tools" : ""));
+    description.textContent = t(row.description || (kind === "connection" ? "Connected service Collie can use when you ask." : ""));
     card.appendChild(description);
     var meta = document.createElement("div"); meta.className = "capability-meta";
     var bits = [];
-    if (row.origin) bits.push(t(row.origin));
-    if (row.kind) bits.push(t(row.kind));
-    if (row.tools != null) bits.push(libraryQuantity(row.tools, "tool", "tools"));
+    if (kind !== "connection" && row.origin) bits.push(t(row.origin));
+    if (kind !== "connection" && row.kind) bits.push(t(row.kind));
+    if (row.tools != null) bits.push(libraryQuantity(row.tools,
+      kind === "connection" ? "action" : "tool", kind === "connection" ? "actions" : "tools"));
     if (row.event_count != null) bits.push(libraryQuantity(row.event_count, "event", "events"));
     if (row.status && kind === "workflow") bits.push(t(row.status));
     if (row.trusted === false) bits.push(t("untrusted project source"));
@@ -5878,8 +5971,8 @@
   }
   function renderLibrarySummary(summary) {
     var box = $("librarySummary"); if (!box) return; box.textContent = "";
-    [["Built-ins","builtins"],["Skills","skills"],["Connections","connections"],
-     ["Workflows","workflows"],["Extensions","extensions"]].forEach(function (entry) {
+    [["Connected apps","connections"],["On this computer","builtins"],
+     ["My automations","workflows"]].forEach(function (entry) {
       var item = document.createElement("div"); item.className = "library-stat";
       var count = document.createElement("b"); count.textContent = Number((summary || {})[entry[1]] || 0);
       item.appendChild(count); item.appendChild(document.createTextNode(t(entry[0]))); box.appendChild(item);
@@ -5889,8 +5982,8 @@
     renderLibrarySummary(payload.summary || {});
     renderCapabilityRows("libraryBuiltins", payload.builtins || [], "builtin", "No capabilities found", "Collie could not read its built-in capability index.");
     renderCapabilityRows("librarySkills", payload.skills || [], "skill", "No Skills found", "Create one here or import an extension package.");
-    renderCapabilityRows("libraryConnections", payload.connections || [], "connection", "No connections yet", "Add an app or MCP server.");
-    renderCapabilityRows("libraryWorkflows", payload.workflows || [], "workflow", "No recorded workflows yet", "Use Studio to turn a proven run into a Skill.");
+    renderCapabilityRows("libraryConnections", payload.connections || [], "connection", "No connections yet", "Connect an app to use it with Collie.");
+    renderCapabilityRows("libraryWorkflows", payload.workflows || [], "workflow", "No recorded workflows yet", "Create a reusable workflow after a task works the way you want.");
     renderLibrary(payload.extensions || []);
   }
   function renderLibrary(extensions) {
@@ -5931,11 +6024,11 @@
   }
   function loadLibrary() {
     if (!libraryPanel || libraryPanel.hidden) return Promise.resolve();
-    libraryNotice(t("Refreshing capability library…"));
+    libraryNotice(t("Refreshing apps and connections…"));
     return libraryRequest("/api/library").then(function (payload) {
       renderLibraryInventory(payload || {}); libraryNotice("");
     }).catch(function (error) {
-      libraryNotice(t("Library could not refresh:") + " " + ((error && error.message) || error || t("Unavailable")), true);
+      libraryNotice(t("Apps & connections could not refresh:") + " " + ((error && error.message) || error || t("Unavailable")), true);
       var grid = $("libraryGrid"); if (grid && !grid.querySelector(".library-card"))
         grid.innerHTML = '<div class="library-empty"><strong>' + esc(t("Library unavailable")) + '</strong>' +
           esc(t("The installed extension registry could not be read.")) + '</div>';
@@ -6030,9 +6123,9 @@
         var payload = error.payload || {};
         if (!payload.consent_required) throw error;
         var terms = (payload.generic_terms || []).join(", ") || t("no private text");
-        if (!window.confirm(t("Allow future public MCP Registry searches?") + "\n\n" +
+        if (!window.confirm(t("Allow future public app directory searches?") + "\n\n" +
             t("Only these generic labels will be sent:") + " " + terms + "\n" +
-            t("Your original request stays on this computer. Registry results are unreviewed."))) throw new Error(t("Public search cancelled"));
+            t("Your original request stays on this computer. Public results are not reviewed."))) throw new Error(t("Public search cancelled"));
         return requestMCPRecommendations(goal, true, true);
       });
     }).then(function (out) { renderMCPRecommendations(out || {});
@@ -6274,7 +6367,7 @@
   }
   function renderMissionList(rows) {
     var grid = $("missionsGrid"); grid.textContent = "";
-    if (!(rows || []).length) { libraryEmpty(grid, "No missions yet", "Start one from Home with /mission followed by the outcome."); return; }
+    if (!(rows || []).length) { libraryEmpty(grid, "No tasks yet", "Start a longer task from Home. Collie will keep its progress here."); return; }
     rows.forEach(function (mission) {
       var card = document.createElement("button"); card.type = "button"; card.className = "mission-list-card";
       var top = document.createElement("div"); top.className = "mission-list-top";
@@ -6292,7 +6385,7 @@
   }
   function loadMissions() {
     if (!missionsPanel || missionsPanel.hidden) return Promise.resolve();
-    $("missionsNotice").textContent = t("Refreshing missions…"); $("missionsNotice").classList.remove("bad");
+    $("missionsNotice").textContent = t("Refreshing tasks…"); $("missionsNotice").classList.remove("bad");
     return missionGet("/api/missions").then(function (out) {
       renderMissionList((out && out.missions) || []); $("missionsNotice").textContent = "";
     }).catch(function (error) {
@@ -7307,7 +7400,9 @@
     document.querySelectorAll(".side-nav-item").forEach(function (node) {
       node.classList.toggle("on", node.id === "nav" + id.charAt(0).toUpperCase() + id.slice(1));
     });
-    var titles = { home: "Home", missions: "Missions", pack: "Pack", online: "Online", library: "Library", activity: "Activity", needsYou: "Needs You" };
+    var sideMore = $("sideMore");
+    if (sideMore) sideMore.open = ["pack", "online", "activity"].indexOf(id) >= 0;
+    var titles = { home: "Home", missions: "Tasks", pack: "Devices & team", online: "Sync & cloud", library: "Apps & connections", activity: "System activity", needsYou: "Needs You" };
     var title = $("pageTitle"); if (title && titles[id]) title.textContent = t(titles[id]);
   }
   function newThread(userRequestedFocus) {
@@ -8422,6 +8517,7 @@
   modelTrigger.addEventListener("click", function (event) {
     event.preventDefault();
     event.stopPropagation();
+    if ($("topbarMore")) $("topbarMore").open = false;
     openModelPicker();
   });
   modelClose.addEventListener("click", closeModelPicker);

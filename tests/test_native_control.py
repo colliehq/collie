@@ -9,6 +9,7 @@ import pytest
 from harness import native
 from harness import native_input
 from harness import risk
+from harness import screenshot
 from harness.gate import Gate, Mode
 
 
@@ -22,6 +23,17 @@ def test_driver_can_attach_by_hwnd_and_use_the_full_uia_action_set():
                     "TransformPattern", "DockPattern", "MultipleViewPattern",
                     "VirtualizedItemPattern"):
         assert pattern in src
+
+
+def test_screenshot_title_selection_prefers_an_exact_window_over_an_earlier_partial_match():
+    visit = screenshot._CAPTURE_PS.split("public static bool Visit", 1)[1].split(
+        "public static Bitmap Window", 1)[0]
+
+    assert "String.Equals(t, Needle, StringComparison.OrdinalIgnoreCase)" in visit
+    exact = visit.index("String.Equals(t, Needle")
+    fallback = visit.index("if (Found == IntPtr.Zero)")
+    assert exact < fallback
+    assert "Found = h; FoundTitle = t; return false;" in visit
 
 
 def test_native_layers_include_msaa_and_allowlisted_win32_messages():
