@@ -109,6 +109,14 @@ def test_mcp_discovery_is_read_but_connecting_a_candidate_is_external():
     assert R.classify("mcpctl_connect_candidate") is RiskClass.EXTERNAL
 
 
+def test_interview_assist_risk_follows_the_requested_effect():
+    assert R.classify("interview_assist", args={"action": "status"}) is RiskClass.READ
+    assert R.classify("interview_assist", args={"action": "note"}) is RiskClass.WRITE_LOCAL
+    assert R.classify("interview_assist", args={"action": "diagram_preview"}) is RiskClass.WRITE_LOCAL
+    assert R.classify("interview_assist", args={"action": "diagram_apply"}) is RiskClass.EXTERNAL
+    assert R.classify("interview_assist", args={}) is RiskClass.EXTERNAL
+
+
 def test_override_wins_over_table():
     """A user who trusts a server can relax it; that is the only way down."""
     assert R.classify("bash") is RiskClass.EXEC

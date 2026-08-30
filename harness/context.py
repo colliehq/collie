@@ -300,6 +300,16 @@ class ContextComposer:
                 meta.prefetched_ids = incl_ids
                 if lines:
                     vol_parts.append("RELEVANT MEMORY (auto-recalled):\n" + "\n".join(lines))
+        # Interview state is volatile by definition: the append-only VocalCode transcript changes
+        # while the model is working.  The integration itself enforces the explicit per-session
+        # sharing bit and a strict character budget, so inactive/private sessions add nothing here.
+        try:
+            from .interview_assist import model_context as _interview_context
+            interview = _interview_context()
+            if interview:
+                vol_parts.append(interview)
+        except Exception:
+            pass
         # date-only, NOT %H:%M — this string is inside the single cached system block, so a
         # per-minute timestamp busted the ENTIRE cached prefix (identity + tool names + rules)
         # on every minute boundary of a multi-minute run, forcing a full re-write and killing the

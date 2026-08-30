@@ -286,6 +286,10 @@ CATALOG = {
     # generation terms and credits remain Comfy's and are shown during its own account flow.
     "comfy-cloud": {"url": "https://cloud.comfy.org/mcp", "label": "Comfy Cloud",
                     "aka": ("comfy", "comfyui", "comfycloud")},
+    # Eraser documents this remote endpoint as its first-party OAuth MCP server for creating,
+    # reading and updating architecture diagrams and files.
+    "eraser": {"url": "https://app.eraser.io/api/mcp", "label": "Eraser",
+               "aka": ("eraserio", "diagram", "diagrams")},
 }
 
 
@@ -1439,7 +1443,7 @@ class MCPAddTool(Tool):
     name, tier = "mcpctl_add", "always"
     description = ("Add an MCP server, giving yourself the tools it exposes. For a well-known "
                    "service — Slack, Linear, Notion, Sentry, Jira/Confluence, Stripe, HubSpot, "
-                   "Vercel, Neon, GitHub, Comfy Cloud — pass ONLY the name: Collie fills in the official remote "
+                   "Vercel, Neon, GitHub, Comfy Cloud, Eraser — pass ONLY the name: Collie fills in the official remote "
                    "address, which signs in through the browser. Never send the user hunting for an "
                    "API token or a bot token for one of these. "
                    "Otherwise provide `url` for a "
@@ -1496,7 +1500,7 @@ class MCPAddTool(Tool):
 class MCPConnectTool(Tool):
     name, tier = "mcpctl_connect", "always"
     description = ("Connect a well-known service in ONE step: Slack, Linear, Notion, Sentry, "
-                   "Jira/Confluence, Stripe, HubSpot, Vercel, Neon, GitHub or Comfy Cloud. Pass the name and "
+                   "Jira/Confluence, Stripe, HubSpot, Vercel, Neon, GitHub, Comfy Cloud or Eraser. Pass the name and "
                    "nothing else — Collie knows the official remote address, opens the user's "
                    "browser so they can authorize it, and registers the tools it exposes in THIS "
                    "session. This is the right tool for 'connect Slack' or 'can you use Linear': "

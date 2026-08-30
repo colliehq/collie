@@ -923,6 +923,14 @@ def default_registry(code_search: bool = False,
               GlobTool(), MemorySearchTool(), RememberTool(), PlanTool(), UndoTool(),
               EnableCapabilityTool()):
         r.register(t)
+    # One always-visible, local-first seam for live system-design interviews.  It stays useful
+    # without a browser (VocalCode transcript + working notes); board mutation independently
+    # requires an attached bridge and session-scoped authority.
+    try:
+        from .interview_assist import register_interview_assist
+        register_interview_assist(r)
+    except Exception:
+        pass
     if code_search:                              # semantic repo navigation (embedding)
         from .codeindex import register_code_search
         register_code_search(r)

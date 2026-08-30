@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.23.0 — Live system-design interview collaboration
+
+- Added an explicit, session-scoped System Design Interview mode that consumes only VocalCode's
+  local append-only transcript text, never its audio. Transcript sharing to the selected model and
+  whiteboard editing are separate one-session permissions and are cleared when the session stops.
+- Added a provider-neutral architecture diagram contract plus editable browser-canvas adapters for
+  Miro, FigJam, Excalidraw, and tldraw; provider-aware guided support for Eraser, Lucid,
+  Whimsical, Microsoft Whiteboard, Canva, diagrams.net, CoderPad, and HackerRank; and a generic
+  HTTPS whiteboard fallback. Browser control attaches only the tab the user explicitly selects.
+- Added Eraser's official OAuth MCP endpoint to the reviewed connection catalog for structured
+  architecture-diagram creation and updates. Interview assistance remains visible, does not delete
+  board content, and does not support stealth, impersonation, or proctoring bypass.
+
 ## v0.22.0 — The control center closes the operations loop
 
 - Added versioned, opt-in outside-AI learning with Off, Activity only, and Personal intelligence

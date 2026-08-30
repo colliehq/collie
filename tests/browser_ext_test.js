@@ -64,6 +64,11 @@ function eq(name, got, want) {
   ok ? pass++ : fail++;
 }
 
+t('canvas text uses bounded trusted CDP insertion',
+  src.includes('async function doInsertText(text)') &&
+  src.includes('"Input.insertText", { text }') &&
+  src.includes('cmd.action === "insert_text"'));
+
 // --- product shell: presence, hard takeover, and side-panel entry points -------------------------
 {
   const manifest = JSON.parse(fs.readFileSync(

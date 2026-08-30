@@ -65,6 +65,10 @@ _BASE: dict[str, RiskClass] = {
     # Recommendation is local catalog matching, with an optional read-only public Registry query.
     # It never persists a server or starts OAuth; connecting is a separate external action below.
     "mcpctl_recommend": RiskClass.READ,
+    # Mixed by action in classify(): status is read, notes/plans are local writes, and applying a
+    # diagram reaches the explicitly attached cloud board. The conservative table entry makes
+    # calls with missing or malformed arguments fail closed.
+    "interview_assist": RiskClass.EXTERNAL,
     # web_fetch/web_search leave the machine, but only to READ a public URL: no
     # session, no cookies, nothing mutated. Gating them would stop ordinary
     # research and buy nothing — the injection risk they DO carry is already
@@ -184,6 +188,13 @@ def classify(tool_name: str, tool: Any = None,
         ov = overrides(tool_name)
         if ov is not None:
             return ov
+    if tool_name == "interview_assist":
+        action = str((args or {}).get("action") or "").strip().casefold()
+        if action == "status":
+            return RiskClass.READ
+        if action in {"note", "diagram_preview"}:
+            return RiskClass.WRITE_LOCAL
+        return RiskClass.EXTERNAL
     base = _BASE.get(tool_name)
     if base is not None:
         return base

@@ -33,6 +33,13 @@ feature inherently requires:
   stay in `~/.collie/meeting-reminders.json`; attendee fields are not retained. Collie does not fetch
   calendar feeds or send schedule metadata to a model. Reminder detection can prefill a note but
   cannot start recording or carry consent from one meeting to another.
+- **System-design interview assistance (separately opt-in for every session).** VocalCode owns
+  local capture and transcription; Collie does not read its audio. After you confirm everyone has
+  agreed to recording and AI assistance, you may separately share a bounded tail of the current
+  session's transcript with your configured model provider and grant Collie permission to add
+  editable shapes to one Chrome board tab you explicitly attach. Stopping the session clears both
+  permissions. Collie does not hide itself, impersonate the candidate, bypass proctoring rules, or
+  delete existing board content.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,

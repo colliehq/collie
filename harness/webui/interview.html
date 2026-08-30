@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>System design interview · Collie</title>
+<style>
+  :root{color-scheme:light;--bg:#f5f5f1;--card:#fff;--line:#dedfd8;--ink:#171916;
+    --mut:#747871;--pine:#235f4e;--pine2:#e8f2ed;--good:#277458;--warn:#a36b1b;
+    --bad:#bd4b43;--shadow:0 14px 44px rgba(24,38,29,.07)}
+  @media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#111310;--card:#1a1d19;
+    --line:#32372f;--ink:#eef0eb;--mut:#9ca199;--pine:#82c9ac;--pine2:#20362d;
+    --good:#79caa7;--warn:#dfac5b;--bad:#f1847b;--shadow:0 14px 44px rgba(0,0,0,.28)}}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif}
+  button,input{font:inherit;color:inherit}.shell{max-width:1120px;margin:auto;padding:24px 22px 54px}
+  .back{display:inline-flex;color:var(--mut);text-decoration:none;margin-bottom:15px}.head{display:flex;
+    align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}.head h1{font-size:27px;
+    letter-spacing:-.035em;margin:0}.head p{max-width:720px;color:var(--mut);margin:5px 0 0}.status{display:flex;
+    align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;background:var(--card);
+    padding:7px 11px;color:var(--mut);font-size:12px;white-space:nowrap}.dot{width:8px;height:8px;
+    border-radius:50%;background:var(--mut)}.status.live .dot{background:var(--good);box-shadow:0 0 0 4px color-mix(in srgb,var(--good) 15%,transparent)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.card{background:var(--card);border:1px solid var(--line);
+    border-radius:16px;padding:18px;box-shadow:var(--shadow);min-width:0}.card.full{grid-column:1/-1}.card h2{font-size:15px;margin:0}.eyebrow{color:var(--pine);font-size:10px;font-weight:800;
+    letter-spacing:.11em;text-transform:uppercase;margin-bottom:5px}.desc{color:var(--mut);font-size:12.5px;margin:6px 0 14px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  input[type=text]{width:100%;height:40px;border:1px solid var(--line);border-radius:10px;background:var(--bg);
+    padding:0 11px;margin-bottom:10px}.check{display:flex;gap:9px;align-items:flex-start;margin:9px 0;color:var(--mut);
+    font-size:12px}.check input{margin-top:2px}.check strong{display:block;color:var(--ink);font-size:12.5px}
+  button{appearance:none;border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:8px 12px;
+    cursor:pointer;font-weight:700;font-size:12.5px}button:hover{border-color:var(--pine)}button.primary{background:var(--pine);
+    border-color:var(--pine);color:#fff}button.danger{color:var(--bad)}button:disabled{opacity:.48;cursor:default}
+  .pill{display:inline-flex;border-radius:999px;background:var(--pine2);color:var(--pine);padding:3px 8px;
+    font-size:10px;font-weight:800}.facts{display:grid;grid-template-columns:repeat(3,1fr);border-block:1px solid var(--line);
+    margin:12px 0}.fact{padding:10px 5px}.fact b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}.fact span{color:var(--mut);font-size:10px}.notice{min-height:19px;color:var(--mut);font-size:11.5px;margin-top:9px}.notice.bad{color:var(--bad)}
+  .transcript{height:150px;overflow:auto;border:1px solid var(--line);border-radius:11px;background:var(--bg);padding:9px;
+    margin-top:11px}.segment{display:grid;grid-template-columns:74px 1fr;gap:8px;padding:6px 2px;border-bottom:1px solid var(--line);
+    font-size:11.5px}.segment:last-child{border:0}.speaker{color:var(--pine);font-weight:750}.empty{height:100%;display:grid;
+    place-items:center;text-align:center;color:var(--mut);font-size:12px;padding:14px}.boardline{padding:11px;border:1px solid var(--line);
+    border-radius:11px;background:var(--bg);margin:10px 0}.boardline b{display:block}.boardline span{display:block;color:var(--mut);
+    font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.providers{display:grid;grid-template-columns:repeat(4,1fr);
+    gap:8px}.provider{border:1px solid var(--line);border-radius:11px;padding:10px;background:var(--bg)}.provider b{display:block;
+    font-size:12px}.provider span{display:block;color:var(--mut);font-size:10px;margin-top:3px}.provider em{display:inline-block;
+    color:var(--pine);font:700 9px/1.2 inherit;margin-top:7px;text-transform:uppercase}.truth{border-left:3px solid var(--pine);
+    background:var(--pine2);border-radius:5px;padding:11px 13px;color:var(--mut);font-size:12px;margin-top:12px}.truth strong{color:var(--ink)}
+  .prompts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.prompt{text-align:left;padding:12px;background:var(--bg)}
+  .prompt strong,.prompt span{display:block}.prompt span{color:var(--mut);font-size:11px;font-weight:450;margin-top:3px}
+  :where(button,a,input):focus-visible{outline:3px solid #9facff;outline-offset:2px}body.embedded .back,body.embedded .pagehead{display:none}
+  body.embedded .shell{padding:18px 20px 46px}@media(max-width:780px){.grid{grid-template-columns:1fr}.card.full{grid-column:auto}
+    .providers{grid-template-columns:repeat(2,1fr)}.prompts{grid-template-columns:1fr}.head{display:block}.status{margin-top:10px;width:max-content}}
+</style>
+</head>
+<body>
+<script>if(new URLSearchParams(location.search).get("embedded")==="1")document.body.classList.add("embedded");</script>
+<main class="shell">
+  <a class="back" href="/">← <span data-i="Back to Collie">Back to Collie</span></a>
+  <header class="head"><div><div class="eyebrow" data-i="LIVE COPILOT">Live copilot</div><h1 data-i="System design interview">System design interview</h1>
+    <p data-i="VocalCode listens locally. Collie turns the conversation into requirements, tradeoffs and an editable architecture on the whiteboard you choose.">VocalCode listens locally. Collie turns the conversation into requirements, tradeoffs and an editable architecture on the whiteboard you choose.</p></div>
+    <div class="status" id="sessionStatus"><i class="dot"></i><span id="sessionStatusText" data-i="Not active">Not active</span></div></header>
+
+  <section class="grid">
+    <article class="card">
+      <div class="eyebrow" data-i="1 · SESSION">1 · Session</div><h2 data-i="Choose the authority once">Choose the authority once</h2>
+      <p class="desc" data-i="Permissions end automatically when you stop this interview session.">Permissions end automatically when you stop this interview session.</p>
+      <div id="setup">
+        <input id="title" type="text" maxlength="300" value="System design interview" aria-label="Interview title">
+        <label class="check"><input type="checkbox" id="share" checked><span><strong data-i="Use VocalCode transcript in Collie">Use VocalCode transcript in Collie</strong><span data-i="Transcript text may be sent to your selected model provider; audio never leaves VocalCode through this integration.">Transcript text may be sent to your selected model provider; audio never leaves VocalCode through this integration.</span></span></label>
+        <label class="check"><input type="checkbox" id="edit"><span><strong data-i="Let Collie add editable shapes to this board">Let Collie add editable shapes to this board</strong><span data-i="Session-scoped, visible and reversible. Deletion is not included.">Session-scoped, visible and reversible. Deletion is not included.</span></span></label>
+        <label class="check"><input type="checkbox" id="consent"><span><strong data-i="Everyone has agreed to recording and AI assistance">Everyone has agreed to recording and AI assistance</strong><span data-i="Collie does not hide itself or bypass interview and proctoring rules.">Collie does not hide itself or bypass interview and proctoring rules.</span></span></label>
+        <button class="primary" id="start" data-i="Start interview mode">Start interview mode</button>
+      </div>
+      <div id="activeControls" hidden><div class="facts"><div class="fact"><b id="elapsed">00:00</b><span data-i="Session">Session</span></div><div class="fact"><b id="shareState">—</b><span data-i="Transcript">Transcript</span></div><div class="fact"><b id="editState">—</b><span data-i="Board edits">Board edits</span></div></div>
+        <div class="row"><button id="toggleShare">—</button><button id="toggleEdit">—</button><button class="danger" id="stop" data-i="Stop & clear authority">Stop & clear authority</button></div></div>
+      <div class="notice" id="sessionNotice" role="status"></div>
+    </article>
+
+    <article class="card">
+      <div class="eyebrow" data-i="2 · VOICE">2 · Voice</div><h2>VocalCode</h2>
+      <p class="desc" data-i="Start a local Meeting with microphone and system audio. Collie reads only new transcript segments from this session.">Start a local Meeting with microphone and system audio. Collie reads only new transcript segments from this session.</p>
+      <div class="facts"><div class="fact"><b id="vcInstalled">—</b><span data-i="App">App</span></div><div class="fact"><b id="vcRecording">—</b><span data-i="Capture">Capture</span></div><div class="fact"><b id="vcSegments">0</b><span data-i="Segments">Segments</span></div></div>
+      <div class="row"><button id="openVocal" data-i="Open VocalCode">Open VocalCode</button><span class="pill" data-i="Audio stays local">Audio stays local</span></div>
+      <div class="transcript" id="transcript"><div class="empty" data-i="Start interview mode, then start a Meeting in VocalCode.">Start interview mode, then start a Meeting in VocalCode.</div></div>
+      <div class="notice" id="voiceNotice" role="status"></div>
+    </article>
+
+    <article class="card">
+      <div class="eyebrow" data-i="3 · WHITEBOARD">3 · Whiteboard</div><h2 data-i="Attach the interviewer's board">Attach the interviewer's board</h2>
+      <p class="desc" data-i="Open the board in Chrome, keep that tab active, then attach it. Collie never takes over an unrelated tab automatically.">Open the board in Chrome, keep that tab active, then attach it. Collie never takes over an unrelated tab automatically.</p>
+      <div class="boardline" id="board"><b data-i="No board attached">No board attached</b><span data-i="Miro, FigJam, Excalidraw, tldraw and more">Miro, FigJam, Excalidraw, tldraw and more</span></div>
+      <div class="row"><button class="primary" id="attach" data-i="Attach active Chrome board">Attach active Chrome board</button></div>
+      <div class="notice" id="boardNotice" role="status"></div>
+      <div class="truth"><strong data-i="Control policy:">Control policy:</strong> <span data-i="Collie may add and connect shapes only when board editing is on. It will not delete content, submit an answer, or conceal assistance.">Collie may add and connect shapes only when board editing is on. It will not delete content, submit an answer, or conceal assistance.</span></div>
+    </article>
+
+    <article class="card">
+      <div class="eyebrow" data-i="LIVE WORKFLOW">Live workflow</div><h2 data-i="Ask in one sentence">Ask in one sentence</h2>
+      <p class="desc" data-i="These open a normal Collie task with the live transcript and attached board already in context.">These open a normal Collie task with the live transcript and attached board already in context.</p>
+      <div class="prompts">
+        <button class="prompt" data-prompt="In interview mode, summarize the requirements and ambiguities from the latest VocalCode transcript. Give me the next concise clarification question to ask."><strong data-i="Clarify requirements">Clarify requirements</strong><span data-i="Find constraints and one next question.">Find constraints and one next question.</span></button>
+        <button class="prompt" data-prompt="In interview mode, propose the smallest defensible system architecture. State scale assumptions, core components, data flow, bottlenecks and tradeoffs. Preview a board diagram before applying it."><strong data-i="Shape the architecture">Shape the architecture</strong><span data-i="Assumptions, components and tradeoffs.">Assumptions, components and tradeoffs.</span></button>
+        <button class="prompt" data-prompt="In interview mode, inspect our current notes and transcript. Tell me what important system-design dimension I have not covered yet, in at most three bullets."><strong data-i="Find the gap">Find the gap</strong><span data-i="Catch one missing dimension.">Catch one missing dimension.</span></button>
+      </div><div class="notice" id="promptNotice"></div>
+    </article>
+
+    <article class="card full"><div class="eyebrow" data-i="COMPATIBILITY">Compatibility</div><h2 data-i="One contract, provider-aware adapters">One contract, provider-aware adapters</h2>
+      <p class="desc" data-i="Structured integrations are preferred; browser assistance remains the fallback for a board without a stable write API.">Structured integrations are preferred; browser assistance remains the fallback for a board without a stable write API.</p><div class="providers" id="providers"></div></article>
+  </section>
+</main>
+<script>
+var CT=(document.querySelector('meta[name="collie-token"]')||{}).content||"",LANG="en",STATE=null;
+function q(path){return path+(path.indexOf("?")<0?"?":"&")+"token="+encodeURIComponent(CT)}
+function api(path,method,body){var o={method:method||"GET",headers:{}};if(body!==undefined){o.headers["content-type"]="application/json";o.body=JSON.stringify(body)}return fetch(q(path),o).then(function(r){return r.json().catch(function(){return{}}).then(function(d){if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d})})}
+var ZH={"Back to Collie":"返回 Collie","LIVE COPILOT":"实时协作","System design interview":"系统设计面试","VocalCode listens locally. Collie turns the conversation into requirements, tradeoffs and an editable architecture on the whiteboard you choose.":"VocalCode 在本机倾听；Collie 把对话整理成需求、取舍，并在你选择的画板上形成可编辑架构。","Not active":"未开启","Active":"进行中","1 · SESSION":"1 · 会话","Choose the authority once":"一次选定权限","Permissions end automatically when you stop this interview session.":"面试会话停止时，权限会自动清除。","Use VocalCode transcript in Collie":"让 Collie 使用 VocalCode 转写","Transcript text may be sent to your selected model provider; audio never leaves VocalCode through this integration.":"转写文本可能发送给你选择的模型服务商；此集成绝不会读取或上传 VocalCode 音频。","Let Collie add editable shapes to this board":"允许 Collie 向画板添加可编辑图形","Session-scoped, visible and reversible. Deletion is not included.":"仅本次会话有效，过程可见且可撤销；不包含删除。","Everyone has agreed to recording and AI assistance":"所有参与者都同意录音与 AI 辅助","Collie does not hide itself or bypass interview and proctoring rules.":"Collie 不隐藏自身，也不会绕过面试或监考规则。","Start interview mode":"开始面试模式","Session":"会话","Transcript":"转写","Board edits":"画板编辑","Stop & clear authority":"停止并清除权限","On":"开启","Off":"关闭","Disable transcript":"关闭转写","Enable transcript":"开启转写","Disable board edits":"关闭画板编辑","Enable board edits":"开启画板编辑","2 · VOICE":"2 · 语音","Start a local Meeting with microphone and system audio. Collie reads only new transcript segments from this session.":"在 VocalCode 中开启包含麦克风和系统音频的本地 Meeting。Collie 只读取本次会话的新转写片段。","App":"应用","Capture":"采集","Segments":"片段","Installed":"已安装","Missing":"未安装","Listening":"正在倾听","Waiting":"等待中","Open VocalCode":"打开 VocalCode","Audio stays local":"音频留在本机","Start interview mode, then start a Meeting in VocalCode.":"先开启面试模式，再在 VocalCode 中开始 Meeting。","Waiting for a current VocalCode Meeting…":"正在等待本次 VocalCode Meeting……","3 · WHITEBOARD":"3 · 画板","Attach the interviewer's board":"连接面试画板","Open the board in Chrome, keep that tab active, then attach it. Collie never takes over an unrelated tab automatically.":"在 Chrome 中打开画板并保持该标签页为当前页，然后连接。Collie 不会自动接管无关标签页。","No board attached":"尚未连接画板","Miro, FigJam, Excalidraw, tldraw and more":"Miro、FigJam、Excalidraw、tldraw 等","Attach active Chrome board":"连接当前 Chrome 画板","Control policy:":"控制策略：","Collie may add and connect shapes only when board editing is on. It will not delete content, submit an answer, or conceal assistance.":"只有开启画板编辑时，Collie 才能添加和连接图形；它不会删除内容、代为提交答案或隐藏辅助。","LIVE WORKFLOW":"实时工作流","Ask in one sentence":"一句话开始协作","These open a normal Collie task with the live transcript and attached board already in context.":"这些操作会打开普通 Collie 任务，并自动带入实时转写和已连接画板。","Clarify requirements":"澄清需求","Find constraints and one next question.":"找出约束和下一个问题。","Shape the architecture":"形成架构","Assumptions, components and tradeoffs.":"假设、组件与取舍。","Find the gap":"检查遗漏","Catch one missing dimension.":"补上一项缺失维度。","COMPATIBILITY":"兼容范围","One contract, provider-aware adapters":"统一契约，按平台适配","Structured integrations are preferred; browser assistance remains the fallback for a board without a stable write API.":"优先使用结构化集成；没有稳定写入 API 的画板则使用受控浏览器协作。","shortcut":"可编辑画图","mcp":"官方 MCP","guided":"受控协作","Sent to Collie":"已发送给 Collie","Session started. Open VocalCode and attach the board when ready.":"面试模式已开启；请打开 VocalCode，并在准备好后连接画板。","VocalCode opened. Start a Meeting there; recording never starts automatically.":"VocalCode 已打开。请在其中开始 Meeting；录音绝不会自动启动。","Board attached.":"画板已连接。"};
+function t(s){return LANG.indexOf("zh")===0&&ZH[s]?ZH[s]:s}function applyI18n(){document.querySelectorAll("[data-i]").forEach(function(el){el.textContent=t(el.getAttribute("data-i"))})}
+function duration(ms){var s=Math.max(0,Math.floor(ms/1000)),m=Math.floor(s/60);return String(m).padStart(2,"0")+":"+String(s%60).padStart(2,"0")}
+function notice(id,text,bad){var el=document.getElementById(id);el.textContent=text||"";el.className="notice"+(bad?" bad":"")}
+function render(s){STATE=s||{};var active=!!s.active,vc=s.vocalcode||{},segments=vc.segments||[],board=s.board||null;
+  document.getElementById("sessionStatus").classList.toggle("live",active);document.getElementById("sessionStatusText").textContent=t(active?"Active":"Not active");document.getElementById("setup").hidden=active;document.getElementById("activeControls").hidden=!active;
+  if(active){document.getElementById("elapsed").textContent=duration(Date.now()-Number(s.started_at_ms||Date.now()));document.getElementById("shareState").textContent=t(s.share_transcript?"On":"Off");document.getElementById("editState").textContent=t(s.board_edit?"On":"Off");document.getElementById("toggleShare").textContent=t(s.share_transcript?"Disable transcript":"Enable transcript");document.getElementById("toggleEdit").textContent=t(s.board_edit?"Disable board edits":"Enable board edits")}
+  document.getElementById("vcInstalled").textContent=t(vc.installed?"Installed":"Missing");document.getElementById("vcRecording").textContent=t(vc.recording?"Listening":"Waiting");document.getElementById("vcSegments").textContent=String((vc.meeting&&vc.meeting.segment_count)||segments.length||0);
+  var tx=document.getElementById("transcript");tx.textContent="";if(!segments.length){var e=document.createElement("div");e.className="empty";e.textContent=t(active?"Waiting for a current VocalCode Meeting…":"Start interview mode, then start a Meeting in VocalCode.");tx.appendChild(e)}else segments.slice(-16).forEach(function(seg){var row=document.createElement("div");row.className="segment";var who=document.createElement("span");who.className="speaker";who.textContent=(seg.speaker||seg.source)+" · "+duration(seg.start_ms);var text=document.createElement("span");text.textContent=seg.text;row.appendChild(who);row.appendChild(text);tx.appendChild(row)});tx.scrollTop=tx.scrollHeight;
+  var b=document.getElementById("board");b.textContent="";var strong=document.createElement("b"),small=document.createElement("span");strong.textContent=board?(board.service_name||board.service):t("No board attached");small.textContent=board?((board.integration||board.mode)+" · "+(board.title||board.url||"")):t("Miro, FigJam, Excalidraw, tldraw and more");b.appendChild(strong);b.appendChild(small);document.getElementById("attach").disabled=!active;
+  var providers=document.getElementById("providers");providers.textContent="";(s.providers||[]).forEach(function(p){var box=document.createElement("div");box.className="provider";var name=document.createElement("b");name.textContent=p.name;var detail=document.createElement("span");detail.textContent=p.integration;var mode=document.createElement("em");mode.textContent=t(p.mode);box.appendChild(name);box.appendChild(detail);box.appendChild(mode);providers.appendChild(box)})}
+function load(){return api("/api/interview").then(render).catch(function(e){notice("sessionNotice",e.message,true)})}
+document.getElementById("start").onclick=function(){var b=this;b.disabled=true;api("/api/interview/start","POST",{title:document.getElementById("title").value,share_transcript:document.getElementById("share").checked,board_edit:document.getElementById("edit").checked,consent:document.getElementById("consent").checked}).then(function(s){render(s);notice("sessionNotice",t("Session started. Open VocalCode and attach the board when ready."))}).catch(function(e){notice("sessionNotice",e.message,true)}).finally(function(){b.disabled=false})};
+document.getElementById("stop").onclick=function(){api("/api/interview/stop","POST",{}).then(render).catch(function(e){notice("sessionNotice",e.message,true)})};
+document.getElementById("toggleShare").onclick=function(){api("/api/interview/permissions","POST",{share_transcript:!STATE.share_transcript}).then(render).catch(function(e){notice("sessionNotice",e.message,true)})};document.getElementById("toggleEdit").onclick=function(){api("/api/interview/permissions","POST",{board_edit:!STATE.board_edit}).then(render).catch(function(e){notice("sessionNotice",e.message,true)})};
+document.getElementById("openVocal").onclick=function(){api("/api/interview/vocalcode/open","POST",{}).then(function(){notice("voiceNotice",t("VocalCode opened. Start a Meeting there; recording never starts automatically."))}).catch(function(e){notice("voiceNotice",e.message,true)})};
+document.getElementById("attach").onclick=function(){var b=this;b.disabled=true;api("/api/interview/board/attach","POST",{}).then(function(s){render(s);notice("boardNotice",t("Board attached."))}).catch(function(e){notice("boardNotice",e.message,true)}).finally(function(){b.disabled=false})};
+document.querySelectorAll("[data-prompt]").forEach(function(button){button.onclick=function(){var text=button.getAttribute("data-prompt");if(window.parent!==window){window.parent.postMessage({type:"collie:prefill",text:text},location.origin);notice("promptNotice",t("Sent to Collie"))}else{navigator.clipboard&&navigator.clipboard.writeText(text);location.href="/"}}});
+fetch(q("/api/settings")).then(function(r){return r.json()}).then(function(d){LANG=String(((d||{}).values||{}).LANG||navigator.language||"en").toLowerCase()}).catch(function(){LANG=(navigator.language||"en").toLowerCase()}).finally(function(){applyI18n();load();setInterval(load,1500)});
+</script>
+</body>
+</html>

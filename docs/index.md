@@ -10,7 +10,8 @@ keeps source and verification evidence attached to the result.
 - :material-play: **[Quickstart](quickstart.md)** — your first evidence-backed task in a minute
 - :material-brain: **[Providers](providers.md)** — connect Claude, Codex, Gemini, a local model, or an API key
 - :material-console: **[CLI reference](cli.md)** — every `collie` command
-- :material-monitor: **[The desktop app](desktop.md)** — Home, Missions, Pack, Library, Activity, and Needs You
+- :material-monitor: **[The desktop app](desktop.md)** — Today, Tasks, Interview, connections, Activity, and Needs You
+- :material-drawing: **[System-design interviews](interviews.md)** — use VocalCode and an attached cloud whiteboard as one session
 - :material-shield-check: **[Operations & recovery](operations.md)** — doctor, Control Center, fault matrix, and soak
 - :material-puzzle: **[Extensions](extensions.md)** — build and install digest-pinned Library packages
 - :material-graph: **[Comfy visual AI](comfy.md)** — connect the official MCP or a local ComfyUI graph runtime

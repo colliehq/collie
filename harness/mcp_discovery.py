@@ -97,6 +97,13 @@ _NEEDS = {
             "生成图片", "生成圖像", "生成视频", "生成影片", "视觉工作流", "視覺工作流程"),
         "registry_terms": ("comfy", "image", "video"), "services": ("comfy-cloud",),
     },
+    "diagramming": {
+        "label": "collaborative diagrams and whiteboards", "patterns": (
+            "diagram", "whiteboard", "architecture diagram", "system design", "eraser",
+            "miro", "figjam", "lucidchart", "excalidraw", "tldraw",
+            "画板", "白板", "架构图", "架構圖", "系统设计", "系統設計"),
+        "registry_terms": ("diagram", "whiteboard", "eraser"), "services": ("eraser",),
+    },
     "calendar": {
         "label": "calendar and scheduling", "patterns": (
             "calendar", "schedule", "meeting", "appointment", "availability",
@@ -181,6 +188,12 @@ _CURATED = {
         "description": "Search and run image, video, audio and 3D workflows through Comfy Cloud.",
         "capabilities": ("visual_ai",), "data": ("prompts", "workflows", "generated media"),
         "effects": ("read catalogs", "generation may consume provider credits"),
+    },
+    "eraser": {
+        "description": "Create, read and update collaborative architecture diagrams through Eraser's official MCP.",
+        "capabilities": ("diagramming",),
+        "data": ("diagram prompts", "diagram code", "Eraser files and workspace identity"),
+        "effects": ("read diagrams", "create or update diagrams only with action-time authority"),
     },
 }
 

@@ -113,6 +113,11 @@ def _builtins() -> list[dict]:
             "status": "ready", "tools": 1, "action": "meetings",
         },
         {
+            "id": "interview-assist", "name": "System design interview",
+            "description": "Use VocalCode's local live transcript and collaborate on an attached cloud whiteboard.",
+            "status": "ready", "tools": 1, "action": "interview",
+        },
+        {
             "id": "workflow-studio", "name": "Workflow Studio",
             "description": "Record a proven workflow, dry-run it, evaluate it, then approve it as a Skill.",
             "status": "ready", "tools": 1, "action": "studio",

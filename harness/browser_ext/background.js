@@ -2295,6 +2295,32 @@ async function doPress(key, mods, repeat) {
                        r || {});
 }
 
+// Insert an entire bounded string into the control/canvas that currently owns focus.  This is the
+// text half of canvas automation: whiteboards expose their shape editor only after a pointer/Enter
+// sequence, so there is no durable DOM selector for browser_type to target.  CDP Input.insertText
+// follows the same IME-safe path Chrome uses for Unicode typing and does not synthesize one key per
+// character.  It is deliberately focus-relative and never presses Enter/Submit.
+async function doInsertText(text) {
+  text = String(text == null ? "" : text).replace(/\0/g, "").slice(0, 4000);
+  if (!text) return { error: "insert_text needs non-empty text" };
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  if (await focusForTrusted(tab)) {
+    try {
+      await agentInput(tab.id, 2200);
+      await ensureAttached(tab.id);
+      await dbgSend(tab.id, "Input.insertText", { text });
+      return { inserted: true, characters: [...text].length, trusted: true };
+    } catch (e) {
+      if (dbgTab === tab.id) dbgTab = null;
+      const stopped = pausedResult(tab.id); if (stopped) return stopped;
+      return { error: "trusted text insertion failed: " + String((e && e.message) || e) };
+    }
+  }
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
+  return { error: "high-fidelity browser input is required to type into a canvas" };
+}
+
 async function doHover(target) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
@@ -2787,6 +2813,8 @@ async function runStep(cmd) {
     }
     if (cmd.action === "press")
       return await doPress(cmd.key, cmd.modifiers, cmd.repeat);
+    if (cmd.action === "insert_text")
+      return await doInsertText(cmd.text);
     if (cmd.action === "hover")
       return await doHover({ ref: cmd.ref, selector: cmd.selector, text: cmd.text,
                              x: cmd.x, y: cmd.y });

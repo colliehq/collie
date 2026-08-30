@@ -1534,6 +1534,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("ambient.html", "text/html; charset=utf-8")
             if path == "/meetings":
                 return self._serve_static("meetings.html", "text/html; charset=utf-8")
+            if path == "/interview":
+                return self._serve_static("interview.html", "text/html; charset=utf-8")
             if path == "/studio":
                 return self._serve_static("studio.html", "text/html; charset=utf-8")
             if path == "/comfy":
@@ -1902,6 +1904,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"recording": on, "out": (st or {}).get("out"),
                                         "since": (st or {}).get("started"),
                                         "window": (st or {}).get("window")})
+            if path == "/api/interview":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .interview_assist import InterviewStore
+                return self._send_json(InterviewStore(_state_root()).snapshot(include_transcript=True))
             if path == "/api/record/sources":
                 # everything the record panel needs to populate its pickers
                 from . import record as rec
@@ -2970,6 +2977,36 @@ class Handler(BaseHTTPRequestHandler):
                 ok = bb.start_background()
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
+            if path in ("/api/interview/start", "/api/interview/stop",
+                        "/api/interview/permissions", "/api/interview/vocalcode/open",
+                        "/api/interview/board/attach"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .interview_assist import InterviewError, InterviewStore, launch_vocalcode
+                body = self._read_json(32_768)
+                if not isinstance(body, dict):
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                store = InterviewStore(_state_root())
+                try:
+                    if path.endswith("/start"):
+                        return self._send_json(store.start(
+                            title=body.get("title") or "",
+                            share_transcript=body.get("share_transcript") is True,
+                            board_edit=body.get("board_edit") is True,
+                            consent=body.get("consent") is True), 201)
+                    if path.endswith("/stop"):
+                        return self._send_json(store.stop())
+                    if path.endswith("/permissions"):
+                        return self._send_json(store.update_permissions(
+                            share_transcript=(body.get("share_transcript")
+                                              if "share_transcript" in body else None),
+                            board_edit=(body.get("board_edit")
+                                        if "board_edit" in body else None)))
+                    if path.endswith("/vocalcode/open"):
+                        return self._send_json(launch_vocalcode())
+                    return self._send_json(store.attach_board())
+                except InterviewError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path in ("/api/meetings/start", "/api/meetings/chunk", "/api/meetings/note",
                         "/api/meetings/finish", "/api/meetings/retry", "/api/meetings/delete"):
                 if not self._authed(parsed):
