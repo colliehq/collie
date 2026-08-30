@@ -16,7 +16,7 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_first_party_surfaces_share_the_quiet_interface_contract():
+def test_first_party_surfaces_share_the_calm_personal_os_contract():
     desktop = read("harness/webui/index.html")
     mobile = read("harness/webui/mobile.html")
     remote = read("harness/webui/remote.html")
@@ -24,12 +24,24 @@ def test_first_party_surfaces_share_the_quiet_interface_contract():
     wallpaper = read("harness/webui/wallpaper.html")
     explorer = read("harness/webui/map.html")
 
-    assert 'data-ui="minimal"' in desktop
+    assert 'data-ui="calm-os"' in desktop
     assert 'id="topbarMore"' in desktop and 'class="topbar-tools"' in desktop
     assert 'id="modeClose"' in desktop and 'class="mode-menu-head"' in desktop
     assert 'get("preview") === "onboarding"' in desktop
-    assert "grid-template-columns:232px" in desktop
-    assert "--bg:#F6F6F3" in desktop and "--pine:#35594A" in desktop
+    assert "grid-template-columns:244px" in desktop
+    assert 'class="product-mark"' in desktop and 'class="wc-avatar"' in desktop
+    assert 'id="nativeWindowControls"' in desktop and 'data-window-action="drag"' not in desktop
+    assert 'requestNativeWindow("drag")' in desktop and 'body.home-idle .composer-box' in desktop
+    assert 'id="nativeMaximize"' in desktop and 'class="restore-icon"' in desktop
+    assert 'data.type === "window-state"' in desktop and 'native-maximized' in desktop
+    assert 'function libraryCardVisual' in desktop and 'className = "capability-card kind-" + kind' in desktop
+    assert 'function recentThreadGroup' in desktop and '"Your recent work will appear here."' in desktop
+    native_host = read("harness/wallpaper/Program.cs")
+    assert "FormBorderStyle.None" in native_host and '"native_shell=1"' in native_host
+    assert "WM_NCHITTEST" in native_host and '\\"action\\":\\"maximize\\"' in native_host
+    assert "work.X - bounds.X" in native_host and "work.Y - bounds.Y" in native_host
+    assert "PostWebMessageAsJson" in native_host and '\\"window-state\\"' in native_host
+    assert "--bg:#F3F2EE" in desktop and "--pine:#225D4B" in desktop
     assert "--bg:#F6F6F3" in mobile and "--bg:#F6F6F3" in remote
     assert "Quiet ambient mode" in ambient and "Quiet visual run view" in wallpaper
     assert "The map stays immersive" in explorer
@@ -55,8 +67,8 @@ def test_desktop_defaults_to_plain_language_and_progressively_discloses_advanced
     # The empty state speaks in user outcomes. Internal routing and proof nouns stay available
     # after work begins, but are not prerequisites for submitting the first request.
     welcome = desktop.split('id="welcome"', 1)[1].split('</div>\n      </div>\n    </div>', 1)[0]
-    assert "Tell Collie what you want done." in welcome
-    for example in ("Plan my day", "Handle it in my apps", "Research and decide", "Build or fix something"):
+    assert "Describe the outcome." in welcome
+    for example in ("Organize my day", "Work across my apps", "Research a decision", "Build or fix something"):
         assert example in welcome
     for jargon in ("brain, tools, skills and workers", 'data-fill="/mission "'):
         assert jargon not in welcome

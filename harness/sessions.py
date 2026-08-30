@@ -625,6 +625,7 @@ def recent(n=10):
         # inherits whatever Explorer hands it, and the in-memory run list is empty at startup. The
         # star-map's project discovery seeds from these.
         out.append({"id": f[:-5], "turns": turns, "title": title[:72], "cwd": s.get("cwd") or "",
+                    "updated": float(s.get("updated") or _mtime(os.path.join(d, f))),
                     "last": (s.get("last_answer") or "")[:60], "edits": n_edit, "touches": n_touch,
                     "forked_from": s.get("forked_from") or "",
                     "workspace": s.get("workspace") if isinstance(s.get("workspace"), dict) else {}})

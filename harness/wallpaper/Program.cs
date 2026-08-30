@@ -22,7 +22,10 @@ class CollieWallpaper : Form
     const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
     const long WS_EX_NOACTIVATE = 0x08000000L, WS_EX_TOOLWINDOW = 0x00000080L;
     const uint SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4;
-    const int WM_WINDOWPOSCHANGING = 0x0046;
+    const int WM_WINDOWPOSCHANGING = 0x0046, WM_NCHITTEST = 0x0084, WM_NCLBUTTONDOWN = 0x00A1;
+    const int HTCLIENT = 1, HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12,
+              HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16,
+              HTBOTTOMRIGHT = 17;
     [StructLayout(LayoutKind.Sequential)] struct WINDOWPOS { public IntPtr hwnd, hwndInsertAfter; public int x, y, cx, cy; public uint flags; }
     const int WH_MOUSE_LL = 14, WH_KEYBOARD_LL = 13;
     const int WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202,
@@ -52,6 +55,8 @@ class CollieWallpaper : Form
     [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr p);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookExW(int id, HookProc proc, IntPtr hMod, uint thread);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int code, IntPtr w, IntPtr l);
@@ -88,6 +93,17 @@ class CollieWallpaper : Form
         // DWM repaints the caption on the next frame; nudge it so the change is not deferred until
         // the user happens to move or focus the window.
         SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020);
+    }
+
+    void ReportWindowState()
+    {
+        if (!_windowMode || _web == null || _web.CoreWebView2 == null) return;
+        try
+        {
+            _web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"window-state\",\"maximized\":" +
+                (WindowState == FormWindowState.Maximized ? "true" : "false") + "}");
+        }
+        catch { }
     }
 
     static string _log = Path.Combine(Path.GetTempPath(), "collie-wallpaper.log");
@@ -166,6 +182,29 @@ class CollieWallpaper : Form
     // even for a single frame — so clicking the galaxy no longer makes the icons flash away.
     protected override void WndProc(ref Message m)
     {
+        // The app window uses Collie's own integrated chrome. Preserve native resizing by returning
+        // the standard non-client hit-test codes around an eight-pixel edge; the WebView owns the
+        // rest of the surface and asks us to drag the window through WM_NCLBUTTONDOWN.
+        if (_windowMode && m.Msg == WM_NCHITTEST)
+        {
+            base.WndProc(ref m);
+            if ((int)m.Result == HTCLIENT && WindowState == FormWindowState.Normal)
+            {
+                POINT cursor;
+                if (GetCursorPos(out cursor))
+                {
+                    Point point = PointToClient(new Point(cursor.x, cursor.y));
+                    const int grip = 8;
+                    bool left = point.X < grip, right = point.X >= ClientSize.Width - grip;
+                    bool top = point.Y < grip, bottom = point.Y >= ClientSize.Height - grip;
+                    int hit = top && left ? HTTOPLEFT : top && right ? HTTOPRIGHT :
+                              bottom && left ? HTBOTTOMLEFT : bottom && right ? HTBOTTOMRIGHT :
+                              left ? HTLEFT : right ? HTRIGHT : top ? HTTOP : bottom ? HTBOTTOM : HTCLIENT;
+                    m.Result = (IntPtr)hit;
+                }
+            }
+            return;
+        }
         if (m.Msg == WM_WINDOWPOSCHANGING && _pinned && _progman != IntPtr.Zero)
         {
             WINDOWPOS wp = (WINDOWPOS)Marshal.PtrToStructure(m.LParam, typeof(WINDOWPOS));
@@ -190,11 +229,12 @@ class CollieWallpaper : Form
         if (_windowMode)
         {
             Text = "Collie";
-            FormBorderStyle = FormBorderStyle.Sizable;
+            FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = true;
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(Math.Min(1180, (int)(w * 0.8)), Math.Min(820, (int)(h * 0.85)));
             MinimumSize = new Size(720, 520);
+            Padding = new Padding(1);
             Icon = AppIcon();   // the Collie mark in the title bar + taskbar
         }
         else
@@ -209,6 +249,7 @@ class CollieWallpaper : Form
         _web.Dock = DockStyle.Fill;
         _web.CoreWebView2InitializationCompleted += OnWebReady;
         Controls.Add(_web);
+        Resize += delegate { ReportWindowState(); };
         Load += delegate { InitWeb(); };
         FormClosed += delegate { Cleanup(); };
         // Also tear the hook + input attachment down on ANY process exit / unhandled crash, not only a
@@ -268,6 +309,38 @@ class CollieWallpaper : Form
                 string raw = null;
                 try { raw = eT.WebMessageAsJson; } catch { }
                 if (string.IsNullOrEmpty(raw)) { try { raw = eT.TryGetWebMessageAsString(); } catch { return; } }
+                if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"window\"", StringComparison.Ordinal) >= 0)
+                {
+                    try
+                    {
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            if (raw.IndexOf("\"action\":\"minimize\"", StringComparison.Ordinal) >= 0)
+                                WindowState = FormWindowState.Minimized;
+                            else if (raw.IndexOf("\"action\":\"maximize\"", StringComparison.Ordinal) >= 0)
+                            {
+                                // MaximizedBounds is monitor-relative. Passing WorkingArea's virtual-
+                                // desktop X/Y makes a window on monitor 2 span every monitor to its
+                                // left (for example 5120px wide on a two-monitor desk).
+                                Screen screen = Screen.FromHandle(Handle);
+                                Rectangle work = screen.WorkingArea, bounds = screen.Bounds;
+                                MaximizedBounds = new Rectangle(work.X - bounds.X, work.Y - bounds.Y,
+                                                                work.Width, work.Height);
+                                WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+                                ReportWindowState();
+                            }
+                            else if (raw.IndexOf("\"action\":\"close\"", StringComparison.Ordinal) >= 0)
+                                Close();
+                            else if (raw.IndexOf("\"action\":\"drag\"", StringComparison.Ordinal) >= 0)
+                            {
+                                ReleaseCapture();
+                                SendMessageW(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+                            }
+                        });
+                    }
+                    catch { }
+                    return;
+                }
                 if (string.IsNullOrEmpty(raw) || raw.IndexOf("\"theme\"", StringComparison.Ordinal) < 0) return;
                 bool dark = raw.IndexOf("\"dark\":true", StringComparison.Ordinal) >= 0
                             || raw.IndexOf("\"dark\": true", StringComparison.Ordinal) >= 0;
@@ -287,6 +360,8 @@ class CollieWallpaper : Form
             // window mode shows the full GUI; wallpaper mode shows the desktop /wallpaper page
             if (string.IsNullOrEmpty(url))
                 url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/wallpaper";
+            if (_windowMode)
+                url += (url.IndexOf('?') >= 0 ? "&" : "?") + "native_shell=1";
             // Keep target=_blank links (the star map, the meadow) INSIDE the app. Unhandled they
             // escape to a bare popup / the system browser, which is exactly what makes a native shell
             // feel like a browser wrapper. Each opens its own titled Collie window instead.
