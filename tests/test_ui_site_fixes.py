@@ -39,7 +39,10 @@ def test_first_party_surfaces_share_the_calm_personal_os_contract():
     native_host = read("harness/wallpaper/Program.cs")
     assert "FormBorderStyle.None" in native_host and '"native_shell=1"' in native_host
     assert "WM_NCHITTEST" in native_host and '\\"action\\":\\"maximize\\"' in native_host
-    assert "work.X - bounds.X" in native_host and "work.Y - bounds.Y" in native_host
+    assert "_restoreBounds = Bounds" in native_host and "Bounds = screen.WorkingArea" in native_host
+    assert "MaximizedBounds" not in native_host and "_customMaximized" in native_host
+    assert 'EventWaitHandle.OpenExisting("collie-wallpaper-show-window")' in native_host
+    assert "void WakeWindow()" in native_host and "SetForegroundWindow(Handle)" in native_host
     assert "PostWebMessageAsJson" in native_host and '\\"window-state\\"' in native_host
     assert "--bg:#F3F2EE" in desktop and "--pine:#225D4B" in desktop
     assert "--bg:#F6F6F3" in mobile and "--bg:#F6F6F3" in remote

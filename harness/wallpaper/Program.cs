@@ -22,7 +22,9 @@ class CollieWallpaper : Form
     const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
     const long WS_EX_NOACTIVATE = 0x08000000L, WS_EX_TOOLWINDOW = 0x00000080L;
     const uint SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4;
-    const int WM_WINDOWPOSCHANGING = 0x0046, WM_NCHITTEST = 0x0084, WM_NCLBUTTONDOWN = 0x00A1;
+    const int WM_WINDOWPOSCHANGING = 0x0046, WM_NCHITTEST = 0x0084, WM_NCLBUTTONDOWN = 0x00A1,
+              WM_SYSCOMMAND = 0x0112;
+    const int SC_MAXIMIZE = 0xF030, SC_RESTORE = 0xF120;
     const int HTCLIENT = 1, HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12,
               HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16,
               HTBOTTOMRIGHT = 17;
@@ -57,6 +59,8 @@ class CollieWallpaper : Form
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int command);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookExW(int id, HookProc proc, IntPtr hMod, uint thread);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int code, IntPtr w, IntPtr l);
@@ -101,9 +105,128 @@ class CollieWallpaper : Form
         try
         {
             _web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"window-state\",\"maximized\":" +
-                (WindowState == FormWindowState.Maximized ? "true" : "false") + "}");
+                (_customMaximized ? "true" : "false") + "}");
         }
         catch { }
+    }
+
+    // WinForms' built-in Maximized state is not reliable for a FormBorderStyle.None window. On a
+    // wide/high-DPI desktop it can apply the working-area offset twice (we observed x=1288 with a
+    // 5120px-wide window on a 0..5120 screen), pushing Collie's restore button off-screen. Keep the
+    // ordinary bounds ourselves and make maximization a plain, reversible geometry change instead.
+    Rectangle _restoreBounds = Rectangle.Empty;
+    bool _customMaximized, _changingWindowBounds;
+
+    Rectangle DefaultRestoreBounds(Screen screen)
+    {
+        Rectangle work = screen.WorkingArea;
+        int width = Math.Min(1180, Math.Max(MinimumSize.Width, (int)(work.Width * 0.8)));
+        int height = Math.Min(820, Math.Max(MinimumSize.Height, (int)(work.Height * 0.85)));
+        return new Rectangle(work.Left + Math.Max(0, (work.Width - width) / 2),
+                             work.Top + Math.Max(0, (work.Height - height) / 2), width, height);
+    }
+
+    bool RestoreBoundsAreUsable(Rectangle value)
+    {
+        if (value.Width < MinimumSize.Width || value.Height < MinimumSize.Height) return false;
+        foreach (Screen screen in Screen.AllScreens)
+        {
+            Rectangle visible = Rectangle.Intersect(value, screen.WorkingArea);
+            if (visible.Width >= 160 && visible.Height >= 80) return true;
+        }
+        return false;
+    }
+
+    void RememberRestoreBounds()
+    {
+        if (!_windowMode || _customMaximized || _changingWindowBounds ||
+            WindowState != FormWindowState.Normal || !Visible) return;
+        if (Bounds.Width >= MinimumSize.Width && Bounds.Height >= MinimumSize.Height)
+            _restoreBounds = Bounds;
+    }
+
+    void ToggleMaximizeWindow()
+    {
+        if (_customMaximized || WindowState == FormWindowState.Maximized)
+        {
+            RestoreWindow();
+            return;
+        }
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Rectangle current = Bounds;
+        if (current.Width >= MinimumSize.Width && current.Height >= MinimumSize.Height)
+            _restoreBounds = current;
+        Screen screen = Screen.FromHandle(Handle);
+        _changingWindowBounds = true;
+        try
+        {
+            // Set the flag before Bounds: the resulting Resize event must not overwrite the saved
+            // normal rectangle with the full-screen rectangle.
+            _customMaximized = true;
+            WindowState = FormWindowState.Normal;
+            Bounds = screen.WorkingArea;
+        }
+        finally { _changingWindowBounds = false; }
+        ReportWindowState();
+    }
+
+    void RestoreWindow()
+    {
+        Screen screen = Screen.FromHandle(Handle);
+        Rectangle target = RestoreBoundsAreUsable(_restoreBounds) ? _restoreBounds : DefaultRestoreBounds(screen);
+        _changingWindowBounds = true;
+        try
+        {
+            WindowState = FormWindowState.Normal;
+            Bounds = target;
+            _customMaximized = false;
+        }
+        finally { _changingWindowBounds = false; }
+        ReportWindowState();
+    }
+
+    void BeginWindowDrag()
+    {
+        if (_customMaximized)
+        {
+            // Match native Windows: pulling a maximized title bar restores the window under the
+            // pointer and immediately continues the drag, instead of making the title bar feel dead.
+            POINT cursor;
+            if (GetCursorPos(out cursor))
+            {
+                Screen screen = Screen.FromPoint(new Point(cursor.x, cursor.y));
+                Rectangle work = screen.WorkingArea;
+                Rectangle target = RestoreBoundsAreUsable(_restoreBounds) ? _restoreBounds : DefaultRestoreBounds(screen);
+                double ratio = work.Width > 0 ? (cursor.x - work.Left) / (double)work.Width : 0.5;
+                ratio = Math.Max(0.1, Math.Min(0.9, ratio));
+                target.X = cursor.x - (int)(target.Width * ratio);
+                target.Y = work.Top;
+                _changingWindowBounds = true;
+                try
+                {
+                    WindowState = FormWindowState.Normal;
+                    Bounds = target;
+                    _restoreBounds = target;
+                    _customMaximized = false;
+                }
+                finally { _changingWindowBounds = false; }
+                ReportWindowState();
+            }
+            else RestoreWindow();
+        }
+        ReleaseCapture();
+        SendMessageW(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+    }
+
+    void WakeWindow()
+    {
+        if (!_windowMode || IsDisposed) return;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Show();
+        Activate();
+        BringToFront();
+        SetForegroundWindow(Handle);
+        ReportWindowState();
     }
 
     static string _log = Path.Combine(Path.GetTempPath(), "collie-wallpaper.log");
@@ -111,6 +234,7 @@ class CollieWallpaper : Form
 
     WebView2 _web;
     static EventWaitHandle _quit;           // signalled by another process to request a CLEAN shutdown
+    static EventWaitHandle _show;           // a second shortcut launch restores/focuses the app window
     static IntPtr _progman, _input;         // Chromium child to post to
     static bool _pinned;                    // once true, WndProc forces our z-order below the icons
     static IntPtr _icons, _iconProc, _iconMem;   // desktop icon ListView + explorer handle + remote LVHITTESTINFO
@@ -154,7 +278,24 @@ class CollieWallpaper : Form
         bool fresh;
         try { _instanceMutex = new Mutex(true, _windowMode ? "collie-wallpaper-window" : "collie-wallpaper-bg", out fresh); }
         catch { fresh = true; }
-        if (!fresh) { Log("another " + (_windowMode ? "window" : "wallpaper") + " instance is already running — exiting"); return; }
+        if (!fresh)
+        {
+            Log("another " + (_windowMode ? "window" : "wallpaper") + " instance is already running — exiting");
+            if (_windowMode)
+            {
+                // A user commonly clicks the desktop/Start shortcut after minimizing Collie. The old
+                // single-instance path silently exited, which looked as though the app was broken.
+                try { using (EventWaitHandle show = EventWaitHandle.OpenExisting("collie-wallpaper-show-window")) show.Set(); }
+                catch { }
+                try
+                {
+                    IntPtr existing = FindWindowW(null, "Collie");
+                    if (existing != IntPtr.Zero) { ShowWindow(existing, 9); SetForegroundWindow(existing); }
+                }
+                catch { }
+            }
+            return;
+        }
         try { File.Delete(_log); } catch { }
         Log("start M4 mode=" + (_windowMode ? "window" : "wallpaper"));
         SetProcessDpiAwarenessContext((IntPtr)(-4));
@@ -182,13 +323,29 @@ class CollieWallpaper : Form
     // even for a single frame — so clicking the galaxy no longer makes the icons flash away.
     protected override void WndProc(ref Message m)
     {
+        if (_windowMode && m.Msg == WM_SYSCOMMAND)
+        {
+            int command = unchecked((int)((long)m.WParam)) & 0xFFF0;
+            if (command == SC_MAXIMIZE)
+            {
+                if (!_customMaximized) ToggleMaximizeWindow();
+                return;
+            }
+            // Restoring a minimized maximized window should bring it back full-size. Only Win+Down
+            // (SC_RESTORE while it is visible) means "leave maximized mode".
+            if (command == SC_RESTORE && _customMaximized && WindowState != FormWindowState.Minimized)
+            {
+                RestoreWindow();
+                return;
+            }
+        }
         // The app window uses Collie's own integrated chrome. Preserve native resizing by returning
         // the standard non-client hit-test codes around an eight-pixel edge; the WebView owns the
         // rest of the surface and asks us to drag the window through WM_NCLBUTTONDOWN.
         if (_windowMode && m.Msg == WM_NCHITTEST)
         {
             base.WndProc(ref m);
-            if ((int)m.Result == HTCLIENT && WindowState == FormWindowState.Normal)
+            if ((int)m.Result == HTCLIENT && WindowState == FormWindowState.Normal && !_customMaximized)
             {
                 POINT cursor;
                 if (GetCursorPos(out cursor))
@@ -249,7 +406,9 @@ class CollieWallpaper : Form
         _web.Dock = DockStyle.Fill;
         _web.CoreWebView2InitializationCompleted += OnWebReady;
         Controls.Add(_web);
-        Resize += delegate { ReportWindowState(); };
+        Resize += delegate { RememberRestoreBounds(); ReportWindowState(); };
+        Move += delegate { RememberRestoreBounds(); };
+        Shown += delegate { RememberRestoreBounds(); ReportWindowState(); };
         Load += delegate { InitWeb(); };
         FormClosed += delegate { Cleanup(); };
         // Also tear the hook + input attachment down on ANY process exit / unhandled crash, not only a
@@ -270,6 +429,25 @@ class CollieWallpaper : Form
             qt.IsBackground = true; qt.Start();
         }
         catch { }
+        if (_windowMode)
+        {
+            try
+            {
+                _show = new EventWaitHandle(false, EventResetMode.AutoReset, "collie-wallpaper-show-window");
+                var st = new Thread(delegate ()
+                {
+                    while (true)
+                    {
+                        _show.WaitOne();
+                        try { BeginInvoke((MethodInvoker)delegate { WakeWindow(); }); }
+                        catch { return; }
+                    }
+                });
+                st.IsBackground = true;
+                st.Start();
+            }
+            catch { }
+        }
     }
 
     async void InitWeb()
@@ -318,24 +496,11 @@ class CollieWallpaper : Form
                             if (raw.IndexOf("\"action\":\"minimize\"", StringComparison.Ordinal) >= 0)
                                 WindowState = FormWindowState.Minimized;
                             else if (raw.IndexOf("\"action\":\"maximize\"", StringComparison.Ordinal) >= 0)
-                            {
-                                // MaximizedBounds is monitor-relative. Passing WorkingArea's virtual-
-                                // desktop X/Y makes a window on monitor 2 span every monitor to its
-                                // left (for example 5120px wide on a two-monitor desk).
-                                Screen screen = Screen.FromHandle(Handle);
-                                Rectangle work = screen.WorkingArea, bounds = screen.Bounds;
-                                MaximizedBounds = new Rectangle(work.X - bounds.X, work.Y - bounds.Y,
-                                                                work.Width, work.Height);
-                                WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
-                                ReportWindowState();
-                            }
+                                ToggleMaximizeWindow();
                             else if (raw.IndexOf("\"action\":\"close\"", StringComparison.Ordinal) >= 0)
                                 Close();
                             else if (raw.IndexOf("\"action\":\"drag\"", StringComparison.Ordinal) >= 0)
-                            {
-                                ReleaseCapture();
-                                SendMessageW(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
-                            }
+                                BeginWindowDrag();
                         });
                     }
                     catch { }
