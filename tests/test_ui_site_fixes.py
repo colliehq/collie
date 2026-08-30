@@ -53,9 +53,22 @@ def test_first_party_surfaces_share_the_calm_personal_os_contract():
 def test_desktop_defaults_to_plain_language_and_progressively_discloses_advanced_surfaces():
     desktop = read("harness/webui/index.html")
 
-    # One obvious starting action; Home remains as an internal route without duplicating New task.
+    # Home is a personal Today brief; the outcome launcher belongs to New task.
     assert 'id="newChat"' in desktop
-    assert re.search(r'id="navHome"\s+hidden', desktop)
+    assert re.search(r'id="navHome"(?!\s+hidden)', desktop)
+    assert 'id="todayDashboard"' in desktop and 'data-i18n="Today"' in desktop
+    for node in ("todayGreeting", "todayTimeline", "todayAttention", "todayBrief", "todaySuggestion"):
+        assert f'id="{node}"' in desktop
+    assert 'todayJson("/api/personal")' in desktop
+    assert 'todayJson("/api/missions")' in desktop
+    assert 'todayJson("/api/approvals")' in desktop
+    assert 'todayJson("/api/procedures?limit=20")' in desktop
+    assert 'todayJson("/api/meetings/schedule")' in desktop
+    assert 'document.visibilityState === "visible"' in desktop and "TODAY_VISIBLE_REFRESH_MS = 60000" in desktop
+    assert 'setProductNav("today")' in desktop and 'showToday(true)' in desktop
+    assert 'function returnToPrimarySurface()' in desktop and 'prepareTaskCanvas();' in desktop
+    assert 'timeline.slice(0,3)' in desktop and 'attention.slice(0,3)' in desktop
+    assert 'list = list.slice(0, 6)' in desktop
     assert 'id="sideMore"' in desktop
     more = desktop.split('id="sideMore"', 1)[1].split('</details>', 1)[0]
     for node in ("navPack", "navOnline", "navActivity"):
@@ -90,6 +103,16 @@ def test_desktop_defaults_to_plain_language_and_progressively_discloses_advanced
     assert "Custom remote MCP" not in default_path and "Create a local Skill" not in default_path
     assert "Custom remote MCP" in advanced and "Create a local Skill" in advanced
     assert 'loc.textContent = t("On this computer")' in desktop
+
+
+def test_personal_history_scanning_is_event_coalesced_and_bounded():
+    background = read("harness/browser_ext/background.js")
+    assert 'periodInMinutes: 30' in background
+    assert 'chrome.runtime.onStartup.addListener' in background
+    assert 'chrome.history.onVisited.addListener' in background
+    assert 'colliePersonalHistorySoon' in background and 'delayInMinutes: 5' in background
+    assert 'if (!alarm) chrome.alarms.create' in background
+    assert 'if (!enabled || !granted || !chrome.history)' in background
 
 
 def test_library_and_activity_replace_the_conversation_instead_of_stacking():

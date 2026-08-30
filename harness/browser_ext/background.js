@@ -3336,7 +3336,19 @@ chrome.alarms.create("colliePoll", { periodInMinutes: 0.5 });  // survive-suspen
 chrome.alarms.create("colliePersonalHistory", { periodInMinutes: 30 });
 chrome.alarms.onAlarm.addListener(function (a) {
   if (a.name === "colliePoll") pollOnce();
-  if (a.name === "colliePersonalHistory") syncPersonalHistory().catch(function () {});
+  if (a.name === "colliePersonalHistory" || a.name === "colliePersonalHistorySoon")
+    syncPersonalHistory().catch(function () {});
+});
+// Do not reread two weeks of history on every page view. A visit only schedules one quiet,
+// coalesced pass five minutes later; startup and the 30-minute alarm remain bounded backstops.
+// syncPersonalHistory itself rechecks the one-time setting and optional history permission.
+if (chrome.history && chrome.history.onVisited) chrome.history.onVisited.addListener(function () {
+  chrome.storage.local.get("colliePersonalHistory").then(function (value) {
+    if (!value.colliePersonalHistory) return;
+    chrome.alarms.get("colliePersonalHistorySoon", function (alarm) {
+      if (!alarm) chrome.alarms.create("colliePersonalHistorySoon", { delayInMinutes: 5 });
+    });
+  }).catch(function () {});
 });
 chrome.runtime.onStartup.addListener(function () {
   pollOnce();

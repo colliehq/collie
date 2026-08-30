@@ -1715,6 +1715,79 @@
   @keyframes welcomeRise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
   @keyframes statusPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.45;transform:scale(.82)} }
 
+  /* Today is Collie's home: a quiet, time-aware personal brief. The outcome launcher below still
+     exists, but belongs to New task. Keeping the two surfaces distinct stops Home from reading like
+     an AI capability brochure while preserving one universal composer. */
+  body:not([data-surface]) .welcome, body[data-surface="today"] .welcome { display:none; }
+  .today-dashboard { width:100%; box-sizing:border-box; padding:22px 2px 34px; }
+  .today-hero { display:flex; align-items:flex-start; gap:18px; padding:4px 2px 22px; }
+  .today-hero-copy { min-width:0; flex:1; }
+  .today-date { margin-bottom:8px; color:var(--pine-ink); font:650 10px var(--sans); letter-spacing:.075em; text-transform:uppercase; }
+  .today-greeting { margin:0; color:var(--ink); font-family:var(--display); font-size:clamp(34px,4.5vw,48px); font-weight:680;
+    line-height:1.04; letter-spacing:-.05em; text-wrap:balance; }
+  .today-summary { max-width:650px; margin:10px 0 0; color:var(--muted); font-size:14.5px; line-height:1.55; text-wrap:pretty; }
+  .today-refresh-wrap { flex:none; display:flex; align-items:center; gap:8px; padding-top:8px; }
+  .today-updated { color:var(--faint); font-size:9.5px; white-space:nowrap; }
+  .today-refresh { width:32px; height:32px; display:grid; place-items:center; border:1px solid var(--line); border-radius:10px;
+    background:color-mix(in srgb,var(--raise) 84%,transparent); color:var(--muted); cursor:pointer; }
+  .today-refresh:hover { color:var(--ink); border-color:color-mix(in srgb,var(--pine) 34%,var(--line)); background:var(--raise); }
+  .today-refresh:disabled { opacity:.55; cursor:wait; }
+  .today-refresh svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .today-refresh.loading svg { animation:todaySpin .8s linear infinite; }
+  @keyframes todaySpin { to { transform:rotate(360deg); } }
+  .today-grid { display:grid; grid-template-columns:minmax(0,1.16fr) minmax(270px,.84fr); gap:12px; }
+  .today-panel { min-width:0; overflow:hidden; border:1px solid color-mix(in srgb,var(--line) 84%,transparent); border-radius:var(--r-md);
+    background:color-mix(in srgb,var(--raise) 84%,transparent); box-shadow:0 1px 2px rgba(19,31,25,.03); backdrop-filter:blur(10px); }
+  .today-panel-wide { grid-column:1/-1; }
+  .today-panel-head { min-height:49px; display:flex; align-items:center; gap:10px; padding:0 15px; border-bottom:1px solid var(--line-2); }
+  .today-panel-head h3 { flex:1; margin:0; font-family:var(--display); font-size:13px; font-weight:680; }
+  .today-panel-head span { color:var(--faint); font-size:9.5px; }
+  .today-list { padding:5px 8px; }
+  .today-row { width:100%; min-height:52px; box-sizing:border-box; display:grid; grid-template-columns:32px minmax(0,1fr) auto; align-items:center; gap:10px;
+    padding:8px; border:0; border-bottom:1px solid color-mix(in srgb,var(--line-2) 72%,transparent); border-radius:9px;
+    background:transparent; color:inherit; text-align:left; font:inherit; }
+  button.today-row { cursor:pointer; }
+  button.today-row:hover { background:var(--surface-2); }
+  .today-row:last-child { border-bottom:0; }
+  .today-row-icon { width:32px; height:32px; display:grid; place-items:center; border-radius:10px; color:var(--pine); background:var(--accent-soft);
+    font-size:13px; font-weight:700; }
+  .today-row.attention .today-row-icon { color:var(--coral); background:var(--coral-bg); }
+  .today-row.calm .today-row-icon { color:var(--meadow); background:var(--meadow-bg); }
+  .today-row.brief .today-row-icon { color:var(--azure); background:var(--blue-soft); }
+  .today-row-copy { min-width:0; }
+  .today-row-title { display:block; overflow:hidden; color:var(--ink); font-size:11.8px; font-weight:650; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }
+  .today-row-meta { display:block; margin-top:2px; overflow:hidden; color:var(--muted); font-size:10px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+  .today-row-action { color:var(--faint); font-size:13px; }
+  .today-empty { padding:20px 14px; text-align:center; }
+  .today-empty strong { display:block; color:var(--ink); font-size:12px; }
+  .today-empty span { display:block; max-width:330px; margin:5px auto 0; color:var(--muted); font-size:10.5px; line-height:1.45; }
+  .today-empty button { margin-top:11px; border:1px solid var(--line); border-radius:9px; padding:7px 10px; background:var(--surface);
+    color:var(--ink); font:600 10.5px var(--sans); cursor:pointer; }
+  .today-empty button:hover { border-color:var(--pine); }
+  .today-for-you { display:grid; grid-template-columns:1fr 1fr; gap:0; }
+  .today-for-you > div + div { border-left:1px solid var(--line-2); }
+  .today-brief-card { min-height:118px; box-sizing:border-box; display:flex; flex-direction:column; align-items:flex-start; padding:13px 15px; }
+  .today-brief-kicker { color:var(--faint); font:650 9px var(--sans); letter-spacing:.07em; text-transform:uppercase; }
+  .today-brief-card strong { margin-top:7px; color:var(--ink); font-size:12.5px; }
+  .today-brief-card p { flex:1; margin:5px 0 12px; color:var(--muted); font-size:10.5px; line-height:1.48; }
+  .today-brief-card button { border:0; padding:0; background:transparent; color:var(--pine-ink); font:650 10.5px var(--sans); cursor:pointer; }
+  .today-source-line { display:flex; align-items:center; gap:7px; margin-top:12px; padding:0 3px; color:var(--faint); font-size:9.5px; }
+  .today-source-line::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--meadow); }
+  .today-source-line[data-state="partial"]::before { background:var(--amber); }
+  @media (max-width:760px) {
+    .today-dashboard { padding:14px 0 28px; }
+    .today-hero { padding-inline:2px; }
+    .today-grid { grid-template-columns:1fr; }
+    .today-panel-wide { grid-column:1; }
+  }
+  @media (max-width:560px) {
+    .today-hero { display:block; }
+    .today-refresh-wrap { justify-content:flex-end; margin-top:8px; padding:0; }
+    .today-greeting { font-size:34px; }
+    .today-for-you { grid-template-columns:1fr; }
+    .today-for-you > div + div { border-left:0; border-top:1px solid var(--line-2); }
+  }
+
   .composer { position:relative; padding:9px 16px 11px; border-top-color:var(--line-2);
     background:color-mix(in srgb,var(--surface) 94%,transparent); backdrop-filter:blur(18px); }
   .composer-context { display:flex; align-items:center; gap:8px; max-width:820px; margin:0 auto 6px; color:var(--faint); font-size:9.5px; }
@@ -2042,9 +2115,9 @@
     </button>
 
     <nav class="side-nav" aria-label="Collie">
-      <button type="button" class="side-nav-item on" id="navHome" hidden>
+      <button type="button" class="side-nav-item on" id="navHome">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11.5 12 4l9 7.5V21h-6v-6H9v6H3z"/></svg>
-        <span data-i18n="Home">Home</span>
+        <span data-i18n="Today">Today</span>
       </button>
       <button type="button" class="side-nav-item" id="navMissions">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m18 6 3-3M18 3h3v3"/></svg>
@@ -2112,7 +2185,7 @@
       <button class="tbtn" id="sideToggle" title="Toggle sidebar" aria-label="Toggle sidebar" data-i18n-title="Toggle sidebar" data-i18n-aria-label="Toggle sidebar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
       </button>
-      <h1 id="pageTitle" data-i18n="Home">Home</h1>
+      <h1 id="pageTitle" data-i18n="Today">Today</h1>
       <span class="pill" id="statePill"><span class="dot"></span><span id="stateText" data-i18n="idle">idle</span></span>
       <!-- What collie itself is playing, with the off switch. Shown only while something is playing.
            Anything the agent starts and leaves running has to be stoppable without asking the agent
@@ -2174,6 +2247,40 @@
 
     <div class="scroll" id="scroll">
       <div class="thread-log" id="log">
+        <section class="today-dashboard" id="todayDashboard" aria-labelledby="todayGreeting">
+          <header class="today-hero">
+            <div class="today-hero-copy">
+              <div class="today-date" id="todayDate"></div>
+              <h2 class="today-greeting" id="todayGreeting" data-i18n="Good morning.">Good morning.</h2>
+              <p class="today-summary" id="todaySummary" data-i18n="Bringing today into focus…">Bringing today into focus…</p>
+            </div>
+            <div class="today-refresh-wrap">
+              <span class="today-updated" id="todayUpdated" data-i18n="Checking…">Checking…</span>
+              <button type="button" class="today-refresh" id="todayRefresh" aria-label="Refresh Today" data-i18n-aria-label="Refresh Today"
+                title="Today refreshes on open or focus and once a minute while visible. Personal browser summaries sync locally after a short activity delay and every 30 minutes; reminders are evaluated every 30 seconds.">
+                <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+              </button>
+            </div>
+          </header>
+          <div class="today-grid">
+            <section class="today-panel" aria-labelledby="todayTimelineTitle">
+              <div class="today-panel-head"><h3 id="todayTimelineTitle" data-i18n="Today's focus">Today's focus</h3><span id="todayTimelineCount"></span></div>
+              <div class="today-list" id="todayTimeline"><div class="today-empty"><span data-i18n="Checking your day…">Checking your day…</span></div></div>
+            </section>
+            <section class="today-panel" aria-labelledby="todayAttentionTitle">
+              <div class="today-panel-head"><h3 id="todayAttentionTitle" data-i18n="Needs attention">Needs attention</h3><span id="todayAttentionCount"></span></div>
+              <div class="today-list" id="todayAttention"><div class="today-empty"><span data-i18n="Checking what needs you…">Checking what needs you…</span></div></div>
+            </section>
+            <section class="today-panel today-panel-wide" aria-labelledby="todayForYouTitle">
+              <div class="today-panel-head"><h3 id="todayForYouTitle" data-i18n="For you">For you</h3><span data-i18n="Kept deliberately short">Kept deliberately short</span></div>
+              <div class="today-for-you">
+                <div id="todayBrief"><div class="today-brief-card"><span class="today-brief-kicker" data-i18n="Checking personal updates…">Checking personal updates…</span></div></div>
+                <div id="todaySuggestion"><div class="today-brief-card"><span class="today-brief-kicker" data-i18n="Looking for a useful pattern…">Looking for a useful pattern…</span></div></div>
+              </div>
+            </section>
+          </div>
+          <div class="today-source-line" id="todaySourceLine" data-state="partial" data-i18n="Private local brief · only connected sources">Private local brief · only connected sources</div>
+        </section>
         <div class="welcome" id="welcome">
           <div class="wc-identity"><span class="wc-avatar"><img class="wc-logo" data-collie-avatar src="/api/avatar.png" alt="" /><span class="wc-live"></span></span>
             <div><div class="wc-kicker" data-i18n="Your personal intelligence">Your personal intelligence</div>
@@ -2910,7 +3017,7 @@
     "Completed without independent verification": "已完成但未经独立验证", "Failed": "失败",
     "Recovery required": "需要恢复", "Reconciling": "正在核对", "Cancelled": "已取消", "Pausing": "正在暂停",
     "Close Missions": "关闭持续任务", "Loading missions…": "正在加载持续任务…", "Refreshing missions…": "正在刷新持续任务…",
-    "No missions yet": "尚无持续任务", "Start one from Home with /mission followed by the outcome.": "回到主页，输入 /mission 和目标即可启动。",
+    "No missions yet": "尚无持续任务", "Start one from New task with /mission followed by the outcome.": "从新任务页输入 /mission 和目标即可启动。",
     "Mission list could not refresh:": "持续任务列表刷新失败：", "Current": "当前", "updated": "更新于",
     "Refresh page": "刷新页面", "Open in browser": "在浏览器打开", "Close page": "关闭页面",
     "Creating…": "正在创建…", "Installing…": "正在安装…", "Refreshing capability library…": "正在刷新能力库…",
@@ -3152,7 +3259,7 @@
     "Completed without independent verification": "已完成但未經獨立驗證", "Failed": "失敗",
     "Recovery required": "需要復原", "Reconciling": "正在核對", "Cancelled": "已取消", "Pausing": "正在暫停",
     "Close Missions": "關閉持續任務", "Loading missions…": "正在載入持續任務…", "Refreshing missions…": "正在重新整理持續任務…",
-    "No missions yet": "尚無持續任務", "Start one from Home with /mission followed by the outcome.": "回到首頁，輸入 /mission 和目標即可啟動。",
+    "No missions yet": "尚無持續任務", "Start one from New task with /mission followed by the outcome.": "從新任務頁輸入 /mission 和目標即可啟動。",
     "Mission list could not refresh:": "持續任務清單重新整理失敗：", "Current": "目前", "updated": "更新於",
     "Refresh page": "重新整理頁面", "Open in browser": "在瀏覽器開啟", "Close page": "關閉頁面",
     "Creating…": "正在建立…", "Installing…": "正在安裝…", "Refreshing capability library…": "正在重新整理能力庫…",
@@ -3359,9 +3466,48 @@
     "Cloud image and media workflows.":"云端图像与媒体工作流。","Private visual workflows on this computer.":"这台电脑上的私密视觉工作流。",
     "Available when a task needs it.":"任务需要时即可使用。","Untitled task":"未命名任务",
     "Today":"今天","Yesterday":"昨天","Earlier":"更早","Your recent work will appear here.":"你最近的工作会显示在这里。",
+    "Task":"任务","Good morning.":"早上好。","Good noon.":"中午好。","Good afternoon.":"下午好。","Good evening.":"晚上好。",
+    "Bringing today into focus…":"正在整理今天…","Checking…":"正在检查…","Refresh Today":"刷新今天",
+    "Today's focus":"今日重点","Needs attention":"需要处理","For you":"为你准备","Kept deliberately short":"只保留重要内容",
+    "Checking your day…":"正在查看今天…","Checking what needs you…":"正在查看哪些事情需要你…",
+    "Checking personal updates…":"正在查看个人动态…","Looking for a useful pattern…":"正在寻找有用的习惯…",
+    "Private local brief · only connected sources":"本机私密简报 · 仅使用已连接来源",
+    "Ask about today, or tell Collie what to handle…":"询问今天的情况，或者告诉 Collie 要处理什么…",
+    "Tomorrow":"明天","Updated just now":"刚刚更新","Updated {n} min ago":"{n} 分钟前更新",
+    "Your day is open":"今天还有空间","No scheduled items need the foreground right now.":"目前没有需要摆到眼前的日程。",
+    "Connect a calendar to bring plans and conflicts into Today.":"连接日历后，计划和时间冲突会进入 Today。",
+    "Scheduled meeting":"日程会议","Plan the rest of today":"安排今天剩余时间","Connect calendar":"连接日历","Nothing urgent":"没有紧急事项",
+    "Some of today is unavailable":"今天有部分内容暂时不可用","Collie couldn't refresh every local source. Nothing missing has been assumed clear.":"Collie 未能刷新所有本机来源，不会把缺失内容当作一切正常。",
+    "Attention check incomplete":"待处理检查未完成","Collie couldn't verify every source, so this area is not being marked clear.":"Collie 未能核实所有来源，因此这里不会被标记为已清空。","Try again":"重试",
+    "Collie will put changes here only when they deserve your attention.":"只有真正值得你注意的变化，Collie 才会放在这里。",
+    "1 decision needs you":"有 1 个决定需要你","{n} decisions need you":"有 {n} 个决定需要你","Review before Collie continues":"Collie 继续前需要你确认",
+    "May be delayed":"可能延迟","Overdue":"已经逾期","Coming up soon":"即将到来","A task needs attention":"有一项任务需要处理",
+    "Personal updates":"个人动态","1 tracked item":"正在跟踪 1 项内容","{n} tracked items":"正在跟踪 {n} 项内容",
+    "Calendar, orders, bills, reservations, and follow-ups stay evidence-backed and local.":"日历、订单、账单、预订和后续事项都保留本机证据。",
+    "Review connections":"查看连接","News and updates":"新闻与动态","Build a brief around what matters to you":"围绕你真正关心的内容建立简报",
+    "Choose topics and trusted sources. Collie keeps the result short, sourced, and separate from urgent items.":"选择主题和可信来源。Collie 会保持简短、标明来源，并与紧急事项分开。",
+    "Set up a brief":"设置简报","Collie suggests":"Collie 建议","A routine worth reviewing":"有一个习惯值得看看",
+    "This pattern repeated locally. Review it before Collie turns it into a reusable workflow.":"这个模式在本机重复出现过。Collie 将它变成可复用流程前，请先审阅。",
+    "Review habit":"查看习惯","Clear the important things first":"先处理真正重要的事情","Keep today realistic":"让今天保持现实",
+    "Start with the items that need your decision; everything else can stay quiet.":"先处理需要你决定的事项，其他内容可以保持安静。",
+    "Turn the open space into a short plan without filling every hour.":"把空余时间整理成一个简短计划，不必填满每个小时。",
+    "Plan with Collie":"和 Collie 一起规划","Private local brief · 1 connected source":"本机私密简报 · 已连接 1 个来源","Private local brief · {n} connected sources":"本机私密简报 · 已连接 {n} 个来源",
+    "Private local brief · connect sources to make it richer":"本机私密简报 · 连接来源后内容会更完整",
+    "1 thing needs your attention. Everything else can wait.":"有 1 件事需要你处理，其他事情可以稍后。","{n} things need your attention. Everything else can wait.":"有 {n} 件事需要你处理，其他事情可以稍后。",
+    "1 item is in view. Nothing urgent is waiting.":"今天有 1 项内容，目前没有紧急事项。","{n} items are in view. Nothing urgent is waiting.":"今天有 {n} 项内容，目前没有紧急事项。",
+    "You're clear for now. Collie will surface changes here without filling the page with noise.":"目前一切正常。Collie 会在这里显示重要变化，不会用噪声填满页面。",
+    "Part of today couldn't refresh. Nothing has been assumed clear.":"今天有部分内容未能刷新，不会把未知状态当作一切正常。",
+    "Collie is working":"Collie 正在处理","In progress":"进行中","Waiting":"等待中","Queued":"已排队","Ongoing task":"持续任务",
+    "Stopping…":"正在停止…","Help me handle this today: ":"帮我处理今天这件事：",
+    ". Check the connected source, explain the current status, and ask before any outside action.":"。检查已连接来源，说明当前状态，并在任何外部操作前询问我。",
+    "Help me make a realistic plan for the rest of today.":"帮我为今天剩余时间制定一个现实的计划。",
+    "Check this and help me decide what to do: ":"检查这件事并帮我决定怎么处理：",
+    ". Do not send, buy, cancel, or change anything without asking me.":"。未经询问，不要发送、购买、取消或修改任何内容。",
+    "Help me set up a concise daily briefing. Ask what topics and sources matter, recommend the smallest trusted connections, and do not connect anything without approval.":"帮我设置一份简洁的每日简报。先询问我关心的主题和来源，推荐最少的可信连接，未经批准不要建立连接。",
+    "Review what matters today and help me make a short, realistic plan. Keep open time and ask before changing anything.":"查看今天重要的事情，帮我制定一个简短、现实的计划。保留空余时间，修改任何内容前先询问我。",
     "Tasks":"任务","Apps & connections":"应用与连接","More":"更多",
     "Close Tasks":"关闭任务","Loading tasks…":"正在加载任务…","Refreshing tasks…":"正在刷新任务…",
-    "No tasks yet":"还没有任务","Start a longer task from Home. Collie will keep its progress here.":"从主页开始一项较长任务。Collie 会在这里持续记录进度。",
+    "No tasks yet":"还没有任务","Start a longer task from New task. Collie will keep its progress here.":"从新任务开始一项较长任务。Collie 会在这里持续记录进度。",
     "Close Apps & connections":"关闭应用与连接","Refreshing apps and connections…":"正在刷新应用与连接…",
     "Apps & connections could not refresh:":"应用与连接刷新失败：",
     "Devices & team":"设备与协作","Sync & cloud":"同步与云端","System activity":"系统活动","Recent":"最近",
@@ -3494,9 +3640,48 @@
     "Cloud image and media workflows.":"雲端圖像與媒體工作流程。","Private visual workflows on this computer.":"這台電腦上的私密視覺工作流程。",
     "Available when a task needs it.":"任務需要時即可使用。","Untitled task":"未命名任務",
     "Today":"今天","Yesterday":"昨天","Earlier":"更早","Your recent work will appear here.":"你最近的工作會顯示在這裡。",
+    "Task":"任務","Good morning.":"早安。","Good noon.":"午安。","Good afternoon.":"下午好。","Good evening.":"晚安。",
+    "Bringing today into focus…":"正在整理今天…","Checking…":"正在檢查…","Refresh Today":"重新整理今天",
+    "Today's focus":"今日重點","Needs attention":"需要處理","For you":"為你準備","Kept deliberately short":"只保留重要內容",
+    "Checking your day…":"正在查看今天…","Checking what needs you…":"正在查看哪些事情需要你…",
+    "Checking personal updates…":"正在查看個人動態…","Looking for a useful pattern…":"正在尋找有用的習慣…",
+    "Private local brief · only connected sources":"本機私密簡報 · 僅使用已連線來源",
+    "Ask about today, or tell Collie what to handle…":"詢問今天的情況，或者告訴 Collie 要處理什麼…",
+    "Tomorrow":"明天","Updated just now":"剛剛更新","Updated {n} min ago":"{n} 分鐘前更新",
+    "Your day is open":"今天還有空間","No scheduled items need the foreground right now.":"目前沒有需要放到眼前的行程。",
+    "Connect a calendar to bring plans and conflicts into Today.":"連接行事曆後，計畫和時間衝突會進入 Today。",
+    "Scheduled meeting":"排程會議","Plan the rest of today":"安排今天剩餘時間","Connect calendar":"連接行事曆","Nothing urgent":"沒有緊急事項",
+    "Some of today is unavailable":"今天有部分內容暫時無法使用","Collie couldn't refresh every local source. Nothing missing has been assumed clear.":"Collie 未能重新整理所有本機來源，不會把缺少的內容當作一切正常。",
+    "Attention check incomplete":"待處理檢查未完成","Collie couldn't verify every source, so this area is not being marked clear.":"Collie 未能核實所有來源，因此這裡不會被標記為已清空。","Try again":"重試",
+    "Collie will put changes here only when they deserve your attention.":"只有真正值得你注意的變化，Collie 才會放在這裡。",
+    "1 decision needs you":"有 1 個決定需要你","{n} decisions need you":"有 {n} 個決定需要你","Review before Collie continues":"Collie 繼續前需要你確認",
+    "May be delayed":"可能延遲","Overdue":"已經逾期","Coming up soon":"即將到來","A task needs attention":"有一項任務需要處理",
+    "Personal updates":"個人動態","1 tracked item":"正在追蹤 1 項內容","{n} tracked items":"正在追蹤 {n} 項內容",
+    "Calendar, orders, bills, reservations, and follow-ups stay evidence-backed and local.":"行事曆、訂單、帳單、預訂和後續事項都保留本機證據。",
+    "Review connections":"查看連線","News and updates":"新聞與動態","Build a brief around what matters to you":"圍繞你真正關心的內容建立簡報",
+    "Choose topics and trusted sources. Collie keeps the result short, sourced, and separate from urgent items.":"選擇主題和可信來源。Collie 會保持簡短、標明來源，並與緊急事項分開。",
+    "Set up a brief":"設定簡報","Collie suggests":"Collie 建議","A routine worth reviewing":"有一個習慣值得看看",
+    "This pattern repeated locally. Review it before Collie turns it into a reusable workflow.":"這個模式在本機重複出現過。Collie 將它變成可重複使用流程前，請先審閱。",
+    "Review habit":"查看習慣","Clear the important things first":"先處理真正重要的事情","Keep today realistic":"讓今天保持實際",
+    "Start with the items that need your decision; everything else can stay quiet.":"先處理需要你決定的事項，其他內容可以保持安靜。",
+    "Turn the open space into a short plan without filling every hour.":"把空餘時間整理成一個簡短計畫，不必填滿每個小時。",
+    "Plan with Collie":"和 Collie 一起規劃","Private local brief · 1 connected source":"本機私密簡報 · 已連線 1 個來源","Private local brief · {n} connected sources":"本機私密簡報 · 已連線 {n} 個來源",
+    "Private local brief · connect sources to make it richer":"本機私密簡報 · 連接來源後內容會更完整",
+    "1 thing needs your attention. Everything else can wait.":"有 1 件事需要你處理，其他事情可以稍後。","{n} things need your attention. Everything else can wait.":"有 {n} 件事需要你處理，其他事情可以稍後。",
+    "1 item is in view. Nothing urgent is waiting.":"今天有 1 項內容，目前沒有緊急事項。","{n} items are in view. Nothing urgent is waiting.":"今天有 {n} 項內容，目前沒有緊急事項。",
+    "You're clear for now. Collie will surface changes here without filling the page with noise.":"目前一切正常。Collie 會在這裡顯示重要變化，不會用雜訊填滿頁面。",
+    "Part of today couldn't refresh. Nothing has been assumed clear.":"今天有部分內容未能重新整理，不會把未知狀態當作一切正常。",
+    "Collie is working":"Collie 正在處理","In progress":"進行中","Waiting":"等待中","Queued":"已排隊","Ongoing task":"持續任務",
+    "Stopping…":"正在停止…","Help me handle this today: ":"幫我處理今天這件事：",
+    ". Check the connected source, explain the current status, and ask before any outside action.":"。檢查已連線來源，說明目前狀態，並在任何外部操作前詢問我。",
+    "Help me make a realistic plan for the rest of today.":"幫我為今天剩餘時間制定一個實際的計畫。",
+    "Check this and help me decide what to do: ":"檢查這件事並幫我決定怎麼處理：",
+    ". Do not send, buy, cancel, or change anything without asking me.":"。未經詢問，不要傳送、購買、取消或修改任何內容。",
+    "Help me set up a concise daily briefing. Ask what topics and sources matter, recommend the smallest trusted connections, and do not connect anything without approval.":"幫我設定一份簡潔的每日簡報。先詢問我關心的主題和來源，推薦最少的可信連線，未經批准不要建立連線。",
+    "Review what matters today and help me make a short, realistic plan. Keep open time and ask before changing anything.":"查看今天重要的事情，幫我制定一個簡短、實際的計畫。保留空餘時間，修改任何內容前先詢問我。",
     "Tasks":"任務","Apps & connections":"應用程式與連線","More":"更多",
     "Close Tasks":"關閉任務","Loading tasks…":"正在載入任務…","Refreshing tasks…":"正在重新整理任務…",
-    "No tasks yet":"還沒有任務","Start a longer task from Home. Collie will keep its progress here.":"從首頁開始一項較長任務。Collie 會在這裡持續記錄進度。",
+    "No tasks yet":"還沒有任務","Start a longer task from New task. Collie will keep its progress here.":"從新任務開始一項較長任務。Collie 會在這裡持續記錄進度。",
     "Close Apps & connections":"關閉應用程式與連線","Refreshing apps and connections…":"正在重新整理應用程式與連線…",
     "Apps & connections could not refresh:":"應用程式與連線重新整理失敗：",
     "Devices & team":"裝置與協作","Sync & cloud":"同步與雲端","System activity":"系統活動","Recent":"最近",
@@ -3852,7 +4037,9 @@
       img.alt = name;
       img.onerror = function () { this.onerror = null; COLLIE_IDENTITY.avatarFailedFor = avatarUrl; this.src = "/logo.svg"; };
     });
-    document.title = name === "Collie" ? "Collie · Home" : name + " · Collie";
+    var surface = document.body.getAttribute("data-surface") || "today";
+    var section = surface === "today" ? t("Today") : (surface === "home" ? t("Task") : t("Home"));
+    document.title = name === "Collie" ? "Collie · " + section : name + " · " + section;
   }
   function refreshCollieIdentity() {
     return fetch("/api/whoami", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (d) {
@@ -3883,7 +4070,8 @@
     if (hint) hint.innerHTML = ((I18N[UI_LANG] || {}).__kbd)
       || "<kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line";
     var inp = $("input");
-    if (inp && !running) inp.placeholder = t("Describe the outcome you want…");
+    if (inp && !running) inp.placeholder = t(document.body.getAttribute("data-surface") === "today" ?
+      "Ask about today, or tell Collie what to handle…" : "Describe the outcome you want…");
     var runDetails = $("runDetailsBtn");
     if (runDetails) {
       runDetails.title = t("run details");
@@ -4364,7 +4552,7 @@
   function closeSettings() {
     setOverlay.classList.remove("open"); clearInterval(mcpPollTimer);
     dialogClosed(setOverlay, $("settingsBtn"));
-    if ($("navLibrary") && $("navLibrary").classList.contains("on") && typeof setProductNav === "function") setProductNav("home");
+    if ($("navLibrary") && $("navLibrary").classList.contains("on") && typeof returnToPrimarySurface === "function") returnToPrimarySurface();
   }
 
   $("settingsBtn").onclick = function () { openSettings(); };
@@ -4933,7 +5121,7 @@
     var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
     nav.hidden = n === 0; count.textContent = String(n);
-    if (!n && nav.classList.contains("on") && typeof setProductNav === "function") setProductNav("home");
+    if (!n && nav.classList.contains("on") && typeof returnToPrimarySurface === "function") returnToPrimarySurface();
   }
   function trackPermission(d, sid) {
     if (!d || !d.id) return;
@@ -5996,10 +6184,13 @@
     var opening = activityPanel.hidden || activityPageMode !== "activity";
     if (opening) setActivityMode("activity");
     setActivityOpen(opening);
-    if (typeof setProductNav === "function") setProductNav(opening ? "activity" : "home");
+    if (typeof setProductNav === "function") {
+      if (opening) setProductNav("activity");
+      else returnToPrimarySurface();
+    }
   };
   if ($("activityClose")) $("activityClose").onclick = function () {
-    setActivityOpen(false); if (typeof setProductNav === "function") setProductNav("home");
+    setActivityOpen(false); if (typeof returnToPrimarySurface === "function") returnToPrimarySurface();
   };
   if ($("activityRefresh")) $("activityRefresh").onclick = loadActivity;
   window.setInterval(function () { if (activityPanel && !activityPanel.hidden) loadActivity(); }, 10000);
@@ -6214,15 +6405,15 @@
         kind === "workflow" ? "Open" : "Open");
       button.onclick = function () {
         if (kind === "connection" || action === "settings-tools") {
-          setLibraryOpen(false); setProductNav("home"); openSettings(kind === "connection" ? "mcp" : "caps");
+          setLibraryOpen(false); returnToPrimarySurface(); openSettings(kind === "connection" ? "mcp" : "caps");
         } else if (action === "settings-capabilities") {
-          setLibraryOpen(false); setProductNav("home"); openSettings("devices");
+          setLibraryOpen(false); returnToPrimarySurface(); openSettings("devices");
         } else if (action === "missions") {
           setLibraryOpen(false); setProductNav("missions"); setMissionsOpen(true);
         } else if (action === "meetings") openEmbeddedSurface("Meeting notes", "/meetings?embedded=1");
         else if (action === "comfy") openEmbeddedSurface("Comfy", "/comfy?embedded=1");
         else if (action === "studio" || kind === "workflow") openEmbeddedSurface("Studio", "/studio?embedded=1");
-        else { setLibraryOpen(false); setProductNav("home"); $("input").focus(); }
+        else { setLibraryOpen(false); prepareTaskCanvas(); $("input").focus(); }
       };
       card.appendChild(button);
     }
@@ -6305,7 +6496,7 @@
     $("libraryPackageForm").hidden = mode !== "package";
     $("libraryConnectionForm").hidden = mode !== "connection";
     if (mode === "custom-connection") {
-      $("libraryAddPanel").hidden = true; setLibraryOpen(false); setProductNav("home"); openSettings("mcp");
+      $("libraryAddPanel").hidden = true; setLibraryOpen(false); returnToPrimarySurface(); openSettings("mcp");
     } else if (mode === "workflow") {
       $("libraryAddPanel").hidden = true; openEmbeddedSurface("Studio", "/studio?embedded=1");
     } else {
@@ -6452,7 +6643,7 @@
   }
   if ($("libraryRefresh")) $("libraryRefresh").onclick = function () { loadLibrary().catch(function () {}); };
   if ($("libraryClose")) $("libraryClose").onclick = function () {
-    setLibraryOpen(false); if (typeof setProductNav === "function") setProductNav("home");
+    setLibraryOpen(false); if (typeof returnToPrimarySurface === "function") returnToPrimarySurface();
   };
 
   // ---- Embedded first-party surfaces keep the native Collie shell and navigation ----
@@ -6475,13 +6666,13 @@
   if ($("surfaceExternal")) $("surfaceExternal").onclick = function () {
     if (surfacePath) window.open(surfacePath.replace(/[?&]embedded=1(?:&|$)/, ""), "_blank", "noopener");
   };
-  if ($("surfaceClose")) $("surfaceClose").onclick = function () { setEmbeddedSurfaceOpen(false); setProductNav("home"); };
+  if ($("surfaceClose")) $("surfaceClose").onclick = function () { setEmbeddedSurfaceOpen(false); returnToPrimarySurface(); };
   if ($("studioBtn")) $("studioBtn").onclick = function () { openEmbeddedSurface("Studio", "/studio?embedded=1"); };
   window.addEventListener("message", function (event) {
     if (event.origin !== location.origin || !event.data || event.data.type !== "collie:prefill") return;
     var text = String(event.data.text || "").trim();
     if (!text) return;
-    setEmbeddedSurfaceOpen(false); setProductNav("home"); $("pageTitle").textContent = t("Home");
+    setEmbeddedSurfaceOpen(false); prepareTaskCanvas();
     var input = $("input"); input.value = text; input.dispatchEvent(new Event("input", { bubbles:true }));
     input.focus(); input.setSelectionRange(text.length, text.length);
   });
@@ -6631,7 +6822,7 @@
   }
   function renderMissionList(rows) {
     var grid = $("missionsGrid"); grid.textContent = "";
-    if (!(rows || []).length) { libraryEmpty(grid, "No tasks yet", "Start a longer task from Home. Collie will keep its progress here."); return; }
+    if (!(rows || []).length) { libraryEmpty(grid, "No tasks yet", "Start a longer task from New task. Collie will keep its progress here."); return; }
     rows.forEach(function (mission) {
       var card = document.createElement("button"); card.type = "button"; card.className = "mission-list-card";
       var top = document.createElement("div"); top.className = "mission-list-top";
@@ -6664,7 +6855,7 @@
     $("scrollDownBtn").hidden = !!open; if (open) loadMissions().catch(function () {});
   }
   if ($("missionsRefresh")) $("missionsRefresh").onclick = function () { loadMissions().catch(function () {}); };
-  if ($("missionsClose")) $("missionsClose").onclick = function () { setMissionsOpen(false); setProductNav("home"); };
+  if ($("missionsClose")) $("missionsClose").onclick = function () { setMissionsOpen(false); returnToPrimarySurface(); };
   function showMissions() {
     setMissionsOpen(true); setProductNav("missions");
   }
@@ -7507,6 +7698,9 @@
         list.unshift({ id: id, title: r.ask || "", last: r.ask || "", turns: r.turns || 0,
           updated: Date.now() / 1000 });
       });
+      // Today is a brief, not a task archive. Keep only a small recency preview here; New task and
+      // an opened conversation restore the full list through their own loadSessions() call.
+      if (document.body.getAttribute("data-surface") === "today") list = list.slice(0, 6);
       if (!list.length) { box.innerHTML = '<div class="empty">' + esc(t("Your recent work will appear here.")) + '</div>'; return; }
       var lastGroup = "";
       list.forEach(function (s) {
@@ -7677,25 +7871,268 @@
     });
   }
 
-  // Keep one source of truth for the Home empty state. Re-insertion preserves its i18n and identity
-  // hooks, then applyLang/renderCollieIdentity refresh them for the current user and device.
+  // Today is a read-and-act surface; New task is the empty conversation surface. Store each shell
+  // once so navigation never accumulates stale cards or leaves a dashboard above a conversation.
+  var TODAY_HTML = $("todayDashboard").outerHTML;
   var WELCOME_HTML = $("welcome").outerHTML;
+  var TODAY_VISIBLE_REFRESH_MS = 60000;
+  var todayLastLoaded = 0, todayLoading = false;
+
+  function todayLocale() {
+    return UI_LANG === "zh" ? "zh-CN" : UI_LANG === "zhtw" ? "zh-TW" :
+      ({ja:"ja-JP",ko:"ko-KR",es:"es-ES",fr:"fr-FR",de:"de-DE",pt:"pt-BR",ru:"ru-RU"}[UI_LANG] || "en-US");
+  }
+  function todayGreetingKey(now) {
+    var hour = now.getHours();
+    if (hour < 5) return "Good evening.";
+    if (hour < 12) return "Good morning.";
+    if (hour < 14 && (UI_LANG === "zh" || UI_LANG === "zhtw")) return "Good noon.";
+    if (hour < 18) return "Good afternoon.";
+    return "Good evening.";
+  }
+  function todayDateText(now) {
+    try { return new Intl.DateTimeFormat(todayLocale(), {weekday:"long",month:"long",day:"numeric"}).format(now); }
+    catch (_) { return now.toLocaleDateString(); }
+  }
+  function todayTimeText(stamp) {
+    var date = new Date(Number(stamp || 0) * 1000), now = new Date();
+    if (!Number.isFinite(date.getTime())) return "";
+    if (date.toDateString() === now.toDateString())
+      return date.toLocaleTimeString(todayLocale(), {hour:"numeric",minute:"2-digit"});
+    var tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
+    if (date.toDateString() === tomorrow.toDateString()) return t("Tomorrow") + " · " +
+      date.toLocaleTimeString(todayLocale(), {hour:"numeric",minute:"2-digit"});
+    return date.toLocaleDateString(todayLocale(), {month:"short",day:"numeric"});
+  }
+  function todayTarget(event) {
+    return Number((event || {}).starts_at || (event || {}).due_at || (event || {}).expected_at || 0);
+  }
+  function todayJson(path) {
+    return authenticatedFetch(path, {cache:"no-store"}).then(function (response) {
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return response.json();
+    }).catch(function (error) { return {__unavailable:true,error:String(error || "unavailable")}; });
+  }
+  function todayEmpty(container, title, detail, action, label) {
+    if (!container) return;
+    container.textContent = "";
+    var box = document.createElement("div"); box.className = "today-empty";
+    var strong = document.createElement("strong"); strong.textContent = t(title); box.appendChild(strong);
+    var span = document.createElement("span"); span.textContent = t(detail); box.appendChild(span);
+    if (action) {
+      var button = document.createElement("button"); button.type = "button"; button.textContent = t(label);
+      button.onclick = action; box.appendChild(button);
+    }
+    container.appendChild(box);
+  }
+  function todayRow(container, value) {
+    var row = document.createElement(value.action ? "button" : "div");
+    if (value.action) row.type = "button";
+    row.className = "today-row " + (value.tone || "");
+    var icon = document.createElement("span"); icon.className = "today-row-icon"; icon.textContent = value.icon || "·";
+    var copy = document.createElement("span"); copy.className = "today-row-copy";
+    var title = document.createElement("span"); title.className = "today-row-title"; title.textContent = value.title || "";
+    var meta = document.createElement("span"); meta.className = "today-row-meta"; meta.textContent = value.meta || "";
+    var arrow = document.createElement("span"); arrow.className = "today-row-action"; arrow.textContent = value.action ? "→" : "";
+    copy.appendChild(title); copy.appendChild(meta); row.appendChild(icon); row.appendChild(copy); row.appendChild(arrow);
+    if (value.action) row.onclick = value.action;
+    container.appendChild(row);
+  }
+  function todayStartTask(prompt) {
+    newThread(false);
+    var input = $("input"); input.value = prompt; input.dispatchEvent(new Event("input", {bubbles:true}));
+    input.focus(); try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
+  }
+  function todayOpenConnections() {
+    setProductNav("library"); setLibraryOpen(true);
+  }
+  function todayOpenHabits() {
+    setActivityMode("activity"); setProductNav("activity"); setActivityOpen(true); setControlTab("procedures");
+  }
+  function todayBriefCard(container, kicker, title, detail, label, action) {
+    if (!container) return;
+    container.textContent = "";
+    var card = document.createElement("div"); card.className = "today-brief-card";
+    var small = document.createElement("span"); small.className = "today-brief-kicker"; small.textContent = t(kicker);
+    var strong = document.createElement("strong"); strong.textContent = title;
+    var paragraph = document.createElement("p"); paragraph.textContent = detail;
+    var button = document.createElement("button"); button.type = "button"; button.textContent = t(label) + " →"; button.onclick = action;
+    card.appendChild(small); card.appendChild(strong); card.appendChild(paragraph); card.appendChild(button); container.appendChild(card);
+  }
+  function todayFreshness() {
+    var node = $("todayUpdated"); if (!node || !todayLastLoaded) return;
+    var age = Math.max(0, Date.now() - todayLastLoaded);
+    node.textContent = age < 60000 ? t("Updated just now") : t("Updated {n} min ago").replace("{n}", Math.floor(age / 60000));
+  }
+  function todayCount(n, singular, plural) {
+    return t(n === 1 ? singular : plural).replace("{n}", n);
+  }
+  function renderToday(values) {
+    if (document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return;
+    var personal = values[0] || {}, missionData = values[1] || {}, approvalData = values[2] || {};
+    var procedures = values[3] || {}, runData = values[4] || {}, meetingData = values[5] || {};
+    var events = Array.isArray(personal.events) ? personal.events : [];
+    var reminders = Array.isArray(personal.reminders) ? personal.reminders : [];
+    var sources = Array.isArray(personal.sources) ? personal.sources : [];
+    var missions = Array.isArray(missionData.missions) ? missionData.missions : [];
+    var approvals = Array.isArray(approvalData.approvals) ? approvalData.approvals : [];
+    var candidates = Array.isArray(procedures.candidates) ? procedures.candidates : [];
+    var runs = Array.isArray(runData.runs) ? runData.runs : [];
+    var meetings = Array.isArray(meetingData.events) ? meetingData.events : [];
+    var unavailable = values.some(function (value) { return value && value.__unavailable; });
+    var timelineUnavailable = !!personal.__unavailable || !!missionData.__unavailable || !!runData.__unavailable || !!meetingData.__unavailable;
+    var attentionUnavailable = !!personal.__unavailable || !!missionData.__unavailable || !!approvalData.__unavailable;
+    var now = new Date(), start = new Date(now); start.setHours(0,0,0,0);
+    var end = new Date(start); end.setDate(end.getDate() + 1);
+    $("todayDate").textContent = todayDateText(now);
+    $("todayGreeting").textContent = t(todayGreetingKey(now));
+
+    var timeline = [];
+    var timelineKeys = {};
+    events.forEach(function (event) {
+      if (/^(done|delivered|cancelled|paid)$/.test(event.status || "")) return;
+      var target = todayTarget(event);
+      if (!target || target * 1000 < start.getTime() || target * 1000 >= end.getTime()) return;
+      timelineKeys[String(event.title || "").toLowerCase() + "|" + target] = true;
+      timeline.push({sort:target, icon:event.event_type === "appointment" ? "○" : "·", title:event.title,
+        meta:todayTimeText(target) + " · " + t(String(event.status || "scheduled")), tone:"",
+        action:function () { todayStartTask(t("Help me handle this today: ") + event.title +
+          t(". Check the connected source, explain the current status, and ask before any outside action.")); }});
+    });
+    meetings.forEach(function (meeting) {
+      var target = Number(meeting.start_at || 0), endAt = Number(meeting.end_at || 0);
+      if (!target || endAt * 1000 < start.getTime() || target * 1000 >= end.getTime()) return;
+      var key = String(meeting.title || "").toLowerCase() + "|" + target;
+      if (timelineKeys[key]) return;
+      timelineKeys[key] = true;
+      timeline.push({sort:target,icon:"○",title:meeting.title || t("Scheduled meeting"),
+        meta:todayTimeText(target) + (meeting.location ? " · " + meeting.location : ""),tone:"",
+        action:function () { openEmbeddedSurface("Meeting notes", "/meetings?embedded=1"); }});
+    });
+    runs.filter(function (run) { return run.state === "running" || run.state === "canceling"; }).forEach(function (run) {
+      timeline.push({sort:Date.now()/1000,icon:"↗",title:cleanThreadTitle(run.ask || t("Collie is working")),
+        meta:t(run.state === "canceling" ? "Stopping…" : "In progress"),tone:"brief",
+        action:function () { if (run.session) openSession(run.session); }});
+    });
+    missions.filter(function (mission) { return /^(running|waiting|queued)$/.test(mission.state || ""); }).slice(0,3).forEach(function (mission) {
+      timeline.push({sort:Number(mission.updated_at || Date.now()/1000),icon:"↗",title:mission.title || t("Ongoing task"),
+        meta:t(mission.state === "waiting" ? "Waiting" : mission.state === "queued" ? "Queued" : "In progress"),tone:"brief",
+        action:function () { setProductNav("missions"); setMissionsOpen(true); }});
+    });
+    timeline.sort(function (a,b) { return a.sort-b.sort; });
+    var timelineBox = $("todayTimeline"); timelineBox.textContent = "";
+    timeline.slice(0,3).forEach(function (item) { todayRow(timelineBox,item); });
+    $("todayTimelineCount").textContent = timeline.length ? String(timeline.length) : "";
+    var hasCalendar = meetings.length || sources.some(function (source) { return source.enabled && source.kind === "calendar"; });
+    if (!timeline.length && timelineUnavailable)
+      todayEmpty(timelineBox, "Some of today is unavailable", "Collie couldn't refresh every local source. Nothing missing has been assumed clear.", function () { loadToday(true); }, "Try again");
+    else if (!timeline.length) todayEmpty(timelineBox, "Your day is open", hasCalendar ?
+      "No scheduled items need the foreground right now." : "Connect a calendar to bring plans and conflicts into Today.",
+      hasCalendar ? function () { todayStartTask(t("Help me make a realistic plan for the rest of today.")); } : todayOpenConnections,
+      hasCalendar ? "Plan the rest of today" : "Connect calendar");
+
+    var attention = [];
+    if (approvals.length) attention.push({icon:"!",title:todayCount(approvals.length, "1 decision needs you", "{n} decisions need you"),
+      meta:t("Review before Collie continues"),tone:"attention",action:function () { $("needsYouNav").click(); }});
+    reminders.filter(function (reminder) { return reminder.state !== "upcoming"; }).forEach(function (reminder) {
+      var state = reminder.state === "possibly_delayed" ? t("May be delayed") : reminder.state === "overdue" ? t("Overdue") : t("Coming up soon");
+      attention.push({icon:"!",title:reminder.title,meta:state + (reminder.at ? " · " + todayTimeText(reminder.at) : ""),tone:"attention",
+        action:function () { todayStartTask(t("Check this and help me decide what to do: ") + reminder.title +
+          t(". Do not send, buy, cancel, or change anything without asking me.")); }});
+    });
+    missions.filter(function (mission) { return /^(needs_you|review_required|recovery_required|failed)$/.test(mission.state || ""); }).forEach(function (mission) {
+      attention.push({icon:"!",title:mission.title || t("A task needs attention"),meta:missionStateLabel(mission.state),tone:"attention",
+        action:function () { setProductNav("missions"); setMissionsOpen(true); }});
+    });
+    var attentionBox = $("todayAttention"); attentionBox.textContent = "";
+    attention.slice(0,3).forEach(function (item) { todayRow(attentionBox,item); });
+    $("todayAttentionCount").textContent = attention.length ? String(attention.length) : "";
+    if (!attention.length && attentionUnavailable)
+      todayEmpty(attentionBox, "Attention check incomplete", "Collie couldn't verify every source, so this area is not being marked clear.", function () { loadToday(true); }, "Try again");
+    else if (!attention.length) todayEmpty(attentionBox, "Nothing urgent", "Collie will put changes here only when they deserve your attention.", null, "");
+
+    var connected = sources.filter(function (source) { return source.enabled && source.permission_state === "granted"; });
+    var upcoming = reminders.filter(function (reminder) { return reminder.state === "upcoming"; }).length;
+    var activeEvents = events.filter(function (event) { return !/^(done|delivered|cancelled|paid)$/.test(event.status || ""); });
+    if (activeEvents.length || upcoming) {
+      todayBriefCard($("todayBrief"), "Personal updates", todayCount(activeEvents.length || upcoming, "1 tracked item", "{n} tracked items"),
+        t("Calendar, orders, bills, reservations, and follow-ups stay evidence-backed and local."), "Review connections", todayOpenConnections);
+    } else {
+      todayBriefCard($("todayBrief"), "News and updates", t("Build a brief around what matters to you"),
+        t("Choose topics and trusted sources. Collie keeps the result short, sourced, and separate from urgent items."), "Set up a brief",
+        function () { todayStartTask(t("Help me set up a concise daily briefing. Ask what topics and sources matter, recommend the smallest trusted connections, and do not connect anything without approval.")); });
+    }
+    var proposed = candidates.filter(function (candidate) { return candidate.status === "proposed"; })[0];
+    if (proposed) {
+      todayBriefCard($("todaySuggestion"), "Collie suggests", proposed.title || t("A routine worth reviewing"),
+        proposed.summary || t("This pattern repeated locally. Review it before Collie turns it into a reusable workflow."), "Review habit", todayOpenHabits);
+    } else {
+      todayBriefCard($("todaySuggestion"), "Collie suggests", attention.length ? t("Clear the important things first") : t("Keep today realistic"),
+        attention.length ? t("Start with the items that need your decision; everything else can stay quiet.") :
+          t("Turn the open space into a short plan without filling every hour."), "Plan with Collie",
+        function () { todayStartTask(t("Review what matters today and help me make a short, realistic plan. Keep open time and ask before changing anything.")); });
+    }
+    var sourceLine = $("todaySourceLine");
+    sourceLine.dataset.state = unavailable || !connected.length ? "partial" : "ready";
+    sourceLine.textContent = connected.length ? todayCount(connected.length, "Private local brief · 1 connected source", "Private local brief · {n} connected sources") :
+      t("Private local brief · connect sources to make it richer");
+    $("todaySummary").textContent = unavailable ? t("Part of today couldn't refresh. Nothing has been assumed clear.") : attention.length ?
+      todayCount(attention.length, "1 thing needs your attention. Everything else can wait.", "{n} things need your attention. Everything else can wait.") : timeline.length ?
+      todayCount(timeline.length, "1 item is in view. Nothing urgent is waiting.", "{n} items are in view. Nothing urgent is waiting.") :
+      t("You're clear for now. Collie will surface changes here without filling the page with noise.");
+    todayLastLoaded = Date.now(); todayFreshness();
+  }
+  function loadToday(force) {
+    if (document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return Promise.resolve();
+    if (todayLoading || (!force && Date.now() - todayLastLoaded < TODAY_VISIBLE_REFRESH_MS)) return Promise.resolve();
+    todayLoading = true;
+    var button = $("todayRefresh"); if (button) { button.disabled = true; button.classList.add("loading"); }
+    return Promise.all([todayJson("/api/personal"),todayJson("/api/missions"),todayJson("/api/approvals"),
+      todayJson("/api/procedures?limit=20"),todayJson("/api/runs"),todayJson("/api/meetings/schedule")]).then(renderToday).finally(function () {
+        todayLoading = false; var refresh = $("todayRefresh");
+        if (refresh) { refresh.disabled = false; refresh.classList.remove("loading"); refresh.onclick = function () { loadToday(true); }; }
+      });
+  }
+  function prepareTaskCanvas() {
+    if (!$("todayDashboard")) { setProductNav("home"); return; }
+    currentSession = null; currentRun = null;
+    $("log").innerHTML = WELCOME_HTML; applyLang(); renderCollieIdentity(); setProductNav("home");
+  }
+  function showToday(userRequested) {
+    detachRun(); currentSession = null; currentRun = null; queuedFollowUps = [];
+    clearAttached(); clearManualIdeContexts(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
+    $("log").innerHTML = TODAY_HTML; applyLang(); renderCollieIdentity();
+    setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setProductNav("today");
+    if (userRequested && $("scroll")) $("scroll").scrollTop = 0;
+    loadSessions(); loadToday(true);
+  }
   function syncHomeState() {
     document.body.classList.toggle("home-idle",
       document.body.getAttribute("data-surface") === "home" && !!$("welcome"));
   }
   new MutationObserver(syncHomeState).observe($("log"), { childList:true, subtree:true });
-  document.body.setAttribute("data-surface", "home"); syncHomeState();
+  document.body.setAttribute("data-surface", "today"); syncHomeState();
   function setProductNav(id) {
     document.body.setAttribute("data-surface", id);
+    var selectedNav = id === "today"
+      ? "navHome"
+      : (id === "home" ? "" : "nav" + id.charAt(0).toUpperCase() + id.slice(1));
     document.querySelectorAll(".side-nav-item").forEach(function (node) {
-      node.classList.toggle("on", node.id === "nav" + id.charAt(0).toUpperCase() + id.slice(1));
+      node.classList.toggle("on", node.id === selectedNav);
     });
     var sideMore = $("sideMore");
     if (sideMore) sideMore.open = ["pack", "online", "activity"].indexOf(id) >= 0;
-    var titles = { home: "Home", missions: "Tasks", pack: "Devices & team", online: "Sync & cloud", library: "Apps & connections", activity: "System activity", needsYou: "Needs You" };
+    var titles = { today: "Today", home: currentSession ? "Task" : "New task", missions: "Tasks", pack: "Devices & team", online: "Sync & cloud", library: "Apps & connections", activity: "System activity", needsYou: "Needs You" };
     var title = $("pageTitle"); if (title && titles[id]) title.textContent = t(titles[id]);
+    var input = $("input"); if (input && !running) input.placeholder = t(id === "today" ?
+      "Ask about today, or tell Collie what to handle…" : "Describe the outcome you want…");
+    renderCollieIdentity();
     syncHomeState();
+  }
+  function returnToPrimarySurface() {
+    var surface = $("todayDashboard") ? "today" : "home";
+    setProductNav(surface);
+    if (surface === "today") loadToday(false);
   }
   function newThread(userRequestedFocus) {
     detachRun();                         // start a second thing while the first one runs
@@ -7706,7 +8143,7 @@
     loadSessions(); focusComposer(userRequestedFocus === true);
   }
   $("newChat").onclick = function () { newThread(true); };
-  $("navHome").onclick = function () { newThread(true); };
+  $("navHome").onclick = function () { showToday(true); };
   $("navMissions").onclick = function () { setProductNav("missions"); setMissionsOpen(true); };
   $("navPack").onclick = function () { openEmbeddedSurface("Pack", "/remote?embedded=1", "pack"); };
   $("navOnline").onclick = openOnlinePage;
@@ -7736,6 +8173,17 @@
     }).catch(function () {});
   }
   pollOnlineNeeds(); window.setInterval(pollOnlineNeeds, 10000);
+  window.setInterval(function () {
+    todayFreshness();
+    if (document.visibilityState === "visible" && document.body.getAttribute("data-surface") === "today") loadToday(false);
+  }, 30000);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && document.body.getAttribute("data-surface") === "today") loadToday(true);
+  });
+  window.addEventListener("focus", function () {
+    if (document.body.getAttribute("data-surface") === "today") loadToday(true);
+  });
+  showToday(true);
 
   // Starter cards in the empty state: click one to drop a ready-made prompt into the composer (so a
   // first-timer sees what Collie is FOR). Delegated on #log so it works for both the initial welcome
@@ -8111,6 +8559,11 @@
     var imgs = attached.slice();
     var manualContextCount = ideManualContexts.length;
     var contexts = ideContextItems();
+    // The Today composer is universal, but a submitted request is still a task. Swap to a clean
+    // conversation canvas before rendering the user's message so the dashboard never stacks above
+    // a transcript and the request receives the same durable thread semantics as New task.
+    if (!running && (q || imgs.length) && document.body.getAttribute("data-surface") === "today")
+      prepareTaskCanvas();
     // Mission control is an out-of-band command, even while an interactive run
     // is streaming. Never feed pause/cancel to the model as steering text.
     if (/^\/(?:mission|delegate)(?:\s|$)/i.test(q)) {
