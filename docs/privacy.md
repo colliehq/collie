@@ -41,8 +41,13 @@ feature inherently requires:
   uses Collie's first-party microphone/system-audio capture; transient audio chunks are deleted after
   the configured speech service returns transcript text. Transcript and compact live understanding
   may be sent to the providers disclosed in the UI. Suggestions have no execution authority. A
-  shortcut handoff is an explicit user action; interactive tasks and background Missions still use
-  the ordinary permission and recovery boundaries. Stopping clears live capture and surface authority.
+  shortcut handoff is an explicit user action. At that moment Collie retains the exact foreground
+  process name, PID/window handle, window title, and a bounded set of accessibility control types and
+  labels so the requested action can return to the correct window. Field values, keys, clipboard
+  content, and screenshots remain excluded. The shortcut's one-shot command audio is processed by
+  Windows' local speech recognizer; only recognized text is sent to the configured Collie model.
+  Interactive tasks and background Missions still use the ordinary permission and recovery
+  boundaries. Stopping clears live capture and surface authority.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,

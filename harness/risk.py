@@ -191,7 +191,7 @@ def classify(tool_name: str, tool: Any = None,
         action = str((args or {}).get("action") or "").strip().casefold()
         if action == "status":
             return RiskClass.READ
-        if action in {"note", "diagram_preview"}:
+        if action in {"stop", "note", "diagram_preview"}:
             return RiskClass.WRITE_LOCAL
         return RiskClass.EXTERNAL
     base = _BASE.get(tool_name)

@@ -2,6 +2,11 @@
 
 ## v0.24.0 — Live Copilot becomes a general work mode
 
+- Added natural-language Live Session start from the ordinary desktop composer and replaced the
+  global shortcut's full-window wake-up with a small always-on-top voice capsule. The shortcut
+  freezes the exact prior process/window before focus changes, uses local Windows Chinese/English
+  speech recognition, and targets the recognized command back to that prior app; long work may
+  continue as a Mission without opening the full Collie UI.
 - Replaced the narrow interview integration with a top-level Live Copilot session that accepts an
   optional or empty starting context, continuously compresses approved conversation and foreground-
   app signals, and keeps suggestions non-executing until the user hands something off.

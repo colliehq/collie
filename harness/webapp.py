@@ -1538,6 +1538,10 @@ class Handler(BaseHTTPRequestHandler):
                 # /interview is a compatibility URL from the narrower 0.23 preview. The product
                 # surface is now the general Live Copilot, with meetings/boards as optional context.
                 return self._serve_static("live.html", "text/html; charset=utf-8")
+            if path == "/live-capsule":
+                # Native Windows shell opens this as a small always-on-top WebView. It owns no
+                # authority: commands still run through the same authenticated stream and Gate.
+                return self._serve_static("live_capsule.html", "text/html; charset=utf-8")
             if path == "/studio":
                 return self._serve_static("studio.html", "text/html; charset=utf-8")
             if path == "/comfy":
@@ -3057,7 +3061,8 @@ class Handler(BaseHTTPRequestHandler):
                             handoff_id=body.get("handoff_id") or ""))
                     if path.endswith("/handoff"):
                         return self._send_json(store.request_handoff(
-                            app=body.get("app") or ""), 201)
+                            app=body.get("app") or "", title=body.get("title") or "",
+                            pid=body.get("pid") or 0, hwnd=body.get("hwnd") or 0), 201)
                     return self._send_json(store.attach_board())
                 except LiveCopilotError as exc:
                     return self._send_json({"error": str(exc)}, 409)

@@ -93,6 +93,8 @@ def _default_state() -> dict:
 
 
 def capabilities() -> dict:
+    desktop_control_ready = False
+    screen_capture_ready = False
     try:
         from . import settings
         # A status read must stay observational.  In particular, do not call ``settings.apply``
@@ -101,6 +103,10 @@ def capabilities() -> dict:
         # already implements env > saved file > default precedence without mutating the process.
         provider = settings.get("PROVIDER", "mock") or "mock"
         model = settings.get("MODEL", "") or "auto"
+        desktop_control_ready = str(settings.get("DESKTOP_CONTROL", "off")).casefold() \
+            in {"1", "on", "true", "yes"}
+        screen_capture_ready = str(settings.get("SCREEN_CAPTURE", "off")).casefold() \
+            in {"1", "on", "true", "yes"}
     except Exception:
         provider, model = "mock", "auto"
     return {
@@ -114,6 +120,11 @@ def capabilities() -> dict:
         "understanding_provider": provider,
         "understanding_model": model,
         "audio_retained": False,
+        "capsule_hotkey": "Ctrl+Alt+Space" if os.name == "nt" else "",
+        "capsule_voice_local": os.name == "nt",
+        "desktop_control_ready": desktop_control_ready,
+        "screen_capture_ready": screen_capture_ready,
+        "continuous_system_audio_requires_picker": True,
     }
 
 
@@ -449,14 +460,20 @@ class LiveSessionStore:
             self._write(value)
         return self.snapshot()
 
-    def request_handoff(self, *, app="") -> dict:
+    def request_handoff(self, *, app="", title="", pid=0, hwnd=0) -> dict:
         """Freeze a small current-context marker when the user presses the global handoff key."""
         now = _now_ms()
         app = _text(app, 80).casefold()
+        title = _text(title, 300)
+        try:
+            pid, hwnd = max(0, int(pid or 0)), max(0, int(hwnd or 0))
+        except (TypeError, ValueError):
+            raise LiveCopilotError("handoff pid and hwnd must be integers")
         with _LOCK:
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("start Live Copilot before using the handoff shortcut")
+            session_id = value.get("session_id")
             if not app:
                 for event in reversed(value.get("events") or []):
                     if event.get("source") != "system":
@@ -466,13 +483,61 @@ class LiveSessionStore:
                     if match:
                         app = match.group(1)
                         break
+            observe_ui = bool(value.get("observe_ui"))
+
+        # The native shell captured this target before the capsule took focus. At that explicit
+        # handoff moment retain bounded semantics only: never field values, keys, clipboard, or an
+        # image. The app/title identify where the user's command should land.
+        semantic = ""
+        if observe_ui and (pid or hwnd):
+            try:
+                from . import native
+                result = native.tree(pid=pid or None, hwnd=hwnd or None, max=36)
+                elements = []
+                if isinstance(result, dict):
+                    elements = (result.get("elements") or result.get("tree") or
+                                result.get("controls") or [])
+                labels = []
+                for item in elements:
+                    if not isinstance(item, dict):
+                        continue
+                    control = _text(item.get("type") or item.get("controlType") or
+                                    item.get("control"), 50)
+                    name = _text(item.get("name") or item.get("text"), 120)
+                    if not control and not name:
+                        continue
+                    prefix = "focused " if item.get("focused") else ""
+                    labels.append(prefix + (control or "control") +
+                                  (": " + name if name else ""))
+                    if len(labels) >= 12:
+                        break
+                semantic = "; ".join(labels)
+            except Exception:
+                semantic = ""
+
+        with _LOCK:
+            value = self._read()
+            if not value.get("active") or value.get("session_id") != session_id:
+                raise LiveCopilotError("the live session ended before handoff context was captured")
+            target_bits = [app or "current app"]
+            if title:
+                target_bits.append("window " + title)
+            context_text = "Capsule invoked for %s." % " · ".join(target_bits)
+            if semantic:
+                context_text += " Accessible UI: " + semantic
+            event = {"id": "evt-" + os.urandom(8).hex(), "at_ms": now,
+                     "received_at_ms": _now_ms(), "source": "system", "speaker": "",
+                     "text": _text(context_text, 2_000)}
+            value["events"] = (value.get("events") or [])[-(MAX_EVENTS - 1):] + [event]
             suggestions = [row for row in value.get("suggestions") or []
                            if not row.get("dismissed")]
             suggested = next((row.get("text") for row in suggestions
                               if row.get("urgency") == "now"), "")
             suggested = suggested or (suggestions[0].get("text") if suggestions else "")
             value["handoff"] = {"id": "hand-" + os.urandom(6).hex(), "at_ms": now,
-                                "app": app, "suggested": _text(suggested, 800),
+                                "app": app, "title": title, "pid": pid, "hwnd": hwnd,
+                                "context_event_id": event["id"],
+                                "suggested": _text(suggested, 800),
                                 "pending": True}
             value["audit"] = (value.get("audit") or [])[-79:] + [{
                 "at_ms": now, "action": "handoff_requested", "detail": app or "current context"}]
@@ -881,15 +946,26 @@ class LiveCopilotTool(Tool):
     name = "live_copilot"
     tier = "always"
     description = (
-        "Use Collie's active Live Copilot session: inspect its current understanding and recent "
-        "conversation, add a working note, explicitly hand a concrete goal to durable background "
-        "work, or preview/apply a diagram to an attached optional work surface. Suggestions never "
-        "execute automatically. Actions: status, note, work, diagram_preview, diagram_apply."
+        "Start or stop Collie's system-level Live Copilot from a natural-language request; inspect "
+        "its current understanding, change session permissions, add a note, explicitly hand a "
+        "goal to durable background work, or preview/apply a diagram. A natural-language 'start a "
+        "live session' request should use start: it observes app changes and bounded active-"
+        "interface labels by default, but never keys, clipboard, field values, or screenshots. "
+        "Continuous conversation audio requires explicit participant consent. After start, if "
+        "desktop_control_ready is false and the user wants actions in apps, use enable_capability "
+        "for desktop_control so its ordinary approval UI can grant it. Suggestions never execute "
+        "automatically. Actions: start, stop, permissions, status, note, work, diagram_preview, "
+        "diagram_apply."
     )
     schema = {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["status", "note", "work",
-                                                    "diagram_preview", "diagram_apply"]},
+        "action": {"type": "string", "enum": ["start", "stop", "permissions", "status",
+                                                    "note", "work", "diagram_preview",
+                                                    "diagram_apply"]},
         "kind": {"type": "string"}, "text": {"type": "string"},
+        "context": {"type": "string"},
+        "listen": {"type": "boolean"}, "understand": {"type": "boolean"},
+        "observe_apps": {"type": "boolean"}, "observe_ui": {"type": "boolean"},
+        "board_edit": {"type": "boolean"}, "consent": {"type": "boolean"},
         "suggestion_id": {"type": "string"},
         "nodes": {"type": "array", "items": {"type": "object"}},
         "edges": {"type": "array", "items": {"type": "object"}},
@@ -900,6 +976,35 @@ class LiveCopilotTool(Tool):
         action = str((args or {}).get("action") or "").strip().casefold()
         store = LiveSessionStore()
         try:
+            if action == "start":
+                if store.snapshot().get("active"):
+                    raise LiveCopilotError(
+                        "a Live Copilot session is already active; stop it before starting another")
+                value = store.start(
+                    context=args.get("context") or args.get("text") or "",
+                    listen=args.get("listen") is True,
+                    understand=args.get("understand") is not False,
+                    observe_apps=args.get("observe_apps") is not False,
+                    # Natural-language Live means useful current-app context. Unlike continuous
+                    # screenshots, this retains only bounded accessibility types and labels.
+                    observe_ui=args.get("observe_ui") is not False,
+                    board_edit=args.get("board_edit") is True,
+                    consent=args.get("consent") is True)
+                value["started_from"] = "natural_language"
+                value["next"] = ("Press Ctrl+Alt+Space in any app for the local voice capsule. "
+                                 "Keep the main Collie window minimized if you want it out of sight.")
+                return json.dumps(value, ensure_ascii=False, indent=2)
+            if action == "stop":
+                return json.dumps(store.stop(), ensure_ascii=False, indent=2)
+            if action == "permissions":
+                return json.dumps(store.update_permissions(
+                    listen=args.get("listen") if "listen" in args else None,
+                    understand=args.get("understand") if "understand" in args else None,
+                    observe_apps=args.get("observe_apps") if "observe_apps" in args else None,
+                    observe_ui=args.get("observe_ui") if "observe_ui" in args else None,
+                    board_edit=args.get("board_edit") if "board_edit" in args else None,
+                    consent=args.get("consent") if "consent" in args else None),
+                    ensure_ascii=False, indent=2)
             if action == "status":
                 return json.dumps(store.snapshot(), ensure_ascii=False, indent=2)
             if action == "note":

@@ -394,6 +394,27 @@ def test_live_copilot_is_a_top_level_context_and_handoff_mode():
     assert "A board or browser canvas is one place" in live
 
 
+def test_live_capsule_is_a_native_hotkey_surface_not_a_full_window_handoff():
+    capsule = read("harness/webui/live_capsule.html")
+    native_host = read("harness/wallpaper/Program.cs")
+    build = read("harness/wallpaper/build.ps1")
+    server = read("harness/webapp.py")
+
+    assert 'path == "/live-capsule"' in server
+    assert "LIVE CAPSULE COMMAND" in capsule and "/api/stream" in capsule
+    assert "capsule-speech-final" in capsule and "capsule-context" in capsule
+    assert "TARGET.hwnd" in capsule and "TARGET.pid" in capsule
+    assert "OpenLiveCapsule(CaptureLiveTarget())" in native_host
+    hotkey = native_host.split("m.Msg == WM_HOTKEY", 1)[1].split("return;", 1)[0]
+    assert "WakeWindow()" not in hotkey
+    assert "GetForegroundWindow()" in native_host
+    assert "SpeechRecognitionEngine" in native_host and "System.Speech" in build
+    ready = native_host.split('raw.IndexOf("capsule-ready"', 1)[1].split(
+        'else if (raw.IndexOf("capsule-listen"', 1)[0]
+    assert "PostCapsuleTarget(target)" in ready and "StartCapsuleSpeech" not in ready
+    assert 'if(STATE.active)host({type:"capsule-listen"' in capsule
+
+
 def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failures():
     desktop = read("harness/webui/index.html")
 

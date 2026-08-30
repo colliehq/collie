@@ -5,9 +5,12 @@
 // is clickable and typable even though it lives on the wallpaper layer.
 
 using System;
+using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Speech.Recognition;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -54,6 +57,8 @@ class CollieWallpaper : Form
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextLengthW(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int m);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int m);
     [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
@@ -239,6 +244,10 @@ class CollieWallpaper : Form
     WebView2 _web;
     static EventWaitHandle _quit;           // signalled by another process to request a CLEAN shutdown
     static EventWaitHandle _show;           // a second shortcut launch restores/focuses the app window
+    static Form _capsuleForm;
+    static WebView2 _capsuleWeb;
+    static SpeechRecognitionEngine _capsuleSpeech;
+    static bool _capsuleSpeechDelivered;
     static IntPtr _progman, _input;         // Chromium child to post to
     static bool _pinned;                    // once true, WndProc forces our z-order below the icons
     static IntPtr _icons, _iconProc, _iconMem;   // desktop icon ListView + explorer handle + remote LVHITTESTINFO
@@ -269,6 +278,16 @@ class CollieWallpaper : Form
     // shows 127.0.0.1:8787 in the address bar and gets lost among their other tabs.
     static bool _windowMode;
     static Mutex _instanceMutex;   // held for the life of the process — keeps duplicate launches out
+    string _baseUrl = "http://127.0.0.1:8787";
+
+    class LiveTarget
+    {
+        public IntPtr Hwnd;
+        public uint Pid;
+        public string ProcessName = "";
+        public string Title = "";
+        public string SpeechLanguage = "";
+    }
 
     [STAThread]
     static void Main(string[] args)
@@ -329,12 +348,10 @@ class CollieWallpaper : Form
     {
         if (_windowMode && m.Msg == WM_HOTKEY && m.WParam.ToInt32() == LIVE_HANDOFF_HOTKEY)
         {
-            // Ctrl+Alt+Space is an explicit handoff: surface Collie and let the page freeze its
-            // already-observed Live context. No keys from the user's foreground app are captured.
-            WakeWindow();
-            try { if (_web != null && _web.CoreWebView2 != null)
-                    _web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"live-handoff\"}"); }
-            catch { }
+            // Capture the user's exact app BEFORE our activatable capsule takes focus. The full
+            // Collie window stays where it was (usually minimized); only the lightweight voice
+            // capsule appears. No keyboard hook or background key logging is involved.
+            OpenLiveCapsule(CaptureLiveTarget());
             return;
         }
         if (_windowMode && m.Msg == WM_SYSCOMMAND)
@@ -542,6 +559,7 @@ class CollieWallpaper : Form
             // window mode shows the full GUI; wallpaper mode shows the desktop /wallpaper page
             if (string.IsNullOrEmpty(url))
                 url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/wallpaper";
+            try { _baseUrl = new Uri(url).GetLeftPart(UriPartial.Authority); } catch { }
             if (_windowMode)
                 url += (url.IndexOf('?') >= 0 ? "&" : "?") + "native_shell=1";
             // Keep target=_blank links (the star map, the meadow) INSIDE the app. Unhandled they
@@ -619,6 +637,229 @@ class CollieWallpaper : Form
         PostMessageW(_input, (uint)WM_LBUTTONUP, IntPtr.Zero, lp);
         foreach (char c in "hello collie") PostMessageW(_input, (uint)WM_CHAR, (IntPtr)c, IntPtr.Zero);
         Log("selftest posted click+text");
+    }
+
+    LiveTarget CaptureLiveTarget()
+    {
+        LiveTarget target = new LiveTarget();
+        try
+        {
+            target.Hwnd = GetForegroundWindow();
+            target.Pid = 0;
+            if (target.Hwnd != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(target.Hwnd, out target.Pid);
+                int n = Math.Min(4096, Math.Max(1, GetWindowTextLengthW(target.Hwnd) + 1));
+                StringBuilder title = new StringBuilder(n);
+                GetWindowTextW(target.Hwnd, title, title.Capacity);
+                target.Title = title.ToString();
+                try { target.ProcessName = Process.GetProcessById((int)target.Pid).ProcessName; }
+                catch { }
+            }
+            try { target.SpeechLanguage = InputLanguage.CurrentInputLanguage.Culture.Name; }
+            catch { target.SpeechLanguage = CultureInfo.CurrentUICulture.Name; }
+        }
+        catch { }
+        return target;
+    }
+
+    static string JsonString(string value)
+    {
+        StringBuilder output = new StringBuilder("\"");
+        foreach (char c in value ?? "")
+        {
+            switch (c)
+            {
+                case '\\': output.Append("\\\\"); break;
+                case '"': output.Append("\\\""); break;
+                case '\r': output.Append("\\r"); break;
+                case '\n': output.Append("\\n"); break;
+                case '\t': output.Append("\\t"); break;
+                default:
+                    if (c < 32) output.Append("\\u" + ((int)c).ToString("x4"));
+                    else output.Append(c);
+                    break;
+            }
+        }
+        output.Append('"');
+        return output.ToString();
+    }
+
+    static void PostCapsule(string json)
+    {
+        Form form = _capsuleForm;
+        if (form == null || form.IsDisposed) return;
+        try
+        {
+            if (form.InvokeRequired)
+            {
+                form.BeginInvoke((MethodInvoker)delegate { PostCapsule(json); });
+                return;
+            }
+            if (_capsuleWeb != null && _capsuleWeb.CoreWebView2 != null)
+                _capsuleWeb.CoreWebView2.PostWebMessageAsJson(json);
+        }
+        catch { }
+    }
+
+    static void StopCapsuleSpeech()
+    {
+        SpeechRecognitionEngine engine = _capsuleSpeech;
+        _capsuleSpeech = null;
+        if (engine == null) return;
+        try { engine.RecognizeAsyncCancel(); } catch { }
+        try { engine.SetInputToNull(); } catch { }
+        try { engine.Dispose(); } catch { }
+    }
+
+    static RecognizerInfo CapsuleRecognizer(string requested)
+    {
+        RecognizerInfo first = null, language = null;
+        string wanted = (requested ?? "").Trim();
+        foreach (RecognizerInfo info in SpeechRecognitionEngine.InstalledRecognizers())
+        {
+            if (first == null) first = info;
+            string name = info.Culture == null ? "" : info.Culture.Name;
+            if (string.Equals(name, wanted, StringComparison.OrdinalIgnoreCase)) return info;
+            if (language == null && wanted.Length >= 2 && name.StartsWith(
+                    wanted.Substring(0, 2), StringComparison.OrdinalIgnoreCase)) language = info;
+        }
+        return language ?? first;
+    }
+
+    static void StartCapsuleSpeech(string requestedLanguage)
+    {
+        StopCapsuleSpeech();
+        _capsuleSpeechDelivered = false;
+        try
+        {
+            RecognizerInfo info = CapsuleRecognizer(requestedLanguage);
+            if (info == null) throw new InvalidOperationException("Windows has no speech recognizer installed");
+            SpeechRecognitionEngine engine = new SpeechRecognitionEngine(info);
+            _capsuleSpeech = engine;
+            engine.LoadGrammar(new DictationGrammar());
+            engine.InitialSilenceTimeout = TimeSpan.FromSeconds(8);
+            engine.BabbleTimeout = TimeSpan.FromSeconds(18);
+            engine.EndSilenceTimeout = TimeSpan.FromMilliseconds(850);
+            engine.EndSilenceTimeoutAmbiguous = TimeSpan.FromMilliseconds(1150);
+            engine.SpeechHypothesized += delegate (object sender, SpeechHypothesizedEventArgs e)
+            {
+                if (e.Result != null && !string.IsNullOrWhiteSpace(e.Result.Text))
+                    PostCapsule("{\"type\":\"capsule-speech-partial\",\"text\":" +
+                                JsonString(e.Result.Text) + "}");
+            };
+            engine.SpeechRecognized += delegate (object sender, SpeechRecognizedEventArgs e)
+            {
+                string text = e.Result == null ? "" : (e.Result.Text ?? "").Trim();
+                if (text.Length == 0) return;
+                _capsuleSpeechDelivered = true;
+                PostCapsule("{\"type\":\"capsule-speech-final\",\"text\":" +
+                            JsonString(text) + "}");
+            };
+            engine.RecognizeCompleted += delegate
+            {
+                if (!_capsuleSpeechDelivered)
+                    PostCapsule("{\"type\":\"capsule-speech-final\",\"text\":\"\"}");
+            };
+            engine.SetInputToDefaultAudioDevice();
+            PostCapsule("{\"type\":\"capsule-speech-start\",\"language\":" +
+                        JsonString(info.Culture.Name) + "}");
+            engine.RecognizeAsync(RecognizeMode.Single);
+        }
+        catch (Exception ex)
+        {
+            StopCapsuleSpeech();
+            PostCapsule("{\"type\":\"capsule-speech-error\",\"message\":" +
+                        JsonString("Local speech recognition unavailable: " + ex.Message) + "}");
+        }
+    }
+
+    void PostCapsuleTarget(LiveTarget target)
+    {
+        PostCapsule("{\"type\":\"capsule-context\",\"target\":{" +
+                    "\"hwnd\":" + target.Hwnd.ToInt64() + ",\"pid\":" + target.Pid +
+                    ",\"process\":" + JsonString(target.ProcessName) +
+                    ",\"title\":" + JsonString(target.Title) +
+                    ",\"speech_language\":" + JsonString(target.SpeechLanguage) + "}}");
+    }
+
+    void OpenLiveCapsule(LiveTarget target)
+    {
+        try
+        {
+            if (_capsuleForm != null && !_capsuleForm.IsDisposed)
+            {
+                _capsuleForm.Close();
+                return;
+            }
+            Form form = new Form();
+            _capsuleForm = form;
+            form.Text = "Collie Live";
+            form.FormBorderStyle = FormBorderStyle.None;
+            form.ShowInTaskbar = false;
+            form.TopMost = true;
+            form.StartPosition = FormStartPosition.Manual;
+            form.ClientSize = new Size(660, 176);
+            form.BackColor = Color.FromArgb(244, 246, 242);
+            form.Icon = AppIcon();
+            Screen screen = target.Hwnd == IntPtr.Zero ? Screen.PrimaryScreen : Screen.FromHandle(target.Hwnd);
+            Rectangle work = screen.WorkingArea;
+            form.Location = new Point(work.Left + Math.Max(12, (work.Width - form.Width) / 2),
+                                      work.Top + 30);
+            WebView2 web = new WebView2();
+            _capsuleWeb = web;
+            web.Dock = DockStyle.Fill;
+            web.DefaultBackgroundColor = Color.Transparent;
+            web.CoreWebView2InitializationCompleted += delegate (object sender, CoreWebView2InitializationCompletedEventArgs e)
+            {
+                if (!e.IsSuccess) { Log("capsule webview failed"); return; }
+                web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+                web.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                web.CoreWebView2.Settings.IsZoomControlEnabled = false;
+                web.CoreWebView2.PermissionRequested += delegate (object s, CoreWebView2PermissionRequestedEventArgs p)
+                {
+                    if (p.PermissionKind == CoreWebView2PermissionKind.Microphone)
+                        p.State = CoreWebView2PermissionState.Allow;
+                };
+                web.CoreWebView2.WebMessageReceived += delegate (object s, CoreWebView2WebMessageReceivedEventArgs m)
+                {
+                    string raw = "";
+                    try { raw = m.WebMessageAsJson ?? ""; } catch { }
+                    if (raw.IndexOf("capsule-ready", StringComparison.Ordinal) >= 0)
+                    {
+                        PostCapsuleTarget(target);
+                    }
+                    else if (raw.IndexOf("capsule-listen", StringComparison.Ordinal) >= 0 ||
+                             raw.IndexOf("capsule-language", StringComparison.Ordinal) >= 0)
+                        StartCapsuleSpeech(raw.IndexOf("en-US", StringComparison.OrdinalIgnoreCase) >= 0
+                                           ? "en-US" : "zh-CN");
+                    else if (raw.IndexOf("capsule-open-main", StringComparison.Ordinal) >= 0)
+                    {
+                        try { form.Close(); } catch { }
+                        WakeWindow();
+                    }
+                    else if (raw.IndexOf("capsule-close", StringComparison.Ordinal) >= 0)
+                        try { form.Close(); } catch { }
+                };
+                web.CoreWebView2.Navigate(_baseUrl.TrimEnd('/') + "/live-capsule");
+            };
+            form.FormClosed += delegate
+            {
+                StopCapsuleSpeech();
+                try { web.Dispose(); } catch { }
+                _capsuleWeb = null; _capsuleForm = null;
+            };
+            form.Controls.Add(web);
+            form.Show();
+            try { int corner = 2; DwmSetWindowAttribute(form.Handle, 33, ref corner, sizeof(int)); } catch { }
+            web.EnsureCoreWebView2Async(_env);
+            form.Activate();
+        }
+        catch (Exception ex)
+        {
+            Log("live capsule failed: " + ex.Message);
+            try { if (_capsuleForm != null) _capsuleForm.Close(); } catch { }
+        }
     }
 
     // A second ordinary Collie window — used for target=_blank links (star map, meadow) so they stay

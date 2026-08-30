@@ -1,4 +1,5 @@
 import time
+import json
 
 import pytest
 
@@ -120,6 +121,45 @@ def test_environment_observation_is_app_name_only_and_handoff_freezes_it(tmp_pat
     assert "title" not in value["events"][-1] and "keys" not in value["events"][-1]
     handoff = store.request_handoff()
     assert handoff["pending"] and handoff["app"] == "figma"
+
+
+def test_capsule_handoff_freezes_exact_window_and_bounded_semantics(monkeypatch, tmp_path):
+    from harness import native
+    from harness.live_copilot import LiveSessionStore
+
+    monkeypatch.setattr(native, "tree", lambda **kwargs: {
+        "ok": True, "elements": [
+            {"type": "Edit", "name": "Architecture notes", "value": "private draft",
+             "keys": "secret", "focused": True},
+            {"type": "Button", "name": "Add service"},
+        ]})
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=True,
+                observe_ui=True)
+    handoff = store.request_handoff(app="Chrome", title="System design board",
+                                    pid=42, hwnd=9001)
+    assert handoff["app"] == "chrome" and handoff["title"] == "System design board"
+    assert handoff["pid"] == 42 and handoff["hwnd"] == 9001
+    assert handoff["context_event_id"]
+    text = store.snapshot()["events"][-1]["text"]
+    assert "focused Edit: Architecture notes" in text and "Button: Add service" in text
+    assert "private draft" not in text and "secret" not in text
+
+
+def test_natural_language_tool_starts_useful_live_defaults_and_can_stop(monkeypatch,
+                                                                       tmp_path):
+    from harness import live_copilot
+
+    real = live_copilot.LiveSessionStore
+    monkeypatch.setattr(live_copilot, "LiveSessionStore", lambda: real(tmp_path))
+    tool = live_copilot.LiveCopilotTool()
+    started = json.loads(tool.run({"action": "start", "context": "System design interview"},
+                                  None))
+    assert started["active"] and started["started_from"] == "natural_language"
+    assert started["observe_apps"] and started["observe_ui"] and started["understand"]
+    assert not started["listen"] and "Ctrl+Alt+Space" in started["next"]
+    stopped = json.loads(tool.run({"action": "stop"}, None))
+    assert not stopped["active"]
 
 
 def test_opt_in_semantic_ui_observation_drops_values_and_keys(monkeypatch, tmp_path):

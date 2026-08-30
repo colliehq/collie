@@ -102,6 +102,9 @@ def test_live_copilot_surface_and_control_plane_require_audio_consent(web_server
     with urllib.request.urlopen(base + "/live", timeout=8) as response:
         page = response.read().decode("utf-8")
     assert "Live Copilot" in page and 'id="handoff"' in page
+    with urllib.request.urlopen(base + "/live-capsule", timeout=8) as response:
+        capsule = response.read().decode("utf-8")
+    assert "COLLIE · LIVE CAPSULE" in capsule and 'name="collie-token"' in capsule
 
     code, denied = _json(base + "/api/live-copilot")
     assert code == 403 and denied["error"] == "forbidden"
@@ -120,8 +123,11 @@ def test_live_copilot_surface_and_control_plane_require_audio_consent(web_server
     code, event = _json(base + "/api/live-copilot/event?token=" + token, "POST", {
         "source": "other", "text": "Can you take the next task?"})
     assert code == 201 and event["source"] == "other"
-    code, handoff = _json(base + "/api/live-copilot/handoff?token=" + token, "POST", {})
+    code, handoff = _json(base + "/api/live-copilot/handoff?token=" + token, "POST", {
+        "app": "Chrome", "title": "System design board", "pid": 42, "hwnd": 9001})
     assert code == 201 and handoff["pending"] is True
+    assert handoff["app"] == "chrome" and handoff["title"] == "System design board"
+    assert handoff["pid"] == 42 and handoff["hwnd"] == 9001
 
     code, stopped = _json(base + "/api/live-copilot/stop?token=" + token, "POST", {})
     assert code == 200 and not stopped["active"]
