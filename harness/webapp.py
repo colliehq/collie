@@ -1534,8 +1534,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("ambient.html", "text/html; charset=utf-8")
             if path == "/meetings":
                 return self._serve_static("meetings.html", "text/html; charset=utf-8")
-            if path == "/interview":
-                return self._serve_static("interview.html", "text/html; charset=utf-8")
+            if path in ("/live", "/interview"):
+                # /interview is a compatibility URL from the narrower 0.23 preview. The product
+                # surface is now the general Live Copilot, with meetings/boards as optional context.
+                return self._serve_static("live.html", "text/html; charset=utf-8")
             if path == "/studio":
                 return self._serve_static("studio.html", "text/html; charset=utf-8")
             if path == "/comfy":
@@ -1904,11 +1906,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"recording": on, "out": (st or {}).get("out"),
                                         "since": (st or {}).get("started"),
                                         "window": (st or {}).get("window")})
-            if path == "/api/interview":
+            if path in ("/api/live-copilot", "/api/interview"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                from .interview_assist import InterviewStore
-                return self._send_json(InterviewStore(_state_root()).snapshot(include_transcript=True))
+                from .live_copilot import LiveSessionStore
+                return self._send_json(LiveSessionStore(_state_root()).snapshot())
             if path == "/api/record/sources":
                 # everything the record panel needs to populate its pickers
                 from . import record as rec
@@ -2977,35 +2979,87 @@ class Handler(BaseHTTPRequestHandler):
                 ok = bb.start_background()
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
-            if path in ("/api/interview/start", "/api/interview/stop",
-                        "/api/interview/permissions", "/api/interview/vocalcode/open",
-                        "/api/interview/board/attach"):
+            if path == "/api/live-copilot/audio":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                from .interview_assist import InterviewError, InterviewStore, launch_vocalcode
+                from .live_copilot import LiveCopilotError, LiveSessionStore, MAX_AUDIO_BYTES
+                query = urllib.parse.parse_qs(parsed.query)
+                raw = self._read_bytes(MAX_AUDIO_BYTES)
+                if raw is None:
+                    return self._send_json({"error": "expected a non-empty bounded audio chunk"}, 400)
+                try:
+                    return self._send_json(LiveSessionStore(_state_root()).ingest_audio(
+                        session_id=str((query.get("session") or [""])[0]),
+                        source=str((query.get("source") or [""])[0]),
+                        seq=str((query.get("seq") or [""])[0]),
+                        mime_type=self.headers.get("content-type") or "audio/webm",
+                        data=raw), 202)
+                except LiveCopilotError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
+            live_paths = {
+                "/api/live-copilot/start", "/api/live-copilot/stop",
+                "/api/live-copilot/permissions", "/api/live-copilot/event",
+                "/api/live-copilot/work", "/api/live-copilot/dismiss",
+                "/api/live-copilot/handoff", "/api/live-copilot/handoff/resolve",
+                "/api/live-copilot/board/attach",
+                # Compatibility for the one released preview URL. It now creates a general session.
+                "/api/interview/start", "/api/interview/stop",
+                "/api/interview/permissions", "/api/interview/board/attach",
+            }
+            if path in live_paths:
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .live_copilot import LiveCopilotError, LiveSessionStore
                 body = self._read_json(32_768)
                 if not isinstance(body, dict):
                     return self._send_json({"error": "expected JSON object"}, 400)
-                store = InterviewStore(_state_root())
+                store = LiveSessionStore(_state_root())
                 try:
                     if path.endswith("/start"):
                         return self._send_json(store.start(
-                            title=body.get("title") or "",
-                            share_transcript=body.get("share_transcript") is True,
+                            context=body.get("context") or body.get("title") or "",
+                            listen=(body.get("listen") is True or
+                                    body.get("share_transcript") is True),
+                            understand=body.get("understand") is not False,
+                            observe_apps=body.get("observe_apps") is not False,
+                            observe_ui=body.get("observe_ui") is True,
                             board_edit=body.get("board_edit") is True,
                             consent=body.get("consent") is True), 201)
                     if path.endswith("/stop"):
                         return self._send_json(store.stop())
                     if path.endswith("/permissions"):
                         return self._send_json(store.update_permissions(
-                            share_transcript=(body.get("share_transcript")
-                                              if "share_transcript" in body else None),
+                            listen=(body.get("listen") if "listen" in body else
+                                    body.get("share_transcript")
+                                    if "share_transcript" in body else None),
+                            understand=(body.get("understand")
+                                        if "understand" in body else None),
+                            observe_apps=(body.get("observe_apps")
+                                          if "observe_apps" in body else None),
+                            observe_ui=(body.get("observe_ui")
+                                        if "observe_ui" in body else None),
                             board_edit=(body.get("board_edit")
-                                        if "board_edit" in body else None)))
-                    if path.endswith("/vocalcode/open"):
-                        return self._send_json(launch_vocalcode())
+                                        if "board_edit" in body else None),
+                            consent=(body.get("consent") if "consent" in body else None)))
+                    if path.endswith("/event"):
+                        return self._send_json(store.add_event(
+                            source=body.get("source"), text=body.get("text"),
+                            speaker=body.get("speaker") or "", at_ms=body.get("at_ms")), 201)
+                    if path.endswith("/work"):
+                        return self._send_json(store.start_work(
+                            text=body.get("text") or "",
+                            suggestion_id=body.get("suggestion_id") or ""), 201)
+                    if path.endswith("/dismiss"):
+                        return self._send_json(store.dismiss_suggestion(
+                            body.get("suggestion_id")))
+                    if path.endswith("/handoff/resolve"):
+                        return self._send_json(store.resolve_handoff(
+                            handoff_id=body.get("handoff_id") or ""))
+                    if path.endswith("/handoff"):
+                        return self._send_json(store.request_handoff(
+                            app=body.get("app") or ""), 201)
                     return self._send_json(store.attach_board())
-                except InterviewError as exc:
+                except LiveCopilotError as exc:
                     return self._send_json({"error": str(exc)}, 409)
             if path in ("/api/meetings/start", "/api/meetings/chunk", "/api/meetings/note",
                         "/api/meetings/finish", "/api/meetings/retry", "/api/meetings/delete"):
@@ -5292,6 +5346,14 @@ def main(argv=None, on_bound=None):
               "Open http://127.0.0.1:%d/ , or pass --port <free port>." % (requested, requested + 11, requested))
         return 1
     start_mission_ticker()
+    # Live Copilot must keep understanding already-captured context when its panel is hidden. The
+    # first-party Web/Desktop server is Collie's long-lived process, so this loop survives ordinary
+    # navigation without turning Live into a browser-page feature.
+    try:
+        from .live_copilot import start_live_copilot_ticker
+        start_live_copilot_ticker()
+    except Exception as exc:
+        print("collie live copilot: background runtime unavailable: %s" % exc, flush=True)
     try:
         from .native_notifications import ensure_personal_started, ensure_started
         ensure_started()

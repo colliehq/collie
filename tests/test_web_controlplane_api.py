@@ -96,35 +96,36 @@ def test_comfy_surface_and_control_plane_are_authenticated(web_server, monkeypat
     assert code == 409 and failed["error"] == "refresh failed"
 
 
-def test_interview_surface_and_control_plane_require_explicit_session_consent(
-        web_server, monkeypatch):
-    from harness import interview_assist
+def test_live_copilot_surface_and_control_plane_require_audio_consent(web_server):
+    base, token, _state = web_server
 
-    base, token, state = web_server
-    vocal = state / "vocalcode"
-    monkeypatch.setenv("VOCALCODE_DATA_DIR", str(vocal))
-    monkeypatch.setattr(interview_assist, "_vocalcode_executable", lambda: "")
-
-    with urllib.request.urlopen(base + "/interview", timeout=8) as response:
+    with urllib.request.urlopen(base + "/live", timeout=8) as response:
         page = response.read().decode("utf-8")
-    assert "System design interview" in page and 'id="attach"' in page
+    assert "Live Copilot" in page and 'id="handoff"' in page
 
-    code, denied = _json(base + "/api/interview")
+    code, denied = _json(base + "/api/live-copilot")
     assert code == 403 and denied["error"] == "forbidden"
-    code, idle = _json(base + "/api/interview?token=" + token)
+    code, idle = _json(base + "/api/live-copilot?token=" + token)
     assert code == 200 and idle["active"] is False
 
-    code, refused = _json(base + "/api/interview/start?token=" + token, "POST", {
-        "consent": False, "share_transcript": True, "board_edit": True})
+    code, refused = _json(base + "/api/live-copilot/start?token=" + token, "POST", {
+        "consent": False, "listen": True, "board_edit": True})
     assert code == 409 and "consent" in refused["error"]
-    code, started = _json(base + "/api/interview/start?token=" + token, "POST", {
-        "consent": True, "share_transcript": True, "board_edit": True,
-        "title": "Architecture interview"})
+    code, started = _json(base + "/api/live-copilot/start?token=" + token, "POST", {
+        "consent": True, "listen": True, "understand": True, "observe_apps": True,
+        "board_edit": True, "context": ""})
     assert code == 201 and started["active"] and started["board_edit"]
+    assert started["context"] == "" and started["observe_apps"]
 
-    code, stopped = _json(base + "/api/interview/stop?token=" + token, "POST", {})
+    code, event = _json(base + "/api/live-copilot/event?token=" + token, "POST", {
+        "source": "other", "text": "Can you take the next task?"})
+    assert code == 201 and event["source"] == "other"
+    code, handoff = _json(base + "/api/live-copilot/handoff?token=" + token, "POST", {})
+    assert code == 201 and handoff["pending"] is True
+
+    code, stopped = _json(base + "/api/live-copilot/stop?token=" + token, "POST", {})
     assert code == 200 and not stopped["active"]
-    assert not stopped["share_transcript"] and not stopped["board_edit"]
+    assert not stopped["listen"] and not stopped["board_edit"]
 
 
 def test_mcp_login_thread_warms_cache_and_publishes_failure(web_server, monkeypatch):

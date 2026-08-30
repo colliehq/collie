@@ -23,7 +23,9 @@ class CollieWallpaper : Form
     const long WS_EX_NOACTIVATE = 0x08000000L, WS_EX_TOOLWINDOW = 0x00000080L;
     const uint SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4;
     const int WM_WINDOWPOSCHANGING = 0x0046, WM_NCHITTEST = 0x0084, WM_NCLBUTTONDOWN = 0x00A1,
-              WM_SYSCOMMAND = 0x0112;
+              WM_SYSCOMMAND = 0x0112, WM_HOTKEY = 0x0312;
+    const int LIVE_HANDOFF_HOTKEY = 0xC011;
+    const uint MOD_ALT = 0x0001, MOD_CONTROL = 0x0002, MOD_NOREPEAT = 0x4000;
     const int SC_MAXIMIZE = 0xF030, SC_RESTORE = 0xF120;
     const int HTCLIENT = 1, HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12,
               HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16,
@@ -61,6 +63,8 @@ class CollieWallpaper : Form
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int command);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterHotKey(IntPtr h, int id, uint modifiers, uint key);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool UnregisterHotKey(IntPtr h, int id);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookExW(int id, HookProc proc, IntPtr hMod, uint thread);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int code, IntPtr w, IntPtr l);
@@ -323,6 +327,16 @@ class CollieWallpaper : Form
     // even for a single frame — so clicking the galaxy no longer makes the icons flash away.
     protected override void WndProc(ref Message m)
     {
+        if (_windowMode && m.Msg == WM_HOTKEY && m.WParam.ToInt32() == LIVE_HANDOFF_HOTKEY)
+        {
+            // Ctrl+Alt+Space is an explicit handoff: surface Collie and let the page freeze its
+            // already-observed Live context. No keys from the user's foreground app are captured.
+            WakeWindow();
+            try { if (_web != null && _web.CoreWebView2 != null)
+                    _web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"live-handoff\"}"); }
+            catch { }
+            return;
+        }
         if (_windowMode && m.Msg == WM_SYSCOMMAND)
         {
             int command = unchecked((int)((long)m.WParam)) & 0xFFF0;
@@ -378,6 +392,9 @@ class CollieWallpaper : Form
         // first frame, so a light caption would flash before the page finishes loading and reports
         // its real theme. The page's own message (below) is what settles it either way.
         ApplyTitleBarTheme(true);
+        if (_windowMode && !RegisterHotKey(Handle, LIVE_HANDOFF_HOTKEY,
+                                           MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x20))
+            Log("live handoff hotkey unavailable error=" + Marshal.GetLastWin32Error());
     }
 
     CollieWallpaper()
@@ -766,6 +783,7 @@ class CollieWallpaper : Form
     void Cleanup()
     {
         if (_cleaned) return; _cleaned = true;
+        if (_windowMode && IsHandleCreated) try { UnregisterHotKey(Handle, LIVE_HANDOFF_HOTKEY); } catch { }
         if (_mouseHook != IntPtr.Zero) UnhookWindowsHookEx(_mouseHook);
         if (_keyHook != IntPtr.Zero) UnhookWindowsHookEx(_keyHook);
         DetachInput();

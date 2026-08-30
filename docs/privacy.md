@@ -33,13 +33,16 @@ feature inherently requires:
   stay in `~/.collie/meeting-reminders.json`; attendee fields are not retained. Collie does not fetch
   calendar feeds or send schedule metadata to a model. Reminder detection can prefill a note but
   cannot start recording or carry consent from one meeting to another.
-- **System-design interview assistance (separately opt-in for every session).** VocalCode owns
-  local capture and transcription; Collie does not read its audio. After you confirm everyone has
-  agreed to recording and AI assistance, you may separately share a bounded tail of the current
-  session's transcript with your configured model provider and grant Collie permission to add
-  editable shapes to one Chrome board tab you explicitly attach. Stopping the session clears both
-  permissions. Collie does not hide itself, impersonate the candidate, bypass proctoring rules, or
-  delete existing board content.
+- **Live Copilot (separately started for every session).** An optional task description may be empty.
+  Basic app awareness retains application names only. A separate active-interface option retains a
+  bounded semantic summary of accessibility control types and labels, which may contain visible page
+  or document text; it discards field values and does not log keys, clipboard, titles, or screenshots.
+  Conversation mode requires participant consent and
+  uses Collie's first-party microphone/system-audio capture; transient audio chunks are deleted after
+  the configured speech service returns transcript text. Transcript and compact live understanding
+  may be sent to the providers disclosed in the UI. Suggestions have no execution authority. A
+  shortcut handoff is an explicit user action; interactive tasks and background Missions still use
+  the ordinary permission and recovery boundaries. Stopping clears live capture and surface authority.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,

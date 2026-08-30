@@ -378,19 +378,20 @@ def test_desktop_language_updates_the_document_accessibility_metadata():
     assert "UI_LANG = resolveLang" in desktop and "applyLang();" in desktop
 
 
-def test_interview_surface_is_reachable_and_session_scoped():
+def test_live_copilot_is_a_top_level_context_and_handoff_mode():
     desktop = read("harness/webui/index.html")
-    interview = read("harness/webui/interview.html")
+    live = read("harness/webui/live.html")
     server = read("harness/webapp.py")
 
-    assert 'id="navInterview"' in desktop
-    assert 'openEmbeddedSurface("Interview", "/interview?embedded=1", "interview")' in desktop
-    assert 'path == "/interview"' in server and 'path == "/api/interview"' in server
-    assert "Use VocalCode transcript in Collie" in interview
-    assert "Let Collie add editable shapes to this board" in interview
-    assert "Stop & clear authority" in interview
-    assert "/api/interview/board/attach" in interview
-    assert "Collie does not hide itself or bypass interview and proctoring rules." in interview
+    assert 'id="navLive"' in desktop and 'id="navInterview"' not in desktop
+    assert 'openEmbeddedSurface("Live Copilot", "/live?embedded=1", "live")' in desktop
+    assert 'path in ("/live", "/interview")' in server
+    assert 'path in ("/api/live-copilot", "/api/interview")' in server
+    assert "Stay in context while you work" in live
+    assert "Notice app changes" in live and "Understand the conversation" in live
+    assert "Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space" in live
+    assert "/api/live-copilot/work" in live and 'type:"collie:run"' in live
+    assert "A board or browser canvas is one place" in live
 
 
 def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failures():
@@ -755,9 +756,9 @@ def test_landing_build_is_an_explicit_allowlist_and_rate_limit_is_atomic():
     assert "publicFiles" in build and '"_headers"' in build and "index.draft.html" not in build and "_preview.html" not in build
     assert '"site-version.json"' in build
     assert "source_product_version must match harness.__version__" in build
-    assert site_version["content_version"] == "personal-intelligence-v2"
+    assert site_version["content_version"] == "live-copilot-v1"
     assert site_version["features"]["personal_intelligence"] == "preview"
-    assert site_version["features"]["system_design_interview"] == "preview"
+    assert site_version["features"]["live_copilot"] == "preview"
     assert site_version["features"]["collie_online"] == "preview"
     assert 'pages_build_output_dir = "dist"' in config
     assert "RATE_LIMITER" in config and "durable_objects.bindings" in config and "kv_namespaces" not in config

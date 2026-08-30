@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.24.0 — Live Copilot becomes a general work mode
+
+- Replaced the narrow interview integration with a top-level Live Copilot session that accepts an
+  optional or empty starting context, continuously compresses approved conversation and foreground-
+  app signals, and keeps suggestions non-executing until the user hands something off.
+- Brought microphone and meeting/system-audio capture into Collie's first-party UI. Audio chunks are
+  transient and deleted after speech processing; the durable live stream contains bounded transcript
+  events and derived context, not recordings. Foreground awareness retains application names only.
+- Added a Windows-native Ctrl+Alt+Space handoff. It wakes Collie from any application, freezes the
+  current context point, and supports either a normal interactive task or a durable Mission that can
+  continue asynchronously. Browser canvases and whiteboards remain optional work surfaces.
+
 ## v0.23.0 — Live system-design interview collaboration
 
 - Added an explicit, session-scoped System Design Interview mode that consumes only VocalCode's

@@ -1,17 +1,23 @@
-# System-design interviews
+# Live Copilot
 
-Interview mode joins three surfaces without turning them into one hidden automation:
+Live Copilot is a top-level way to work with Collie, not a meeting or interview plug-in. During an
+explicit session, Collie maintains a small current-context model from the signals you enable:
 
-1. **VocalCode** remains the user-started, local capture and transcription app.
-2. **Collie** reads only a bounded tail of the current session's transcript when transcript sharing
-   is enabled, helps structure requirements and trade-offs, and keeps concise design notes.
-3. **Your attached Chrome board tab** receives editable shapes only while board editing is enabled.
+1. Collie's own first-party UI can capture microphone and meeting/system audio and retain transcript
+   text rather than audio chunks.
+2. Low-privacy environment awareness can notice foreground application names. A separate switch can
+   include a bounded set of active-interface accessibility control types and labels; labels may
+   contain visible page or document text. Neither mode logs keys, clipboard content, field values,
+   window titles, or screenshots.
+3. The configured model continuously compresses recent events into a short current understanding
+   and a few timely cues. A cue has no authority and never runs itself.
 
-Open **More → System design interview** in the desktop app. Confirm participant consent, start the
-session, and then attach the active Chrome board tab. Transcript sharing and board editing are
-independent switches; stopping the session clears both permissions.
+The task description before starting is optional. While the session is active, press
+**Ctrl+Alt+Space** from any Windows application to freeze the current handoff point and bring Collie
+forward. Add a sentence or use the current context. **Do now** starts a normal interactive task;
+**Background** creates a durable Mission and returns you to your work.
 
-## Board compatibility
+## Optional work surfaces
 
 Collie recognizes Miro, FigJam, Excalidraw, tldraw, Eraser, Lucid, Whimsical, Microsoft Whiteboard,
 Canva, diagrams.net, CoderPad, and HackerRank drawing surfaces. Miro, FigJam, Excalidraw, and tldraw
@@ -23,13 +29,14 @@ Board operations use a small provider-neutral model of nodes and edges. Preview 
 applying it adds bounded content and never deletes existing objects. The attached tab is rechecked
 before each write so authority cannot silently move to another page.
 
-## Interview conduct and privacy
+## Session conduct and privacy
 
-Use the feature only when the interview's rules allow assistance and every participant has agreed to
-recording and AI use. Collie is designed as a visible collaborator: it will not hide itself, evade
-monitoring, impersonate you, or provide a stealth mode.
+Confirm that every participant agrees before enabling conversation capture. The UI requests
+microphone and system audio in one start flow. Each short audio chunk is deleted after the configured
+speech service returns text; it is never placed in the agent prompt. Transcript and derived state
+stay under Collie's private local state directory, while text sent for speech/understanding follows
+the destinations disclosed in the UI.
 
-VocalCode transcript files stay under its own local application-data directory. Collie reads a
-bounded recent slice from a meeting created for the current session and does not ingest audio. If
-you enable transcript sharing, that text can be sent to the model provider configured in Collie.
-Stopping the session immediately clears transcript-sharing and board-editing authority.
+Stopping the session clears capture, continuous-understanding, and optional work-surface authority.
+An interactive task or Mission then continues under Collie's ordinary permission, budget, evidence,
+and recovery boundaries.

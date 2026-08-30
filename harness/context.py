@@ -227,7 +227,7 @@ class ContextComposer:
         # observed on pylint-4551: ~15 turns lost to `cd /repo`, `cd /workspace`, `cd ~`,
         # and absolute /home/user/... paths that don't exist.
         # The "don't cd elsewhere" clause is about not GUESSING prefixes for files in THIS repo. It
-        # was being over-applied as "nothing outside cwd exists" (the VocalCode miss — see
+        # was being over-applied as "nothing outside cwd exists" (the external local-data miss — see
         # _grounding_line), so the last sentence carves out the case where the user's actual target
         # legitimately lives elsewhere on the machine.
         workdir = ("WORKING DIRECTORY: %s\nAll tools run from this directory. Pass paths "
@@ -300,14 +300,13 @@ class ContextComposer:
                 meta.prefetched_ids = incl_ids
                 if lines:
                     vol_parts.append("RELEVANT MEMORY (auto-recalled):\n" + "\n".join(lines))
-        # Interview state is volatile by definition: the append-only VocalCode transcript changes
-        # while the model is working.  The integration itself enforces the explicit per-session
-        # sharing bit and a strict character budget, so inactive/private sessions add nothing here.
+        # Live state is volatile: Collie may receive speech and environment events while a task is
+        # running. The session boundary and strict character budget keep inactive/private state out.
         try:
-            from .interview_assist import model_context as _interview_context
-            interview = _interview_context()
-            if interview:
-                vol_parts.append(interview)
+            from .live_copilot import model_context as _live_context
+            live_context = _live_context()
+            if live_context:
+                vol_parts.append(live_context)
         except Exception:
             pass
         # date-only, NOT %H:%M — this string is inside the single cached system block, so a

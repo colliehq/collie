@@ -923,12 +923,11 @@ def default_registry(code_search: bool = False,
               GlobTool(), MemorySearchTool(), RememberTool(), PlanTool(), UndoTool(),
               EnableCapabilityTool()):
         r.register(t)
-    # One always-visible, local-first seam for live system-design interviews.  It stays useful
-    # without a browser (VocalCode transcript + working notes); board mutation independently
-    # requires an attached bridge and session-scoped authority.
+    # Live Copilot is a top-level Collie mode: session context is locally bounded, while durable
+    # work and optional external surfaces retain their ordinary independent permission gates.
     try:
-        from .interview_assist import register_interview_assist
-        register_interview_assist(r)
+        from .live_copilot import register_live_copilot
+        register_live_copilot(r)
     except Exception:
         pass
     if code_search:                              # semantic repo navigation (embedding)

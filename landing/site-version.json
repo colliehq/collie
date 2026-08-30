@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "content_version": "personal-intelligence-v2",
-  "source_product_version": "0.23.0",
+  "content_version": "live-copilot-v1",
+  "source_product_version": "0.24.0",
   "public_download_channel": "latest-stable",
   "positioning": "local-first private personal intelligence",
-  "privacy_notice_version": "interview-assist-v1",
+  "privacy_notice_version": "live-copilot-v1",
   "features": {
     "local_mission_runtime": "available",
     "desktop_control": "available",
     "personal_intelligence": "preview",
-    "system_design_interview": "preview",
+    "live_copilot": "preview",
     "remote_mcp_discovery": "preview",
     "collie_online": "preview"
   },

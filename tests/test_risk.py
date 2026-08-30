@@ -109,12 +109,13 @@ def test_mcp_discovery_is_read_but_connecting_a_candidate_is_external():
     assert R.classify("mcpctl_connect_candidate") is RiskClass.EXTERNAL
 
 
-def test_interview_assist_risk_follows_the_requested_effect():
-    assert R.classify("interview_assist", args={"action": "status"}) is RiskClass.READ
-    assert R.classify("interview_assist", args={"action": "note"}) is RiskClass.WRITE_LOCAL
-    assert R.classify("interview_assist", args={"action": "diagram_preview"}) is RiskClass.WRITE_LOCAL
-    assert R.classify("interview_assist", args={"action": "diagram_apply"}) is RiskClass.EXTERNAL
-    assert R.classify("interview_assist", args={}) is RiskClass.EXTERNAL
+def test_live_copilot_risk_follows_the_requested_effect():
+    assert R.classify("live_copilot", args={"action": "status"}) is RiskClass.READ
+    assert R.classify("live_copilot", args={"action": "note"}) is RiskClass.WRITE_LOCAL
+    assert R.classify("live_copilot", args={"action": "diagram_preview"}) is RiskClass.WRITE_LOCAL
+    assert R.classify("live_copilot", args={"action": "work"}) is RiskClass.EXTERNAL
+    assert R.classify("live_copilot", args={"action": "diagram_apply"}) is RiskClass.EXTERNAL
+    assert R.classify("live_copilot", args={}) is RiskClass.EXTERNAL
 
 
 def test_override_wins_over_table():
