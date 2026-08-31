@@ -7,35 +7,66 @@ recognition, speaks one prioritized cue through Windows SAPI, then resumes the s
 from __future__ import annotations
 
 import argparse
+import base64
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 
 from . import plat
 from .live_copilot import LiveCopilotError, LiveSessionStore
 
 
-def _speak(text: str, language: str = "zh-CN") -> None:
+def _speak(text: str, language: str = "zh-CN") -> bool:
     if os.name != "nt":
-        return
+        return False
+    payload = base64.b64encode(str(text)[:260].encode("utf-8")).decode("ascii")
+    culture = "zh-CN" if str(language).casefold().startswith("zh") else "en-US"
+    fd, wave_path = tempfile.mkstemp(prefix="collie-live-voice-", suffix=".wav")
+    os.close(fd)
+    path_payload = base64.b64encode(wave_path.encode("utf-8")).decode("ascii")
     script = (
         "Add-Type -AssemblyName System.Speech;"
+        "$t=[System.Text.Encoding]::UTF8.GetString("
+        "[System.Convert]::FromBase64String('%s'));"
+        "$p=[System.Text.Encoding]::UTF8.GetString("
+        "[System.Convert]::FromBase64String('%s'));"
         "$v=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
-        "$v.Rate=2;$v.Volume=92;"
+        "$v.Rate=2;$v.Volume=100;"
         "try{$v.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::NotSet,"
         "[System.Speech.Synthesis.VoiceAge]::NotSet,0,"
-        "[System.Globalization.CultureInfo]::GetCultureInfo($args[1]))}catch{};"
-        "$v.Speak($args[0]);$v.Dispose()"
-    )
-    subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, "--",
-         str(text)[:260], language],
-        timeout=35, check=False, capture_output=True, **plat.no_window_kwargs())
+        "[System.Globalization.CultureInfo]::GetCultureInfo('%s'))}catch{};"
+        "$v.SetOutputToWaveFile($p);$v.Speak($t);"
+        "$v.SetOutputToDefaultAudioDevice();$v.Dispose()"
+    ) % (payload, path_payload, culture)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            timeout=35, check=False, capture_output=True, **plat.no_window_kwargs())
+        if result.returncode != 0:
+            return False
+        player = shutil.which("ffplay")
+        if not player:
+            return False
+        played = subprocess.run(
+            [player, "-nodisp", "-autoexit", "-loglevel", "error",
+             "-af", "volume=2.8", wave_path],
+            timeout=35, check=False, capture_output=True, **plat.no_window_kwargs())
+        return played.returncode == 0
+    finally:
+        try:
+            os.remove(wave_path)
+        except OSError:
+            pass
 
 
 def run(session_id: str, poll_seconds: float = 0.8) -> int:
     store = LiveSessionStore()
     spoken: set[str] = set()
+    spoken_text: set[str] = set()
+    last_spoken_at = 0.0
     rank = {"now": 0, "soon": 1, "later": 2}
     kinds = {"answer": 0, "risk": 1, "action": 2, "question": 3, "note": 4}
     while True:
@@ -52,9 +83,21 @@ def run(session_id: str, poll_seconds: float = 0.8) -> int:
             time.sleep(max(.25, poll_seconds))
             continue
         spoken.update(str(row.get("id") or "") for row in rows)
-        cue = " ".join(str(rows[0].get("text") or "").split())[:260]
+        fresh = [row for row in rows
+                 if " ".join(str(row.get("text") or "").split()).casefold()
+                 not in spoken_text]
+        if not fresh:
+            continue
+        latest = (value.get("events") or [{}])[-1]
+        direct_answer = (fresh[0].get("kind") == "answer" and
+                         latest.get("source") == "you" and latest.get("kind") == "speech")
+        now = time.monotonic()
+        if not direct_answer and now - last_spoken_at < 18.0:
+            continue
+        cue = " ".join(str(fresh[0].get("text") or "").split())[:260]
         if not cue:
             continue
+        spoken_text.add(cue.casefold())
         was_listening = bool(value.get("listen"))
         try:
             if was_listening:
@@ -62,7 +105,8 @@ def run(session_id: str, poll_seconds: float = 0.8) -> int:
                 time.sleep(1.8)
             current = store.snapshot()
             if current.get("active") and current.get("session_id") == session_id:
-                _speak(cue, "zh-CN")
+                if _speak(cue, "zh-CN"):
+                    last_spoken_at = time.monotonic()
         finally:
             current = store.snapshot()
             if (was_listening and current.get("active") and

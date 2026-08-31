@@ -781,7 +781,7 @@ class CollieWallpaper : Form
         }
         catch { }
         voice.Rate = 2;
-        voice.Volume = 92;
+        voice.Volume = 100;
         voice.SpeakCompleted += delegate
         {
             try { voice.Dispose(); } catch { }
