@@ -3035,6 +3035,8 @@ class Handler(BaseHTTPRequestHandler):
                             observe_apps=body.get("observe_apps") is not False,
                             observe_ui=body.get("observe_ui") is not False,
                             observe_input=body.get("observe_input") is not False,
+                            observe_screen=body.get("observe_screen") is True,
+                            voice_dialogue=body.get("voice_dialogue") is True,
                             board_edit=body.get("board_edit") is True,
                             consent=body.get("consent") is True), 201)
                     if path.endswith("/stop"):
@@ -3052,6 +3054,10 @@ class Handler(BaseHTTPRequestHandler):
                                         if "observe_ui" in body else None),
                             observe_input=(body.get("observe_input")
                                            if "observe_input" in body else None),
+                            observe_screen=(body.get("observe_screen")
+                                            if "observe_screen" in body else None),
+                            voice_dialogue=(body.get("voice_dialogue")
+                                            if "voice_dialogue" in body else None),
                             board_edit=(body.get("board_edit")
                                         if "board_edit" in body else None),
                             consent=(body.get("consent") if "consent" in body else None)))

@@ -11,6 +11,7 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Speech.Recognition;
+using System.Speech.Synthesis;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -251,6 +252,10 @@ class CollieWallpaper : Form
     static bool _capsuleSpeechDelivered;
     static WebView2 _mainWeb;
     static SpeechRecognitionEngine _liveSpeech;
+    static SpeechSynthesizer _liveVoice;
+    static bool _liveVoiceSpeaking;
+    static int _liveVoiceGeneration;
+    static string _liveVoiceLastCue = "";
     static bool _liveSpeechWanted;
     static string _liveSpeechSession = "", _liveSpeechLanguage = "";
     static string _liveSpeechFailedFor = "";
@@ -528,6 +533,12 @@ class CollieWallpaper : Form
                 string raw = null;
                 try { raw = eT.WebMessageAsJson; } catch { }
                 if (string.IsNullOrEmpty(raw)) { try { raw = eT.TryGetWebMessageAsString(); } catch { return; } }
+                if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"live-native-speak\"", StringComparison.Ordinal) >= 0)
+                {
+                    SpeakLiveCue(JsonField(raw, "session"), JsonField(raw, "cue_id"),
+                                 JsonField(raw, "text"), JsonField(raw, "language"));
+                    return;
+                }
                 if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"live-native-state\"", StringComparison.Ordinal) >= 0)
                 {
                     bool active = Regex.IsMatch(raw, "\\\"active\\\"\\s*:\\s*true", RegexOptions.IgnoreCase);
@@ -738,9 +749,61 @@ class CollieWallpaper : Form
         try { engine.Dispose(); } catch { }
     }
 
+    static void StopLiveVoice()
+    {
+        _liveVoiceGeneration++;
+        SpeechSynthesizer voice = _liveVoice;
+        _liveVoice = null;
+        _liveVoiceSpeaking = false;
+        if (voice == null) return;
+        try { voice.SpeakAsyncCancelAll(); } catch { }
+        try { voice.Dispose(); } catch { }
+    }
+
+    static void SpeakLiveCue(string session, string cueId, string text, string language)
+    {
+        session = (session ?? "").Trim(); cueId = (cueId ?? "").Trim();
+        text = (text ?? "").Trim(); language = (language ?? "").Trim();
+        if (session.Length == 0 || session != _liveSpeechSession || text.Length == 0 ||
+            (cueId.Length > 0 && cueId == _liveVoiceLastCue)) return;
+        if (cueId.Length > 0) _liveVoiceLastCue = cueId;
+        StopLiveSpeechEngine();
+        StopLiveVoice();
+        _liveVoiceSpeaking = true;
+        int generation = ++_liveVoiceGeneration;
+        SpeechSynthesizer voice = new SpeechSynthesizer();
+        _liveVoice = voice;
+        try
+        {
+            CultureInfo culture = new CultureInfo(language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                                                  ? "zh-CN" : "en-US");
+            voice.SelectVoiceByHints(VoiceGender.NotSet, VoiceAge.NotSet, 0, culture);
+        }
+        catch { }
+        voice.Rate = 2;
+        voice.Volume = 92;
+        voice.SpeakCompleted += delegate
+        {
+            try { voice.Dispose(); } catch { }
+            if (generation != _liveVoiceGeneration) return;
+            _liveVoice = null;
+            _liveVoiceSpeaking = false;
+            ResumeLiveSpeech();
+        };
+        try { voice.SpeakAsync(text); }
+        catch
+        {
+            try { voice.Dispose(); } catch { }
+            if (generation == _liveVoiceGeneration)
+            {
+                _liveVoice = null; _liveVoiceSpeaking = false; ResumeLiveSpeech();
+            }
+        }
+    }
+
     static void ResumeLiveSpeech()
     {
-        if (!_liveSpeechWanted || _capsuleSpeech != null || _liveSpeech != null ||
+        if (!_liveSpeechWanted || _liveVoiceSpeaking || _capsuleSpeech != null || _liveSpeech != null ||
             string.IsNullOrEmpty(_liveSpeechSession)) return;
         string desiredKey = _liveSpeechSession + "\0" + _liveSpeechLanguage;
         if (_liveSpeechFailedFor == desiredKey) return;
@@ -786,7 +849,7 @@ class CollieWallpaper : Form
         _liveSpeechWanted = wanted && session.Length > 0;
         _liveSpeechSession = session;
         _liveSpeechLanguage = language;
-        if (!_liveSpeechWanted) { _liveSpeechFailedFor = ""; StopLiveSpeechEngine(); return; }
+        if (!_liveSpeechWanted) { _liveSpeechFailedFor = ""; StopLiveSpeechEngine(); StopLiveVoice(); return; }
         if (changed) { _liveSpeechFailedFor = ""; StopLiveSpeechEngine(); }
         ResumeLiveSpeech();
     }
@@ -1141,6 +1204,8 @@ class CollieWallpaper : Form
         if (_windowMode && IsHandleCreated) try { UnregisterHotKey(Handle, LIVE_HANDOFF_HOTKEY); } catch { }
         if (_mouseHook != IntPtr.Zero) UnhookWindowsHookEx(_mouseHook);
         if (_keyHook != IntPtr.Zero) UnhookWindowsHookEx(_keyHook);
+        StopLiveSpeechEngine();
+        StopLiveVoice();
         DetachInput();
         try { if (_web != null) { _web.Dispose(); } } catch { }   // dispose WebView2 -> browser process exits cleanly (no orphaned COM)
     }

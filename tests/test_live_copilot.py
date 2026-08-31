@@ -14,6 +14,7 @@ def test_live_session_accepts_no_task_and_observes_without_recording_consent(tmp
     assert value["context"] == ""
     assert value["observe_apps"] is True
     assert value["observe_ui"] is True and value["observe_input"] is True
+    assert value["observe_screen"] is False and value["voice_dialogue"] is False
     assert value["consent_version"] == "not-required"
     assert value["events"][-1]["kind"] == "session"
 
@@ -34,6 +35,19 @@ def test_audio_listening_requires_consent_and_clears_authority_on_stop(tmp_path)
         store.update_permissions(listen=True)
     enabled = store.update_permissions(listen=True, consent=True)
     assert enabled["listen"] and enabled["consent_at_ms"]
+
+
+def test_direct_voice_and_visual_observation_are_session_scoped(tmp_path):
+    from harness.live_copilot import LiveSessionStore
+
+    store = LiveSessionStore(tmp_path)
+    started = store.start(listen=True, consent=True, observe_screen=True,
+                          voice_dialogue=True)
+    assert started["observe_screen"] is True
+    assert started["voice_dialogue"] is True
+    stopped = store.stop()
+    assert stopped["observe_screen"] is False
+    assert stopped["voice_dialogue"] is False
 
 
 def test_native_audio_chunks_become_bounded_speaker_events_and_are_deleted(tmp_path):

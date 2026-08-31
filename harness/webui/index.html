@@ -8178,6 +8178,32 @@
   $("navMissions").onclick = function () { setProductNav("missions"); setMissionsOpen(true); };
   $("navLive").onclick = function () { openEmbeddedSurface("Live Copilot", "/live?embedded=1" +
     (NATIVE_SHELL ? "&native_shell=1" : ""), "live"); };
+  var LIVE_SPOKEN_SESSION = "", LIVE_SPOKEN_CUES = {};
+  function dispatchLiveVoice(value) {
+    if (!NATIVE_SHELL || !window.chrome || !window.chrome.webview ||
+        !value || !value.active || !value.voice_dialogue) return;
+    var session = String(value.session_id || "");
+    if (!session) return;
+    if (session !== LIVE_SPOKEN_SESSION) { LIVE_SPOKEN_SESSION = session; LIVE_SPOKEN_CUES = {}; }
+    var rank = {now:0, soon:1, later:2}, kindRank = {answer:0, risk:1, action:2, question:3, note:4};
+    var fresh = (value.suggestions || []).filter(function (row) {
+      return row && !row.dismissed && !LIVE_SPOKEN_CUES[row.id] && row.urgency !== "later";
+    }).sort(function (a,b) {
+      return (rank[a.urgency] == null ? 9 : rank[a.urgency]) -
+             (rank[b.urgency] == null ? 9 : rank[b.urgency]) ||
+             (kindRank[a.kind] == null ? 9 : kindRank[a.kind]) -
+             (kindRank[b.kind] == null ? 9 : kindRank[b.kind]) ||
+             Number(b.created_at_ms || 0) - Number(a.created_at_ms || 0);
+    });
+    if (!fresh.length) return;
+    fresh.forEach(function (row) { LIVE_SPOKEN_CUES[row.id] = true; });
+    var cue = fresh[0], spoken = String(cue.text || "").trim().slice(0, 260);
+    if (!spoken) return;
+    try { window.chrome.webview.postMessage({
+      type:"live-native-speak", session:session, cue_id:String(cue.id || ""),
+      text:spoken, language:document.documentElement.lang || navigator.language || "zh-CN"
+    }); } catch (e) {}
+  }
   function syncLiveNav() {
     var dot = $("liveNavStatus"); if (!dot) return;
     fetch("/api/live-copilot?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
@@ -8191,6 +8217,7 @@
             language:document.documentElement.lang||navigator.language||"en-US"
           }); } catch (e) {}
         }
+        dispatchLiveVoice(value);
       }).catch(function () {});
   }
   syncLiveNav(); window.setInterval(syncLiveNav, 1500);

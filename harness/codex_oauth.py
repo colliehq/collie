@@ -192,9 +192,28 @@ class CodexOAuthProvider(ModelProvider):
                                   "arguments": json.dumps(targs, ensure_ascii=False)})
             else:
                 text_type = "output_text" if role == "assistant" else "input_text"
+                content = m.get("content", "")
+                if role != "assistant" and isinstance(content, list):
+                    blocks = []
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "image" and block.get("data"):
+                            blocks.append({
+                                "type": "input_image",
+                                "image_url": "data:%s;base64,%s" % (
+                                    block.get("media_type", "image/png"), block["data"]),
+                            })
+                        elif str(block.get("text") or "").strip():
+                            blocks.append({"type": "input_text", "text": block["text"]})
+                    if not blocks:
+                        blocks = [{"type": "input_text", "text": "(no content)"}]
+                    items.append({"type": "message", "role": role or "user",
+                                  "content": blocks})
+                    continue
                 items.append({"type": "message", "role": role or "user",
                               "content": [{"type": text_type,
-                                           "text": content_text(m.get("content", ""))}]})
+                                           "text": content_text(content)}]})
         return items
 
     def _headers(self, token: str, account_id: str) -> dict:
@@ -260,6 +279,26 @@ class CodexOAuthProvider(ModelProvider):
                         return self._consume(r, on_text)
                 except Exception as e2:
                     return _error_completion(self.name, e2)
+            # Fast is account/rollout gated even when the model family supports it. A foreground
+            # default must make the optimistic attempt but must not break the user's turn when the
+            # subscription endpoint says this account cannot use the tier yet.
+            if e.code in (400, 403) and body.get("service_tier") == "fast":
+                try:
+                    detail = e.read(64 * 1024).decode("utf-8", "ignore")
+                except Exception:
+                    detail = str(e)
+                if "service_tier" in detail.casefold() or "fast" in detail.casefold():
+                    body.pop("service_tier", None)
+                    self.actual_speed = "standard"
+                    try:
+                        req = urllib.request.Request(
+                            self.URL, data=json.dumps(body).encode(),
+                            headers=self._headers(access, acct), method="POST")
+                        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                            return self._consume(r, on_text)
+                    except Exception as fallback_error:
+                        return _error_completion(self.name, fallback_error)
+                return _error_completion(self.name, RuntimeError(detail), status=e.code)
             return _error_completion(self.name, e)
         except Exception as e:
             return _error_completion(self.name, e)

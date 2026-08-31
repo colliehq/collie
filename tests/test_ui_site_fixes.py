@@ -391,6 +391,8 @@ def test_live_copilot_is_a_top_level_context_and_handoff_mode():
     assert "Stay in context while you work" in live
     assert "Follow windows and apps" in live and "Understand the conversation" in live
     assert 'id="observeInput" checked' in live and "LIVE LOG" in live
+    assert 'id="observeScreen"' in live and 'id="voiceDialogue" disabled' in live
+    assert "observe_screen:" in live and "voice_dialogue:" in live
     assert 'id="handoffGuide"' in live and 'getElementById("handoffGuide").hidden=active' in live
     assert ".handoff[hidden]{display:none}" in live
     assert 'class="handoff" id="handoff" hidden' in live
@@ -419,6 +421,8 @@ def test_live_capsule_is_a_native_hotkey_surface_not_a_full_window_handoff():
     assert "GetForegroundWindow()" in native_host
     assert "SpeechRecognitionEngine" in native_host and "System.Speech" in build
     assert "live-native-state" in native_host and "live-native-transcript" in native_host
+    assert "live-native-speak" in native_host and "SpeechSynthesizer" in native_host
+    assert "_liveVoiceSpeaking" in native_host and "StopLiveSpeechEngine();" in native_host
     ready = native_host.split('raw.IndexOf("capsule-ready"', 1)[1].split(
         'else if (raw.IndexOf("capsule-listen"', 1)[0]
     assert "PostCapsuleTarget(target)" in ready and "StartCapsuleSpeech" not in ready
