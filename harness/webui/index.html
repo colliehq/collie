@@ -2823,11 +2823,26 @@
     window.chrome.webview.addEventListener("message", function (event) {
       var data = event.data || {};
       if (data.type === "window-state") syncNativeWindowState(!!data.maximized);
+      if (data.type === "live-native-transcript" && data.session && data.text) {
+        fetch("/api/live-copilot/event?token=" + encodeURIComponent(CT), {
+          method:"POST", headers:{"content-type":"application/json"},
+          body:JSON.stringify({source:"you", kind:"speech", text:String(data.text),
+                               session_id:String(data.session),
+                               at_ms:Number(data.at_ms)||Date.now()})
+        }).catch(function () {});
+      }
+      if (data.type === "live-native-speech-status" && !data.active && data.session && data.message) {
+        fetch("/api/live-copilot/event?token=" + encodeURIComponent(CT), {
+          method:"POST", headers:{"content-type":"application/json"},
+          body:JSON.stringify({source:"system", kind:"status", text:String(data.message),
+                               session_id:String(data.session), at_ms:Date.now()})
+        }).catch(function () {});
+      }
       if (data.type === "live-handoff") {
         fetch("/api/live-copilot/handoff?token=" + encodeURIComponent(CT), {
           method:"POST", headers:{"content-type":"application/json"}, body:"{}"
         }).catch(function () {}).finally(function () {
-          openEmbeddedSurface("Live Copilot", "/live?embedded=1&handoff=1", "live");
+          openEmbeddedSurface("Live Copilot", "/live?embedded=1&native_shell=1&handoff=1", "live");
         });
       }
     });
@@ -8161,16 +8176,24 @@
   $("newChat").onclick = function () { newThread(true); };
   $("navHome").onclick = function () { showToday(true); };
   $("navMissions").onclick = function () { setProductNav("missions"); setMissionsOpen(true); };
-  $("navLive").onclick = function () { openEmbeddedSurface("Live Copilot", "/live?embedded=1", "live"); };
+  $("navLive").onclick = function () { openEmbeddedSurface("Live Copilot", "/live?embedded=1" +
+    (NATIVE_SHELL ? "&native_shell=1" : ""), "live"); };
   function syncLiveNav() {
     var dot = $("liveNavStatus"); if (!dot) return;
     fetch("/api/live-copilot?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
       .then(function (value) {
         var active = !!value.active; dot.classList.toggle("connected", active);
         dot.title = active ? t("Maintaining context") : t("Not active");
+        if (NATIVE_SHELL && window.chrome && window.chrome.webview) {
+          try { window.chrome.webview.postMessage({
+            type:"live-native-state", active:active, listen:!!value.listen,
+            session:value.session_id||"",
+            language:document.documentElement.lang||navigator.language||"en-US"
+          }); } catch (e) {}
+        }
       }).catch(function () {});
   }
-  syncLiveNav(); window.setInterval(syncLiveNav, 5000);
+  syncLiveNav(); window.setInterval(syncLiveNav, 1500);
   $("navPack").onclick = function () { openEmbeddedSurface("Pack", "/remote?embedded=1", "pack"); };
   $("navOnline").onclick = openOnlinePage;
   $("navLibrary").onclick = function () { setProductNav("library"); setLibraryOpen(true); };

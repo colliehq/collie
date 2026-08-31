@@ -219,8 +219,11 @@ def build_engine(force: bool = False) -> "str | None":
     # never replace a working exe, so we check csc's return code before the swap.
     out = "cw-build-%d-%s.exe" % (os.getpid(), os.urandom(3).hex())
     tmp = os.path.join(d, out)
+    speech = os.path.join(os.environ.get("WINDIR", r"C:\Windows"),
+                          r"Microsoft.NET\assembly\GAC_MSIL\System.Speech\v4.0_4.0.0.0__31bf3856ad364e35\System.Speech.dll")
     cmd = [csc, "/nologo", "/target:winexe", "/platform:x64", "/out:" + out,
            "/reference:System.Windows.Forms.dll", "/reference:System.Drawing.dll",
+           "/reference:" + speech,
            "/reference:Microsoft.Web.WebView2.Core.dll",
            "/reference:Microsoft.Web.WebView2.WinForms.dll", "Program.cs"]
     try:

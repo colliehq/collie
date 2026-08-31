@@ -12,6 +12,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Speech.Recognition;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;   // disambiguate from System.Threading.Timer
@@ -248,6 +249,11 @@ class CollieWallpaper : Form
     static WebView2 _capsuleWeb;
     static SpeechRecognitionEngine _capsuleSpeech;
     static bool _capsuleSpeechDelivered;
+    static WebView2 _mainWeb;
+    static SpeechRecognitionEngine _liveSpeech;
+    static bool _liveSpeechWanted;
+    static string _liveSpeechSession = "", _liveSpeechLanguage = "";
+    static string _liveSpeechFailedFor = "";
     static IntPtr _progman, _input;         // Chromium child to post to
     static bool _pinned;                    // once true, WndProc forces our z-order below the icons
     static IntPtr _icons, _iconProc, _iconMem;   // desktop icon ListView + explorer handle + remote LVHITTESTINFO
@@ -509,6 +515,7 @@ class CollieWallpaper : Form
             _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _web.CoreWebView2.Settings.IsZoomControlEnabled = false;
+            _mainWeb = _web;
             _web.DefaultBackgroundColor = Color.Black;
             // The page owns the theme (a saved choice, else the system's) and can flip it at any
             // time from the toggle in its header. It posts {type:"theme",dark:bool}; the caption is
@@ -521,6 +528,14 @@ class CollieWallpaper : Form
                 string raw = null;
                 try { raw = eT.WebMessageAsJson; } catch { }
                 if (string.IsNullOrEmpty(raw)) { try { raw = eT.TryGetWebMessageAsString(); } catch { return; } }
+                if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"live-native-state\"", StringComparison.Ordinal) >= 0)
+                {
+                    bool active = Regex.IsMatch(raw, "\\\"active\\\"\\s*:\\s*true", RegexOptions.IgnoreCase);
+                    bool listen = Regex.IsMatch(raw, "\\\"listen\\\"\\s*:\\s*true", RegexOptions.IgnoreCase);
+                    ConfigureLiveSpeech(active && listen, JsonField(raw, "session"),
+                                        JsonField(raw, "language"));
+                    return;
+                }
                 if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"window\"", StringComparison.Ordinal) >= 0)
                 {
                     try
@@ -685,6 +700,102 @@ class CollieWallpaper : Form
         return output.ToString();
     }
 
+    static string JsonField(string json, string name)
+    {
+        try
+        {
+            Match match = Regex.Match(json ?? "", "\\\"" + Regex.Escape(name) +
+                "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
+            if (!match.Success) return "";
+            return match.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+        catch { return ""; }
+    }
+
+    static void PostMain(string json)
+    {
+        WebView2 web = _mainWeb;
+        if (web == null || web.IsDisposed) return;
+        try
+        {
+            if (web.InvokeRequired)
+            {
+                web.BeginInvoke((MethodInvoker)delegate { PostMain(json); });
+                return;
+            }
+            if (web.CoreWebView2 != null) web.CoreWebView2.PostWebMessageAsJson(json);
+        }
+        catch { }
+    }
+
+    static void StopLiveSpeechEngine()
+    {
+        SpeechRecognitionEngine engine = _liveSpeech;
+        _liveSpeech = null;
+        if (engine == null) return;
+        try { engine.RecognizeAsyncCancel(); } catch { }
+        try { engine.SetInputToNull(); } catch { }
+        try { engine.Dispose(); } catch { }
+    }
+
+    static void ResumeLiveSpeech()
+    {
+        if (!_liveSpeechWanted || _capsuleSpeech != null || _liveSpeech != null ||
+            string.IsNullOrEmpty(_liveSpeechSession)) return;
+        string desiredKey = _liveSpeechSession + "\0" + _liveSpeechLanguage;
+        if (_liveSpeechFailedFor == desiredKey) return;
+        try
+        {
+            RecognizerInfo info = CapsuleRecognizer(_liveSpeechLanguage);
+            if (info == null) throw new InvalidOperationException("Windows has no speech recognizer installed");
+            SpeechRecognitionEngine engine = new SpeechRecognitionEngine(info);
+            string session = _liveSpeechSession;
+            _liveSpeech = engine;
+            engine.LoadGrammar(new DictationGrammar());
+            engine.SpeechRecognized += delegate (object sender, SpeechRecognizedEventArgs e)
+            {
+                string spoken = e.Result == null ? "" : (e.Result.Text ?? "").Trim();
+                if (spoken.Length == 0 || !_liveSpeechWanted || session != _liveSpeechSession) return;
+                long at = (long)(DateTime.UtcNow - new DateTime(
+                    1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+                PostMain("{\"type\":\"live-native-transcript\",\"session\":" +
+                         JsonString(session) + ",\"at_ms\":" + at + ",\"text\":" +
+                         JsonString(spoken) + "}");
+            };
+            engine.SetInputToDefaultAudioDevice();
+            engine.RecognizeAsync(RecognizeMode.Multiple);
+            _liveSpeechFailedFor = "";
+            PostMain("{\"type\":\"live-native-speech-status\",\"active\":true,\"session\":" +
+                     JsonString(session) + "}");
+        }
+        catch (Exception ex)
+        {
+            StopLiveSpeechEngine();
+            _liveSpeechFailedFor = desiredKey;
+            PostMain("{\"type\":\"live-native-speech-status\",\"active\":false,\"session\":" +
+                     JsonString(_liveSpeechSession) + ",\"message\":" +
+                     JsonString("Local continuous speech unavailable: " + ex.Message) + "}");
+        }
+    }
+
+    static void ConfigureLiveSpeech(bool wanted, string session, string language)
+    {
+        session = (session ?? "").Trim();
+        language = (language ?? "").Trim();
+        bool changed = session != _liveSpeechSession || language != _liveSpeechLanguage;
+        _liveSpeechWanted = wanted && session.Length > 0;
+        _liveSpeechSession = session;
+        _liveSpeechLanguage = language;
+        if (!_liveSpeechWanted) { _liveSpeechFailedFor = ""; StopLiveSpeechEngine(); return; }
+        if (changed) { _liveSpeechFailedFor = ""; StopLiveSpeechEngine(); }
+        ResumeLiveSpeech();
+    }
+
+    static void SuspendLiveSpeech()
+    {
+        StopLiveSpeechEngine();
+    }
+
     static void PostCapsule(string json)
     {
         Form form = _capsuleForm;
@@ -730,6 +841,7 @@ class CollieWallpaper : Form
     static void StartCapsuleSpeech(string requestedLanguage)
     {
         StopCapsuleSpeech();
+        SuspendLiveSpeech();
         _capsuleSpeechDelivered = false;
         try
         {
@@ -769,6 +881,7 @@ class CollieWallpaper : Form
         catch (Exception ex)
         {
             StopCapsuleSpeech();
+            ResumeLiveSpeech();
             PostCapsule("{\"type\":\"capsule-speech-error\",\"message\":" +
                         JsonString("Local speech recognition unavailable: " + ex.Message) + "}");
         }
@@ -846,6 +959,7 @@ class CollieWallpaper : Form
             form.FormClosed += delegate
             {
                 StopCapsuleSpeech();
+                ResumeLiveSpeech();
                 try { web.Dispose(); } catch { }
                 _capsuleWeb = null; _capsuleForm = null;
             };

@@ -384,11 +384,17 @@ def test_live_copilot_is_a_top_level_context_and_handoff_mode():
     server = read("harness/webapp.py")
 
     assert 'id="navLive"' in desktop and 'id="navInterview"' not in desktop
-    assert 'openEmbeddedSurface("Live Copilot", "/live?embedded=1", "live")' in desktop
+    assert 'openEmbeddedSurface("Live Copilot", "/live?embedded=1" +' in desktop
+    assert '"&native_shell=1"' in desktop
     assert 'path in ("/live", "/interview")' in server
     assert 'path in ("/api/live-copilot", "/api/interview")' in server
     assert "Stay in context while you work" in live
-    assert "Notice app changes" in live and "Understand the conversation" in live
+    assert "Follow windows and apps" in live and "Understand the conversation" in live
+    assert 'id="observeInput" checked' in live and "LIVE LOG" in live
+    assert 'id="handoffGuide"' in live and 'getElementById("handoffGuide").hidden=active' in live
+    assert ".handoff[hidden]{display:none}" in live
+    assert 'class="handoff" id="handoff" hidden' in live
+    assert "NATIVE_HOST&&!hand.pending" in live
     assert "Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space" in live
     assert "/api/live-copilot/work" in live and 'type:"collie:run"' in live
     assert "A board or browser canvas is one place" in live
@@ -401,7 +407,10 @@ def test_live_capsule_is_a_native_hotkey_surface_not_a_full_window_handoff():
     server = read("harness/webapp.py")
 
     assert 'path == "/live-capsule"' in server
+    assert 'authority_text = ' in server and 'run_kwargs["authority_msg"] = authority_text' in server
     assert "LIVE CAPSULE COMMAND" in capsule and "/api/stream" in capsule
+    assert "authority_text=" in capsule and "runner=collie" in capsule
+    assert '/api/live-copilot/event' in capsule and 'kind:"command"' in capsule
     assert "capsule-speech-final" in capsule and "capsule-context" in capsule
     assert "TARGET.hwnd" in capsule and "TARGET.pid" in capsule
     assert "OpenLiveCapsule(CaptureLiveTarget())" in native_host
@@ -409,6 +418,7 @@ def test_live_capsule_is_a_native_hotkey_surface_not_a_full_window_handoff():
     assert "WakeWindow()" not in hotkey
     assert "GetForegroundWindow()" in native_host
     assert "SpeechRecognitionEngine" in native_host and "System.Speech" in build
+    assert "live-native-state" in native_host and "live-native-transcript" in native_host
     ready = native_host.split('raw.IndexOf("capsule-ready"', 1)[1].split(
         'else if (raw.IndexOf("capsule-listen"', 1)[0]
     assert "PostCapsuleTarget(target)" in ready and "StartCapsuleSpeech" not in ready

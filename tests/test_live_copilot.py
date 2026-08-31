@@ -13,7 +13,9 @@ def test_live_session_accepts_no_task_and_observes_without_recording_consent(tmp
     assert value["active"] is True
     assert value["context"] == ""
     assert value["observe_apps"] is True
+    assert value["observe_ui"] is True and value["observe_input"] is True
     assert value["consent_version"] == "not-required"
+    assert value["events"][-1]["kind"] == "session"
 
 
 def test_audio_listening_requires_consent_and_clears_authority_on_stop(tmp_path):
@@ -48,7 +50,8 @@ def test_native_audio_chunks_become_bounded_speaker_events_and_are_deleted(tmp_p
                                 mime_type="audio/webm", data=b"audio", transcriber=transcribe)
     assert queued["queued"]
     deadline = time.time() + 3
-    while time.time() < deadline and not store.snapshot()["events"]:
+    while time.time() < deadline and not any(
+            row.get("source") == "other" for row in store.snapshot()["events"]):
         time.sleep(.02)
     value = store.snapshot()
     assert value["events"][-1]["source"] == "other"
@@ -104,7 +107,7 @@ def test_late_understanding_result_is_dropped_after_session_stops(tmp_path):
     assert value["summary"] == "" and value["suggestions"] == []
 
 
-def test_environment_observation_is_app_name_only_and_handoff_freezes_it(tmp_path):
+def test_environment_observation_logs_window_metadata_without_input_content(tmp_path):
     from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
 
     class Source:
@@ -112,13 +115,18 @@ def test_environment_observation_is_app_name_only_and_handoff_freezes_it(tmp_pat
             return "Figma.exe"
 
     store = LiveSessionStore(tmp_path)
-    store.start(listen=False, consent=False, understand=False, observe_apps=True)
+    store.start(listen=False, consent=False, understand=False, observe_apps=True,
+                observe_ui=False, observe_input=False)
     runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
     runtime.activity_source = Source()
+    runtime._foreground_window = lambda: {
+        "app": "figma", "title": "Architecture board", "pid": 42, "hwnd": 9001}
     assert runtime.tick() is False
     value = store.snapshot()
-    assert value["events"][-1]["text"] == "Foreground app changed to figma."
-    assert "title" not in value["events"][-1] and "keys" not in value["events"][-1]
+    assert value["events"][-1]["text"] == "Opened figma · Architecture board."
+    assert value["events"][-1]["kind"] == "window"
+    assert value["events"][-1]["title"] == "Architecture board"
+    assert "keys" not in value["events"][-1]
     handoff = store.request_handoff()
     assert handoff["pending"] and handoff["app"] == "figma"
 
@@ -156,7 +164,8 @@ def test_natural_language_tool_starts_useful_live_defaults_and_can_stop(monkeypa
     started = json.loads(tool.run({"action": "start", "context": "System design interview"},
                                   None))
     assert started["active"] and started["started_from"] == "natural_language"
-    assert started["observe_apps"] and started["observe_ui"] and started["understand"]
+    assert (started["observe_apps"] and started["observe_ui"] and
+            started["observe_input"] and started["understand"])
     assert not started["listen"] and "Ctrl+Alt+Space" in started["next"]
     stopped = json.loads(tool.run({"action": "stop"}, None))
     assert not stopped["active"]
@@ -182,11 +191,40 @@ def test_opt_in_semantic_ui_observation_drops_values_and_keys(monkeypatch, tmp_p
                 observe_ui=True)
     runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
     runtime.activity_source = Source()
+    runtime._foreground_window = lambda: {
+        "app": "figma", "title": "Design", "pid": 42, "hwnd": 9001}
     runtime.last_ui_poll_ms = 0
     runtime.tick()
     text = store.snapshot()["events"][-1]["text"]
     assert "focused Edit: Search layers" in text and "Button: Share" in text
     assert "private query" not in text and "secret" not in text
+
+
+def test_input_observation_is_throttled_metadata_not_a_keylogger(tmp_path):
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    class Source:
+        def foreground_app(self):
+            return "Figma.exe"
+
+        def idle_seconds(self):
+            return 0.05
+
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=False,
+                observe_ui=False, observe_input=True)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    runtime.activity_source = Source()
+    runtime._foreground_window = lambda: {
+        "app": "figma", "title": "Private draft", "pid": 42, "hwnd": 9001}
+    runtime.last_input_at_ms = 1
+    runtime.tick()
+    row = store.snapshot()["events"][-1]
+    assert row["kind"] == "interaction" and "content not recorded" in row["text"]
+    assert "key" not in row and "value" not in row
+    before = len(store.snapshot()["events"])
+    runtime.tick()
+    assert len(store.snapshot()["events"]) == before
 
 
 def test_explicit_handoff_can_create_durable_mission(monkeypatch, tmp_path):
@@ -224,6 +262,20 @@ def test_stopped_session_refuses_new_context(tmp_path):
     with pytest.raises(LiveCopilotError, match="authority"):
         store.ingest_audio(session_id=started["session_id"], source="microphone", seq=0,
                            mime_type="audio/webm", data=b"late")
+
+
+def test_delayed_native_transcript_cannot_cross_live_sessions(tmp_path):
+    from harness.live_copilot import LiveCopilotError, LiveSessionStore
+
+    store = LiveSessionStore(tmp_path)
+    old = store.start(listen=False, consent=False)
+    store.stop()
+    current = store.start(listen=False, consent=False)
+    with pytest.raises(LiveCopilotError, match="different session"):
+        store.add_event(source="you", kind="speech", text="stale phrase",
+                        session_id=old["session_id"])
+    assert current["session_id"] != old["session_id"]
+    assert all(row.get("text") != "stale phrase" for row in store.snapshot()["events"])
 
 
 def test_default_registry_exposes_live_copilot_not_a_meeting_adapter(monkeypatch):

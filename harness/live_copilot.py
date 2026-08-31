@@ -26,7 +26,7 @@ from .tools import Tool
 SCHEMA_VERSION = 1
 MAX_STATE_BYTES = 4 * 1024 * 1024
 MAX_AUDIO_BYTES = 4 * 1024 * 1024
-MAX_EVENTS = 180
+MAX_EVENTS = 480
 MAX_SUGGESTIONS = 32
 MAX_WORK = 24
 _LOCK = threading.RLock()
@@ -72,7 +72,8 @@ def _default_state() -> dict:
         "listen": False,
         "understand": False,
         "observe_apps": True,
-        "observe_ui": False,
+        "observe_ui": True,
+        "observe_input": True,
         "board_edit": False,
         "consent_version": "",
         "consent_at_ms": 0,
@@ -171,7 +172,7 @@ class LiveSessionStore:
                 pass
 
     def start(self, *, context="", listen=True, understand=True, observe_apps=True,
-              observe_ui=False,
+              observe_ui=True, observe_input=True,
               board_edit=False,
               consent=False) -> dict:
         if listen and consent is not True:
@@ -188,13 +189,18 @@ class LiveSessionStore:
                 "understand": bool(understand),
                 "observe_apps": bool(observe_apps),
                 "observe_ui": bool(observe_ui),
+                "observe_input": bool(observe_input),
                 "board_edit": bool(board_edit),
                 "consent_version": "live-copilot-v1" if listen else "not-required",
                 "consent_at_ms": now if listen else 0,
+                "events": [{"id": "evt-" + os.urandom(8).hex(), "at_ms": now,
+                            "received_at_ms": now, "source": "system", "speaker": "",
+                            "kind": "session", "app": "", "title": "",
+                            "text": "Live monitoring started. Context is being prepared continuously."}],
                 "audit": [{"at_ms": now, "action": "session_started",
-                           "detail": "listen=%s understand=%s observe_apps=%s observe_ui=%s" %
+                           "detail": "listen=%s understand=%s observe_apps=%s observe_ui=%s observe_input=%s" %
                                      (bool(listen), bool(understand), bool(observe_apps),
-                                      bool(observe_ui))}],
+                                      bool(observe_ui), bool(observe_input))}],
             })
             self._write(value)
         return self.snapshot()
@@ -204,6 +210,7 @@ class LiveSessionStore:
             value = self._read()
             value.update({"active": False, "ended_at_ms": _now_ms(), "listen": False,
                           "understand": False, "observe_apps": False, "observe_ui": False,
+                          "observe_input": False,
                           "board_edit": False,
                           "pending_diagram": None})
             value["analysis"] = {**(value.get("analysis") or {}), "inflight": False}
@@ -214,7 +221,7 @@ class LiveSessionStore:
         return self.snapshot()
 
     def update_permissions(self, *, listen=None, understand=None, observe_apps=None,
-                           observe_ui=None,
+                           observe_ui=None, observe_input=None,
                            board_edit=None, consent=None) -> dict:
         with _LOCK:
             value = self._read()
@@ -234,13 +241,15 @@ class LiveSessionStore:
                 value["observe_apps"] = bool(observe_apps)
             if observe_ui is not None:
                 value["observe_ui"] = bool(observe_ui)
+            if observe_input is not None:
+                value["observe_input"] = bool(observe_input)
             if board_edit is not None:
                 value["board_edit"] = bool(board_edit)
             value["audit"] = (value.get("audit") or [])[-79:] + [{
                 "at_ms": _now_ms(), "action": "permissions_changed",
-                "detail": "listen=%s understand=%s observe_apps=%s observe_ui=%s board_edit=%s" %
+                "detail": "listen=%s understand=%s observe_apps=%s observe_ui=%s observe_input=%s board_edit=%s" %
                           (value["listen"], value["understand"], value["observe_apps"],
-                           value["observe_ui"], value["board_edit"])}]
+                           value["observe_ui"], value["observe_input"], value["board_edit"])}]
             self._write(value)
         return self.snapshot()
 
@@ -263,10 +272,11 @@ class LiveSessionStore:
             "understand": bool(value.get("understand")),
             "observe_apps": bool(value.get("observe_apps")),
             "observe_ui": bool(value.get("observe_ui")),
+            "observe_input": bool(value.get("observe_input")),
             "board_edit": bool(value.get("board_edit")),
             "consent_version": value.get("consent_version") or "",
             "consent_at_ms": int(value.get("consent_at_ms") or 0),
-            "events": (value.get("events") or [])[-80:],
+            "events": (value.get("events") or [])[-240:],
             "summary": value.get("summary") or "",
             "suggestions": (value.get("suggestions") or [])[-MAX_SUGGESTIONS:],
             "work": (value.get("work") or [])[-MAX_WORK:],
@@ -281,7 +291,8 @@ class LiveSessionStore:
                        "suggestions_auto_execute": False, "external_actions_require_gate": True},
         }
 
-    def add_event(self, *, source, text, speaker="", at_ms=None) -> dict:
+    def add_event(self, *, source, text, speaker="", at_ms=None, kind="context",
+                  app="", title="", session_id="") -> dict:
         source = _text(source, 24).casefold()
         if source not in {"you", "other", "typed", "system"}:
             raise LiveCopilotError("event source must be you, other, typed, or system")
@@ -297,11 +308,16 @@ class LiveSessionStore:
         row = {"id": "evt-" + hashlib.sha256(
             (source + "\0" + text + "\0" + str(now) + os.urandom(3).hex()).encode()
         ).hexdigest()[:16], "at_ms": when, "received_at_ms": now,
-               "source": source, "speaker": _text(speaker, 100), "text": text}
+               "source": source, "speaker": _text(speaker, 100),
+               "kind": _text(kind, 32).casefold() or "context",
+               "app": _text(app, 80).casefold(), "title": _text(title, 300),
+               "text": text}
         with _LOCK:
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("no live session is active")
+            if session_id and value.get("session_id") != str(session_id):
+                raise LiveCopilotError("live event belongs to a different session")
             value["events"] = (value.get("events") or [])[-(MAX_EVENTS - 1):] + [row]
             audio = dict(value.get("audio") or {})
             if source in {"you", "other"}:
@@ -442,7 +458,7 @@ class LiveSessionStore:
             event_source = "you" if source == "microphone" else "other"
             for speaker, text in texts:
                 try:
-                    self.add_event(source=event_source, speaker=speaker, text=text)
+                    self.add_event(source=event_source, speaker=speaker, kind="speech", text=text)
                 except LiveCopilotError:
                     break
 
@@ -478,6 +494,9 @@ class LiveSessionStore:
                 for event in reversed(value.get("events") or []):
                     if event.get("source") != "system":
                         continue
+                    if event.get("app"):
+                        app = _text(event.get("app"), 80).casefold()
+                        break
                     match = re.fullmatch(r"Foreground app changed to ([a-z0-9._-]+)\.",
                                          str(event.get("text") or ""))
                     if match:
@@ -527,6 +546,7 @@ class LiveSessionStore:
                 context_text += " Accessible UI: " + semantic
             event = {"id": "evt-" + os.urandom(8).hex(), "at_ms": now,
                      "received_at_ms": _now_ms(), "source": "system", "speaker": "",
+                     "kind": "handoff", "app": app, "title": title,
                      "text": _text(context_text, 2_000)}
             value["events"] = (value.get("events") or [])[-(MAX_EVENTS - 1):] + [event]
             suggestions = [row for row in value.get("suggestions") or []
@@ -744,7 +764,7 @@ def analyze_payload(payload: dict) -> dict:
 
 
 class LiveCopilotRuntime:
-    def __init__(self, root=None, analyzer=None, debounce_ms=2_000, min_interval_ms=10_000):
+    def __init__(self, root=None, analyzer=None, debounce_ms=650, min_interval_ms=3_000):
         self.store = LiveSessionStore(root)
         self.analyzer = analyzer or analyze_payload
         self.debounce_ms = max(0, int(debounce_ms))
@@ -754,39 +774,66 @@ class LiveCopilotRuntime:
             self.activity_source = WindowsActivitySource()
         except Exception:
             self.activity_source = None
-        self.last_app = ""
+        self.last_window = ""
         self.last_ui = ""
         self.last_ui_poll_ms = 0
+        self.last_input_at_ms = 0
+        self.last_activity_event_ms = 0
+        self.focused_control = ""
 
-    def _observe_environment(self, value: dict) -> bool:
-        if not value.get("observe_apps") or self.activity_source is None:
-            self.last_app = ""
-            return False
+    def _foreground_window(self) -> dict:
+        """Return the exact foreground window while keeping failures observational."""
+        if self.activity_source is None:
+            return {}
         try:
             from .ambient import _app_name
             app = _app_name(self.activity_source.foreground_app())
         except Exception:
+            return {}
+        if not app or app in {"collie", "python", "pythonw"}:
+            return {}
+        row = {}
+        try:
+            from . import native_input
+            hwnd = int(native_input._user32().GetForegroundWindow() or 0)
+            row = native_input.find_window(hwnd=hwnd) or {}
+            # A mocked/custom activity source may intentionally disagree with the real desktop.
+            # Never splice metadata from a different process into that observation.
+            if _app_name(row.get("process")) != app:
+                row = {}
+        except Exception:
+            row = {}
+        return {"app": app, "title": _text(row.get("title"), 300),
+                "pid": int(row.get("pid") or 0), "hwnd": int(row.get("hwnd") or 0)}
+
+    def _observe_environment(self, value: dict, foreground: dict) -> bool:
+        if not value.get("observe_apps") or self.activity_source is None:
+            self.last_window = ""
             return False
-        if not app or app in {"collie", "python", "pythonw"} or app == self.last_app:
+        app, title = foreground.get("app") or "", foreground.get("title") or ""
+        marker = "%s\0%s\0%s" % (app, title, foreground.get("hwnd") or 0)
+        if not app or marker == self.last_window:
             return False
-        self.last_app = app
-        self.store.add_event(source="system", text="Foreground app changed to %s." % app)
+        self.last_window = marker
+        text = "Opened %s" % app
+        if title:
+            text += " · " + title
+        self.store.add_event(source="system", kind="window", app=app, title=title,
+                             text=text + ".")
         return True
 
-    def _observe_ui(self, value: dict, now: int) -> bool:
+    def _observe_ui(self, value: dict, now: int, foreground: dict) -> bool:
         """Keep a semantic, value-free UI delta; never retain keys, clipboard, or screenshots."""
-        if not value.get("observe_ui") or now - self.last_ui_poll_ms < 5_000:
+        if not value.get("observe_ui") or now - self.last_ui_poll_ms < 2_000:
             return False
         self.last_ui_poll_ms = now
         try:
-            from .ambient import _app_name
-            current_app = _app_name(self.activity_source.foreground_app()) \
-                if self.activity_source is not None else ""
-            if not current_app or current_app in {"collie", "python", "pythonw"}:
+            current_app = foreground.get("app") or ""
+            if not current_app:
                 return False
             from . import native
-            pid = native.foreground_pid()
-            result = native.tree(pid=pid, max=36)
+            result = native.tree(hwnd=foreground.get("hwnd") or 0,
+                                 pid=foreground.get("pid") or native.foreground_pid(), max=36)
         except Exception:
             return False
         if not isinstance(result, dict) or not result.get("ok"):
@@ -803,17 +850,45 @@ class LiveCopilotRuntime:
                 continue
             prefix = "focused " if item.get("focused") else ""
             labels.append(prefix + (control or "control") + (": " + name if name else ""))
+            if item.get("focused"):
+                # Interaction pulses use only the control type, never a field label/value.
+                self.focused_control = control or "control"
             if len(labels) >= 10:
                 break
         if not labels:
             return False
-        summary = "Accessible UI in %s: %s" % (current_app, "; ".join(labels))
+        summary = "Interface in %s: %s" % (current_app, "; ".join(labels))
         summary = _text(summary, 1_200)
         digest = hashlib.sha256(summary.encode("utf-8")).hexdigest()
         if digest == self.last_ui:
             return False
         self.last_ui = digest
-        self.store.add_event(source="system", text=summary)
+        self.store.add_event(source="system", kind="interface", app=current_app,
+                             title=foreground.get("title") or "", text=summary)
+        return True
+
+    def _observe_input(self, value: dict, now: int, foreground: dict) -> bool:
+        """Record a throttled activity pulse, never the user's raw keys or field contents."""
+        if not value.get("observe_input") or self.activity_source is None:
+            self.last_input_at_ms = 0
+            return False
+        try:
+            idle_ms = max(0, int(float(self.activity_source.idle_seconds()) * 1_000))
+        except Exception:
+            return False
+        input_at = now - idle_ms
+        changed = input_at > self.last_input_at_ms + 200
+        self.last_input_at_ms = max(self.last_input_at_ms, input_at)
+        app = foreground.get("app") or ""
+        if (not changed or not app or idle_ms > 1_500 or
+                now - self.last_activity_event_ms < 3_000):
+            return False
+        self.last_activity_event_ms = now
+        focus = " · focused %s" % self.focused_control if self.focused_control else ""
+        self.store.add_event(
+            source="system", kind="interaction", app=app,
+            title=foreground.get("title") or "",
+            text="User interaction in %s%s (content not recorded)." % (app, focus))
         return True
 
     def tick(self) -> bool:
@@ -822,8 +897,10 @@ class LiveCopilotRuntime:
             value = self.store._read()
             if not value.get("active"):
                 return False
-        self._observe_environment(value)
-        self._observe_ui(value, now)
+        foreground = self._foreground_window()
+        self._observe_environment(value, foreground)
+        self._observe_ui(value, now, foreground)
+        self._observe_input(value, now, foreground)
         with _LOCK:
             value = self.store._read()
             if not value.get("understand"):
@@ -848,7 +925,8 @@ class LiveCopilotRuntime:
             payload = {
                 "optional_context": value.get("context") or "",
                 "previous_summary": value.get("summary") or "",
-                "events": [{k: row.get(k) for k in ("source", "speaker", "text", "at_ms")}
+                "events": [{k: row.get(k) for k in (
+                    "source", "speaker", "kind", "app", "title", "text", "at_ms")}
                            for row in events[-36:]],
                 "user_notes": (value.get("notes") or [])[-10:],
             }
@@ -950,7 +1028,8 @@ class LiveCopilotTool(Tool):
         "its current understanding, change session permissions, add a note, explicitly hand a "
         "goal to durable background work, or preview/apply a diagram. A natural-language 'start a "
         "live session' request should use start: it observes app changes and bounded active-"
-        "interface labels by default, but never keys, clipboard, field values, or screenshots. "
+        "interface labels plus content-free interaction pulses by default, but never raw keys, "
+        "clipboard, field values, or screenshots. "
         "Continuous conversation audio requires explicit participant consent. After start, if "
         "desktop_control_ready is false and the user wants actions in apps, use enable_capability "
         "for desktop_control so its ordinary approval UI can grant it. Suggestions never execute "
@@ -965,6 +1044,7 @@ class LiveCopilotTool(Tool):
         "context": {"type": "string"},
         "listen": {"type": "boolean"}, "understand": {"type": "boolean"},
         "observe_apps": {"type": "boolean"}, "observe_ui": {"type": "boolean"},
+        "observe_input": {"type": "boolean"},
         "board_edit": {"type": "boolean"}, "consent": {"type": "boolean"},
         "suggestion_id": {"type": "string"},
         "nodes": {"type": "array", "items": {"type": "object"}},
@@ -988,6 +1068,7 @@ class LiveCopilotTool(Tool):
                     # Natural-language Live means useful current-app context. Unlike continuous
                     # screenshots, this retains only bounded accessibility types and labels.
                     observe_ui=args.get("observe_ui") is not False,
+                    observe_input=args.get("observe_input") is not False,
                     board_edit=args.get("board_edit") is True,
                     consent=args.get("consent") is True)
                 value["started_from"] = "natural_language"
@@ -1002,6 +1083,8 @@ class LiveCopilotTool(Tool):
                     understand=args.get("understand") if "understand" in args else None,
                     observe_apps=args.get("observe_apps") if "observe_apps" in args else None,
                     observe_ui=args.get("observe_ui") if "observe_ui" in args else None,
+                    observe_input=(args.get("observe_input")
+                                   if "observe_input" in args else None),
                     board_edit=args.get("board_edit") if "board_edit" in args else None,
                     consent=args.get("consent") if "consent" in args else None),
                     ensure_ascii=False, indent=2)

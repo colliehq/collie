@@ -810,7 +810,7 @@ class Harness:
         ).verified
 
     def run(self, task_id: str, user_msg, consolidate: bool = True,
-            history: list = None) -> RunResult:
+            history: list = None, authority_msg=None) -> RunResult:
         t0 = time.time()
         # Redact before *any* model-facing or durable copy is made.  Previously
         # only tool output was protected, while a credential pasted in the user
@@ -828,10 +828,18 @@ class Harness:
                                else str(user_msg or ""))
         safe_user_msg = (_redact.redact_obj(normalized_user_msg, self._secret_vault)
                          if _redact_on else normalized_user_msg)
+        # Some first-party surfaces frame an exact user command with untrusted window metadata for
+        # the model. Only the separately authenticated, verbatim command may mint action authority;
+        # the framing remains useful model context but can never expand the user's grant.
+        normalized_authority = (authority_msg if isinstance(authority_msg, (str, list))
+                                else str(authority_msg or ""))
+        safe_authority_msg = (_redact.redact_obj(normalized_authority, self._secret_vault)
+                              if _redact_on else normalized_authority)
         # The authenticated user's message is the only model-adjacent text allowed to
         # create Authority v2 grants. This happens before provider/tool output exists.
         if self.gate is not None and hasattr(self.gate, "begin_request"):
-            self.gate.begin_request(safe_user_msg, project=self.project, mission_id=task_id)
+            self.gate.begin_request(safe_authority_msg or safe_user_msg,
+                                    project=self.project, mission_id=task_id)
         rid = self.recorder.start_run(task_id, "collie", self.provider.model,
                                       self.provider.name, note="v" + __version__)
         res = RunResult(run_id=rid, task_id=task_id, harness="collie",

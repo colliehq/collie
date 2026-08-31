@@ -3026,7 +3026,8 @@ class Handler(BaseHTTPRequestHandler):
                                     body.get("share_transcript") is True),
                             understand=body.get("understand") is not False,
                             observe_apps=body.get("observe_apps") is not False,
-                            observe_ui=body.get("observe_ui") is True,
+                            observe_ui=body.get("observe_ui") is not False,
+                            observe_input=body.get("observe_input") is not False,
                             board_edit=body.get("board_edit") is True,
                             consent=body.get("consent") is True), 201)
                     if path.endswith("/stop"):
@@ -3042,13 +3043,18 @@ class Handler(BaseHTTPRequestHandler):
                                           if "observe_apps" in body else None),
                             observe_ui=(body.get("observe_ui")
                                         if "observe_ui" in body else None),
+                            observe_input=(body.get("observe_input")
+                                           if "observe_input" in body else None),
                             board_edit=(body.get("board_edit")
                                         if "board_edit" in body else None),
                             consent=(body.get("consent") if "consent" in body else None)))
                     if path.endswith("/event"):
                         return self._send_json(store.add_event(
                             source=body.get("source"), text=body.get("text"),
-                            speaker=body.get("speaker") or "", at_ms=body.get("at_ms")), 201)
+                            speaker=body.get("speaker") or "", at_ms=body.get("at_ms"),
+                            kind=body.get("kind") or "context", app=body.get("app") or "",
+                            title=body.get("title") or "",
+                            session_id=body.get("session_id") or ""), 201)
                     if path.endswith("/work"):
                         return self._send_json(store.start_work(
                             text=body.get("text") or "",
@@ -4224,6 +4230,10 @@ class Handler(BaseHTTPRequestHandler):
         settings.apply()   # a Settings-panel save takes effect on the next query, no restart
 
         q = (qs.get("q", [""])[0] or "").strip()
+        # First-party focused surfaces may add model framing around a verbatim command. This value
+        # arrives through the same authenticated request but is kept separate so only the user's
+        # exact words, never window titles or generated instructions, compile Authority v2 grants.
+        authority_text = (qs.get("authority_text", [""])[0] or "").strip()[:4_000]
         sid = (qs.get("session", [""])[0] or "").strip() or sessions.new_id()
         context_ids = [i for i in (qs.get("ctx", [""])[0] or "").split(",") if i]
         ide_items = []
@@ -5147,7 +5157,10 @@ class Handler(BaseHTTPRequestHandler):
                 # visible as a handoff artifact unless Collie explicitly closes it.
                 from .browserbridge import browser_space
                 with browser_space("web-" + sid[:36], release=True):
-                    res = h.run("web", user_msg, consolidate=True, history=history)
+                    run_kwargs = {"consolidate": True, "history": history}
+                    if authority_text:
+                        run_kwargs["authority_msg"] = authority_text
+                    res = h.run("web", user_msg, **run_kwargs)
             finally:
                 stop_hb.set()                  # end the heartbeat before we send `done`
             canceled = bool(getattr(res, "canceled", False)

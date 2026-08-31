@@ -5,10 +5,11 @@ explicit session, Collie maintains a small current-context model from the signal
 
 1. Collie's own first-party UI can capture microphone and meeting/system audio and retain transcript
    text rather than audio chunks.
-2. Low-privacy environment awareness can notice foreground application names. A separate switch can
-   include a bounded set of active-interface accessibility control types and labels; labels may
-   contain visible page or document text. Neither mode logs keys, clipboard content, field values,
-   window titles, or screenshots.
+2. Window awareness records foreground application names and window titles. Interface awareness
+   adds a bounded set of accessibility control types and labels; labels may contain visible page or
+   document text. Content-free activity pulses say that the user interacted and which control type
+   had focus. None of these signals contains raw keys, clipboard content, passwords, field values,
+   or screenshots.
 3. The configured model continuously compresses recent events into a short current understanding
    and a few timely cues. A cue has no authority and never runs itself.
 
@@ -18,11 +19,15 @@ mode without making you navigate to the Live page. Keep the main window minimize
 
 While the session is active, press **Ctrl+Alt+Space** from any Windows application. Collie freezes
 the exact foreground process/window and its bounded accessibility labels *before* focus changes,
-then opens only a small top-of-screen capsule. The capsule immediately listens using Windows' local
+then opens only a small top-of-screen capsule. The capsule is the direct-interaction moment and
+immediately listens using Windows' local
 speech recognizer (Chinese and English when those recognizers are installed). Only recognized command
 text goes to the configured Collie model. You can say “write what I just said here” or “finish this
 design module”; the generated task is explicitly targeted back to the prior window rather than the
-capsule. Short work runs interactively under the ordinary Gate. Long work can become a durable
+capsule. The exact recognized or typed command is the authenticated authority for that turn, so
+ordinary work on the captured target does not require a second blanket approval. A commit still has
+to be explicitly named, and purchases, secrets, security changes, a different target, and ambiguous
+irreversible work remain gated. Long work can become a durable
 Mission while the full Collie window stays out of the way.
 
 ## Optional work surfaces
@@ -39,8 +44,11 @@ before each write so authority cannot silently move to another page.
 
 ## Session conduct and privacy
 
-Confirm that every participant agrees before enabling conversation capture. The UI requests
-microphone and system audio in one start flow. Each short audio chunk is deleted after the configured
+Confirm that every participant agrees before enabling conversation capture. In the native Windows
+app the local microphone recognizer continues while the Live session is active, even when the Live
+page is closed; meeting/system audio still requires the operating system's visible share picker.
+In a browser, the UI requests microphone and system audio in one start flow. Each short audio chunk
+is deleted after the configured
 speech service returns text; it is never placed in the agent prompt. Transcript and derived state
 stay under Collie's private local state directory, while text sent for speech/understanding follows
 the destinations disclosed in the UI.
@@ -51,6 +59,8 @@ speech engine. The explicit handoff retains the foreground process name, PID/win
 title, and bounded control types/labels so a command can return to the right surface. It does not
 retain field values, keys, clipboard content, or a screenshot.
 
-Stopping the session clears capture, continuous-understanding, and optional work-surface authority.
+The Live log keeps up to 480 bounded events and shows their local timestamps. Understanding is
+prewarmed from changed context every few seconds rather than waiting for the capsule. Stopping the
+session clears capture, continuous-understanding, and optional work-surface authority.
 An interactive task or Mission then continues under Collie's ordinary permission, budget, evidence,
 and recovery boundaries.

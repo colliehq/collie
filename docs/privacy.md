@@ -34,9 +34,11 @@ feature inherently requires:
   calendar feeds or send schedule metadata to a model. Reminder detection can prefill a note but
   cannot start recording or carry consent from one meeting to another.
 - **Live Copilot (separately started for every session).** An optional task description may be empty.
-  Basic app awareness retains application names only. A separate active-interface option retains a
-  bounded semantic summary of accessibility control types and labels, which may contain visible page
-  or document text; it discards field values and does not log keys, clipboard, titles, or screenshots.
+  Window awareness retains foreground application names and window titles. Active-interface
+  awareness retains a bounded semantic summary of accessibility control types and labels, which may
+  contain visible page or document text. Optional activity pulses retain interaction timing and the
+  focused control type. These modes discard field values and do not log raw keys, clipboard,
+  passwords, or screenshots.
   Conversation mode requires participant consent and
   uses Collie's first-party microphone/system-audio capture; transient audio chunks are deleted after
   the configured speech service returns transcript text. Transcript and compact live understanding
@@ -46,8 +48,11 @@ feature inherently requires:
   labels so the requested action can return to the correct window. Field values, keys, clipboard
   content, and screenshots remain excluded. The shortcut's one-shot command audio is processed by
   Windows' local speech recognizer; only recognized text is sent to the configured Collie model.
-  Interactive tasks and background Missions still use the ordinary permission and recovery
-  boundaries. Stopping clears live capture and surface authority.
+  The exact capsule command grants authority only for that turn and captured target: ordinary and
+  reversible actions can proceed, while a commit must be explicitly requested and purchases,
+  security changes, secrets, target changes, and ambiguous irreversible actions remain gated.
+  Interactive tasks and background Missions still use the ordinary recovery boundaries. Stopping
+  clears live capture and surface authority.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,
