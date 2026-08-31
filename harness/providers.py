@@ -627,13 +627,15 @@ class AnthropicProvider(ModelProvider):
             body["tools"] = tool_schemas
         if on_text:
             body["stream"] = True                # real token streaming (interactive only)
+        headers = {
+            "content-type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        if getattr(self, "speed", "standard") == "fast":
+            headers["anthropic-beta"] = "fast-mode-2026-02-01"
         req = urllib.request.Request(
-            self.API, data=json.dumps(body).encode(),
-            headers={
-                "content-type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-            }, method="POST")
+            self.API, data=json.dumps(body).encode(), headers=headers, method="POST")
         # errors-as-data (point 4): transport/HTTP/parse failures return an error Completion, never
         # raise — the try covers urlopen + stream-parse + json.loads so a mid-stream connect error
         # is also caught. "max_tokens" is normalized to "length" (point 1).
@@ -1624,7 +1626,7 @@ def provider_capabilities(name: str, model: str | None = None) -> dict:
             fast_unit = "subscription-credits"
             if model.startswith("gpt-5.6-") or model.startswith("gpt-5.5"):
                 fast_multiplier = 2.5
-                fast_note = ("same model at about 1.5x generation speed; "
+                fast_note = ("same model with up to 2.5x faster generation; "
                              "2.5x Codex credits when the account supports Fast")
             else:
                 fast_note = ("same GPT-5.4 model through Codex Fast; the current credit "
@@ -1641,10 +1643,14 @@ def provider_capabilities(name: str, model: str | None = None) -> dict:
         # models must not receive output_config.effort and fail a whole run with 400.
         if any(tag in model for tag in ("opus-4-8", "opus-5", "sonnet-5", "fable-5")):
             reasoning = ["low", "medium", "high", "max"]
-        if any(tag in model for tag in ("opus-4-6", "opus-4-7")):
+        # API Fast is a metered Anthropic API research preview. Raw OAuth keeps
+        # its frozen beta surface; Claude Code Fast is enabled by its runner.
+        if (name == "anthropic" and
+                any(tag in model for tag in ("opus-4-8", "opus-5"))):
             speed_tiers.append("fast")
-            fast_multiplier = 6.0
-            fast_note = "same eligible Opus model via speed=fast; extra-usage billing may be required"
+            fast_multiplier = 2.0
+            fast_note = ("same eligible Opus model via speed=fast; research-preview "
+                         "access and premium API billing are required")
     elif name in ("claude-cli", "cli", "claude-agent-sdk", "claude-sdk"):
         reasoning = ["low", "medium", "high", "max"]
 

@@ -139,7 +139,7 @@ async function send() {
   answerNode = textMessage("assistant", "");
   $("send").disabled = true; $("stop").disabled = false; status("Working…");
   const query = new URLSearchParams({ q: buildRequest(question), session, intent: "build", quality: "balanced",
-    verification: "auto", workspace: "current", strategy: "single", effort: "auto", speed: "standard",
+    verification: "auto", workspace: "current", strategy: "single", effort: "auto",
     route_kind: "chat", explicit_axes: "intent", token: webToken });
   source = new EventSource(WEB + "/api/stream?" + query.toString());
   source.addEventListener("start", (event) => { const d = parse(event); runId = d.run || runId; });

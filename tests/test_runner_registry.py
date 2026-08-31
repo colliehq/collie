@@ -468,8 +468,9 @@ def test_make_runner_builds_the_declared_runner(installed_clis):
     assert app_server.model == "gpt-5.6"
     assert app_server.default_timeout_s == 30
 
-    claude = runner_registry.make_runner("claude-code")
+    claude = runner_registry.make_runner("claude-code", speed="fast")
     assert isinstance(claude, ClaudeCodeRunner)
+    assert claude.speed == "fast"
     assert claude.default_timeout_s == runner_registry.SPECS["claude-code"].default_timeout_s
     assert claude.env_policy == runner_registry.SPECS["claude-code"].env_policy
 

@@ -1606,12 +1606,19 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
     resume_from = (_worker_session(sid, hd.runner)
                    if (getattr(args, "resume", None) or getattr(args, "cont", False))
                    else None)
+    worker_speed = decision.speed
+    if hd.runner == "claude-code" and getattr(args, "speed", None) is None:
+        from . import settings as _worker_settings
+        worker_speed = ("fast" if
+                        (_worker_settings.get("INTERACTIVE_SPEED", "fast") or
+                         "fast").strip().lower() == "fast" else "standard")
     return runner_slice.run_adhoc(
         hd, args.task, cwd,
         timeout_s=(spec.default_timeout_s if spec is not None else None),
         emit=emit, approval_callback=approval_callback, cancelled=None,
         history_note=(None if resume_from else _worker_history_note(history)),
-        resume_from=resume_from, model=model, provider=_worker_provider(hd),
+        resume_from=resume_from, model=model, speed=worker_speed,
+        provider=_worker_provider(hd),
         task_id="adhoc", recorder=recorder)
 
 
@@ -1670,12 +1677,22 @@ def cmd_run(args):
     if configured_model is None and (not args.provider or
                                       args.provider == settings.get("PROVIDER", provider)):
         configured_model = settings.get("MODEL", "") or None
+    requested_speed = getattr(args, "speed", None)
+    if requested_speed is None:
+        from .providers import provider_capabilities
+        preferred_speed = (settings.get("INTERACTIVE_SPEED", "fast") or
+                           "fast").strip().lower()
+        if preferred_speed not in ("standard", "fast"):
+            preferred_speed = "fast"
+        speed_caps = provider_capabilities(provider, configured_model)
+        requested_speed = (preferred_speed if preferred_speed in
+                           speed_caps["speed_tiers"] else "standard")
     decision = resolve_run_decision(
         args.task, provider=provider,
         model=configured_model,
         effort=(getattr(args, "effort", None) or
                 settings.get("REASONING_EFFORT", "auto") or "auto"),
-        speed=getattr(args, "speed", None) or "standard",
+        speed=requested_speed,
         intent=requested_intent,
         quality=getattr(args, "quality", None) or "balanced",
         verification=getattr(args, "verification", None) or "auto",

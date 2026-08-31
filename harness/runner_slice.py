@@ -121,7 +121,7 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
               steering: Callable[[], list[Any]] | None = None,
               history_note: str | None = None,
               resume_from: Any = None,
-              model: str = "", provider: str = "",
+              model: str = "", speed: str = "standard", provider: str = "",
               task_id: str = "", recorder: Any = None) -> RunResult:
     """Carry ``task`` to the worker ``decision`` chose and report what happened.
 
@@ -172,6 +172,9 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
         # would surface it later as an AttributeError inside the slice.
         raise RunnerSelectionError(
             "collie is not an external worker; the caller took the wrong branch")
+    speed = str(speed or "standard").strip().lower()
+    if speed not in ("standard", "fast"):
+        raise ValueError("worker speed must be standard or fast")
 
     root = _canonical_workspace(workspace)
     prompt = _prompt_text(task, history_note)
@@ -197,7 +200,8 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
                 "event": "fallback", "from": decision.runner, "to": key,
                 "reason": outcome.reason if outcome is not None else "",
             })
-        outcome = _attempt(key, prompt, root, prior, timeout_s, model, cancelled, emit,
+        outcome = _attempt(key, prompt, root, prior, timeout_s, model, speed,
+                           cancelled, emit,
                            approval_callback, steering)
         if not (outcome.pre_prompt_failure and index + 1 < len(chain)):
             break
@@ -256,7 +260,7 @@ class _Attempt:
 
 def _attempt(key: str, prompt: str | runner_specs.RunInput, workspace: str,
              prior: RunnerSnapshot | None,
-             timeout_s: float | None, model: str,
+             timeout_s: float | None, model: str, speed: str,
              cancelled: Callable[[], bool] | None,
              emit: Callable[[str, dict], Any] | None,
              approval_callback: Callable[[str, dict], str] | None,
@@ -270,7 +274,8 @@ def _attempt(key: str, prompt: str | runner_specs.RunInput, workspace: str,
             pre_prompt_failure=True)
 
     try:
-        runner = registry.make_runner(key, model=model, timeout_s=timeout_s,
+        runner = registry.make_runner(key, model=model, speed=speed,
+                                      timeout_s=timeout_s,
                                       env_policy=spec.env_policy)
     except (FileNotFoundError, RunnerUnavailableError) as exc:
         # The worker does not exist on this host: nothing was launched, nothing

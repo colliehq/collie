@@ -103,10 +103,21 @@ def test_web_ui_sends_each_axis_and_does_not_fake_fast():
         assert query in page
     assert '"&runner="' in page
     assert "Fast is not lower effort" in page
+    assert "interactive_speed_default" in page
+    assert 'fields.strategy.value === "pack" ? "standard"' in page
     assert 'data-val="quick"' in page
     assert 'data-val="test"' in page and 'data-val="review"' in page
     assert "Pack needs an executed check command" in page
     assert 'id="mode"' not in page
+
+    settings_source = (Path(__file__).resolve().parents[1] / "harness" / "settings.py").read_text(
+        encoding="utf-8")
+    assert '"key": "INTERACTIVE_SPEED"' in settings_source
+    assert '"default": "fast"' in settings_source
+
+    capsule = (Path(__file__).resolve().parents[1] / "harness" / "webui" /
+               "live_capsule.html").read_text(encoding="utf-8")
+    assert "speed=standard" not in capsule
 
 
 def test_normalization_is_case_and_whitespace_safe():

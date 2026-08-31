@@ -668,6 +668,34 @@ def test_anthropic_max_tokens_default():
         os.environ.pop("COLLIE_MAX_TOKENS", None)
         if old is not None: os.environ["COLLIE_MAX_TOKENS"] = old
 
+
+def test_anthropic_fast_uses_the_documented_beta_wire():
+    from unittest.mock import patch
+    from harness.providers import AnthropicProvider
+
+    seen = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def read(self):
+            return json.dumps({"content": [{"type": "text", "text": "ok"}],
+                               "usage": {}}).encode()
+
+    def open_request(request, **_kwargs):
+        seen["request"] = request
+        return Response()
+
+    provider = AnthropicProvider(
+        model="claude-opus-5", api_key="test-key", speed="fast")
+    with patch("urllib.request.urlopen", open_request):
+        result = provider.complete("system", [{"role": "user", "content": "hi"}], [])
+
+    request = seen["request"]
+    assert json.loads(request.data)["speed"] == "fast"
+    assert request.get_header("Anthropic-beta") == "fast-mode-2026-02-01"
+    assert result.text == "ok"
+
 def test_ollama_done_reason_length():
     from unittest.mock import patch
     from harness.providers import OllamaProvider

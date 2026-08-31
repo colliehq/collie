@@ -201,6 +201,7 @@ class ClaudeCodeRunner:
     credential_family = CREDENTIAL_FAMILY
 
     def __init__(self, *, executable: str = BINARY, model: str = "",
+                 speed: str = "standard",
                  max_budget_usd: float | None = None,
                  tools: tuple[str, ...] = DEFAULT_TOOLS,
                  process_runner: ProcessRunner | None = None,
@@ -222,6 +223,9 @@ class ClaudeCodeRunner:
         self.env_policy = env_policy
         self.executable = executable
         self.model = model
+        self.speed = str(speed or "standard").strip().lower()
+        if self.speed not in ("standard", "fast"):
+            raise ValueError("Claude Code speed must be standard or fast")
         self.max_budget_usd = None if max_budget_usd is None else float(max_budget_usd)
         self.tools = _check_tools(tools)
         self.process_runner = process_runner or SubprocessRunner()
@@ -354,6 +358,11 @@ class ClaudeCodeRunner:
             "--prompt-suggestions", "false",     # no unsolicited next-prompt event/surface
             "--strict-mcp-config",               # the user's MCP servers are not this worker's
         ]
+        if self.speed == "fast":
+            # Claude Code's non-interactive `-p` mode does not inherit an
+            # interactive `/fast` toggle for the session. Its documented wire
+            # contract is a session-local settings object.
+            argv += ["--settings", '{"fastMode":true}']
         # The locator is pinned on start and reused on resume: same uuid, two
         # different flags.  `--fork-session` is never passed, so the thread the
         # snapshot names is the thread that continues.

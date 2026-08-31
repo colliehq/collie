@@ -98,7 +98,8 @@ class _Factory:
         self.runners = runners
         self.built: list[str] = []
 
-    def __call__(self, key, *, model="", timeout_s=None, env_policy=""):
+    def __call__(self, key, *, model="", speed="standard", timeout_s=None,
+                 env_policy=""):
         self.built.append(key)
         runner = self.runners.get(key)
         if runner is None:

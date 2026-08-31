@@ -1801,6 +1801,13 @@ class Handler(BaseHTTPRequestHandler):
                 name = _provider()
                 model = settings.get("MODEL", "") or None
                 payload = dict(provider_capabilities(name, model))
+                preferred_speed = (settings.get("INTERACTIVE_SPEED", "fast") or
+                                   "fast").strip().lower()
+                if preferred_speed not in ("standard", "fast"):
+                    preferred_speed = "fast"
+                payload["interactive_speed_default"] = (
+                    preferred_speed if preferred_speed in payload["speed_tiers"]
+                    else "standard")
                 # Worker availability is a separate axis from provider/model
                 # capability.  The UI needs both the declared option and the
                 # observed host state so it can disable a missing/login-blocked
@@ -4352,9 +4359,27 @@ class Handler(BaseHTTPRequestHandler):
         elif legacy_mode == "pack":
             explicit_axes = parse_explicit_axes(list(explicit_axes) + ["strategy"])
 
-        effort_request = qs.get("effort", [settings.get("REASONING_EFFORT", "auto") or "auto"])[0]
-        speed_request = qs.get("speed", ["standard"])[0]
         configured_model = settings.get("MODEL", "") or None
+        effort_request = qs.get("effort", [settings.get("REASONING_EFFORT", "auto") or "auto"])[0]
+        if "speed" in explicit_axes:
+            # An explicit Fast/Standard choice is literal, including its billing
+            # consequence and any clean unsupported-provider refusal.
+            speed_request = qs.get("speed", ["standard"])[0]
+        else:
+            # Foreground conversation optimizes for latency. Pack and other
+            # multi-attempt work optimize for cost unless the user explicitly
+            # selects Fast. A configured Fast default degrades to Standard on a
+            # provider/model without a real same-model speed tier.
+            from .providers import provider_capabilities
+            preferred_speed = (settings.get("INTERACTIVE_SPEED", "fast") or
+                               "fast").strip().lower()
+            if preferred_speed not in ("standard", "fast"):
+                preferred_speed = "fast"
+            if strategy == "pack":
+                preferred_speed = "standard"
+            speed_caps = provider_capabilities(prov, configured_model)
+            speed_request = (preferred_speed if preferred_speed in
+                             speed_caps["speed_tiers"] else "standard")
         try:
             decision = resolve_run_decision(
                 q, provider=prov, model=configured_model, effort=effort_request,
@@ -4535,6 +4560,17 @@ class Handler(BaseHTTPRequestHandler):
                                                 runner=runner_decision.to_dict())})
             return
 
+        execution_speed = decision.speed
+        if (runner_decision.runner == "claude-code" and strategy == "single" and
+                "speed" not in explicit_axes):
+            # Claude Code is its own payer and supports its own Fast mode. The
+            # Brain provider may not expose a same-model tier, so carry the
+            # foreground preference independently to the external worker.
+            external_preference = (settings.get("INTERACTIVE_SPEED", "fast") or
+                                   "fast").strip().lower()
+            execution_speed = ("fast" if external_preference == "fast"
+                               else "standard")
+
         run_id = Handler._run_begin(sid, q, cwd)
         if run_id is None:
             cleanup_error = _discard_unused_worktree()
@@ -4617,6 +4653,8 @@ class Handler(BaseHTTPRequestHandler):
 
         decision_payload = decision.to_dict()
         decision_payload["runner"] = runner_decision.to_dict()
+        if execution_speed != decision.speed:
+            decision_payload["execution_speed"] = execution_speed
         if verify_command:
             decision_payload["verification_proposal"] = {
                 "command": verify_command, "source": verify_source,
@@ -4638,7 +4676,7 @@ class Handler(BaseHTTPRequestHandler):
                    "intent": run_opts["intent"], "quality": run_opts["quality"],
                    "verification": run_opts["verification"], "workspace": workspace,
                    "strategy": strategy, "model": decision.model,
-                   "effort": decision.effort, "speed": decision.speed,
+                   "effort": decision.effort, "speed": execution_speed,
                    "worker_capabilities": worker_caps,
                    "run_plan": run_plan,
                    "decision": decision_payload}
@@ -4882,6 +4920,7 @@ class Handler(BaseHTTPRequestHandler):
                         history_note=(None if resume_from else _worker_history_note(history)),
                         resume_from=resume_from,
                         model=_worker_model("", decision, runner_req, worker_spec),
+                        speed=execution_speed,
                         provider=_worker_provider(runner_decision),
                         task_id="web", recorder=h.recorder)
                 finally:
@@ -4918,7 +4957,7 @@ class Handler(BaseHTTPRequestHandler):
                 worker_receipt = runner_slice.receipt_of(res)
                 if worker_receipt is not None and worker_receipt.runner:
                     Handler._run_mark(sid, runner=worker_receipt.runner)
-                actual_speed = decision.speed
+                actual_speed = execution_speed
                 receipt_row = {
                     "run": run_id, "decision": decision_payload,
                     "runner": worker_receipt.to_dict() if worker_receipt else None,

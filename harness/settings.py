@@ -106,6 +106,17 @@ SCHEMA = [
          {"value": "high", "label": "High", "label_zh": "高"}],
      "hint": "Reasoning depth for providers that support it. Auto resolves per run; unsupported models use their provider default and the receipt says so.",
      "hint_zh": "对支持该能力的模型设置推理深度。自动模式会逐任务决定；不支持时使用 provider 默认值，并在回执中说明。"},
+    {"group": "Model", "key": "INTERACTIVE_SPEED", "label": "Interactive response speed",
+     "label_zh": "交互响应速度", "type": "select", "default": "fast",
+     "options": [
+         {"value": "fast", "label": "Fast when available", "label_zh": "可用时使用快速模式"},
+         {"value": "standard", "label": "Standard", "label_zh": "标准"}],
+     "hint": "Default for foreground chat, Run and Live Copilot turns. Fast keeps the same "
+             "model at a higher-priced service tier; unsupported providers fall back to Standard. "
+             "Pack, Missions and other background work stay Standard unless you explicitly choose Fast.",
+     "hint_zh": "前台对话、Run 和 Live Copilot 默认使用的速度。快速模式保持同一模型，但使用价格更高的"
+                "服务档位；不支持的提供方会回退到标准。Pack、Mission 和其他后台任务默认仍为标准，除非你"
+                "明确选择快速模式。"},
     # Worker (RUNNER) is a different axis from Brain (PROVIDER/MODEL): the provider decides which
     # model thinks, the runner decides which harness actually carries out the task — whose tool
     # loop, whose sandbox, whose approval model, and (for an external CLI) whose login and billing

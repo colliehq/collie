@@ -121,6 +121,17 @@ def test_unknown_codex_model_cannot_silently_fake_fast():
         resolve_speed_tier("codex-oauth", "gpt-4o", "fast")
 
 
+def test_current_anthropic_fast_models_are_api_only():
+    from harness.providers import provider_capabilities
+
+    assert "fast" in provider_capabilities("anthropic", "claude-opus-5")["speed_tiers"]
+    assert "fast" in provider_capabilities("anthropic", "claude-opus-4-8")["speed_tiers"]
+    assert provider_capabilities("anthropic", "claude-opus-4-7")["speed_tiers"] == [
+        "standard"]
+    assert provider_capabilities(
+        "anthropic-oauth", "claude-opus-5")["speed_tiers"] == ["standard"]
+
+
 def test_test_gate_runs_only_the_exact_proposed_check(tmp_path):
     from harness.gate import Gate, Mode
 

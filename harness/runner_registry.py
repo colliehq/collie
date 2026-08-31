@@ -1034,8 +1034,8 @@ def handshake(key: str, *, live: bool = False, provider: str = "") -> Capability
         negotiated_at=observed.probed_at)
 
 
-def make_runner(key: str, *, model: str = "", timeout_s: float | None = None,
-                env_policy: str = "") -> Any:
+def make_runner(key: str, *, model: str = "", speed: str = "standard",
+                timeout_s: float | None = None, env_policy: str = "") -> Any:
     """Build the runner object for ``key``.
 
     Raises rather than returning ``None`` for ``collie``: it is not an external
@@ -1070,7 +1070,8 @@ def make_runner(key: str, *, model: str = "", timeout_s: float | None = None,
             env_policy=policy)
     if spec.key == "claude-code":
         return claude_code_runner.ClaudeCodeRunner(
-            executable=spec.binary, model=model, default_timeout_s=timeout,
+            executable=spec.binary, model=model, speed=speed,
+            default_timeout_s=timeout,
             env_policy=policy)
     if spec.key == "pi-rpc":
         return PiRpcRunner(executable=spec.binary, model=model,

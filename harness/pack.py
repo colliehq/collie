@@ -420,6 +420,7 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
                 res = runner_slice.run_adhoc(
                     runner_decision, task, iso, cancelled=_cancelled,
                     history_note=_worker_history_note(history), model=runner_model,
+                    speed=speed,
                     provider=_worker_provider(runner_decision), task_id="pack%d" % i,
                     recorder=external_recorder)
                 worker_receipt = runner_slice.receipt_of(res)

@@ -3613,10 +3613,10 @@
     "Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.":"快速模式不会降低推理强度：它使用同一模型，仅在提供商明确报告该服务等级与计费溢价时显示。",
     "Fast appears only for a provider/model with a reported same-model tier.":"只有提供商或模型明确报告同模型快速等级时才会显示快速模式。",
     "Fast is not reported by this provider/model":"此提供商或模型未报告快速模式",
-    "same model at about 1.5x generation speed; 2.5x Codex credits when the account supports Fast":"同一模型，生成速度约为 1.5 倍；账户支持快速模式时消耗 2.5 倍 Codex credits",
+    "same model with up to 2.5x faster generation; 2.5x Codex credits when the account supports Fast":"同一模型，生成速度最高可达 2.5 倍；账户支持快速模式时消耗 2.5 倍 Codex credits",
     "same GPT-5.4 model through Codex Fast; the current credit premium is account/version dependent":"通过 Codex Fast 使用同一 GPT-5.4 模型；当前 credits 溢价取决于账户和版本",
     "same model via service_tier=fast; 2x current API token price":"通过 service_tier=fast 使用同一模型；按当前 API token 价格的 2 倍计费",
-    "same eligible Opus model via speed=fast; extra-usage billing may be required":"通过 speed=fast 使用同一符合条件的 Opus 模型；可能需要额外用量计费",
+    "same eligible Opus model via speed=fast; research-preview access and premium API billing are required":"通过 speed=fast 使用同一符合条件的 Opus 模型；需要研究预览权限和高级 API 计费",
     " · a dot means it needs an OAuth app of your own":" · 圆点表示需要你自己的 OAuth 应用","+ Add server":"+ 添加服务器","Add":"添加",
     "An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.":"已批准的操作正在执行，或结果尚不确定。请刷新或取消；继续操作不会重放它。",
     "Auto worker":"自动工作进程","Cancel this mission? Its audit history will be kept.":"取消此任务？其审计历史会保留。",
@@ -3787,10 +3787,10 @@
     "Fast is not lower effort: it keeps the same model and appears only when this provider/model reports the tier and billing premium.":"快速模式不會降低推理強度：它使用同一模型，僅在供應商明確回報該服務等級與計費溢價時顯示。",
     "Fast appears only for a provider/model with a reported same-model tier.":"只有供應商或模型明確回報同模型快速等級時才會顯示快速模式。",
     "Fast is not reported by this provider/model":"此供應商或模型未回報快速模式",
-    "same model at about 1.5x generation speed; 2.5x Codex credits when the account supports Fast":"同一模型，產生速度約為 1.5 倍；帳戶支援快速模式時消耗 2.5 倍 Codex credits",
+    "same model with up to 2.5x faster generation; 2.5x Codex credits when the account supports Fast":"同一模型，產生速度最高可達 2.5 倍；帳戶支援快速模式時消耗 2.5 倍 Codex credits",
     "same GPT-5.4 model through Codex Fast; the current credit premium is account/version dependent":"透過 Codex Fast 使用同一 GPT-5.4 模型；目前 credits 溢價取決於帳戶與版本",
     "same model via service_tier=fast; 2x current API token price":"透過 service_tier=fast 使用同一模型；按目前 API token 價格的 2 倍計費",
-    "same eligible Opus model via speed=fast; extra-usage billing may be required":"透過 speed=fast 使用同一符合條件的 Opus 模型；可能需要額外用量計費",
+    "same eligible Opus model via speed=fast; research-preview access and premium API billing are required":"透過 speed=fast 使用同一符合條件的 Opus 模型；需要研究預覽權限和進階 API 計費",
     " · a dot means it needs an OAuth app of your own":" · 圓點表示需要你自己的 OAuth 應用程式","+ Add server":"+ 新增伺服器","Add":"新增",
     "An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.":"已核准的操作正在執行，或結果尚不確定。請重新整理或取消；繼續操作不會重播它。",
     "Auto worker":"自動工作程序","Cancel this mission? Its audit history will be kept.":"取消此任務？其稽核歷史會保留。",
@@ -4140,7 +4140,7 @@
   var SET_CATS = [
     { id: "overview", label: "General", zh: "通用", kind: "overview", keys: ["COMPANION_NAME"] },
     { id: "brains", label: "Brains & routing", zh: "模型与路由",
-      keys: ["PROVIDER", "MODEL", "REASONING_EFFORT", "RUNNER", "RUNNER_POOL"] },
+      keys: ["PROVIDER", "MODEL", "REASONING_EFFORT", "INTERACTIVE_SPEED", "RUNNER", "RUNNER_POOL"] },
     { id: "caps", label: "Capabilities", zh: "能力",
       keys: ["WEBSEARCH", "BROWSER_BRIDGE", "PLAN_FIRST", "MCP_MANAGE", "MCP_DISCOVERY"] },
     { id: "devices", label: "Desktop & devices", zh: "桌面与设备",
@@ -9448,6 +9448,7 @@
       }
       if (!Object.keys(window.runExplicitAxes).some(function (k) { return window.runExplicitAxes[k]; })) {
         parts = [t("Auto")];
+        if (fields.speed.value === "fast") parts.push("Fast");
       }
       label.textContent = parts.join(" · ");
       trig.title = t("Run setup") + " — " + parts.join(", ");
@@ -9481,6 +9482,10 @@
       }
       if (axis === "strategy" && val === "pack") {
         fields.workspace.value = "current"; delete window.runExplicitAxes.workspace;
+        if (!window.runExplicitAxes.speed) fields.speed.value = "standard";
+      } else if (axis === "strategy" && val === "single" &&
+                 !window.runExplicitAxes.speed && capabilities) {
+        fields.speed.value = capabilities.interactive_speed_default || "standard";
       }
       paint();
     }
@@ -9524,7 +9529,10 @@
         capabilities = caps || {};
         var fast = $("runFastItem"), tiers = capabilities.speed_tiers || [];
         if (fast) fast.hidden = tiers.indexOf("fast") < 0;
-        if (tiers.indexOf("fast") < 0 && fields.speed.value === "fast") {
+        if (!window.runExplicitAxes.speed) {
+          fields.speed.value = fields.strategy.value === "pack" ? "standard" :
+            (capabilities.interactive_speed_default || "standard");
+        } else if (tiers.indexOf("fast") < 0 && fields.speed.value === "fast") {
           fields.speed.value = "standard"; delete window.runExplicitAxes.speed;
         }
         var help = $("runFastHelp");

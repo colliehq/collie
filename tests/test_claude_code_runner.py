@@ -141,6 +141,26 @@ def test_argv_carries_model_and_budget_when_set(tmp_path):
     assert argv[argv.index("--max-budget-usd") + 1] == "2.5"
 
 
+def test_fast_mode_is_session_local_settings_in_print_mode(tmp_path):
+    process = FakeProcessRunner(_outcome())
+    runner = _runner(process, speed="fast")
+
+    runner.start("go", str(tmp_path))
+
+    argv = process.calls[0]["argv"]
+    assert argv[argv.index("--settings") + 1] == '{"fastMode":true}'
+    assert "/fast" not in argv
+
+
+def test_unknown_speed_is_rejected_before_a_process_can_start():
+    process = FakeProcessRunner(_outcome())
+
+    with pytest.raises(ValueError, match="speed must be standard or fast"):
+        _runner(process, speed="turbo")
+
+    assert process.calls == []
+
+
 def test_prompt_on_stdin(tmp_path):
     # A prompt is untrusted text of unbounded length: on Windows it would blow the
     # command-line limit, and on any platform it would be visible in `ps`.
