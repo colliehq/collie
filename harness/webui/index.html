@@ -9026,7 +9026,7 @@
       var meta = document.createElement("div"); meta.className = "task-queue-meta";
       meta.textContent = t(entry.mode === "steer" ? "Added instruction" : "Next task") + " · " +
         t(entry.state === "claimed" ? "Delivering…" : "Waiting");
-      var assets = (entry.metadata || {}).assets || {};
+      var assets = entry.assets || (entry.metadata || {}).assets || {};
       if (assets.images || assets.contexts) meta.textContent += " · " + t("Attachments saved");
       row.appendChild(meta);
       var editing = state.editor && state.editor.id === entry.id;
@@ -9071,11 +9071,17 @@
       }).then(function (data) {
         if (queueState() !== state) return;
         if (!Array.isArray(data.entries)) throw new Error(data.error || t("Could not load pending requests"));
-        var changed = JSON.stringify(state.entries) !== JSON.stringify(data.entries) || state.active !== !!data.active;
+        var active = !!data.active || data.owner_busy === true;
+        var changed = JSON.stringify(state.entries) !== JSON.stringify(data.entries) || state.active !== active;
         state.loaded = true;
         if (state.loadError && state.notice === state.loadError) { state.notice = ""; changed = true; }
         state.loadError = "";
-        state.entries = data.entries; state.active = !!data.active;
+        var serverNotice = (data.queue_error || {}).error || "";
+        if (serverNotice !== (state.serverNotice || "")) {
+          if (serverNotice || state.notice === state.serverNotice) state.notice = serverNotice;
+          state.serverNotice = serverNotice; changed = true;
+        }
+        state.entries = data.entries; state.active = active;
         if (state.active) {
           state.starting = false;
           if (state.notice === t("Starting the next request…")) { state.notice = ""; changed = true; }

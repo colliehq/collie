@@ -409,11 +409,13 @@ def test_ide_context_handoff_is_authenticated_bounded_and_one_shot(web_server):
     assert webapp.Handler._ide_context_take(saved["id"]) == body["items"]
     assert webapp.Handler._ide_context_take(saved["id"]) is None
 
-    code, bounded = _json(base + "/api/ide/context?token=" + token, "POST", {
+    # Over the limit is refused, not quietly shortened.  Truncating here handed
+    # the model a file that stopped mid-function while the editor showed the
+    # whole thing, and nobody was told which 6000 characters went missing.
+    code, refused = _json(base + "/api/ide/context?token=" + token, "POST", {
         "items": [{"path": "too-large.ts", "content": "x" * 70_000}]})
-    assert code == 200
-    stored = webapp.Handler._ide_context_take(bounded["id"])
-    assert len(stored[0]["content"]) == 64_000
+    assert code == 413
+    assert "nothing was truncated" in refused["error"] and "id" not in refused
 
     class Sink:
         _send_json = webapp.Handler._send_json

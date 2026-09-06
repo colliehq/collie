@@ -21,6 +21,7 @@ import time
 from . import __version__
 from . import compaction as _compaction
 from . import redact as _redact
+from . import run_ownership as _ownership
 from . import settings as _settings
 from .context import ContextComposer
 from .hooks import HookManager
@@ -521,7 +522,34 @@ class Harness:
         # optional mid-run steering: a callable -> list[str] of user messages typed while the run is
         # in flight (point 13). Interactive surfaces (TUI) set it; None = zero cost, benchmark path
         # byte-identical. Drained only at safe points (turn start / voluntary finish).
+        # Volatile by construction: whatever it returns was never on disk, so it
+        # remains for embedders that have no durable conversation. Surfaces with
+        # one use the inbox below instead, and MUST NOT wire both to the same
+        # text — this loop appends what the callback returns, and appends the
+        # inbox entry it claims, so a shared source would be inserted twice.
         self.steering = None
+        # The durable half of the same idea. `run_owner` is a session_owner lease
+        # a surface already holds (it took it BEFORE reading the journal and keeps
+        # it through its own final save); run() validates and never releases it.
+        # With no lease supplied and a durable session id, run() takes one for
+        # itself — a direct embedder still must not be the second executor on a
+        # conversation somebody else is running.
+        self.run_owner = None
+        # A task_inbox entry a surface claimed and is handing over as THIS run's
+        # initial request. The loop stamps it onto the first user message (it does
+        # not insert the text a second time) and acknowledges it only once that
+        # message is durable.
+        self.input_entry = None
+        # The chronology boundary for mid-run steering: only input accepted ABOVE
+        # this sequence belongs to this run. A surface that takes execution
+        # ownership before setting up a provider captures it there (nothing
+        # accepted during that gap is then lost); left None, the run captures its
+        # own floor under the lease, before any work.
+        self.steering_after_seq = None
+        self._lease = None               # the lease in force for the current run
+        self._input_entry = None         # the STORE's copy, validated under the lease
+        self._steer_floor = 0
+        self._input_failures = []        # durable-input failures, reported on the result
         # Cooperative cancellation owned by an embedding surface. It is deliberately a callback,
         # not a transport type: the web server uses an Event, while CLI/editor callers can use any
         # durable flag. Checked before every model turn and every individual tool execution.
@@ -760,6 +788,339 @@ class Harness:
             return [s.strip() for s in (self.steering() or []) if isinstance(s, str) and s.strip()]
         except Exception:
             return []
+
+    # ---- durable input (task_inbox) -------------------------------------------------
+    def _inbox_ready(self):
+        """The (session, lease) this run may read and write durable input under, or None.
+
+        Both halves are required and neither is assumed: a benchmark harness has
+        no session, and a run whose lease was refused never got here at all.
+        """
+        sid = self._durable_session_id()
+        lease = self._lease
+        if not sid or lease is None:
+            return None
+        return sid, lease
+
+    def _inbox_failed(self, action, exc, **data):
+        """Report a durable-storage failure. The one thing we never do is hide it.
+
+        The volatile steer queue swallowed exceptions and answered "queued" to a
+        person whose instruction had just been dropped. Every failure here is
+        emitted with the action that failed AND kept on the result, so a surface
+        that renders no events still ends up holding the fact.
+        """
+        detail = exc if isinstance(exc, str) else "%s: %s" % (type(exc).__name__, exc)
+        self._input_failures.append(
+            {"action": action, "id": str(data.get("id") or ""), "error": detail})
+        self._emit("inbox", action=action, ok=False, error=detail, **data)
+
+    def _inbox_reconcile(self):
+        """Resolve a previous executor's crash from the JOURNAL, never from memory.
+
+        Uncheckpointed in-memory messages are not proof of anything: settling a
+        claim from them marks an accepted request consumed with no transcript row
+        behind it, which is the one loss no later reconcile can detect. Returns
+        an error string when durable state could not be established at all — the
+        caller stops, because "we cannot tell" must not be spent as "there was
+        nothing waiting".
+        """
+        ready = self._inbox_ready()
+        if ready is None:
+            return ""
+        sid, lease = ready
+        try:
+            result = _ownership.reconcile(sid, lease)
+        except Exception as exc:
+            self._inbox_failed("reconcile", exc, session=sid)
+            return ("durable input for %s could not be reconciled, so this run "
+                    "cannot tell which accepted requests are still waiting: %s: %s"
+                    % (sid, type(exc).__name__, exc))
+        if result["consumed"] or result["released"] or result["conflicts"]:
+            self._emit("inbox", action="reconcile", ok=True, session=sid,
+                       consumed=list(result["consumed"]),
+                       released=list(result["released"]),
+                       conflicts=list(result["conflicts"]))
+        return ""
+
+    def _prepare_durable_input(self, user_msg, authority_msg):
+        """Establish this run's durable input state before it touches anything.
+
+        Three things, in this order and all before the first journal write, the
+        first hook and the first provider call:
+
+        * settle the previous executor's crash window, so an entry whose message
+          is already in the transcript is never handed to the model again;
+        * validate the claimed initial request against the STORE — still claimed,
+          claimed by this lease, same payload, and not already delivered — rather
+          than trusting the dict a surface passed in;
+        * record the sequence floor above which mid-run steering belongs to this
+          run, so an instruction accepted for an earlier (perhaps canceled) run
+          cannot arrive after, and override, the newer one just sent.
+
+        Returns an error string; non-empty means refuse the run.
+        """
+        self._input_entry = None
+        self._steer_floor = 0
+        ready = self._inbox_ready()
+        supplied = getattr(self, "input_entry", None)
+        if ready is None:
+            if supplied is not None:
+                return ("input_entry was supplied for a run with no durable "
+                        "session and no execution lease")
+            return ""
+        sid, lease = ready
+        failure = self._inbox_reconcile()
+        if failure:
+            return failure
+        stored = None
+        if supplied is not None:
+            try:
+                stored = _ownership.claimed_entry(sid, lease, supplied)
+                _ownership.initial_request_content(
+                    sid, stored, content=user_msg,
+                    authority=authority_msg if isinstance(authority_msg, str) else "")
+            except Exception as exc:
+                self._inbox_failed("input_entry", exc, session=sid,
+                                   id=(supplied or {}).get("id", "")
+                                   if isinstance(supplied, dict) else "")
+                return "%s" % exc
+            self._input_entry = stored
+        floor = getattr(self, "steering_after_seq", None)
+        if floor is None:
+            # No surface-supplied boundary: take one now, under the lease and
+            # before any work, so a steer accepted during a slow provider setup
+            # still counts as belonging to this run.
+            try:
+                floor = (stored["seq"] if stored is not None
+                         else _ownership.sequence_floor(sid, lease))
+            except Exception as exc:
+                self._inbox_failed("sequence_floor", exc, session=sid)
+                return ("durable input for %s could not be read, so this run cannot "
+                        "tell which instructions are new: %s: %s"
+                        % (sid, type(exc).__name__, exc))
+        if isinstance(floor, bool) or not isinstance(floor, int) or floor < 0:
+            return "steering_after_seq must be a non-negative integer, not %r" % (floor,)
+        self._steer_floor = floor
+        return ""
+
+    def _stamp_input_entry(self, message, entry):
+        """Mark the initial user message as the delivery of this accepted entry.
+
+        The text is NOT inserted again: the surface already passed it as
+        ``user_msg`` (expanded with attachments) and ``authority_msg`` (verbatim).
+        What is added is identity — ``inbox_id`` is the only name ``reconcile``
+        can find this message by after a crash — and the tags that keep it the
+        person's own instruction rather than harness chatter.
+        """
+        message.update(source="user", kind=entry.get("mode") or "steer",
+                       inbox_id=entry.get("message_id") or entry["id"])
+        return message
+
+    def _ack_input_entry(self, entry, checkpointed):
+        """Acknowledge the initial entry — after its message is durable, never before.
+
+        A failed checkpoint means the transcript on disk does not contain the
+        instruction yet, so acknowledging it would be a lie the next run cannot
+        detect. Leaving it claimed is recoverable: the end-of-run settle and the
+        next run's reconcile both decide it from the journal.
+        """
+        ready = self._inbox_ready()
+        if entry is None or ready is None:
+            return False
+        sid, lease = ready
+        if checkpointed is False:
+            self._inbox_failed(
+                "ack", "the transcript containing this request could not be "
+                       "persisted; it stays claimed for recovery",
+                session=sid, id=entry["id"])
+            return False
+        try:
+            from . import task_inbox as _inbox
+            _inbox.ack(sid, lease, entry["id"],
+                       message_id=entry.get("message_id") or entry["id"])
+        except Exception as exc:
+            # The message is durable, so this is a bookkeeping failure, not a lost
+            # request: report it and let reconcile settle the entry from the
+            # journal it is already in. It never re-delivers on a later turn.
+            self._inbox_failed("ack", exc, session=sid, id=entry["id"])
+            self._inbox_reconcile()
+            return False
+        self._emit("inbox", action="ack", ok=True, session=sid, id=entry["id"],
+                   state="consumed")
+        return True
+
+    def _consume_durable_steering(self, session, res, rid, turn, prelude=None):
+        """Adopt durable steer input at a safe model boundary.
+
+        The order is the whole contract: claim (so no other executor can take the
+        same entry), append ONE journal message per entry, checkpoint, then
+        acknowledge. Reversing the last two would leave the inbox claiming a
+        delivery no transcript contains.
+
+        Only entries accepted above this run's sequence floor are taken: an
+        instruction typed at an earlier, perhaps canceled, run is not an amendment
+        to the request the person has just sent, and appending it afterwards would
+        let the older text override the newer one.
+
+        Returns (count, error). A non-empty error is fatal to the run: it means an
+        accepted request could not be delivered as accepted — or that we cannot
+        tell whether one exists — and the honest response is to stop at this
+        boundary, before any further provider or tool work, leaving the input
+        visible for correction rather than sending the model a different request.
+        """
+        ready = self._inbox_ready()
+        if ready is None:
+            return 0, ""
+        sid, lease = ready
+        try:
+            entries = _ownership.claim_steer(sid, lease,
+                                             after_seq=getattr(self, "_steer_floor", 0))
+        except Exception as exc:
+            # A torn store or a lost lease. Nothing was claimed, so nothing is
+            # lost — but a correction the person has already sent may be sitting
+            # in there unreadable, and continuing would answer the older request
+            # as though they had never sent it.
+            self._inbox_failed("claim", exc, session=sid)
+            return 0, ("durable input for %s could not be read at this boundary, so "
+                       "this run cannot tell whether a correction is waiting: %s: %s"
+                       % (sid, type(exc).__name__, exc))
+        if not entries:
+            return 0, ""
+        _redact_on = getattr(self, "_redact_on", True)
+        appended = 0
+        for index, entry in enumerate(entries):
+            try:
+                content = _ownership.entry_content(sid, entry)
+            except Exception as exc:
+                # Attachments that cannot be read back. Return every entry in this
+                # batch (including this one) to pending so the person can fix or
+                # cancel it, and stop the run.
+                self._inbox_failed("attachments", exc, session=sid, id=entry["id"])
+                try:
+                    _ownership.release(sid, lease,
+                                       entry_ids=[e["id"] for e in entries[index:]],
+                                       reason="attachments unreadable")
+                except Exception as release_exc:
+                    self._inbox_failed("release", release_exc, session=sid)
+                return appended, ("accepted input %s could not be delivered as "
+                                  "accepted: %s" % (entry["id"], exc))
+            safe_content = (_redact.redact_obj(content, self._secret_vault)
+                            if _redact_on else content)
+            safe_text = (_redact.redact(entry["text"], self._secret_vault)
+                         if _redact_on else entry["text"])
+            from . import task_inbox as _inbox
+            message = _inbox.journal_message(entry)
+            message["content"] = safe_content
+            if prelude is not None and appended == 0:
+                session["messages"].append(prelude)
+            session["messages"].append(message)
+            appended += 1
+            # Authority comes from the words the person wrote, never from the
+            # project files or images the surface attached around them.
+            if self.gate is not None and hasattr(self.gate, "extend_request"):
+                self.gate.extend_request(safe_text)
+            checkpointed = self._session_checkpoint(
+                session["messages"], rid, turn, "turn_boundary",
+                {"inbox_id": entry["id"]})
+            if checkpointed is False:
+                # The transcript on disk does not contain this instruction, so the
+                # entry stays claimed and NO consumed event is emitted: a green
+                # "delivered" line under a failed write is exactly the false
+                # acknowledgement this whole stack exists to end. Stop here,
+                # before the next provider or tool boundary.
+                self._inbox_failed(
+                    "checkpoint", "the transcript containing this request could not "
+                    "be persisted; it stays claimed for recovery",
+                    session=sid, id=entry["id"])
+                return appended, ("accepted input %s could not be recorded in the "
+                                  "transcript at this boundary, so this run stopped "
+                                  "before acting on it" % entry["id"])
+            try:
+                _inbox.ack(sid, lease, entry["id"],
+                           message_id=entry.get("message_id") or entry["id"])
+            except Exception as exc:
+                # The message IS durable; the record of it is not. Settle what the
+                # journal proves, then stop: whatever broke the inbox write is
+                # equally able to hide the person's next correction.
+                self._inbox_failed("ack", exc, session=sid, id=entry["id"])
+                self._inbox_reconcile()
+                return appended, ("accepted input %s was delivered but could not be "
+                                  "recorded as delivered: %s" % (entry["id"], exc))
+            res.steer_count += 1
+            self._emit("steer", session=sid, id=entry["id"], text=safe_text[:200],
+                       state="consumed")
+            self.recorder.log_turn(rid, turn, "steer", safe_text[:500], 0, 0, 0, 0)
+        return appended, ""
+
+    def _settle_durable_input(self, res=None):
+        """Settle every accepted instruction this run touched, from the journal.
+
+        Cancel, error, budget stop, a blocking lifecycle hook and a clean finish
+        all owe the same thing — but "release everything I claimed" is not it. An
+        entry whose message reached the journal one line before the end IS
+        delivered, and reopening it would let a person edit or re-send an
+        instruction the model already has. So reconcile against the transcript
+        first and hand back only the remainder; if the transcript cannot be read,
+        hand back nothing and say so, because a claim left standing is
+        recoverable and a claim wrongly reopened is not.
+        """
+        released = []
+        ready = self._inbox_ready()
+        if ready is not None:
+            sid, lease = ready
+            try:
+                settled = _ownership.settle_and_release(sid, lease, reason="run ended")
+            except Exception as exc:
+                self._inbox_failed("settle", exc, session=sid)
+            else:
+                released = list(settled["released"])
+                recovered = settled["reconciled"]
+                if released or recovered["consumed"] or recovered["released"]:
+                    self._emit("inbox", action="release", ok=True, session=sid,
+                               released=released,
+                               consumed=list(recovered["consumed"]),
+                               recovered=list(recovered["released"]))
+        if res is not None:
+            # The result carries the failures too: a surface that renders no
+            # events still has to be able to tell the person what did not happen.
+            res.input_failures = list(self._input_failures)
+        return released
+
+    def _verification_context(self, messages):
+        """Carry the last host-executed check's verdict into this model turn.
+
+        The evidence exists only in ``run_receipts``, which nothing in a resumed
+        conversation reads, so the next turn could not tell whether the project's
+        tests had passed, failed or been stopped — and the model's own recollection
+        of "I ran the tests" is not evidence about anything. Bounded to the newest
+        receipt and deduplicated by digest, so a long thread gains at most one
+        short host-authored message per distinct check.
+        """
+        ready = self._inbox_ready()
+        if ready is None:
+            return None
+        sid, lease = ready
+        try:
+            row = _ownership.verification_row(sid, lease)
+            if row is None or _ownership.already_projected(messages, row["digest"]):
+                return None
+            message = _ownership.context_message(row)
+            if getattr(self, "_redact_on", True):
+                # A recorded command can carry a credential (``--token …``). It
+                # passes through the same vault as any other model-facing text,
+                # so the receipt cannot become the one place a secret is quoted
+                # back in full. The digest is computed from the stored row, so
+                # deduplication is unaffected.
+                message["content"] = _redact.redact(
+                    message["content"], self._secret_vault)
+        except Exception as exc:
+            self._inbox_failed("verification_context", exc, session=sid)
+            return None
+        self._emit("verification_context", session=sid, outcome=row["outcome"],
+                   command=row["command"], exit_code=row["exit_code"],
+                   digest=row["digest"])
+        return message
 
     def _cancel_requested(self):
         try:
@@ -1061,6 +1422,66 @@ class Harness:
 
     def run(self, task_id: str, user_msg, consolidate: bool = True,
             history: list = None, authority_msg=None) -> RunResult:
+        """Execute one run under exactly one execution lease for its session.
+
+        The lease is the outermost thing this run does, because everything below
+        it — reading the journal, reconciling the inbox, appending messages,
+        writing the final checkpoint — is only safe while no second executor can
+        be doing the same to the same conversation. A surface that already holds
+        the lease passes it as ``run_owner`` and keeps it afterwards (its final
+        save is still to come); a direct embedder with a durable session id gets
+        this wrapper's own lease for the length of the call. A run with no durable
+        session has nothing to serialize and takes nothing.
+        """
+        sid = self._durable_session_id()
+        self._input_failures = []
+        try:
+            with _ownership.hold(sid, label="native-run",
+                                 existing=getattr(self, "run_owner", None)) as lease:
+                self._lease = lease
+                res = None
+                try:
+                    # Durable input state is established BEFORE the first hook, the
+                    # first journal write and the first provider call, so a request
+                    # that must not be executed is refused while the transcript is
+                    # still untouched.
+                    refusal = self._prepare_durable_input(user_msg, authority_msg)
+                    res = (self._refusal(task_id, refusal, "input_refused") if refusal
+                           else self._run(task_id, user_msg, consolidate=consolidate,
+                                          history=history, authority_msg=authority_msg))
+                finally:
+                    # After the run's own final journal write and before the lease
+                    # goes. Here rather than inside _run so that every ending — a
+                    # blocking hook, an exception, a stop — settles the same way.
+                    self._settle_durable_input(res)
+                    self._lease = None
+                return res
+        except _ownership.OwnershipRefused as exc:
+            res = self._refusal(task_id, str(exc), "ownership_refused")
+            self._emit("ownership", ok=False, session=getattr(exc, "session", ""),
+                       busy=bool(getattr(exc, "busy", False)), error=res.error)
+            return res
+
+    def _refusal(self, task_id, error, stop_reason) -> RunResult:
+        """Refuse the run without touching the transcript it does not own.
+
+        Nothing has been read or written at this point, which is the property
+        that matters: neither a second executor nor a run holding a request it
+        may not deliver appends one message, one checkpoint or one receipt.
+        """
+        res = RunResult(run_id=0, task_id=task_id, harness="collie",
+                        model=getattr(self.provider, "model", ""),
+                        provider=getattr(self.provider, "name", ""),
+                        parent_run_id=getattr(self, "parent_run_id", None))
+        res.error = error
+        res.messages = []
+        res.stop_reason = stop_reason
+        res.success = False
+        res.input_failures = list(self._input_failures)
+        return res
+
+    def _run(self, task_id: str, user_msg, consolidate: bool = True,
+             history: list = None, authority_msg=None) -> RunResult:
         t0 = time.time()
         # Redact before *any* model-facing or durable copy is made.  Previously
         # only tool output was protected, while a credential pasted in the user
@@ -1069,6 +1490,7 @@ class Harness:
         # execution boundary, so key-using workflows continue to work.
         _redact_on = (_settings.get("REDACT_SECRETS", "on") or "on") not in (
             "off", "0", "false")
+        self._redact_on = _redact_on     # durable input joins the same policy
         self._secret_vault = getattr(self, "_secret_vault", {})
         # Keep canonical multimodal blocks intact.  Turning a list into ``str``
         # protects neither its structure nor the image path: providers would see
@@ -1168,14 +1590,32 @@ class Harness:
                     {"type": "text", "text": context_block}]
             else:
                 prompt_content += context_block
-        msgs0.append({"role": "user", "content": prompt_content})
+        # What the host actually observed about the last check on this thread, in
+        # front of the new request rather than lost in a receipt file nothing reads.
+        verification_context = self._verification_context(msgs0)
+        if verification_context is not None:
+            msgs0.append(verification_context)
+        prompt_message = {"role": "user", "content": prompt_content}
+        # Validated against the store under this run's lease before anything was
+        # written; never the dict the surface happened to pass in.
+        input_entry = self._input_entry
+        if input_entry is not None:
+            self._stamp_input_entry(prompt_message, input_entry)
+        msgs0.append(prompt_message)
         session = {"messages": msgs0}
         # A resumed thread may already carry a validated handoff summary; adopt it before the
         # first build so a continued long conversation does not re-summarize what it just did.
         self._restore_compaction(session)
         journal_state = "turn_boundary"
         journal_detail = {}
-        self._session_checkpoint(session["messages"], rid, 0, journal_state)
+        checkpointed = self._session_checkpoint(session["messages"], rid, 0, journal_state)
+        # Acknowledge the accepted request only now — the transcript that contains
+        # it is on disk, so "delivered" is a fact rather than an intention.
+        initial_acked = self._ack_input_entry(input_entry, checkpointed)
+        if checkpointed is False:
+            res.error = "the initial request could not be persisted; this run stopped before calling the model"
+        elif input_entry is not None and not initial_acked:
+            res.error = "the initial request could not be acknowledged; this run stopped before calling the model"
         # Tool output uses the same vault initialized before the prompt above.
         total = Usage()
         model_calls = 0
@@ -1276,6 +1716,9 @@ class Harness:
         turns_exhausted = False
         try:
             for turn in (range(turn_cap) if turn_cap else itertools.count()):
+                if res.error:
+                    res.turns = turn
+                    break
                 call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
                 if call_cap and model_calls >= call_cap:
                     budget_hit = True
@@ -1307,6 +1750,15 @@ class Harness:
                     res.steer_count += 1
                     self._emit("steer", text=txt[:200])
                     self.recorder.log_turn(rid, turn, "steer", txt[:500], 0, 0, 0, 0)
+                # ...and the durable half: instructions accepted on any surface,
+                # which survived the process that took them. Same boundary, one
+                # message each, acknowledged only once they are in the journal.
+                _drained, inbox_error = self._consume_durable_steering(
+                    session, res, rid, turn)
+                if inbox_error:
+                    res.error = inbox_error
+                    res.turns = turn
+                    break
                 system, msgs, meta = self.composer.build(
                     session, safe_user_msg, self.cwd, self.project, self.mode)
                 # Long-conversation compaction (compaction.py). Costs nothing until the
@@ -2303,6 +2755,19 @@ class Harness:
                         res.steer_count += 1
                         self._emit("steer", text=txt[:200])
                         self.recorder.log_turn(rid, turn, "steer", txt[:500], 0, 0, 0, 0)
+                        res.turns = turn + 1
+                        continue
+                    # A durable steer accepted while the model was deciding to
+                    # finish is answered, not lost: the finishing text goes into
+                    # the thread first, then the instruction it must now honour.
+                    drained, inbox_error = self._consume_durable_steering(
+                        session, res, rid, turn,
+                        prelude={"role": "assistant", "content": comp.text})
+                    if inbox_error:
+                        res.error = inbox_error
+                        res.turns = turn + 1
+                        break
+                    if drained:
                         res.turns = turn + 1
                         continue
 

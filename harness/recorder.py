@@ -43,6 +43,7 @@ class RunResult:
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
     contract_repairs: int = 0  # bounded structured-response corrections (not transport retries)
     steer_count: int = 0     # mid-run user steering messages injected (point 13)
+    input_failures: list[dict] = field(default_factory=list)
     denied_calls: int = 0    # tool calls the gate refused (denied, or asked with nobody to answer)
     mem_recalls: int = 0
     wall_ms: int = 0

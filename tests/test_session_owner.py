@@ -27,6 +27,27 @@ def store(tmp_path, monkeypatch):
     return str(directory)
 
 
+def test_busy_probe_checks_the_os_during_identity_publication(store):
+    lease = session_owner.acquire("publishing")
+    lease.release()
+    assert session_owner.describe("publishing")["released"]
+    path = session_owner.lock_path("publishing")
+    with open(path, "rb") as source:
+        before = source.read()
+    # A different executor took the OS lock and has not replaced the previous
+    # released identity yet. Advisory metadata alone gives the wrong answer.
+    handle = session_owner._open(path)
+    session_owner._lock(handle)
+    try:
+        assert session_owner.probe_busy("publishing") is True
+    finally:
+        session_owner._unlock(handle)
+        handle.close()
+    assert session_owner.probe_busy("publishing") is False
+    with open(path, "rb") as source:
+        assert source.read() == before, "a display probe must not publish an owner"
+
+
 def _script(tmp_path, name, body):
     path = tmp_path / name
     path.write_text(body, encoding="utf-8")

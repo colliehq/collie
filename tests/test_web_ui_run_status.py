@@ -228,6 +228,7 @@ class _Fixture(BaseHTTPRequestHandler):
     queue_deliver = threading.Event()
     queue_fail_once = False
     queue_active = False
+    queue_status_extra = {}
     lang = "en"                          # what /api/settings reports, so t() can be exercised
 
     def log_message(self, *_a):
@@ -324,7 +325,8 @@ class _Fixture(BaseHTTPRequestHandler):
         if path == "/api/task-inbox":
             sid = (query.get("session") or [""])[0]
             return self._json({"session": sid, "entries": [entry for entry in _Fixture.queue_entries.values()
-                              if entry["session"] == sid], "active": _Fixture.queue_active})
+                              if entry["session"] == sid], "active": _Fixture.queue_active,
+                              **_Fixture.queue_status_extra})
         if path == "/api/stream":
             return self._stream(query)
         if path.startswith("/api/"):
@@ -429,6 +431,7 @@ def ui(server, browser):
     _Fixture.queue_ack.set(); _Fixture.queue_seen = threading.Event()
     _Fixture.queue_deliver = threading.Event()
     _Fixture.queue_fail_once = False; _Fixture.queue_active = False
+    _Fixture.queue_status_extra = {}
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors = []
@@ -933,6 +936,22 @@ def test_follow_up_stays_pending_after_stop_until_send_next(ui):
     assert len(_Fixture.queue_starts) == 1
     assert _Fixture.queue_starts[0]["session"] == "s-read"
     assert len(_Fixture.stream_requests) == 1, "the client never starts a second SSE executor"
+
+
+def test_queue_displays_detached_failure_and_foreign_process_ownership(ui):
+    _hold_queue(ui)
+    ui.page.fill("#input", "Waiting for the other window")
+    ui.page.press("#input", "Enter")
+    ui.page.locator(".task-queue-row").wait_for()
+    _Fixture.queue_status_extra = {"owner_busy": True,
+        "queue_error": {"error": "The accepted attachment could not be read; request kept."}}
+    _Fixture.queue_release.set()
+    ui.page.wait_for_function("() => !document.getElementById('send').classList.contains('stop')")
+    ui.page.wait_for_function("() => document.getElementById('taskQueueNotice').textContent.includes('attachment could not be read')")
+    assert ui.page.locator("#taskQueueStart").is_disabled()
+    _Fixture.queue_status_extra = {"owner_busy": False, "queue_error": None}
+    ui.page.wait_for_function("() => !document.getElementById('taskQueueStart').disabled")
+    assert ui.page.locator("#taskQueueNotice").is_hidden()
 
 
 def test_accepting_attachments_clears_only_the_images_actually_submitted(ui):

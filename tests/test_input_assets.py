@@ -18,6 +18,14 @@ def picture():
     return {"media_type": "image/png", "data": base64.b64encode(b"fixture image").decode()}
 
 
+def test_reference_can_compare_a_retry_without_consuming_storage(store):
+    contexts = [{"path": "sample.py", "content": "exact context\n"}]
+    reference = assets.reference_of(images=[picture()], contexts=contexts)
+    assert not store.exists()
+    assert reference == assets.save("thread", images=[picture()], contexts=contexts)
+    assert assets.reference_of() is None
+
+
 def test_acceptance_persists_exact_context_and_images_without_upload_cache(store):
     text = "开头\n" + "context\n" * 1000 + "原样保留结尾"
     reference = assets.save("thread", images=[picture()], contexts=[

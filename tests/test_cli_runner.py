@@ -143,6 +143,7 @@ def test_run_with_external_runner_json_and_receipt(monkeypatch, tmp_path, capsys
                         lambda command, cwd, **kw: {
                             "command": command, "exit_code": 0, "passed": True,
                             "command_passed": True, "output": "2 passed",
+                            "executed": True, "process_tree_terminated": True,
                             "freshness": "fresh", "source": "user"})
 
     args = _args(cwd=str(tmp_path), runner="codex-exec",
@@ -187,6 +188,7 @@ def test_run_with_external_runner_json_and_receipt(monkeypatch, tmp_path, capsys
                         lambda command, cwd, **kw: {
                             "command": command, "exit_code": 1, "passed": False,
                             "command_passed": False, "output": "1 failed",
+                            "executed": True, "process_tree_terminated": True,
                             "freshness": "fresh", "source": "user"})
     assert cli.cmd_run(_args(cwd=str(tmp_path), runner="codex-exec",
                              verify_command="python -m pytest -q")) == 1

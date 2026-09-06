@@ -528,6 +528,41 @@ def describe(session, directory=None):
             "released": record.get("released"), "advisory": True}
 
 
+def probe_busy(session, directory=None):
+    """Snapshot of OS ownership for display: True, False, or None if unreadable.
+
+    Never grants execution authority or rewrites the identity record. A probe
+    briefly holds the lock, so callers must still use try_acquire before work.
+    Released metadata cannot prove idleness: a new owner may already hold the
+    OS lock while its identity write is still pending.
+    """
+    try:
+        path = lock_path(session, directory)
+        if not os.path.exists(path):
+            return False
+        guard = _guard(path)
+        if not guard.acquire(blocking=False):
+            return True
+    except (ValueError, OSError):
+        return None
+    handle = None
+    try:
+        handle = _open(path)
+        try:
+            _lock(handle)
+        except (OSError, IOError):
+            return True
+        _unlock(handle)
+        return False
+    except (ValueError, OSError):
+        return None
+    finally:
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                handle.close()
+        guard.release()
+
+
 def _small_json(value, limit=1024):
     """Keep caller metadata to plain JSON values inside a hard byte budget."""
     try:

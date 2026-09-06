@@ -1194,6 +1194,18 @@ class Handler(BaseHTTPRequestHandler):
         return iid
 
     @classmethod
+    def _ide_context_peek(cls, iid):
+        """Read an uploaded context without consuming it.
+
+        Validation has to happen before the record is destroyed.  ``take`` first
+        meant that a request refused for any reason took the attachment with it,
+        and that a retried POST — the browser never saw the first answer — asked
+        for an id that no longer existed.  Peek, decide, then consume.
+        """
+        with cls._ide_context_lock:
+            return cls._ide_contexts.get(iid)
+
+    @classmethod
     def _ide_context_take(cls, iid):
         with cls._ide_context_lock:
             try:
@@ -1438,6 +1450,45 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return None
         return body if isinstance(body, dict) else None
+
+    def _read_json_sized(self, maxlen: int):
+        """``(body, error, status)`` — an oversize request is not a malformed one.
+
+        ``_read_json`` answers ``None`` to "too large", "not JSON" and "no body"
+        alike, which is why a request over the cap used to come back as a plain
+        400 the sender could not act on.  A person whose message is too long
+        needs to be told that, with the limit, and told it was not accepted.
+        """
+        try:
+            n = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            return None, "content-length must be a number", 400
+        if n <= 0:
+            return None, "expected a JSON object", 400
+        if n > maxlen:
+            # Read the rejected body (bounded) before answering.  Replying while
+            # the sender is still writing resets the connection on Windows, and
+            # the person gets a dropped request instead of the reason for it.
+            drain = min(n, 8 * 1024 * 1024)
+            try:
+                while drain > 0:
+                    chunk = self.rfile.read(min(drain, 65536))
+                    if not chunk:
+                        break
+                    drain -= len(chunk)
+            except OSError:
+                pass
+            if n > 8 * 1024 * 1024:
+                self.close_connection = True
+            return None, ("this request is %d bytes; the limit is %d and nothing was "
+                          "truncated or accepted" % (n, maxlen)), 413
+        try:
+            body = _strict_json_loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            return None, "expected a JSON object", 400
+        if not isinstance(body, dict):
+            return None, "expected a JSON object", 400
+        return body, "", 200
 
     def _read_bytes(self, maxlen: int):
         """Read an exact bounded binary POST body, or ``None`` on any malformed request."""
@@ -2127,11 +2178,53 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send_html(f.read(), 200, "image/png")
                 except Exception:
                     return self._send_json({"error": "read"}, 404)
+            if path == "/api/task-inbox":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                return self._serve_task_inbox(urllib.parse.parse_qs(parsed.query))
             if path.startswith("/api/delete/"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                from . import sessions
-                return self._send_json({"ok": sessions.delete(urllib.parse.unquote(path[len("/api/delete/"):]))})
+                from . import sessions, session_owner, task_inbox, web_tasks
+                sid = urllib.parse.unquote(path[len("/api/delete/"):])
+                if not sessions._path(sid):
+                    return self._send_json({"ok": False, "error": "no such conversation"}, 400)
+                # Deleting a conversation another process is executing would take
+                # the transcript out from under a live run.  The lease is the only
+                # honest test, and the lock file itself is never removed: it is the
+                # stable name every executor coordinates on.
+                lease = session_owner.try_acquire(sid, label="web-delete")
+                if lease is None:
+                    return self._send_json(
+                        {"ok": False, "error": "this conversation is running; stop it "
+                                               "before deleting it"}, 409)
+                try:
+                    try:
+                        waiting = task_inbox.list_entries(sid, states=task_inbox.OPEN_STATES)
+                    except task_inbox.InboxError as exc:
+                        return self._send_json(
+                            {"ok": False, "error": "this conversation's accepted requests "
+                                                   "could not be read, so it was not "
+                                                   "deleted: %s" % exc}, 409)
+                    discard = urllib.parse.parse_qs(parsed.query).get(
+                        "discard_pending", ["0"])[0] in ("1", "true", "on")
+                    if waiting and not discard:
+                        return self._send_json(
+                            {"ok": False, "pending": len(waiting),
+                             "entries": [web_tasks.public_entry(e) for e in waiting],
+                             "error": "%d accepted request(s) are still waiting in this "
+                                      "conversation; cancel them or repeat with "
+                                      "discard_pending=1" % len(waiting)}, 409)
+                    for row in waiting:
+                        # Recorded as canceled, never silently dropped.
+                        try:
+                            task_inbox.cancel(sid, row["id"], reason="session deleted")
+                        except task_inbox.InboxError:
+                            pass
+                    return self._send_json({"ok": sessions.delete(sid),
+                                            "canceled": [r["id"] for r in waiting]})
+                finally:
+                    lease.release()
             if path.startswith("/api/rename/"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2570,7 +2663,23 @@ class Handler(BaseHTTPRequestHandler):
                 resolution = str(body.get("resolution") or "").strip()
                 if not sid:
                     return self._send_json({"error": "session required"}, 400)
-                from . import sessions
+                from . import sessions, session_owner
+                if not sessions._path(sid):
+                    return self._send_json({"error": "no such session"}, 404)
+                # Resolving a fence describes what a stopped run left behind. A
+                # session that is executing right now is not that, and rewriting
+                # its boundary underneath it would erase evidence about work in
+                # progress.
+                recovery_root = os.path.join(_state_root(), "sessions")
+                try:
+                    lease = session_owner.try_acquire(sid, label="web-reconcile",
+                                                      directory=recovery_root)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                if lease is None:
+                    return self._send_json(
+                        {"error": "this conversation is running; stop it before "
+                                  "reconciling its recovery state"}, 409)
                 try:
                     state = sessions.reconcile_recovery(
                         sid, resolution, note=str(body.get("note") or "")[:1000], confirmed=True,
@@ -2579,6 +2688,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "no such session"}, 404)
                 except ValueError as exc:
                     return self._send_json({"error": str(exc)}, 409)
+                finally:
+                    lease.release()
                 return self._send_json({"ok": True, "session": sid,
                                         "state": _public_recovery(state, sid) if state else None})
             if path == "/api/doctor/repair":
@@ -3591,68 +3702,78 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ide/context":
                 # One-shot IDE context upload.  The process token proves this came through the
                 # reviewed local workbench; validate every shape and keep the total prompt bounded.
+                #
+                # Bounded now means REFUSED when it does not fit.  This route used
+                # to answer 200 with an id for a request whose file contents it had
+                # silently cut to 64k characters: the editor showed the whole
+                # selection as attached, and the model was asked about a fragment
+                # of it.  One validator (``input_assets``) decides what is storable,
+                # so what the composer can attach and what a queued request can
+                # carry cannot drift apart.
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                body = self._read_json(160_000)
+                from . import input_assets, web_tasks
+                body, detail, status = self._read_json_sized(web_tasks.MAX_IDE_BODY_BYTES)
                 if body is None:
-                    return self._send_json({"error": "expected JSON object"}, 400)
-                raw_items = body.get("items") if isinstance(body, dict) else None
-                if not isinstance(raw_items, list) or not raw_items or len(raw_items) > 24:
-                    return self._send_json({"error": "items must contain 1 to 24 context objects"}, 400)
-                items, total = [], 0
-                for raw in raw_items:
-                    if not isinstance(raw, dict):
-                        return self._send_json({"error": "each context item must be an object"}, 400)
-                    item = {}
-                    for key, cap in (("kind", 32), ("label", 240), ("path", 4096),
-                                     ("fsPath", 4096)):
-                        value = raw.get(key, "")
-                        if value is not None and not isinstance(value, str):
-                            return self._send_json({"error": key + " must be a string"}, 400)
-                        if value:
-                            item[key] = value[:cap]
-                    for key in ("startLine", "endLine"):
-                        value = raw.get(key)
-                        if value is not None:
-                            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                                return self._send_json({"error": key + " must be a positive integer"}, 400)
-                            item[key] = min(value, 10_000_000)
-                    content = raw.get("content", "")
-                    if not isinstance(content, str):
-                        return self._send_json({"error": "content must be a string"}, 400)
-                    remaining = max(0, 64_000 - total)
-                    if content and remaining:
-                        item["content"] = content[:remaining]
-                        total += len(item["content"])
-                    if not item.get("path") and not item.get("label") and not item.get("content"):
-                        continue
-                    items.append(item)
+                    return self._send_json({"error": detail}, status)
+                raw_items = body.get("items")
+                if not isinstance(raw_items, list) or not raw_items:
+                    return self._send_json(
+                        {"error": "items must contain 1 to %d context objects"
+                                  % input_assets.MAX_CONTEXTS}, 400)
+                try:
+                    items = input_assets.validate_contexts(raw_items)
+                except input_assets.AssetError as exc:
+                    return self._send_json({"error": str(exc)},
+                                           413 if "exceed" in str(exc) else 400)
                 if not items:
                     return self._send_json({"error": "no usable context items"}, 400)
                 return self._send_json({"id": Handler._ide_context_put(items)})
-            if path == "/api/steer":
-                # mid-run steering: queue user text for the session's in-flight run. The loop injects
-                # it as a user message at the next turn boundary. CSRF-gated; tiny body.
-                # {queued:false} means no active run — the client falls back to starting a new turn.
+            if path in ("/api/task-inbox", "/api/task-inbox/edit",
+                        "/api/task-inbox/cancel", "/api/task-inbox/start"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                body = self._read_json(65536)
+                return self._serve_task_inbox_post(path)
+            if path == "/api/steer":
+                # Compatibility adapter for the durable inbox.  The response keys
+                # are unchanged, but `queued: true` now means one thing only: the
+                # text is on disk.  It used to mean "pushed onto a queue that a
+                # finishing run discards", after cutting the request to 4000
+                # characters — an acknowledgement for something that never ran,
+                # and for text nobody wrote.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import web_tasks
+                body, detail, status = self._read_json_sized(web_tasks.MAX_BODY_BYTES)
                 if body is None:
-                    return self._send_json({"queued": False,
-                                            "error": "expected JSON object"}, 400)
-                sid = (body or {}).get("session") or ""
-                text = ((body or {}).get("q") or "").strip()
-                if not sid or not text:
+                    return self._send_json({"queued": False, "error": detail}, status)
+                text = body.get("q")
+                if not body.get("session") or not isinstance(text, str) or not text.strip():
                     return self._send_json({"queued": False, "error": "need session + q"}, 400)
-                can_steer, status = Handler._run_feature(sid, "can_steer")
-                if not can_steer:
-                    message = ("the selected worker does not support mid-turn steering; "
-                               "stop it or wait and send a follow-up"
-                               if status == "unsupported" else "no active run")
-                    return self._send_json(
-                        {"queued": False, "status": status, "error": message},
-                        409 if status == "unsupported" else 200)
-                return self._send_json({"queued": Handler._steer_push(sid, text[:4000])})
+                try:
+                    sid = web_tasks.check_session_id(body.get("session"))
+                    entry = self._accept_task_input(
+                        sid, entry_id=body.get("id") or ("steer-" + os.urandom(8).hex()),
+                        text=text, mode=body.get("mode") or "steer",
+                        config=body.get("config"), images=body.get("images") or [],
+                        contexts=body.get("contexts") or [], client="web")
+                except web_tasks.WebInputError as exc:
+                    return self._send_json({"queued": False, "error": str(exc)}, exc.status)
+                running = Handler._runs_snapshot()
+                active = any(r["session"] == sid and r.get("ended") is None for r in running)
+                can_steer, feature = Handler._run_feature(sid, "can_steer")
+                out = {"queued": True, "session": sid, "active": active,
+                       "entry": web_tasks.public_entry(entry),
+                       # What happens next, stated rather than implied: a live run
+                       # that can steer consumes this at its next safe boundary;
+                       # anything else leaves it waiting where it can be seen,
+                       # edited, canceled or started.
+                       "delivery": "in_flight" if (active and can_steer) else "pending",
+                       "status": feature}
+                if active and not can_steer:
+                    out["note"] = ("the running worker cannot take mid-turn steering; "
+                                   "this request is queued and waits for the next turn")
+                return self._send_json(out)
             if path == "/api/approve":
                 # Answer a parked approval. Same CSRF gate and tiny body as /api/steer.
                 # {resolved:false} means the run ended, the item is unknown, or another
@@ -4306,22 +4427,201 @@ class Handler(BaseHTTPRequestHandler):
                     for tc in tcs]
         self._send_json(s)
 
+    # ------------------------------------------------------------------ durable input
+    def _serve_task_inbox(self, qs):
+        """GET /api/task-inbox?session=SID — every request accepted for a conversation.
+
+        Reads the store, not this process's memory, so a page reloaded after a
+        restart still shows what the person is waiting on.
+
+        Three different facts, kept apart because they answer different
+        questions.  ``active`` is "is *this* server running it", which only this
+        process can know.  ``owner_busy`` is "is anybody running it", asked of
+        the operating system rather than inferred from the advisory record — a
+        process that died holding the lease leaves a record indistinguishable
+        from a live run, and a surface that read that record alone would either
+        offer Start on a conversation another window is running or refuse it
+        forever after a crash.  It is ``null`` when even the OS cannot say.
+        ``owner`` stays what it always was: the advisory description, labelled.
+        """
+        from . import session_owner, task_inbox, web_tasks
+        try:
+            sid = web_tasks.check_session_id(qs.get("session", [""])[0])
+            entries = web_tasks.list_public(sid)
+        except web_tasks.WebInputError as exc:
+            return self._send_json({"error": str(exc)}, exc.status)
+        except task_inbox.InboxError as exc:
+            return self._send_json({"error": str(exc)}, 409)
+        with Handler._runs_lock:
+            row = Handler._runs.get(sid)
+            active = bool(row is not None and row.get("ended") is None)
+        busy = web_tasks.owner_busy(sid)
+        return self._send_json({
+            "session": sid, "entries": entries, "active": active,
+            "owner_busy": True if active else busy,
+            "owner": session_owner.describe(sid)["owner"] or None,
+            "queue_error": web_tasks.queue_error(sid),
+            "limits": {"max_pending": task_inbox.MAX_PENDING,
+                       "max_text_bytes": task_inbox.MAX_TEXT_BYTES,
+                       "max_body_bytes": web_tasks.MAX_BODY_BYTES}})
+
+    def _accept_task_input(self, sid, *, entry_id, text, mode, config, images,
+                           contexts, client):
+        """Validate, snapshot and durably store one request — then acknowledge it.
+
+        The order is the contract.  Attachment bytes are copied out of the
+        volatile upload cache first, so a burst of screenshots cannot evict the
+        one this request is about between checking it and storing it; the run
+        settings are frozen next, so the follow-up runs as the person configured
+        it rather than as the panel happens to be set later; and only after the
+        entry is on disk does anything answer "accepted".
+
+        A retry of an id this conversation already holds never reaches any of
+        that.  It is compared against the stored request — the words, the mode,
+        the configuration the person chose and the attachment content — and
+        answered with the entry that exists, keeping the settings snapshot it was
+        accepted under.  Re-freezing would make an identical retry sent after a
+        Settings change look like a different request; accepting changed text or
+        a different screenshot under the same id would silently replace one.
+        """
+        from . import settings, web_tasks
+        entry_id = web_tasks.check_entry_id(entry_id)
+        mode = web_tasks.check_mode(mode)
+        text = web_tasks.check_text(text)
+
+        def _resolve_assets():
+            return (web_tasks.resolve_images(images, Handler._img_get),
+                    web_tasks.resolve_contexts(contexts, Handler._ide_context_peek))
+
+        fingerprint = web_tasks.request_fingerprint(
+            sid, entry_id=entry_id, text=text, mode=mode, config=config,
+            images=images, contexts=contexts, client=client)
+        existing = web_tasks.existing_entry(sid, entry_id)
+        if existing is not None:
+            matched = web_tasks.match_accepted(
+                existing, entry_id=entry_id, text=text, mode=mode, config=config,
+                fingerprint=fingerprint, resolve_assets=_resolve_assets)
+            if matched is not None:
+                return matched
+        image_payloads, context_items = _resolve_assets()
+        # Read the effective settings; never write them.  ``settings.apply()``
+        # here would push this acceptance's provider and model into the whole
+        # process's environment, changing runs that are in flight right now — the
+        # opposite of what freezing a config for one request means.
+        provider = (settings.get("PROVIDER", "") or _provider() or "").strip()
+        if not provider:
+            raise web_tasks.WebInputError(
+                "no model configured — open Settings and choose a Provider before "
+                "queueing work", 409)
+        frozen = web_tasks.freeze_config(
+            config, provider=provider, model=settings.get("MODEL", "") or "",
+            interactive_speed=settings.get("INTERACTIVE_SPEED", "") or "",
+            reasoning_effort=settings.get("REASONING_EFFORT", "") or "")
+        return web_tasks.accept(sid, entry_id=entry_id, text=text, mode=mode,
+                                config=frozen, images=image_payloads,
+                                contexts=context_items, client=client,
+                                fingerprint=fingerprint)
+
+    def _serve_task_inbox_post(self, path):
+        """POST /api/task-inbox[/edit|/cancel|/start]."""
+        from . import session_owner, task_inbox, web_tasks
+        body, detail, status = self._read_json_sized(web_tasks.MAX_BODY_BYTES)
+        if body is None:
+            return self._send_json({"error": detail}, status)
+        try:
+            sid = web_tasks.check_session_id(body.get("session"))
+            if path == "/api/task-inbox":
+                entry = self._accept_task_input(
+                    sid, entry_id=body.get("id"), text=body.get("text"),
+                    mode=body.get("mode") or "steer", config=body.get("config"),
+                    images=body.get("images") or [], contexts=body.get("contexts") or [],
+                    client=str(body.get("client") or "web"))
+                return self._send_json({"session": sid, "accepted": True,
+                                        "entry": web_tasks.public_entry(entry)})
+            if path == "/api/task-inbox/edit":
+                entry = task_inbox.edit(
+                    sid, web_tasks.check_entry_id(body.get("id")),
+                    text=web_tasks.check_text(body.get("text")),
+                    expected_digest=str(body.get("expected_digest") or ""))
+                return self._send_json({"session": sid,
+                                        "entry": web_tasks.public_entry(entry)})
+            if path == "/api/task-inbox/cancel":
+                # Withdrawing queued input is its own action.  Stop is about the
+                # model that is running; using it to clear a queue would also
+                # abandon the answer being produced.
+                entry = task_inbox.cancel(
+                    sid, web_tasks.check_entry_id(body.get("id")),
+                    reason=str(body.get("reason") or "")[:200])
+                return self._send_json({"session": sid,
+                                        "entry": web_tasks.public_entry(entry)})
+            return self._send_json(web_tasks.start_pending(sid))
+        except web_tasks.WebInputError as exc:
+            return self._send_json({"error": str(exc)}, exc.status)
+        except task_inbox.UnknownEntry:
+            return self._send_json({"error": "no such queued request"}, 404)
+        except task_inbox.IdConflict as exc:
+            return self._send_json({"error": str(exc)}, 409)
+        except task_inbox.InboxFull as exc:
+            return self._send_json({"error": str(exc)}, 429)
+        except task_inbox.InvalidRequest as exc:
+            return self._send_json({"error": str(exc)}, 400)
+        except (task_inbox.InboxError, session_owner.OwnershipRequired) as exc:
+            return self._send_json({"error": str(exc)}, 409)
+
     def _serve_stream(self, qs):
+        """GET /api/stream — the managed turn.
+
+        The stream itself is only the audience.  ``web_tasks.serve_managed_stream``
+        takes this session's OS execution lease before a single byte of its
+        journal is read, holds it through the run, the required check and the
+        final save, and hands it to a scheduled follow-up rather than releasing
+        it into a race.  ``_run_stream`` below is the run; it never owns anything.
+        """
+        from . import web_tasks
+        return web_tasks.serve_managed_stream(self, qs)
+
+    def _run_stream(self, qs):
         from .cli import (configure_run_options, default_gate, make_harness,
                           normalize_run_options, _worker_model)
-        from . import sessions, settings
+        from . import sessions, settings, task_inbox, web_tasks
         settings.apply()   # a Settings-panel save takes effect on the next query, no restart
+
+        # What this turn owns, supplied by the execution manager: the held lease,
+        # the durable request being executed (if this turn was started from the
+        # inbox rather than from a live composer), its attachments, and the run
+        # settings frozen when the person accepted it.
+        run_owner = getattr(self, "_run_owner", None)
+        input_entry = getattr(self, "_input_entry", None)
+        input_bundle = getattr(self, "_input_bundle", None)
+        frozen = getattr(self, "_run_config_frozen", None) or {}
+        # Steering older than this floor belongs to an earlier turn: it was
+        # accepted before this run started and must not be appended after the
+        # request the person is watching.  ``None`` means the floor could not be
+        # read, and then nothing mid-run is consumed at all.
+        steer_floor = getattr(self, "_steer_floor", 0)
+        self._stream_outcome = None
 
         q = (qs.get("q", [""])[0] or "").strip()
         # First-party focused surfaces may add model framing around a verbatim command. This value
         # arrives through the same authenticated request but is kept separate so only the user's
         # exact words, never window titles or generated instructions, compile Authority v2 grants.
         authority_text = (qs.get("authority_text", [""])[0] or "").strip()[:4_000]
-        sid = (qs.get("session", [""])[0] or "").strip() or sessions.new_id()
+        sid = getattr(self, "_managed_session", "") or (
+            (qs.get("session", [""])[0] or "").strip() or sessions.new_id())
         context_ids = [i for i in (qs.get("ctx", [""])[0] or "").split(",") if i]
         ide_items = []
+        # Peek first, consume after the request is known to be runnable: a refusal
+        # must not take the person's attached context away with it.
+        missing_context = [cid for cid in context_ids[:8]
+                           if not isinstance(Handler._ide_context_peek(cid), list)]
+        if missing_context and input_entry is None:
+            self._sse_open()
+            self._sse("done", {"session": sid, "answer": "", "error":
+                               "attached editor context is no longer available; "
+                               "re-attach it and send again"})
+            return
         for context_id in context_ids[:8]:
-            stored = Handler._ide_context_take(context_id)
+            stored = Handler._ide_context_peek(context_id)
             if isinstance(stored, list):
                 ide_items.extend(stored)
 
@@ -4344,17 +4644,41 @@ class Handler(BaseHTTPRequestHandler):
             rows.append("\n[End IDE context]")
             return "\n".join(rows)
 
-        model_q = q + _ide_context_text(ide_items)
         # attached images: /api/stream?imgs=<id>,<id> references what the composer POSTed to /api/upload.
         # With images the user_msg becomes a multimodal list (text + image blocks) the provider layer
         # reshapes into each vendor's vision format.
         img_ids = [i for i in (qs.get("imgs", [""])[0] or "").split(",") if i]
-        imgs = [Handler._img_get(i) for i in img_ids]
-        imgs = [im for im in imgs if im]
-        user_msg = model_q
-        if imgs:
-            user_msg = ([{"type": "text", "text": model_q}] if model_q else []) + \
-                       [{"type": "image", "media_type": mt, "data": data} for (mt, data) in imgs]
+        if input_entry is not None:
+            # This turn is executing a durably accepted request. Its text and its
+            # attachments come from the store, not from ids in a URL that a
+            # bounded in-memory cache may already have evicted.
+            q = input_entry["text"]
+            authority_text = q
+            bundle = input_bundle or {"images": [], "contexts": []}
+            ide_items = list(bundle.get("contexts") or [])
+            imgs = [(im["media_type"], im["data"]) for im in (bundle.get("images") or [])]
+            model_q = q + _ide_context_text(ide_items)
+            from . import input_assets as _input_assets
+            user_msg = _input_assets.model_message(q, bundle)
+        else:
+            model_q = q + _ide_context_text(ide_items)
+            imgs = []
+            for iid in img_ids:
+                stored = Handler._img_get(iid)
+                if not stored:
+                    # Never run the request without what it was about: an evicted
+                    # or expired upload is a refusal the person can act on, not an
+                    # attachment quietly left out of the prompt.
+                    self._sse_open()
+                    self._sse("done", {"session": sid, "answer": "", "error":
+                                       "an attached image is no longer available; "
+                                       "re-attach it and send again"})
+                    return
+                imgs.append(stored)
+            user_msg = model_q
+            if imgs:
+                user_msg = ([{"type": "text", "text": model_q}] if model_q else []) + \
+                           [{"type": "image", "media_type": mt, "data": data} for (mt, data) in imgs]
         self._sse_open()
         if not q and not imgs:
             self._sse("done", {"session": sid, "answer": "", "error": "empty message"})
@@ -4400,6 +4724,17 @@ class Handler(BaseHTTPRequestHandler):
                                "no model configured — open Settings and choose a Provider "
                                "(a saved one did not reach this run)"})
             return
+        if frozen.get("provider") and frozen["provider"] != prov:
+            # The provider decides who pays.  A request accepted against one
+            # subscription must not be silently executed against another because
+            # Settings changed while it waited; the person is told, and the
+            # request stays waiting for them to decide.
+            self._sse("done", {"session": sid, "answer": "", "error":
+                               "this request was accepted for provider %s, which is no longer "
+                               "the configured one (%s); re-send it to run on %s"
+                               % (frozen["provider"], prov, prov),
+                               "provider_changed": True})
+            return
 
         # A transcript stopped at a model/turn boundary is safe to continue.  One stopped while an
         # external tool may have fired is not: loading and replaying that suffix can duplicate an
@@ -4444,8 +4779,12 @@ class Handler(BaseHTTPRequestHandler):
         elif legacy_mode == "pack":
             explicit_axes = parse_explicit_axes(list(explicit_axes) + ["strategy"])
 
-        configured_model = settings.get("MODEL", "") or None
-        effort_request = qs.get("effort", [settings.get("REASONING_EFFORT", "auto") or "auto"])[0]
+        # Frozen settings are resolved here, locally, for this run only.  Replaying
+        # a snapshot by writing Settings or the environment would change every
+        # other run in this process, including ones the person is watching.
+        configured_model = frozen.get("model") or settings.get("MODEL", "") or None
+        effort_request = qs.get("effort", [frozen.get("reasoning_effort") or
+                                           settings.get("REASONING_EFFORT", "auto") or "auto"])[0]
         if "speed" in explicit_axes:
             # An explicit Fast/Standard choice is literal, including its billing
             # consequence and any clean unsupported-provider refusal.
@@ -4456,7 +4795,8 @@ class Handler(BaseHTTPRequestHandler):
             # selects Fast. A configured Fast default degrades to Standard on a
             # provider/model without a real same-model speed tier.
             from .providers import provider_capabilities
-            preferred_speed = (settings.get("INTERACTIVE_SPEED", "fast") or
+            preferred_speed = (frozen.get("interactive_speed") or
+                               settings.get("INTERACTIVE_SPEED", "fast") or
                                "fast").strip().lower()
             if preferred_speed not in ("standard", "fast"):
                 preferred_speed = "fast"
@@ -4637,11 +4977,29 @@ class Handler(BaseHTTPRequestHandler):
                                                 runner=runner_decision.to_dict())})
             return
         if imgs and runner_decision.runner != "collie":
+            # Including a queued request whose snapshotted images this worker
+            # cannot carry: refused before it is journalled or transmitted, and
+            # named by its inbox id so the surface can point at it.
             cleanup_error = _discard_unused_worktree()
             self._sse("done", {"session": sid, "answer": "",
                                "error": "%s does not accept image attachments on the Web "
                                         "worker protocol yet; use worker Collie for this run%s" %
                                         (runner_decision.runner, cleanup_error),
+                               "decision": dict(decision.to_dict(),
+                                                runner=runner_decision.to_dict()),
+                               **({"input_id": input_entry["id"]}
+                                  if input_entry is not None else {})})
+            return
+        if input_entry is not None and runner_decision.runner != "collie" and run_owner is None:
+            # A queued request may only run under the lease that claimed it: the
+            # journal insertion below, and the acknowledgement after it, are both
+            # owner-gated.  Without one there is nothing to make delivery
+            # recoverable, so the request stays waiting and visible.
+            cleanup_error = _discard_unused_worktree()
+            self._sse("done", {"session": sid, "answer": "", "input_id": input_entry["id"],
+                               "error": "this queued request was not started by the "
+                                        "execution manager, so its delivery could not be "
+                                        "made recoverable" + cleanup_error,
                                "decision": dict(decision.to_dict(),
                                                 runner=runner_decision.to_dict())})
             return
@@ -4652,7 +5010,8 @@ class Handler(BaseHTTPRequestHandler):
             # Claude Code is its own payer and supports its own Fast mode. The
             # Brain provider may not expose a same-model tier, so carry the
             # foreground preference independently to the external worker.
-            external_preference = (settings.get("INTERACTIVE_SPEED", "fast") or
+            external_preference = (frozen.get("interactive_speed") or
+                                   settings.get("INTERACTIVE_SPEED", "fast") or
                                    "fast").strip().lower()
             execution_speed = ("fast" if external_preference == "fast"
                                else "standard")
@@ -4664,6 +5023,11 @@ class Handler(BaseHTTPRequestHandler):
                                "error": "this session already has an active run" +
                                         cleanup_error})
             return
+        # The request is now committed to a run, so the one-shot editor context
+        # ids it referenced may finally be consumed: a stale selection cannot
+        # reach a later run, and nothing was destroyed by a refusal above.
+        for context_id in context_ids[:8]:
+            Handler._ide_context_take(context_id)
 
         # External workers own a tool loop Collie cannot replay, and Pack may
         # copy a winning tree into the current workspace. Arm a durable fence
@@ -4671,14 +5035,24 @@ class Handler(BaseHTTPRequestHandler):
         # execution receipt and the user-visible exchange are durable.
         durable_external_boundary = bool(
             strategy == "pack" or runner_decision.runner != "collie")
+        boundary_detail = {"runner": runner_decision.runner,
+                           "surface": "pack" if strategy == "pack" else "web",
+                           "strategy": strategy}
+        # What this run believes is already in the journal, and whether the
+        # person's request is part of it.  A worker that cannot prove it received
+        # a message can still be given one Collie wrote down first: insertion
+        # before transport is what makes a crash recoverable instead of a request
+        # that comes back pending after it may already have had an effect.
+        journaled = list(history)
+        request_journaled = False
         if durable_external_boundary:
+            if input_entry is not None:
+                journaled = journaled + [task_inbox.journal_message(input_entry)]
+                request_journaled = True
             try:
                 sessions.checkpoint(
-                    sid, history, project="web", cwd=cwd, run_id=run_id,
-                    state="external_action",
-                    detail={"runner": runner_decision.runner,
-                            "surface": "pack" if strategy == "pack" else "web",
-                            "strategy": strategy})
+                    sid, journaled, project="web", cwd=cwd, run_id=run_id,
+                    state="external_action", detail=boundary_detail)
             except Exception as persist_exc:
                 error = _public_error(
                     persist_exc,
@@ -4686,9 +5060,20 @@ class Handler(BaseHTTPRequestHandler):
                 cleanup_error = _discard_unused_worktree()
                 error += cleanup_error
                 Handler._run_end(sid, error=error, run_id=run_id)
-                self._sse("done", {"session": sid, "run": run_id,
-                                   "answer": "", "error": error})
+                self._sse("done", {"session": sid, "run": run_id, "answer": "",
+                                   "error": error,
+                                   **({"input_id": input_entry["id"]}
+                                      if input_entry is not None else {})})
                 return
+            if input_entry is not None:
+                # The request is durably in the transcript under its inbox id, so
+                # acknowledging it now is a statement about storage, not about the
+                # worker.  A crash before this leaves a claimed entry that
+                # reconcile settles from the journal — never a second send.
+                try:
+                    task_inbox.ack(sid, run_owner, input_entry["id"])
+                except task_inbox.InboxError:
+                    pass          # reconcile finds it in the journal and consumes it
 
         def _clear_durable_external_boundary():
             if not durable_external_boundary:
@@ -4876,7 +5261,11 @@ class Handler(BaseHTTPRequestHandler):
                         error += ": " + receipt_detail
                 history_saved = False
                 try:
-                    sessions.append_exchange(sid, user_msg, error, project="web", cwd=cwd)
+                    if request_journaled:
+                        web_tasks.append_exchange_with_input(
+                            sid, None, error, [], project="web", cwd=cwd)
+                    else:
+                        sessions.append_exchange(sid, user_msg, error, project="web", cwd=cwd)
                     history_saved = True
                 except Exception as history_exc:
                     error += "; " + _public_error(
@@ -4950,7 +5339,14 @@ class Handler(BaseHTTPRequestHandler):
                               (ans or error or "")))
             history_saved = False
             try:
-                sessions.append_exchange(sid, user_msg, saved_answer, project="web", cwd=cwd)
+                if request_journaled:
+                    # The queued request was stamped into the transcript before
+                    # any candidate ran; this adds the winner's answer to it.
+                    web_tasks.append_exchange_with_input(
+                        sid, None, saved_answer, [], project="web", cwd=cwd)
+                else:
+                    sessions.append_exchange(sid, user_msg, saved_answer,
+                                             project="web", cwd=cwd)
                 history_saved = True
             except Exception as e:
                 error = error or _public_error(
@@ -4964,6 +5360,9 @@ class Handler(BaseHTTPRequestHandler):
             Handler._run_mark(sid, turns=turns,
                               verified=bool(winner_rec and winner_rec.get("verified")))
             Handler._run_end(sid, error=error or "", canceled=canceled, run_id=run_id)
+            self._stream_outcome = web_tasks.terminal_outcome(
+                completed=bool(win is not None), canceled=canceled, error=error or "",
+                recovery_required=pack_recovery_required)
             done_d = {
                 "session": sid, "run": run_id, "answer": ans, "error": error,
                 "canceled": canceled,
@@ -5036,16 +5435,82 @@ class Handler(BaseHTTPRequestHandler):
                         inbox_approver(worker_inbox, sid, visibility=VIS_INLINE))
 
                 worker_steering = None
+                handed_steers = []           # offered to the transport, in order
+                steer_recorded = []          # journalled and acknowledged
+                steer_unsettled = []         # journalled, acknowledgement failed
+                steer_not_sent = []          # refused before transport, still waiting
+                steer_errors = []
                 if worker_caps["steer"]:
                     worker_steer_q = Handler._steer_open(sid)
 
                     def _drain_worker_steer():
+                        nonlocal journaled, request_journaled
                         out = []
                         while True:
                             try:
                                 out.append(worker_steer_q.get_nowait())
                             except queue.Empty:
-                                return out
+                                break
+                        if run_owner is None:
+                            return out
+                        # Durable input accepted while this worker is running.
+                        # Claiming it records who is responsible for it; writing
+                        # it down *before* returning it is what makes handing it
+                        # to a protocol with no receipt survivable.  A crash after
+                        # this point finds the instruction in the transcript and
+                        # never sends it again; a crash before it finds nothing
+                        # sent and nothing claimed.
+                        try:
+                            claimed = web_tasks.claim_steer(sid, run_owner,
+                                                            after_seq=steer_floor)
+                        except Exception:
+                            return out
+                        if not claimed:
+                            return out
+                        base = list(journaled)
+                        if not request_journaled:
+                            base.append({"role": "user", "content": q})
+                        try:
+                            journaled = web_tasks.journal_before_transport(
+                                sid, run_owner, claimed, base_messages=base,
+                                run_id=run_id, cwd=cwd, detail=boundary_detail)
+                            request_journaled = True
+                        except Exception as persist_exc:
+                            # Not written down, so not transmitted.  The person's
+                            # correction goes back to waiting, where they can see
+                            # it, edit it and send it again — the one state that
+                            # is neither a lost instruction nor a repeated one.
+                            detail = _public_error(persist_exc)
+                            steer_not_sent.extend(row["id"] for row in claimed)
+                            web_tasks.release_undelivered(
+                                sid, run_owner, [row["id"] for row in claimed],
+                                "it could not be written to the transcript, so it was "
+                                "not sent")
+                            steer_errors.append(
+                                "%d steering request(s) could not be saved before being "
+                                "sent, so they were not sent and are still waiting: %s"
+                                % (len(claimed), detail))
+                            error_event = {"session": sid, "run": run_id,
+                                           "error": steer_errors[-1],
+                                           "entries": [row["id"] for row in claimed]}
+                            _tx("steering_error", error_event)
+                            Handler._mirror_pub(sid, "steering_error", error_event)
+                            web_tasks.note_queue_error(sid, steer_errors[-1],
+                                                       kind="steering")
+                            return out
+                        settled = web_tasks.ack_delivered(sid, run_owner, claimed)
+                        steer_recorded.extend(settled["consumed"])
+                        steer_unsettled.extend(settled["unsettled"])
+                        if settled["unsettled"]:
+                            steer_errors.append(
+                                "%d steering request(s) are in the transcript but could "
+                                "not be acknowledged; they stay claimed and will not be "
+                                "sent again" % len(settled["unsettled"]))
+                        for row in claimed:
+                            handed_steers.append(row)
+                            out.append(row["text"])
+                        self._input_handed = list(handed_steers)
+                        return out
                     worker_steering = _drain_worker_steer
                 try:
                     res = runner_slice.run_adhoc(
@@ -5139,13 +5604,35 @@ class Handler(BaseHTTPRequestHandler):
                                 runner_slice.transcript_text(res))
                 history_saved = False
                 try:
-                    sessions.append_exchange(sid, q, saved_answer, project="web", cwd=cwd)
+                    if request_journaled or handed_steers:
+                        # Whatever was written down before it was transmitted is
+                        # already in the transcript, in the order it happened.
+                        # This adds the answer to it — never a second copy of the
+                        # question, and never a trailing instruction the next turn
+                        # would answer again.
+                        web_tasks.append_exchange_with_input(
+                            sid, None if request_journaled else q, saved_answer,
+                            handed_steers, project="web", cwd=cwd)
+                    else:
+                        sessions.append_exchange(sid, q, saved_answer, project="web", cwd=cwd)
                     history_saved = True
                 except Exception as persist_exc:
                     persistence_error = _public_error(
                         persist_exc, prefix="worker history could not be persisted: ")
                     res.error = ((res.error + "; ") if res.error else "") + persistence_error
                     res.success = False
+                steer_settlement = None
+                if handed_steers or steer_not_sent or steer_errors:
+                    # Acknowledgement already happened, before transmission; this
+                    # only reports it.  "Recorded" means journalled and closed
+                    # out, not that the worker acted on anything.
+                    steer_settlement = {
+                        "recorded": list(steer_recorded),
+                        "unsettled": list(steer_unsettled),
+                        "not_sent": list(steer_not_sent),
+                        "consumption_unconfirmed": [row["id"] for row in handed_steers]}
+                for steer_error in steer_errors:
+                    res.error = ((res.error + "; ") if res.error else "") + steer_error
                 recovery_required = bool(
                     worker_receipt is None or worker_receipt.recovery_required
                     # A host check whose tree is unaccounted for is its own
@@ -5172,6 +5659,22 @@ class Handler(BaseHTTPRequestHandler):
                     "subscription": runner_decision.billing_class ==
                                     "subscription_allowance",
                 }
+                if steer_settlement is not None:
+                    # Written down before it was offered to the transport, and
+                    # never re-sent.  "The worker was given this" is all an
+                    # external protocol proves, so that is all this says.
+                    done_d["steering"] = dict(steer_settlement)
+                self._stream_outcome = web_tasks.terminal_outcome(
+                    res, canceled=canceled, error=res.error or "",
+                    recovery_required=recovery_required)
+                # A follow-up may only start on a turn this worker's own protocol
+                # reported as finished and settled, whose receipt and transcript
+                # both landed.  Anything unknown — no receipt, an unsettled one,
+                # an open fence, a failed save — leaves accepted input waiting for
+                # an explicit Start rather than stacking work on a guess.
+                if not (worker_receipt is not None and worker_receipt.settled
+                        and receipt_saved and history_saved and not steer_errors):
+                    self._stream_outcome["auto_next"] = False
                 if wt_info:
                     from . import worktree as _wt
                     st = _wt.status(wt_info["dir"])
@@ -5211,9 +5714,14 @@ class Handler(BaseHTTPRequestHandler):
                                             "canceled": done_d["canceled"]})
                 _tx("done", done_d)
                 try:
-                    sessions.append_exchange(
-                        sid, q, "_[Worker error: %s]_" % error,
-                        project="web", cwd=cwd)
+                    if request_journaled:
+                        web_tasks.append_exchange_with_input(
+                            sid, None, "_[Worker error: %s]_" % error,
+                            [], project="web", cwd=cwd)
+                    else:
+                        sessions.append_exchange(
+                            sid, q, "_[Worker error: %s]_" % error,
+                            project="web", cwd=cwd)
                 except Exception:
                     pass
                 try:
@@ -5253,6 +5761,33 @@ class Handler(BaseHTTPRequestHandler):
             configure_run_options(h, **run_opts)
             h.cancelled = lambda: Handler._run_cancelled(sid, run_id)
             h.checkpoint_scope = "web:" + sid
+            # Ownership and durable input.  The harness validates the lease
+            # against its own session/root and never releases one it was given:
+            # this surface acquired it before the journal was read and keeps it
+            # until after the final save.
+            # An unreadable floor is not a floor.  Rather than hand the loop a
+            # number that would let it consume an older turn's steering, the
+            # durable channel stays closed for this run and accepted input waits
+            # where it can be seen and started deliberately.
+            durable_input = (web_tasks.harness_accepts_input_entry(h)
+                             and steer_floor is not None)
+            if run_owner is not None and durable_input:
+                h.run_owner = run_owner
+                # The loop claims steering itself; this is the only thing that
+                # tells it which requests belong to this turn.
+                h.steering_after_seq = steer_floor
+            if input_entry is not None:
+                if not durable_input or run_owner is None:
+                    # Without the handshake the harness would insert this text as
+                    # an ordinary message, unstamped, and nothing could later tell
+                    # delivered from lost.  Refuse; the request stays waiting.
+                    error = ("this build cannot execute a queued request "
+                             "(the run harness does not implement durable input)")
+                    Handler._run_end(sid, error=error, run_id=run_id)
+                    _tx("done", {"session": sid, "run": run_id, "answer": "",
+                                 "error": error, "input_id": input_entry["id"]})
+                    return
+                h.input_entry = input_entry
             # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
             # shell + the user's logged-in browser. Nudge it to ACT on local/system questions (time, tz,
             # hardware, status, location) via bash/powershell.exe instead of refusing for "lack of a tool".
@@ -5314,18 +5849,23 @@ class Handler(BaseHTTPRequestHandler):
             inbox = InboxStore(on_new=_permission_new)
             Handler._inbox_open(sid, inbox)
             h.approve = inbox_approver(inbox, sid, visibility=VIS_INLINE)
-            # mid-run steering: register a per-session queue; the loop drains it at each turn boundary.
-            # POST /api/steer pushes onto it. Text typed while Collie works becomes the next user turn.
-            steer_q = Handler._steer_open(sid)
-            def _drain_steer():
-                out = []
-                while True:
-                    try:
-                        out.append(steer_q.get_nowait())
-                    except queue.Empty:
-                        break
-                return out
-            h.steering = _drain_steer
+            # Mid-run steering.  With durable input the loop claims accepted
+            # requests from the inbox itself at each safe boundary and inserts
+            # them once; wiring the old volatile callback as well would deliver
+            # the same instruction twice.  Without it, fall back to the in-memory
+            # queue this process has always used.
+            if not durable_input:
+                steer_q = Handler._steer_open(sid)
+
+                def _drain_steer():
+                    out = []
+                    while True:
+                        try:
+                            out.append(steer_q.get_nowait())
+                        except queue.Empty:
+                            break
+                    return out
+                h.steering = _drain_steer
             # HEARTBEAT: h.run is synchronous, so during a silent gap (a slow tool, then the next
             # turn's time-to-first-token) NO bytes cross the SSE socket. On flaky forwarders (WSL2
             # localhost, some proxies) an idle connection gets dropped mid-run -> the browser shows
@@ -5414,6 +5954,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 run_recovery = None
             recovery_required = bool(run_recovery and run_recovery.get("recovery_required"))
+            # The scheduler's only input, and it is the run's own terminal record:
+            # not the answer text, not whether a socket was still attached.
+            self._stream_outcome = web_tasks.terminal_outcome(
+                res, canceled=canceled, error=res.error or "",
+                recovery_required=recovery_required)
             Handler._live_pub("done", {"session": sid, "run": run_id,
                                         "turns": res.turns, "canceled": canceled})
             actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)

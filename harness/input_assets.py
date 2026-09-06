@@ -114,16 +114,27 @@ def _path(session, digest, directory=None):
     return path
 
 
+def reference_of(*, images=None, contexts=None):
+    """Validate and identify attachment content without writing a bundle."""
+    bundle = _bundle([] if images is None else images, [] if contexts is None else contexts)
+    if not bundle["images"] and not bundle["contexts"]:
+        return None
+    return _reference(bundle, _encode(bundle))
+
+
+def _reference(bundle, raw):
+    return {"digest": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
+            "images": len(bundle["images"]), "contexts": len(bundle["contexts"])}
+
+
 def save(session, *, images=None, contexts=None, directory=None):
     """Persist exact validated content before the caller acknowledges the inbox POST."""
     bundle = _bundle([] if images is None else images, [] if contexts is None else contexts)
     if not bundle["images"] and not bundle["contexts"]:
         return None
     raw = _encode(bundle)
-    digest = hashlib.sha256(raw).hexdigest()
-    reference = {"digest": digest, "bytes": len(raw), "images": len(bundle["images"]),
-                 "contexts": len(bundle["contexts"])}
-    path = _path(session, digest, directory)
+    reference = _reference(bundle, raw)
+    path = _path(session, reference["digest"], directory)
     # One short transaction for all bundles in this conversation. Reject new
     # content at capacity; never evict an attachment accepted for pending work.
     with sessions._locked(os.path.join(os.path.dirname(path), "_quota")):

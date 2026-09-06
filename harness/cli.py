@@ -545,6 +545,7 @@ def cmd_repl(args):
     """Interactive REPL — a lightweight readline chat that keeps the FULL conversation thread
     across turns (and persists it as a session, so you can --resume later). collie's answer to
     'no interactive mode' without a heavy TUI: one input() loop over the same harness."""
+    from . import run_ownership
     from . import sessions as sess
     resume_id = args.resume or (sess.latest() if getattr(args, "cont", False) else None)
     sid = resume_id or sess.new_id()
@@ -565,9 +566,16 @@ def cmd_repl(args):
     try:
         cwd = sess.resolve_cwd(loaded, requested=args.cwd)
         if loaded and args.cwd:
-            sess.relocate(sid, cwd)
+            # Where a conversation executes is durable state about it, so moving
+            # it takes the same lease a turn does: a relocation that lands under
+            # a running executor would move the ground beneath it.
+            with run_ownership.hold(sid, label="cli-repl-relocate"):
+                sess.relocate(sid, cwd)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except run_ownership.OwnershipRefused as exc:
+        print("cannot move %s to %s: %s" % (sid, cwd, exc), file=sys.stderr)
         return 2
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
     configured_model = configured_model_for(
@@ -606,61 +614,94 @@ def cmd_repl(args):
                 # last action has an unknown outcome. Refuse the turn, not the user.
                 print("\n" + fenced)
                 continue
+            # One turn, one owner: the lease covers reading the durable thread, the
+            # run, the transcript save and the receipt, and is released before the
+            # next prompt — a person thinking at a REPL is not an executor, and
+            # holding the session open across that would lock every other surface
+            # out of the conversation.
             try:
-                decision = resolve_turn_decision(
-                    line, provider, configured_model=configured_model,
-                    history=history, receipts=receipts)
-                apply_turn_decision(h, decision, _gate)
-            except Exception as e:
-                print("\ncollie could not route this turn: %s: %s" % (type(e).__name__, e))
-                continue
-            print("  [decision] %s · %s · %s/%s/%s" % (
-                decision.model, decision.effort, decision.intent,
-                decision.quality, decision.verification))
-            try:
-                res = h.run("repl", line, consolidate=True, history=history)
-            except KeyboardInterrupt:
-                # run() turns Ctrl-C into a canceled result, so reaching here means
-                # the interrupt landed outside it. Recover the thread from the
-                # durable journal rather than silently dropping this turn's work.
-                recovered = sess.resume_after_interrupt(sid, fallback=history)
-                history = recovered["messages"]
-                print("\n⏹ turn interrupted — kept the %d messages already recorded"
-                      % len(history))
-                fenced = (recovery_notice(sid, recovered["recovery"])
-                          if recovered["blocked"] else "")
-                if fenced:
-                    print("\n" + fenced)
-                continue
-            print("\n" + (res.answer or res.error or "(no output)"))
-            history = res.messages
-            receipt = turn_decision_receipt(decision, res, getattr(h, "provider", None))
-            try:
-                saved_sid = sess.save(
-                    sid, history, project=args.project, cwd=cwd, answer=res.answer or "")
-            except Exception as exc:
-                # A journal that refuses the write is evidence, not a hiccup: this
-                # turn happened and is now unrecorded, so stop rather than pile
-                # more unrecorded turns on top of it.
-                from .runner_specs import redact_text
-                fenced = ("session transcript could not be persisted: %s\n"
-                          "  this thread is no longer being recorded — inspect %s, then "
-                          "/new for a fresh thread" % (
-                              redact_text("%s: %s" % (type(exc).__name__, exc), 500), sid))
-                print("\n" + fenced)
-                continue
-            if saved_sid:
-                try:
-                    sess.append_run_receipt(sid, receipt)
-                except Exception:
-                    pass
-            receipts.append(receipt)
-            # The save above deliberately keeps an uncertain fence. Re-read it here:
-            # the next turn must not continue over an effect nobody has inspected.
-            state = sess.recovery_state(sid)
-            if state and state.get("recovery_required"):
-                fenced = recovery_notice(sid, state)
-                print("\n" + fenced)
+                with run_ownership.hold(sid, label="cli-repl") as lease:
+                    # Whatever happened to this conversation while the prompt was
+                    # waiting decides what this turn runs on — not the copy this
+                    # process has been carrying since the last turn.
+                    state, refusal = owned_turn_state(sid, lease, cwd)
+                    if refusal:
+                        if state["recovery"]:
+                            fenced = refusal
+                        print("\n" + refusal)
+                        continue
+                    history = state["messages"] or history
+                    if state["receipts"]:
+                        receipts = state["receipts"]
+                    try:
+                        decision = resolve_turn_decision(
+                            line, provider, configured_model=configured_model,
+                            history=history, receipts=receipts)
+                        apply_turn_decision(h, decision, _gate)
+                    except Exception as e:
+                        print("\ncollie could not route this turn: %s: %s"
+                              % (type(e).__name__, e))
+                        continue
+                    print("  [decision] %s · %s · %s/%s/%s" % (
+                        decision.model, decision.effort, decision.intent,
+                        decision.quality, decision.verification))
+                    h.run_owner = lease
+                    try:
+                        res = h.run("repl", line, consolidate=True, history=history)
+                    except KeyboardInterrupt:
+                        # run() turns Ctrl-C into a canceled result, so reaching here
+                        # means the interrupt landed outside it. Recover the thread
+                        # from the durable journal rather than silently dropping this
+                        # turn's work.
+                        recovered = sess.resume_after_interrupt(sid, fallback=history)
+                        history = recovered["messages"]
+                        print("\n⏹ turn interrupted — kept the %d messages already "
+                              "recorded" % len(history))
+                        fenced = (recovery_notice(sid, recovered["recovery"])
+                                  if recovered["blocked"] else "")
+                        if fenced:
+                            print("\n" + fenced)
+                        continue
+                    finally:
+                        h.run_owner = None
+                    print("\n" + (res.answer or res.error or "(no output)"))
+                    history = res.messages
+                    receipt = turn_decision_receipt(decision, res,
+                                                    getattr(h, "provider", None))
+                    try:
+                        saved_sid = sess.save(
+                            sid, history, project=args.project, cwd=cwd,
+                            answer=res.answer or "")
+                    except Exception as exc:
+                        # A journal that refuses the write is evidence, not a hiccup:
+                        # this turn happened and is now unrecorded, so stop rather than
+                        # pile more unrecorded turns on top of it.
+                        from .runner_specs import redact_text
+                        fenced = ("session transcript could not be persisted: %s\n"
+                                  "  this thread is no longer being recorded — inspect "
+                                  "%s, then /new for a fresh thread" % (
+                                      redact_text("%s: %s" % (type(exc).__name__, exc),
+                                                  500), sid))
+                        print("\n" + fenced)
+                        continue
+                    if saved_sid:
+                        try:
+                            sess.append_run_receipt(sid, receipt)
+                        except Exception:
+                            pass
+                    receipts.append(receipt)
+                    # The save above deliberately keeps an uncertain fence. Re-read it
+                    # here: the next turn must not continue over an effect nobody has
+                    # inspected.
+                    after = sess.recovery_state(sid)
+                    if after and after.get("recovery_required"):
+                        fenced = recovery_notice(sid, after)
+                        print("\n" + fenced)
+            except run_ownership.OwnershipRefused as exc:
+                print("\n" + (("this conversation is being executed elsewhere: %s\n"
+                               "  wait for it, or /new for a fresh thread" % exc)
+                              if exc.busy else
+                              "collie cannot take ownership of %s: %s" % (sid, exc)))
     finally:
         h.memory.close(); h.recorder.close()
         # A fenced thread would refuse that resume, so say why instead of inviting it.
@@ -1663,7 +1704,51 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
         task_id="adhoc", recorder=recorder)
 
 
+def _run_session_target(args):
+    """Which durable conversation this invocation will execute, before reading one.
+
+    The lease has to be taken before the journal is loaded — a decision made from
+    a transcript another executor is still appending to is a decision about a
+    conversation that no longer exists — so the id is resolved from the flags
+    alone. ``--continue`` with no sessions yet simply names a new one.
+    """
+    from . import sessions as sess
+    if getattr(args, "resume", None):
+        return str(args.resume)
+    if getattr(args, "cont", False):
+        return sess.latest() or sess.new_id()
+    return sess.new_id()
+
+
 def cmd_run(args):
+    """One turn on the session this process owns for the whole command.
+
+    Ownership brackets everything: history load, routing, the run itself (native
+    or on an external worker), the host verification command, the receipt and the
+    final save. The context manager is the point — the body below has more than a
+    dozen early returns, and a release repeated at each of them is a release that
+    will be forgotten at the next one.
+    """
+    import json as _json
+    from . import run_ownership
+    sid = _run_session_target(args)
+    try:
+        with run_ownership.hold(sid, label="cli-run") as lease:
+            return _cmd_run_owned(args, sid, lease)
+    except run_ownership.OwnershipRefused as exc:
+        payload = {"answer": "", "error": str(exc), "session": sid,
+                   "busy": bool(exc.busy), "owner": exc.owner}
+        if getattr(args, "json", False) or getattr(args, "stream_json", False):
+            print(_json.dumps(payload, ensure_ascii=False))
+        else:
+            print(str(exc), file=sys.stderr)
+            if exc.busy:
+                print("  attach to it instead, or wait for it to finish.",
+                      file=sys.stderr)
+        return 2
+
+
+def _cmd_run_owned(args, sid, lease):
     import json as _json
     from .recorder import run_outcome
     _, runs_db, out_html, _ = _paths()
@@ -1673,7 +1758,7 @@ def cmd_run(args):
     # Resolve continuity before routing: a recent failed turn is a legitimate
     # escalation signal, and therefore belongs in the same decision on CLI and Web.
     from . import sessions as sess
-    history, sid, loaded = None, None, None
+    history, loaded = None, None
     prior_receipts = []
     def _recovery_refusal(candidate):
         state = sess.recovery_state(candidate) if candidate else None
@@ -1687,30 +1772,29 @@ def cmd_run(args):
             print("recovery required: %s" % payload["error"], file=sys.stderr)
         return True
     if getattr(args, "resume", None):
-        if _recovery_refusal(args.resume):
+        if _recovery_refusal(sid):
             return 2
-        s = sess.load(args.resume)
+        s = sess.load(sid)
         if s:
             loaded = s
-            history, sid = (s.get("messages") or []), args.resume
+            history = s.get("messages") or []
             prior_receipts = s.get("run_receipts") or []
         else:
-            error = "no such session: %s" % args.resume
+            error = "no such session: %s" % sid
             if getattr(args, "json", False) or getattr(args, "stream_json", False):
                 print(_json.dumps({"answer": "", "error": error,
-                                   "session": args.resume}, ensure_ascii=False))
+                                   "session": sid}, ensure_ascii=False))
             else:
                 print(error, file=sys.stderr)
             return 2
     elif getattr(args, "cont", False):
-        sid = sess.latest()
-        if sid:
-            if _recovery_refusal(sid):
-                return 2
-            loaded = sess.load(sid) or {}
-            history = loaded.get("messages")
-            prior_receipts = loaded.get("run_receipts") or []
-    sid = sid or sess.new_id()
+        if _recovery_refusal(sid):
+            return 2
+        # A brand-new id (no sessions yet) simply loads nothing; --continue then
+        # behaves exactly like a fresh run, as it always has.
+        loaded = sess.load(sid) or {}
+        history = loaded.get("messages")
+        prior_receipts = loaded.get("run_receipts") or []
     if loaded:
         try:
             cwd = sess.resolve_cwd(loaded, requested=args.cwd)
@@ -1861,6 +1945,9 @@ def cmd_run(args):
         if getattr(args, "goal", None):           # pin a standing goal into CORE memory (every turn)
             h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
         h.checkpoint_scope = "session:" + sid
+        # The lease this command already holds. run() validates it and does NOT
+        # release it: the receipt and the transcript save below are still ours.
+        h.run_owner = lease
     # --stream-json: emit one NDJSON event per action (tool/edit/repro/receipt) as it happens,
     # so a terminal, an editor extension, or the ACP adapter can render the run LIVE (the
     # verification gate flipping fail->pass) instead of waiting for one final blob. Progress to
@@ -1873,6 +1960,20 @@ def cmd_run(args):
         h.emit = lambda kind, d: print(_json.dumps({**d, "type": kind}, ensure_ascii=False),
                                        file=sys.stderr, flush=True)
         h.emit("decision", decision_payload)
+    # Durable-input failures are reported, not swallowed: an instruction someone
+    # was told had been accepted and that this run could not deliver has to reach
+    # the person, whether or not they asked for the event stream.
+    inbox_errors = []
+    _base_emit = getattr(h, "emit", None)
+
+    def _emit_with_inbox_errors(kind, data):
+        if kind == "inbox" and data.get("ok") is False:
+            inbox_errors.append({"action": data.get("action", ""),
+                                 "id": data.get("id", ""),
+                                 "error": data.get("error", "")})
+        if _base_emit is not None:
+            _base_emit(kind, data)
+    h.emit = _emit_with_inbox_errors
     h.defer_memory_promotion = will_verify
     runner_payload = None
     if hd.runner != "collie":
@@ -2056,6 +2157,7 @@ def cmd_run(args):
             **run_outcome(res),
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
             "recovery_required": fenced, "recovery": recovery if fenced else None,
+            "inbox_errors": inbox_errors,
             "decision": decision_payload, "actual_speed": actual_speed,
             "runner": runner_payload,
             "verification_evidence": verification_evidence,
@@ -2087,6 +2189,10 @@ def cmd_run(args):
         visible_result = (res.answer + "\n\n[run error] " + res.error
                           if res.answer and res.error else (res.answer or res.error))
         print("\n%s" % visible_result)
+        for failure in inbox_errors:
+            print("  [queued input] %s could not be %s: %s" % (
+                failure["id"] or "an accepted request", failure["action"] or "handled",
+                failure["error"]), file=sys.stderr)
         if fenced:
             print("\n  " + recovery_notice(sid, recovery, fresh="run without --continue"))
         else:
@@ -2503,6 +2609,31 @@ def stopped_before_verification(res):
     if getattr(res, "error", ""):
         return "the run ended with an error before this check could mean anything"
     return ""
+
+
+def owned_turn_state(sid, lease, cwd):
+    """The durable state this turn will execute on, re-read under its owner.
+
+    An interactive surface loads a conversation once and then waits at a prompt.
+    A person can sit there for minutes while another surface executes the very
+    same session, and the history in this process is stale the moment that
+    happens: running from it asks the model about a thread that no longer exists,
+    and saving the answer writes over messages another run recorded. So the state
+    a turn executes on is derived here — after the lease, before routing, tools or
+    the model — and a fence or a workspace move that appeared in the meantime
+    refuses the turn instead of being run over.
+
+    Returns ``(state, refusal)``; a non-empty refusal is what the surface shows
+    instead of running.
+    """
+    from . import run_ownership
+    state = run_ownership.session_state(sid, lease, cwd=cwd)
+    if not state["refusal"]:
+        return state, ""
+    recovery = state["recovery"]
+    if recovery and recovery.get("recovery_required"):
+        return state, recovery_notice(sid, recovery)
+    return state, "collie refused this turn on %s: %s" % (sid, state["refusal"])
 
 
 def recovery_notice(sid, state, fresh="/new to start a fresh thread"):

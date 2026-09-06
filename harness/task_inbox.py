@@ -817,7 +817,7 @@ def purge(session, entry_id, *, directory=None):
 # --------------------------------------------------------------- delivery
 
 
-def claim(session, owner, *, limit=8, modes=MODES, directory=None):
+def claim(session, owner, *, limit=8, modes=MODES, after_seq=0, directory=None):
     """Hand pending entries to the one executor that holds the run lease.
 
     Claiming is not delivery.  It records *which* executor is responsible for
@@ -826,16 +826,27 @@ def claim(session, owner, *, limit=8, modes=MODES, directory=None):
     timeout.  Requires a live ``session_owner`` lease for this exact session:
     without it there is nothing to stop a second surface from claiming the same
     entry and inserting it twice.
+
+    ``after_seq`` claims only entries accepted *after* a boundary the caller
+    established (a run start, an ownership acquisition).  It is applied inside
+    this transaction rather than by the caller for two reasons: an entry the
+    caller must not deliver is never marked claimed even briefly, and a backlog
+    of older pending entries larger than ``limit`` cannot hide a newer one behind
+    it — which would either starve the new instruction or turn every claim into a
+    claim/release cycle over rows nobody is going to run.
     """
     root = _root(directory)
     owner = _require_owner(owner, session, root)
     wanted = tuple(_check_mode(m) for m in modes)
     limit = max(1, int(limit))
+    if isinstance(after_seq, bool) or not isinstance(after_seq, int) or after_seq < 0:
+        raise InvalidRequest("after_seq must be a non-negative integer")
     path = store_path(session, root=root)
     with sessions._locked(path):
         doc = _load(path, session)
         ready = sorted((e for e in doc["entries"]
-                        if e["state"] == "pending" and e["mode"] in wanted),
+                        if e["state"] == "pending" and e["mode"] in wanted
+                        and e["seq"] > after_seq),
                        key=lambda e: e["seq"])[:limit]
         if not ready:
             return []

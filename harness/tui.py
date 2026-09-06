@@ -19,6 +19,7 @@ same live event stream) with a one-line hint to `pip install rich` for the full 
 Nothing here is required by the core; it's a pure UI layer over Harness.run + sessions.
 """
 from __future__ import annotations
+import contextlib
 import os
 import queue
 import sys
@@ -29,7 +30,17 @@ class _StdinFeed:
     """Single owner of stdin for the TUI's whole lifetime — kills the two-readers-race between the
     REPL prompt and mid-run steering (point 13). A daemon thread pumps lines into a queue;
     readline_blocking() serves the prompt, drain() serves mid-run steering. Only armed on a real
-    TTY: piped stdin (scripts, tests) must NOT be slurped as mid-run hints."""
+    TTY: piped stdin (scripts, tests) must NOT be slurped as mid-run hints.
+
+    While a run owns the terminal (``accepting``), an ordinary line is handed to
+    the acceptor the moment it is read, and the acceptor writes it to durable
+    storage before anything on screen calls it accepted. That is the difference
+    the person feels: a line typed into a run that then crashes is still there
+    afterwards, instead of having lived only in this queue. Two lines are never
+    treated that way — a slash command (a REPL instruction, honored after the run)
+    and anything typed while a prompt is explicitly waiting for an answer, which
+    is how an approval question keeps getting its reply.
+    """
 
     def __init__(self, stream=None):
         self._stream = stream if stream is not None else sys.stdin
@@ -38,16 +49,48 @@ class _StdinFeed:
         except Exception:
             self.tty = False
         self._q = queue.Queue()
+        self._state = threading.Lock()
+        self._accept = None               # set only while a run is in flight
+        self._waiting = 0                 # readers blocked on a prompt right now
         self._t = threading.Thread(target=self._pump, daemon=True)
         self._t.start()
 
     def _pump(self):
         try:
             for line in self._stream:
-                self._q.put(line.rstrip("\n"))
+                line = line.rstrip("\n")
+                if not self._offer(line):
+                    self._q.put(line)
         except Exception:
             pass
         self._q.put(None)                 # EOF sentinel
+
+    def _offer(self, line):
+        """Give a line typed during a run to the durable acceptor. True when it took it."""
+        text = line.strip()
+        if not text or text.startswith("/"):
+            return False                  # a REPL command is not an instruction to the model
+        with self._state:
+            accept = self._accept if not self._waiting else None
+        if accept is None:
+            return False
+        try:
+            return bool(accept(text))
+        except Exception:
+            # The acceptor reports its own failures; a broken one must not cost
+            # the user the line, so fall through and queue it like any other.
+            return False
+
+    @contextlib.contextmanager
+    def accepting(self, acceptor):
+        """Route run-time input to ``acceptor`` for the length of the block."""
+        with self._state:
+            previous, self._accept = self._accept, acceptor
+        try:
+            yield self
+        finally:
+            with self._state:
+                self._accept = previous
 
     def readline_blocking(self, prompt=""):
         """Blocking prompt read (Ctrl-C stays responsive via the 0.2s poll). None on EOF."""
@@ -56,15 +99,21 @@ class _StdinFeed:
                 sys.stdout.write(prompt); sys.stdout.flush()
             except Exception:
                 pass
-        while True:
-            try:
-                item = self._q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if item is None:
-                self._q.put(None)         # EOF is sticky
-                return None
-            return item
+        with self._state:
+            self._waiting += 1
+        try:
+            while True:
+                try:
+                    item = self._q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if item is None:
+                    self._q.put(None)         # EOF is sticky
+                    return None
+                return item
+        finally:
+            with self._state:
+                self._waiting -= 1
 
     def drain(self):
         """Non-blocking: queued NON-slash lines become steering; slash lines are re-queued for the
@@ -251,6 +300,12 @@ class RichTUI:
                         "[red]▸ repro failed%s[/red] [dim]%s[/dim]" % (asserted, cmd)))
             elif kind == "steer":                          # mid-run user steering (point 13)
                 rows.append(Text.from_markup("[yellow]↳ you:[/yellow] %s" % _esc(str(d.get("text", "")))))
+            elif kind == "inbox" and d.get("ok") is False:
+                # A request this run could not deliver is the person's business,
+                # not a log line: they were told it had been accepted.
+                rows.append(Text.from_markup(
+                    "[red]⚠ queued input (%s): %s[/red]" % (
+                        _esc(str(d.get("action", ""))), _esc(str(d.get("error", ""))))))
             elif kind == "retry":                          # bounded transient-error retry (point 5)
                 rows.append(Text.from_markup(
                     "[dim]↻ retry %s/%s in %ss — %s[/dim]" % (d.get("attempt"), d.get("max"),
@@ -425,6 +480,11 @@ class PlainTUI:
                 self._p("  %s repro%s %s" % ("✓" if d.get("passed") else "✗",
                                              " (assert)" if d.get("asserted") else "",
                                              d.get("cmd", "")))
+            elif kind == "inbox" and d.get("ok") is False:
+                self._p("  ⚠ queued input (%s): %s" % (d.get("action", ""),
+                                                       d.get("error", "")))
+            elif kind == "steer":
+                self._p("  ↳ you: %s" % d.get("text", ""))
             elif kind == "receipt":
                 v = d.get("verified")
                 self._p("  %s · %s tok · %s · %d turns · %d tools · %.1fs" % (
@@ -445,6 +505,31 @@ class PlainTUI:
 # --------------------------------------------------------------------------- #
 # The REPL driver — shared control flow over whichever UI backend is active
 # --------------------------------------------------------------------------- #
+def _steer_acceptor(session, note):
+    """Accept a line typed during a run by writing it down first.
+
+    Ordering is the entire feature: ``enqueue`` returns only once the text is on
+    disk, so the "queued" line below is a report of something that already
+    happened rather than a promise about a queue that dies with the process. A
+    refusal (the inbox is full, the text is impossible to store) is shown with the
+    text still visible, because the one thing that must never happen is telling
+    someone their instruction was accepted when it was not.
+    """
+    from . import task_inbox
+
+    def accept(text):
+        entry_id = "tui-%s" % os.urandom(8).hex()
+        try:
+            task_inbox.enqueue(session, entry_id, text, mode="steer", client="tui")
+        except Exception as exc:
+            note("✗ not accepted — %s\n  your line: %s" % (exc, text), "red")
+            return True                # consumed: it is NOT waiting anywhere
+        note("↳ queued for this run: %s" % (text if len(text) <= 72 else text[:69] + "…"),
+             "yellow")
+        return True
+    return accept
+
+
 def _read_line(console, have_rich):
     if have_rich:
         try:
@@ -460,8 +545,9 @@ def _read_line(console, have_rich):
 def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=None,
             cwd_explicit=False):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
-    from .cli import (apply_turn_decision, make_harness, recovery_notice,
-                      resolve_turn_decision, turn_decision_receipt)
+    from .cli import (apply_turn_decision, make_harness, owned_turn_state,
+                      recovery_notice, resolve_turn_decision, turn_decision_receipt)
+    from . import run_ownership
     from . import sessions as sess
 
     have_rich = _HAVE_RICH
@@ -490,9 +576,15 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
             cwd = sess.resolve_cwd(loaded, requested=cwd if cwd_explicit else None,
                                    fallback=cwd)
             if loaded and cwd_explicit:
-                sess.relocate(sid, cwd)
+                # Where a conversation executes is durable state about it: take
+                # its lease to move it, so the relocation cannot land under a run
+                # that is already using the old workspace.
+                with run_ownership.hold(sid, label="tui-relocate"):
+                    sess.relocate(sid, cwd)
         except ValueError as exc:
             resume_error = str(exc)
+        except run_ownership.OwnershipRefused as exc:
+            resume_error = "its workspace cannot be moved right now: %s" % exc
     if resume_error:
         message = "collie refused to resume %s: %s" % (sid, resume_error)
         console.print("[red]%s[/red]" % message) if have_rich else print(message)
@@ -637,75 +729,121 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 # around: refuse the turn and say exactly how to close the boundary.
                 say(fenced, "yellow")
                 continue
+            # The lease covers reading the durable thread, the run, the transcript
+            # save and the receipt — and nothing else. Between turns this terminal
+            # is a person thinking, and holding a session's execution lease through
+            # that would lock the conversation out of every other surface for as
+            # long as the window is open. Ownership is per turn; durable input is
+            # what waits.
             try:
-                decision = resolve_turn_decision(
-                    line, provider, configured_model=model,
-                    history=history, receipts=receipts)
-                apply_turn_decision(h, decision, _gate)
-            except Exception as ex:
-                msg = "collie could not route this turn: %s: %s" % (type(ex).__name__, ex)
-                console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
-                continue
-            try:
-                if feed is not None and feed.tty:
-                    h.steering = feed.drain     # let mid-run keystrokes steer the agent
-                    # The approval prompt reads through the SAME pump, or it would fight the
-                    # steering thread for stdin and neither would get a whole line.
-                    from .approve import tty_approver
-                    _w = (lambda s: console.print("[yellow]%s[/yellow]" % s)) if have_rich else print
-                    h.approve = tty_approver(
-                        read_line=lambda: feed.readline_blocking(
-                            "  allow? [y]es / [a]lways / [N]o: "),
-                        write=_w, gate=_gate)
-                res = ui.run_turn(h, "tui", line, history)
-            except KeyboardInterrupt:
-                # Ctrl-C DURING a turn aborts just this turn, not the whole session.
-                # run() converts an interrupt it sees into a canceled result, so
-                # arriving here means the interrupt landed outside it. Continuing
-                # from the pre-turn history would delete whatever the turn did from
-                # the conversation while its effects remain on disk — so take the
-                # durable journal, and stop if it is fenced on an unknown effect.
-                recovered = sess.resume_after_interrupt(sid, fallback=history)
-                history = recovered["messages"]
-                saved = saved or bool(recovered["recovery"])
-                say("\n⏹ turn interrupted — kept the %d messages already recorded "
-                    "(Ctrl-C again at an empty prompt to exit)" % len(history))
-                fenced = (recovery_notice(sid, recovered["recovery"])
-                          if recovered["blocked"] else "")
-                if fenced:
-                    say(fenced, "yellow")
-                continue
-            finally:
-                h.steering = None               # steering only during a run
-                h.approve = None                # and nobody is at the prompt between turns
-            history = res.messages
-            receipt = turn_decision_receipt(decision, res, getattr(h, "provider", None))
-            try:
-                saved_sid = sess.save(
-                    sid, history, project=project, cwd=cwd, answer=res.answer or "")
-            except Exception as exc:
-                # This turn happened and is now unrecorded. Say so and stop, rather
-                # than stacking more unrecorded turns on a journal that refuses writes.
-                from .runner_specs import redact_text
-                fenced = ("session transcript could not be persisted: %s\n"
-                          "  this thread is no longer being recorded — inspect %s, then "
-                          "/new for a fresh thread" % (
-                              redact_text("%s: %s" % (type(exc).__name__, exc), 500), sid))
-                say(fenced, "red")
-                continue
-            if saved_sid:
-                try:
-                    sess.append_run_receipt(sid, receipt)
-                except Exception:
-                    pass
-            receipts.append(receipt)
-            saved = True
-            # The transcript save keeps an uncertain fence on purpose; re-read it so
-            # the next turn cannot continue over an effect nobody has inspected.
-            state = sess.recovery_state(sid)
-            if state and state.get("recovery_required"):
-                fenced = recovery_notice(sid, state)
-                say(fenced, "yellow")
+                with run_ownership.hold(sid, label="tui") as lease:
+                    # The thread may have grown, been fenced or moved while this
+                    # prompt was waiting — possibly because another surface ran
+                    # this very session. Execution authority derives from what is
+                    # durable now, not from the copy on screen.
+                    state, refusal = owned_turn_state(sid, lease, cwd)
+                    if refusal:
+                        if state["recovery"]:
+                            fenced = refusal
+                        say(refusal, "yellow")
+                        continue
+                    history = state["messages"] or history
+                    if state["receipts"]:
+                        receipts = state["receipts"]
+                    try:
+                        decision = resolve_turn_decision(
+                            line, provider, configured_model=model,
+                            history=history, receipts=receipts)
+                        apply_turn_decision(h, decision, _gate)
+                    except Exception as ex:
+                        msg = ("collie could not route this turn: %s: %s"
+                               % (type(ex).__name__, ex))
+                        console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
+                        continue
+                    h.run_owner = lease
+                    try:
+                        if feed is not None and feed.tty:
+                            # The approval prompt reads through the SAME pump, or it would
+                            # fight for stdin and neither reader would get a whole line.
+                            from .approve import tty_approver
+                            _w = ((lambda s: console.print("[yellow]%s[/yellow]" % s))
+                                  if have_rich else print)
+                            h.approve = tty_approver(
+                                read_line=lambda: feed.readline_blocking(
+                                    "  allow? [y]es / [a]lways / [N]o: "),
+                                write=_w, gate=_gate)
+                            # Typed text is persisted at ACCEPTANCE, not when the loop
+                            # gets around to draining it; the loop then claims it from
+                            # durable storage. Only one of the two may insert it, so the
+                            # old volatile callback stays off.
+                            steer_ctx = feed.accepting(_steer_acceptor(sid, say))
+                        else:
+                            steer_ctx = contextlib.nullcontext()
+                        with steer_ctx:
+                            res = ui.run_turn(h, "tui", line, history)
+                    except KeyboardInterrupt:
+                        # Ctrl-C DURING a turn aborts just this turn, not the whole
+                        # session. run() converts an interrupt it sees into a canceled
+                        # result, so arriving here means the interrupt landed outside it.
+                        # Continuing from the pre-turn history would delete whatever the
+                        # turn did from the conversation while its effects remain on disk
+                        # — so take the durable journal, and stop if it is fenced on an
+                        # unknown effect.
+                        recovered = sess.resume_after_interrupt(sid, fallback=history)
+                        history = recovered["messages"]
+                        saved = saved or bool(recovered["recovery"])
+                        say("\n⏹ turn interrupted — kept the %d messages already recorded "
+                            "(Ctrl-C again at an empty prompt to exit)" % len(history))
+                        fenced = (recovery_notice(sid, recovered["recovery"])
+                                  if recovered["blocked"] else "")
+                        if fenced:
+                            say(fenced, "yellow")
+                        continue
+                    finally:
+                        h.run_owner = None
+                        h.steering = None       # steering only during a run
+                        h.approve = None        # and nobody is at the prompt between turns
+                    history = res.messages
+                    receipt = turn_decision_receipt(decision, res,
+                                                    getattr(h, "provider", None))
+                    try:
+                        saved_sid = sess.save(
+                            sid, history, project=project, cwd=cwd,
+                            answer=res.answer or "")
+                    except Exception as exc:
+                        # This turn happened and is now unrecorded. Say so and stop,
+                        # rather than stacking more unrecorded turns on a journal that
+                        # refuses writes.
+                        from .runner_specs import redact_text
+                        fenced = ("session transcript could not be persisted: %s\n"
+                                  "  this thread is no longer being recorded — inspect %s, "
+                                  "then /new for a fresh thread" % (
+                                      redact_text("%s: %s" % (type(exc).__name__, exc), 500),
+                                      sid))
+                        say(fenced, "red")
+                        continue
+                    if saved_sid:
+                        try:
+                            sess.append_run_receipt(sid, receipt)
+                        except Exception:
+                            pass
+                    receipts.append(receipt)
+                    saved = True
+                    # The transcript save keeps an uncertain fence on purpose; re-read it
+                    # so the next turn cannot continue over an effect nobody inspected.
+                    after = sess.recovery_state(sid)
+                    if after and after.get("recovery_required"):
+                        fenced = recovery_notice(sid, after)
+                        say(fenced, "yellow")
+            except run_ownership.OwnershipRefused as exc:
+                # Somebody else is executing this conversation right now. Typing at
+                # it is still useful — the text goes to the durable inbox that run
+                # drains — but starting a second executor is the one thing that must
+                # not happen here.
+                say(("this conversation is being executed elsewhere: %s\n"
+                     "  wait for it, or /new for a fresh thread" % exc) if exc.busy
+                    else "collie cannot take ownership of %s: %s" % (sid, exc),
+                    "yellow")
     finally:
         try:
             h.memory.close(); h.recorder.close()
