@@ -1,15 +1,8 @@
 """A steer is shown where it happened, and you can always see what you just typed.
 
-Two things the web transcript got wrong about mid-run messages.
-
-The message was appended to the log, and the log already ended with the assistant bubble that was
-still growing. So a run you interrupted read back as "you asked → Collie answered → you interrupted",
-with the interruption sitting under the answer it had already changed. Order is the only thing a
-transcript is for.
-
-And the scroll: starting a run forces the view to the bottom, steering did not. Scroll up to read
-what happened earlier, type a correction, and your own words stay off-screen — indistinguishable
-from a message that never sent.
+Accepted input remains visible in a durable queue. Only a model-boundary event
+places it inside the answer it changes. Storage acknowledgment must not masquerade
+as delivery; refused writes keep the original draft and an actionable message.
 
 The page's script is an IIFE, so nothing is reachable to call directly. The test drives the real
 composer and controls the TRANSPORT instead: a stub EventSource lets the run stay mid-flight for as

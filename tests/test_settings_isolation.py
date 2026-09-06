@@ -113,6 +113,59 @@ def _harness(tmp_path, monkeypatch, name, **kwargs):
 
 # ------------------------------------------------------ 1. the budget of a run in flight
 
+def test_frozen_limits_read_one_saved_settings_revision(panel, monkeypatch):
+    reads = []
+    versions = [{"MAX_COST":"4", "MAX_TOTAL_TOKENS":"400", "MAX_TURNS":"40"},
+                {"MAX_COST":"8", "MAX_TOTAL_TOKENS":"800", "MAX_TURNS":"80"}]
+    def changing_file():
+        reads.append(True)
+        return versions[min(len(reads)-1, 1)]
+    monkeypatch.setattr(settings, "_load", changing_file)
+    limits = settings.limits_from_payload(settings.freeze_limits())
+    assert (limits.max_cost, limits.max_total_tokens, limits.max_turns) == (4, 400, 40)
+    assert len(reads) == 1
+
+
+def test_freezing_limits_cannot_observe_a_half_applied_panel(panel, monkeypatch):
+    panel.save(MAX_COST="4", MAX_TOTAL_TOKENS="400", MAX_TURNS="40")
+    settings.save({"MAX_COST":"8", "MAX_TOTAL_TOKENS":"800", "MAX_TURNS":"80"})
+    entered, release, read_done = threading.Event(), threading.Event(), threading.Event()
+    original = type(os.environ).__setitem__
+    frozen, errors = [], []
+
+    def held_write(env, key, value):
+        original(env, key, value)
+        if key == "COLLIE_MAX_COST" and value == "8":
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("settings apply was not released")
+
+    def capture():
+        try:
+            frozen.append(settings.freeze_limits())
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            read_done.set()
+
+    monkeypatch.setattr(type(os.environ), "__setitem__", held_write)
+    writer = threading.Thread(target=settings.apply, daemon=True)
+    reader = threading.Thread(target=capture, daemon=True)
+    try:
+        writer.start()
+        assert entered.wait(2)
+        reader.start()
+        assert not read_done.wait(.1), "a task accepted a partly updated budget"
+    finally:
+        release.set()
+        writer.join(3)
+        if reader.ident is not None:
+            reader.join(3)
+    assert not errors and len(frozen) == 1
+    limits = settings.limits_from_payload(frozen[0])
+    assert (limits.max_cost, limits.max_total_tokens, limits.max_turns) == (8, 800, 80)
+
+
 def test_a_budget_saved_mid_run_binds_the_next_run_and_never_the_one_in_flight(
         tmp_path, monkeypatch, panel):
     """Two real harnesses, two real threads, one Settings save in between.
@@ -561,6 +614,9 @@ def lab(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "get",
                         lambda key, default=None: values.get(
                             key, default if default is not None else ""))
+    monkeypatch.setattr(settings, "_load", lambda: dict(values))
+    for key in settings.LIMIT_KEYS:
+        monkeypatch.delenv("COLLIE_" + key, raising=False)
     # The panel for this suite is the dict above; a COLLIE_* variable exported in whoever's
     # shell is running it must not join in through the hard-set-env layer.
     monkeypatch.setattr(settings, "_HARD_ENV", set())

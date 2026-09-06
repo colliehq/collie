@@ -3242,7 +3242,7 @@
     "Latest coding report": "最近的编码报告", "Read full coding report": "查看完整编码报告",
     "Updates to this task": "补充这项任务", "Saved instructions": "已保存的补充说明",
     "Add a requirement or correction to this task…": "补充要求，或纠正这项任务的做法…",
-    "Code changes": "代码修改", "Update this task": "补充这项任务", "Save instruction": "保存补充说明",
+    "Not applied": "未应用", "Code changes": "代码修改", "Update this task": "补充这项任务", "Save instruction": "保存补充说明",
     "Read by Collie": "Collie 已读取", "Not accepted": "未接受",
     "Saved · awaiting next boundary": "已保存，等待下一步读取",
     "No saved instructions yet.": "还没有补充说明。", "Saving instruction…": "正在保存…",
@@ -3570,7 +3570,7 @@
     "Latest coding report": "最近的編碼報告", "Read full coding report": "查看完整編碼報告",
     "Updates to this task": "補充這項任務", "Saved instructions": "已儲存的補充說明",
     "Add a requirement or correction to this task…": "補充要求，或修正這項任務的做法…",
-    "Code changes": "程式碼修改", "Update this task": "補充這項任務", "Save instruction": "儲存補充說明",
+    "Not applied": "未套用", "Code changes": "程式碼修改", "Update this task": "補充這項任務", "Save instruction": "儲存補充說明",
     "Read by Collie": "Collie 已讀取", "Not accepted": "未接受",
     "Saved · awaiting next boundary": "已儲存，等待下一步讀取",
     "No saved instructions yet.": "還沒有補充說明。", "Saving instruction…": "正在儲存…",
@@ -7343,7 +7343,7 @@
           notes.forEach(function (note) {
             var row = document.createElement("div"); row.className = "mission-note-entry";
             var state = document.createElement("small");
-            state.textContent = t(note.state === "applied" ? "Read by Collie" : note.state === "rejected" ? "Not accepted" : "Saved · awaiting next boundary");
+            state.textContent = t(note.state === "applied" ? "Read by Collie" : note.state === "rejected" ? "Not applied" : "Saved · awaiting next boundary");
             if (note.error) state.textContent += " · " + note.error;
             row.appendChild(state);
             var text = document.createElement("p"); text.textContent = note.text || ""; row.appendChild(text);

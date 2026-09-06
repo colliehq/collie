@@ -8,12 +8,24 @@ GUI reads SCHEMA to render the panel and GET/POSTs the values; make_harness/_pro
 import hashlib
 import json
 import os
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass, replace
+from functools import wraps
 
 _PATH = os.environ.get("COLLIE_SETTINGS_PATH") or os.path.expanduser("~/.collie/settings.json")
 _cache = {"mtime": -1.0, "data": {}}
+_state_lock = threading.RLock()
+
+
+def _serialized(fn):
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _state_lock:
+            return fn(*args, **kwargs)
+    return locked
+
 # env vars set BEFORE we ran are authoritative (a user's CLI `COLLIE_X=… collie …` must win over a
 # saved panel value); apply() never overwrites these.
 # Env vars the USER set, which outrank the Settings panel. Snapshotted at import — but a var this
@@ -412,6 +424,7 @@ def normalize_companion_name(value, allow_empty=True) -> str:
     return name
 
 
+@_serialized
 def _load():
     """settings.json, mtime-cached so a Settings-panel save takes effect on the next get().
 
@@ -497,6 +510,7 @@ def injected_values() -> dict:
     return dict(_injected)
 
 
+@_serialized
 def apply():
     """Inject saved settings into os.environ (as COLLIE_<KEY>) for keys the user did NOT hard-set
     via a real env var — so every existing os.environ.get('COLLIE_X') read picks up the Settings
@@ -535,6 +549,7 @@ def apply():
     os.environ[_INJECTED_ENV] = ",".join(injected)
 
 
+@_serialized
 def save(values: dict) -> dict:
     """Persist only known keys (ignore junk); empty string clears a key back to its default."""
     clean = {k: v for k, v in (values or {}).items() if k in _KEYS and v not in (None, "")}
@@ -719,10 +734,18 @@ class RunLimits:
         return " / ".join(parts)
 
 
+@_serialized
 def _raw_limits() -> dict:
-    """The five limit knobs as the layered lookup answers them right now."""
-    return {key: ("" if get(key, "") is None else str(get(key, "")).strip())
-            for key in LIMIT_KEYS}
+    """Read one settings revision, outside any half-applied environment update."""
+    data = _load()
+    env = dict(os.environ)
+    values = {}
+    for key in LIMIT_KEYS:
+        value = env.get("COLLIE_" + key)
+        if value in (None, ""):
+            value = data.get(key)
+        values[key] = "" if value is None else str(value).strip()
+    return values
 
 
 def current_limits() -> RunLimits:
