@@ -316,10 +316,9 @@ def _b64(path: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-def _enabled() -> bool:
-    """Read live at call time (COLLIE_SCREEN_CAPTURE), so enable_capability takes effect mid-session
-    without re-registering anything — same contract as native.py's desktop gate."""
-    return os.environ.get("COLLIE_SCREEN_CAPTURE", "").lower() in ("1", "on", "true")
+def _enabled(ctx=None) -> bool:
+    from .capability_policy import allowed
+    return allowed("SCREEN_CAPTURE", ctx)
 
 
 # Screen capture is gated SEPARATELY from desktop control, not folded into it. They are different
@@ -355,7 +354,7 @@ class ScreenshotTool(Tool):
     }}
 
     def run(self, args, ctx):
-        if not _enabled():
+        if not _enabled(ctx):
             return _CONSENT
         args = args or {}
         title = str(args.get("title") or "").strip()

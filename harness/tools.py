@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from . import plat
 from . import tool_process as _proc
+from . import capability_policy
 
 _SHIM_DIR = None
 
@@ -137,6 +138,7 @@ class ToolCtx:
     # as cleanly finished while a command it started may still be writing files. Never
     # model-controlled: no tool argument can set or clear it.
     tool_effect_uncertain: bool = False
+    capabilities: dict = field(default_factory=capability_policy.snapshot)
 
 
 class Tool:
@@ -966,8 +968,8 @@ _GATED_CAPS = {
 class EnableCapabilityTool(Tool):
     """Turn ON a gated-off capability — AFTER the user has agreed. collie's just-in-time consent seam:
     when a gated tool (e.g. desktop_*) is needed but off, collie asks the user in plain language and,
-    only on a yes, calls this. The setting is applied to os.environ immediately, so the capability
-    works for the rest of this session, and saved so it stays on next time."""
+    only on a yes, calls this. The requesting tool context gains the capability;
+    saved settings allow future requests, without arming other in-flight runs."""
     name, tier = "enable_capability", "always"
     description = ("Turn ON a capability that is currently gated off — ONLY after the user has "
                    "explicitly agreed in the conversation. Never enable silently: ask first, and say "
@@ -985,9 +987,9 @@ class EnableCapabilityTool(Tool):
             from . import settings as _settings
             _settings.update({skey: "on"})
             _settings.apply()
+            capability_policy.grant(skey, ctx)
         except Exception as e:
-            os.environ["COLLIE_" + skey] = "on"       # at least make it live for this session
-            return "%s enabled for this session (couldn't persist: %s). Retry your action." % (label, e)
+            return "ERROR: %s was not enabled for this run: %s. Check the settings before retrying." % (label, e)
         return ("✓ %s enabled — %s. On now for the rest of this session and saved for next "
                 "time (the user can turn it off in settings). Retry what you were doing." % (label, grants))
 

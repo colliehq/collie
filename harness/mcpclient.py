@@ -1352,12 +1352,14 @@ _MCP_DISCOVERY_CONSENT = (
     "agrees call enable_capability(capability=\"mcp_discovery\") and retry.")
 
 
-def _mcp_manage_on():
-    return os.environ.get("COLLIE_MCP_MANAGE", "").lower() in ("1", "on", "true")
+def _mcp_manage_on(ctx=None):
+    from .capability_policy import allowed
+    return allowed("MCP_MANAGE", ctx)
 
 
-def _mcp_discovery_on():
-    return os.environ.get("COLLIE_MCP_DISCOVERY", "").lower() in ("1", "on", "true")
+def _mcp_discovery_on(ctx=None):
+    from .capability_policy import allowed
+    return allowed("MCP_DISCOVERY", ctx)
 
 
 def _register_live(registry, name, cfg):
@@ -1453,7 +1455,7 @@ class MCPRecommendTool(Tool):
         if not goal:
             return "ERROR: goal is required"
         public = a.get("search_registry") is True
-        if public and not _mcp_discovery_on():
+        if public and not _mcp_discovery_on(ctx):
             return _MCP_DISCOVERY_CONSENT
         from .mcp_discovery import recommend
         try:
@@ -1499,7 +1501,7 @@ class MCPAddTool(Tool):
     def run(self, args, ctx):
         a = args if isinstance(args, dict) else {}
         name = str(a.get("name", "")).strip()
-        if not _mcp_manage_on():
+        if not _mcp_manage_on(ctx):
             return _MCP_CONSENT % ("add the MCP server %r and register its tools for you" % name)
         cfg = {}
         for k in ("url", "command"):
@@ -1551,7 +1553,7 @@ class MCPConnectTool(Tool):
     def run(self, args, ctx):
         a = args if isinstance(args, dict) else {}
         raw = str(a.get("name", "")).strip()
-        if not _mcp_manage_on():
+        if not _mcp_manage_on(ctx):
             return _MCP_CONSENT % ("connect the MCP server %r and sign in to it as the user" % raw)
         hit = known(raw)
         name = hit["name"] if hit else raw
@@ -1667,7 +1669,7 @@ class MCPConnectCandidateTool(Tool):
         candidate_id = str(a.get("candidate_id") or "").strip()
         if a.get("confirmed") is not True:
             return "REFUSED: confirmed=true is required after the user reviews this exact candidate"
-        if not _mcp_manage_on():
+        if not _mcp_manage_on(ctx):
             return _MCP_CONSENT % ("connect the unreviewed Registry candidate %r" % candidate_id)
         try:
             _candidate, name, cfg, tools = connect_registry_candidate(candidate_id, timeout=180)
@@ -1701,7 +1703,7 @@ class MCPSetEnabledTool(Tool):
         name, on = str(a.get("name", "")).strip(), bool(a.get("enabled"))
         # Switching OFF only ever reduces reach, so it does not need consent — being able to disable
         # a misbehaving server without a permission dance is the point of having a switch.
-        if on and not _mcp_manage_on():
+        if on and not _mcp_manage_on(ctx):
             return _MCP_CONSENT % ("switch the MCP server %r back on and give you its tools" % name)
         if not set_enabled(name, on):
             return "ERROR: no MCP server named %r (call mcpctl_status to see what exists)" % name
@@ -1719,7 +1721,7 @@ class MCPRemoveTool(Tool):
 
     def run(self, args, ctx):
         name = str((args if isinstance(args, dict) else {}).get("name", "")).strip()
-        if not _mcp_manage_on():
+        if not _mcp_manage_on(ctx):
             return _MCP_CONSENT % ("delete the MCP server %r, including its stored credential" % name)
         if not remove_server(name):
             return "ERROR: no MCP server named %r (call mcpctl_status to see what exists)" % name

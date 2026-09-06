@@ -1219,9 +1219,9 @@ def _dt_elements(d):
     return "\n".join(lines)
 
 
-def _dc_enabled():
-    """The 'Control desktop apps' setting (COLLIE_DESKTOP_CONTROL), read live at call time."""
-    return os.environ.get("COLLIE_DESKTOP_CONTROL", "").lower() in ("1", "on", "true")
+def _dc_enabled(ctx=None):
+    from .capability_policy import allowed
+    return allowed("DESKTOP_CONTROL", ctx)
 
 
 # What a desktop_* tool returns when it's called while the capability is off. It does NOT fail hard —
@@ -1248,7 +1248,7 @@ def _register_gated(registry, tools):
         _orig = t.run
 
         def gated(args, ctx, _orig=_orig):
-            if not _dc_enabled():
+            if not _dc_enabled(ctx):
                 return _DC_CONSENT
             return _orig(args, ctx)
 
