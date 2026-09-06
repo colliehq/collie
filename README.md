@@ -32,6 +32,9 @@ Completion is accountable, not magical. Collie records the checks it actually ra
 checks cover, the permissions used, and what remains unverified. A passing check is evidence for a
 named contract—not a claim that every property of the result is proven.
 
+For queued follow-ups, Mission updates, stopping and resuming work, and reviewing saved Pack
+changes, see the [task workflow guide](docs/task-workflows.md).
+
 ## Why it's different
 
 **Memory lives inside the workflow.** Optional outside-AI learning turns content-free local activity
