@@ -27,7 +27,12 @@ def complete(provider, system, messages, schemas, *, on_text=None, cancelled=Non
                 if cancelled():
                     # Keep checking until completion. A stop may arrive just
                     # before the provider publishes its pending invocation.
-                    cancel_for(scope)
+                    cancel = cancel_for(scope)
+                    # Claude SDK/CLI return a scope-bound callback, while some
+                    # providers cancel directly. Calling the factory alone
+                    # silently left the real Claude request running.
+                    if callable(cancel):
+                        cancel()
             except Exception:
                 # Cancellation failure is not completion. The actual provider
                 # call still owns its outcome and normal cleanup/error path.

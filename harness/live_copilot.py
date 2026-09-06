@@ -759,6 +759,14 @@ class LiveSessionStore:
                 value["voice_dialogue"] = bool(voice_dialogue)
             if board_edit is not None:
                 value["board_edit"] = bool(board_edit)
+            if any(option is not None for option in (
+                    listen, understand, observe_apps, observe_ui, observe_input,
+                    observe_screen, voice_dialogue)):
+                analysis = dict(value.get("analysis") or {})
+                analysis["permission_epoch"] = int(analysis.get("permission_epoch") or 0) + 1
+                analysis.update(inflight=False, dialogue_inflight=False,
+                                claimed_at_ms=0, dialogue_claimed_at_ms=0)
+                value["analysis"] = analysis
             value["audit"] = (value.get("audit") or [])[-79:] + [{
                 "at_ms": _now_ms(), "action": "permissions_changed",
                 "detail": "listen=%s understand=%s observe_apps=%s observe_ui=%s observe_input=%s observe_screen=%s voice_dialogue=%s board_edit=%s" %
@@ -956,7 +964,11 @@ class LiveSessionStore:
             self._write(state)
         return dict(self.snapshot().get("avatar") or {})
 
-    def add_note(self, *, text, kind="note") -> dict:
+    def add_note(self, *, text, kind="note", session_id="") -> dict:
+        if not isinstance(text, str) or not text.strip():
+            raise LiveCopilotError("note text is required")
+        if len(text) > 2_000:
+            raise LiveCopilotError("Live notes can contain up to 2,000 characters; nothing was saved")
         kind = _text(kind, 30).casefold() or "note"
         if kind not in {"note", "question", "decision", "risk", "action", "context"}:
             raise LiveCopilotError("unsupported live note kind")
@@ -968,7 +980,13 @@ class LiveSessionStore:
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("no live session is active")
+            if session_id and value.get("session_id") != session_id:
+                raise LiveCopilotError("this note belongs to a different Live session")
             value["notes"] = (value.get("notes") or [])[-99:] + [row]
+            event = dict(row, source="typed", received_at_ms=row["at_ms"],
+                         speaker="", app="", title="")
+            value["events"] = (value.get("events") or [])[-(MAX_EVENTS - 1):] + [event]
+            value["last_meaningful_at_ms"] = row["at_ms"]
             self._write(value)
         return row
 
@@ -1654,7 +1672,58 @@ def _normalize_analysis(value: dict) -> dict:
     return {"summary": summary, "suggestions": suggestions}
 
 
-def analyze_payload(payload: dict) -> dict:
+def _lane_busy(store, analysis, prefix="", *, now=0):
+    if not analysis.get(prefix + "inflight"):
+        return False
+    owner = analysis.get(prefix + "owner")
+    if owner:
+        return _owner_alive(store.audio_root, owner)
+    # One compatibility window for a request started by an older build.
+    return now - int(analysis.get(prefix + "claimed_at_ms") or 0) < 90_000
+
+
+def _claim_lane(store, analysis, prefix="", *, now=0):
+    nonce = os.urandom(16).hex()
+    analysis.update({prefix + "inflight": True, prefix + "claimed_at_ms": now,
+                     prefix + "owner": _owner_key(store.audio_root),
+                     prefix + "nonce": nonce})
+    return nonce, int(analysis.get("permission_epoch") or 0)
+
+
+def _lane_current(value, session, nonce, epoch, prefix=""):
+    analysis = value.get("analysis") or {}
+    permission = "voice_dialogue" if prefix else "understand"
+    return bool(value.get("active") and value.get("session_id") == session
+                and value.get(permission) and analysis.get(prefix + "inflight")
+                and analysis.get(prefix + "nonce") == nonce
+                and int(analysis.get("permission_epoch") or 0) == epoch)
+
+
+def _lane_cancelled(store, session, nonce, epoch, prefix=""):
+    def cancelled():
+        try:
+            with store._transaction():
+                return not _lane_current(store._read(), session, nonce, epoch, prefix)
+        except Exception:
+            return True
+    return cancelled
+
+
+def _invoke_analyzer(analyzer, payload, cancelled):
+    if cancelled():
+        raise LiveCopilotError("live model request canceled before it started")
+    # Preserve the injected one-argument analyzer seam used by embedders.
+    import inspect
+    try:
+        params = inspect.signature(analyzer).parameters
+        accepts_cancel = "cancelled" in params or any(
+            item.kind == inspect.Parameter.VAR_KEYWORD for item in params.values())
+    except (TypeError, ValueError):
+        accepts_cancel = False
+    return analyzer(payload, cancelled=cancelled) if accepts_cancel else analyzer(payload)
+
+
+def analyze_payload(payload: dict, *, cancelled=None) -> dict:
     from . import settings
     from .providers import make_provider, provider_capabilities
     settings.apply()
@@ -1703,7 +1772,9 @@ def analyze_payload(payload: dict) -> dict:
             {"type": "image", "media_type": visual.get("media_type") or "image/png",
              "data": visual["data"]},
         ]
-    completion = provider.complete(system, [{"role": "user", "content": content}], [])
+    from .cancellation import complete
+    completion = complete(provider, system, [{"role": "user", "content": content}], [],
+                          cancelled=cancelled)
     if completion.stop_reason == "error":
         raise LiveCopilotError(completion.error_detail or "understanding provider returned an error")
     return _normalize_analysis(_extract_json(completion.text))
@@ -1740,7 +1811,7 @@ def _dialogue_system_prompt(payload: dict) -> str:
         "useful clarification, or the next design point.")
 
 
-def analyze_dialogue_payload(payload: dict) -> str:
+def analyze_dialogue_payload(payload: dict, *, cancelled=None) -> str:
     """Answer one spoken turn without waiting for the heavier visual-understanding lane."""
     from . import settings
     from .providers import make_provider, provider_capabilities
@@ -1758,8 +1829,9 @@ def analyze_dialogue_payload(payload: dict) -> str:
         speed = "standard"
     provider = make_provider(name, model, effort="low", speed=speed)
     system = _dialogue_system_prompt(payload)
-    completion = provider.complete(system, [{"role": "user", "content": json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"))}], [])
+    from .cancellation import complete
+    completion = complete(provider, system, [{"role": "user", "content": json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"))}], [], cancelled=cancelled)
     if completion.stop_reason == "error":
         raise LiveCopilotError(completion.error_detail or "voice provider returned an error")
     answer = " ".join(str(completion.text or "").strip().split())[:260]
@@ -1781,12 +1853,11 @@ def run_voice_dialogue_once(root=None, analyzer=None) -> bool:
         analysis = dict(value.get("analysis") or {})
         if analysis.get("dialogue_last_event_id") == latest.get("id"):
             return False
-        if (analysis.get("dialogue_inflight") and
-                now - int(analysis.get("dialogue_claimed_at_ms") or 0) < 45_000):
+        if _lane_busy(store, analysis, "dialogue_", now=now):
             return False
         session_id = value.get("session_id")
-        analysis.update({"dialogue_inflight": True, "dialogue_claimed_at_ms": now,
-                         "dialogue_error": ""})
+        nonce, epoch = _claim_lane(store, analysis, "dialogue_", now=now)
+        analysis["dialogue_error"] = ""
         value["analysis"] = analysis
         store._write(value)
         payload = {
@@ -1798,14 +1869,15 @@ def run_voice_dialogue_once(root=None, analyzer=None) -> bool:
                 for row in (value.get("events") or [])[-10:]],
         }
     try:
-        answer = (analyzer or analyze_dialogue_payload)(payload)
+        answer = _invoke_analyzer(analyzer or analyze_dialogue_payload, payload,
+                                  _lane_cancelled(store, session_id, nonce, epoch, "dialogue_"))
         error = ""
     except Exception as exc:
         answer = ""
         error = _text("%s: %s" % (type(exc).__name__, exc), 1_000)
     with store._transaction():
         current = store._read()
-        if current.get("session_id") != session_id or not current.get("active"):
+        if not _lane_current(current, session_id, nonce, epoch, "dialogue_"):
             return False
         state = dict(current.get("analysis") or {})
         if not current.get("voice_dialogue"):
@@ -2087,7 +2159,8 @@ class LiveCopilotRuntime:
             if int(value.get("expires_at_ms") or 0) and now >= int(value["expires_at_ms"]):
                 self.store.stop(reason="max_duration", stopped_from="automatic")
                 return False
-        foreground = self._foreground_window()
+        foreground = (self._foreground_window() if any(value.get(key) for key in (
+            "observe_apps", "observe_ui", "observe_input", "observe_screen")) else {})
         self._observe_environment(value, foreground)
         self._observe_ui(value, now, foreground)
         self._observe_input(value, now, foreground)
@@ -2100,7 +2173,7 @@ class LiveCopilotRuntime:
             if not events:
                 return False
             analysis = dict(value.get("analysis") or {})
-            if analysis.get("inflight") and now - int(analysis.get("claimed_at_ms") or 0) < 90_000:
+            if _lane_busy(self.store, analysis, now=now):
                 return False
             last = events[-1]
             # Visual context is opt-in and transient, but it must work for ordinary browser work
@@ -2115,7 +2188,8 @@ class LiveCopilotRuntime:
             if now - int(analysis.get("last_at_ms") or 0) < self.min_interval_ms:
                 return False
             session_id = value.get("session_id")
-            analysis.update({"inflight": True, "claimed_at_ms": now, "last_error": ""})
+            nonce, epoch = _claim_lane(self.store, analysis, now=now)
+            analysis["last_error"] = ""
             value["analysis"] = analysis
             self.store._write(value)
             payload = {
@@ -2148,7 +2222,8 @@ class LiveCopilotRuntime:
                 if visual:
                     payload["_visual"] = visual
         try:
-            result = self.analyzer(payload)
+            result = _invoke_analyzer(self.analyzer, payload,
+                                      _lane_cancelled(self.store, session_id, nonce, epoch))
             result = _normalize_analysis(result)
             error = ""
         except Exception as exc:
@@ -2159,8 +2234,7 @@ class LiveCopilotRuntime:
             # A provider request that was already in flight cannot be recalled, but ending or
             # pausing the session must still be a real processing boundary: never let its late
             # result repopulate understanding or suggestions after authority was cleared.
-            if (current.get("session_id") != session_id or not current.get("active") or
-                    not current.get("understand")):
+            if not _lane_current(current, session_id, nonce, epoch):
                 return False
             state = dict(current.get("analysis") or {})
             state.update({"inflight": False, "claimed_at_ms": 0, "last_at_ms": _now_ms(),
