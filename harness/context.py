@@ -24,6 +24,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from .compaction import project_messages
 from .providers import content_text, est_tokens
 
 
@@ -119,6 +120,13 @@ class ComposeMeta:
     elide_from: int = 0      # message index below which old tool outputs were stubbed this build;
                              # the loop compares it turn-to-turn to attribute cache misses to 'elide'
                              # (composer stays stateless — it only reports, never remembers)
+    # What the compaction projection did this build: {"active", "cutoff", "compacted", "kept",
+    # "generation"}. Content-free — the summary text itself never rides in meta.
+    compaction: dict = field(default_factory=dict)
+    # The pre-elision message list `elide_from` indexes into. It is the PROJECTION, not
+    # session["messages"], once compaction is active; the loop's cache-miss attribution needs
+    # the same list the indices came from or it reads the wrong window.
+    pre_elision: list = field(default_factory=list)
 
 
 class TokenBudgeter:
@@ -351,9 +359,16 @@ class ContextComposer:
         window = 4 if shrink else 14
         stub = 120 if shrink else 240
         recent_cap = 4000 if shrink else None
-        msgs = session.get("messages", [])
+        # SEMANTIC COMPACTION (compaction.py) runs FIRST and on a different axis: elision shrinks
+        # old tool OUTPUT, compaction replaces an old SPAN of the conversation with a model-written
+        # handoff summary. It is a projection — session["messages"] is not touched here or anywhere
+        # else, so history, resume, fork and the permission audit keep the real transcript. With no
+        # valid checkpoint this is the identity projection and the build is byte-identical to before.
+        msgs, meta.compaction = project_messages(session.get("messages", []),
+                                                 session.get("_compaction"))
         keep_from = len(msgs) - window
         meta.elide_from = keep_from
+        meta.pre_elision = msgs
         provider_messages = []
         for i, m in enumerate(msgs):
             if m.get("role") == "tool":

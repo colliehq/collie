@@ -19,6 +19,7 @@ import threading
 import time
 
 from . import __version__
+from . import compaction as _compaction
 from . import redact as _redact
 from . import settings as _settings
 from .context import ContextComposer
@@ -510,6 +511,10 @@ class Harness:
         # context-overflow recovery (point 9): on an input-too-long error, shrink the history once
         # and retry the turn. COLLIE_OVERFLOW_RECOVERY=0 restores the old die-on-overflow behavior.
         self.overflow_recovery = _settings.get("OVERFLOW_RECOVERY", "1") not in ("0", "false", "off")
+        # Semantic compaction of a long conversation (compaction.py). Same user-facing switch as
+        # above — OVERFLOW_RECOVERY is the "auto-compact and retry" toggle the Settings panel
+        # already describes — plus its own thresholds. Set to None to disable it alone.
+        self.compaction = _compaction.CompactionPolicy.from_settings()
         # optional NDJSON event sink for streaming UX (CLI --stream-json, an editor extension,
         # or the ACP adapter). Default None = zero cost, no behavior change. Set h.emit = fn.
         self.emit = None
@@ -592,13 +597,18 @@ class Harness:
                        timed_out=bool(receipt.get("timed_out", False)))
         return result
 
-    def _session_checkpoint(self, messages, run_id, turn, state, detail=None,
-                            terminal=False):
+    def _durable_session_id(self) -> str:
+        """The durable conversation id this run persists to, or "" when it has none."""
         sid = getattr(self, "durable_session_id", "")
         if not sid:
             scope = getattr(self, "checkpoint_scope", "") or ""
             if scope.startswith(("web:", "session:")):
                 sid = scope.split(":", 1)[1]
+        return sid or ""
+
+    def _session_checkpoint(self, messages, run_id, turn, state, detail=None,
+                            terminal=False):
+        sid = self._durable_session_id()
         if not sid:
             return True
         try:
@@ -763,6 +773,195 @@ class Harness:
         if self.shared_budget is not None:
             self.shared_budget.account(model or self.provider.model, usage)
 
+    # ---- semantic compaction (compaction.py) ------------------------------------------
+    def _compaction_policy(self):
+        """The active policy, or None when compaction must not run at all.
+
+        OVERFLOW_RECOVERY is the user-facing switch for exactly this behaviour ("auto-compact
+        and retry the turn"), so turning it off keeps the pre-compaction loop verbatim.
+        """
+        policy = getattr(self, "compaction", None)
+        if policy is None or not getattr(self, "overflow_recovery", True):
+            return None
+        return policy if getattr(policy, "enabled", False) else None
+
+    def _restore_compaction(self, session):
+        """Adopt a persisted checkpoint for a resumed thread, if it still fits the transcript.
+
+        The fingerprint does the deciding: a fork, a hand-edited session file or a merged
+        history simply fails to match and the run starts from the full transcript again.
+        """
+        if self._compaction_policy() is None:
+            return
+        sid = self._durable_session_id()
+        if not sid:
+            return
+        stored = _compaction.load_checkpoint(sid)
+        if stored is None:
+            return
+        valid = _compaction.validate_checkpoint(session.get("messages") or [], stored)
+        if valid:
+            session[_compaction.SESSION_KEY] = valid
+            self._emit("compaction", status="restored", cutoff=valid["cutoff"],
+                       generation=int(valid.get("generation") or 1),
+                       kept=len(session.get("messages") or []) - valid["cutoff"])
+        else:
+            self._emit("compaction", status="ignored",
+                       reason="stored checkpoint does not match this transcript")
+
+    def _maybe_compact(self, session, system, msgs, total, rid, turn, model_calls,
+                       reason="threshold"):
+        """Spend at most ONE physical provider request folding old history into a summary.
+
+        Returns None when no request was made, else ``(applied, request_count)`` — the caller
+        adds the count to the run's model_calls whether or not the summary was usable, because
+        the request was really issued and really billed.
+        """
+        policy = self._compaction_policy()
+        forced = bool(session.pop(_compaction.FORCE_KEY, False))
+        if policy is None:
+            return None
+        messages = session.get("messages") or []
+        if len(messages) < policy.min_messages:
+            # Short task: not even the estimate is worth walking the thread. Say so when an
+            # actual overflow asked for help, so "why did it not compact?" has an answer.
+            if forced:
+                self._emit("compaction", status="skipped", reason="short",
+                           source_messages=len(messages))
+            return None
+        try:
+            schemas = self.registry.active_schemas()
+        except Exception:
+            schemas = []
+        before = _compaction.estimate_request(system, msgs, schemas)
+        plan, why = _compaction.plan(
+            messages, session.get(_compaction.SESSION_KEY),
+            session.get(_compaction.GATE_KEY), policy=policy, total_tokens=before,
+            force=forced, reason=reason)
+        if plan is None:
+            if forced:
+                # A real overflow that compaction cannot help with is worth saying out loud;
+                # an ordinary turn under the threshold is not (it happens every turn).
+                self._emit("compaction", status="skipped", reason=why,
+                           before_tokens=before, source_messages=len(messages))
+            return None
+        # Budget and cancellation are the caller's boundaries, not this feature's: a summary is
+        # never worth crossing a ceiling the user set, and a cancelled run stops here too.
+        if self._cancel_requested():
+            return None
+        call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
+        if call_cap and model_calls >= call_cap:
+            return None
+        if self.shared_budget is not None and self.shared_budget.exceeded():
+            return None
+        if _budget_exceeded(self.provider.model, total,
+                            bool(getattr(self.provider, "subscription_only", False))):
+            return None
+        # Build the digest BEFORE spending anything. It is bounded by whole messages and can
+        # refuse (a user message too large to hand over complete, a span too small once it is
+        # trimmed to fit); refusing here costs no request and leaves the full thread being sent,
+        # which is the honest outcome — summarizing a span the summarizer only half saw is not.
+        prepared = _compaction.prepare(messages, plan, policy)
+        if not prepared.ok:
+            self._emit("compaction", status="skipped", reason=prepared.reason,
+                       before_tokens=before, cutoff=plan.cutoff,
+                       source_messages=plan.source_messages)
+            return None
+        self._emit("compaction", status="started", reason=plan.reason,
+                   before_tokens=before, cutoff=prepared.cutoff,
+                   kept=plan.source_messages - prepared.cutoff,
+                   source_messages=plan.source_messages,
+                   user_messages=prepared.user_messages,
+                   span_truncated=prepared.span_truncated)
+        digest = prepared.digest
+        started = time.time()
+        try:
+            # No tools (nothing may execute during a summary), no stream callback (the summary
+            # is private context, not this run's answer), and this run's own provider only —
+            # a summary produced by some other endpoint would not be the same conversation.
+            from .cancellation import complete as complete_cancelable
+            comp = complete_cancelable(
+                self.provider, _compaction.SUMMARY_SYSTEM,
+                [{"role": "user", "content": digest}], [], cancelled=self.cancelled)
+        except Exception as exc:
+            comp = _error_completion(getattr(self.provider, "name", "?"), exc)
+        # From here every path returns (applied, requests): the request physically happened, so
+        # it lands in the ledger, the token total and the shared budget whether the summary was
+        # usable, malformed, refused or arrived after a cancellation.
+        requests = max(1, _compaction.bounded_int(
+            getattr(comp, "request_count", 1), 1, _compaction.MAX_SUMMARY_REQUESTS, 1))
+        self._account_usage(total, comp.usage)
+        ok, summary, failure = _compaction.validate_summary(comp, policy)
+        elapsed = int((time.time() - started) * 1000)
+        if ok and self._cancel_requested():
+            # Cancelled while the summary was in flight: pay for it, adopt nothing. The next
+            # run re-plans from the transcript, which was never touched.
+            self._emit("compaction", status="skipped", reason="canceled",
+                       before_tokens=before, cutoff=prepared.cutoff)
+            return False, requests
+        checkpoint = _compaction.make_checkpoint(
+            messages, plan, summary, policy, prepared) if ok else None
+        if checkpoint is None:
+            failure = failure or "checkpoint refused the summary"
+            gate = _compaction.note_failure(session, messages)
+            self.recorder.log_turn(
+                rid, turn, "compaction", "compaction failed: %s (attempt %d)" % (
+                    failure, gate["failures"]),
+                comp.usage.input_tokens, comp.usage.output_tokens, 0, elapsed,
+                cache_read=comp.usage.cache_read)
+            self._emit("compaction", status="failed", reason=failure,
+                       before_tokens=before, cutoff=prepared.cutoff,
+                       failures=gate["failures"])
+            return False, requests
+        session[_compaction.SESSION_KEY] = checkpoint
+        session[_compaction.GATE_KEY] = {}       # a success clears the failure cooldown
+        # Run-scoped, on the session the caller owns — not on the Harness, which an embedder
+        # may reuse for the next conversation.
+        session[_compaction.PENDING_KEY] = (checkpoint, elapsed, comp.usage)
+        return True, requests
+
+    def _settle_compaction(self, session, system, msgs, rid, turn):
+        """Measure what the compaction actually bought, then record and persist it."""
+        pending = session.pop(_compaction.PENDING_KEY, None)
+        if not pending:
+            return
+        checkpoint, elapsed, usage = pending
+        try:
+            schemas = self.registry.active_schemas()
+        except Exception:
+            schemas = []
+        after = _compaction.estimate_request(system, msgs, schemas)
+        policy = getattr(self, "compaction", None) or _compaction.CompactionPolicy()
+        checkpoint = _compaction.record_projection(session, checkpoint, after, policy)
+        before = int(checkpoint.get("before_tokens") or 0)
+        # Persist beside the transcript so the next turn/process/resume reuses this summary
+        # instead of paying for it again. A failure to write is not a failure to compact.
+        sid = self._durable_session_id()
+        persisted = _compaction.save_checkpoint(sid, checkpoint) if sid else False
+        # The ledger line says what was summarized THIS time (the span, not the whole prefix —
+        # generations 2+ only re-read the newest span, the rest is carried in the previous
+        # summary) and how much recoverable payload was abbreviated inside it.
+        self.recorder.log_turn(
+            rid, turn, "compaction",
+            "summarized messages %d-%d of %d (%d from the user, %d payload chars abbreviated); "
+            "est %d -> %d tokens" % (
+                checkpoint["summarized_from"], max(0, checkpoint["cutoff"] - 1),
+                checkpoint["source_messages"], checkpoint["user_messages_summarized"],
+                checkpoint["payload_chars_elided"], before, after),
+            usage.input_tokens, usage.output_tokens, 0, elapsed,
+            cache_read=usage.cache_read)
+        self._emit("compaction", status="applied", reason=checkpoint.get("reason", ""),
+                   before_tokens=before, after_tokens=after, cutoff=checkpoint["cutoff"],
+                   kept=int(checkpoint["source_messages"]) - int(checkpoint["cutoff"]),
+                   source_messages=checkpoint["source_messages"],
+                   summarized_from=checkpoint["summarized_from"],
+                   messages_summarized=checkpoint["messages_summarized"],
+                   user_messages_summarized=checkpoint["user_messages_summarized"],
+                   payload_chars_elided=checkpoint["payload_chars_elided"],
+                   span_truncated=bool(checkpoint.get("span_truncated")),
+                   generation=int(checkpoint.get("generation") or 1),
+                   improved=bool(checkpoint.get("improved")), persisted=bool(persisted))
+
     def _run_critic(self, issue, diff):
         """Independent adversarial review — a FRESH provider call seeing ONLY the issue + the diff
         (not the main model's reasoning or its self-written test), so it does not inherit the main
@@ -918,6 +1117,9 @@ class Harness:
                 prompt_content += context_block
         msgs0.append({"role": "user", "content": prompt_content})
         session = {"messages": msgs0}
+        # A resumed thread may already carry a validated handoff summary; adopt it before the
+        # first build so a continued long conversation does not re-summarize what it just did.
+        self._restore_compaction(session)
         journal_state = "turn_boundary"
         journal_detail = {}
         self._session_checkpoint(session["messages"], rid, 0, journal_state)
@@ -960,11 +1162,17 @@ class Harness:
         prev_prompt = 0
         prev_skey = None
         prev_elide_from = 0
+        prev_compact_gen = 0
         prev_t = None
         waste_tok = waste_usd = 0
         miss_n = 0
         trunc_rounds = 0            # output-truncation rounds (point 1), bounded like verify_max
         overflow_tried = False      # context-overflow recovery is once-per-run (point 9)
+        # ...except when a compaction has genuinely changed what would be sent since the last
+        # overflow. That is a different request, not a retry of the same one, so it earns one
+        # more attempt. Cleared on use, and a second compaction needs real source progress, so
+        # this cannot become an unbounded retry loop.
+        compaction_since_overflow = False
         last_stop = ""              # stop_reason of the last completion (for the memory-consolidation gate)
         answer = ""
         did_edit = verified = covered = multifile_hinted = edit_forced = False
@@ -1042,6 +1250,18 @@ class Harness:
                     self.recorder.log_turn(rid, turn, "steer", txt[:500], 0, 0, 0, 0)
                 system, msgs, meta = self.composer.build(
                     session, safe_user_msg, self.cwd, self.project, self.mode)
+                # Long-conversation compaction (compaction.py). Costs nothing until the
+                # estimated request crosses the threshold (or a real overflow forces it), and
+                # then costs exactly one request, accounted below like every other one.
+                compacted = self._maybe_compact(
+                    session, system, msgs, total, rid, turn, model_calls)
+                if compacted is not None:
+                    model_calls += compacted[1]
+                    if compacted[0]:
+                        system, msgs, meta = self.composer.build(
+                            session, safe_user_msg, self.cwd, self.project, self.mode)
+                        self._settle_compaction(session, system, msgs, rid, turn)
+                        compaction_since_overflow = True
                 if turn == 0:
                     res.prefix_tokens = meta.prefix_tokens
                     ceiling = getattr(self.composer.budgeter, "prefix_ceiling", 0)
@@ -1115,10 +1335,16 @@ class Harness:
                     cls = classify_error(
                         comp.error_detail or comp.text or "", comp.error_status,
                         getattr(comp, "error_code", ""))
-                    if (cls == "overflow" and not overflow_tried and self.overflow_recovery
+                    if (cls == "overflow" and self.overflow_recovery
+                            and (not overflow_tried or compaction_since_overflow)
                             and _has_next_turn(turn)):
                         overflow_tried = overflow_now = True
+                        compaction_since_overflow = False
                         session["_overflow_shrink"] = True   # composer shrinks the history next build
+                        # Ask compaction to run on the next build regardless of the estimate —
+                        # the provider just told us the estimate was wrong. It still refuses on a
+                        # short history, so the tiny-history one-shot retry above is unchanged.
+                        session[_compaction.FORCE_KEY] = True
                         self.recorder.log_turn(rid, turn, "overflow",
                                                (comp.error_detail or comp.text or "")[:200],
                                                comp.usage.input_tokens, comp.usage.output_tokens,
@@ -1240,10 +1466,21 @@ class Harness:
                 cause = []
                 if prev_skey is not None and skey != prev_skey:
                     cause.append("schema")           # tool set changed (load_tools / hard_at restriction)
+                compact_gen = int((meta.compaction or {}).get("generation") or 0)
+                if compact_gen != prev_compact_gen:
+                    # Replacing an old span with a summary rewrites the message prefix, so the
+                    # first request after a compaction cannot cache-hit. It is a real, priced
+                    # cost of the feature and belongs in the ledger by name, not as
+                    # "unexplained" — the whole point of the cause column.
+                    cause.append("compact")
+                # Read the window from the list elide_from indexes into. Once compaction is
+                # active that is the PROJECTION, not the raw transcript, and slicing the wrong
+                # list would attribute the miss to the wrong cause (or miss it entirely).
+                elide_src = meta.pre_elision or session["messages"]
                 if prev_elide_from and meta.elide_from > prev_elide_from and any(
                         m.get("role") == "tool" and isinstance(m.get("content"), str)
                         and len(m["content"]) > 240
-                        for m in session["messages"][prev_elide_from:meta.elide_from]):
+                        for m in elide_src[prev_elide_from:meta.elide_from]):
                     cause.append("elide")            # history elision newly stubbed a big tool output
                 if prev_t and time.time() - prev_t > _CACHE_TTL:
                     cause.append("ttl?")             # NB completion-to-completion incl. generation time
@@ -1254,6 +1491,7 @@ class Harness:
                     self._emit("cache_miss", tokens=mt, usd=mu, cause=c_str)
                 prev_skey = skey
                 prev_elide_from = meta.elide_from
+                prev_compact_gen = compact_gen
                 prev_t = time.time()
                 reported_cache = reported_cache or (u.cache_read + u.cache_creation) > 0
                 _p = u.input_tokens + u.cache_read + u.cache_creation

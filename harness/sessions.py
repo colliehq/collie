@@ -283,7 +283,8 @@ def save(sid, messages, project="demo", cwd="", answer="",
                "last_answer": answer or old.get("last_answer", "")}
         if old.get("title"):
             obj["title"] = old["title"]
-        for field in ("forked_from", "fork_index", "lineage", "workspace", "handoffs"):
+        for field in ("forked_from", "fork_index", "lineage", "workspace", "handoffs",
+                      "context_compaction"):
             if field in old:
                 obj[field] = old[field]
         # Run receipts are orthogonal to the conversational transcript.  Preserve
