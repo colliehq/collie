@@ -18,6 +18,7 @@ through in about a tenth of a second.
 
     COLLIE_WEB=http://127.0.0.1:8996 COLLIE_TOKEN=<token> python3 tests/steer_ui_check.py
 """
+import json
 import os
 import sys
 
@@ -70,9 +71,25 @@ def main():
         # the classifying head, so send() goes straight to a stream
         pg.route("**/api/route*", lambda r: r.fulfill(
             status=200, content_type="application/json", body='{"kind": "chat"}'))
-        steer_reply = {"body": '{"queued": true}'}
-        pg.route("**/api/steer*", lambda r: r.fulfill(
-            status=200, content_type="application/json", body=steer_reply["body"]))
+        # Storage acknowledgment and delivery at a model boundary are distinct.
+        inbox = {"entries": [], "refuse": False}
+
+        def queue_transport(route):
+            if route.request.method == "POST":
+                body = route.request.post_data_json
+                if inbox["refuse"]:
+                    return route.fulfill(status=409, content_type="application/json",
+                        body=json.dumps({"error": "the request was not saved"}))
+                entry = {"id": body["id"], "text": body["text"], "state": "pending",
+                         "mode": "steer", "seq": len(inbox["entries"]) + 1}
+                inbox["entries"].append(entry)
+                out = {"accepted": True, "entry": entry}
+            else:
+                out = {"session": "s-steer-check", "entries": inbox["entries"],
+                       "active": True, "owner_busy": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(out))
+
+        pg.route("**/api/task-inbox*", queue_transport)
 
         # Normal follow-ups now queue by default. Select the supported steering mode
         # explicitly so this suite exercises in-flight delivery rather than that queue.
@@ -118,6 +135,19 @@ def main():
         pg.press("#input", "Enter")
         pg.wait_for_timeout(700)
 
+        check(pg.input_value("#input") == "", "the draft clears after the durable acknowledgment")
+        check(pg.query_selector(".flow .steer-note") is None,
+              "saved input is not labeled delivered before a model boundary")
+        check("actually, use the other endpoint" in pg.locator("#taskQueue").inner_text(),
+              "the accepted correction is visible in the durable queue")
+        if inbox["entries"]:
+            entry = inbox["entries"][0]
+            entry["state"] = "consumed"
+            pg.evaluate("""data => {
+                const es = window.__es.find(e => e.url.indexOf('/api/stream') > -1);
+                es.emit('steer', data);
+            }""", {"session": "s-steer-check", "id": entry["id"], "text": entry["text"]})
+        pg.wait_for_timeout(200)
         note = pg.query_selector(".flow .steer-note")
         check(note is not None, "the steer lands inside the run's own flow, not after it")
         if note:
@@ -137,24 +167,22 @@ def main():
             check(pg.query_selector(".msg.steer") is None,
                   "nothing was appended below the answer any more")
 
-        check(pg.evaluate("() => document.getElementById('scroll').scrollTop > 50"),
-              "typing it scrolled the view back to it")
         note_class = note.get_attribute("class") if note else ""
         check(note is not None and "pending" not in note_class,
-              "and it stops saying 'queued' once the desktop confirms")
+              "and the model boundary confirms delivery")
 
-        # A run that ended first must say so on the note itself, not only in a passing event line.
-        steer_reply["body"] = '{"queued": false}'
+        # A refused write stays in the composer and never claims model delivery.
+        inbox["refuse"] = True
+        before = len(inbox["entries"])
         pg.fill("#input", "and rename the flag")
         pg.press("#input", "Enter")
         pg.wait_for_timeout(700)
-        last = pg.evaluate("""() => {
-            const all = document.querySelectorAll('.flow .steer-note');
-            const n = all[all.length - 1];
-            return n ? {cls: n.className, tag: n.querySelector('.sn-tag').textContent.trim()} : null;
-        }""")
-        check(last is not None and "dropped" in last["cls"],
-              "an undelivered steer is marked on the message itself (%s)" % (last or {}).get("cls"))
+        check(pg.input_value("#input") == "and rename the flag",
+              "an unacknowledged instruction stays in the draft")
+        check("the request was not saved" in pg.locator("#taskQueue").inner_text(),
+              "the refusal is visible beside the pending requests")
+        check(len(inbox["entries"]) == before and pg.locator(".steer-note").count() == 1,
+              "refusal creates neither a queued request nor a delivery claim")
 
         check(not errs, "no JS errors%s" % ("" if not errs else ": " + errs[0][:90]))
         br.close()

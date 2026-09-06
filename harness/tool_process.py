@@ -587,7 +587,7 @@ def _start_owned(argv, *, use_shell, cwd, env, capture_stderr, cancelled):
     boot = _Bootstrap(status_path)
     try:
         proc = subprocess.Popen(_bootstrap_argv(), stdin=subprocess.PIPE, cwd=cwd, env=env,
-                                **stdio, creationflags=_CREATE_NO_WINDOW)
+                                **stdio, **plat.no_window_kwargs())
     except Exception as e:
         boot.cleanup()
         raise _NotStarted(LAUNCH_ERROR,
