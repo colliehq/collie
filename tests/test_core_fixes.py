@@ -135,34 +135,60 @@ def test_concurrent_full_saves_merge_divergent_exchanges(monkeypatch, tmp_path):
     assert "left" in contents and "right" in contents
 
 
-def test_pack_apply_removes_deleted_paths_but_preserves_skipped_trees(tmp_path):
-    from harness import pack
+def _pack_bundle(workspace, edit, monkeypatch, tmp_path):
+    """Isolate, let ``edit`` play the model, then save the winner exactly as run_pack does."""
+    import shutil
+    from harness import pack_artifacts
 
-    src, dst = tmp_path / "winner", tmp_path / "real"
-    src.mkdir(); dst.mkdir(); (src / "keep.txt").write_text("new", encoding="utf-8")
-    (dst / "keep.txt").write_text("old", encoding="utf-8")
+    monkeypatch.setenv("COLLIE_PACK_ARTIFACT_DIR", str(tmp_path / "store"))
+    attempt = tmp_path / "attempt"
+    shutil.copytree(str(workspace), str(attempt), symlinks=True,
+                    ignore=lambda _d, names: [n for n in names if n in pack_artifacts.SKIP_DIRS])
+    baseline = pack_artifacts.capture_baseline(str(attempt))
+    edit(attempt)
+    bundle = pack_artifacts.create_artifact(str(attempt), baseline, workspace=str(workspace))
+    return pack_artifacts.save_artifact(bundle)
+
+
+def test_pack_apply_removes_deleted_paths_but_preserves_skipped_trees(tmp_path, monkeypatch):
+    from harness import pack_artifacts
+
+    dst = tmp_path / "real"
+    dst.mkdir(); (dst / "keep.txt").write_text("old", encoding="utf-8")
     (dst / "deleted.txt").write_text("gone", encoding="utf-8")
     (dst / "deleted-dir").mkdir(); (dst / "deleted-dir" / "x").write_text("x", encoding="utf-8")
     (dst / ".git").mkdir(); (dst / ".git" / "sentinel").write_text("git", encoding="utf-8")
-    pack._copy_back(str(src), str(dst))
+
+    def edit(attempt):
+        (attempt / "keep.txt").write_text("new", encoding="utf-8")
+        (attempt / "deleted.txt").unlink()
+        (attempt / "deleted-dir" / "x").unlink()
+        (attempt / "deleted-dir").rmdir()
+
+    record = _pack_bundle(dst, edit, monkeypatch, tmp_path)
+    assert pack_artifacts.apply_artifact(record["id"], str(dst))["applied"]
     assert (dst / "keep.txt").read_text(encoding="utf-8") == "new"
     assert not (dst / "deleted.txt").exists() and not (dst / "deleted-dir").exists()
     assert (dst / ".git" / "sentinel").exists()
 
 
-def test_pack_apply_preserves_nested_skipped_trees(tmp_path):
-    from harness import pack
+def test_pack_apply_preserves_nested_skipped_trees(tmp_path, monkeypatch):
+    from harness import pack_artifacts
 
-    src, dst = tmp_path / "winner", tmp_path / "real"
-    app_src, app_dst = src / "packages" / "app", dst / "packages" / "app"
-    app_src.mkdir(parents=True); app_dst.mkdir(parents=True)
-    (app_src / "keep.txt").write_text("new", encoding="utf-8")
+    dst = tmp_path / "real"
+    app_dst = dst / "packages" / "app"
+    app_dst.mkdir(parents=True)
+    (app_dst / "keep.txt").write_text("old", encoding="utf-8")
     for skipped in ("node_modules", ".venv", "build"):
         tree = app_dst / skipped / "nested"
         tree.mkdir(parents=True)
         (tree / "sentinel").write_text(skipped, encoding="utf-8")
 
-    pack._copy_back(str(src), str(dst))
+    def edit(attempt):
+        (attempt / "packages" / "app" / "keep.txt").write_text("new", encoding="utf-8")
+
+    record = _pack_bundle(dst, edit, monkeypatch, tmp_path)
+    assert pack_artifacts.apply_artifact(record["id"], str(dst))["applied"]
 
     assert (app_dst / "keep.txt").read_text(encoding="utf-8") == "new"
     for skipped in ("node_modules", ".venv", "build"):
@@ -191,23 +217,34 @@ def test_pack_apply_failure_is_reported_and_json_cli_is_nonzero(monkeypatch, tmp
 
 
 def test_run_pack_propagates_apply_failure_in_result(monkeypatch, tmp_path):
-    from harness import catalog, cli, pack, scratch
+    from harness import catalog, cli, pack, pack_artifacts, scratch
+
+    monkeypatch.setenv("COLLIE_PACK_ARTIFACT_DIR", str(tmp_path / "store"))
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
 
     class Result:
         answer, verified, turns, error, cost_usd = "ok", True, 1, "", 0.0
     class Harness:
         memory = recorder = None
-        def run(self, *args, **kwargs): return Result()
+        def __init__(self, cwd): self.cwd = cwd
+        def run(self, *args, **kwargs):
+            # A winner with no edits has nothing to apply; give the apply path real work.
+            with open(os.path.join(self.cwd, "edited.txt"), "w", encoding="utf-8") as handle:
+                handle.write("winner")
+            return Result()
     closer = types.SimpleNamespace(close=lambda: None)
     Harness.memory = Harness.recorder = closer
     monkeypatch.setattr(catalog, "preflight", lambda members: [])
-    monkeypatch.setattr(cli, "make_harness", lambda *a, **k: Harness())
+    monkeypatch.setattr(cli, "make_harness", lambda cwd, **k: Harness(cwd))
     monkeypatch.setattr(scratch, "isolate_harness", lambda *a, **k: None)
-    monkeypatch.setattr(pack, "_copy_back", lambda *a, **k:
+    monkeypatch.setattr(pack_artifacts, "apply_artifact", lambda *a, **k:
                         (_ for _ in ()).throw(PermissionError("read only")))
-    res = pack.run_pack("x", str(tmp_path), n=1, apply=True, provider="mock")
+    res = pack.run_pack("x", str(workspace), n=1, apply=True, provider="mock")
     assert res["winner"] == 0 and not res["applied"]
     assert "PermissionError" in res["apply_error"] and "apply failed" in res["reason"]
+    # The winner is still saved and reviewable even though applying it failed.
+    assert res["artifact"] and res["artifact"]["summary"]["added"] == 1
 
 
 def test_pack_quality_presets_and_context_reach_every_candidate(monkeypatch, tmp_path):

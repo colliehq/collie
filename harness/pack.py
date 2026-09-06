@@ -3,9 +3,14 @@
 collie's thesis is "don't trust the model's claim, run the code." Pack mode applies that to candidate
 selection: run the task N independent times in isolated copies of the working tree, then pick the
 winner by what actually PASSES — an optional check command (exit 0 = pass), then the harness's own
-verification verdict (edited + a repro ran green), then a cheap quality tiebreak. Only the winning
-tree is (optionally) copied back. If a check is given and NOTHING passes it, pack refuses to apply a
-losing attempt — a no-op beats shipping a wrong edit.
+verification verdict (edited + a repro ran green), then a cheap quality tiebreak. If a check is
+given and NOTHING passes it, pack refuses to apply a losing attempt — a no-op beats a wrong edit.
+
+The winner's EDITS outlive the throwaway trees: each attempt's baseline is measured inside its own
+isolated directory before the model runs, so the winning diff can be saved as a reviewable bundle
+(``result["artifact"]``) and applied later — once, conflict-checked — without paying for the run
+again. ``--apply`` uses that same bundle, so it can no longer mirror a stale candidate over edits
+made while the candidates were running. See ``pack_artifacts``.
 
 CLI:  collie pack "task" -n 3 --check "python -m pytest -q" [--apply]
 """
@@ -17,8 +22,11 @@ import subprocess
 import tempfile
 import threading
 
-_SKIP = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache",
-         ".pytest_cache", ".collie", "dist", "build", ".tox"}
+from . import pack_artifacts
+
+# One definition, shared with the apply path: a tree Pack does not isolate is a tree Pack does not
+# own, and neither the diff nor the apply may touch it.
+_SKIP = set(pack_artifacts.SKIP_DIRS)
 
 
 def _error_text(exc, prefix=""):
@@ -128,7 +136,7 @@ class _PackBudget:
 
 
 def _ignore(_dir, names):
-    return [n for n in names if n in _SKIP]
+    return [n for n in names if n.lower() in _SKIP]
 
 
 def _isolate(cwd):
@@ -213,78 +221,32 @@ def select(attempts, have_check):
     return best["idx"], ", ".join(why)
 
 
-def _copy_back(src, dst):
-    """Make ``dst`` exactly match the winning tree, excluding deliberately unisolated heavy dirs.
+def _task_text(task):
+    """A short, redacted label for the bundle. Never the workspace's file contents."""
+    from .runner_specs import redact_text
+    if isinstance(task, (list, tuple)):
+        parts = [str(item.get("text", "")) for item in task if isinstance(item, dict)]
+        task = " ".join(p for p in parts if p)
+    return redact_text(str(task or ""))[:400]
 
-    Copy-only semantics left deleted files behind, so a candidate could pass in isolation and then
-    become a different, failing tree when applied. Filesystem errors are intentionally propagated:
-    callers must never print APPLIED after a partial or refused operation.
+
+def _save_winner(attempt_dir, baseline, baseline_error, cwd, metadata):
+    """Persist the winner's diff BEFORE the throwaway tree is deleted.
+
+    Returns ``(record or None, error)``. ``(None, "")`` means the winner changed nothing — the
+    cheap, common case for a question-only pack, which must not create an empty bundle. A non-empty
+    error means the winner is NOT saved, and the caller keeps its attempt directory.
     """
-    src, dst = os.path.realpath(src), os.path.realpath(dst)
-    if not os.path.isdir(src) or not os.path.isdir(dst) or src == dst:
-        raise OSError("invalid pack apply roots")
-
-    # Remove paths the winner removed. Work bottom-up, never crossing one of the excluded trees.
-    # With ``topdown=False`` pruning ``dirs`` cannot prevent os.walk from having already visited a
-    # child.  Check every component of the current relative path too, otherwise
-    # ``packages/app/node_modules`` (and nested .venv/build trees) are emptied before their parent
-    # gets a chance to filter the directory name.
-    for root, dirs, files in os.walk(dst, topdown=False, followlinks=False):
-        rel = os.path.relpath(root, dst)
-        if rel != "." and any(part in _SKIP for part in rel.split(os.sep)):
-            continue
-        dirs[:] = [d for d in dirs if d not in _SKIP]
-        source_root = src if rel == "." else os.path.join(src, rel)
-        for name in files:
-            if name in _SKIP:
-                continue
-            if not os.path.lexists(os.path.join(source_root, name)):
-                os.remove(os.path.join(root, name))
-        for name in dirs:
-            target_path = os.path.join(root, name)
-            source_path = os.path.join(source_root, name)
-            if not os.path.lexists(source_path):
-                if os.path.islink(target_path):
-                    os.remove(target_path)
-                else:
-                    shutil.rmtree(target_path)
-
-    # Then copy every winner path. Resolve file/directory type changes explicitly.
-    for root, dirs, files in os.walk(src, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in _SKIP]
-        rel = os.path.relpath(root, src)
-        target_root = dst if rel == "." else os.path.join(dst, rel)
-        if os.path.lexists(target_root) and (os.path.islink(target_root)
-                                                or not os.path.isdir(target_root)):
-            os.remove(target_root)
-        os.makedirs(target_root, exist_ok=True)
-        # os.walk lists symlinks-to-directories in ``dirs`` but (correctly) does not traverse them;
-        # copy them here or the applied tree silently loses that path.
-        for d in list(dirs):
-            source_dir = os.path.join(root, d)
-            if not os.path.islink(source_dir):
-                continue
-            dirs.remove(d)
-            target_dir = os.path.join(target_root, d)
-            if os.path.isdir(target_dir) and not os.path.islink(target_dir):
-                shutil.rmtree(target_dir)
-            elif os.path.lexists(target_dir):
-                os.remove(target_dir)
-            os.symlink(os.readlink(source_dir), target_dir, target_is_directory=True)
-        for f in files:
-            source_file = os.path.join(root, f)
-            target_file = os.path.join(target_root, f)
-            if os.path.isdir(target_file) and not os.path.islink(target_file):
-                shutil.rmtree(target_file)
-            elif os.path.lexists(target_file) and os.path.islink(source_file) != os.path.islink(target_file):
-                os.remove(target_file)
-            if os.path.islink(source_file):
-                if os.path.lexists(target_file):
-                    os.remove(target_file)
-                os.symlink(os.readlink(source_file), target_file,
-                           target_is_directory=os.path.isdir(source_file))
-            else:
-                shutil.copy2(source_file, target_file)
+    if baseline is None:
+        return None, (baseline_error or "no baseline manifest was captured for the winner")
+    try:
+        bundle = pack_artifacts.create_artifact(
+            attempt_dir, baseline, workspace=cwd, metadata=metadata)
+        if bundle.empty:
+            return None, ""
+        return pack_artifacts.save_artifact(bundle), ""
+    except Exception as exc:
+        return None, _error_text(exc, "winner changes could not be saved: ")
 
 
 def normalize_roster(roster, provider, model):
@@ -362,7 +324,11 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
                 "parallel": parallel, "requested_parallel": requested_parallel,
                 "budget_exhausted": False, "budget_usage_unknown": False,
                 "budget_unknown_fields": [],
-                "budget_tokens": 0, "budget_cost_usd": 0.0}
+                "budget_tokens": 0, "budget_cost_usd": 0.0,
+                # Same shape on every return path: a UI that reads result["artifact"] must not
+                # have to special-case the run that never started.
+                "artifact": None, "artifact_error": "", "apply_conflicts": [],
+                "retained_attempt_dir": ""}
     # Best-of-N is only best-of-N if the N are independent. Attempts used to share one project, so
     # each one's consolidated answer was auto-recalled into the NEXT one's prompt. A per-attempt
     # project separates the undo stacks (keyed by project, and cached in a process-global dict);
@@ -374,6 +340,13 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
     # and would sink every attempt if the last copy failed. Each index is written by exactly one
     # worker, so the list needs no lock.
     dirs = [None] * n
+    # The winner's diff is measured against the tree ITS attempt started from, so the baseline has
+    # to be taken from that isolated directory before any model work — never from the live
+    # workspace afterwards, where the user's own concurrent edits are indistinguishable from the
+    # candidate's. Saving is on unless disabled, and always on when the caller asked to apply.
+    want_artifact = bool(apply) or pack_artifacts.enabled()
+    baselines = [None] * n
+    baseline_errors = [""] * n
     emit_lock = threading.Lock()
 
     def _cancelled():
@@ -409,6 +382,13 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
             _safe_emit(emit, emit_lock, i, rec)
             return rec
         rec["dir"] = iso
+        if want_artifact:
+            try:
+                baselines[i] = pack_artifacts.capture_baseline(iso)
+            except Exception as e:
+                # A candidate whose baseline could not be measured can still run and still win;
+                # it just cannot be turned into a reviewable bundle. Say so if it does win.
+                baseline_errors[i] = _error_text(e, "baseline capture failed: ")
         h = None
         external_recorder = None
         res = None
@@ -532,15 +512,41 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
     winner_idx, reason = (None, "canceled by user") if canceled else select(attempts, have_check)
     applied = False
     apply_error = ""
-    if apply and winner_idx is not None and dirs[winner_idx] and not canceled:
-        # `dirs[winner_idx]` can be empty only when every attempt failed to isolate and select()
-        # still had to return one of them. There is no tree to copy back, and inventing one would
-        # be worse than applying nothing.
-        try:
-            _copy_back(dirs[winner_idx], cwd)
-            applied = True
-        except Exception as e:
-            apply_error = _error_text(e)
+    apply_conflicts = []
+    artifact_record = None
+    artifact_error = ""
+    # `dirs[winner_idx]` can be empty only when every attempt failed to isolate and select() still
+    # had to return one of them. There is nothing to save and nothing to apply, and inventing a
+    # tree would be worse than applying nothing.
+    winner_dir = dirs[winner_idx] if winner_idx is not None else None
+    if want_artifact and winner_dir and not canceled:
+        best = attempts[winner_idx]
+        artifact_record, artifact_error = _save_winner(
+            winner_dir, baselines[winner_idx], baseline_errors[winner_idx], cwd,
+            metadata={"task": _task_text(task), "check": str(check or ""),
+                      "reason": reason, "attempt": winner_idx, "project": project,
+                      "provider": best.get("provider") or "", "model": best.get("model") or "",
+                      "runner": best.get("runner") or "collie",
+                      "turns": best.get("turns", 0),
+                      "check_pass": best.get("check_pass"),
+                      "verified": bool(best.get("verified"))})
+    if apply and winner_idx is not None and not canceled:
+        # Immediate apply is the SAME bundle apply as a later review→apply: baseline-compared,
+        # conflict-refusing, backed up. It is never a mirror of the whole stale candidate tree.
+        if artifact_error:
+            apply_error = artifact_error
+        elif artifact_record is None:
+            applied = bool(winner_dir)          # the winner changed no files: nothing to apply
+        else:
+            try:
+                outcome = pack_artifacts.apply_artifact(artifact_record["id"], cwd)
+            except Exception as e:              # defensive: apply reports, it does not raise
+                outcome = {"applied": False, "error": _error_text(e), "conflicts": []}
+            applied = bool(outcome.get("applied"))
+            if not applied:
+                apply_error = outcome.get("error") or "apply was refused"
+                apply_conflicts = list(outcome.get("conflicts") or ())[:20]
+        if not applied and apply_error:
             reason = "%s; apply failed: %s" % (reason, apply_error)
 
     budget = shared_budget.snapshot() if shared_budget is not None else {
@@ -565,7 +571,14 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
               "budget_unknown_fields": budget["unknown_fields"],
               "budget_tokens": budget["tokens"],
               "budget_cost_usd": round(budget["cost_usd"], 6),
-              "total_cost_usd": total_cost}
+              "total_cost_usd": total_cost,
+              # A compact view only: ids, counts and a bounded path preview. The full change list
+              # (and never the file contents) is read back with pack_artifacts.inspect_artifact,
+              # so a Pack `done` event does not carry a serialized workspace.
+              "artifact": (pack_artifacts.summarize_artifact(artifact_record)
+                           if artifact_record else None),
+              "artifact_error": artifact_error,
+              "apply_conflicts": apply_conflicts}
     if winner_idx is not None:
         best = attempts[winner_idx]
         result["answer"] = best.get("answer", "")
@@ -578,8 +591,11 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
     # the outcome: it may retain source, worker transcripts, or half-applied
     # candidate edits and must not disappear behind ignore_errors=True.
     cleanup_errors = []
+    # A winner we could not persist is NOT deleted as though it had been saved: its exact owned
+    # directory is kept and named, so the work someone already paid for is still recoverable.
+    retained = winner_dir if (artifact_error and winner_dir) else None
     for idx, d in enumerate(dirs):
-        if not d:
+        if not d or d == retained:
             continue
         try:
             shutil.rmtree(d)
@@ -587,8 +603,13 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
             cleanup_errors.append({"idx": idx, "error": _error_text(
                 exc, "attempt cleanup failed: ")})
     result["cleanup_errors"] = cleanup_errors
+    result["retained_attempt_dir"] = retained or ""
+    notes = []
     if cleanup_errors:
+        notes.append("%d attempt workspace(s) could not be removed" % len(cleanup_errors))
+    if retained:
+        notes.append("winner kept at %s: %s" % (retained, artifact_error))
+    if notes:
         result["reason"] = ((result.get("reason") + "; ")
-                            if result.get("reason") else "") + \
-            "%d attempt workspace(s) could not be removed" % len(cleanup_errors)
+                            if result.get("reason") else "") + "; ".join(notes)
     return result
