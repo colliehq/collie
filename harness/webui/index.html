@@ -2122,6 +2122,20 @@
     .online-local h2 { font-size:27px; }
     .online-local-row { grid-template-columns:1fr; gap:4px; }
   }
+  .task-queue {margin:0 0 9px;border:1px solid var(--line,#dedfd9);border-radius:12px;background:var(--surface,#fafaf7);font-size:12px;}
+  .task-queue[hidden] {display:none;}
+  .task-queue-head {display:flex;align-items:center;gap:8px;padding:9px 12px;}
+  .task-queue-head strong {flex:1;}
+  .task-queue button {border:1px solid var(--line,#dedfd9);border-radius:7px;background:transparent;color:inherit;padding:4px 8px;font:inherit;cursor:pointer;}
+  .task-queue button:disabled {opacity:.5;cursor:default;}
+  .task-queue-list {max-height:180px;overflow:auto;overscroll-behavior:contain;}
+  .task-queue-row {padding:9px 12px;border-top:1px solid var(--line,#dedfd9);}
+  .task-queue-meta {display:flex;align-items:center;gap:7px;color:var(--muted,#69736b);margin-bottom:4px;}
+  .task-queue-text {white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+  .task-queue-actions {display:flex;gap:6px;justify-content:flex-end;margin-top:5px;}
+  .task-queue textarea {box-sizing:border-box;width:100%;min-height:68px;max-height:160px;resize:vertical;background:transparent;color:inherit;border:1px solid var(--line,#dedfd9);border-radius:6px;padding:6px;font:inherit;}
+  .task-queue-notice {padding:0 12px 9px;color:var(--muted,#69736b);overflow-wrap:anywhere;}
+  @media(max-width:640px) {.task-queue-list {max-height:140px;}}
 </style>
 
 <div class="app" data-ui="calm-os">
@@ -2482,6 +2496,11 @@
 
     <!-- composer -->
     <div class="composer" id="composer">
+      <section class="task-queue" id="taskQueue" aria-label="Pending requests" hidden>
+        <div class="task-queue-head"><strong id="taskQueueTitle"></strong><button type="button" id="taskQueueStart" hidden></button></div>
+        <div class="task-queue-list" id="taskQueueList"></div>
+        <div class="task-queue-notice" id="taskQueueNotice" role="status" aria-live="polite" hidden></div>
+      </section>
       <div class="attach-strip" id="attachStrip" hidden></div>
       <div class="ide-context-strip" id="ideContextStrip" aria-label="Attached IDE context" hidden></div>
       <div class="composer-context" aria-label="Task privacy and access">
@@ -3285,6 +3304,23 @@
     "saved context restored": "已恢复保存的上下文",
     "Check was not run": "未运行检查",
     "Check stopped": "检查已停止",
+    "Pending requests": "待执行要求",
+    "Send next": "执行下一条",
+    "Added instruction": "补充要求",
+    "Next task": "后续任务",
+    "Delivering…": "正在送达…",
+    "Waiting": "等待执行",
+    "Attachments saved": "附件已保存",
+    "Edit pending request": "编辑待执行要求",
+    "Saving request…": "正在保存要求…",
+    "Request saved": "要求已保存",
+    "Starting the next request…": "正在开始下一条要求…",
+    "Could not load pending requests": "无法加载待执行要求",
+    "Request update was not confirmed": "未确认更新成功",
+    "Request save was not confirmed": "未确认保存成功",
+    "No pending request was started": "没有开始待执行要求",
+    "Request was not confirmed. Your draft is kept; try again.": "尚未确认保存。输入内容已保留，可以重试。",
+    "Add a message to queue these attachments.": "请输入一条要求，再将附件加入队列。",
     "The check was interrupted; this run has no completed verification result.": "检查已中断，本次任务没有完整的验证结果。",
     "Running project check": "正在运行项目检查",
     "verifying…": "正在检查…",
@@ -3576,6 +3612,23 @@
     "saved context restored": "已恢復儲存的上下文",
     "Check was not run": "未執行檢查",
     "Check stopped": "檢查已停止",
+    "Pending requests": "待執行要求",
+    "Send next": "執行下一條",
+    "Added instruction": "補充要求",
+    "Next task": "後續任務",
+    "Delivering…": "正在送達…",
+    "Waiting": "等待執行",
+    "Attachments saved": "附件已儲存",
+    "Edit pending request": "編輯待執行要求",
+    "Saving request…": "正在儲存要求…",
+    "Request saved": "要求已儲存",
+    "Starting the next request…": "正在開始下一條要求…",
+    "Could not load pending requests": "無法載入待執行要求",
+    "Request update was not confirmed": "未確認更新成功",
+    "Request save was not confirmed": "未確認儲存成功",
+    "No pending request was started": "沒有開始待執行要求",
+    "Request was not confirmed. Your draft is kept; try again.": "尚未確認儲存。輸入內容已保留，可以重試。",
+    "Add a message to queue these attachments.": "請輸入一條要求，再將附件加入佇列。",
     "The check was interrupted; this run has no completed verification result.": "檢查已中斷，本次任務沒有完整的驗證結果。",
     "Running project check": "正在執行專案檢查",
     "verifying…": "正在檢查…",
@@ -7906,12 +7959,15 @@
         (d.runs || []).forEach(function (r) { next[r.session] = r; });
         Object.keys(next).concat(Object.keys(liveRuns)).forEach(function (k) {
           var a = liveRuns[k], b = next[k];
-          if (!a !== !b || (a && b && (a.state !== b.state || a.verified !== b.verified))) changed = true;
+          if (!a !== !b || (a && b && (a.state !== b.state || a.verified !== b.verified || a.run !== b.run))) changed = true;
         });
         liveRuns = next;
         // Only redraw when something actually moved: the sidebar is also where rename and delete
         // live, and a list that rebuilds every two seconds eats the click that lands on it.
         if (changed) loadSessions();
+        var active = currentSession && liveRuns[currentSession];
+        if (!running && !routePending && !sessionLoadPending && active && (active.state === "running" || active.state === "canceling"))
+          followSession(currentSession);
       })
       .catch(function () {});
   }
@@ -8017,6 +8073,7 @@
   // socket, and it is the whole reason Collie could hold only one thought at a time. The server owns
   // the run now, so leaving is just this window looking somewhere else.
   function detachRun() {
+    sessionLoadPending = null;
     routeToken++; routePending = false; streamLaunchToken++;
     if (es) { try { es.close(); } catch (e) {} es = null; }
     if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }
@@ -8037,16 +8094,28 @@
       evidence: (evidence && (evidence.command || evidence.cmd)) ? evidence : null,
       required: runRequiresCheck({ verification: decision.verification, intent: decision.intent })
     });
+    var bubbles = $("log").querySelectorAll(".msg.assistant .bubble");
+    if (receipt.canceled || receipt.error) {
+      showTerminalRunState(receipt);
+      if (bubbles.length) {
+        var note = document.createElement("div"); note.className = "pack-summary interruption-note " + (receipt.canceled ? "warn" : "fail");
+        note.textContent = receipt.canceled ? t("Run stopped by the user.") : receipt.error;
+        bubbles[bubbles.length - 1].appendChild(note);
+      }
+      return;
+    }
     if (!isUnfinished(receipt)) return;
     showTerminalRunState(receipt);
-    var bubbles = $("log").querySelectorAll(".msg.assistant .bubble");
     if (bubbles.length) addStopNote(receipt, bubbles[bubbles.length - 1], id);
   }
 
+  var sessionLoadPending;
   function openSession(id) {
     detachRun();
     var loadToken = routeToken;
+    sessionLoadPending = {id:id, token:loadToken};
     currentSession = id;
+    loadTaskQueue();
     currentTitle = SESSION_TITLES[id] || "";     // sidebar label first; the transcript refines it below
     if (typeof setProductNav === "function") setProductNav("home");
     if (typeof setActivityOpen === "function") setActivityOpen(false);
@@ -8059,17 +8128,24 @@
       fetch("/api/runs").then(function (r) { return r.json(); })
     ]).then(function (loaded) {
       if (currentSession !== id || routeToken !== loadToken) return;
+      sessionLoadPending = null;
       var s = loaded[0], run = ((loaded[1] || {}).runs || []).filter(function (row) {
         return row.session === id;
       })[0];
       if (run) liveRuns[id] = run; else delete liveRuns[id];
       var msgs = (s && s.messages) || [], firstAsk = "";
       msgs.forEach(function (m) {
-        if (m.role === "user" && m.source !== "harness" && typeof m.content === "string") {
-          if (!firstAsk) firstAsk = m.content;
-          addMsg("user", m.content);
+        if (m.role === "user" && m.source !== "harness") {
+          var text = typeof m.content === "string" ? m.content : "", images = [];
+          if (Array.isArray(m.content)) m.content.forEach(function (part) {
+            if (part.type === "text") text += (text ? "\n" : "") + (part.text || "");
+            if (part.type === "image" && part.data && part.media_type) images.push(part);
+          });
+          if (!firstAsk) firstAsk = text;
+          addMsg("user", text, images, m.kind === "steer");
         } else if (m.role === "assistant" && m.content) {
-          var el = addMsg("assistant", ""); renderMd(el, m.content); addCopy(el, m.content);
+          var content = String(m.content).replace(/\s*_\[stopped by user\]_\s*$/, "");
+          var el = addMsg("assistant", ""); renderMd(el, content); if (content) addCopy(el, content);
         }
       });
       // A reopened thread is named by the same first sentence the sidebar uses. No rename stored and
@@ -8091,7 +8167,12 @@
       // — so without this you are shown a stale transcript with no sign that Collie is mid-sentence
       // in it, and the obvious next move is to ask for the same thing again.
       if (liveRuns[id] && (liveRuns[id].state === "running" || liveRuns[id].state === "canceling")) followSession(id);
-    }).catch(function () {});
+    }).catch(function (error) {
+      if (currentSession === id && routeToken === loadToken) {
+        sessionLoadPending = null;
+        addErr(t("failed to load") + ": " + (error.message || error));
+      }
+    });
   }
 
   // Watch a run this window did not start. The mirror bus is session-scoped and takes late
@@ -8100,15 +8181,14 @@
   // following, shows the activity that arrives from here on, and swaps itself for the real
   // transcript the moment the run lands.
   function followSession(sid) {
+    if (running && currentSession === sid) return;
     var knownRun = liveRuns[sid] || {};
     currentRun = knownRun.run || null; running = true; cancelPending = knownRun.state === "canceling";
     runCanSteer = !!knownRun.can_steer; shownRunPlan = "";
     setRunState(cancelPending ? "stopping" : "running", true);
     var runButton = $("send");runButton.classList.add("stop");runButton.disabled=cancelPending;
     runButton.title=cancelPending?"Stopping…":"Stop run";runButton.setAttribute("aria-label",cancelPending?"Stopping run":"Stop run");
-    $("input").disabled=cancelPending;$("input").placeholder=t(runCanSteer ?
-      "Steer while the worker runs — Enter to send" :
-      "This worker cannot be steered — stop it or wait");
+    $("input").disabled=cancelPending;$("input").placeholder=followUpPlaceholder();
     var note = addEvent("meta", "eye", t("still working"),
                         t("this run started elsewhere — following it live; the thread fills in when it lands"));
     // A live bubble to put the steps in. Without one traceStep has nowhere to write (it returns on a
@@ -8127,11 +8207,14 @@
     var replaying = false;
     src.addEventListener("start", function(m){try{var d=JSON.parse(m.data||"{}");if(d.run)currentRun=d.run;
       runCanSteer=!!((d.worker_capabilities||{}).steer);
-      $("input").placeholder=t(runCanSteer?"Steer while the worker runs — Enter to send":
-        "This worker cannot be steered — stop it or wait");showRunPlan(d.run_plan);}catch(_){}});
+      $("input").placeholder=followUpPlaceholder();showRunPlan(d.run_plan);}catch(_){}});
     src.addEventListener("mirror_replay", function () { replaying = true; });
     watchVerificationProgress(src, function () { return currentSession === sid; });
     src.addEventListener("mirror_live", function () { replaying = false; });
+    src.addEventListener("steer", function (event) {
+      if (currentSession !== sid || replaying) return;
+      try { deliveredSteer(JSON.parse(event.data || "{}")); } catch (_) {}
+    });
     ["tool", "edit", "repro"].forEach(function (ev) {
       src.addEventListener(ev, function (m) {
         if (currentSession !== sid) { stop(); return; }     // walked away again
@@ -8397,7 +8480,7 @@
     $("log").innerHTML = WELCOME_HTML; applyLang(); renderCollieIdentity(); setProductNav("home");
   }
   function showToday(userRequested) {
-    detachRun(); currentSession = null; currentRun = null; queuedFollowUps = []; currentTitle = "";
+    detachRun(); currentSession = null; currentRun = null; currentTitle = ""; loadTaskQueue();
     clearAttached(); clearManualIdeContexts(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     $("log").innerHTML = TODAY_HTML; applyLang(); renderCollieIdentity();
     setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setProductNav("today");
@@ -8457,7 +8540,7 @@
   function newThread(userRequestedFocus) {
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null; currentTitle = "";
-    queuedFollowUps = []; clearAttached(); clearManualIdeContexts();
+    loadTaskQueue(); clearAttached(); clearManualIdeContexts();
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     setProductNav("home"); setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     loadSessions(); focusComposer(userRequestedFocus === true);
@@ -8659,6 +8742,7 @@
     var inp = $("input"); inp.disabled = false;
     inp.placeholder = t("Describe the outcome you want…");
     if (window.setRunSetupLocked) window.setRunSetupLocked(false);
+    renderTaskQueue();
   }
 
   // ---- image attachments ------------------------------------------------
@@ -8680,16 +8764,16 @@
   // VS Code sends only user-visible chips through the authenticated parent bridge.  Automatic
   // context is the active file/selection; explicit context is added by an editor command and stays
   // until one run consumes it.  No host message focuses the composer unless it explicitly asks to.
-  var ideAutomaticContext = null, ideManualContexts = [], queuedFollowUps = [];
+  var ideAutomaticContext = null, ideManualContexts = [];
   function contextKey(item) {
     return [item.kind || "file", item.fsPath || item.path || item.label || "",
             item.startLine || "", item.endLine || ""].join(":");
   }
   function cleanContextItem(raw) {
     if (!raw || typeof raw !== "object") return null;
-    var item = {}, stringCaps = {kind:32,label:240,path:4096,fsPath:4096,content:64000};
-    Object.keys(stringCaps).forEach(function (key) {
-      if (typeof raw[key] === "string" && raw[key]) item[key] = raw[key].slice(0, stringCaps[key]);
+    var item = {};
+    ["kind", "label", "path", "fsPath", "content"].forEach(function (key) {
+      if (typeof raw[key] === "string" && raw[key]) item[key] = raw[key];
     });
     ["startLine","endLine"].forEach(function (key) {
       if (Number.isInteger(raw[key]) && raw[key] > 0) item[key] = raw[key];
@@ -8702,7 +8786,7 @@
       if (!item) return; var key = contextKey(item); if (seen[key]) return;
       seen[key] = true; out.push(item);
     });
-    return out.slice(0, 24);
+    return out;
   }
   function renderIdeContexts() {
     var strip = $("ideContextStrip"); if (!strip) return;
@@ -8802,54 +8886,6 @@
     }
   })();
 
-  // steer the in-flight run: echo the message as a user bubble, then queue it server-side. The loop
-  // injects it at the next turn boundary and streams back a `steer` event when it lands.
-  // A steer belongs INSIDE the run, at the moment it was said.
-  //
-  // It used to be appended to the log, which put it after the assistant bubble that was still
-  // growing — so the transcript read "you asked, Collie answered, then you interrupted", with the
-  // interruption below the answer it had already changed. Everything about that order is false.
-  // It goes into the flow instead, in front of the status line, exactly where the tool steps and
-  // text segments of that turn go.
-  //
-  // It is also not delivered yet. The desktop hands it over at the next turn boundary, so it stays
-  // visibly QUEUED until the POST comes back saying it was taken.
-  function steer(q) {
-    var el;
-    if (flowEl) {
-      sealText();                       // close the current text block: this happened after it
-      el = document.createElement("div");
-      el.className = "steer-note pending";
-      el.innerHTML = '<span class="sn-ico">↳</span><span class="sn-tag"></span><span class="sn-text"></span>';
-      el.querySelector(".sn-tag").textContent = t("queued");
-      el.querySelector(".sn-text").textContent = q;
-      flowEl.insertBefore(el, statusEl && statusEl.parentNode === flowEl ? statusEl : null);
-    } else {
-      el = addMsg("user", q, null, true).parentNode;   // no live bubble (rare): fall back to the log
-    }
-    scrollDown(true);                   // your own words always come into view, even scrolled up
-    fetch("/api/steer?token=" + encodeURIComponent(CT), {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session: currentSession, q: q })
-    }).then(function (r) { return r.json(); }).then(function (d) {
-      var tag = el && el.querySelector && el.querySelector(".sn-tag");
-      if (d && d.queued) {
-        if (el.classList) el.classList.remove("pending");
-        if (tag) tag.textContent = t("steering");
-        return;
-      }
-      if (el.classList) { el.classList.remove("pending"); el.classList.add("dropped"); }
-      if (tag) tag.textContent = t("not delivered");
-      addEvent("meta", "flag", t("not delivered"), t("run already finished — send again to start a new turn"));
-    }).catch(function (err) {
-      var tag=el&&el.querySelector&&el.querySelector(".sn-tag");
-      if(el&&el.classList){el.classList.remove("pending");el.classList.add("dropped");}
-      if(tag)tag.textContent=t("not delivered");
-      addEvent("meta","bad",t("not delivered"),t("steering request failed")+" — "+(err&&err.message?err.message:err));
-      addErr(t("Steer not delivered")+" — "+(err&&err.message?err.message:err));
-    });
-  }
-
   function readRunConfig() {
     var explicit = Object.keys(window.runExplicitAxes || {}).filter(function (k) {
       return window.runExplicitAxes[k] && k !== "runner";
@@ -8909,21 +8945,223 @@
     if (window.setRunSetupLocked) window.setRunSetupLocked(routePending || running);
   }
 
-  function queueFollowUp(q, contexts, imgs) {
-    queuedFollowUps.push({ session:currentSession, q:q, contexts:(contexts || []).slice(0,24), imgs:(imgs || []).slice(0,8) });
-    $("input").value = ""; $("input").style.height = "auto"; clearAttached(); clearManualIdeContexts();
-    addEvent("meta", "clock", "follow-up queued", q.length > 140 ? q.slice(0, 140) + "…" : q);
+  // Accepted requests belong to the conversation, including while its tab is closed.
+  var taskQueueState, taskQueueRequests = {}, queueDraftRevision = 0;
+  $("input").addEventListener("input", function () { queueDraftRevision++; });
+  function followUpPlaceholder() {
+    return t((IDE_PREFS.followUpQueueMode || "queue") === "steer" && runCanSteer ?
+      "Steer while the worker runs — Enter to send" : "Follow up while the worker runs — Enter queues");
   }
-  function drainQueuedFollowUp() {
-    if (running || routePending || !queuedFollowUps.length) return;
-    var next = queuedFollowUps[0], input = $("input");
-    if (next.session && currentSession !== next.session) return;
-    queuedFollowUps.shift();
-    input.value = next.q; input.dispatchEvent(new Event("input", {bubbles:true}));
-    attached = (next.imgs || []).slice(0,8); renderAttached();
-    restoreIdeContexts(next.contexts || []);
-    window.setTimeout(function () { if (!running && !routePending) send(); }, 0);
+  function deliveredSteer(data) {
+    if (data.session && data.session !== currentSession) return;
+    if (data.run && currentRun && data.run !== currentRun) return;
+    var state = queueState(), entry = state.entries.filter(function (entry) { return entry.id === data.id; })[0];
+    var text = entry ? entry.text : (data.text || "");
+    if (entry) entry.state = "consumed";
+    if (flowEl && text) {
+      sealText();
+      var note = document.createElement("div"); note.className = "steer-note";
+      note.innerHTML = '<span class="sn-ico">↳</span><span class="sn-tag"></span><span class="sn-text"></span>';
+      note.querySelector(".sn-tag").textContent = t("steering delivered");
+      note.querySelector(".sn-text").textContent = text;
+      flowEl.insertBefore(note, statusEl && statusEl.parentNode === flowEl ? statusEl : null);
+    }
+    addEvent("meta", "flag", t("steering delivered"), text.slice(0,120));
+    renderTaskQueue(); loadTaskQueue();
   }
+  function queueState() {
+    if (!taskQueueState || taskQueueState.session !== currentSession)
+      taskQueueState = {session:currentSession, entries:[], active:false, notice:"", editor:null, loading:false, starting:false};
+    return taskQueueState;
+  }
+  function queuePost(path, body) {
+    return fetch(path + "?token=" + encodeURIComponent(CT), {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (data) {
+        if (!response.ok || data.error) throw new Error(data.error || "HTTP " + response.status);
+        return data;
+      });
+    });
+  }
+  function queueNotice(message, sid) {
+    if (currentSession !== sid) return;
+    queueState().notice = message; renderTaskQueue();
+  }
+  function renderTaskQueue() {
+    var state = queueState(), panel = $("taskQueue"), list = $("taskQueueList");
+    if (!panel || !list) return;
+    var entries = state.entries.filter(function (entry) { return entry.state === "pending" || entry.state === "claimed"; });
+    panel.hidden = !currentSession || (!entries.length && !state.notice);
+    $("taskQueueTitle").textContent = t("Pending requests") + (entries.length ? " · " + entries.length : "");
+    $("taskQueueNotice").hidden = !state.notice;
+    $("taskQueueNotice").textContent = state.notice;
+    var start = $("taskQueueStart");
+    start.hidden = !entries.some(function (entry) { return entry.state === "pending"; });
+    start.disabled = running || state.active || state.starting || entries.some(function (entry) { return entry.state === "claimed"; });
+    start.textContent = t(state.starting ? "Starting…" : "Send next");
+    start.onclick = startQueuedRequest;
+    list.innerHTML = "";
+    entries.forEach(function (entry) {
+      var row = document.createElement("div"); row.className = "task-queue-row"; row.dataset.id = entry.id;
+      var meta = document.createElement("div"); meta.className = "task-queue-meta";
+      meta.textContent = t(entry.mode === "steer" ? "Added instruction" : "Next task") + " · " +
+        t(entry.state === "claimed" ? "Delivering…" : "Waiting");
+      var assets = (entry.metadata || {}).assets || {};
+      if (assets.images || assets.contexts) meta.textContent += " · " + t("Attachments saved");
+      row.appendChild(meta);
+      var editing = state.editor && state.editor.id === entry.id;
+      var content = document.createElement(editing ? "textarea" : "div");
+      if (editing) {
+        content.value = state.editor.text;
+        content.setAttribute("aria-label", t("Edit pending request"));
+        content.oninput = function () { if (state.editor) state.editor.text = content.value; };
+      } else { content.className = "task-queue-text"; content.textContent = entry.text; }
+      row.appendChild(content);
+      if (entry.state === "pending") {
+        var actions = document.createElement("div"); actions.className = "task-queue-actions";
+        function button(label, action) {
+          var button = document.createElement("button"); button.type = "button"; button.textContent = t(label);
+          button.disabled = !!state.mutating; button.onclick = action; actions.appendChild(button);
+        }
+        if (editing) {
+          button("Save", function () { editQueuedRequest(entry.id); });
+          button("Cancel", function () { state.editor = null; renderTaskQueue(); });
+        } else {
+          button("Edit", function () {
+            state.editor = {id:entry.id, text:entry.text, digest:entry.digest}; renderTaskQueue();
+            var editor = list.querySelector("textarea"); if (editor) editor.focus();
+          });
+          button("Remove", function () { removeQueuedRequest(entry.id); });
+        }
+        row.appendChild(actions);
+      }
+      list.appendChild(row);
+    });
+  }
+  function loadTaskQueue() {
+    var state = queueState(), sid = state.session;
+    if (!sid) { renderTaskQueue(); return Promise.resolve(); }
+    if (state.loading) return Promise.resolve();
+    if (!state.loaded) renderTaskQueue();
+    state.loading = true;
+    return fetch("/api/task-inbox?session=" + encodeURIComponent(sid) + "&token=" + encodeURIComponent(CT))
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      }).then(function (data) {
+        if (queueState() !== state) return;
+        if (!Array.isArray(data.entries)) throw new Error(data.error || t("Could not load pending requests"));
+        var changed = JSON.stringify(state.entries) !== JSON.stringify(data.entries) || state.active !== !!data.active;
+        state.loaded = true;
+        if (state.loadError && state.notice === state.loadError) { state.notice = ""; changed = true; }
+        state.loadError = "";
+        state.entries = data.entries; state.active = !!data.active;
+        if (state.active) {
+          state.starting = false;
+          if (state.notice === t("Starting the next request…")) { state.notice = ""; changed = true; }
+        }
+        if (state.editor && !state.entries.some(function (entry) {
+          return entry.id === state.editor.id && entry.state === "pending";
+        })) state.editor = null;
+        if (changed) renderTaskQueue();
+      }).catch(function (error) {
+        if (queueState() === state) {
+          state.loadError = t("Could not load pending requests") + ": " + error.message;
+          queueNotice(state.loadError, sid);
+        }
+      }).then(function () { state.loading = false; });
+  }
+  function mutateQueuedRequest(path, body, clearEditor) {
+    var state = queueState(); state.mutating = true;
+    renderTaskQueue();
+    return queuePost(path, Object.assign({session:state.session}, body)).then(function (data) {
+      if (!data.entry) throw new Error(t("Request update was not confirmed"));
+      if (queueState() === state) {
+        state.entries = state.entries.map(function (entry) { return entry.id === data.entry.id ? data.entry : entry; });
+        if (clearEditor) state.editor = null;
+        state.notice = "";
+      }
+    }).catch(function (error) { queueNotice(error.message, state.session); })
+      .then(function () { state.mutating = false; if (queueState() === state) { renderTaskQueue(); loadTaskQueue(); } });
+  }
+  function editQueuedRequest(id) {
+    var editor = queueState().editor;
+    if (!editor || editor.id !== id || !editor.text.trim()) return;
+    return mutateQueuedRequest("/api/task-inbox/edit", {id:id, text:editor.text, expected_digest:editor.digest}, true);
+  }
+  function removeQueuedRequest(id) {
+    return mutateQueuedRequest("/api/task-inbox/cancel", {id:id}, true);
+  }
+  function startQueuedRequest() {
+    var state = queueState(); if (!state.session || running || state.active || state.starting) return;
+    state.starting = true; state.notice = ""; renderTaskQueue();
+    queuePost("/api/task-inbox/start", {session:state.session}).then(function (data) {
+      if (queueState() !== state) return;
+      if (!data.started) throw new Error(data.reason || t("No pending request was started"));
+      state.notice = t("Starting the next request…");
+      pollRuns(); loadTaskQueue();
+    }).catch(function (error) { queueNotice(error.message, state.session); })
+      .then(function () { state.starting = false; if (queueState() === state) renderTaskQueue(); });
+  }
+  function requestFingerprint(value) {
+    var text = JSON.stringify(value);
+    if (window.crypto && window.crypto.subtle) {
+      return window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (buffer) {
+        return Array.from(new Uint8Array(buffer)).map(function (n) { return n.toString(16).padStart(2,"0"); }).join("");
+      });
+    }
+    // LAN HTTP may not expose WebCrypto. This cache key never authorizes input:
+    // the server independently checks the full payload against its request ID.
+    var a = 2166136261, b = 5381;
+    for (var i=0; i<text.length; i++) { a = Math.imul(a ^ text.charCodeAt(i), 16777619); b = Math.imul(b,33) ^ text.charCodeAt(i); }
+    return Promise.resolve((a>>>0).toString(16) + ":" + (b>>>0).toString(16) + ":" + text.length);
+  }
+  function queueInput(q, contexts, imgs, mode) {
+    var sid = currentSession; if (!sid || !q.trim()) return Promise.resolve();
+    var config = readRunConfig(); if (!validateRunConfig(config)) return Promise.resolve();
+    var originalDraft = $("input").value, originalManual = JSON.stringify(ideManualContexts);
+    var originalRevision = queueDraftRevision;
+    var value = {session:sid, text:q, mode:mode, config:config, contexts:contexts || [], images:imgs || []};
+    queueNotice(t("Saving request…"), sid);
+    return requestFingerprint(value).then(function (fingerprint) {
+      var key = "collie.queue.retry." + sid + "." + fingerprint;
+      var request = taskQueueRequests[key];
+      if (request && request.promise) return request.promise;
+      if (!request) {
+        var id; try { id = sessionStorage.getItem(key); } catch (_) {}
+        id = id || (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : "web-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+        request = {id:id}; taskQueueRequests[key] = request;
+        try { sessionStorage.setItem(key, id); } catch (_) {}
+      }
+      request.promise = Promise.all((imgs || []).map(uploadImg)).then(function (images) {
+        return queuePost("/api/task-inbox", {session:sid, id:request.id, text:q, mode:mode,
+          config:config, contexts:contexts || [], images:images, client:"web"});
+      }).then(function (data) {
+        if (!data.accepted || !data.entry) throw new Error(t("Request save was not confirmed"));
+        try { sessionStorage.removeItem(key); } catch (_) {}
+        delete taskQueueRequests[key];
+        if (currentSession !== sid) return;
+        var state = queueState();
+        state.entries = state.entries.filter(function (entry) { return entry.id !== data.entry.id; }).concat([data.entry]);
+        state.entries.sort(function (a,b) { return a.seq - b.seq; }); state.notice = "";
+        // A slow ACK must never erase words or attachments added in the meantime.
+        if ($("input").value === originalDraft && queueDraftRevision === originalRevision) { $("input").value = ""; $("input").style.height = "auto"; }
+        attached = attached.filter(function (image) { return imgs.indexOf(image) < 0; }); renderAttached();
+        if (JSON.stringify(ideManualContexts) === originalManual) clearManualIdeContexts();
+        addEvent("meta", "clock", t("Request saved"), q.length > 140 ? q.slice(0,140) + "…" : q);
+        renderTaskQueue(); loadTaskQueue();
+      }).catch(function (error) {
+        request.promise = null;
+        queueNotice(t("Request was not confirmed. Your draft is kept; try again.") + " " + error.message, sid);
+      });
+      return request.promise;
+    }).catch(function (error) { queueNotice(error.message, sid); });
+  }
+  function queueFollowUp(q, contexts, imgs) { return queueInput(q, contexts, imgs, "follow_up"); }
+  function steer(q) { return queueInput(q, [], [], "steer"); }
+  setInterval(function () { if (currentSession && document.visibilityState !== "hidden") loadTaskQueue(); }, 2500);
+
 
   function send(followUpOverride) {
     if (routePending) return;
@@ -8948,18 +9186,19 @@
     // Follow-ups default to a separate queued turn so a background worker never has its current
     // instruction silently rewritten. Ctrl/Cmd+Shift+Enter flips Queue/Steer for one send.
     if (running) {
-      if (!q || !currentSession) return;   // nothing to steer, or the run hasn't reported its id yet
+      if (!currentSession) return;
+      if (!q) { if (imgs.length || contexts.length) queueNotice(t("Add a message to queue these attachments."), currentSession); return; }
       var mode = followUpOverride || IDE_PREFS.followUpQueueMode || "queue";
       if (imgs.length || manualContextCount || mode === "queue") {
         queueFollowUp(q, contexts, imgs); return;
       }
       if (!runCanSteer) {
+        if (followUpOverride !== "steer") { queueFollowUp(q, contexts, imgs); return; }
         addEvent("meta", "flag", t("steering unavailable"),
           t("This worker cannot accept instructions until its current turn finishes."));
         input.placeholder = t("This worker cannot be steered — stop it or wait");
         return;
       }
-      input.value = ""; input.style.height = "auto";
       steer(q);
       return;
     }
@@ -9115,7 +9354,7 @@
   // Every interactive request uses one managed stream from launch through its verdict.
   function runStream(q, imgs, runConfig, runSession, userMsgEl, contexts) {
     var input = $("input");
-    contexts = Array.isArray(contexts) ? contexts.slice(0,24) : [];
+    contexts = Array.isArray(contexts) ? contexts.slice() : [];
     addPending();                       // live "thinking" bubble in the conversation
     scrollDown(true);                   // sending always jumps to the latest
 
@@ -9185,10 +9424,8 @@
       currentSession = d.session;
       currentRun = d.run || null;
       runCanSteer = !!((d.worker_capabilities || {}).steer);
-      input.placeholder = t((IDE_PREFS.followUpQueueMode || "queue") === "queue" ?
-        "Follow up while the worker runs — Enter queues" : (runCanSteer ?
-        "Steer while the worker runs — Enter to send" :
-        "Follow up while the worker runs — Enter queues"));
+      input.placeholder = followUpPlaceholder();
+      loadTaskQueue();
       // Exact baseline for interrupt recovery: user-turns in the thread BEFORE this run. Once this
       // run's answer is saved the file holds one more user turn than this, which is how recovery
       // tells "the answer landed" from "the file is just stale mid-run".
@@ -9204,7 +9441,7 @@
     es.addEventListener("steer", function (e) {
       // the loop picked up a queued steer and injected it as a user turn — confirm delivery
       var d = JSON.parse(e.data);
-      addEvent("meta", "flag", t("steering delivered"), (d.text || "").slice(0, 120));
+      deliveredSteer(d);
     });
 
     es.addEventListener("runner", function (e) {
@@ -9553,7 +9790,7 @@
       showTerminalRunState(d);
       if (!d.error && !d.canceled) loadHandoffArtifact(d.session, intent);
       loadSessions();
-      if (stopReason(d) === "completed") window.setTimeout(drainQueuedFollowUp, 0);
+      window.setTimeout(loadTaskQueue, 0);
     });
 
     es.onerror = function () {

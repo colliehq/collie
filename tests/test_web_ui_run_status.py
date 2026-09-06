@@ -218,6 +218,16 @@ RUNS = [{"session": "s-cap", "run": "r3", "state": "done", "stop_reason": "turn_
 class _Fixture(BaseHTTPRequestHandler):
     stream_requests = []                 # every /api/stream the page opened, in order
     route_requests = []
+    queue_entries = {}
+    queue_posts = []
+    queue_starts = []
+    uploads = []
+    queue_release = threading.Event()
+    queue_ack = threading.Event()
+    queue_seen = threading.Event()
+    queue_deliver = threading.Event()
+    queue_fail_once = False
+    queue_active = False
     lang = "en"                          # what /api/settings reports, so t() can be exercised
 
     def log_message(self, *_a):
@@ -253,10 +263,37 @@ class _Fixture(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(length)
+        raw = self.rfile.read(length)
+        body = json.loads(raw or b"{}")
         if path == "/api/route":
             _Fixture.route_requests.append(path)
             return self._json({"kind": "chat"})
+        if path == "/api/upload":
+            _Fixture.uploads.append(body)
+            return self._json({"id": "upload-%d" % len(_Fixture.uploads)})
+        if path == "/api/task-inbox":
+            _Fixture.queue_posts.append(body)
+            key = body["id"]
+            entry = _Fixture.queue_entries.setdefault(key, dict(body, seq=len(_Fixture.queue_entries)+1,
+                state="pending", digest="v1", metadata={}))
+            _Fixture.queue_seen.set()
+            _Fixture.queue_ack.wait(15)
+            if _Fixture.queue_fail_once:
+                _Fixture.queue_fail_once = False
+                return self._json({"error": "temporary response failure"}, 503)
+            return self._json({"accepted": True, "entry": entry, "session": body["session"]})
+        if path in ("/api/task-inbox/edit", "/api/task-inbox/cancel"):
+            entry = _Fixture.queue_entries[body["id"]]
+            if path.endswith("edit"):
+                if body["expected_digest"] != entry["digest"]:
+                    return self._json({"error": "request changed elsewhere"}, 409)
+                entry.update(text=body["text"], digest="v2")
+            else:
+                entry["state"] = "canceled"
+            return self._json({"entry": entry})
+        if path == "/api/task-inbox/start":
+            _Fixture.queue_starts.append(body)
+            return self._json({"started": True, "session": body["session"]})
         return self._json({})
 
     def do_GET(self):
@@ -284,6 +321,10 @@ class _Fixture(BaseHTTPRequestHandler):
             return self._json(TRANSCRIPTS.get(path.rsplit("/", 1)[-1], {"messages": []}))
         if path == "/api/runs":
             return self._json({"runs": RUNS})
+        if path == "/api/task-inbox":
+            sid = (query.get("session") or [""])[0]
+            return self._json({"session": sid, "entries": [entry for entry in _Fixture.queue_entries.values()
+                              if entry["session"] == sid], "active": _Fixture.queue_active})
         if path == "/api/stream":
             return self._stream(query)
         if path.startswith("/api/"):
@@ -299,6 +340,23 @@ class _Fixture(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
+            if text == "Hold queue fixture":
+                _Fixture.queue_active = True
+                self._sse("start", {"session": "s-read", "run": "queue-run", "model": "mock",
+                                    "prior_turns": 0, "worker_capabilities": {"steer": True}})
+                deadline = time.monotonic() + 20
+                while not _Fixture.queue_release.wait(.02) and time.monotonic() < deadline:
+                    if _Fixture.queue_deliver.is_set():
+                        _Fixture.queue_deliver.clear()
+                        for entry in list(_Fixture.queue_entries.values()):
+                            if entry["mode"] == "steer" and entry["state"] == "pending":
+                                entry["state"] = "consumed"
+                                self._sse("steer", {"session": "s-read", "id": entry["id"],
+                                                    "text": entry["text"], "state": "consumed"})
+                _Fixture.queue_active = False
+                self._sse("done", dict(DONE_BASE, session="s-read", run="queue-run", answer="Partial work",
+                    canceled=True, error="", stop_reason="canceled", completed=False))
+                return
             for kind, payload in _script(text):
                 if kind == "done":
                     time.sleep(0.25)     # a beat of real "running", so live state is observable
@@ -365,6 +423,12 @@ class Page:
 def ui(server, browser):
     _Fixture.stream_requests = []
     _Fixture.route_requests = []
+    _Fixture.queue_entries = {}; _Fixture.queue_posts = []; _Fixture.queue_starts = []
+    _Fixture.uploads = []
+    _Fixture.queue_release = threading.Event(); _Fixture.queue_ack = threading.Event()
+    _Fixture.queue_ack.set(); _Fixture.queue_seen = threading.Event()
+    _Fixture.queue_deliver = threading.Event()
+    _Fixture.queue_fail_once = False; _Fixture.queue_active = False
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors = []
@@ -374,6 +438,7 @@ def ui(server, browser):
     page.wait_for_timeout(400)          # identity + model probes settle; onboarding must stay shut
     assert not page.is_visible("#obOverlay.open"), "fixture should look configured"
     yield Page(page, errors)
+    _Fixture.queue_release.set(); _Fixture.queue_ack.set()
     assert errors == [], "JS errors: %r" % errors
     context.close()
 
@@ -777,3 +842,131 @@ def test_stop_does_not_automatically_launch_a_queued_follow_up(ui):
     ui.page.press("#input", "Enter")
     ui.page.wait_for_timeout(900)
     assert len(_Fixture.stream_requests) == 1
+
+
+def _hold_queue(ui):
+    ui.page.fill("#input", "Hold queue fixture")
+    ui.page.press("#input", "Enter")
+    ui.page.wait_for_function("() => document.getElementById('send').classList.contains('stop') && "
+                              "!document.getElementById('input').disabled")
+    ui.page.wait_for_timeout(100)
+
+
+def test_accepted_long_input_survives_reload_and_can_be_edited_or_removed(ui):
+    _hold_queue(ui)
+    request = "保留完整要求：" + "需要检查边界。" * 900 + "最后一项：不要丢掉这句话。"
+    ui.page.fill("#input", request)
+    ui.page.press("#input", "Enter")
+    ui.page.wait_for_function("() => document.getElementById('input').value === ''")
+    row = ui.page.locator(".task-queue-row")
+    assert row.count() == 1
+    assert row.locator(".task-queue-text").text_content() == request
+    assert _Fixture.queue_posts[0]["text"] == request
+    _Fixture.queue_release.set()
+    ui.page.wait_for_function("() => !document.getElementById('send').classList.contains('stop')")
+    ui.page.reload(wait_until="load")
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.locator(".task-queue-row").wait_for()
+    assert ui.page.locator(".task-queue-text").text_content() == request
+    ui.page.locator("#taskQueue").get_by_role("button", name="Edit", exact=True).click()
+    ui.page.get_by_label("Edit pending request").fill("修改后的完整要求")
+    ui.page.locator("#taskQueue").get_by_role("button", name="Save", exact=True).click()
+    ui.page.wait_for_function("() => document.querySelector('.task-queue-text')?.textContent === '修改后的完整要求'")
+    assert next(iter(_Fixture.queue_entries.values()))["text"] == "修改后的完整要求"
+    ui.page.locator("#taskQueue").get_by_role("button", name="Remove", exact=True).click()
+    ui.page.wait_for_function("() => document.getElementById('taskQueue').hidden")
+    assert next(iter(_Fixture.queue_entries.values()))["state"] == "canceled"
+    assert len(_Fixture.stream_requests) == 1 and not _Fixture.queue_starts
+
+
+def test_slow_acceptance_keeps_draft_and_cannot_erase_newer_typing(ui):
+    _hold_queue(ui); _Fixture.queue_ack.clear()
+    ui.page.fill("#input", "The first queued instruction")
+    ui.page.press("#input", "Enter")
+    assert _Fixture.queue_seen.wait(3)
+    assert ui.page.input_value("#input") == "The first queued instruction"
+    ui.page.fill("#input", "New words typed while saving")
+    _Fixture.queue_ack.set()
+    ui.page.locator(".task-queue-row").wait_for()
+    assert ui.page.input_value("#input") == "New words typed while saving"
+    assert len(_Fixture.queue_posts) == 1
+
+
+def test_ambiguous_acceptance_retries_same_id_and_keeps_the_draft(ui):
+    _hold_queue(ui); _Fixture.queue_fail_once = True
+    ui.page.fill("#input", "Keep this queued instruction")
+    ui.page.press("#input", "Enter")
+    ui.page.wait_for_function("() => document.getElementById('taskQueueNotice').textContent.includes('draft is kept')")
+    assert ui.page.input_value("#input") == "Keep this queued instruction"
+    ui.page.press("#input", "Enter")
+    ui.page.wait_for_function("() => document.getElementById('input').value === ''")
+    assert len(_Fixture.queue_posts) == 2
+    assert _Fixture.queue_posts[0]["id"] == _Fixture.queue_posts[1]["id"]
+    assert len(_Fixture.queue_entries) == 1
+
+
+def test_follow_up_stays_pending_after_stop_until_send_next(ui):
+    _hold_queue(ui)
+    ui.page.fill("#input", "Run the next task only when requested")
+    ui.page.press("#input", "Enter")
+    ui.page.locator(".task-queue-row").wait_for()
+    _Fixture.queue_release.set()
+    ui.page.wait_for_function("() => !document.getElementById('send').classList.contains('stop')")
+    ui.page.locator("#taskQueueStart").click(timeout=5000)
+    assert len(_Fixture.queue_starts) == 1
+    assert _Fixture.queue_starts[0]["session"] == "s-read"
+    assert len(_Fixture.stream_requests) == 1, "the client never starts a second SSE executor"
+
+
+def test_accepting_attachments_clears_only_the_images_actually_submitted(ui):
+    import base64
+
+    _hold_queue(ui); _Fixture.queue_ack.clear()
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==")
+    ui.page.locator("#fileInput").set_input_files({"name": "first.png", "mimeType": "image/png", "buffer": png})
+    ui.page.locator("#attachStrip .thumb").wait_for()
+    ui.page.fill("#input", "Inspect this queued image")
+    ui.page.press("#input", "Enter")
+    assert _Fixture.queue_seen.wait(3)
+    assert ui.page.locator("#attachStrip .thumb").count() == 1
+    ui.page.locator("#fileInput").set_input_files({"name": "second.png", "mimeType": "image/png", "buffer": png})
+    ui.page.wait_for_function("() => document.querySelectorAll('#attachStrip .thumb').length === 2")
+    _Fixture.queue_ack.set()
+    ui.page.wait_for_function("() => document.querySelectorAll('#attachStrip .thumb').length === 1")
+    assert _Fixture.queue_posts[0]["images"] == ["upload-1"]
+    assert len(_Fixture.uploads) == 1
+
+
+def test_reopened_canceled_multimodal_thread_preserves_its_request_and_status(ui, monkeypatch):
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [
+            {"role": "user", "source": "user", "content": [
+                {"type": "text", "text": "Inspect the attached diagram"},
+                {"type": "image", "media_type": "image/png", "data": "aW1hZ2U="}]},
+            {"role": "assistant", "content": "I inspected the labels.\n\n_[stopped by user]_"},
+        ],
+        "run_receipts": [{"run": "canceled", "canceled": True, "stop_reason": "canceled",
+                          "completed": False, "edited": False, "error": ""}],
+    })
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_selector(".interruption-note")
+    assert "Inspect the attached diagram" in ui.log_text()
+    assert "I inspected the labels." in ui.log_text()
+    assert "_[stopped by user]_" not in ui.log_text()
+    assert ui.page.locator('#log .msg.user img[src^="data:image/png"]').count() == 1
+    assert ui.page.locator(".interruption-note").count() == 1
+
+
+def test_steering_is_only_labeled_delivered_after_the_model_boundary(ui):
+    _hold_queue(ui)
+    ui.page.fill("#input", "Keep the exact steering instruction")
+    ui.page.press("#input", "Control+Shift+Enter")
+    ui.page.locator(".task-queue-row").wait_for()
+    assert _Fixture.queue_posts[0]["mode"] == "steer"
+    assert "Waiting" in ui.page.locator("#taskQueue").inner_text()
+    assert ui.page.locator(".steer-note").count() == 0
+    _Fixture.queue_deliver.set()
+    ui.page.locator(".steer-note").wait_for()
+    assert "Keep the exact steering instruction" in ui.page.locator(".steer-note").inner_text()
+    assert "steering delivered" in ui.page.locator(".steer-note").inner_text().lower()
+    assert ui.page.locator(".task-queue-row").count() == 0
