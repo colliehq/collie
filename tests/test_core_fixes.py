@@ -424,8 +424,9 @@ def test_loop_passing_until_does_not_promote_a_failed_run(monkeypatch, tmp_path)
     args = types.SimpleNamespace(cwd=str(tmp_path), provider="mock", model=None, project="p",
                                  goal=None, task="work", max=1, until="passes")
 
-    assert cli.cmd_loop(args) == 0
-    assert settlements and settlements[0][0] is False
+    assert cli.cmd_loop(args) == 1
+    assert not settlements, "an errored run must not start its goal command"
+    assert result.verification_evidence["executed"] is False
     assert result.verified is False
 
 

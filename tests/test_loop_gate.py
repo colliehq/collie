@@ -256,7 +256,7 @@ def test_durable_tool_does_not_run_when_pre_action_checkpoint_fails(tmp_path):
     ran = []
     h = _h(tmp_path, gate=None)
     h.durable_session_id = "durable-session"
-    h._session_checkpoint = lambda *args, **kwargs: False
+    h._session_checkpoint = lambda messages, rid, turn, state, *a, **kw: state != "executing_tool"
     h.provider = _ScriptProvider(_calls(("write_file", {
         "path": "should-not-exist.txt", "content": "unsafe",
     })))

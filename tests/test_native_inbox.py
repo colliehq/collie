@@ -1509,6 +1509,57 @@ def _stub_routing(monkeypatch):
     monkeypatch.setattr(cli, "turn_decision_receipt", lambda *a, **k: {"ok": True})
 
 
+@pytest.mark.parametrize("surface", ["repl", "tui"])
+def test_terminal_can_inspect_and_continue_pending_input_with_its_context(
+        store, tmp_path, monkeypatch, capsys, surface):
+    sid = "terminal-pending-" + surface
+    sessions.save(sid, [{"role": "user", "content": "earlier task"},
+                        {"role": "assistant", "content": "stopped"}], cwd=str(tmp_path))
+    ref = input_assets.save(sid, contexts=[{"path":"notes.txt", "content":"CONTEXT_6789"}])
+    text = "保留完整请求\n" + "details " * 60 + "最后一句不要丢。"
+    task_inbox.enqueue(sid, "pending-first", text, mode="steer", metadata={"assets":ref})
+    h = _harness(tmp_path, sid=sid)
+    seen = []
+    h.provider = _recording_provider(seen)
+    _stub_routing(monkeypatch)
+    assert _drive_surface(monkeypatch, tmp_path, surface, h,
+                          ["/queue", "/queue show pending-first", "/next", "/next", "/exit"],
+                          resume=sid) == 0
+    output = capsys.readouterr().out
+    assert text in output
+    assert "No pending request to send" in output
+    assert len(seen) == 1, "the second /next must not execute the same request again"
+    assert "CONTEXT_6789" in "\n".join(_seen_contents(seen))
+    messages = sessions.load(sid)["messages"]
+    assert sum(m.get("inbox_id") == "pending-first" for m in messages) == 1
+    assert task_inbox.get(sid, "pending-first")["state"] == "consumed"
+
+
+def test_terminal_does_not_silently_drop_required_check_settings(
+        store, tmp_path, monkeypatch, capsys):
+    sid = "terminal-required"
+    sessions.save(sid, [{"role":"user","content":"initial"}], cwd=str(tmp_path))
+    task_inbox.enqueue(sid, "needs-check", "implement", mode="follow_up",
+                       config={"verification":"required", "verify_command":"python check.py"})
+    h = _harness(tmp_path,sid=sid); seen=[]; h.provider=_recording_provider(seen)
+    _stub_routing(monkeypatch)
+    assert _drive_surface(monkeypatch,tmp_path,"repl",h,["/next","/queue","/exit"],resume=sid)==0
+    assert "required host check" in capsys.readouterr().out
+    assert not seen
+    assert task_inbox.get(sid,"needs-check")["state"]=="pending"
+    assert task_inbox.get(sid,"needs-check")["attempts"]==0
+
+
+def test_terminal_queue_remove_cancels_only_the_named_pending_request(store):
+    from harness import terminal_queue
+    task_inbox.enqueue("terminal-remove","keep","keep this")
+    task_inbox.enqueue("terminal-remove","remove","remove this")
+    output=[]
+    assert terminal_queue.handle_command("/queue remove remove","terminal-remove",output.append)
+    assert task_inbox.get("terminal-remove","remove")["state"]=="canceled"
+    assert task_inbox.get("terminal-remove","keep")["state"]=="pending"
+
+
 def _drive_surface(monkeypatch, tmp_path, surface, harness, lines, *,
                    at_prompt=None, resume=None):
     """Run one interactive surface over a scripted set of typed lines."""

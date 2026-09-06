@@ -247,6 +247,9 @@ class RichTUI:
             ("/model [name]", "list models / switch (e.g. /model terra)"),
             ("/resume <id>", "load a previous session by id"),
             ("/sessions", "list recent sessions"),
+            ("/queue", "list waiting requests; /queue show <id> shows the full text"),
+            ("/queue remove <id>", "remove an unstarted request"),
+            ("/next", "send the earliest pending request"),
             ("/help", "show this"),
         ]:
             t.add_row(cmd, desc)
@@ -362,7 +365,7 @@ class RichTUI:
         return Panel(body, title=title, title_align="left",
                      border_style="cyan" if running else "green", padding=(1, 2))
 
-    def run_turn(self, h, task_id, line, history):
+    def run_turn(self, h, task_id, line, history, *, authority_msg=None):
         """Run one agent turn with a Live panel wired to h.emit. Returns RunResult."""
         st = _RunState()
         if isinstance(getattr(h, "run_decision", None), dict):
@@ -381,7 +384,8 @@ class RichTUI:
                     except Exception:
                         pass
                 h.emit = emit
-                res = h.run(task_id, line, consolidate=True, history=history)
+                kwargs = {"authority_msg": authority_msg} if authority_msg is not None else {}
+                res = h.run(task_id, line, consolidate=True, history=history, **kwargs)
                 result["res"] = res
                 live.update(self._panel(st, False))
         finally:
@@ -453,7 +457,7 @@ class PlainTUI:
         self._p("/exit quit · /new fresh thread · /resume <id> · /sessions · /help")
 
     def help(self):
-        self._p("commands: /exit /quit  /new  /model [name]  /resume <id>  /sessions  /help")
+        self._p("commands: /exit /quit  /new  /model [name]  /resume <id>  /sessions  /queue  /next  /help")
 
     def sessions(self, rows):
         if not rows:
@@ -462,7 +466,7 @@ class PlainTUI:
         for r in rows:
             self._p("  %s  turns=%d  %s" % (r["id"], r["turns"], r.get("last", "")))
 
-    def run_turn(self, h, task_id, line, history):
+    def run_turn(self, h, task_id, line, history, *, authority_msg=None):
         prev_emit = h.emit
 
         def emit(kind, d):
@@ -495,7 +499,8 @@ class PlainTUI:
         try:
             if isinstance(getattr(h, "run_decision", None), dict):
                 emit("decision", h.run_decision)
-            res = h.run(task_id, line, consolidate=True, history=history)
+            kwargs = {"authority_msg": authority_msg} if authority_msg is not None else {}
+            res = h.run(task_id, line, consolidate=True, history=history, **kwargs)
         finally:
             h.emit = prev_emit
         self._p("\n" + (res.answer or res.error or "(no output)"))
@@ -547,7 +552,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
     from .cli import (apply_turn_decision, make_harness, owned_turn_state,
                       recovery_notice, resolve_turn_decision, turn_decision_receipt)
-    from . import run_ownership
+    from . import run_ownership, terminal_queue
     from . import sessions as sess
 
     have_rich = _HAVE_RICH
@@ -615,7 +620,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
     fenced = ""                    # set while an uninspected effect blocks the next turn
 
     def say(text, style="dim"):
-        console.print("[%s]%s[/%s]" % (style, text, style)) if have_rich else print(text)
+        console.print(text, style=style, markup=False) if have_rich else print(text)
 
     try:
         while True:
@@ -636,6 +641,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 ui.sessions(sess.recent(10)); continue
             if line == "/new":
                 history, receipts, sid, fenced = [], [], sess.new_id(), ""
+                saved = False
                 h.checkpoint_scope = "session:" + sid
                 if have_rich:
                     console.print("[dim]new session[/dim] [yellow]%s[/yellow]" % sid)
@@ -724,6 +730,8 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
                 continue
 
+            if terminal_queue.handle_command(line, sid, say):
+                continue
             if fenced:
                 # An uninspected effect is not something the next prompt can route
                 # around: refuse the turn and say exactly how to close the boundary.
@@ -736,7 +744,8 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
             # long as the window is open. Ownership is per turn; durable input is
             # what waits.
             try:
-                with run_ownership.hold(sid, label="tui") as lease:
+                with run_ownership.hold(sid, label="tui") as lease, terminal_queue.claimed_next(
+                        sid, lease, requested=line == "/next") as queued:
                     # The thread may have grown, been fenced or moved while this
                     # prompt was waiting — possibly because another surface ran
                     # this very session. Execution authority derives from what is
@@ -751,9 +760,13 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     if state["receipts"]:
                         receipts = state["receipts"]
                     try:
-                        decision = resolve_turn_decision(
-                            line, provider, configured_model=model,
-                            history=history, receipts=receipts)
+                        if queued:
+                            line = queued["text"]
+                            decision = terminal_queue.decision(queued, provider, model, history, receipts)
+                        else:
+                            decision = resolve_turn_decision(
+                                line, provider, configured_model=model,
+                                history=history, receipts=receipts)
                         apply_turn_decision(h, decision, _gate)
                     except Exception as ex:
                         msg = ("collie could not route this turn: %s: %s"
@@ -761,6 +774,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                         console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
                         continue
                     h.run_owner = lease
+                    h.input_entry = queued
                     try:
                         if feed is not None and feed.tty:
                             # The approval prompt reads through the SAME pump, or it would
@@ -780,7 +794,11 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                         else:
                             steer_ctx = contextlib.nullcontext()
                         with steer_ctx:
-                            res = ui.run_turn(h, "tui", line, history)
+                            if queued:
+                                content = run_ownership.entry_content(sid, queued)
+                                res = ui.run_turn(h, "tui", content, history, authority_msg=line)
+                            else:
+                                res = ui.run_turn(h, "tui", line, history)
                     except KeyboardInterrupt:
                         # Ctrl-C DURING a turn aborts just this turn, not the whole
                         # session. run() converts an interrupt it sees into a canceled
@@ -801,6 +819,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                         continue
                     finally:
                         h.run_owner = None
+                        h.input_entry = None
                         h.steering = None       # steering only during a run
                         h.approve = None        # and nobody is at the prompt between turns
                     history = res.messages
@@ -831,10 +850,15 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     saved = True
                     # The transcript save keeps an uncertain fence on purpose; re-read it
                     # so the next turn cannot continue over an effect nobody inspected.
+                    waiting = terminal_queue.notice(sid)
+                    if waiting:
+                        say(waiting)
                     after = sess.recovery_state(sid)
                     if after and after.get("recovery_required"):
                         fenced = recovery_notice(sid, after)
                         say(fenced, "yellow")
+            except terminal_queue.QueueError as exc:
+                say(str(exc), "yellow")
             except run_ownership.OwnershipRefused as exc:
                 # Somebody else is executing this conversation right now. Typing at
                 # it is still useful — the text goes to the durable inbox that run
