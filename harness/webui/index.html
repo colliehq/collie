@@ -1279,6 +1279,18 @@
   .pack-summary code { font-family: var(--mono); font-size: 12px; }
   .pack-summary.fail { background: var(--coral-bg); border-color: color-mix(in srgb,var(--coral) 34%,transparent); }
   .pack-summary.warn { background: color-mix(in srgb,var(--amber) 12%,var(--surface-2)); border-color: color-mix(in srgb,var(--amber) 34%,transparent); }
+  .pack-saved { background:var(--surface); border-color:var(--line); }
+  .pack-saved[data-state="conflict"] { background:color-mix(in srgb,var(--amber) 10%,var(--surface)); }
+  .pack-saved[data-state="applied"] { background:var(--accent-soft); }
+  .pack-saved > [role="status"] { margin:5px 0 10px; }
+  .pack-saved details { margin:8px 0; }
+  .pack-saved summary { cursor:pointer; padding:4px 0; }
+  .pack-saved > button { margin:8px 6px 0 0; padding:7px 12px; border:1px solid var(--line);
+    border-radius:8px; background:var(--surface); color:var(--ink); font:inherit; cursor:pointer; }
+  .pack-saved > button.pk-apply { background:var(--pine); border-color:var(--pine); color:var(--on-accent); }
+  .pack-saved > button:disabled { opacity:.55; cursor:wait; }
+  .attached-context { margin:8px 0; font-size:13px; color:var(--muted); }
+  .attached-context summary { cursor:pointer; }
   /* A run stopped by a cap is not a failure and not a finished answer. It keeps the text it did
      produce, names the cap in plain words, and offers the one safe next move where there is one. */
   .stop-note { display: grid; gap: 7px; }
@@ -1356,6 +1368,11 @@
                     letter-spacing: .04em; }
   .msummary-value { min-width: 0; overflow-wrap: anywhere; }
   .msummary-row.blocked .msummary-value { color: #d99532; }
+  .mission-delivery { margin: 16px 0; padding: 15px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--surface-2); }
+  .mission-delivery > h3 { margin: 0 0 12px; font-size: 14px; color: var(--ink); }
+  .mission-delivery .bubble { max-width: none; padding: 0; overflow-wrap: anywhere; }
+  .mission-delivery > .mbtn { margin-top: 12px; }
   .mactivity { display: grid; gap: 6px; padding: 2px 1px; }
   .mactivity-title { color: var(--faint); font-size: 11px; text-transform: uppercase;
                      letter-spacing: .04em; }
@@ -3209,6 +3226,17 @@
     "Best for": "适合", "Not for": "不适合",
     "bug fixes and tasks with a clear pass/fail check — it runs N isolated attempts and keeps the one that actually passes, so reliability beats a single try.": "有明确通过/失败检查的修复与任务。它会运行 N 个隔离尝试，并保留真正通过检查的结果，因此比单次尝试更可靠。",
     "building large or new files: it is N× the cost, and nothing is written unless you choose apply winner (otherwise it is preview-only). For a large feature, use Single run and let it write incrementally.": "构建大型或全新文件。它的成本约为 N 倍；除非选择“应用胜出结果”，否则只预览、不写入。大型功能请使用“单次运行”，让 Collie 逐步写入。",
+    "Attached context": "附加上下文",
+    "Latest coding report": "最近的编码报告", "Read full coding report": "查看完整编码报告",
+    "Saved Pack changes": "已保存的 Pack 修改", "Review saved changes": "查看已保存的修改",
+    "Apply saved changes": "应用已保存的修改", "Refresh review": "刷新预览",
+    "Winning changes need attention": "胜出修改需要处理",
+    "Saved for review. Applying does not run the model again.": "修改已保存，可随时查看。应用时不会重新调用模型。",
+    "Ready to apply the saved changes.": "已检查，可以应用保存的修改。",
+    "The saved changes are already present.": "保存的修改已在工作目录中。",
+    "Preview shortened. Applying uses the complete saved files.": "预览已缩短；应用时会使用完整的已保存文件。",
+    "Applying saved changes…": "正在应用保存的修改…",
+    "Wait for the current run to finish.": "请等待当前任务结束。",
     "Verification gate": "验证门禁", "Awaiting a task": "等待任务",
     "Auto asks for a relevant check after edits; Required makes that check a finish gate.": "编辑后，“自动”会在适用时要求检查；“必须”会把该检查作为完成门禁。",
     "Auto asks for a relevant check after edits; Verification · Required blocks completion until an executed assertion is green.": "编辑后，“自动”会在适用时要求检查；“验证 · 必须”会阻止任务完成，直到实际执行的断言通过。",
@@ -3517,6 +3545,17 @@
     "Best for": "適合", "Not for": "不適合",
     "bug fixes and tasks with a clear pass/fail check — it runs N isolated attempts and keeps the one that actually passes, so reliability beats a single try.": "有明確通過/失敗檢查的修復與任務。它會執行 N 個隔離嘗試，並保留真正通過檢查的結果，因此比單次嘗試更可靠。",
     "building large or new files: it is N× the cost, and nothing is written unless you choose apply winner (otherwise it is preview-only). For a large feature, use Single run and let it write incrementally.": "構建大型或全新檔案。它的成本約為 N 倍；除非選擇「套用勝出結果」，否則只預覽、不寫入。大型功能請使用「單次執行」，讓 Collie 逐步寫入。",
+    "Attached context": "附加上下文",
+    "Latest coding report": "最近的編碼報告", "Read full coding report": "查看完整編碼報告",
+    "Saved Pack changes": "已儲存的 Pack 修改", "Review saved changes": "查看已儲存的修改",
+    "Apply saved changes": "套用已儲存的修改", "Refresh review": "重新整理預覽",
+    "Winning changes need attention": "勝出修改需要處理",
+    "Saved for review. Applying does not run the model again.": "修改已儲存，可隨時查看。套用時不會重新呼叫模型。",
+    "Ready to apply the saved changes.": "已檢查，可以套用儲存的修改。",
+    "The saved changes are already present.": "儲存的修改已在工作目錄中。",
+    "Preview shortened. Applying uses the complete saved files.": "預覽已縮短；套用時會使用完整的已儲存檔案。",
+    "Applying saved changes…": "正在套用儲存的修改…",
+    "Wait for the current run to finish.": "請等待目前任務結束。",
     "Verification gate": "驗證閘門", "Awaiting a task": "等待任務",
     "Auto asks for a relevant check after edits; Required makes that check a finish gate.": "編輯後，「自動」會在適用時要求檢查；「必須」會把該檢查作為完成閘門。",
     "Auto asks for a relevant check after edits; Verification · Required blocks completion until an executed assertion is green.": "編輯後，「自動」會在適用時要求檢查；「驗證 · 必須」會阻止任務完成，直到實際執行的斷言通過。",
@@ -4319,6 +4358,7 @@
       setGate(gate.getAttribute("data-state") || "idle");
     }
     if (typeof renderCollieIdentity === "function") renderCollieIdentity();
+    if (typeof SURFACE_TITLES !== "undefined") applyPageTitle(document.body.getAttribute("data-surface"));
     if (window.refreshRunSetup) window.refreshRunSetup();
   }
   // boot: pick the language up from saved settings once, then patch the chrome
@@ -7250,6 +7290,32 @@
     }
     summaryRow("Blocked by", summary.blocker, "blocked");
     b.appendChild(sb);
+    var codeDelivery = (st.case || {}).code_delivery || {};
+    if (codeDelivery.answer) {
+      var deliveryBox = document.createElement("section"); deliveryBox.className = "mission-delivery";
+      var deliveryTitle = document.createElement("h3"); deliveryTitle.textContent = t("Latest coding report");
+      deliveryBox.appendChild(deliveryTitle);
+      var deliveryText = document.createElement("div"); deliveryText.className = "bubble";
+      renderMd(deliveryText, codeDelivery.answer); deliveryBox.appendChild(deliveryText);
+      var fullReport = document.createElement("button"); fullReport.type = "button"; fullReport.className = "mbtn";
+      fullReport.textContent = t("Read full coding report"); deliveryBox.appendChild(fullReport);
+      var deliveryNotice = document.createElement("div"); deliveryNotice.className = "mnote";
+      deliveryNotice.setAttribute("role", "status"); deliveryBox.appendChild(deliveryNotice);
+      fullReport.onclick = function () {
+        fullReport.disabled = true;
+        fetch("/api/mission/delivery?id=" + encodeURIComponent(st.mission_id) + "&token=" + encodeURIComponent(CT))
+          .then(function (response) { return response.json().then(function (data) {
+            if (!response.ok || data.error) throw new Error(data.error || "HTTP " + response.status); return data;
+          }); }).then(function (data) {
+            renderMd(deliveryText, data.answer || "");
+            addCopy(deliveryText, data.answer || "");
+            deliveryNotice.textContent = data.notice || "";
+            if (data.complete) fullReport.hidden = true;
+          }).catch(function (error) { deliveryNotice.textContent = error.message || String(error); })
+          .finally(function () { fullReport.disabled = false; });
+      };
+      b.appendChild(deliveryBox);
+    }
     if (st.report && !st.report.error) {
       var report = st.report, reportCoverage = report.coverage || {}, reportReceipts = report.receipts || {};
       var reportBox = document.createElement("details"); reportBox.className = "mreport";
@@ -8138,6 +8204,70 @@
       history.replaceState(null, "", address.href);
     } catch (_) {}
   }
+
+  function renderPackArtifact(receipt, host, sid) {
+    var artifact = receipt.artifact || {}, ident = artifact.id;
+    if (!ident && !receipt.artifact_error) return;
+    var card = document.createElement("div"); card.className = "pack-summary pack-saved";
+    card.setAttribute("data-pack-artifact", ident || "unsaved");
+    var title = document.createElement("b"); title.textContent = t("Saved Pack changes"); card.appendChild(title);
+    var status = document.createElement("div"); status.setAttribute("role", "status"); card.appendChild(status);
+    var details = document.createElement("div"); card.appendChild(details);
+    var review = document.createElement("button"); review.type = "button";
+    review.textContent = t("Review saved changes"); card.appendChild(review);
+    var apply = document.createElement("button"); apply.type = "button";
+    apply.className = "pk-apply";
+    apply.textContent = t("Apply saved changes"); apply.hidden = true; card.appendChild(apply);
+    if (!ident) {
+      title.textContent = t("Winning changes need attention");
+      status.textContent = receipt.artifact_error + (receipt.retained_attempt_dir ? " · " + receipt.retained_attempt_dir : "");
+      review.hidden = true; host.appendChild(card); return;
+    }
+    status.textContent = t("Saved for review. Applying does not run the model again.");
+    function display(data) {
+      var check = data.check || {};
+      card.dataset.state = !check.ok ? "conflict" : (check.changed && check.changed.length ? "ready" : "applied");
+      details.textContent = "";
+      status.textContent = check.ok ? (check.changed && check.changed.length ?
+        t("Ready to apply the saved changes.") : t("The saved changes are already present.")) : (check.error || t("failed to load"));
+      (check.conflicts || []).forEach(function (row) {
+        var note = document.createElement("div"); note.textContent = row.path + ": " + row.reason; details.appendChild(note);
+      });
+      (data.files || []).forEach(function (file) {
+        var item = document.createElement("details"), summary = document.createElement("summary");
+        summary.textContent = file.action + " · " + file.path; item.appendChild(summary);
+        var pre = document.createElement("pre"); pre.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto";
+        pre.textContent = file.diff || file.note; item.appendChild(pre); details.appendChild(item);
+      });
+      if (data.preview_truncated) {
+        var shortened = document.createElement("p"); shortened.textContent = t("Preview shortened. Applying uses the complete saved files."); details.appendChild(shortened);
+      }
+      apply.hidden = !check.ok || !(check.changed || []).length;
+      review.textContent = t("Refresh review");
+    }
+    function read() {
+      review.disabled = true; apply.hidden = true; status.textContent = t("loading…");
+      return fetch("/api/pack-artifact?session=" + encodeURIComponent(sid) + "&id=" + encodeURIComponent(ident) + "&token=" + encodeURIComponent(CT))
+        .then(function (response) { return response.json().then(function (data) { if (!response.ok || data.error) throw new Error(data.error || "HTTP " + response.status); return data; }); })
+        .then(function (data) { if (card.isConnected && currentSession === sid) display(data); })
+        .catch(function (error) { card.dataset.state = "conflict"; status.textContent = error.message || String(error); })
+        .finally(function () { review.disabled = false; });
+    }
+    review.onclick = read;
+    apply.onclick = function () {
+      if (running) { status.textContent = t("Wait for the current run to finish."); return; }
+      apply.disabled = true; review.disabled = true; status.textContent = t("Applying saved changes…");
+      fetch("/api/pack-artifact/apply?token=" + encodeURIComponent(CT), {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session:sid, id:ident})
+      }).then(function (response) { return response.json().then(function (data) {
+        if (!response.ok || !data.applied) throw new Error(data.error || "HTTP " + response.status);
+        return data;
+      }); }).then(function () { return read(); })
+        .catch(function (error) { card.dataset.state = "conflict"; status.textContent = error.message || String(error); })
+        .finally(function () { apply.disabled = false; review.disabled = false; });
+    };
+    host.appendChild(card);
+  }
   function openSession(id) {
     detachRun();
     var loadToken = routeToken;
@@ -8174,8 +8304,19 @@
             if (part.type === "text") text += (text ? "\n" : "") + (part.text || "");
             if (part.type === "image" && part.data && part.media_type) images.push(part);
           });
+          var display = m.display || {};
+          if (typeof display.text === "string") text = display.text;
           if (!firstAsk) firstAsk = text;
-          addMsg("user", text, images, m.kind === "steer");
+          var userBubble = addMsg("user", text, images, m.kind === "steer");
+          (display.contexts || []).forEach(function (context) {
+            var panel = document.createElement("details"), label = document.createElement("summary");
+            label.textContent = context.label || context.path || t("Attached context");
+            if (context.startLine) label.textContent += " · " + context.startLine + (context.endLine ? "–" + context.endLine : "");
+            panel.appendChild(label);
+            var content = document.createElement("pre"); content.textContent = context.content || "";
+            content.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto";
+            panel.appendChild(content); panel.className = "attached-context"; userBubble.appendChild(panel);
+          });
         } else if (m.role === "assistant" && m.content) {
           var content = String(m.content).replace(/\s*_\[stopped by user\]_\s*$/, "");
           var el = addMsg("assistant", ""); renderMd(el, content); if (content) addCopy(el, content);
@@ -8194,6 +8335,9 @@
       // which check ran, and whether the run actually finished. Reading a stale "DONE" over a
       // half-finished answer is the whole reason a person asks for the same work twice.
       restoreLastOutcome(id, receipts[receipts.length - 1]);
+      receipts.forEach(function (receipt) {
+        if (receipt.pack) renderPackArtifact(receipt, $("log"), id);
+      });
       scrollDown();
       // Reopening a thread that is STILL WORKING must not look like reading a finished one. The
       // saved file holds the PREVIOUS turn mid-run — the last thing written, not what is happening
@@ -9759,6 +9903,7 @@
           });
         }
         if (flowEl) flowEl.insertBefore(sum, statusEl || null);
+        renderPackArtifact(d, sum, d.session);
       }
       if (statusEl) { statusEl.remove(); statusEl = null; }   // drop the thinking line
       if (d.canceled) {

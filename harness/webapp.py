@@ -2178,6 +2178,11 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send_html(f.read(), 200, "image/png")
                 except Exception:
                     return self._send_json({"error": "read"}, 404)
+            if path == "/api/pack-artifact":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                qs = urllib.parse.parse_qs(parsed.query)
+                return self._serve_pack_artifact({key: values[0] for key, values in qs.items()})
             if path == "/api/task-inbox":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2234,6 +2239,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": sessions.set_title(sid, title)})
             if path.startswith("/api/session/"):
                 return self._serve_session(path[len("/api/session/"):])
+            if path == "/api/mission/delivery":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .missionweb import MissionService
+                from .mission_delivery import read_report
+                mid = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
+                if not mid:
+                    return self._send_json({"error": "id required"}, 400)
+                svc = MissionService()
+                try:
+                    out = read_report(svc.store.get(mid), svc._state_dir)
+                    return self._send_json(out, 404 if out.get("error") else 200)
+                finally:
+                    svc.close()
             if path == "/api/mission/report":             # redacted integration/report feed
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -3729,6 +3748,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not items:
                     return self._send_json({"error": "no usable context items"}, 400)
                 return self._send_json({"id": Handler._ide_context_put(items)})
+            if path == "/api/pack-artifact/apply":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body, detail, status = self._read_json_sized(16 * 1024)
+                if body is None:
+                    return self._send_json({"error": detail}, status)
+                return self._serve_pack_artifact(body, apply=True)
             if path in ("/api/task-inbox", "/api/task-inbox/edit",
                         "/api/task-inbox/cancel", "/api/task-inbox/start"):
                 if not self._authed(parsed):
@@ -4411,13 +4437,39 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_session(self, sid: str):
         from . import sessions
-        s = sessions.load(urllib.parse.unquote(sid))
+        sid = urllib.parse.unquote(sid)
+        s = sessions.load(sid)
         if not s:
             return self._send_json({"error": "no such session"}, 404)
         # load() rehydrates tool_calls into ToolCall dataclasses; JSON's default=str would emit them
         # as repr strings ("ToolCall(id=…, name=…, args=…)"), which the Map's replay can't parse.
         # Normalize to plain {id, name, args} dicts so /api/session carries structured tool calls.
+        # The model reads explicit attachment boundaries; a person reopening
+        # their conversation reads their own request and expandable source chips.
+        # Derive this view from the durable accepted input, without rewriting the
+        # model transcript or guessing where a user-typed delimiter begins.
+        from . import task_inbox, input_assets
+        try:
+            accepted = {entry["id"]: entry for entry in task_inbox.list_entries(sid)}
+        except (task_inbox.InboxError, OSError):
+            accepted = {}
         for m in s.get("messages", []):
+            entry = accepted.get(m.get("inbox_id"))
+            if m.get("role") == "user" and entry and not entry.get("compacted"):
+                display = {"text": entry["text"], "contexts": []}
+                reference = (entry.get("metadata") or {}).get("assets")
+                if reference:
+                    try:
+                        bundle = input_assets.load(sid, reference)
+                        display["contexts"] = [{key: context[key] for key in
+                            ("label", "path", "startLine", "endLine", "content") if key in context}
+                            for context in bundle.get("contexts", [])]
+                    except (input_assets.AssetError, OSError):
+                        # Keep the full original transcript visible if its source
+                        # context cannot be recovered; do not quietly hide it.
+                        display = None
+                if display is not None:
+                    m["display"] = display
             tcs = m.get("tool_calls")
             if tcs:
                 m["tool_calls"] = [
@@ -4426,6 +4478,37 @@ class Handler(BaseHTTPRequestHandler):
                      "args": getattr(tc, "args", None)}
                     for tc in tcs]
         self._send_json(s)
+
+    def _serve_pack_artifact(self, body, apply=False):
+        from . import pack_artifacts, pack_review, sessions, session_owner
+        sid, ident = str(body.get("session") or ""), str(body.get("id") or "")
+        lease = None
+        try:
+            if apply:
+                lease = session_owner.try_acquire(sid, label="apply saved Pack changes")
+                if lease is None:
+                    return self._send_json({"error": "This conversation is still running. Try again when it finishes."}, 409)
+            session = sessions.load(sid)
+            receipts = (session or {}).get("run_receipts") or []
+            if not session or not ident or not any(
+                    (row.get("artifact") or {}).get("id") == ident for row in receipts):
+                return self._send_json({"error": "These saved changes are not part of this conversation."}, 404)
+            cwd = session.get("cwd")
+            if not cwd or not os.path.isdir(cwd):
+                return self._send_json({"error": "The saved workspace is missing. Restore it before applying changes."}, 409)
+            if apply:
+                if (sessions.recovery_state(sid) or {}).get("recovery_required"):
+                    return self._send_json({"error": "Resolve the interrupted run before applying saved changes."}, 409)
+                data = pack_artifacts.apply_artifact(ident, cwd)
+                return self._send_json(data, 200 if data.get("ok") else 409)
+            return self._send_json(pack_review.review(ident, cwd))
+        except pack_artifacts.ArtifactNotFound as exc:
+            return self._send_json({"error": str(exc)}, 404)
+        except (pack_artifacts.PackArtifactError, ValueError) as exc:
+            return self._send_json({"error": str(exc)}, 409)
+        finally:
+            if lease is not None:
+                lease.release()
 
     # ------------------------------------------------------------------ durable input
     def _serve_task_inbox(self, qs):
@@ -5323,6 +5406,10 @@ class Handler(BaseHTTPRequestHandler):
                     "verification_evidence")),
                 "applied": bool(pr.get("applied")),
                 "apply_error": pr.get("apply_error") or "",
+                "artifact": pr.get("artifact"),
+                "artifact_error": pr.get("artifact_error") or "",
+                "retained_attempt_dir": pr.get("retained_attempt_dir") or "",
+                "apply_conflicts": pr.get("apply_conflicts") or [],
                 "cleanup_errors": list(pr.get("cleanup_errors") or [])[:6],
                 "total_cost_usd": pr.get("total_cost_usd"),
                 "attempts": [{
@@ -5380,6 +5467,10 @@ class Handler(BaseHTTPRequestHandler):
                 "canceled": canceled,
                 "pack": True, "winner": win, "reason": pr.get("reason", ""),
                 "applied": pr.get("applied", False), "attempts": pr.get("attempts", []),
+                "artifact": pr.get("artifact"),
+                "artifact_error": pr.get("artifact_error") or "",
+                "retained_attempt_dir": pr.get("retained_attempt_dir") or "",
+                "apply_conflicts": pr.get("apply_conflicts") or [],
                 "n": pr.get("n"), "cost_usd": pr.get("total_cost_usd", 0.0),
                 "model": (winner_rec or {}).get("model") or decision.model,
                 "effort": decision.effort,

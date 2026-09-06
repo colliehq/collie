@@ -2299,6 +2299,12 @@ def cmd_prefix(args):
 
 
 def cmd_pack(args):
+    if getattr(args, "saved", None) is not None:
+        from .pack_review import saved_command
+        return saved_command(args)
+    if not args.task:
+        print("Provide a task, or use --saved to review saved Pack changes.", file=sys.stderr)
+        return 2
     import json as _json
     from . import pack as _pack
     _, runs_db, _, _ = _paths()
@@ -2358,6 +2364,8 @@ def cmd_pack(args):
             "roster: explicit provider list; automatic routing did not add a provider")
 
     def _emit(i, rec):
+        if getattr(args, "json", False):
+            return
         tag = ("check=%s " % ("pass" if rec.get("check_pass") else "fail")) if args.check else ""
         who = ((" [%s]" % rec["provider"]) if roster and rec.get("provider") else
                ((" [%s]" % rec["runner"]) if rec.get("runner") != "collie" else ""))
@@ -2393,8 +2401,17 @@ def cmd_pack(args):
                   if res.get("total_cost_usd") is not None else "cost unknown")
     print("\nwinner: attempt %d%s (%s) · total %s across %d attempts%s" % (
         res["winner"], won_on, res["reason"], total_cost, res["n"],
-        " · APPLIED to cwd" if res["applied"] else " · not applied (use --apply)"))
+        " · APPLIED to cwd" if res["applied"] else " · not applied"))
     print("\n%s" % res.get("answer", ""))
+    artifact = res.get("artifact") or {}
+    if artifact.get("id"):
+        print("\nReview saved changes: collie pack --saved %s" % artifact["id"])
+        if not res.get("applied"):
+            print("Apply saved changes:  collie pack --saved %s --apply" % artifact["id"])
+    if res.get("artifact_error"):
+        print("Winner could not be saved: %s" % res["artifact_error"], file=sys.stderr)
+    if res.get("retained_attempt_dir"):
+        print("Winning files kept at: %s" % res["retained_attempt_dir"])
     return 0
 
 
@@ -4596,12 +4613,14 @@ def main(argv=None):
 
     # pack: best-of-N with execution-based selection (run N isolated attempts, pick what passes)
     pk = sub.add_parser("pack", help="best-of-N: run the task N times in isolation, keep what passes")
-    pk.add_argument("task")
+    pk.add_argument("task", nargs="?")
+    pk.add_argument("--saved", nargs="?", const="", default=None, metavar="ID",
+                    help="list saved changes, or review ID; add --apply to apply without a model run")
     pk.add_argument("-n", type=int, default=3, help="number of attempts (1-8, default 3)")
     pk.add_argument("--check", default=None,
                     help="shell command run in each attempt's copy; exit 0 = pass (selection gate)")
     pk.add_argument("--apply", action="store_true",
-                    help="copy the winning attempt's files back over the working dir")
+                    help="apply the winner's changes, refusing files edited since the attempt began")
     pk.add_argument("--provider", default=None); pk.add_argument("--model", default=None)
     pk.add_argument("--runner", default=None, choices=[*_runner_option_keys(), "auto"],
                     help="worker for every candidate (default: saved RUNNER; auto uses "

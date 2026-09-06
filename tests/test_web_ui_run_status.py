@@ -787,6 +787,26 @@ def test_reopened_active_session_receives_mirror_completion(ui):
     assert ui.page.locator("#stateText").inner_text() == "idle"
 
 
+def test_late_language_settings_cannot_overwrite_the_open_thread_title(ui):
+    ui.page.add_init_script("""(() => {
+      const original = window.fetch.bind(window);
+      const waiting = [];
+      window.releaseLanguageSettings = () => waiting.forEach(resolve => resolve(
+        new Response(JSON.stringify({values:{LANG:'en'}}), {headers:{'content-type':'application/json'}})));
+      window.fetch = (url, options) => String(url).split('?')[0] === '/api/settings'
+        ? new Promise(resolve => waiting.push(resolve))
+        : original(url, options);
+    })();""")
+    ui.page.reload(wait_until="domcontentloaded")
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_function("() => document.getElementById('log').textContent.includes('README')")
+    before = ui.page.locator("#pageTitle").inner_text()
+    assert "README" in before
+    ui.page.evaluate("() => window.releaseLanguageSettings()")
+    ui.page.wait_for_timeout(100)
+    assert ui.page.locator("#pageTitle").inner_text() == before
+
+
 def test_late_transcript_cannot_replace_the_newly_selected_thread(ui):
     ui.page.evaluate("""() => {
       const original = window.fetch.bind(window);
