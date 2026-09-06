@@ -1403,21 +1403,27 @@ class Handler(BaseHTTPRequestHandler):
             "form-action 'self'",
         ))
 
-    def _send_html(self, body: bytes, code: int = 200, ctype: str = "text/html; charset=utf-8"):
+    def _send_html(self, body: bytes, code: int = 200, ctype: str = "text/html; charset=utf-8",
+                   headers=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, str(value))
         if ctype.lower().startswith("text/html"):
             self.send_header("Content-Security-Policy", self._html_csp(
                 body, vscode_embed=bool(getattr(self, "_vscode_embed", False))))
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_json(self, obj, code: int = 200):
+    def _send_json(self, obj, code: int = 200, *, headers=None):
         body = json.dumps(obj, ensure_ascii=False, default=str,
                           allow_nan=False).encode("utf-8")
-        self._send_html(body, code, "application/json; charset=utf-8")
+        if headers:
+            self._send_html(body, code, "application/json; charset=utf-8", headers=headers)
+        else:
+            self._send_html(body, code, "application/json; charset=utf-8")
 
     def _read_json(self, maxlen: int = 8192):
         """Read + parse a JSON POST body, or None on any problem (missing/oversize/parse)."""
@@ -3033,7 +3039,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/live-copilot/audio":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                from .live_copilot import LiveCopilotError, LiveSessionStore, MAX_AUDIO_BYTES
+                from .live_copilot import (LiveCopilotError, LiveCopilotBusyError,
+                                          LiveSessionStore, MAX_AUDIO_BYTES)
                 query = urllib.parse.parse_qs(parsed.query)
                 raw = self._read_bytes(MAX_AUDIO_BYTES)
                 if raw is None:
@@ -3044,7 +3051,10 @@ class Handler(BaseHTTPRequestHandler):
                         source=str((query.get("source") or [""])[0]),
                         seq=str((query.get("seq") or [""])[0]),
                         mime_type=self.headers.get("content-type") or "audio/webm",
-                        data=raw), 202)
+                        data=raw, listen_epoch=(query.get("listen_epoch") or [None])[0]), 202)
+                except LiveCopilotBusyError as exc:
+                    return self._send_json(exc.payload(), 429, headers={
+                        "Retry-After": str(max(1, (exc.retry_after_ms + 999) // 1000))})
                 except LiveCopilotError as exc:
                     return self._send_json({"error": str(exc)}, 409)
             live_paths = {

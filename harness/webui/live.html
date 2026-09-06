@@ -85,9 +85,10 @@ Object.assign(ZH,{
   "Audio recording failed. Recording stopped.":"音频采集失败，已停止录音。",
   "Microphone active":"麦克风采集中"
 });
-var captureEpoch=0,captureSession="",captureRequests=new Set();
+var captureEpoch=0,captureSession="",captureListenEpoch=0,captureRequests=new Set();
 function captureCurrent(epoch,session){
-  return runningCapture&&captureEpoch===epoch&&STATE.active&&STATE.listen&&STATE.session_id===session;
+  return runningCapture&&captureEpoch===epoch&&STATE.active&&STATE.listen&&STATE.session_id===session&&
+    Number((STATE.audio||{}).listen_epoch||0)===captureListenEpoch;
 }
 function audioNotice(text,bad){notice("audioNotice",text?tr(text):"",bad)}
 function captureWait(ms,signal){
@@ -107,7 +108,7 @@ async function uploadAudioChunk(item,blob,session,seq,epoch){
       lifetime.signal.addEventListener("abort",abort,{once:true});
       var timer=setTimeout(function(){timedOut=true;request.abort()},10000);
       try{
-        var response=await fetch(q("/api/live-copilot/audio",{session:session,source:item.name,seq:seq}),
+        var response=await fetch(q("/api/live-copilot/audio",{session:session,source:item.name,seq:seq,listen_epoch:captureListenEpoch}),
           {method:"POST",headers:{"content-type":blob.type},body:blob,signal:request.signal});
         var data=await response.json().catch(function(){return{}});
         if(!captureCurrent(epoch,session)||lifetime.signal.aborted)return false;
@@ -159,14 +160,15 @@ function startCycler(item){
 }
 async function beginCapture(sources){
   if(runningCapture)endCapture();
-  var epoch=++captureEpoch,session=STATE.session_id;
+  var epoch=++captureEpoch,session=STATE.session_id,listenEpoch=Number((STATE.audio||{}).listen_epoch||0);
   sources=sources||await captureSources();
   // Permission/session changes while the browser permission sheet was open do
   // not authorize starting these newly returned tracks in a different session.
-  if(epoch!==captureEpoch||!STATE.active||!STATE.listen||STATE.session_id!==session){
+  if(epoch!==captureEpoch||!STATE.active||!STATE.listen||STATE.session_id!==session||
+      Number((STATE.audio||{}).listen_epoch||0)!==listenEpoch){
     sources.forEach(function(item){item.stream.getTracks().forEach(function(track){track.stop()})});return;
   }
-  captureSession=session;runningCapture=true;audioNotice("");sources.forEach(startCycler);
+  captureSession=session;captureListenEpoch=listenEpoch;runningCapture=true;audioNotice("");sources.forEach(startCycler);
 }
 function endCapture(){
   runningCapture=false;captureEpoch++;captureSession="";
@@ -180,7 +182,7 @@ function speakAvatar(text){text=String(text||"").trim();if(!text||!("speechSynth
 function clearAvatarSurface(){AVATAR_JOIN="";document.getElementById("openAvatar").disabled=true;document.getElementById("avatarLocal").hidden=false}
 function openAvatarRoom(){if(!AVATAR_JOIN)return false;var w=window.open(AVATAR_JOIN,"collie-avatar-room");if(w)try{w.opener=null}catch(e){}return!!w}
 function render(s){STATE=s||{};var active=!!s.active,events=s.events||[],suggestions=(s.suggestions||[]).filter(function(x){return!x.dismissed}),work=s.work||[],cap=s.capabilities||{},audio=s.audio||{},analysis=s.analysis||{};
- if(runningCapture&&(!active||!s.listen||s.session_id!==captureSession))endCapture();
+ if(runningCapture&&(!active||!s.listen||s.session_id!==captureSession||Number((s.audio||{}).listen_epoch||0)!==captureListenEpoch))endCapture();
  document.getElementById("status").classList.toggle("on",active);document.getElementById("statusText").textContent=tr(active?"Maintaining context":s.session_id?"Session ended":"Not active");document.getElementById("setup").hidden=active;document.getElementById("handoffGuide").hidden=active;document.getElementById("activeArea").hidden=!s.session_id;document.getElementById("eventCount").textContent=events.length;document.getElementById("suggestionCount").textContent=suggestions.length;document.getElementById("workCount").textContent=work.length;
  document.getElementById("summaryTitle").textContent=tr(active?"What Collie is carrying":"Session review");document.getElementById("reviewHint").hidden=active;document.getElementById("toggleUnderstand").hidden=!active;document.getElementById("stop").hidden=!active;document.getElementById("boardEdit").disabled=!active;
  document.getElementById("listen").disabled=!(cap.speech_ready||(NATIVE_HOST&&cap.capsule_voice_local));document.getElementById("listen").title=(cap.speech_ready||(NATIVE_HOST&&cap.capsule_voice_local))?"":"Configure a speech provider before using conversation understanding";

@@ -12,6 +12,7 @@ the mode's organizing concept.
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import os
@@ -19,8 +20,8 @@ import re
 import threading
 import time
 import base64
-from pathlib import Path
 
+from . import statelock
 from .tools import Tool
 
 
@@ -30,7 +31,15 @@ MAX_AUDIO_BYTES = 4 * 1024 * 1024
 MAX_EVENTS = 1_200
 MAX_SUGGESTIONS = 32
 MAX_WORK = 24
-_LOCK = threading.RLock()
+# Speech ingress is bounded work, not one daemon thread per chunk.  A fixed pool decodes, and a
+# short queue absorbs bursts; anything past that is rejected synchronously so the sender can
+# retry the same chunk instead of the machine quietly accumulating hundreds of threads.
+AUDIO_WORKERS = 2
+AUDIO_QUEUE_CHUNKS = 8
+AUDIO_QUEUE_BYTES = 8 * 1024 * 1024
+AUDIO_BUSY_RETRY_MS = 750
+MAX_AUDIO_OWNERS = 32
+MAX_PENDING = 1_000
 _TICKER_LOCK = threading.Lock()
 _TICKER_THREAD = None
 _DIALOGUE_THREAD = None
@@ -46,6 +55,30 @@ class LiveCopilotError(RuntimeError):
     pass
 
 
+class LiveCopilotBusyError(LiveCopilotError):
+    """Live speech ingress is saturated; this exact chunk can be retried unchanged.
+
+    Distinguishable from an invalid chunk on purpose.  The HTTP layer should answer 429 with
+    ``Retry-After`` and echo ``seq`` so the sender resends the same sequence number and leaves
+    no hole; a generic "bad audio" would make the client drop the chunk and skip a sequence.
+    """
+
+    code = "live_audio_busy"
+
+    def __init__(self, message, *, retry_after_ms=AUDIO_BUSY_RETRY_MS, seq=None, source=""):
+        super().__init__(message)
+        self.retry_after_ms = max(0, int(retry_after_ms))
+        self.retry_after_seconds = round(self.retry_after_ms / 1000.0, 3)
+        self.seq = seq
+        self.source = source
+
+    def payload(self) -> dict:
+        """Return the exact JSON body the API should send with HTTP 429."""
+        return {"error": str(self), "code": self.code, "retryable": True,
+                "retry_after_ms": self.retry_after_ms, "seq": self.seq,
+                "source": self.source}
+
+
 def _validate_boolean_fields(values: dict, *, allow_none=False) -> None:
     # Permissions must not inherit Python truthiness: bool("false") is True, and
     # listen=1 would bypass an identity-based consent check before enabling capture.
@@ -58,6 +91,45 @@ def _validate_boolean_fields(values: dict, *, allow_none=False) -> None:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _is_redirected(path) -> bool:
+    """True for a symlink, a Windows directory junction, or any other reparse point.
+
+    ``os.path.islink`` answers False for a directory junction, which is the redirection an
+    attacker (or an ordinary "move my data to D:" tool) can create on Windows without any
+    privilege.  Deleting *through* one would delete files outside Collie's audio store.
+    """
+    try:
+        if os.path.islink(path):
+            return True
+        entry = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    if getattr(entry, "st_reparse_tag", 0):
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    try:
+        return bool(isjunction and isjunction(path))
+    except (OSError, ValueError):
+        return False
+
+
+def _within(base_real: str, path) -> bool:
+    """True only when ``path`` resolves inside the already-resolved directory ``base_real``."""
+    try:
+        target = os.path.normcase(os.path.realpath(path))
+    except (OSError, ValueError):
+        return False
+    base = os.path.normcase(base_real)
+    return target == base or target.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _remove_quietly(path) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _text(value, limit=1_000) -> str:
@@ -76,9 +148,23 @@ def _explicit_stop_intent(value) -> bool:
         r"stop(?:the)?(?:live)?session|end(?:the)?(?:live)?session)", text))
 
 
+def _bump_listen_epoch(value: dict) -> int:
+    """Invalidate speech that was accepted under the previous listening authority.
+
+    A decode already outstanding when the user turns listening off — and back on again before it
+    returns — must not be rescued by the new authorization.  Consent covers the capture moment,
+    so the result carries the epoch it was accepted under and a mismatch is dropped.
+    """
+    audio = dict(value.get("audio") or {})
+    audio["listen_epoch"] = int(audio.get("listen_epoch") or 0) + 1
+    value["audio"] = audio
+    return audio["listen_epoch"]
+
+
 def _mark_stopped(value: dict, *, reason="user_requested", stopped_from="unknown") -> dict:
     now = _now_ms()
     value.pop("voice_pause_token", None)
+    _bump_listen_epoch(value)
     value.update({"active": False, "ended_at_ms": now, "listen": False,
                   "understand": False, "observe_apps": False, "observe_ui": False,
                   "observe_input": False, "observe_screen": False,
@@ -147,8 +233,9 @@ def _default_state() -> dict:
         "avatar": {"active": False, "mode": "simulation", "provider": "local",
                    "conversation_id": "", "started_at_ms": 0, "ended_at_ms": 0,
                    "script": "", "disclosure": "AI rehearsal — not a real interview participant"},
-        "audio": {"pending": 0, "microphone_seq": -1, "system_seq": -1,
-                  "last_error": "", "last_text_at_ms": 0},
+        "audio": {"pending": 0, "pending_bytes": 0, "pending_by_owner": {},
+                  "listen_epoch": 0, "microphone_seq": -1,
+                  "system_seq": -1, "last_error": "", "last_text_at_ms": 0},
         "analysis": {"inflight": False, "claimed_at_ms": 0, "last_at_ms": 0,
                      "last_event_id": "", "last_error": ""},
         "audit": [],
@@ -208,6 +295,295 @@ def _sensevoice_capabilities() -> dict:
         return {"available": False, "engine": "SenseVoice · unavailable", "model_dir": ""}
 
 
+def _audio_limit(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(str(os.environ.get(name) or default).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
+class _AudioTicket:
+    """One admitted chunk's place in the bounded queue, released exactly once."""
+
+    __slots__ = ("nbytes", "released")
+
+    def __init__(self, nbytes: int):
+        self.nbytes = max(0, int(nbytes))
+        self.released = False
+
+
+class _AudioJob:
+    __slots__ = ("store", "session_id", "source", "path", "mime", "transcriber", "ticket",
+                 "nbytes", "epoch", "seq")
+
+    def __init__(self, store, session_id, source, path, mime, transcriber, ticket,
+                 nbytes=0, epoch=0, seq=-1):
+        self.store = store
+        self.session_id = session_id
+        self.source = source
+        self.path = path
+        self.mime = mime
+        self.transcriber = transcriber
+        self.ticket = ticket
+        self.nbytes = max(0, int(nbytes))
+        self.epoch = int(epoch)
+        self.seq = int(seq)
+
+    def run(self) -> None:
+        # Authority is re-checked here, immediately before the expensive part.  A stop or a
+        # revocation that landed while this chunk sat in the queue — including one that raced
+        # the submit itself — must not turn into a decode.
+        if not self.store._begin_decode(self):
+            return
+        self.store._transcribe_audio(self.session_id, self.source, self.path,
+                                     self.mime, self.transcriber, self.epoch, self.nbytes)
+
+    def discard(self) -> None:
+        """Delete audio this job will never decode.  The caller owns the pending count."""
+        _remove_quietly(self.path)
+
+    def release_claim(self) -> None:
+        """Give back this chunk's durable admission claim when no caller holds the state."""
+        try:
+            self.store._release_claim(self.session_id, self.nbytes)
+        except Exception:
+            pass
+
+    def abandon(self) -> None:
+        self.release_claim()
+        self.discard()
+
+
+class _AudioIngress:
+    """Fixed workers and a bounded queue for one Live state file.
+
+    Admission is decided synchronously, before the chunk's sequence number is consumed, so a
+    saturated machine answers ``LiveCopilotBusyError`` and the sender retries the same chunk.
+    A chunk holds its ticket from admission until its decode finishes, so the bound covers
+    queued *and* executing work, i.e. bytes actually staged on disk.
+
+    This object bounds one *process*.  The bound that matters for the machine is the durable one
+    in ``LiveSessionStore._shared_totals``: accepted chunks and accepted bytes are counted per
+    crash-released owner claim inside the state transaction, against these same limits, so a
+    second Collie server on the same state root cannot double the audio staged on disk simply by
+    creating a second pool.  What remains per process is *decoder concurrency*: n processes can
+    run up to ``n × workers`` decoders at once, but only while the shared accepted-chunk limit
+    still allows that many chunks to exist at all.
+    """
+
+    IDLE_SECONDS = 30.0
+
+    def __init__(self, key: str):
+        self.key = key
+        self.workers = _audio_limit("COLLIE_LIVE_AUDIO_WORKERS", AUDIO_WORKERS, 1, 8)
+        self.max_chunks = _audio_limit("COLLIE_LIVE_AUDIO_QUEUE", AUDIO_QUEUE_CHUNKS, 1, 64)
+        self.max_bytes = _audio_limit("COLLIE_LIVE_AUDIO_QUEUE_BYTES", AUDIO_QUEUE_BYTES,
+                                      4_096, 256 * 1024 * 1024)
+        self._ready = threading.Condition(threading.Lock())
+        self._queue = collections.deque()
+        self._threads = []
+        self._outstanding = 0
+        self._bytes = 0
+        self._active = 0
+        self._peak_active = 0
+
+    def stats(self) -> dict:
+        with self._ready:
+            return {"queue_depth": len(self._queue), "queue_limit": self.max_chunks,
+                    "queue_limit_bytes": self.max_bytes, "workers": self.workers,
+                    "decoding": self._active, "outstanding": self._outstanding}
+
+    def reserve(self, nbytes: int) -> _AudioTicket:
+        with self._ready:
+            # An idle queue always admits one chunk, so a legal chunk larger than the byte
+            # budget is decoded rather than rejected forever.
+            if self._outstanding and (self._outstanding >= self.max_chunks or
+                                      self._bytes + nbytes > self.max_bytes):
+                raise LiveCopilotBusyError(
+                    "live speech queue is full (%d of %d chunks, %d of %d bytes); "
+                    "retry this chunk shortly" % (self._outstanding, self.max_chunks,
+                                                  self._bytes, self.max_bytes))
+            self._outstanding += 1
+            self._bytes += nbytes
+            return _AudioTicket(nbytes)
+
+    def release(self, ticket) -> None:
+        if ticket is None:
+            return
+        with self._ready:
+            if ticket.released:
+                return
+            ticket.released = True
+            self._outstanding = max(0, self._outstanding - 1)
+            self._bytes = max(0, self._bytes - ticket.nbytes)
+
+    def submit(self, job: _AudioJob) -> None:
+        with self._ready:
+            self._queue.append(job)
+            idle = len(self._threads) - self._active
+            if len(self._threads) < self.workers and len(self._queue) > idle:
+                worker = threading.Thread(target=self._run, name="collie-live-speech",
+                                          daemon=True)
+                self._threads.append(worker)
+                worker.start()
+            self._ready.notify()
+
+    def discard(self, predicate) -> list:
+        """Drop queued chunks a stop, new session, or permission change invalidated."""
+        dropped, kept = [], collections.deque()
+        with self._ready:
+            for job in self._queue:
+                (dropped if predicate(job) else kept).append(job)
+            self._queue = kept
+        for job in dropped:
+            job.discard()
+            self.release(job.ticket)
+        return dropped
+
+    def _run(self) -> None:
+        current = threading.current_thread()
+        while True:
+            with self._ready:
+                deadline = time.monotonic() + self.IDLE_SECONDS
+                while not self._queue:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        if current in self._threads:
+                            self._threads.remove(current)
+                        return
+                    self._ready.wait(remaining)
+                job = self._queue.popleft()
+                self._active += 1
+                self._peak_active = max(self._peak_active, self._active)
+            try:
+                job.run()
+            except Exception:
+                # ``run`` already records decode failures in Live state; a worker must survive
+                # anything else so the pool never shrinks to zero with work queued.  Whatever
+                # went wrong, this chunk's durable admission claim must not leak.
+                job.abandon()
+            finally:
+                with self._ready:
+                    self._active -= 1
+                self.release(job.ticket)
+
+
+_INGRESS: dict = {}
+_INGRESS_GUARD = threading.Lock()
+
+
+def _audio_ingress(path) -> _AudioIngress:
+    """Return the one ingress for a state file, shared by every store object on this root."""
+    key = statelock.canonical(path)
+    with _INGRESS_GUARD:
+        ingress = _INGRESS.get(key)
+        if ingress is None:
+            ingress = _INGRESS[key] = _AudioIngress(key)
+        return ingress
+
+
+def reset_audio_ingress() -> None:
+    """Forget cached ingress objects so new limit settings take effect (tests/restarts)."""
+    with _INGRESS_GUARD:
+        stale = list(_INGRESS.values())
+        _INGRESS.clear()
+    for ingress in stale:
+        for job in ingress.discard(lambda _job: True):
+            job.release_claim()
+
+
+_OWNERS: dict = {}
+_OWNERS_GUARD = threading.Lock()
+
+
+def _owner_dir(audio_root: str) -> str:
+    return os.path.join(audio_root, "owners")
+
+
+def _drop_owner(audio_root: str, row) -> None:
+    """Forget an owner row that belongs to another process (an inherited cache entry).
+
+    ``statelock.unclaim`` is pid-bound: for a claim taken by the parent it closes this process's
+    descriptor without ever unlocking, so the parent keeps its identity and its pending work.
+    """
+    _OWNERS.pop(audio_root, None)
+    statelock.unclaim(row[1])
+
+
+def _owner_key(audio_root: str) -> str:
+    """Claim this process's crash-released identity for durable pending counts.
+
+    The claim is an exclusive lock the OS drops when the process exits, so another process can
+    tell a live owner from a dead one by trying to take it — no heartbeat, no TTL guess, and no
+    chance of a recycled pid being mistaken for the original owner.  The cache entry records the
+    pid that took the claim: a forked child must never spend the identity, or the claims, of its
+    parent.
+    """
+    pid = os.getpid()
+    with _OWNERS_GUARD:
+        row = _OWNERS.get(audio_root)
+        if row and row[2] != pid:
+            _drop_owner(audio_root, row)
+            row = None
+        if row:
+            return row[0]
+        directory = _owner_dir(audio_root)
+        os.makedirs(directory, exist_ok=True)
+        _private(directory)
+        key = "%d-%s" % (pid, os.urandom(4).hex())
+        held = statelock.claim(os.path.join(directory, key + ".owner"))
+        if held is None:
+            raise LiveCopilotError("could not claim live audio ownership")
+        _OWNERS[audio_root] = (key, held, pid)
+        return key
+
+
+def _this_owner(audio_root: str) -> str:
+    pid = os.getpid()
+    with _OWNERS_GUARD:
+        row = _OWNERS.get(audio_root)
+        if row and row[2] != pid:
+            _drop_owner(audio_root, row)
+            row = None
+    return row[0] if row else ""
+
+
+def _owner_alive(audio_root: str, key: str) -> bool:
+    if key and key == _this_owner(audio_root):
+        return True
+    if not _SAFE_ID.fullmatch(str(key or "")):
+        return False
+    path = os.path.join(_owner_dir(audio_root), str(key) + ".owner")
+    if not os.path.exists(path):
+        return False
+    held = statelock.claim(path)
+    if held is None:
+        return True
+    statelock.unclaim(held)
+    _remove_quietly(path)
+    return False
+
+
+def _reset_live_after_fork() -> None:
+    """A forked child owns none of the parent's ingress state, threads, files, or identity."""
+    global _OWNERS_GUARD, _INGRESS_GUARD
+    _OWNERS_GUARD = threading.Lock()
+    _INGRESS_GUARD = threading.Lock()
+    owners = list(_OWNERS.values())
+    _OWNERS.clear()
+    for row in owners:
+        statelock.unclaim(row[1])  # pid-bound: closes here, still held by the parent
+    # Queued jobs, worker threads and outstanding counters belong to the parent.  The child has
+    # no workers to drain them and must not delete files the parent is still going to decode, so
+    # the cache is dropped without discarding anything.
+    _INGRESS.clear()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX only; Windows has no fork
+    os.register_at_fork(after_in_child=_reset_live_after_fork)
+
+
 class LiveSessionStore:
     def __init__(self, root=None):
         root = os.path.abspath(os.path.expanduser(root or _state_root()))
@@ -216,6 +592,19 @@ class LiveSessionStore:
         self.root = root
         self.path = os.path.join(root, "live-copilot.json")
         self.audio_root = os.path.join(root, "live-audio")
+
+    def _transaction(self):
+        """Serialize one complete read-modify-write across threads *and* processes.
+
+        Every mutation below reads, edits, and writes inside this transaction.  It is
+        re-entrant, so nested helpers (``stop`` inside a tick, ``snapshot`` inside a stop) do not
+        re-lock the same byte on a second handle.  Nothing slow belongs inside it: model calls,
+        transcription, and browser work all happen with the lock released.
+        """
+        return statelock.transaction(self.path)
+
+    def _ingress(self) -> _AudioIngress:
+        return _audio_ingress(self.path)
 
     def _read(self) -> dict:
         try:
@@ -279,8 +668,11 @@ class LiveSessionStore:
         except (TypeError, ValueError):
             raise LiveCopilotError("live session duration must be a number of minutes")
         origin = _text(started_from, 80).casefold() or "unknown"
-        with _LOCK:
+        with self._transaction():
             value = _default_state()
+            # A new session invalidates every chunk staged for the previous one.  Drop the
+            # queued work first: its pending claims live in the state this call replaces.
+            self._ingress().discard(lambda _job: True)
             value.update({
                 "active": True,
                 "session_id": "live-%s-%s" % (now, os.urandom(3).hex()),
@@ -310,11 +702,15 @@ class LiveSessionStore:
                                       bool(observe_screen), bool(voice_dialogue))}],
             })
             self._write(value)
+            self._purge_stale_audio(value["session_id"])
         return self.snapshot()
 
     def stop(self, *, reason="user_requested", stopped_from="unknown") -> dict:
-        with _LOCK:
+        with self._transaction():
             value = self._read()
+            # Stopping is a real processing boundary: audio that has not been decoded yet is
+            # dropped here rather than transcribed into a session the user already ended.
+            self._cancel_queued_audio(value, lambda _job: True)
             _mark_stopped(value, reason=reason, stopped_from=stopped_from)
             self._write(value)
         return self.snapshot()
@@ -324,7 +720,7 @@ class LiveSessionStore:
                            observe_screen=None, voice_dialogue=None,
                            board_edit=None, consent=None) -> dict:
         _validate_boolean_fields(locals(), allow_none=True)
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("start a live session before changing its permissions")
@@ -335,10 +731,20 @@ class LiveSessionStore:
                 # An explicit choice, including listen=False while already paused, supersedes
                 # any temporary pause owned by the spoken-cue relay.
                 value.pop("voice_pause_token", None)
+                # Either direction starts a new listening epoch, so audio accepted before this
+                # choice cannot be written by a decode that finishes after it — including the
+                # off-then-on case, where the new authority must not adopt the old capture.
+                _bump_listen_epoch(value)
                 value["listen"] = bool(listen)
                 if listen is True and not value.get("consent_at_ms"):
                     value["consent_version"] = "live-copilot-v1"
                     value["consent_at_ms"] = _now_ms()
+                if listen is False:
+                    # Revoking listening authority invalidates continuous capture that is still
+                    # waiting to be decoded.  The push-to-talk capsule is a separate explicit
+                    # gesture and keeps its own queued chunk.
+                    self._cancel_queued_audio(
+                        value, lambda job: job.source in {"microphone", "system"})
             if understand is not None:
                 value["understand"] = bool(understand)
             if observe_apps is not None:
@@ -365,7 +771,7 @@ class LiveSessionStore:
 
     def pause_listening_for_voice(self, *, session_id: str) -> str:
         """Pause only this session's existing listener; return a single-use resume claim."""
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if (not value.get("active") or value.get("session_id") != session_id or
                     not value.get("listen") or not value.get("consent_at_ms")):
@@ -377,7 +783,7 @@ class LiveSessionStore:
 
     def resume_listening_after_voice(self, *, session_id: str, token: str) -> bool:
         """Resume an owned pause only if no explicit listening choice has superseded it."""
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if (not token or not value.get("active") or value.get("session_id") != session_id or
                     value.get("voice_pause_token") != token or not value.get("consent_at_ms")):
@@ -388,13 +794,31 @@ class LiveSessionStore:
             return True
 
     def snapshot(self) -> dict:
-        with _LOCK:
+        with self._transaction():
             value = self._read()
         board = dict(value.get("board") or {})
         if board.get("url"):
             from .live_surfaces import safe_display_url
             board["url"] = safe_display_url(board["url"])
         audio = dict(value.get("audio") or {})
+        # Status must describe reality, not a counter.  Show only the claims of processes that
+        # are still running, plus this process's real queue depth.  Live state itself is not
+        # rewritten here; the next audio transaction persists the same reclaim.
+        ingress = self._ingress()
+        accepted, accepted_bytes = self._shared_totals(audio)
+        interrupted = max(0, sum(row[0] for row in self._owner_claims(audio).values()) - accepted)
+        if interrupted and not audio.get("last_error"):
+            audio["last_error"] = ("Audio processing was interrupted; %d accepted clip(s) have "
+                                   "no transcript. Recording may have a gap." % interrupted)
+        audio["pending"] = accepted
+        audio["pending_bytes"] = accepted_bytes
+        audio.pop("pending_by_owner", None)
+        audio.pop("recent_chunks", None)
+        audio.update(ingress.stats())
+        # Machine-wide accepted work on this state root, and the bound it is measured against.
+        audio.update({"accepted": accepted, "accepted_bytes": accepted_bytes,
+                      "accepted_limit": ingress.max_chunks,
+                      "accepted_limit_bytes": ingress.max_bytes})
         analysis = dict(value.get("analysis") or {})
         return {
             "active": bool(value.get("active")),
@@ -437,7 +861,7 @@ class LiveSessionStore:
         """Export exactly the requested retained session without probing any provider."""
         if type(include_events) is not bool:
             raise LiveCopilotError("include_events must be a boolean")
-        with _LOCK:
+        with self._transaction():
             value = self._read()
         current_id = str(value.get("session_id") or "")
         if not current_id or not session_id or str(session_id) != current_id:
@@ -468,7 +892,7 @@ class LiveSessionStore:
                "kind": _text(kind, 32).casefold() or "context",
                "app": _text(app, 80).casefold(), "title": _text(title, 300),
                "text": text}
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("no live session is active")
@@ -503,7 +927,7 @@ class LiveSessionStore:
         return row
 
     def set_avatar(self, value: dict) -> dict:
-        with _LOCK:
+        with self._transaction():
             state = self._read()
             if not state.get("active"):
                 raise LiveCopilotError("start a live session before avatar rehearsal")
@@ -520,7 +944,7 @@ class LiveSessionStore:
         return dict(self.snapshot().get("avatar") or {})
 
     def stop_avatar(self, *, reason="user_requested") -> dict:
-        with _LOCK:
+        with self._transaction():
             state = self._read()
             avatar = {**(_default_state()["avatar"]), **dict(state.get("avatar") or {})}
             avatar.update({"active": False, "ended_at_ms": _now_ms(),
@@ -540,7 +964,7 @@ class LiveSessionStore:
                "kind": kind, "text": _text(text, 2_000)}
         if not row["text"]:
             raise LiveCopilotError("note text is required")
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("no live session is active")
@@ -548,8 +972,166 @@ class LiveSessionStore:
             self._write(value)
         return row
 
+    def _owner_claims(self, audio: dict) -> dict:
+        """Normalize the durable per-owner admission claims to ``{owner: [chunks, bytes]}``."""
+        claims = {}
+        for key, row in (audio.get("pending_by_owner") or {}).items():
+            if type(row) is int:  # a state file written before bytes were claimed
+                row = {"chunks": row, "bytes": 0}
+            if not isinstance(row, dict):
+                continue
+            chunks, nbytes = row.get("chunks"), row.get("bytes")
+            if type(chunks) is not int or chunks <= 0:
+                continue
+            chunks = min(MAX_PENDING, chunks)
+            # A claim can never legitimately hold more than one maximum-size chunk's bytes per
+            # chunk, so a damaged total cannot lock admission out with a number nobody repays.
+            claims[str(key)] = [chunks, min(chunks * MAX_AUDIO_BYTES,
+                                            max(0, nbytes) if type(nbytes) is int else 0)]
+        return claims
+
+    def _live_claims(self, audio: dict) -> dict:
+        """Keep only the claims of owners that are still running on this machine."""
+        return {key: row for key, row in self._owner_claims(audio).items()
+                if _owner_alive(self.audio_root, key)}
+
+    def _shared_totals(self, audio: dict) -> tuple:
+        """Return (chunks, bytes) accepted on this state root by every live owner."""
+        live = self._live_claims(audio)
+        return (min(MAX_PENDING, sum(row[0] for row in live.values())),
+                sum(row[1] for row in live.values()))
+
+    def _adjust_claim(self, value: dict, chunks: int, nbytes: int = 0) -> dict:
+        """Move this process's durable admission claim and recompute the visible totals.
+
+        The claim is per owner rather than one shared integer.  A second Collie process
+        finishing its own chunk must not zero out this process's outstanding work, and a
+        process that died must not leave its claims pending forever — the owner claim file is
+        released by the OS, so a dead owner is detected rather than timed out.  Bytes are
+        carried alongside chunks because the admission bound is a byte bound too.
+        """
+        audio = dict(value.get("audio") or {})
+        claims = self._owner_claims(audio)
+        changing = bool(chunks or nbytes)
+        mine = _owner_key(self.audio_root) if changing else _this_owner(self.audio_root)
+        if changing:
+            row = claims.get(mine) or [0, 0]
+            count = max(0, min(MAX_PENDING, row[0] + int(chunks)))
+            if count:
+                claims[mine] = [count, max(0, row[1] + int(nbytes))]
+            else:
+                # No chunks left means no staged bytes left; never carry a byte remainder.
+                claims.pop(mine, None)
+        live = {}
+        # This process's own claim is kept first, so a state file carrying many stale owners
+        # can never evict the count this call is responsible for.
+        for key in sorted(claims, key=lambda name: (name != mine, name)):
+            if len(live) >= MAX_AUDIO_OWNERS:
+                break
+            if claims[key][0] > 0 and _owner_alive(self.audio_root, key):
+                live[key] = {"chunks": claims[key][0], "bytes": claims[key][1]}
+        audio["pending_by_owner"] = live
+        interrupted = sum(row[0] for key, row in claims.items() if key not in live)
+        if interrupted and not audio.get("last_error"):
+            audio["last_error"] = ("Audio processing was interrupted; %d accepted clip(s) have "
+                                   "no transcript. Recording may have a gap." % interrupted)
+        audio["pending"] = min(MAX_PENDING, sum(row["chunks"] for row in live.values()))
+        audio["pending_bytes"] = sum(row["bytes"] for row in live.values())
+        value["audio"] = audio
+        return audio
+
+    def _release_claim(self, session_id: str, nbytes: int) -> None:
+        """Give one accepted chunk back to the shared bound from outside any transaction."""
+        with self._transaction():
+            value = self._read()
+            if value.get("session_id") != session_id:
+                return
+            self._adjust_claim(value, -1, -int(nbytes or 0))
+            self._write(value)
+
+    def _cancel_queued_audio(self, value: dict, predicate) -> int:
+        """Drop queued chunks and give back the admission claims they held in ``value``."""
+        dropped = self._ingress().discard(predicate)
+        stale = [job for job in dropped if job.session_id == value.get("session_id")]
+        if stale:
+            self._adjust_claim(value, -len(stale), -sum(job.nbytes for job in stale))
+        return len(dropped)
+
+    def _audio_base(self, *, create: bool) -> str:
+        """Return the resolved audio store, refusing a redirected root.
+
+        The store is always ``<state root>/live-audio``.  If that name is a symlink or a Windows
+        directory junction, someone has pointed Collie's delete-and-restage area at a directory
+        it does not own, so the whole audio path is refused rather than followed.  A deliberately
+        relocated store is not supported here: relocate the state root instead, which is the
+        configured knob.
+        """
+        if _is_redirected(self.audio_root):
+            raise LiveCopilotError(
+                "live audio staging directory cannot be a symbolic link or junction")
+        if create:
+            try:
+                os.makedirs(self.audio_root, exist_ok=True)
+            except OSError as exc:
+                raise LiveCopilotError("could not prepare live audio staging: %s" % exc) from exc
+        return os.path.realpath(self.audio_root)
+
+    def _purge_stale_audio(self, keep_session_id: str) -> None:
+        """Best-effort removal of staging directories no live session can claim any more.
+
+        Every path is confirmed to resolve inside the resolved audio store before anything is
+        deleted, and redirected entries are skipped rather than followed: deleting *through* a
+        junction would remove files outside Collie's store entirely.  Nothing recurses, so a
+        nested directory is left for the failing ``rmdir`` to report instead of being walked.
+
+        A chunk another worker is decoding right now cannot be unlinked on Windows; that file
+        is removed by the worker that owns it, so this stays advisory.
+        """
+        try:
+            base = self._audio_base(create=False)
+            names = os.listdir(self.audio_root)
+        except (LiveCopilotError, OSError):
+            return
+        for name in names:
+            if name in {keep_session_id, "owners"}:
+                continue
+            directory = os.path.join(self.audio_root, name)
+            if _is_redirected(directory) or not os.path.isdir(directory):
+                continue
+            if not _within(base, directory):
+                continue
+            try:
+                entries = os.listdir(directory)
+            except OSError:
+                continue
+            for entry in entries:
+                target = os.path.join(directory, entry)
+                # A redirected or non-regular entry is left alone: unlinking a junction's
+                # contents would delete someone else's files, and this purge never recurses.
+                if _is_redirected(target) or not os.path.isfile(target):
+                    continue
+                if not _within(base, target):
+                    continue
+                _remove_quietly(target)
+            try:
+                os.rmdir(directory)
+            except OSError:
+                pass
+
+    def _audio_staging(self, session_id: str) -> str:
+        base = self._audio_base(create=True)
+        directory = os.path.join(self.audio_root, session_id)
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError as exc:
+            raise LiveCopilotError("could not prepare live audio staging: %s" % exc) from exc
+        if _is_redirected(directory) or not _within(base, directory):
+            raise LiveCopilotError("live audio staging path is invalid")
+        _private(self.audio_root); _private(directory)
+        return directory
+
     def ingest_audio(self, *, session_id, source, seq, mime_type, data,
-                     transcriber=None) -> dict:
+                     transcriber=None, listen_epoch=None) -> dict:
         source = _text(source, 24).casefold()
         if source not in {"microphone", "system", "capsule"}:
             raise LiveCopilotError("audio source must be microphone, system, or capsule")
@@ -563,68 +1145,180 @@ class LiveSessionStore:
             raise LiveCopilotError("audio sequence must be an integer")
         if seq < 0:
             raise LiveCopilotError("audio sequence must be non-negative")
+        if listen_epoch is not None:
+            try:
+                if isinstance(listen_epoch, bool):
+                    raise ValueError()
+                listen_epoch = int(listen_epoch)
+                if listen_epoch < 0:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise LiveCopilotError("listening epoch must be a non-negative integer") from None
         if not _SAFE_ID.fullmatch(str(session_id or "")):
             raise LiveCopilotError("invalid live session id")
         mime = str(mime_type or "audio/webm").split(";", 1)[0].strip().lower()
         if mime not in {"audio/webm", "audio/ogg", "audio/mp4", "audio/wav"}:
             raise LiveCopilotError("unsupported live audio type")
-        if os.path.islink(self.audio_root):
-            raise LiveCopilotError("live audio staging directory cannot be a symbolic link")
-        directory = os.path.join(self.audio_root, session_id)
+        fingerprint = hashlib.sha256(mime.encode("ascii") + b"\0" + data).hexdigest()
+
+        # Admission comes first, before the sequence number is consumed, before any receipt is
+        # written, and before a byte is staged.  A rejected chunk therefore leaves the session
+        # exactly as it was and the sender can resend this same ``seq`` without a hole.  The
+        # process-local reservation below only bounds this process's queue; the bound that holds
+        # for the machine is checked inside the transaction, against the durable claims.
+        ingress = self._ingress()
+        nbytes = len(data)
         try:
-            os.makedirs(directory, exist_ok=True)
-        except OSError as exc:
-            raise LiveCopilotError("could not prepare live audio staging: %s" % exc) from exc
-        if os.path.islink(directory) or os.path.commonpath(
-                [os.path.realpath(self.audio_root), os.path.realpath(directory)]) != \
-                os.path.realpath(self.audio_root):
-            raise LiveCopilotError("live audio staging path is invalid")
-        _private(self.audio_root); _private(directory)
-        with _LOCK:
-            value = self._read()
-            # The push-to-talk capsule is an explicit, bounded user gesture. It keeps working
-            # when continuous meeting capture is off, so X2 never competes for the microphone
-            # with a background listener. All other sources still require listening authority.
-            allowed = bool(value.get("listen")) or source == "capsule"
-            if (not value.get("active") or value.get("session_id") != session_id or not allowed):
-                raise LiveCopilotError("live listening authority is no longer active")
-            audio = dict(value.get("audio") or {})
-            key = "%s_seq" % source
-            previous = int(audio.get(key, -1))
-            if seq <= previous:
-                return {"ok": True, "duplicate": True, "seq": seq}
-            if seq != previous + 1:
-                raise LiveCopilotError("audio sequence gap: expected %d" % (previous + 1))
-            audio[key] = seq
-            audio["pending"] = min(1000, int(audio.get("pending") or 0) + 1)
-            value["audio"] = audio
-            self._write(value)
-        ext = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a",
-               "audio/wav": "wav"}[mime]
-        path = os.path.join(directory, "%s-%08d.%s" % (source, seq, ext))
+            ticket = ingress.reserve(nbytes)
+        except LiveCopilotBusyError as exc:
+            exc.seq, exc.source = seq, source
+            raise
+        accepted = False
         try:
-            Path(path).write_bytes(bytes(data))
+            directory = self._audio_staging(session_id)
+            ext = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a",
+                   "audio/wav": "wav"}[mime]
+            path = os.path.join(directory, "%s-%08d.%s" % (source, seq, ext))
+            with self._transaction():
+                value = self._read()
+                # The push-to-talk capsule is an explicit, bounded user gesture. It keeps working
+                # when continuous meeting capture is off, so X2 never competes for the microphone
+                # with a background listener. All other sources still require listening authority.
+                allowed = bool(value.get("listen")) or source == "capsule"
+                if (not value.get("active") or value.get("session_id") != session_id
+                        or not allowed):
+                    raise LiveCopilotError("live listening authority is no longer active")
+                audio = dict(value.get("audio") or {})
+                if (source != "capsule" and listen_epoch is not None and
+                        listen_epoch != int(audio.get("listen_epoch") or 0)):
+                    raise LiveCopilotError("this clip was captured under an earlier listening permission")
+                key = "%s_seq" % source
+                previous = int(audio.get(key, -1))
+                if seq <= previous:
+                    matching = next((row for row in audio.get("recent_chunks", [])
+                                     if row.get("source") == source and row.get("seq") == seq), None)
+                    if matching and matching.get("digest") == fingerprint:
+                        return {"ok": True, "duplicate": True, "seq": seq}
+                    raise LiveCopilotError(
+                        "audio sequence already accepted with different or unavailable clip identity; "
+                        "refresh this session before recording again")
+                if seq != previous + 1:
+                    raise LiveCopilotError("audio sequence gap: expected %d" % (previous + 1))
+                chunks, used = self._shared_totals(audio)
+                if chunks and (chunks >= ingress.max_chunks or
+                               used + nbytes > ingress.max_bytes):
+                    # An empty store always admits one chunk, so a legal 4 MiB chunk is never
+                    # rejected forever; past that the limit is shared by every process here.
+                    raise LiveCopilotBusyError(
+                        "live speech queue is full (%d of %d chunks, %d of %d bytes accepted "
+                        "on this state root); retry this chunk shortly" %
+                        (chunks, ingress.max_chunks, used, ingress.max_bytes),
+                        seq=seq, source=source)
+                # Bounded local staging happens inside the transaction, so the sequence number
+                # is consumed only once the bytes exist.  A failed write can therefore never
+                # leave a hole behind a sequence another writer has already accepted.
+                self._stage_audio_bytes(path, data)
+                try:
+                    audio[key] = seq
+                    audio["recent_chunks"] = (audio.get("recent_chunks") or [])[-127:] + [{
+                        "source": source, "seq": seq, "digest": fingerprint}]
+                    value["audio"] = audio
+                    epoch = int(self._adjust_claim(value, 1, nbytes).get("listen_epoch") or 0)
+                    self._write(value)
+                except BaseException:
+                    _remove_quietly(path)
+                    raise
+            job = _AudioJob(self, session_id, source, path, mime, transcriber, ticket,
+                            nbytes, epoch, seq)
+            try:
+                ingress.submit(job)
+            except BaseException as exc:
+                # Nothing will ever decode this chunk: give the sequence number, the claim and
+                # the file back rather than stranding all three.
+                self._abandon_accepted(job, "could not queue live audio: %s" % exc)
+                raise
+            accepted = True
+        finally:
+            if not accepted:
+                ingress.release(ticket)
+        return {"ok": True, "queued": True, "seq": seq, **ingress.stats()}
+
+    def _stage_audio_bytes(self, path: str, data) -> None:
+        """Write one bounded chunk (≤ 4 MiB) to its staging file.
+
+        Deliberately short and purely local: this is the only file work the state transaction
+        covers, and it is what makes sequence and admission commit together.  No fsync — the
+        chunk is transient by design and a crash simply loses it.
+        """
+        try:
+            with open(path, "wb") as handle:
+                handle.write(bytes(data))
+                handle.flush()
             _private(path)
         except OSError as exc:
-            with _LOCK:
-                current = self._read()
-                if current.get("session_id") == session_id:
-                    current_audio = dict(current.get("audio") or {})
-                    key = "%s_seq" % source
-                    if int(current_audio.get(key, -1)) == seq:
-                        current_audio[key] = seq - 1
-                        current_audio["pending"] = max(
-                            0, int(current_audio.get("pending") or 0) - 1)
-                        current["audio"] = current_audio
-                        self._write(current)
+            _remove_quietly(path)
             raise LiveCopilotError("could not stage live audio: %s" % exc) from exc
-        worker = threading.Thread(target=self._transcribe_audio,
-                                  args=(session_id, source, path, mime, transcriber),
-                                  name="collie-live-speech", daemon=True)
-        worker.start()
-        return {"ok": True, "queued": True, "seq": seq}
 
-    def _transcribe_audio(self, session_id, source, path, mime, transcriber) -> None:
+    def _abandon_accepted(self, job, error: str) -> None:
+        """Undo an accepted chunk that can no longer be decoded."""
+        job.discard()
+        with self._transaction():
+            value = self._read()
+            if value.get("session_id") != job.session_id:
+                return
+            audio = self._adjust_claim(value, -1, -job.nbytes)
+            key = "%s_seq" % job.source
+            if int(audio.get(key, -1)) == job.seq:
+                # Still the newest accepted sequence: hand it back so the sender's retry of this
+                # exact seq is accepted rather than reported as a gap.
+                audio[key] = job.seq - 1
+                audio["recent_chunks"] = [row for row in audio.get("recent_chunks", [])
+                                          if not (row.get("source") == job.source and
+                                                  row.get("seq") == job.seq)]
+            else:
+                # A later sequence was accepted in the meantime, so the number cannot be
+                # returned without creating a hole.  Say so instead of silently losing it.
+                audio["last_error"] = _text(error, 1_000)
+            value["audio"] = audio
+            self._write(value)
+
+    def _speech_authorized(self, value: dict, session_id, source, epoch) -> bool:
+        """Decide whether a decoded chunk may still be written into the session.
+
+        Capsule chunks are authorized by the push-to-talk gesture itself, so turning continuous
+        listening off does not cancel them; only ending the session or starting a new one does.
+        Continuous capture must additionally still be permitted *under the same epoch* it was
+        accepted in, so an off/on toggle during a decode does not resurrect the old chunk.
+        """
+        if not value.get("active") or value.get("session_id") != session_id:
+            return False
+        if source == "capsule":
+            return True
+        audio = value.get("audio") or {}
+        if int(audio.get("listen_epoch") or 0) != int(epoch):
+            return False
+        return bool(value.get("listen"))
+
+    def _begin_decode(self, job) -> bool:
+        """Confirm authority immediately before decoding; release the chunk if it is gone."""
+        with self._transaction():
+            try:
+                value = self._read()
+            except LiveCopilotError:
+                # Unknown consent cannot authorize a decoder call. Keep the
+                # durable claim for recovery but discard the transient clip.
+                job.discard()
+                return False
+            if self._speech_authorized(value, job.session_id, job.source, job.epoch):
+                return True
+            if value.get("session_id") == job.session_id:
+                self._adjust_claim(value, -1, -job.nbytes)
+                self._write(value)
+        job.discard()
+        return False
+
+    def _transcribe_audio(self, session_id, source, path, mime, transcriber,
+                          epoch=0, nbytes=0) -> None:
         error, texts = "", []
         try:
             if transcriber is None:
@@ -646,25 +1340,30 @@ class LiveSessionStore:
         except Exception as exc:
             error = _text("%s: %s" % (type(exc).__name__, exc), 1_000)
         finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-        with _LOCK:
+            _remove_quietly(path)
+        # One transaction covers the authority check *and* the insertion.  Checking permission,
+        # releasing the state, and then calling ``add_event`` leaves a window in which listening
+        # is revoked between the two steps: ``add_event`` only re-checks the session, so the
+        # speech would be appended anyway.  The nested transaction below is re-entrant and runs
+        # under the OS lock this block already holds.
+        with self._transaction():
             try:
                 value = self._read()
                 if value.get("session_id") != session_id:
+                    # This chunk belongs to a session that no longer exists.  Its pending claim
+                    # went away with that session's state; touching the new one would be wrong.
                     return
-                audio = dict(value.get("audio") or {})
-                audio["pending"] = max(0, int(audio.get("pending") or 0) - 1)
+                audio = self._adjust_claim(value, -1, -int(nbytes or 0))
                 if error:
                     audio["last_error"] = error
-                value["audio"] = audio
                 self._write(value)
-                still_active = value.get("active") and value.get("session_id") == session_id
+                # A decode that was already running cannot be recalled, but ending the session
+                # or revoking listening must still be a real boundary for its result.
+                authorized = self._speech_authorized(value, session_id, source, epoch)
             except Exception:
-                still_active = False
-        if still_active:
+                return
+            if not authorized:
+                return
             event_source = "you" if source in {"microphone", "capsule"} else "other"
             for speaker, text in texts:
                 try:
@@ -675,7 +1374,7 @@ class LiveSessionStore:
 
     def dismiss_suggestion(self, suggestion_id) -> dict:
         suggestion_id = str(suggestion_id or "")
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             found = False
             for item in value.get("suggestions") or []:
@@ -696,7 +1395,7 @@ class LiveSessionStore:
             pid, hwnd = max(0, int(pid or 0)), max(0, int(hwnd or 0))
         except (TypeError, ValueError):
             raise LiveCopilotError("handoff pid and hwnd must be integers")
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("start Live Copilot before using the handoff shortcut")
@@ -750,7 +1449,7 @@ class LiveSessionStore:
             except Exception:
                 semantic = ""
 
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if not value.get("active") or value.get("session_id") != session_id:
                 raise LiveCopilotError("the live session ended before handoff context was captured")
@@ -781,7 +1480,7 @@ class LiveSessionStore:
             return dict(value["handoff"])
 
     def resolve_handoff(self, *, handoff_id="") -> dict:
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             handoff = dict(value.get("handoff") or {})
             if not handoff or (handoff_id and handoff.get("id") != handoff_id):
@@ -793,7 +1492,7 @@ class LiveSessionStore:
             return handoff
 
     def start_work(self, *, text="", suggestion_id="") -> dict:
-        with _LOCK:
+        with self._transaction():
             value = self._read()
         if not value.get("active"):
             raise LiveCopilotError("no live session is active")
@@ -821,7 +1520,7 @@ class LiveSessionStore:
             raise LiveCopilotError(str(status["error"]))
         row = {"mission_id": status.get("mission_id"), "goal": goal,
                "state": status.get("state"), "created_at_ms": _now_ms()}
-        with _LOCK:
+        with self._transaction():
             current = self._read()
             current["work"] = (current.get("work") or [])[-(MAX_WORK - 1):] + [row]
             self._write(current)
@@ -830,7 +1529,7 @@ class LiveSessionStore:
     def attach_board(self) -> dict:
         from . import browserbridge as bb
         from .live_surfaces import BOARD_SPACE, SurfaceError, detect_board, safe_board_url
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("start a live session before attaching a surface")
@@ -855,7 +1554,7 @@ class LiveSessionStore:
                      "service_name": profile["name"], "mode": profile["mode"],
                      "integration": profile["integration"], "tab_id": int(identity["tab_id"]),
                      "attached_at_ms": _now_ms()}
-            with _LOCK:
+            with self._transaction():
                 current = self._read()
                 if not current.get("active") or current.get("session_id") != session_id:
                     raise LiveCopilotError("the live session ended before the surface attached")
@@ -875,7 +1574,7 @@ class LiveSessionStore:
                              separators=(",", ":")).encode("utf-8")
         plan = {"id": "diagram-" + hashlib.sha256(encoded).hexdigest()[:16],
                 "created_at_ms": _now_ms(), **diagram}
-        with _LOCK:
+        with self._transaction():
             value = self._read()
             if not value.get("active"):
                 raise LiveCopilotError("no live session is active")
@@ -885,7 +1584,7 @@ class LiveSessionStore:
 
     def apply_diagram(self, plan_id) -> dict:
         from .live_surfaces import detect_board, draw_with_shortcuts, safe_display_url
-        with _LOCK:
+        with self._transaction():
             value = self._read()
         if not value.get("active") or not value.get("board_edit"):
             raise LiveCopilotError("live surface editing is not allowed")
@@ -898,7 +1597,7 @@ class LiveSessionStore:
         expected_session = value.get("session_id")
 
         def authority():
-            with _LOCK:
+            with self._transaction():
                 current = self._read()
             if (not current.get("active") or not current.get("board_edit") or
                     current.get("session_id") != expected_session or
@@ -911,7 +1610,7 @@ class LiveSessionStore:
                 expected_url=safe_display_url(board.get("url")))
         except Exception as exc:
             raise LiveCopilotError(str(exc)) from exc
-        with _LOCK:
+        with self._transaction():
             current = self._read()
             current["pending_diagram"] = None
             self._write(current)
@@ -1070,7 +1769,7 @@ def analyze_dialogue_payload(payload: dict) -> str:
 def run_voice_dialogue_once(root=None, analyzer=None) -> bool:
     store = LiveSessionStore(root)
     now = _now_ms()
-    with _LOCK:
+    with store._transaction():
         value = store._read()
         if not value.get("active") or not value.get("voice_dialogue"):
             return False
@@ -1104,7 +1803,7 @@ def run_voice_dialogue_once(root=None, analyzer=None) -> bool:
     except Exception as exc:
         answer = ""
         error = _text("%s: %s" % (type(exc).__name__, exc), 1_000)
-    with _LOCK:
+    with store._transaction():
         current = store._read()
         if current.get("session_id") != session_id or not current.get("active"):
             return False
@@ -1381,7 +2080,7 @@ class LiveCopilotRuntime:
 
     def tick(self) -> bool:
         now = _now_ms()
-        with _LOCK:
+        with self.store._transaction():
             value = self.store._read()
             if not value.get("active"):
                 return False
@@ -1393,7 +2092,7 @@ class LiveCopilotRuntime:
         self._observe_ui(value, now, foreground)
         self._observe_input(value, now, foreground)
         self._observe_browser_context(value, now)
-        with _LOCK:
+        with self.store._transaction():
             value = self.store._read()
             if not value.get("understand"):
                 return False
@@ -1455,7 +2154,7 @@ class LiveCopilotRuntime:
         except Exception as exc:
             result = {"summary": "", "suggestions": []}
             error = _text("%s: %s" % (type(exc).__name__, exc), 1_000)
-        with _LOCK:
+        with self.store._transaction():
             current = self.store._read()
             # A provider request that was already in flight cannot be recalled, but ending or
             # pausing the session must still be a real processing boundary: never let its late
@@ -1515,8 +2214,9 @@ def model_context() -> str:
         # Context composition is a hot, read-only path.  Read only the private state it needs;
         # the public snapshot also computes UI capabilities and must never gain the power to
         # change an unrelated run's environment.
-        with _LOCK:
-            value = LiveSessionStore()._read()
+        store = LiveSessionStore()
+        with store._transaction():
+            value = store._read()
         snap = {
             "active": bool(value.get("active")),
             "context": value.get("context") or "",
