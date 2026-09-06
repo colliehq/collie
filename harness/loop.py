@@ -313,9 +313,25 @@ def _is_asserting_cmd(command: str) -> bool:
     return bool(_ASSERTED_RE.search(c))
 
 
-def _budget_exceeded(model, total, subscription_only=False):
-    """True once the run has spent past the configured $ or token ceiling (Settings panel /
-    COLLIE_MAX_COST / COLLIE_MAX_TOTAL_TOKENS). 0/unset = no limit."""
+def _budget_exceeded(model, total, subscription_only=False, limits=None):
+    """True once the run has spent past the $ or token ceiling it is authorized to spend.
+
+    ``limits`` is the run's own frozen snapshot (``settings.RunLimits``), taken once when the
+    run started or when its request was accepted. Passing it is how a Settings save stops being
+    retroactive: this used to read COLLIE_MAX_COST / COLLIE_MAX_TOTAL_TOKENS at every call, so a
+    cap typed for future work was applied to spend a run had already made. ``Harness._over_budget``
+    supplies it at every call site inside the loop.
+
+    Without one this still reads the environment, unchanged, for standalone callers that have no
+    run to snapshot for (Pack's own aggregate accounting, an automation's subprocess env). 0 or
+    unset means no limit either way.
+    """
+    if limits is not None:
+        max_cost = max(0.0, float(getattr(limits, "max_cost", 0.0) or 0.0))
+        max_tok = max(0, int(getattr(limits, "max_total_tokens", 0) or 0))
+        if max_cost <= 0 and max_tok <= 0:
+            return False
+        return _spend_exceeded(model, total, subscription_only, max_cost, max_tok)
     try:
         max_cost = float(os.environ.get("COLLIE_MAX_COST", "0") or 0)
     except ValueError:
@@ -326,6 +342,11 @@ def _budget_exceeded(model, total, subscription_only=False):
         max_tok = 0
     if max_cost <= 0 and max_tok <= 0:
         return False
+    return _spend_exceeded(model, total, subscription_only, max_cost, max_tok)
+
+
+def _spend_exceeded(model, total, subscription_only, max_cost, max_tok) -> bool:
+    """Has this run's accumulated usage crossed either ceiling? (0 = no ceiling.)"""
     tot = total.input_tokens + total.output_tokens + total.cache_read + total.cache_creation
     if max_tok > 0 and tot >= max_tok:
         return True
@@ -451,7 +472,7 @@ class Harness:
                  composer: ContextComposer, recorder: Recorder,
                  cwd: str, project: str = "global", mode: str = "act",
                  max_turns: int = 0, self_verify: bool = True,
-                 force_edit: bool = False):
+                 force_edit: bool = False, limits=None):
         self.provider = provider
         self.memory = memory
         self.registry = registry
@@ -461,6 +482,14 @@ class Harness:
         self.project = project
         self.mode = mode
         self.max_turns = max_turns
+        # The $/token ceilings this harness is authorized to spend, frozen (settings.RunLimits).
+        # None means "this run takes its own snapshot when it starts", which is what every
+        # ordinary caller wants: the panel's value at the moment work began, held steady for the
+        # whole run, and re-read for the next one. A surface replaying a durable request supplies
+        # the snapshot taken when the person accepted it instead, so a cap moved while the
+        # request waited neither loosens nor tightens what was agreed.
+        self.limits = limits
+        self._active_limits = None       # the snapshot in force for the run currently executing
         # Optional hard ceiling for physical provider requests in this Harness
         # run. Mission code slices set it from their outer durable budget;
         # ordinary interactive runs leave it unlimited (zero).
@@ -584,6 +613,30 @@ class Harness:
         # workspace explicitly trusted with ``collie trust``; user hooks remain
         # available everywhere. Embedders/tests may replace this manager.
         self.hooks = HookManager(cwd)
+
+    def resolve_limits(self):
+        """The ceilings this run will be held to, decided ONCE before the first request.
+
+        Order: what the caller froze for this harness, then what the parent of a delegated run
+        authorized, then the values configured right now. The middle step is what keeps a child
+        honest — it already shares the parent's ledger through ``shared_budget``, so it must be
+        measured against the same ceilings the parent started under, not against a panel value
+        that moved while the parent was working. Pack's aggregate budget carries no ceilings of
+        its own and falls through to the third case, exactly as before.
+        """
+        limits = getattr(self, "limits", None)
+        if limits is None:
+            limits = getattr(getattr(self, "shared_budget", None), "limits", None)
+        if limits is None:
+            limits = _settings.current_limits()
+        return limits
+
+    def _over_budget(self, total) -> bool:
+        """Has this run spent past the ceiling it started under?"""
+        return _budget_exceeded(
+            self.provider.model, total,
+            bool(getattr(self.provider, "subscription_only", False)),
+            limits=self._active_limits)
 
     def _emit(self, kind, **data):
         if self.emit:
@@ -1260,8 +1313,7 @@ class Harness:
             return None
         if self.shared_budget is not None and self.shared_budget.exceeded():
             return None
-        if _budget_exceeded(self.provider.model, total,
-                            bool(getattr(self.provider, "subscription_only", False))):
+        if self._over_budget(total):
             return None
         # Build the digest BEFORE spending anything. It is bounded by whole messages and can
         # refuse (a user message too large to hand over complete, a span too small once it is
@@ -1483,6 +1535,10 @@ class Harness:
     def _run(self, task_id: str, user_msg, consolidate: bool = True,
              history: list = None, authority_msg=None) -> RunResult:
         t0 = time.time()
+        # One snapshot, before the first request, for every budget question this run will ask.
+        # After this line nothing in the loop looks at COLLIE_MAX_COST/COLLIE_MAX_TOTAL_TOKENS
+        # again, so a Settings save lands on the NEXT run instead of on the one in flight.
+        self._active_limits = self.resolve_limits()
         # Redact before *any* model-facing or durable copy is made.  Previously
         # only tool output was protected, while a credential pasted in the user
         # prompt or carried by resumed history was checkpointed and sent raw.
@@ -1526,6 +1582,8 @@ class Harness:
                       # deadline. Passing the bound method (not self.cancelled) keeps the late-bound
                       # lookup and the never-raises discipline of _cancel_requested.
                       cancelled=self._cancel_requested)
+        if getattr(self, "capabilities", None) is not None:
+            ctx.capabilities = dict(self.capabilities)
         self._hook("SessionStart", {
             "run_id": rid, "task_id": task_id, "project": self.project,
             "provider": self.provider.name, "model": self.provider.model,
@@ -1629,8 +1687,12 @@ class Harness:
                 def exceeded(_budget):
                     return (parent._cancel_requested() or
                             bool(parent.shared_budget and parent.shared_budget.exceeded()) or
-                            bool(_budget_exceeded(parent.provider.model, total,
-                                bool(getattr(parent.provider, "subscription_only", False)))))
+                            bool(parent._over_budget(total)))
+
+            # The child is measured against the ceilings its parent was authorized to spend, not
+            # against whatever the panel says by the time it starts. run_child assigns this
+            # object as the child's shared_budget, so resolve_limits finds it there.
+            DelegationBudget.limits = self._active_limits
 
             def delegate_runner(task, limit):
                 nonlocal model_calls
@@ -1732,9 +1794,7 @@ class Harness:
                     break
                 shared_budget_hit = bool(self.shared_budget is not None
                                          and self.shared_budget.exceeded())
-                if shared_budget_hit or (turn > 0 and _budget_exceeded(
-                        self.provider.model, total,
-                        bool(getattr(self.provider, "subscription_only", False)))):
+                if shared_budget_hit or (turn > 0 and self._over_budget(total)):
                     budget_hit = True         # spent past the $/token ceiling — stop before another turn
                     res.turns = turn
                     break
@@ -1883,9 +1943,7 @@ class Harness:
                                 0, int(getattr(self, "max_contract_repairs", 1) or 0))
                             and (not call_cap or model_calls < call_cap)
                             and not shared_exhausted
-                            and not _budget_exceeded(
-                                self.provider.model, total,
-                                bool(getattr(self.provider, "subscription_only", False)))):
+                            and not self._over_budget(total)):
                         res.contract_repairs += 1
                         # Do not append either the rejected output or this synthetic correction to
                         # session["messages"].  The next successful tool/answer is the only assistant
@@ -1909,9 +1967,7 @@ class Harness:
                     if (cls == "retryable" and attempts < self.max_retries
                             and (not call_cap or model_calls < call_cap)
                             and not shared_exhausted
-                            and not _budget_exceeded(
-                                self.provider.model, total,
-                                bool(getattr(self.provider, "subscription_only", False)))):
+                            and not self._over_budget(total)):
                         delay = self.retry_base * (2 ** attempts)
                         attempts += 1
                         self.recorder.log_turn(rid, turn, "retry",
@@ -2701,9 +2757,7 @@ class Harness:
                 # self-nudge cannot. Bounded critic->repair rounds.
                 shared_exhausted = bool(self.shared_budget is not None
                                         and self.shared_budget.exceeded())
-                local_exhausted = _budget_exceeded(
-                    self.provider.model, total,
-                    bool(getattr(self.provider, "subscription_only", False)))
+                local_exhausted = self._over_budget(total)
                 if (self.critic and did_edit and _has_next_turn(turn)
                         and critic_rounds < self.critic_max
                         and (not getattr(self, "max_model_calls", 0) or
@@ -2841,9 +2895,7 @@ class Harness:
                     pass                          # keep answer empty -> `res.answer or res.error` shows the error
                 elif last_text:
                     answer = comp.text
-                elif (budget_hit or _budget_exceeded(
-                        self.provider.model, total,
-                        bool(getattr(self.provider, "subscription_only", False)))
+                elif (budget_hit or self._over_budget(total)
                       or (self.shared_budget is not None and self.shared_budget.exceeded())):
                     # Don't spend MORE past either the local ceiling or Pack's aggregate ceiling on
                     # a cosmetic synthesis call after useful work has already happened.
@@ -2894,7 +2946,14 @@ class Harness:
                     budget_hit = True
                     answer = "(stopped at model-call budget — see the edits/tools above)"
             if budget_hit and answer:
-                answer += "\n\n_[stopped: budget ceiling reached]_"
+                # Name the ceiling that was actually crossed, and only when it was: budget_hit
+                # also covers the model-call cap and Pack's aggregate, and a receipt that
+                # invented a number for those would be worse than one that stayed general.
+                ceiling = (self._active_limits.ceiling_text()
+                           if (self._active_limits is not None
+                               and self._over_budget(total)) else "")
+                answer += "\n\n_[stopped: budget ceiling reached%s]_" % (
+                    (" — " + ceiling) if ceiling else "")
             if turns_exhausted and answer and "ran out of turns" not in answer:
                 # The cost ceiling has always said so; the turn ceiling never did, so a summary
                 # written mid-task read as a finished report — including when no check had run.
@@ -2990,6 +3049,11 @@ class Harness:
         res.wall_ms = int((time.time() - t0) * 1000)
         res.canceled = canceled
         res.budget_exhausted = budget_hit
+        # The ceilings this run was actually held to, so a receipt can say what "budget" meant
+        # here rather than making a reader guess from whatever the panel says afterwards.
+        if self._active_limits is not None:
+            res.budget_limits = dict(self._active_limits.values(),
+                                     source=self._active_limits.source)
         res.edited = did_edit
         # Keep this assignment before finish_run: recorder implementations/adapters are allowed to
         # inspect the complete result synchronously, and previously always observed the dataclass's

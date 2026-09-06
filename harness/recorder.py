@@ -37,6 +37,7 @@ class RunResult:
     # distinguish a normal unresolved attempt from a provider or adapter failure.
     turns_exhausted: bool = False
     budget_exhausted: bool = False
+    budget_limits: dict = field(default_factory=dict)
     canceled: bool = False
     stop_reason: str = ""
     tool_calls: int = 0
@@ -199,6 +200,7 @@ def run_outcome(result):
             "edited": bool(getattr(result, "edited", False)),
             "turns_exhausted": bool(getattr(result, "turns_exhausted", False)),
             "budget_exhausted": bool(getattr(result, "budget_exhausted", False)),
+            "budget_limits": dict(getattr(result, "budget_limits", {}) or {}),
             "canceled": bool(getattr(result, "canceled", False)),
             "model_calls": getattr(result, "model_calls", 0),
             "parent_run_id": getattr(result, "parent_run_id", None)}

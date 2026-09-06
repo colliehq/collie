@@ -323,13 +323,22 @@ def test_a_retry_after_the_settings_panel_moved_on_is_still_the_same_request(web
     code, accepted = _post(base, token, "/api/task-inbox", body)
     assert code == 200
     frozen = accepted["entry"]["config"]["frozen"]
-    assert frozen == {"provider": "mock", "model": "model-a",
-                      "interactive_speed": "standard", "reasoning_effort": "auto",
-                      "runner_settings": {"RUNNER": "collie", "RUNNER_POOL": "collie"}}
+    assert {k: v for k, v in frozen.items() if k not in {"limits", "capabilities"}} == {
+        "provider": "mock", "model": "model-a",
+        "interactive_speed": "standard", "reasoning_effort": "auto",
+        "runner_settings": {"RUNNER": "collie", "RUNNER_POOL": "collie"}}
+    assert frozen["capabilities"] == {"version":1,"values":{
+        "DESKTOP_CONTROL":False,"SCREEN_CAPTURE":False,"MCP_MANAGE":False,"MCP_DISCOVERY":False}}
+    # The budget it was accepted under travels with it, versioned and digested, so a build
+    # that cannot replay it refuses rather than picking a ceiling nobody authorized.
+    assert frozen["limits"] == {
+        "version": 1, "digest": frozen["limits"]["digest"],
+        "values": {"MAX_COST": "0", "MAX_TOTAL_TOKENS": "0", "MAX_TURNS": "0",
+                   "MAX_TOKENS": "", "TEMPERATURE": ""}}
 
-    # Somebody opens Settings and picks a different model, and a different payer.
+    # Somebody opens Settings and picks a different model, a different payer, and a budget.
     PANEL.update({"MODEL": "model-b", "PROVIDER": "anthropic-oauth",
-                  "REASONING_EFFORT": "high"})
+                  "REASONING_EFFORT": "high", "MAX_TOTAL_TOKENS": "1000"})
 
     code, retried = _post(base, token, "/api/task-inbox", body)
     assert code == 200 and retried["accepted"] is True

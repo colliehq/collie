@@ -190,7 +190,7 @@ def semantic_config(raw):
 
 
 def freeze_config(raw, *, provider, model="", interactive_speed="", reasoning_effort="",
-                  runner_settings=None):
+                  runner_settings=None, limits=None, capabilities=None):
     """Pin every setting this request was typed under, at acceptance.
 
     A follow-up accepted while the composer said "Plan / thorough / Required"
@@ -204,6 +204,17 @@ def freeze_config(raw, *, provider, model="", interactive_speed="", reasoning_ef
     ``provider`` is frozen for a different reason: it decides who pays.  The
     managed stream refuses a run whose configured provider changed since
     acceptance rather than quietly charging a different account.
+
+    ``limits`` is ``settings.freeze_limits()`` — the budget and generation
+    ceilings (MAX_COST, MAX_TOTAL_TOKENS, MAX_TURNS, MAX_TOKENS, TEMPERATURE)
+    the person had configured when they pressed send.  Those used to be read
+    live at every turn boundary, which meant a cap raised or lowered while a
+    request sat in the queue silently became the cap it ran under.  It carries
+    its own version and digest so a build that cannot replay it says so and
+    leaves the request waiting instead of guessing.  ``None`` means this entry
+    made no claim about its limits (an entry accepted before they were frozen),
+    and the managed stream then uses the current ones — an explicit absence,
+    not an empty snapshot.
     """
     out = semantic_config(raw)
     out["frozen"] = {"provider": str(provider or ""), "model": str(model or ""),
@@ -211,6 +222,10 @@ def freeze_config(raw, *, provider, model="", interactive_speed="", reasoning_ef
                      "reasoning_effort": str(reasoning_effort or "")}
     if runner_settings is not None:
         out["frozen"]["runner_settings"] = dict(runner_settings)
+    if limits is not None:
+        out["frozen"]["limits"] = json.loads(json.dumps(limits))   # plain, storable, detached
+    if capabilities is not None:
+        out["frozen"]["capabilities"] = json.loads(json.dumps(capabilities))
     return out
 
 

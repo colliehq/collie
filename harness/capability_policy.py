@@ -16,6 +16,23 @@ def snapshot():
     return {key: _current(key) for key in KEYS}
 
 
+def freeze():
+    return {"version": 1, "values": snapshot()}
+
+
+def from_payload(payload):
+    """Replay accepted grants; live global revocation still applies in allowed()."""
+    if payload is None:
+        return snapshot()
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ValueError("unsupported saved capability policy")
+    values = payload.get("values")
+    if (not isinstance(values, dict) or set(values) != set(KEYS) or
+            any(type(value) is not bool for value in values.values())):
+        raise ValueError("incomplete or invalid saved capability policy")
+    return dict(values)
+
+
 def allowed(key, ctx=None):
     if key not in KEYS:
         return False

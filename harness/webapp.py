@@ -863,6 +863,32 @@ def _provider() -> str:
     return os.environ.get("COLLIE_PROVIDER", "")
 
 
+class _RunSettings:
+    """``settings`` as ONE run must see it: its own frozen ceilings, everything else live.
+
+    Worker selection reads MAX_COST/MAX_TOTAL_TOKENS to decide which harness can be trusted to
+    stop at a budget.  A request that waited in the durable inbox has to be routed by the budget
+    it was accepted under, not by whatever the panel says at the moment its turn comes — and the
+    only honest way to arrange that is to hand the reader a view, because writing the values
+    into os.environ would re-route every other run in this process at the same time.
+
+    Read-only by construction: there is no ``save``/``apply`` here, and the frozen values are a
+    plain dict of strings taken once.
+    """
+
+    def __init__(self, base, limits):
+        self._base = base
+        self._values = limits.values()
+
+    def get(self, key, default=None):
+        if key in self._values:
+            value = self._values[key]
+            if value != "":
+                return value
+            return default if default is not None else ""
+        return self._base.get(key, default)
+
+
 def _perm(item) -> dict:
     """One parked approval, as the browser needs it.
 
@@ -4607,12 +4633,16 @@ class Handler(BaseHTTPRequestHandler):
             raise web_tasks.WebInputError(
                 "no model configured — open Settings and choose a Provider before "
                 "queueing work", 409)
+        from . import capability_policy
         frozen = web_tasks.freeze_config(
             config, provider=provider, model=settings.get("MODEL", "") or "",
             interactive_speed=settings.get("INTERACTIVE_SPEED", "") or "",
             reasoning_effort=settings.get("REASONING_EFFORT", "") or "",
             runner_settings={"RUNNER": settings.get("RUNNER", "collie") or "collie",
-                             "RUNNER_POOL": settings.get("RUNNER_POOL", "collie") or "collie"})
+                             "RUNNER_POOL": settings.get("RUNNER_POOL", "collie") or "collie"},
+            # The budget this request is authorized to spend, read (never written) here so the
+            # answer to "how much may this cost?" is the one the person had in front of them.
+            limits=settings.freeze_limits(), capabilities=capability_policy.freeze())
         return web_tasks.accept(sid, entry_id=entry_id, text=text, mode=mode,
                                 config=frozen, images=image_payloads,
                                 contexts=context_items, client=client,
@@ -4830,6 +4860,34 @@ class Handler(BaseHTTPRequestHandler):
                                "the configured one (%s); re-send it to run on %s"
                                % (frozen["provider"], prov, prov),
                                "provider_changed": True})
+            return
+
+        # How much this run is authorized to spend, decided once, here.  A queued request
+        # replays the ceilings it was accepted under; a live one snapshots the current ones.
+        # Both are then carried by value — into worker selection, into the Harness, onto the
+        # provider object — and never by writing the process environment, which is what used to
+        # make one person's Settings save land on somebody else's run in flight.
+        try:
+            run_limits = settings.enforce_pinned(
+                settings.limits_from_payload(frozen.get("limits")))
+        except ValueError as exc:
+            # A stored snapshot this build cannot read is not a reason to pick a number.  The
+            # request keeps its place in the queue and says what would have to change.
+            self._sse("done", {"session": sid, "answer": "", "error":
+                               "this request recorded the budget it was accepted under, and "
+                               "this build cannot replay it (%s); it was kept pending — "
+                               "re-send it to run under the current limits" % exc,
+                               "limits_unreplayable": True,
+                               **({"input_id": input_entry["id"]}
+                                  if input_entry is not None else {})})
+            return
+
+        from . import capability_policy
+        try:
+            run_capabilities = capability_policy.from_payload(frozen.get("capabilities"))
+        except ValueError as exc:
+            self._sse("done", {"session":sid, "answer":"", "error":str(exc),
+                               "capabilities_unreplayable":True})
             return
 
         # A transcript stopped at a model/turn boundary is safe to continue.  One stopped while an
@@ -5050,9 +5108,14 @@ class Handler(BaseHTTPRequestHandler):
         gate_mode = (run_opts["intent"] if run_opts["intent"] in
                      ("plan", "review", "test") else "project")
         try:
+            # Worker selection weighs this run's budget (a tight ceiling rules out a worker
+            # that cannot be stopped at one), so it has to see the same ceilings the run will
+            # actually be held to — the frozen ones for a queued request.  A read-only view,
+            # so no other run in this process moves.
             runner_req = runner_select.request_from_surface(
                 "pack" if strategy == "pack" else "web", requested_runner,
-                decision, settings, cwd=cwd, has_approver=True, gate_mode=gate_mode)
+                decision, _RunSettings(settings, run_limits), cwd=cwd,
+                has_approver=True, gate_mode=gate_mode)
             runner_candidates = tuple(runner_req.candidates())
             runner_probes = runner_reg.probe_all(
                 keys=runner_candidates, provider=decision.provider)
@@ -5108,6 +5171,40 @@ class Handler(BaseHTTPRequestHandler):
                                         "made recoverable" + cleanup_error,
                                "decision": dict(decision.to_dict(),
                                                 runner=runner_decision.to_dict())})
+            return
+        if input_entry is not None and frozen.get("limits") is not None:
+            # Only Collie's own harness can be HANDED a budget: make_harness below passes the
+            # frozen ceilings straight into the loop and onto the provider object. An external
+            # worker runs its own loop under its own accounting, so a limit that moved while this
+            # request waited would silently become the limit it runs under.  Say which knob
+            # moved and keep the request pending; nothing has been journalled or transmitted
+            # yet, and the person can re-send it under the settings they now have.
+            unenforceable = runner_decision.runner != "collie"
+            moved = run_limits.differences(settings.current_limits())
+            if unenforceable and moved:
+                cleanup_error = _discard_unused_worktree()
+                where = "worker %s, which runs its own loop under its own accounting" % runner_decision.runner
+                error = ("this request was accepted with %s, and %s cannot be given that "
+                         "ceiling; the limit changed after it was accepted (now %s), so the "
+                         "request was kept pending. Re-send it to run under the current "
+                         "limits, or use worker Collie%s"
+                         % (run_limits.describe(moved), where,
+                            settings.current_limits().describe(moved), cleanup_error))
+                self._sse("done", {"session": sid, "answer": "", "error": error,
+                                   "limits_changed": True, "input_id": input_entry["id"],
+                                   "decision": dict(decision.to_dict(),
+                                                    runner=runner_decision.to_dict())})
+                return
+
+        if (input_entry is not None and frozen.get("capabilities") is not None and
+                runner_decision.runner != "collie" and
+                run_capabilities != capability_policy.snapshot()):
+            cleanup_error = _discard_unused_worktree()
+            self._sse("done", {"session":sid, "answer":"", "input_id":input_entry["id"],
+                "error":"Capability settings changed while this request was waiting. "
+                        "This worker cannot replay its saved grants; the request remains pending. "
+                        "Re-send it under the current settings." + cleanup_error,
+                "capabilities_changed":True})
             return
 
         execution_speed = decision.speed
@@ -5347,6 +5444,7 @@ class Handler(BaseHTTPRequestHandler):
                                     # ungated merely because this is a multi-candidate strategy.
                                     gate_factory=lambda attempt_cwd: default_gate(attempt_cwd),
                                     history=history, runner_decision=runner_decision,
+                                    limits=run_limits, capabilities=run_capabilities,
                                     runner_model=_worker_model(
                                         "", decision, runner_req,
                                         runner_reg.SPECS.get(runner_decision.runner)))
@@ -5869,6 +5967,11 @@ class Handler(BaseHTTPRequestHandler):
                              effort=decision.effort, speed=decision.speed,
                              project="web",
                              code_search=True, web_search=True, exec_code=True, delegate=True,
+                             # The ceilings resolved for this run, handed over by value: the
+                             # loop is held to them for its whole length, and the provider gets
+                             # the per-turn generation knobs by assignment rather than through
+                             # an environment every other run in this process shares.
+                             limits=run_limits, capabilities=run_capabilities,
                              gate=default_gate(
                                  cwd, mode=gate_mode,
                                  commands=[verify_command] if gate_mode == "test" else None))

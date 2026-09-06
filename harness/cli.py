@@ -227,12 +227,64 @@ def default_gate(cwd, mode=None, commands=None):
     return g
 
 
+def _apply_generation_limits(provider, limits):
+    """Hand a run's frozen per-turn generation knobs to the provider object it will use.
+
+    By assignment, never by writing os.environ. Providers read COLLIE_MAX_TOKENS and
+    COLLIE_TEMPERATURE once, in their constructors, so setting the attribute is the only way to
+    deliver a value frozen earlier (when a durable request was accepted) without moving what
+    every OTHER provider built in this process would read — which is the leak this whole change
+    exists to close.
+
+    A provider with no such attribute does not consult that knob at all, so the run is neither
+    loosened nor tightened by it. That is reported as not-applicable rather than refused:
+    refusing would turn a setting the run never depended on into a dead end for the person.
+
+    Returns ``(applied, not_applicable)`` — what was delivered, and which knobs this provider
+    has no place to put.
+    """
+    applied, not_applicable = {}, []
+    for attr, key, value, cast in (
+            ("max_tokens", "MAX_TOKENS", getattr(limits, "max_tokens", None), int),
+            ("temperature", "TEMPERATURE", getattr(limits, "temperature", None), float)):
+        if not hasattr(provider, attr):
+            if value is not None:
+                not_applicable.append(key)
+            continue
+        if value is None:
+            # The constructor may have read a newer setting than this request.
+            # An accepted unset value means the provider's declared default,
+            # never whatever another task put into the environment meanwhile.
+            value = getattr(provider, "default_" + attr, None)
+            if value is None:
+                if getattr(limits, "source", "") == "frozen":
+                    raise ValueError("provider does not declare its default %s; "
+                                     "cannot replay this request's unset %s" % (attr, key))
+                continue
+        setattr(provider, attr, cast(value))
+        applied[key] = cast(value)
+    return applied, not_applicable
+
+
 def make_harness(cwd, provider="mock", model=None, project="demo",
                  embed="auto", prefix_ceiling=6000, code_search=False,
                  rerank=None, distill=None, web_search=None, exec_code=False, delegate=False,
-                 gate=None, effort=None, speed="standard", subscription_only=False):
+                 gate=None, effort=None, speed="standard", subscription_only=False,
+                 limits=None, capabilities=None):
+    """Build a Harness. ``limits`` is a ``settings.RunLimits`` a caller already froze.
+
+    Supplying it pins this harness to those ceilings for every run it performs — that is what a
+    durable queued request needs, because the budget it was accepted under must not move while
+    it waits. Leaving it None keeps the long-standing behaviour: the turn cap and the provider's
+    generation knobs are read once here, and each run takes its own budget snapshot when it
+    starts, so a panel save lands on the next run rather than on one already in flight.
+    """
     from .embeddings import make_reranker
     from .distill import make_distiller
+    from . import settings as _settings
+    # The construction-time knobs (turn cap, provider max_tokens/temperature) need concrete
+    # values now. `resolved` is the caller's snapshot when there is one, otherwise a fresh read.
+    resolved = limits if limits is not None else _settings.current_limits()
     mem_db, runs_db, _, _ = _paths()
     rr = make_reranker(rerank or os.environ.get("COLLIE_RERANK"))   # opt-in cross-encoder
     ds = make_distiller(distill or os.environ.get("COLLIE_DISTILL"))  # opt-in extraction
@@ -253,8 +305,18 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     prov = make_provider(
         provider, model, effort=effort, speed=speed,
         subscription_only=bool(subscription_only))
-    h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project)
-    # Interactive runs have no implicit turn ceiling.  A positive COLLIE_MAX_TURNS remains an
+    limits_applied, limits_not_applicable = _apply_generation_limits(prov, resolved)
+    h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project,
+                limits=limits)
+    # What the construction-time knobs were taken from, and what this provider had nowhere to
+    # put. A surface replaying a frozen request reads these to say what it could and could not
+    # honour, instead of claiming a setting took effect that nothing consulted.
+    h.limits_snapshot = resolved
+    h.limits_applied = limits_applied
+    h.limits_not_applicable = tuple(limits_not_applicable)
+    if capabilities is not None:
+        h.capabilities = dict(capabilities)
+    # Interactive runs have no implicit turn ceiling.  A positive MAX_TURNS remains an
     # explicit user-owned hard cap; zero means unlimited.
     h._max_turns_hard_cap = None
     h.gate = gate                             # None = ungated (benchmarks, delegate child, embedded)
@@ -264,15 +326,11 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
             h.audit = AuditLog()
         except Exception:
             pass                              # a read-only home must not stop a run
-    try:                                      # Settings-panel turn limit (env/JSON), else keep default
-        mt = os.environ.get("COLLIE_MAX_TURNS")
-        if mt:
-            configured_cap = int(mt)
-            if configured_cap > 0:
-                h.max_turns = max(1, min(120, configured_cap))
-                h._max_turns_hard_cap = h.max_turns
-    except (TypeError, ValueError):
-        pass
+    # Settings-panel turn limit, from the same snapshot as everything else (env > settings.json
+    # > default), so a queued request keeps the turn cap it was accepted under.
+    if resolved.max_turns > 0:
+        h.max_turns = max(1, min(120, int(resolved.max_turns)))
+        h._max_turns_hard_cap = h.max_turns
     return h
 
 

@@ -5,10 +5,12 @@ then the saved settings.json (what the web Settings panel writes), then the code
 GUI reads SCHEMA to render the panel and GET/POSTs the values; make_harness/_provider/_embedder read
 `get()` so a saved setting takes effect on the next run with zero env fiddling.
 """
+import hashlib
 import json
 import os
 import time
 import unicodedata
+from dataclasses import dataclass, replace
 
 _PATH = os.environ.get("COLLIE_SETTINGS_PATH") or os.path.expanduser("~/.collie/settings.json")
 _cache = {"mtime": -1.0, "data": {}}
@@ -27,6 +29,25 @@ _cache = {"mtime": -1.0, "data": {}}
 _INJECTED_ENV = "COLLIE_APPLIED_KEYS"
 _inherited = {k.strip() for k in (os.environ.get(_INJECTED_ENV) or "").split(",") if k.strip()}
 _HARD_ENV = {k for k in os.environ if k.startswith("COLLIE_")} - _inherited - {_INJECTED_ENV}
+
+# What apply() put in os.environ, as env-var-name -> the exact value it wrote. Keys alone were
+# not enough. Runtime code legitimately REPLACES an injected value after import — a capability
+# granted for this session when the save failed (tools.py), the browser-bridge selection a
+# Mission browse run makes for itself (primitives.py) — and the old apply() popped or overwrote
+# every non-hard-set key it recognized, so any other surface calling apply() on its timer (Live
+# Copilot's ticker, the mission tick, every web request) silently revoked those grants mid-run.
+# Measured: COLLIE_SCREEN_CAPTURE='on' and COLLIE_BROWSER_BRIDGE='1' both became None across one
+# unrelated apply().
+#
+# So ownership is now a value, not a name: apply() writes or removes a variable only while what
+# is in the environment is still the thing it put there. A value somebody else wrote is somebody
+# else's, and is left exactly as found — the same rule _HARD_ENV already applies to a var the
+# user exported before we started, extended to one the running process set deliberately.
+#
+# A var inherited across a fork is seeded as ours at its inherited value, so the parent's panel
+# keeps working in the child: that is the whole point of _INJECTED_ENV, and dropping it would
+# re-open the bug where a spawned web server answered forever with the values it started with.
+_injected = {k: os.environ[k] for k in _inherited if k in os.environ}
 
 
 # Each knob: key (the settings.json field + the env var suffix COLLIE_<KEY>), label, type, default,
@@ -457,27 +478,59 @@ def pinned(key):
     return ("COLLIE_" + key) in _HARD_ENV
 
 
+def owns(key) -> bool:
+    """Is COLLIE_<KEY> still the value apply() last put there (so apply() may change it)?
+
+    True for a variable apply() injected and nobody has touched since, and for one that is
+    absent (nothing to take from anyone). False for a user's hard-set env var and for a value
+    the running process replaced at runtime — those belong to whoever set them.
+    """
+    envk = key if key.startswith("COLLIE_") else "COLLIE_" + key
+    if envk in _HARD_ENV:
+        return False
+    current = os.environ.get(envk)
+    return current is None or current == _injected.get(envk)
+
+
+def injected_values() -> dict:
+    """A copy of what apply() has injected and still owns (env var name -> value)."""
+    return dict(_injected)
+
+
 def apply():
     """Inject saved settings into os.environ (as COLLIE_<KEY>) for keys the user did NOT hard-set
     via a real env var — so every existing os.environ.get('COLLIE_X') read picks up the Settings
     panel with zero call-site changes, while an explicit env override stays authoritative. Re-reads
     settings.json (mtime-cached) so a panel save takes effect on the next call. Call per web request
-    / at CLI start."""
+    / at CLI start.
+
+    It only ever writes or removes a value it still owns (see ``owns``/``_injected``): a variable
+    the running process set for itself after import is a runtime override, and this function is
+    called on timers by surfaces that know nothing about it.
+    """
     data = _load()
     injected = []
     for s in SCHEMA:
         envk = "COLLIE_" + s["key"]
         if envk in _HARD_ENV:
             continue
+        if not owns(envk):
+            # Somebody replaced what we injected (or set it themselves after import). Leave both
+            # the value and our record of it alone: overwriting would revoke a runtime decision,
+            # and this is the periodic call of an unrelated surface, not a user's panel save.
+            continue
         v = data.get(s["key"])
         if v is not None and v != "":
-            os.environ[envk] = str(v)
+            value = str(v)
+            os.environ[envk] = value
+            _injected[envk] = value
             injected.append(envk)      # tell any child this came from the panel, not from the user
         else:
             # Clearing a setting in the panel must REVERT within a long-lived process, not linger until
             # restart — code that reads os.environ directly (COLLIE_MAX_TOKENS / _MAX_COST / force ratios)
             # kept a stale cap otherwise. Only drop env WE injected; a hard-set env stays (guarded above).
             os.environ.pop(envk, None)
+            _injected.pop(envk, None)
     # Carried across a fork so a child can tell panel-injected vars from a real user override.
     os.environ[_INJECTED_ENV] = ",".join(injected)
 
@@ -531,3 +584,217 @@ def update(partial: dict) -> dict:
         if k in _KEYS:
             data[k] = v
     return save(data)
+
+
+# ---------------------------------------------------------------- frozen run limits
+# A budget is authority, not a preference. The number that decides "stop here" has to be the one
+# the person authorized when the run started — not whatever the panel happens to say at the
+# moment a turn boundary is reached.
+#
+# Reading COLLIE_MAX_COST / COLLIE_MAX_TOTAL_TOKENS at every check made a Settings save
+# retroactive. Measured: a run had spent 5000 tokens, the user saved "Budget: stop past 1000
+# tokens" in another tab intending it for *future* work, and the answer they were waiting for
+# came back "_[stopped: budget ceiling reached]_". It goes wrong in the other direction too, and
+# more expensively: a durable request waits in the inbox, the cap is raised while it waits, and
+# the request runs past the ceiling it was accepted under.
+#
+# So the limits are SNAPSHOT once — at the start of a run, or at the moment a queued request is
+# accepted — and carried explicitly from there. Nothing in here writes os.environ: replaying a
+# snapshot by mutating process state would move every other run in this process with it, which
+# is the bug, not the fix.
+
+LIMIT_KEYS = ("MAX_COST", "MAX_TOTAL_TOKENS", "MAX_TURNS", "MAX_TOKENS", "TEMPERATURE")
+# Bumped when the meaning of a frozen field changes. A queued request whose payload names a
+# version this build cannot replay is refused and left waiting, never guessed at.
+LIMITS_VERSION = 1
+
+
+def _fmt_num(value) -> str:
+    """A float as short canonical text, so the same limit always digests the same."""
+    text = "%.10g" % float(value)
+    return "0" if text in ("-0", "-0.0") else text
+
+
+def _as_float(value, default=0.0) -> float:
+    try:
+        out = float(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return default if out != out or out in (float("inf"), float("-inf")) else out
+
+
+def _as_int(value, default=0) -> int:
+    text = str(value).strip()
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        pass
+    try:                       # "1000.0" from a JSON number round-trip is still a token count
+        return int(float(text))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _tighter(a, b):
+    """The stricter of two ceilings, where 0 means "no ceiling"."""
+    values = [v for v in (a, b) if v and v > 0]
+    return min(values) if values else 0
+
+
+@dataclass(frozen=True)
+class RunLimits:
+    """The budget and generation ceilings ONE run is authorized to spend.
+
+    ``max_cost`` / ``max_total_tokens`` / ``max_turns`` use 0 for "no ceiling", matching the
+    Settings panel. ``max_tokens`` / ``temperature`` use None for "not set — the provider's own
+    default", which is a different statement from "set to zero" and has to survive as one:
+    temperature 0 is a real, deliberate choice.
+    """
+
+    max_cost: float = 0.0
+    max_total_tokens: int = 0
+    max_turns: int = 0
+    max_tokens: int | None = None
+    temperature: float | None = None
+    # Where these came from, for receipts: "current" (read from the live settings at run start)
+    # or "frozen" (replayed from a durable request's acceptance snapshot).
+    source: str = "current"
+
+    @classmethod
+    def from_raw(cls, raw, *, source="current"):
+        """Parse the five knobs from their string form (missing/"" = unset)."""
+        raw = raw or {}
+        max_tokens = str(raw.get("MAX_TOKENS", "") or "").strip()
+        temperature = str(raw.get("TEMPERATURE", "") or "").strip()
+        return cls(
+            # A malformed ceiling reads as "no ceiling", which is what the loop has always done
+            # with junk in COLLIE_MAX_COST. Changing that to fail-closed is a separate decision.
+            max_cost=max(0.0, _as_float(raw.get("MAX_COST", ""), 0.0)),
+            max_total_tokens=max(0, _as_int(raw.get("MAX_TOTAL_TOKENS", ""), 0)),
+            max_turns=max(0, _as_int(raw.get("MAX_TURNS", ""), 0)),
+            # 0 output tokens is not a request anyone can serve, so it means "unset" here.
+            max_tokens=(lambda v: v if v > 0 else None)(_as_int(max_tokens, 0))
+                       if max_tokens else None,
+            temperature=_as_float(temperature, 0.0) if temperature else None,
+            source=str(source or "current"))
+
+    def values(self) -> dict:
+        """The canonical string form: what gets stored, compared and digested."""
+        return {"MAX_COST": _fmt_num(self.max_cost),
+                "MAX_TOTAL_TOKENS": str(int(self.max_total_tokens)),
+                "MAX_TURNS": str(int(self.max_turns)),
+                "MAX_TOKENS": "" if self.max_tokens is None else str(int(self.max_tokens)),
+                "TEMPERATURE": ("" if self.temperature is None
+                                else _fmt_num(self.temperature))}
+
+    def digest(self) -> str:
+        blob = json.dumps({"version": LIMITS_VERSION, "values": self.values()},
+                          sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+    def payload(self) -> dict:
+        """The durable form carried by an accepted request."""
+        return {"version": LIMITS_VERSION, "values": self.values(), "digest": self.digest()}
+
+    def differences(self, other) -> tuple:
+        """SCHEMA key names whose ceiling differs between two snapshots."""
+        if other is None:
+            return LIMIT_KEYS
+        mine, theirs = self.values(), other.values()
+        return tuple(k for k in LIMIT_KEYS if mine[k] != theirs[k])
+
+    def describe(self, keys=None) -> str:
+        """``MAX_TOTAL_TOKENS=1000, MAX_COST=0.5`` — for a refusal a person has to act on."""
+        values = self.values()
+        return ", ".join("%s=%s" % (k, values[k] or "unset")
+                         for k in (keys or LIMIT_KEYS))
+
+    def ceiling_text(self) -> str:
+        """The spend ceilings in words, for the line that says a run stopped at one."""
+        parts = []
+        if self.max_total_tokens > 0:
+            parts.append("%d total tokens" % self.max_total_tokens)
+        if self.max_cost > 0:
+            parts.append("$%s" % _fmt_num(self.max_cost))
+        return " / ".join(parts)
+
+
+def _raw_limits() -> dict:
+    """The five limit knobs as the layered lookup answers them right now."""
+    return {key: ("" if get(key, "") is None else str(get(key, "")).strip())
+            for key in LIMIT_KEYS}
+
+
+def current_limits() -> RunLimits:
+    """One snapshot of the configured ceilings, taken now. Env > settings.json > default."""
+    return RunLimits.from_raw(_raw_limits(), source="current")
+
+
+def freeze_limits() -> dict:
+    """The durable snapshot to store with a request at the moment it is accepted."""
+    return current_limits().payload()
+
+
+def limits_from_payload(payload, *, source="frozen") -> RunLimits:
+    """Replay a stored snapshot, or raise ``ValueError`` saying exactly why it cannot be.
+
+    ``None`` is the legacy entry: it was accepted before limits were frozen, so it carries no
+    claim about them and runs under the current ones. That absence is explicit — an entry whose
+    payload is present but unreadable is refused instead, because a request that *did* record a
+    ceiling must never be run under a different one.
+    """
+    if payload is None:
+        return current_limits()
+    if not isinstance(payload, dict):
+        raise ValueError("the frozen run limits are not an object")
+    version = payload.get("version")
+    if version != LIMITS_VERSION:
+        raise ValueError(
+            "this request froze its limits in format version %r; this build reads version %d"
+            % (version, LIMITS_VERSION))
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        raise ValueError("the frozen run limits carry no values")
+    unknown = sorted(set(values) - set(LIMIT_KEYS))
+    if unknown:
+        raise ValueError("the frozen run limits name unknown setting(s): %s"
+                         % ", ".join(unknown))
+    missing = sorted(set(LIMIT_KEYS) - set(values))
+    if missing:
+        raise ValueError("the frozen run limits are missing setting(s): %s" % ", ".join(missing))
+    if any(not isinstance(value, str) for value in values.values()):
+        raise ValueError("the frozen run limits require canonical string values")
+    limits = RunLimits.from_raw(values, source=source)
+    stored = payload.get("digest")
+    if not isinstance(stored, str) or stored != limits.digest():
+        raise ValueError("the frozen run limits do not match their own digest")
+    if values != limits.values():
+        raise ValueError("the frozen run limits contain malformed or noncanonical values")
+    return limits
+
+
+def enforce_pinned(limits: RunLimits) -> RunLimits:
+    """Never let a snapshot loosen a ceiling the user hard-set in this process's environment.
+
+    An explicit ``COLLIE_MAX_COST=...`` outranks the panel everywhere else, and it has to
+    outrank a snapshot too — including one frozen by a *different* process, which is the only
+    way the two can disagree. For the three spend ceilings the stricter of the two wins, so a
+    snapshot that asked for less still gets less. The two generation knobs are not ceilings, so
+    the user's explicit value simply wins.
+    """
+    if limits is None:
+        return current_limits()
+    live = current_limits()
+    changes = {}
+    if pinned("MAX_COST"):
+        changes["max_cost"] = float(_tighter(limits.max_cost, live.max_cost))
+    if pinned("MAX_TOTAL_TOKENS"):
+        changes["max_total_tokens"] = int(_tighter(limits.max_total_tokens,
+                                                   live.max_total_tokens))
+    if pinned("MAX_TURNS"):
+        changes["max_turns"] = int(_tighter(limits.max_turns, live.max_turns))
+    if pinned("MAX_TOKENS"):
+        changes["max_tokens"] = live.max_tokens
+    if pinned("TEMPERATURE"):
+        changes["temperature"] = live.temperature
+    return replace(limits, **changes) if changes else limits

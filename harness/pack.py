@@ -276,7 +276,8 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
              speed="standard",
              apply=False, emit=None, project="pack", roster=None, parallel=1,
              cancel=None, quality="balanced", verification="auto", gate_factory=None,
-             history=None, runner_decision=None, runner_model=""):
+             history=None, runner_decision=None, runner_model="", limits=None,
+             capabilities=None):
     """Run N isolated attempts, select the winner by execution, optionally apply it back.
 
     ``roster`` runs the attempts on DIFFERENT backends, assigned round-robin. Selection stays what
@@ -290,7 +291,9 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
     """
     from .cli import (configure_run_options, make_harness, _paths,
                       _worker_history_note, _worker_provider)
-    from . import settings
+    from . import settings, capability_policy
+    run_limits = settings.enforce_pinned(limits) if limits is not None else settings.current_limits()
+    run_capabilities = dict(capabilities) if capabilities is not None else capability_policy.snapshot()
     from .scratch import isolate_harness
     external_worker = bool(runner_decision and getattr(runner_decision, "runner", "") != "collie")
     if external_worker and roster:
@@ -304,7 +307,11 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
         n = min(8, len(members))
     parallel = max(1, min(int(parallel or 1), n))
     requested_parallel = parallel
-    shared_budget = _PackBudget.from_env()
+    shared_budget = (_PackBudget(run_limits.max_cost, run_limits.max_total_tokens)
+                     if limits is not None and (run_limits.max_cost or run_limits.max_total_tokens)
+                     else None if limits is not None else _PackBudget.from_env())
+    if shared_budget is not None:
+        shared_budget.limits = run_limits
     # Without a reservation protocol the spend of an in-flight model call is unknowable. Letting N
     # workers all observe an empty ledger would therefore permit N first calls past a supposedly
     # aggregate hard cap. Budgeted Packs serialize candidates; unbudgeted Packs keep the requested
@@ -426,7 +433,8 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
                 h = make_harness(iso, provider=member_provider, model=member_model,
                                  effort=effort, speed=speed,
                                  project="%s-%d" % (run_tag, i),
-                                 code_search=True, exec_code=True, gate=gate)
+                                 code_search=True, exec_code=True, gate=gate,
+                                 limits=run_limits, capabilities=run_capabilities)
                 configure_run_options(h, quality=quality, verification=verification)
                 isolate_harness(h, read_project=project)
                 h.cancelled = _cancelled

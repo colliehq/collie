@@ -584,6 +584,7 @@ def _parse_anthropic_stream(r, on_text):
 
 class AnthropicProvider(ModelProvider):
     name = "anthropic"
+    default_max_tokens = 8192
     reports_cache = True                          # cache_read/creation_input_tokens always reported
     API = "https://api.anthropic.com/v1/messages"
 
@@ -593,7 +594,7 @@ class AnthropicProvider(ModelProvider):
         # 1024 was the old default and made any edit whose new_string exceeds ~1024 output tokens
         # systematically impossible (infinite retry churn). Default to the shared COLLIE_MAX_TOKENS
         # knob (same env OpenAICompat reads) so big edits fit; explicit arg still wins.
-        self.max_tokens = max_tokens or int(os.environ.get("COLLIE_MAX_TOKENS", "8192"))
+        self.max_tokens = max_tokens or int(os.environ.get("COLLIE_MAX_TOKENS", str(self.default_max_tokens)))
         requested_effort = effort if effort is not None else (
             os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
         self.effort, _ = resolve_reasoning_effort(self.name, self.model, requested_effort)
@@ -814,7 +815,7 @@ class AnthropicOAuthProvider(AnthropicProvider):
         # honour the shared COLLIE_MAX_TOKENS knob (Settings "Max output tokens/turn"), like the parent
         # and every sibling provider — pinning 4096 here made big write_file edits truncate on the
         # subscription path (the user's default), then churn on retries.
-        self.max_tokens = max_tokens or int(os.environ.get("COLLIE_MAX_TOKENS", "8192"))
+        self.max_tokens = max_tokens or int(os.environ.get("COLLIE_MAX_TOKENS", str(self.default_max_tokens)))
         requested_effort = effort if effort is not None else (
             os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
         self.effort, _ = resolve_reasoning_effort(self.name, self.model, requested_effort)
@@ -1481,6 +1482,8 @@ OPENAI_COMPAT_PRESETS = {
 
 
 class OpenAICompatProvider(ModelProvider):
+    default_max_tokens = 4096
+    default_temperature = 0.2
     def __init__(self, base_url, api_key_env, model, name="openai-compat",
                  effort: str | None = None, speed: str = "standard"):
         self.base = base_url.rstrip("/") + "/chat/completions"
@@ -1496,8 +1499,8 @@ class OpenAICompatProvider(ModelProvider):
         # default temperature is 1.0 — the source of collie's run-to-run patch variance
         # (same instance editing different files across runs). Default low; override via
         # COLLIE_TEMPERATURE.
-        self.temperature = float(os.environ.get("COLLIE_TEMPERATURE", "0.2"))
-        self.max_tokens = int(os.environ.get("COLLIE_MAX_TOKENS", "4096"))
+        self.temperature = float(os.environ.get("COLLIE_TEMPERATURE", str(self.default_temperature)))
+        self.max_tokens = int(os.environ.get("COLLIE_MAX_TOKENS", str(self.default_max_tokens)))
         # deepseek/openai return prompt_tokens_details.cached_tokens; others (groq/moonshot/…) may
         # not — seed the ledger's sticky flag only for the known-reporting presets, inference covers
         # the rest once a nonzero cache field appears.
