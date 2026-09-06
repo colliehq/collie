@@ -4407,7 +4407,12 @@ class Handler(BaseHTTPRequestHandler):
         # failure evidence, so the web surface escalates on the same facts the
         # terminal does instead of on words in the transcript.
         prior_receipts = (prior or {}).get("run_receipts") or []
-        cwd = os.getcwd()
+        try:
+            cwd = sessions.resolve_cwd(prior, fallback=os.getcwd())
+        except ValueError as exc:
+            self._sse("done", {"session": sid, "answer": "", "error": str(exc),
+                               "workspace_missing": True})
+            return
 
         # New clients send a non-empty sentinel ("none") when every axis is Auto. Older clients
         # predate Auto and expect any supplied query field to be literal, so preserve that contract.

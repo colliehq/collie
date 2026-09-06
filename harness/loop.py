@@ -1025,7 +1025,9 @@ class Harness:
         self._critic_request_count = None
         try:
             reviewer = self.critic_provider or self.provider
-            comp = reviewer.complete(sysp, [{"role": "user", "content": msg}], [])
+            from .cancellation import complete as complete_cancelable
+            comp = complete_cancelable(reviewer, sysp, [{"role": "user", "content": msg}],
+                                       [], cancelled=self._cancel_requested)
             self._critic_usage = comp.usage   # the caller folds this into the run's token/$ total —
             self._critic_request_count = max(
                 1, int(getattr(comp, "request_count", 1) or 1))
@@ -1192,14 +1194,18 @@ class Harness:
 
             def delegate_runner(task, limit):
                 nonlocal model_calls
-                from .delegate import run_child
+                from .delegate import DelegatedInterrupt, run_child
                 budget = DelegationBudget()
                 cap = max(0, int(self.max_model_calls or 0))
                 if budget.exceeded() or (cap and model_calls >= cap):
                     return 'ERROR: parent run has no remaining delegation budget or was canceled'
-                child_result, payload = run_child(
-                    self, task, limit, budget, max(0, cap - model_calls) if cap else 0,
-                    parent_run_id=rid, parent_request=safe_user_msg)
+                try:
+                    child_result, payload = run_child(
+                        self, task, limit, budget, max(0, cap - model_calls) if cap else 0,
+                        parent_run_id=rid, parent_request=safe_user_msg)
+                except DelegatedInterrupt as exc:
+                    model_calls += exc.result.model_calls
+                    raise
                 model_calls += child_result.model_calls
                 return payload
 
@@ -2276,6 +2282,12 @@ class Harness:
                             res.turns = turn + 1
                             continue
 
+                if self._cancel_requested():
+                    canceled = True
+                    answer = comp.text or ""
+                    res.turns = turn + 1
+                    break
+
                 # steering finish-interception (point 13, point B): if the user typed something while
                 # the model was deciding to finish, honor it instead of stopping — same gate pattern
                 # as verify/coverage. Guard BEFORE draining so a steer typed on the LAST turn stays
@@ -2386,16 +2398,33 @@ class Harness:
                         # the raw thread is the single most likely place to actually overflow.
                         _sys2, msgs2, _m2 = self.composer.build(
                             session, safe_user_msg, self.cwd, self.project, self.mode)
-                        fin = self.provider.complete(_sys2, msgs2, [], on_text=self.stream_cb)
+                        from .cancellation import complete as complete_cancelable
+                        def _synthesis_text(piece):
+                            interrupt_partial.append(piece)
+                            if self.stream_cb:
+                                self.stream_cb(piece)
+                        fin = complete_cancelable(
+                            self.provider, _sys2, msgs2, [], on_text=_synthesis_text,
+                            cancelled=self._cancel_requested)
                         self._account_usage(total, fin.usage)
                         model_calls += max(1, int(getattr(fin, "request_count", 1) or 1))
-                        if fin.stop_reason == "error":   # don't let a failed synthesis become the answer
+                        if self._cancel_requested():
+                            canceled = True
+                            answer = (fin.text or "".join(interrupt_partial)).strip()
+                            answer = ((answer + "\n\n") if answer else "") + "_[stopped by user]_"
+                        elif fin.stop_reason == "error":   # don't let a failed synthesis become the answer
                             res.error = res.error or (fin.text or "provider error")[:300]
                             answer = _placeholder
                         else:
                             answer = (fin.text or "").strip() or _placeholder
+                        del interrupt_partial[:]
                     except Exception:
-                        answer = _placeholder
+                        if self._cancel_requested():
+                            canceled = True
+                            answer = "".join(interrupt_partial).strip()
+                            answer = ((answer + "\n\n") if answer else "") + "_[stopped by user]_"
+                        else:
+                            answer = _placeholder
                 else:
                     budget_hit = True
                     answer = "(stopped at model-call budget — see the edits/tools above)"
@@ -2581,7 +2610,8 @@ class Harness:
         if interrupted_child:
             # Books closed: usage accounted, receipt emitted, journal written. Now
             # the stop reaches the parent, which owns the surface the user stopped.
-            raise KeyboardInterrupt("delegated run interrupted by user")
+            from .delegate import DelegatedInterrupt
+            raise DelegatedInterrupt(res)
         return res
 
     def settle_run_memory(self, res: RunResult, passed: bool, evidence=None,

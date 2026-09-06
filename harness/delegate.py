@@ -47,6 +47,14 @@ class _InheritedGate:
         return getattr(self._gate, name)
 
 
+class DelegatedInterrupt(KeyboardInterrupt):
+    """A stopped child carries its settled usage back to the owning run."""
+
+    def __init__(self, result):
+        super().__init__("delegated run interrupted by user")
+        self.result = result
+
+
 def run_child(parent, task, max_turns, budget, model_call_limit=0, parent_run_id=None,
               parent_request=""):
     from .loop import Harness

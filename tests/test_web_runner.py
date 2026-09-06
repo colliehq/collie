@@ -140,6 +140,51 @@ def test_web_external_worker_streams_identity_saves_history_and_receipt(monkeypa
     assert sessions.recovery_state("web-worker") is None
 
 
+def test_web_resume_reads_saved_project_from_another_server_directory(monkeypatch, tmp_path):
+    from harness import router
+
+    _isolate(monkeypatch, tmp_path)
+    original = tmp_path / "original-project"
+    original.mkdir()
+    (original / "fact.txt").write_text("saved project", encoding="utf-8")
+    (tmp_path / "fact.txt").write_text("server project", encoding="utf-8")
+    sessions.save("resume-project", [{"role": "user", "content": "remember"}],
+                  cwd=str(original))
+    monkeypatch.setattr(router, "resolve_run_decision", lambda *a, **kw: _decision())
+    monkeypatch.setattr(runner_registry, "probe_all",
+                        lambda keys=None, **kw: {"codex-exec": _probe()})
+
+    def run(decision, task, workspace, **kwargs):
+        from pathlib import Path
+        return RunResult(task_id="web", success=True, stop_reason="completed",
+                         answer=(Path(workspace) / "fact.txt").read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(runner_slice, "run_adhoc", run)
+    events = []
+    webapp.Handler._serve_stream(_handler(events), {
+        "q": ["read fact.txt"], "session": ["resume-project"], "runner": ["codex-exec"],
+    })
+    done = next(data for kind, data in events if kind == "done")
+    assert done["answer"] == "saved project"
+    assert sessions.load("resume-project")["cwd"] == str(original)
+
+
+def test_web_resume_missing_project_refuses_before_starting_worker(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    sessions.save("missing-project", [{"role": "user", "content": "remember"}],
+                  cwd=str(tmp_path / "removed"))
+    monkeypatch.setattr(runner_slice, "run_adhoc", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("must not run in the server project")))
+    events = []
+    webapp.Handler._serve_stream(_handler(events), {
+        "q": ["continue"], "session": ["missing-project"], "runner": ["codex-exec"],
+    })
+    assert not any(kind == "start" for kind, _ in events)
+    done = next(data for kind, data in events if kind == "done")
+    assert done["workspace_missing"] is True
+    assert "session workspace" in done["error"]
+
+
 def test_web_app_server_wires_gate_inbox_and_steering(monkeypatch, tmp_path):
     from harness import router
 

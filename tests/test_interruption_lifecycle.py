@@ -327,6 +327,7 @@ def test_an_interrupted_delegated_run_stops_the_run_the_user_is_watching(tmp_pat
 
     assert res.canceled and "interrupted by user" in res.error
     assert "kept going" not in (res.answer or "")
+    assert res.model_calls == h.provider.calls == 2
     results = _results(res.messages)
     assert "UNKNOWN" not in results["d1"]      # delegate is host-attested effect-free
     assert "stopped before returning a result" in results["d1"]
@@ -336,6 +337,49 @@ def test_an_interrupted_delegated_run_stops_the_run_the_user_is_watching(tmp_pat
 # --------------------------------------------------------------------------- #
 # interactive surfaces: REPL and TUI
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("phase", ["synthesis", "review"])
+def test_stop_reaches_secondary_model_requests(tmp_path, monkeypatch, phase):
+    import threading
+    from harness.providers import ModelProvider
+
+    stopped, released = threading.Event(), threading.Event()
+
+    class Provider(_ScriptProvider, ModelProvider):
+        def complete(self, system, messages, tools, on_text=None):
+            if phase == "synthesis" and self.calls == 0:
+                return super().complete(system, messages, tools, on_text=on_text)
+            self.calls += 1
+            self.scope = self.current_request_scope()
+            if on_text:
+                on_text("Partial summary")
+            stopped.set()
+            assert released.wait(2), "Stop never reached the active request"
+            return Completion(text="Partial summary", stop_reason="error")
+
+        def cancel_for(self, scope):
+            if scope == self.scope:
+                released.set()
+
+    (tmp_path / "fact.txt").write_text("evidence", encoding="utf-8")
+    h = _harness(tmp_path, monkeypatch)
+    h.provider = Provider([Completion(tool_calls=[
+        ToolCall("read", "read_file", {"path": "fact.txt"})], stop_reason="tool_use")])
+    h.cancelled = stopped.is_set
+    h.max_turns = 1
+    try:
+        if phase == "review":
+            h._run_critic("inspect the fix", "a candidate diff")
+        else:
+            result = h.run("capped", "read fact.txt", consolidate=False)
+            assert result.canceled and result.stop_reason == "canceled"
+            assert not result.success
+            assert "Partial summary" in result.answer
+            assert result.model_calls == 2
+        assert released.is_set()
+    finally:
+        h.memory.close(); h.recorder.close()
+
+
 class _FakeHarness:
     """A harness whose turn does durable work and then loses the process."""
 
