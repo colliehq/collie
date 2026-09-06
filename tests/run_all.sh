@@ -158,7 +158,7 @@ if "$PY" -c "import playwright" >/dev/null 2>&1; then
   # Two suites that need a live server as well as a browser: the transcript's own honesty (a steer
   # shown where it happened) and that more than one thread can run at once. browser_suite.py starts
   # a throwaway `collie web` for each, so they can never touch the user's real one.
-  for t in steer_ui_check parallel_ui_check; do
+  for t in steer_ui_check parallel_ui_check live_review_ui_check; do
     out=$("$PY" tests/browser_suite.py "$t" 2>&1); trc=$?
     if [ "$trc" = "0" ]; then echo "  $t OK"
     else echo "  $t FAIL"; echo "$out" | tail -14 | sed "s/^/    /"; rc=1; fi

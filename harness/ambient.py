@@ -19,6 +19,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
+from . import plat
 from .procedure_memory import AMBIENT_PROJECT, ProcedureMemory
 
 
@@ -117,7 +118,7 @@ class WindowsActivitySource:
                 ["wevtutil.exe", "qe", "System", "/q:" + query,
                  "/rd:true", "/c:16", "/f:xml"],
                 capture_output=True, text=True, errors="replace", timeout=8,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                **plat.no_window_kwargs())
         except (OSError, subprocess.SubprocessError):
             return []
         if result.returncode != 0 or not result.stdout.strip():

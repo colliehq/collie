@@ -6,12 +6,17 @@ diagram contract; they do not define the Live session and never grant background
 from __future__ import annotations
 
 import re
+import time
 import urllib.parse
 
 
 MAX_NODES = 24
 MAX_EDGES = 48
 BOARD_SPACE = "live-work-surface"
+# Text inserted into a canvas should arrive as individual input events.  This keeps the
+# visible collaboration behaviour close to a person typing, avoids clipboard-style bulk
+# insertion, and lets the authority check interrupt a long label promptly.
+MANUAL_TYPING_DELAY_S = 0.018
 _NODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 
 
@@ -140,6 +145,27 @@ def _bridge_data(response):
     return data
 
 
+def _type_text_character_by_character(text, *, authority=None):
+    """Write focused canvas text through one trusted input action per character.
+
+    Whiteboard editors generally do not offer a stable DOM input to target after a shape has
+    been drawn.  Keeping the text path focus-relative also means a user revoking Live-session
+    editing authority can stop the writer between individual characters.
+    """
+    from . import browserbridge as bb
+
+    characters = list(str(text or ""))
+    if not characters:
+        return 0
+    for index, character in enumerate(characters):
+        if authority:
+            authority()
+        _bridge_data(bb._call({"action": "insert_text", "text": character}))
+        if index + 1 < len(characters):
+            time.sleep(MANUAL_TYPING_DELAY_S)
+    return len(characters)
+
+
 def draw_with_shortcuts(profile, plan, *, authority=None, expected_tab_id=None,
                         expected_url=""):
     from . import browserbridge as bb
@@ -159,7 +185,7 @@ def draw_with_shortcuts(profile, plan, *, authority=None, expected_tab_id=None,
         width, height = max(720, int(shot.get("css_width") or 1280)), \
                         max(520, int(shot.get("css_height") or 720))
         left, top, usable_w, usable_h = 120, 100, max(400, width - 210), max(300, height - 170)
-        points, created = {}, 0
+        points, created, typed_characters = {}, 0, 0
         for node in plan["nodes"]:
             if authority:
                 authority()
@@ -170,7 +196,8 @@ def draw_with_shortcuts(profile, plan, *, authority=None, expected_tab_id=None,
             _bridge_data(bb._call({"action": "drag", "from": {"x": cx - nw / 2, "y": cy - nh / 2},
                                   "to": {"x": cx + nw / 2, "y": cy + nh / 2}, "steps": 8}))
             _bridge_data(bb._call({"action": "press", "key": "Enter"}))
-            _bridge_data(bb._call({"action": "insert_text", "text": node["label"]}))
+            typed_characters += _type_text_character_by_character(
+                node["label"], authority=authority)
             _bridge_data(bb._call({"action": "press", "key": "Escape"}))
             created += 1
         for edge in plan["edges"]:
@@ -187,4 +214,5 @@ def draw_with_shortcuts(profile, plan, *, authority=None, expected_tab_id=None,
         _bridge_data(bb._call({"action": "press", "key": "v"}))
     return {"ok": True, "service": profile["id"], "nodes": len(plan["nodes"]),
             "edges": len(plan["edges"]), "actions": created,
+            "typed_characters": typed_characters, "input_mode": "character_by_character",
             "verification": "Inspect the visible surface; use its Undo if placement is wrong."}

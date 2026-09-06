@@ -838,6 +838,76 @@ def _bridge_live(port=None, timeout=0.5):
         return False
 
 
+def live_tab_context(timeout=1.5):
+    """Read a deliberately privacy-bounded description of the user's active web tab for Live.
+
+    This does not allocate a browser space, adopt a tab, or retrieve the URL.  The extension only
+    returns an HTTP(S) hostname plus the bounded Chrome title; callers receive no path, query,
+    fragment, page text, selection, form value, cookie, or credential.
+    """
+    timeout = max(0.1, min(float(timeout or 1.5), 4.0))
+    if not _bridge_live(timeout=min(timeout, 0.35)):
+        return {}
+    try:
+        data = _data(_call({"action": "live_context"}, timeout=timeout)) or {}
+    except Exception:
+        return {}
+    host = str(data.get("host") or "").strip().lower()[:255]
+    title = " ".join(str(data.get("title") or "").replace("\x00", " ").split())[:300]
+    # Do not pass through arbitrary keys even if an old/malicious extension sends them.
+    return {"app": "chrome", "host": host, "title": title} if host else {}
+
+
+def live_tab_observation(timeout=6, max_text=16_000, max_dim=1280):
+    """Read transient visual context from the user's active tab after Live visual consent.
+
+    Unlike :func:`live_tab_context`, this may carry visible page text and a screenshot.  The caller
+    must keep it out of durable state: the return value is for the current model turn only.  URLs,
+    form values, cookies, and arbitrary extension fields are never forwarded.
+    """
+    timeout = max(.5, min(float(timeout or 6), 12.0))
+    if not _bridge_live(timeout=min(timeout, .5)):
+        return {}
+    try:
+        data = _data(_call({"action": "live_observation",
+                            "max_text": max(1_000, min(int(max_text), 32_000)),
+                            "max_dim": max(640, min(int(max_dim), 1568))}, timeout=timeout)) or {}
+    except (TypeError, ValueError):
+        return {}
+    except Exception:
+        return {}
+    host = str(data.get("host") or "").strip().lower()[:255]
+    if not host:
+        return {}
+    try:
+        body_chars = max(0, min(int(data.get("body_chars") or 0), 10_000_000))
+    except (TypeError, ValueError):
+        body_chars = 0
+    value = {"app": "chrome", "host": host,
+             "title": " ".join(str(data.get("title") or "").replace("\x00", " ").split())[:300],
+             "body_text": str(data.get("body_text") or "").replace("\x00", "")[:32_000],
+             "body_chars": body_chars,
+             "body_truncated": data.get("body_truncated") is True,
+             "body_error": str(data.get("body_error") or "")[:240]}
+    shot = data.get("screenshot")
+    if isinstance(shot, dict) and shot.get("media_type") == "image/png":
+        encoded = str(shot.get("data") or "")
+        # A bridge result is local but still untrusted input. Bound and validate the payload before
+        # it reaches a provider; no URL, executable MIME type, or unbounded base64 is permitted.
+        if 32 <= len(encoded) <= 4_200_000:
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+                if 24 <= len(raw) <= 3_100_000:
+                    value["screenshot"] = {
+                        "media_type": "image/png", "data": encoded,
+                        "width": max(1, min(int(shot.get("width") or 0), 4096)),
+                        "height": max(1, min(int(shot.get("height") or 0), 4096)),
+                    }
+            except (TypeError, ValueError):
+                pass
+    return value
+
+
 def _ensure_server(port):
     """Auto-start the bridge server on demand (like the embed daemon) so the user only has to load
     the extension once — no separate `collie browser-bridge` terminal. Disable with

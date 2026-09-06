@@ -1544,6 +1544,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("live_capsule.html", "text/html; charset=utf-8")
             if path == "/studio":
                 return self._serve_static("studio.html", "text/html; charset=utf-8")
+            if path == "/prototype":
+                return self._serve_static("prototype.html", "text/html; charset=utf-8")
             if path == "/comfy":
                 return self._serve_static("comfy.html", "text/html; charset=utf-8")
             if path == "/remote":
@@ -1917,11 +1919,34 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"recording": on, "out": (st or {}).get("out"),
                                         "since": (st or {}).get("started"),
                                         "window": (st or {}).get("window")})
-            if path in ("/api/live-copilot", "/api/interview"):
+            if path in ("/api/live-copilot", "/api/interview", "/api/live-copilot/export"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                from .live_copilot import LiveSessionStore
-                return self._send_json(LiveSessionStore(_state_root()).snapshot())
+                from .live_copilot import LiveCopilotError, LiveSessionStore
+                try:
+                    store = LiveSessionStore(_state_root())
+                    if path == "/api/live-copilot/export":
+                        query = urllib.parse.parse_qs(parsed.query)
+                        events = query.get("events", ["0"])[0]
+                        if events not in {"0", "1"}:
+                            return self._send_json({"error": "events must be 0 or 1"}, 400)
+                        exported = store.export_markdown(
+                            session_id=query.get("session", [""])[0], include_events=events == "1",
+                            language=query.get("lang", ["en"])[0])
+                        body = exported["content"].encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                        self.send_header("Content-Disposition", 'attachment; filename="%s"' %
+                                         exported["filename"])
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("X-Content-Type-Options", "nosniff")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                    return self._send_json(store.snapshot())
+                except LiveCopilotError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path == "/api/record/sources":
                 # everything the record panel needs to populate its pickers
                 from . import record as rec
@@ -3013,6 +3038,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/live-copilot/work", "/api/live-copilot/dismiss",
                 "/api/live-copilot/handoff", "/api/live-copilot/handoff/resolve",
                 "/api/live-copilot/board/attach",
+                "/api/live-copilot/avatar/start", "/api/live-copilot/avatar/stop",
                 # Compatibility for the one released preview URL. It now creates a general session.
                 "/api/interview/start", "/api/interview/stop",
                 "/api/interview/permissions", "/api/interview/board/attach",
@@ -3026,21 +3052,36 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "expected JSON object"}, 400)
                 store = LiveSessionStore(_state_root())
                 try:
+                    if path == "/api/live-copilot/avatar/start":
+                        from .avatar_rehearsal import AvatarRehearsalService
+                        return self._send_json(AvatarRehearsalService(
+                            _state_root()).start(scenario=body.get("scenario") or ""), 201)
+                    if path == "/api/live-copilot/avatar/stop":
+                        from .avatar_rehearsal import AvatarRehearsalService
+                        return self._send_json(AvatarRehearsalService(
+                            _state_root()).stop(reason="live_ui"))
                     if path.endswith("/start"):
                         return self._send_json(store.start(
                             context=body.get("context") or body.get("title") or "",
-                            listen=(body.get("listen") is True or
-                                    body.get("share_transcript") is True),
-                            understand=body.get("understand") is not False,
-                            observe_apps=body.get("observe_apps") is not False,
-                            observe_ui=body.get("observe_ui") is not False,
-                            observe_input=body.get("observe_input") is not False,
-                            observe_screen=body.get("observe_screen") is True,
-                            voice_dialogue=body.get("voice_dialogue") is True,
-                            board_edit=body.get("board_edit") is True,
-                            consent=body.get("consent") is True), 201)
+                            listen=body.get("listen", body.get("share_transcript", False)),
+                            understand=body.get("understand", True),
+                            observe_apps=body.get("observe_apps", True),
+                            observe_ui=body.get("observe_ui", True),
+                            observe_input=body.get("observe_input", True),
+                            observe_screen=body.get("observe_screen", False),
+                            voice_dialogue=body.get("voice_dialogue", False),
+                            board_edit=body.get("board_edit", False),
+                            consent=body.get("consent", False),
+                            started_from=("interview_ui" if path.startswith("/api/interview/")
+                                          else "live_ui"),
+                            max_duration_minutes=body.get("max_duration_minutes", 120)), 201)
                     if path.endswith("/stop"):
-                        return self._send_json(store.stop())
+                        try:
+                            from .avatar_rehearsal import AvatarRehearsalService
+                            AvatarRehearsalService(_state_root()).stop(reason="live_session_stop")
+                        except Exception:
+                            pass
+                        return self._send_json(store.stop(stopped_from="live_ui"))
                     if path.endswith("/permissions"):
                         return self._send_json(store.update_permissions(
                             listen=(body.get("listen") if "listen" in body else

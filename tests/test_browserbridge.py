@@ -30,6 +30,7 @@ def check(cond, msg):
     _ran.append(msg)
     if not cond:
         _fails.append(msg)
+        raise AssertionError(msg)
 
 
 class Stub:
@@ -291,6 +292,24 @@ def test_script_rejects_nonsense_before_touching_the_browser():
         bb._call = real
 
 
+def test_live_tab_context_strips_url_and_untrusted_fields():
+    real_call, real_live = bb._call, bb._bridge_live
+    try:
+        bb._bridge_live = lambda **_kwargs: True
+        stub = with_stub(ok({"app": "chrome", "host": "MAKER.TAVUS.IO",
+                             "title": "System design\x00 rehearsal",
+                             "url": "https://maker.tavus.io/pal/pf14?token=secret",
+                             "page_text": "private page body"}))
+        value = bb.live_tab_context(timeout=.2)
+        check(value == {"app": "chrome", "host": "maker.tavus.io",
+                        "title": "System design rehearsal"},
+              "live tab context preserves only hostname and bounded title")
+        check(stub.sent[0]["action"] == "live_context" and "url" not in value and
+              "page_text" not in value, "live context never forwards URL or page content")
+    finally:
+        bb._call, bb._bridge_live = real_call, real_live
+
+
 def test_script_reports_a_clean_run():
     real = bb._call
     try:
@@ -456,7 +475,7 @@ def test_browser_click_resolves_snapshot_ref_intent_before_gate():
         stub = with_stub(ok({"intent": {"effect": "commit", "action": "send",
                                          "label": "Send", "reversible": False}}))
         intent = bb.BrowserClick()._collie_intent({"ref": "e22"})
-        check(stub.sent[0] == {"action": "intent", "ref": "e22"},
+        check(stub.sent[0] == {"action": "intent", "ref": "e22", "_timeout": 8},
               "opaque ref is classified by the live extension")
         check(intent.action == "send" and intent.effect.value == "commit",
               "the host receives a structured commit rather than a bare ref")

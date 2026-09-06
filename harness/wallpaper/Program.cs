@@ -39,8 +39,9 @@ class CollieWallpaper : Form
     const int WH_MOUSE_LL = 14, WH_KEYBOARD_LL = 13;
     const int WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202,
               WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_MOUSEWHEEL = 0x020A,
+              WM_XBUTTONDOWN = 0x020B, WM_XBUTTONUP = 0x020C,
               WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_CHAR = 0x0102, WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105;
-    const int MK_LBUTTON = 0x0001, MK_RBUTTON = 0x0002;
+    const int MK_LBUTTON = 0x0001, MK_RBUTTON = 0x0002, XBUTTON2 = 0x0002;
 
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int x, y; }
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int left, top, right, bottom; }
@@ -250,6 +251,9 @@ class CollieWallpaper : Form
     static WebView2 _capsuleWeb;
     static SpeechRecognitionEngine _capsuleSpeech;
     static bool _capsuleSpeechDelivered;
+    static bool _capsuleStopOnRelease;
+    static bool _capsulePttMode, _capsulePttHeld;
+    static CollieWallpaper _mainForm;
     static WebView2 _mainWeb;
     static SpeechRecognitionEngine _liveSpeech;
     static SpeechSynthesizer _liveVoice;
@@ -427,6 +431,7 @@ class CollieWallpaper : Form
 
     CollieWallpaper()
     {
+        _mainForm = this;
         int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
         if (_windowMode)
         {
@@ -612,7 +617,15 @@ class CollieWallpaper : Form
         catch (Exception ex) { Log("navigate EXCEPTION: " + ex.Message); }
         // Everything below is WALLPAPER-only: pinning under the desktop icons and forwarding desktop
         // mouse/keyboard into the page. A normal window is activatable and WebView2 gets input natively.
-        if (_windowMode) { Log("window mode: skipping pin + input hooks"); return; }
+        if (_windowMode)
+        {
+            // The native app has no wallpaper input child, but it still owns the global Live
+            // handoff. Install only the low-level mouse hook so X2 can be the push-to-talk gesture;
+            // MouseProc returns immediately for every other event and never records mouse data.
+            if (_mouseHook == IntPtr.Zero) InstallHooks();
+            Log("window mode: X2 Live handoff hook installed; skipping pin + desktop forwarding");
+            return;
+        }
         Pin();
 
         // resolve the Chromium child + install input hooks a moment after the page starts
@@ -665,7 +678,7 @@ class CollieWallpaper : Form
         Log("selftest posted click+text");
     }
 
-    LiveTarget CaptureLiveTarget()
+    static LiveTarget CaptureLiveTarget()
     {
         LiveTarget target = new LiveTarget();
         try
@@ -886,6 +899,16 @@ class CollieWallpaper : Form
         try { engine.Dispose(); } catch { }
     }
 
+    static void FinishCapsuleSpeech()
+    {
+        _capsuleStopOnRelease = true;
+        SpeechRecognitionEngine engine = _capsuleSpeech;
+        if (engine == null) return;
+        // Stop (rather than Cancel) lets the recognizer deliver the phrase already spoken while
+        // X2 was held. It is the native push-to-talk boundary, not a background recorder.
+        try { engine.RecognizeAsyncStop(); } catch { }
+    }
+
     static RecognizerInfo CapsuleRecognizer(string requested)
     {
         RecognizerInfo first = null, language = null;
@@ -940,6 +963,7 @@ class CollieWallpaper : Form
             PostCapsule("{\"type\":\"capsule-speech-start\",\"language\":" +
                         JsonString(info.Culture.Name) + "}");
             engine.RecognizeAsync(RecognizeMode.Single);
+            if (_capsuleStopOnRelease) FinishCapsuleSpeech();
         }
         catch (Exception ex)
         {
@@ -959,15 +983,25 @@ class CollieWallpaper : Form
                     ",\"speech_language\":" + JsonString(target.SpeechLanguage) + "}}");
     }
 
-    void OpenLiveCapsule(LiveTarget target)
+    void OpenLiveCapsule(LiveTarget target, bool pushToTalk = false)
     {
         try
         {
             if (_capsuleForm != null && !_capsuleForm.IsDisposed)
             {
-                _capsuleForm.Close();
+                // A second X2 press while the capsule is already open is a fresh command, not a
+                // request to close it. Reuse the captured target and start a new local recording.
+                _capsulePttMode = pushToTalk;
+                _capsulePttHeld = pushToTalk;
+                PostCapsuleTarget(target);
+                if (!pushToTalk || _capsulePttHeld)
+                    PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                                (pushToTalk ? "true" : "false") + "}");
                 return;
             }
+            _capsuleStopOnRelease = false;
+            _capsulePttMode = pushToTalk;
+            _capsulePttHeld = pushToTalk;
             Form form = new Form();
             _capsuleForm = form;
             form.Text = "Collie Live";
@@ -1004,11 +1038,17 @@ class CollieWallpaper : Form
                     if (raw.IndexOf("capsule-ready", StringComparison.Ordinal) >= 0)
                     {
                         PostCapsuleTarget(target);
+                        if (!_capsulePttMode || _capsulePttHeld)
+                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                                        (_capsulePttMode ? "true" : "false") + "}");
                     }
                     else if (raw.IndexOf("capsule-listen", StringComparison.Ordinal) >= 0 ||
                              raw.IndexOf("capsule-language", StringComparison.Ordinal) >= 0)
-                        StartCapsuleSpeech(raw.IndexOf("en-US", StringComparison.OrdinalIgnoreCase) >= 0
-                                           ? "en-US" : "zh-CN");
+                    {
+                        if (!_capsulePttMode || _capsulePttHeld)
+                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                                        (_capsulePttMode ? "true" : "false") + "}");
+                    }
                     else if (raw.IndexOf("capsule-open-main", StringComparison.Ordinal) >= 0)
                     {
                         try { form.Close(); } catch { }
@@ -1021,6 +1061,8 @@ class CollieWallpaper : Form
             };
             form.FormClosed += delegate
             {
+                _capsuleStopOnRelease = false;
+                _capsulePttMode = _capsulePttHeld = false;
                 StopCapsuleSpeech();
                 ResumeLiveSpeech();
                 try { web.Dispose(); } catch { }
@@ -1259,6 +1301,33 @@ class CollieWallpaper : Form
     {
         // Keep this callback CHEAP — it runs for every mouse event system-wide. No file I/O, no blocking
         // calls, and a fast early-out over desktop icons so Explorer's click/double-click is never delayed.
+        if (nCode >= 0)
+        {
+            int liveMsg = (int)wParam;
+            if (_windowMode && (liveMsg == WM_XBUTTONDOWN || liveMsg == WM_XBUTTONUP))
+            {
+                MSLLHOOKSTRUCT liveMouse = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                int button = (int)((liveMouse.mouseData >> 16) & 0xFFFF);
+                if (button == XBUTTON2)
+                {
+                    System.Threading.SynchronizationContext ctx = _uiCtx;
+                    CollieWallpaper main = _mainForm;
+                    if (liveMsg == WM_XBUTTONDOWN)
+                    {
+                        // Capture before the capsule opens so the action stays pinned to the app
+                        // the user was operating (for example the already focused browser tab).
+                        LiveTarget target = CaptureLiveTarget();
+                        if (ctx != null && main != null)
+                            try { ctx.Post(delegate { main.OpenLiveCapsule(target, true); }, null); } catch { }
+                    }
+                    else if (ctx != null)
+                        try { ctx.Post(delegate { _capsulePttHeld = false; PostCapsule("{\"type\":\"capsule-record-stop\"}"); }, null); } catch { }
+                    // X2 is deliberately claimed only while the normal Collie app is running; do
+                    // not also let the browser interpret it as Back/Forward while it is a voice key.
+                    return (IntPtr)1;
+                }
+            }
+        }
         if (nCode >= 0 && _input != IntPtr.Zero)
         {
             int msg = (int)wParam;

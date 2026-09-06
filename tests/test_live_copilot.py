@@ -19,6 +19,48 @@ def test_live_session_accepts_no_task_and_observes_without_recording_consent(tmp
     assert value["events"][-1]["kind"] == "session"
 
 
+def test_live_ui_never_uses_screen_sharing_for_audio_capture():
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "harness" / "webui" / "live.html").read_text(
+        encoding="utf-8")
+    assert 'async function captureSources()' in source
+    assert 'getDisplayMedia' not in source
+    assert 'id="systemAudio"' not in source
+    start = source.index('document.getElementById("start").onclick=async function()')
+    start_flow = source[start:source.index('document.getElementById("stop").onclick', start)]
+    assert start_flow.index('var s=await api("/api/live-copilot/start"') < \
+        start_flow.index('await beginCapture()')
+
+
+def test_live_defaults_to_local_sensevoice_not_a_cloud_transcriber(tmp_path, monkeypatch):
+    from harness.live_copilot import LiveSessionStore, capabilities
+
+    monkeypatch.setattr("harness.sensevoice.availability", lambda: {
+        "available": True, "engine": "SenseVoice · local", "model_dir": "C:/model"})
+    seen = []
+
+    def local_transcribe(path, **kwargs):
+        seen.append((path, kwargs))
+        return {"text": "Collie 能看到当前浏览器。", "segments": []}
+
+    monkeypatch.setattr("harness.sensevoice.transcribe", local_transcribe)
+    assert capabilities()["speech_ready"] is True
+    assert capabilities()["speech_engine"] == "SenseVoice · local"
+    store = LiveSessionStore(tmp_path)
+    started = store.start(listen=True, consent=True, observe_apps=False)
+    store.ingest_audio(session_id=started["session_id"], source="microphone", seq=0,
+                       mime_type="audio/webm", data=b"local-audio")
+    deadline = time.time() + 3
+    while time.time() < deadline and not any(
+            event.get("text") == "Collie 能看到当前浏览器。"
+            for event in store.snapshot()["events"]):
+        time.sleep(.02)
+    assert seen and seen[0][1]["language"] == ""
+    assert any(event.get("text") == "Collie 能看到当前浏览器。"
+               for event in store.snapshot()["events"])
+
+
 def test_audio_listening_requires_consent_and_clears_authority_on_stop(tmp_path):
     from harness.live_copilot import LiveCopilotError, LiveSessionStore
 
@@ -100,6 +142,45 @@ def test_runtime_continuously_understands_events_but_never_starts_work(tmp_path)
     assert runtime.tick() is False
 
 
+def test_voice_dialogue_lane_answers_without_waiting_for_visual_analyzer(tmp_path):
+    from harness.live_copilot import LiveSessionStore, run_voice_dialogue_once
+
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, observe_apps=False, voice_dialogue=True)
+    spoken = store.add_event(source="you", kind="speech", text="我现在出什么？")
+    seen = []
+
+    def answer(payload):
+        seen.append(payload)
+        return "先补微光披风，留钱买真眼。"
+
+    assert run_voice_dialogue_once(tmp_path, analyzer=answer) is True
+    value = store.snapshot()
+    cue = value["suggestions"][-1]
+    assert cue["lane"] == "dialogue" and cue["kind"] == "answer"
+    assert cue["source_event_id"] == spoken["id"]
+    assert seen[0]["newest_speech"] == "我现在出什么？"
+    assert run_voice_dialogue_once(tmp_path, analyzer=answer) is False
+
+
+def test_voice_dialogue_prompt_adapts_to_interview_and_dota_contexts():
+    from harness.live_copilot import _dialogue_system_prompt
+
+    interview = _dialogue_system_prompt({
+        "optional_context": "System-design interview about a ticketing service.",
+        "newest_speech": "How do you prevent oversell?",
+    })
+    assert "general work session" in interview
+    assert "Dota 2 support" not in interview
+
+    dota = _dialogue_system_prompt({
+        "recent_events": [{"app": "dota2", "title": "Dota 2", "text": "lane"}],
+        "newest_speech": "现在出什么？",
+    })
+    assert "playing Dota 2 as a support" in dota
+    assert "fog-of-war" in dota
+
+
 def test_late_understanding_result_is_dropped_after_session_stops(tmp_path):
     from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
 
@@ -137,12 +218,48 @@ def test_environment_observation_logs_window_metadata_without_input_content(tmp_
         "app": "figma", "title": "Architecture board", "pid": 42, "hwnd": 9001}
     assert runtime.tick() is False
     value = store.snapshot()
-    assert value["events"][-1]["text"] == "Opened figma · Architecture board."
-    assert value["events"][-1]["kind"] == "window"
-    assert value["events"][-1]["title"] == "Architecture board"
-    assert "keys" not in value["events"][-1]
+    row = next(row for row in value["events"] if row["kind"] == "window")
+    assert row["text"] == "Opened figma · Architecture board."
+    assert row["title"] == "Architecture board"
+    assert "keys" not in row
     handoff = store.request_handoff()
     assert handoff["pending"] and handoff["app"] == "figma"
+
+
+def test_browser_observation_is_bounded_to_host_and_opt_in_title(monkeypatch, tmp_path):
+    from harness import browserbridge
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    monkeypatch.setattr(browserbridge, "live_tab_context", lambda **_kwargs: {
+        "app": "chrome", "host": "maker.tavus.io",
+        "title": "Collie System Design Interviewer — Tavus",
+        "url": "https://maker.tavus.io/pals/pf14a58a0511?secret=never-recorded",
+        "page_text": "also never recorded",
+    })
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=True,
+                observe_ui=True, observe_input=False)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    runtime.activity_source = None
+    assert runtime.tick() is False
+    row = store.snapshot()["events"][-1]
+    assert row["kind"] == "browser_tab" and row["app"] == "chrome"
+    assert row["title"] == "Collie System Design Interviewer — Tavus"
+    assert row["text"] == "Browser tab: maker.tavus.io · Collie System Design Interviewer — Tavus."
+    assert "secret" not in json.dumps(row) and "page_text" not in row
+    before = len(store.snapshot()["events"])
+    runtime.tick()
+    assert len(store.snapshot()["events"]) == before
+
+    private_store = LiveSessionStore(tmp_path / "host-only")
+    private_store.start(listen=False, consent=False, understand=False, observe_apps=True,
+                        observe_ui=False, observe_input=False)
+    private_runtime = LiveCopilotRuntime(tmp_path / "host-only", analyzer=lambda _payload: {})
+    private_runtime.activity_source = None
+    private_runtime.tick()
+    private_row = private_store.snapshot()["events"][-1]
+    assert private_row["kind"] == "browser_tab" and private_row["title"] == ""
+    assert private_row["text"] == "Browser tab: maker.tavus.io."
 
 
 def test_capsule_handoff_freezes_exact_window_and_bounded_semantics(monkeypatch, tmp_path):
@@ -183,6 +300,87 @@ def test_natural_language_tool_starts_useful_live_defaults_and_can_stop(monkeypa
     assert not started["listen"] and "Ctrl+Alt+Space" in started["next"]
     stopped = json.loads(tool.run({"action": "stop"}, None))
     assert not stopped["active"]
+
+
+def test_start_provenance_is_persisted_and_explicit_end_phrase_stops_capture(tmp_path):
+    from harness.live_copilot import LiveSessionStore
+
+    store = LiveSessionStore(tmp_path)
+    started = store.start(listen=False, consent=False, started_from="natural_language",
+                          max_duration_minutes=45)
+    assert started["started_from"] == "natural_language"
+    assert started["expires_at_ms"] > started["started_at_ms"]
+
+    store.add_event(source="you", kind="speech", text="行了，结束吧。")
+    stopped = store.snapshot()
+    assert stopped["active"] is False
+    assert stopped["stop_reason"] == "explicit_stop_phrase"
+    assert stopped["stopped_from"] == "live_event"
+    assert stopped["events"][-1]["text"] == "行了，结束吧。"
+
+
+def test_repeated_interface_snapshots_are_coalesced(tmp_path):
+    from harness.live_copilot import LiveSessionStore
+
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False)
+    first = store.add_event(source="system", kind="interface", app="chrome",
+                            title="Board", text="Interface in chrome: Canvas")
+    second = store.add_event(source="system", kind="interface", app="chrome",
+                             title="Board", text="Interface in chrome: Canvas")
+    value = store.snapshot()
+    assert len(value["events"]) == 2
+    assert second["id"] == first["id"] and second["repeat_count"] == 2
+
+
+def test_avatar_rehearsal_simulates_without_tavus_credentials(monkeypatch, tmp_path):
+    from harness import avatar_rehearsal
+    from harness.avatar_rehearsal import AvatarRehearsalService
+    from harness.live_copilot import LiveSessionStore
+
+    monkeypatch.setattr(avatar_rehearsal.mcpclient, "server_has_tool",
+                        lambda _server, _tool: False)
+    store = LiveSessionStore(tmp_path)
+    store.start(context="Explain a restaurant discovery design", listen=False, consent=False)
+    service = AvatarRehearsalService(tmp_path)
+    started = service.start()
+    assert started["simulation"] is True
+    assert started["avatar"]["active"] is True
+    assert "AI 排练化身" in started["script"]
+    stopped = service.stop()
+    assert stopped["avatar"]["active"] is False
+
+
+def test_avatar_rehearsal_uses_narrow_mcp_service(monkeypatch, tmp_path):
+    from harness import avatar_rehearsal
+    from harness.avatar_rehearsal import AvatarRehearsalService
+    from harness.live_copilot import LiveSessionStore
+
+    monkeypatch.setattr(avatar_rehearsal.mcpclient, "server_has_tool",
+                        lambda _server, tool: tool in {"avatar_start", "avatar_stop"})
+    calls = []
+
+    def call(server, tool, arguments, timeout=None):
+        calls.append((server, tool, arguments, timeout))
+        if tool == "avatar_start":
+            return {"structuredContent": {
+                "provider": "tavus", "conversation_id": "conversation_123456",
+                "join_url": "https://tavus.daily.co/rehearsal?t=short-lived-token",
+                "disclosed_ai": True}}
+        return {"structuredContent": {"ended": True}}
+
+    LiveSessionStore(tmp_path).start(listen=False, consent=False)
+    service = AvatarRehearsalService(
+        tmp_path, mcp_call=call, allowed_join_hosts=["daily.co"])
+    started = service.start(scenario="Explain the cache path")
+    assert started["simulation"] is False
+    assert "short-lived-token" in started["join_url"]
+    assert calls[0][0:2] == ("avatar", "avatar_start")
+    assert "AI 排练化身" in calls[0][2]["script"]
+    assert calls[0][2]["max_live_seconds"] == 600
+    service.stop()
+    assert calls[-1][0:2] == ("avatar", "avatar_stop")
+    assert calls[-1][2]["conversation_id"] == "conversation_123456"
 
 
 def test_opt_in_semantic_ui_observation_drops_values_and_keys(monkeypatch, tmp_path):

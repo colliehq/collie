@@ -40,7 +40,10 @@ def ask(cwd, env):
 
 def main():
     # A checkout keeps its own data/.
-    out, err = ask(ROOT, dict(os.environ, PYTHONPATH=ROOT))
+    checkout_env = dict(os.environ, PYTHONPATH=ROOT)
+    checkout_env.pop("COLLIE_STATE_DIR", None)
+    checkout_env.pop("COLLIE_DATA_DIR", None)
+    out, err = ask(ROOT, checkout_env)
     check(out == os.path.join(ROOT, "data"),
           "a source checkout still uses its own data/ (got %s)" % (out or err[-120:]))
 

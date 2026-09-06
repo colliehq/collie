@@ -22,11 +22,12 @@ def wait_up(url, tries=40):
 
 def main():
     import tempfile
-    setpath = os.path.join(tempfile.gettempdir(), "collie_gui_test_settings.json")
+    stage = tempfile.mkdtemp(prefix="collie_gui_test_")
+    setpath = os.path.join(stage, "settings.json")
     try: os.remove(setpath)
     except OSError: pass
     # redirect settings to a temp file so the test never clobbers the user's real ~/.collie/settings.json
-    sessdir = os.path.join(tempfile.gettempdir(), "collie_gui_test_sessions")
+    sessdir = os.path.join(stage, "sessions")
     # redirect settings AND sessions to temp so the test never clobbers real ~/.collie or floods the Map
     #
     # mock goes in the SETTINGS FILE, not COLLIE_PROVIDER. An env var set before the server starts is
@@ -39,14 +40,15 @@ def main():
     # code that draws a row read a variable belonging to a different function: the first server
     # anybody configured made the whole pane stop redrawing, and mcpLoad's catch-all swallowed the
     # ReferenceError so completely that pressing Connect looked like pressing nothing.
-    mcppath = os.path.join(tempfile.gettempdir(), "collie_gui_test_mcp.json")
+    mcppath = os.path.join(stage, "mcp.json")
     with open(mcppath, "w", encoding="utf-8") as fh:
         json.dump({"servers": {"probe": {"url": "https://mcp.example.invalid/mcp"}}}, fh)
-    slackpath = os.path.join(tempfile.gettempdir(), "collie_gui_test_empty_slack.json")
+    slackpath = os.path.join(stage, "slack.json")
     try: os.remove(slackpath)
     except OSError: pass
     env = dict(os.environ, PYTHONUNBUFFERED="1", COLLIE_MCP_CONFIG=mcppath,
                COLLIE_SETTINGS_PATH=setpath, COLLIE_SESSIONS_DIR=sessdir,
+               COLLIE_STATE_DIR=os.path.join(stage, "state"),
                COLLIE_SLACK_STORE=slackpath)
     env.pop("COLLIE_PROVIDER", None)
     env.pop("COLLIE_MODEL", None)
@@ -68,8 +70,8 @@ def main():
             # --- collie.localhost resolves + loads (cool URL) ---
             check("collie.localhost loads", "collie" in pg.title().lower())
 
-            # --- welcome empty state ---
-            check("welcome state shown", pg.query_selector("#welcome") is not None)
+            # Home now opens Today; the task welcome belongs to New task.
+            check("Today dashboard shown", pg.query_selector("#todayDashboard") is not None)
 
             # --- first-run companion naming: adoption is a real step, not a hidden config key ---
             try:
@@ -84,11 +86,7 @@ def main():
                 pg.fill("#nameInput", "Mochi")
                 pg.click("#nameContinue")
                 pg.wait_for_selector("#nameOverlay.open", state="detached", timeout=15000)
-                pg.wait_for_function("document.querySelector('[data-collie-name]').textContent === 'Mochi'")
-                check("chosen name updates the desktop identity live",
-                      pg.text_content("[data-collie-name]") == "Mochi")
-                check("renamed avatar uses a versioned transparent endpoint",
-                      "/api/avatar.png?v=" in (pg.get_attribute("[data-collie-avatar]", "src") or ""))
+                pg.wait_for_function("document.title.startsWith('Mochi ·')")
 
             # --- first run shows the onboarding, and it must be dismissable ---
             # This is why the suite broke: CI runs with COLLIE_PROVIDER=mock, so there is no working
@@ -114,6 +112,13 @@ def main():
             check("onboarding dismisses and stops blocking the page",
                   "open" not in ((pg.query_selector("#obOverlay").get_attribute("class") or "")
                                  if pg.query_selector("#obOverlay") else ""))
+
+            pg.click("#newChat")
+            pg.wait_for_selector("#welcome", state="visible")
+            check("chosen name updates the task identity live",
+                  pg.text_content("[data-collie-name]") == "Mochi")
+            check("renamed avatar uses a versioned transparent endpoint",
+                  "/api/avatar.png?v=" in (pg.get_attribute("[data-collie-avatar]", "src") or ""))
 
             # --- CSRF token injected ---
             tok = pg.eval_on_selector('meta[name="collie-token"]', "e => e.content")
@@ -250,6 +255,7 @@ def main():
             pg.wait_for_selector("#workpanel", state="visible", timeout=15000)
             pg.click("#workpanelClose")
             pg.wait_for_selector("#workpanel", state="hidden", timeout=15000)
+            pg.click("#topbarMore > summary")
             pg.click("#modelTrigger")
             pg.wait_for_selector("#modelOverlay.open", timeout=15000)
             pg.wait_for_selector(".model-option", timeout=15000)

@@ -468,6 +468,44 @@ def status():
     return out
 
 
+def server_configuration(name):
+    """Return one enabled server's non-normalized config for a host-owned integration seam.
+
+    Domain adapters should still invoke the server through MCP; this helper only lets a Collie
+    surface read connection policy such as an allowed return-URL host list without reaching into
+    the private config loader itself.
+    """
+    cfg = _load_config().get(str(name or ""))
+    return dict(cfg) if isinstance(cfg, dict) and enabled(cfg) else {}
+
+
+def server_has_tool(name, tool):
+    """Check the cached contract without spawning a provider during a frequently-polled UI read."""
+    cfg = server_configuration(name)
+    if not cfg:
+        return False
+    entry = _read_cache().get(str(name or "")) or {}
+    if entry.get("hash") != _cfg_hash(cfg):
+        return False
+    return any(str(row.get("name") or "") == str(tool or "")
+               for row in (entry.get("tools") or []) if isinstance(row, dict))
+
+
+def call_server_tool(name, tool, arguments=None, timeout=None):
+    """Call one named MCP tool and return its raw MCP result.
+
+    This is for host surfaces that need a narrow provider operation outside the model tool loop.
+    It deliberately preserves MCP's structured result and error bit so the surface can validate
+    every value before presenting it to a browser.
+    """
+    cfg = server_configuration(name)
+    if not cfg:
+        raise ValueError("no enabled MCP server named %r" % str(name or ""))
+    conn = _get_conn(str(name), cfg)
+    return conn.call_tool(str(tool), arguments if isinstance(arguments, dict) else {},
+                          timeout=timeout or _tool_timeout(str(name), str(tool), arguments or {}))
+
+
 def _cfg_hash(cfg):
     # The `enabled` switch is presentation, not identity: toggling a server off and on again must not
     # invalidate its cached tool list and force a re-spawn.

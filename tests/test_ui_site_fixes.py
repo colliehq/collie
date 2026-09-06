@@ -387,7 +387,7 @@ def test_live_copilot_is_a_top_level_context_and_handoff_mode():
     assert 'openEmbeddedSurface("Live Copilot", "/live?embedded=1" +' in desktop
     assert '"&native_shell=1"' in desktop
     assert 'path in ("/live", "/interview")' in server
-    assert 'path in ("/api/live-copilot", "/api/interview")' in server
+    assert 'path in ("/api/live-copilot", "/api/interview", "/api/live-copilot/export")' in server
     assert "Stay in context while you work" in live
     assert "Follow windows and apps" in live and "Understand the conversation" in live
     assert 'id="observeInput" checked' in live and "LIVE LOG" in live

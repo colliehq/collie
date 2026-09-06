@@ -225,6 +225,62 @@ async function activeTab() {
   return await targetTab(false);
 }
 
+// Live's ambient observation must never take ownership of, inspect, or alter the user's tab.
+// This deliberately returns the smallest useful browser signal: a web origin's host and the
+// Chrome tab title.  In particular, paths, queries, fragments, page text, selections, cookies,
+// and form values never cross the loopback bridge.
+async function liveTabContext() {
+  let tab = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tab = tabs && tabs[0];
+  } catch (e) {}
+  if (!tab) return { app: "chrome", host: "", title: "" };
+  let host = "";
+  try {
+    const url = new URL(tab.url || "");
+    if (url.protocol === "http:" || url.protocol === "https:") host = (url.hostname || "").toLowerCase();
+  } catch (e) {}
+  return { app: "chrome", host: host.slice(0, 255), title: (tab.title || "").slice(0, 300) };
+}
+
+// This fuller view is reached only after a user explicitly enables visual context for a Live
+// session. It neither adopts the tab nor changes focus; the minimal liveTabContext above remains
+// the default path.
+async function liveTabObservation(maxText, maxDim) {
+  let tab = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tab = tabs && tabs[0];
+  } catch (e) {}
+  if (!tab) return { error: "no active Chrome tab" };
+  let url;
+  try { url = new URL(tab.url || ""); } catch (e) { return { error: "active tab has no web origin" }; }
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    return { error: "active tab is not an ordinary web page" };
+  const limit = Math.max(1_000, Math.min(32_000, Number(maxText) || 16_000));
+  let body = { text: "", chars: 0, truncated: false };
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id }, world: "MAIN", func: livePageText, args: [limit],
+    });
+    if (result && result.result && typeof result.result === "object") body = result.result;
+  } catch (e) { body.error = "page text unavailable: " + String((e && e.message) || e); }
+  let screenshot = null;
+  try {
+    // This reads the viewport the user is already seeing. It does not use the debugger or switch
+    // tabs, avoiding both the debugger banner and focus stealing.
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    const image = await shrinkPng(dataUrl, Math.max(640, Math.min(1568, Number(maxDim) || 1280)));
+    screenshot = { data: image.data, width: image.width, height: image.height,
+                   media_type: "image/png", how: "visible Chrome viewport" };
+  } catch (e) { screenshot = { error: "screenshot unavailable: " + String((e && e.message) || e) }; }
+  return { app: "chrome", host: (url.hostname || "").toLowerCase().slice(0, 255),
+           title: (tab.title || "").slice(0, 300), body_text: String(body.text || ""),
+           body_chars: Math.max(0, Number(body.chars) || 0), body_truncated: body.truncated === true,
+           body_error: String(body.error || "").slice(0, 240), screenshot };
+}
+
 // Adopt a tab the user already has on that site — ONLY when the caller explicitly asked for it
 // (browser_open adopt:true / browser_attach). Lands directly on the view they are looking at, which
 // is sometimes exactly the point ("finish what I started in this tab") and is never the default.
@@ -285,6 +341,11 @@ function httpUrl(raw) {
 
 // --- functions injected into the page (must be self-contained) ---
 function pageRead() { return document.body ? document.body.innerText : ""; }
+function livePageText(limit) {
+  const text = document.body ? String(document.body.innerText || "") : "";
+  const max = Math.max(1_000, Math.min(32_000, Number(limit) || 16_000));
+  return { text: text.slice(0, max), chars: text.length, truncated: text.length > max };
+}
 
 function pageLinks(filter) {
   const f = (filter || "").toLowerCase();
@@ -2688,6 +2749,10 @@ async function syntheticType(ref, selector, label, text, submit) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runStep(cmd) {
+    // Independent of a Collie-owned browser space: Live is passively observing the tab the user is
+    // already looking at, and this action has no read/write capability beyond liveTabContext().
+    if (cmd.action === "live_context") return await liveTabContext();
+    if (cmd.action === "live_observation") return await liveTabObservation(cmd.max_text, cmd.max_dim);
     const held = await getSpace(curSpace);
     if (held && held.paused && !["spaces", "mode", "release"].includes(cmd.action))
       return { error: "Collie is paused in space '" + curSpace + "'. Resume it from the extension before continuing.",
@@ -3049,7 +3114,8 @@ async function handle(cmd) {
   }
   const readActions = new Set(["read", "snapshot", "links", "screenshot", "wait", "wait_for",
                                "fields", "form_snapshot", "voice_identity", "google_voice_otp",
-                               "file_inputs", "console", "spaces", "mode"]);
+                               "file_inputs", "console", "spaces", "mode", "live_context",
+                               "live_observation"]);
   const state = readActions.has(cmd.action) ? "observing" : "acting";
   await setSpacePresence(curSpace, state, cmd.action || "browser action", "");
   try {

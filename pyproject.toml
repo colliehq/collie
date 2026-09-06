@@ -38,6 +38,7 @@ desktop = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real be
 tui = ["rich"]                          # the full-experience terminal chat (collie tui)
 acp = ["agent-client-protocol"]         # editor integration (collie acp)
 search = ["ddgs"]                        # keyless web_search (DuckDuckGo JSON API)
+speech = ["sherpa-onnx>=1.13,<1.14", "soundfile"] # local SenseVoice Live transcription; model stays user-local
 dev = ["pytest", "pyyaml"]
 docs = ["mkdocs-material"]               # the user docs site (mkdocs serve / build); see mkdocs.yml
 

@@ -69,6 +69,12 @@ t('canvas text uses bounded trusted CDP insertion',
   src.includes('"Input.insertText", { text }') &&
   src.includes('cmd.action === "insert_text"'));
 
+t('Live tab context returns only the active web host and bounded title',
+  src.includes('async function liveTabContext()') &&
+  src.includes('chrome.tabs.query({ active: true, lastFocusedWindow: true })') &&
+  src.includes('cmd.action === "live_context"') &&
+  !/liveTabContext[\s\S]{0,1000}url\.pathname/.test(src));
+
 // --- product shell: presence, hard takeover, and side-panel entry points -------------------------
 {
   const manifest = JSON.parse(fs.readFileSync(

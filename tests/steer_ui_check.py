@@ -74,7 +74,9 @@ def main():
         pg.route("**/api/steer*", lambda r: r.fulfill(
             status=200, content_type="application/json", body=steer_reply["body"]))
 
-        pg.goto(BASE + "/?token=" + TOKEN, wait_until="load")
+        # Normal follow-ups now queue by default. Select the supported steering mode
+        # explicitly so this suite exercises in-flight delivery rather than that queue.
+        pg.goto(BASE + "/?followup=steer&token=" + TOKEN, wait_until="load")
         # Wait for the welcome overlay rather than sampling for it: it opens when the provider probe
         # answers, which is later than 600ms on a cold machine — and if it is missed, it opens over
         # the composer a moment after and the run this suite is about never starts. That failure

@@ -24,6 +24,21 @@ def check(ok, what):
 
 
 def main():
+    # Earlier suites and real desktop sessions remember a Map root. Give this
+    # fallback test its own state so that preference cannot win over its fixtures.
+    prior_state = os.environ.get("COLLIE_STATE_DIR")
+    with tempfile.TemporaryDirectory(prefix="collie-map-landing-") as state:
+        os.environ["COLLIE_STATE_DIR"] = state
+        try:
+            return _run()
+        finally:
+            if prior_state is None:
+                os.environ.pop("COLLIE_STATE_DIR", None)
+            else:
+                os.environ["COLLIE_STATE_DIR"] = prior_state
+
+
+def _run():
     from harness import webapp, sessions
 
     # --- the default project ------------------------------------------------------------------

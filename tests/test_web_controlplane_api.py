@@ -96,8 +96,12 @@ def test_comfy_surface_and_control_plane_are_authenticated(web_server, monkeypat
     assert code == 409 and failed["error"] == "refresh failed"
 
 
-def test_live_copilot_surface_and_control_plane_require_audio_consent(web_server):
+def test_live_copilot_surface_and_control_plane_require_audio_consent(web_server, monkeypatch):
+    from harness import avatar_rehearsal
+
     base, token, _state = web_server
+    monkeypatch.setattr(avatar_rehearsal.mcpclient, "server_has_tool",
+                        lambda _server, _tool: False)
 
     with urllib.request.urlopen(base + "/live", timeout=8) as response:
         page = response.read().decode("utf-8")
@@ -129,9 +133,72 @@ def test_live_copilot_surface_and_control_plane_require_audio_consent(web_server
     assert handoff["app"] == "chrome" and handoff["title"] == "System design board"
     assert handoff["pid"] == 42 and handoff["hwnd"] == 9001
 
+    code, avatar = _json(base + "/api/live-copilot/avatar/start?token=" + token,
+                         "POST", {"scenario": "Explain the architecture"})
+    assert code == 201 and avatar["simulation"] is True
+    assert avatar["avatar"]["active"] is True
+    code, avatar_stop = _json(base + "/api/live-copilot/avatar/stop?token=" + token,
+                              "POST", {})
+    assert code == 200 and avatar_stop["avatar"]["active"] is False
+
     code, stopped = _json(base + "/api/live-copilot/stop?token=" + token, "POST", {})
     assert code == 200 and not stopped["active"]
     assert not stopped["listen"] and not stopped["board_edit"]
+
+
+@pytest.mark.parametrize("body", [
+    {"listen": "false"}, {"observe_screen": 1}, {"understand": "false"},
+    {"observe_ui": None}, {"share_transcript": "true"},
+])
+def test_live_start_rejects_non_boolean_authority(web_server, monkeypatch, body):
+    from harness import live_copilot
+
+    monkeypatch.setattr(live_copilot, "capabilities", lambda: {})
+    base, token, state = web_server
+    code, refused = _json(base + "/api/live-copilot/start?token=" + token, "POST", body)
+    assert code == 409 and "boolean" in refused["error"]
+    assert live_copilot.LiveSessionStore(state).snapshot()["active"] is False
+
+
+def test_live_permissions_cannot_enable_listening_with_a_string(web_server, monkeypatch):
+    from harness import live_copilot
+
+    monkeypatch.setattr(live_copilot, "capabilities", lambda: {})
+    base, token, state = web_server
+    code, _ = _json(base + "/api/live-copilot/start?token=" + token, "POST", {"listen": False})
+    assert code == 201
+    code, refused = _json(base + "/api/live-copilot/permissions?token=" + token,
+                         "POST", {"listen": "false"})
+    assert code == 409 and "boolean" in refused["error"]
+    current = live_copilot.LiveSessionStore(state).snapshot()
+    assert current["listen"] is False and current["consent_at_ms"] == 0
+
+
+def test_live_review_download_is_authenticated_and_session_bound(web_server, monkeypatch):
+    from harness import live_copilot
+
+    monkeypatch.setattr(live_copilot, "capabilities", lambda: {})
+    base, token, state = web_server
+    store = live_copilot.LiveSessionStore(state)
+    session = store.start(listen=False)["session_id"]
+    store.add_note(text="Prepare the launch notes.")
+    store.add_event(source="you", text="Private transcript")
+    store.stop()
+    url = base + "/api/live-copilot/export?session=" + session
+    assert _json(url)[0] == 403
+    assert _json(url + "&token=" + token + "&events=false")[0] == 400
+    with urllib.request.urlopen(url + "&token=" + token, timeout=8) as response:
+        assert response.headers["Content-Type"] == "text/markdown; charset=utf-8"
+        assert response.headers["Content-Disposition"] == 'attachment; filename="%s.md"' % session
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        content = response.read().decode("utf-8")
+    assert "Prepare the launch notes." in content and "Private transcript" not in content
+    with urllib.request.urlopen(url + "&token=" + token + "&events=1&lang=zh", timeout=8) as response:
+        content = response.read().decode("utf-8")
+    assert "会话回顾" in content and "Private transcript" in content
+    store.start(listen=False)
+    assert _json(url + "&token=" + token)[0] == 409
 
 
 def test_mcp_login_thread_warms_cache_and_publishes_failure(web_server, monkeypatch):
@@ -869,6 +936,9 @@ def test_model_picker_auto_unpins_model_without_switching_provider(web_server, m
     monkeypatch.setattr(settings, "_cache", {"mtime": None, "data": {}})
     monkeypatch.setenv("COLLIE_PROVIDER", "codex-oauth")
     monkeypatch.delenv("COLLIE_MODEL", raising=False)
+    # Simulate a process launched without a model override as well as clearing its current env.
+    # settings remembers hard overrides at import, including a mock model supplied by the runner.
+    monkeypatch.setattr(settings, "_HARD_ENV", settings._HARD_ENV - {"COLLIE_MODEL"})
     settings.update({"PROVIDER": "codex-oauth", "MODEL": "gpt-5.6-sol"})
 
     code, result = _json(base + "/api/model?token=" + token, "POST", {"auto": True})

@@ -27,6 +27,37 @@ def test_provider_neutral_diagram_is_strictly_bounded():
                          [{"from": "api", "to": "api"}])
 
 
+def test_shortcut_writer_types_each_canvas_label_character_by_character(monkeypatch):
+    from harness import browserbridge, live_surfaces
+
+    calls = []
+    monkeypatch.setattr(browserbridge, "_bridge_live", lambda: True)
+    monkeypatch.setattr(live_surfaces.time, "sleep", lambda _seconds: None)
+
+    def call(command, timeout=60):
+        calls.append(dict(command))
+        if command["action"] == "spaces":
+            return {"ok": True, "data": {"spaces": [{
+                "space": live_surfaces.BOARD_SPACE, "tab_id": 7,
+                "title": "System design", "url": "https://excalidraw.com/",
+            }]}}
+        if command["action"] == "screenshot":
+            return {"ok": True, "data": {"css_width": 1200, "css_height": 800}}
+        return {"ok": True, "data": {}}
+
+    monkeypatch.setattr(browserbridge, "_call", call)
+    profile = live_surfaces.detect_board("https://excalidraw.com/", "System design")
+    plan = live_surfaces.validate_diagram([{"id": "api", "label": "API"}], [])
+
+    result = live_surfaces.draw_with_shortcuts(
+        profile, plan, expected_tab_id=7, expected_url="https://excalidraw.com/")
+
+    typed = [row["text"] for row in calls if row.get("action") == "insert_text"]
+    assert typed == ["A", "P", "I"]
+    assert result["input_mode"] == "character_by_character"
+    assert result["typed_characters"] == 3
+
+
 def test_live_diagram_apply_stops_when_session_authority_is_revoked(monkeypatch, tmp_path):
     from harness import browserbridge
     from harness.live_copilot import LiveCopilotError, LiveSessionStore
