@@ -26,7 +26,7 @@ import uuid
 
 from .providers import (Completion, ModelProvider, ToolCall, Usage,
                          _error_completion, _norm_stop, content_text, _tc_fields,
-                         resolve_reasoning_effort, resolve_speed_tier)
+                         resolve_reasoning_effort, resolve_speed_tier, unique_tool_history)
 from .oauth_owner import RefreshOwner
 
 # codex-rs OAuth app + endpoints (mirrors the upstream CLI so the token is interchangeable
@@ -173,7 +173,7 @@ class CodexOAuthProvider(ModelProvider):
     # ---- collie chat messages -> Responses `input` items --------------------------------
     def _to_input(self, messages: list) -> list:
         items = []
-        for m in messages:
+        for m in unique_tool_history(messages):
             role = m.get("role")
             if role == "tool":
                 items.append({"type": "function_call_output",

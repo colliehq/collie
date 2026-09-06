@@ -327,6 +327,42 @@ def _tc_fields(tc):
     return getattr(tc, "id", None), getattr(tc, "name", None), getattr(tc, "args", {}) or {}
 
 
+def unique_tool_history(messages):
+    """Project legacy repeated call IDs without rewriting the saved journal.
+
+    Older CLI adapters derived IDs from response length. Sequential repeated
+    IDs can be paired unambiguously; overlapping ones cannot. Stable projected
+    IDs let a saved CLI conversation switch providers without invalid history.
+    """
+    used, pending, out = set(), {}, []
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            calls, changed = [], False
+            for call_index, call in enumerate(message["tool_calls"]):
+                cid, name, args = _tc_fields(call)
+                if cid and cid in pending:
+                    raise ValueError("conversation has overlapping tool calls with the same ID")
+                projected = cid
+                if cid and cid in used:
+                    projected = "history_" + uuid.uuid5(
+                        uuid.NAMESPACE_URL, "%s:%d:%d" % (cid, index, call_index)).hex
+                    while projected in used:
+                        projected = "history_" + uuid.uuid5(uuid.NAMESPACE_URL, projected).hex
+                    changed = True
+                used.add(projected)
+                if cid:
+                    pending[cid] = projected
+                calls.append({"id": projected, "name": name, "args": args})
+            out.append(dict(message, tool_calls=calls) if changed else message)
+        elif message.get("role") == "tool":
+            cid = message.get("tool_call_id")
+            projected = pending.pop(cid, cid)
+            out.append(dict(message, tool_call_id=projected) if projected != cid else message)
+        else:
+            out.append(message)
+    return out
+
+
 class ModelProvider:
     name = "base"
     model = "base"
@@ -569,7 +605,7 @@ class AnthropicProvider(ModelProvider):
 
     def _to_anthropic(self, messages: list) -> list:
         out = []
-        for m in messages:
+        for m in unique_tool_history(messages):
             role = m["role"]
             if role == "tool":
                 out.append({"role": "user", "content": [{
@@ -1276,7 +1312,10 @@ def _parse_response_envelope(text: str, allowed_tools=None):
     if kind == "answer":
         return kind, payload
     name, args = payload
-    return kind, ToolCall("cli_%d" % (len(text) % 100000), name, args)
+    # Each invocation needs its own identity, including repeated identical
+    # calls. Length-derived IDs collided in ordinary reads and could make an
+    # older tool result look like the receipt for a newly interrupted call.
+    return kind, ToolCall("cli_" + uuid.uuid4().hex, name, args)
 
 
 def _parse_tool_json(text: str):
@@ -1460,7 +1499,7 @@ class OpenAICompatProvider(ModelProvider):
 
     def _to_openai(self, system, messages):
         out = [{"role": "system", "content": system}]
-        for m in messages:
+        for m in unique_tool_history(messages):
             r = m["role"]
             if r == "tool":
                 out.append({"role": "tool", "tool_call_id": m.get("tool_call_id", ""),
