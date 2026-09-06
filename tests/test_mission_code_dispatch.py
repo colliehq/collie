@@ -1198,9 +1198,11 @@ def test_a_long_answer_is_shortened_visibly_and_kept_whole_in_the_record():
     assert "files changed and the change is attributed to this Mission" in text
     assert "python -m unittest -q" in text
     assert "Stop: the coding run reached its turn limit." in text
-    # ...and the cut is announced, with where the whole of it lives.
+    # ...and the cut is announced, pointing only at a copy that really is whole.
+    # A runner result with no delivery record has only the session journal.
     assert "report shortened here" in text
-    assert "code_delivery" in text
+    assert "durable coding session journal" in text
+    assert "code_delivery" not in text
     assert len(text) <= 1800
     # A short answer is never touched.
     short = code_stop_report("stopped", {"answer": "all done", "slice_mutated": False,

@@ -36,7 +36,9 @@ from .jobs import (CANCELLED, DONE_ACCEPTED, DONE_VERIFIED, FAILED_S, NEEDS_YOU,
                    RUNNING, WAITING, Capability)
 from .mission import (_campaign_coverage, _compact_case_storage,
                       _open_campaign_coverage,
-                      _resolved_authorization, completion_contract,
+                      _resolved_authorization, admit_human_note,
+                      completion_contract, HUMAN_NOTE_MAX_CHARS,
+                      STEER_NOTE_MAX_CHARS,
                       MissionDriver, MissionStore,
                       ModelDecider, ResourceBusy, create_mission, world_leash)
 from .primitives import register_primitives
@@ -2049,11 +2051,22 @@ class MissionService:
                 "usage_projection_errors": usage["errors"]}
 
     def steer_specialist(self, run_id: str, text: str, sender_run_id: str = "") -> dict:
-        """Queue a durable steer which is consumed at the next safe boundary."""
+        """Queue a durable steer which is consumed at the next safe boundary.
+
+        Admission happens here, before anything is queued, because the mailbox
+        stores a bounded payload: an over-length steer that was allowed through
+        would be silently shortened on its way to becoming the run's scope.  The
+        sender is refused with a reason instead.
+        """
         if self._run_tree is None:
             return {"error": "no durable run-tree store configured", "run_id": run_id}
+        admitted, refusal = admit_human_note(text, STEER_NOTE_MAX_CHARS)
+        if refusal:
+            return {"error": refusal, "run_id": run_id, "queued": False,
+                    "note_rejected": True, "note_chars": len(str(text or "")),
+                    "note_limit": STEER_NOTE_MAX_CHARS}
         try:
-            message_id = self._run_tree.steer(run_id, text, sender_run_id)
+            message_id = self._run_tree.steer(run_id, admitted, sender_run_id)
         except ValueError as exc:
             return {"error": str(exc), "run_id": run_id}
         if message_id is None:
@@ -2836,8 +2849,17 @@ class MissionService:
                 case=case, allow_unowned=True)
             return self.status(successor)
         _name, nonce = self.store.last_parked(mid)
-        if m.state != NEEDS_YOU or nonce or not self.store.continue_handoff(mid, note):
+        if m.state != NEEDS_YOU or nonce:
             return {**self.status(mid), "error": f"cannot continue from {m.state}"}
+        # The note is durable scope, so a refusal has to reach the person who
+        # typed it.  Returning a bare "cannot continue" for an over-length
+        # instruction told them nothing about what to change.
+        accepted = self.store.continue_handoff_result(mid, note)
+        if not accepted.get("ok"):
+            return {**self.status(mid), "error": accepted.get("error") or
+                    f"cannot continue from {m.state}",
+                    "note_rejected": True, "note_chars": len(str(note or "")),
+                    "note_limit": HUMAN_NOTE_MAX_CHARS}
         specialist = self._specialist_run(mid)
         if specialist:
             self._run_tree.resume(specialist["run_id"])
@@ -2983,14 +3005,37 @@ class MissionService:
         if child and child.run_token:
             self._fold_child_results(child_mid, run_id, child.run_token)
         messages = self._run_tree.claim_messages(run_id, token)
-        steers = []
+        steers, empty = [], []
         for message in messages:
-            if message["kind"] == "steer":
-                text = (message.get("payload") or {}).get("text")
-                if text:
-                    steers.append(text)
-                self._run_tree.ack_message(run_id, token, message["message_id"])
-        return {"cancel": bool(run and run.get("cancel_requested")), "steers": steers}
+            if message["kind"] != "steer":
+                continue
+            text = (message.get("payload") or {}).get("text")
+            if text:
+                steers.append({"text": text, "id": message["message_id"]})
+            else:
+                empty.append(message["message_id"])
+
+        def ack(accepted_ids, refused):
+            """Acknowledge only what the Mission has durably recorded or refused.
+
+            A claimed message is 'delivered', not consumed.  Acknowledging on
+            claim meant a steer whose case write then failed — a lost lease, a
+            full ledger — was gone: the user's instruction had been deleted by
+            the act of reading it.  Anything left unacked is requeued when the
+            lease expires, so it is re-delivered rather than dropped.
+            """
+            for message_id in list(accepted_ids or []):
+                self._run_tree.ack_message(run_id, token, message_id)
+            for item in refused or []:
+                # A refusal is a settled outcome too: redelivering an
+                # instruction the Mission can never accept would loop forever.
+                # The reason is on the run's durable event trail for its sender.
+                self._run_tree.ack_message(run_id, token, item.get("id"))
+
+        for message_id in empty:
+            self._run_tree.ack_message(run_id, token, message_id)
+        return {"cancel": bool(run and run.get("cancel_requested")),
+                "steers": steers, "ack": ack}
 
     def _run_specialist(self, run, token):
         run_id, child_mid = run["run_id"], run.get("mission_id") or ""

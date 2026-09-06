@@ -369,7 +369,9 @@ def _compact_case_storage(case, max_chars=64000):
     recent = list(case.get("_recent_results") or [])[-12:]
     if recent:
         case["_recent_results"] = recent
-    updates = list(case.get("human_updates") or [])[-20:]
+    # The case field is a bounded projection; the exact instructions live in
+    # ``mission_human_notes`` and are unaffected by any compaction here.
+    updates = _human_note_projection(case.get("human_updates"))
     if updates:
         case["human_updates"] = updates
     raw = _js(case)
@@ -388,6 +390,7 @@ def _compact_case_storage(case, max_chars=64000):
         "observe_count", "submitted", "published", "sent", "url", "draft",
         "code_verified", "code_pending", "code_session_id",
         "code_recovery_required", "code_delivery", "code_dispatch",
+        "code_verification_history", "code_goal_revision", "_human_note_ledger",
         "code_baseline_tree_digest", "code_expected_tree_digest", "coded",
         "last_sent_to", "_isolated_workspace",
         "_workspace", "_run_id", "_specialist_run_id", "_parent_mission_id",
@@ -427,7 +430,7 @@ def _model_case_json(case, limit=12000):
                 "code_verification", "code_delivery", "code_baseline_tree_digest",
                 "code_expected_tree_digest",
                 "_standing_authority", "_connected_work_identities", "signal",
-                "_mission_summary", "human_updates",
+                "_mission_summary", "_human_note_ledger", "human_updates",
                 "pending_authorizations", "resolved_authorizations",
                 "_campaign_coverage", "pending_followups", "_due_followups", "_activity_ledger",
                 "_do_not_repeat", "browse_sites", "_recent_results",
@@ -447,7 +450,8 @@ def _model_case_json(case, limit=12000):
                "code_expected_tree_digest": 200,
                "_standing_authority": 1000,
                "_connected_work_identities": 1200, "signal": 900,
-               "_mission_summary": 900, "human_updates": 700,
+               "_mission_summary": 900, "_human_note_ledger": 400,
+               "human_updates": 700,
                "pending_authorizations": 1000, "resolved_authorizations": 600,
                "_campaign_coverage": 1800,
                "pending_followups": 1000, "_due_followups": 800,
@@ -537,7 +541,7 @@ class Mission:
 # having done nothing.  So a dedicated code Mission dispatches its OWN complete
 # goal; mixed-work Missions, which really do have to choose between primitives,
 # keep the planner.
-CODE_DISPATCH_VERSION = 1
+CODE_DISPATCH_VERSION = 2
 # How many consecutive slices may end without changing a single file before the
 # Mission stops asking.  Reading a large repository legitimately takes a slice or
 # two; an agent that has done nothing three times running is not making progress
@@ -549,6 +553,155 @@ CODE_UNPRODUCTIVE_SLICES = 3
 # and report; after that the Mission stops and says exactly that, rather than
 # reading exit zero as delivery.
 CODE_FINISH_SLICES = 2
+
+# --- durable human instruction admission ------------------------------------
+#
+# Everything a person types at a Mission is scope.  The old code appended it to
+# ``case['human_updates']`` with a per-note slice and a 20-entry rolling window,
+# so a long instruction lost its tail and an old one fell off the end entirely —
+# silently, in the one place the agent reads to learn what it was asked to do.
+#
+# The fix is not a bigger slice.  An accepted instruction is stored EXACTLY, in
+# a dedicated append-only table, and admission is bounded up front: an input
+# above the limit is REFUSED with an actionable message, so the person who typed
+# it finds out instead of the agent quietly working on half of it.  The case
+# keeps a bounded, explicitly-labelled projection for model context only.
+HUMAN_NOTE_MAX_CHARS = 20000
+# A steer sent to an already-running specialist travels through the TaskTree
+# mailbox, whose payload is bounded at 4,000 characters.  Admission for that
+# surface uses the transport's real limit, so an accepted steer is never
+# shortened in flight; a longer instruction is refused at the surface with that
+# number in the message instead of arriving as a prefix of itself.
+STEER_NOTE_MAX_CHARS = 4000
+# The whole durable ledger for one Mission.  Reaching this rejects the new note
+# rather than evicting an old one: no accepted instruction is ever deleted.
+HUMAN_LEDGER_MAX_CHARS = 400000
+HUMAN_LEDGER_MAX_NOTES = 500
+# How much of each note the in-case projection carries, and how many entries.
+# This is a display/context convenience; it is never the dispatch source.
+HUMAN_PROJECTION_NOTE_CHARS = 500
+HUMAN_PROJECTION_NOTES = 20
+
+
+def admit_human_note(note, limit=HUMAN_NOTE_MAX_CHARS):
+    """Validate one human instruction: exact text, or an actionable refusal.
+
+    Returns ``(text, error)``.  ``text`` is the caller's characters unchanged —
+    no strip, no normalization, no ellipsis — because this is the text that
+    becomes the agent's scope.  An oversized or empty input yields ``error``,
+    which is a sentence the caller can show the person who typed it.
+    """
+    text = "" if note is None else str(note)
+    if not text.strip():
+        return "", "the instruction is empty"
+    if len(text) > int(limit):
+        return "", (
+            "the instruction is %d characters; this Mission accepts at most %d "
+            "per message so nothing has to be silently shortened. Send it as "
+            "several messages, or put the long material in a file in the "
+            "Mission's workspace and reference it." % (len(text), int(limit)))
+    return text, ""
+
+
+def _note_digest(entries):
+    """A content+identity digest of an ordered instruction ledger.
+
+    Counting entries cannot detect "a person spoke" once a rolling window is
+    full, and cannot detect an edit at all.  Hashing the durable ids together
+    with the exact bytes changes whenever the authorized scope changes, and
+    never changes when nothing was said.
+    """
+    digest = hashlib.sha256()
+    for item in entries or ():
+        if not isinstance(item, dict):
+            continue
+        digest.update(b"%d\x00" % int(item.get("note_id") or 0))
+        digest.update(str(item.get("note") or "").encode("utf-8", "replace"))
+        digest.update(b"\x00%s\x00" % str(item.get("source") or "").encode())
+    return digest.hexdigest()
+
+
+def _human_note_projection(entries):
+    """The bounded in-case view of the ledger, honest about being a view."""
+    out = []
+    for item in list(entries or [])[-HUMAN_PROJECTION_NOTES:]:
+        if not isinstance(item, dict):
+            continue
+        note = str(item.get("note") or "")
+        row = {"at": int(item.get("at") or 0),
+               "note": note[:HUMAN_PROJECTION_NOTE_CHARS],
+               "note_id": int(item.get("note_id") or 0),
+               "source": str(item.get("source") or "")}
+        if item.get("host"):
+            row["recovery"] = True
+        if str(item.get("source") or "") == "steer":
+            row["steer"] = True
+        # Re-projecting an already-projected entry (every case compaction does)
+        # must not quietly lose the fact that it is a fragment.
+        full = max(len(note), int(item.get("note_chars") or 0))
+        if full > HUMAN_PROJECTION_NOTE_CHARS or item.get("projection_only"):
+            # The model must never mistake this for the instruction itself.
+            row["projection_only"] = True
+            row["note_chars"] = full
+        out.append(row)
+    return out
+
+
+def _legacy_case_notes(case):
+    """Read pre-ledger ``case['human_updates']`` as ordered ledger entries.
+
+    Missions saved before the ledger existed keep their instructions only here,
+    already shortened by the old writer.  They are migrated as-is and labelled,
+    so nothing is invented and nothing is lost twice.
+    """
+    out = []
+    for item in (case or {}).get("human_updates") or []:
+        if not isinstance(item, dict):
+            continue
+        note = str(item.get("note") or "")
+        if not note.strip():
+            continue
+        entry = {"at": int(item.get("at") or 0), "note": note,
+                 "note_id": int(item.get("note_id") or 0),
+                 "host": bool(item.get("recovery")),
+                 "source": str(item.get("source") or
+                               ("steer" if item.get("steer") else "legacy"))}
+        if item.get("projection_only"):
+            entry["projection_only"] = True
+        out.append(entry)
+    return out
+
+
+def _supersede_code_evidence(case, revision, note_ids, now):
+    """Retire completion evidence when the authorized scope changes.
+
+    A green host check proves something about the goal that was in force when it
+    ran.  The moment a person asks for something more, that check is history,
+    not certification: leaving ``code_verified`` set let the dispatcher move
+    straight to "verified, finish up" and close the Mission over an instruction
+    it had just accepted and never worked on.
+
+    The old verdict is not deleted — it is moved into ``code_verification_history``
+    with the revision that retired it, so the record still shows what passed when.
+    """
+    if not (case.get("code_verified") or case.get("code_verification")):
+        case["code_goal_revision"] = revision
+        return {}
+    archived = {"at": now, "superseded_by_notes": list(note_ids),
+                "goal_revision": revision,
+                "verified": bool(case.get("code_verified")),
+                "verification": case.get("code_verification"),
+                "delivery": case.get("code_delivery"),
+                "reason": "a later human instruction changed the authorized goal"}
+    history = [x for x in (case.get("code_verification_history") or [])
+               if isinstance(x, dict)]
+    history.append(archived)
+    case["code_verification_history"] = history[-5:]
+    case["code_verified"] = False
+    case.pop("code_verification", None)
+    case["code_goal_revision"] = revision
+    return {"verified": bool(archived["verified"]),
+            "had_verification": bool(archived["verification"])}
 
 
 @dataclass(frozen=True)
@@ -588,7 +741,7 @@ def code_mission_profile(mission):
     return profile
 
 
-def code_mission_goal(mission) -> str:
+def code_mission_goal(mission, notes=None) -> str:
     """The user's complete authorized request, plus their updates in order.
 
     The goal is never summarized, translated or truncated: it is the exact text
@@ -596,13 +749,14 @@ def code_mission_goal(mission) -> str:
     approach it.  Later human updates are appended in the order they were given
     so a steering message refines the request instead of replacing it.
 
-    Nothing is shortened here.  Whether a very long instruction should be
-    accepted at all is a question for the surface that takes it — and the store
-    already bounds each note as it is written.  Silently dropping the tail of an
-    instruction the user did type, at the one point where it becomes the agent's
-    scope, would be the worst possible place to answer that question: the user
-    would see their words in the Mission record and never learn that the coding
-    loop was given only the first part of them.
+    ``notes`` is the authoritative ledger from ``MissionStore.human_notes`` and
+    is what a real dispatch passes.  Whether a very long instruction is accepted
+    at all was already decided, explicitly and with a refusal message, at the
+    surface that took it (:func:`admit_human_note`); by the time text reaches
+    here it is exactly what the user typed and all of it is used.  Falling back
+    to the case projection keeps store-less callers working, and any entry the
+    projection had to shorten is labelled as a fragment rather than passed off
+    as the instruction.
 
     Only durable human/operator text ever becomes scope.  Model prose, worker
     answers and check output live in the case as evidence and stay there;
@@ -610,23 +764,30 @@ def code_mission_goal(mission) -> str:
     labelled, so a housekeeping instruction cannot read as a new requirement.
     """
     goal = str(getattr(mission, "goal", "") or "").strip()
-    case = dict(getattr(mission, "case", {}) or {})
+    if notes is None:
+        notes = _legacy_case_notes(dict(getattr(mission, "case", {}) or {}))
     updates = []
-    for item in (case.get("human_updates") or []):
+    for item in notes or ():
         if not isinstance(item, dict):
             continue
         note = str(item.get("note") or "").strip()
-        if note:
-            updates.append((note, bool(item.get("recovery"))))
+        if not note:
+            continue
+        label = ""
+        if item.get("host"):
+            label = "[Mission host recovery note] "
+        elif item.get("projection_only"):
+            label = "[first %d characters only; the full instruction is in the " \
+                    "Mission note ledger] " % HUMAN_PROJECTION_NOTE_CHARS
+        updates.append((note, label))
     if not updates:
         return goal
     lines = [goal, "",
              "Later instructions from the same user, in the order they were given. "
              "They refine or override the request above; the earlier text still "
              "applies wherever they are silent:"]
-    lines.extend("%d. %s%s" % (index, "[Mission host recovery note] " if host else "",
-                               note)
-                 for index, (note, host) in enumerate(updates, 1))
+    lines.extend("%d. %s%s" % (index, label, note)
+                 for index, (note, label) in enumerate(updates, 1))
     return "\n".join(lines)
 
 
@@ -639,10 +800,20 @@ def code_stop_report(reason, result, limit=1800) -> str:
 
     This is the Mission's one-screen ``result`` line, so it is bounded — but the
     structured facts are never the part that gets dropped, and a shortened answer
-    says so and says where the whole of it is.  The complete worker answer stays
-    in ``case['code_delivery']`` and in the durable session transcript; a
-    truncated summary must never be mistaken for the deliverable, and a stop must
-    never be dressed up as a concise successful reply.
+    says so and says where the whole of it is.
+
+    Where that is depends on the length.  ``case['code_delivery']['answer']`` is
+    itself capped (the case is a working set that must survive compaction and
+    stay loadable), and it used to be advertised here as "the complete answer",
+    which sent anyone chasing a long report to a copy that had also been cut.
+    The delivery record now states its own ``answer_chars`` and
+    ``answer_truncated``, and this report repeats only what is true of the copy
+    it points at.  The durable session journal is the one place that always
+    holds the run's complete words, so it is named whenever the case copy is
+    short of the whole thing.
+
+    A truncated summary must never be mistaken for the deliverable, and a stop
+    must never be dressed up as a concise successful reply.
     """
     row = result if isinstance(result, dict) else {}
     parts = [str(reason or "code stopped without completion-grade evidence").strip()]
@@ -688,11 +859,26 @@ def code_stop_report(reason, result, limit=1800) -> str:
     if not answer:
         return facts
     limit = max(len(facts), int(limit))
+    # Name the copy that actually holds the rest.  The case record keeps only
+    # its first ``answer_chars_kept`` characters, so pointing at it as though it
+    # were complete would send someone to a second truncation.
+    kept = int(row.get("answer_chars_kept", 0) or 0)
+    session = str(row.get("session_id") or "")
+    journal = ("the durable coding session journal" +
+               (" (session %s)" % session[:64] if session else ""))
+    if kept and kept < len(answer):
+        where = ("its first %d characters are in the Mission record "
+                 "(code_delivery.answer) and the whole of it is in %s"
+                 % (kept, journal))
+    elif kept:
+        where = ("it is in the Mission record (code_delivery.answer) and in %s"
+                 % journal)
+    else:
+        where = "it is in %s" % journal
     # The facts are short and bounded; whatever room is left belongs to the
     # worker's own words, and the cut is announced rather than hidden behind an
     # ellipsis that reads like the model trailed off.
-    elision = ("\n…[report shortened here; the coding run's complete answer is kept "
-               "in the Mission record (code_delivery) and its session transcript]")
+    elision = "\n…[report shortened here; %s]" % where
     whole_header = "\nThe coding run's own report follows.\n"
     cut_header = "\nThe coding run's own report begins here.\n"
     if len(facts) + len(whole_header) + len(answer) <= limit:
@@ -700,11 +886,9 @@ def code_stop_report(reason, result, limit=1800) -> str:
     room = limit - len(facts) - len(cut_header) - len(elision)
     if room < 200:
         # Not enough space left to quote anything useful without misleading.
-        return (facts + "\nThe coding run wrote a %d-character report; it is kept in "
-                "the Mission record (code_delivery) and its session transcript."
-                % len(answer))
-    return (facts + "\nThe coding run's own report begins here.\n" +
-            answer[:room] + elision)
+        return (facts + "\nThe coding run wrote a %d-character report; %s."
+                % (len(answer), where))
+    return facts + cut_header + answer[:room] + elision
 
 
 @dataclass(frozen=True)
@@ -915,6 +1099,19 @@ class MissionStore:
             payload_json TEXT NOT NULL DEFAULT '{}', at INTEGER NOT NULL)""")
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS mission_events_recent ON mission_events(mission_id,event_id)")
+        # The authoritative record of what a person actually asked for.  It is
+        # append-only and stores the exact accepted characters; the case field
+        # of the same name is only a bounded projection of it.  Kept out of
+        # ``missions`` so old databases migrate without rewriting lifecycle rows
+        # and so an operator can read the instruction history directly.
+        self.db.execute("""CREATE TABLE IF NOT EXISTS mission_human_notes(
+            note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id TEXT NOT NULL, at INTEGER NOT NULL,
+            source TEXT NOT NULL DEFAULT '', host INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL)""")
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS mission_human_notes_order "
+            "ON mission_human_notes(mission_id,note_id)")
         self.db.execute("""CREATE TABLE IF NOT EXISTS mission_action_keys(
             mission_id TEXT NOT NULL, action_key TEXT NOT NULL, nonce TEXT NOT NULL DEFAULT '',
             state TEXT NOT NULL, at INTEGER NOT NULL,
@@ -2027,12 +2224,26 @@ class MissionStore:
                 self.db.commit()
                 return None
             case = _jl(r["case_json"])
-            updates = case.get("human_updates")
-            if not isinstance(updates, list):
-                updates = []
-            updates.append({"at": now, "note": (note or
-                "recovery inspected; safe to continue")[:500], "recovery": True})
-            case["human_updates"] = updates[-20:]
+            # A recovery note is housekeeping, not new scope, so an unusable one
+            # must never block the cleanup that makes the Mission safe again.
+            # It is recorded as a host note either way, and an oversized operator
+            # note is replaced by an explicit statement that it was refused —
+            # never by a silent prefix of what they wrote.
+            host_note = note or "recovery inspected; safe to continue"
+            _admitted, refusal = admit_human_note(host_note)
+            if refusal:
+                host_note = ("recovery inspected; the operator's inspection note "
+                             "was not recorded: %s" % refusal)
+            ok, error, _info = self._admit_notes_locked(
+                mission_id, case, [(host_note, "recovery", True)], now)
+            if not ok:
+                host_note = ("recovery inspected; no further note could be "
+                             "recorded: %s" % error)
+                updates = case.get("human_updates")
+                case["human_updates"] = (
+                    (updates if isinstance(updates, list) else []) +
+                    [{"at": now, "note": host_note, "recovery": True,
+                      "source": "recovery"}])[-HUMAN_PROJECTION_NOTES:]
             cur = self.db.execute(
                 "UPDATE missions SET state=?,case_json=?,run_token=?,lease_until=?,result=?,updated_at=? "
                 "WHERE mission_id=? AND state=?",
@@ -2141,10 +2352,151 @@ class MissionStore:
             self.db.commit()
         return cur.rowcount == 1
 
-    def continue_handoff(self, mission_id, note=""):
-        """Return a human-assisted hand-off to Collie without declaring it done."""
+    # --- durable human instruction ledger ---------------------------------
+
+    def _ledger_rows_locked(self, mission_id):
+        rows = self.db.execute(
+            "SELECT note_id,at,source,host,note FROM mission_human_notes "
+            "WHERE mission_id=? ORDER BY note_id", (mission_id,)).fetchall()
+        return [{"note_id": r["note_id"], "at": r["at"], "source": r["source"],
+                 "host": bool(r["host"]), "note": r["note"]} for r in rows]
+
+    def _backfill_ledger_locked(self, mission_id, case, now):
+        """Migrate a pre-ledger Mission's case entries once, in the caller's txn.
+
+        Their text was already shortened by the old writer; migrating it keeps
+        the chronology intact rather than pretending the Mission was never
+        steered before the upgrade.
+        """
+        legacy = _legacy_case_notes(case)
+        if not legacy:
+            return
+        for item in legacy:
+            self.db.execute(
+                "INSERT INTO mission_human_notes(mission_id,at,source,host,note) "
+                "VALUES(?,?,?,?,?)",
+                (mission_id, int(item["at"] or now), item["source"],
+                 1 if item["host"] else 0, item["note"]))
+
+    def _admit_notes_locked(self, mission_id, case, notes, now):
+        """Admit exact human instructions inside the caller's transaction.
+
+        ``notes`` is a sequence of ``(text, source, host)``.  Returns
+        ``(ok, error, info)``: on refusal NOTHING is written, so a caller that
+        also moves lifecycle state simply abandons its transaction and reports
+        the refusal instead of half-accepting the message.
+        """
+        existing = self._ledger_rows_locked(mission_id)
+        if not existing:
+            self._backfill_ledger_locked(mission_id, case, now)
+            existing = self._ledger_rows_locked(mission_id)
+        accepted, total = [], sum(len(x["note"]) for x in existing)
+        count = len(existing)
+        for text, source, host in notes:
+            admitted, error = admit_human_note(text)
+            if error:
+                return False, error, {}
+            total += len(admitted)
+            count += 1
+            if count > HUMAN_LEDGER_MAX_NOTES:
+                return False, (
+                    "this Mission already holds %d durable instructions, the "
+                    "maximum; none are discarded to make room. Continue in a "
+                    "new Mission." % HUMAN_LEDGER_MAX_NOTES), {}
+            if total > HUMAN_LEDGER_MAX_CHARS:
+                return False, (
+                    "this Mission's durable instructions would reach %d "
+                    "characters, above the %d limit; none are discarded to "
+                    "make room. Continue in a new Mission."
+                    % (total, HUMAN_LEDGER_MAX_CHARS)), {}
+            accepted.append((admitted, str(source or ""), bool(host)))
+        note_ids = []
+        for admitted, source, host in accepted:
+            cur = self.db.execute(
+                "INSERT INTO mission_human_notes(mission_id,at,source,host,note) "
+                "VALUES(?,?,?,?,?)",
+                (mission_id, now, source, 1 if host else 0, admitted))
+            note_ids.append(cur.lastrowid)
+        entries = self._ledger_rows_locked(mission_id)
+        case["human_updates"] = _human_note_projection(entries)
+        case["_human_note_ledger"] = {
+            "notes": len(entries), "chars": sum(len(x["note"]) for x in entries),
+            "revision": _note_digest(entries), "max_note_id": entries[-1]["note_id"],
+            "authoritative": "MissionStore.human_notes(); case.human_updates is a "
+                             "bounded projection of it"}
+        info = {"note_ids": note_ids, "revision": _note_digest(entries),
+                "notes": len(entries)}
+        if any(not host for _text, _source, host in accepted):
+            info["superseded"] = _supersede_code_evidence(
+                case, info["revision"], note_ids, now)
+        return True, "", info
+
+    def human_notes(self, mission_id):
+        """The authoritative instruction ledger, oldest first, exact text.
+
+        This — not ``case['human_updates']`` — is what may be turned into scope.
+        A Mission saved before the ledger existed answers from its case so the
+        upgrade never looks like the user said nothing.
+        """
+        with self._lock:
+            entries = self._ledger_rows_locked(mission_id)
+            if entries:
+                return entries
+            r = self.db.execute("SELECT case_json FROM missions WHERE mission_id=?",
+                                (mission_id,)).fetchone()
+        return _legacy_case_notes(_jl(r["case_json"])) if r else []
+
+    def add_human_notes_owned(self, mission_id, token, notes):
+        """Admit instructions for a Mission this caller currently owns.
+
+        The ledger insert and the case projection commit together, so a reader
+        can never see one without the other.  A refusal writes nothing and is
+        returned verbatim to the caller, which is what lets a live steer be
+        re-delivered instead of acknowledged and dropped.
+        """
         now = int(time.time())
         with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            r = self.db.execute(
+                "SELECT case_json FROM missions WHERE mission_id=? "
+                "AND state IN (?,?) AND run_token=?",
+                (mission_id, RUNNING, PAUSING, token)).fetchone()
+            if not r:
+                self.db.rollback()
+                return {"ok": False, "error": "this run no longer owns the Mission",
+                        "lost_ownership": True}
+            case = _jl(r["case_json"])
+            ok, error, info = self._admit_notes_locked(mission_id, case, notes, now)
+            if not ok:
+                self.db.rollback()
+                return {"ok": False, "error": error}
+            cur = self.db.execute(
+                "UPDATE missions SET case_json=?,updated_at=? WHERE mission_id=? "
+                "AND state IN (?,?) AND run_token=?",
+                (_js(_compact_case_storage(case)), now, mission_id,
+                 RUNNING, PAUSING, token))
+            if not cur.rowcount:
+                self.db.rollback()
+                return {"ok": False, "error": "this run no longer owns the Mission",
+                        "lost_ownership": True}
+            self.db.commit()
+        return {"ok": True, "case": _compact_case_storage(case), **info}
+
+    def continue_handoff(self, mission_id, note=""):
+        """Return a human-assisted hand-off to Collie without declaring it done."""
+        return bool(self.continue_handoff_result(mission_id, note).get("ok"))
+
+    def continue_handoff_result(self, mission_id, note=""):
+        """``continue_handoff`` with the reason a refusal happened.
+
+        The note is durable scope, so it is admitted in the SAME transaction
+        that makes the Mission runnable again.  Either the instruction is
+        recorded exactly and the Mission continues, or nothing changes and the
+        caller is told why — never "continued, but your words were shortened".
+        """
+        now = int(time.time())
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
             r = self.db.execute(
                 "SELECT case_json FROM missions WHERE mission_id=? AND state=? "
                 "AND COALESCE(run_token,'')=''",
@@ -2153,25 +2505,33 @@ class MissionStore:
                 "SELECT 1 FROM mission_steps WHERE mission_id=? AND verdict=? LIMIT 1",
                 (mission_id, _AWAITING)).fetchone()
             if not r or parked:
-                return False
+                self.db.rollback()
+                return {"ok": False, "error": "this Mission is not waiting on a "
+                                              "human step it can continue from"}
             case = _jl(r["case_json"])
-            updates = case.get("human_updates")
-            if not isinstance(updates, list):
-                updates = []
-            updates.append({"at": now, "note": (note or "human step completed")[:500]})
-            case["human_updates"] = updates[-20:]
+            ok, error, info = self._admit_notes_locked(
+                mission_id, case,
+                [(note or "human step completed", "handoff", False)], now)
+            if not ok:
+                self.db.rollback()
+                return {"ok": False, "error": error}
             cur = self.db.execute(
                 "UPDATE missions SET state=?,case_json=?,result=?,updated_at=? "
                 "WHERE mission_id=? AND state=? AND COALESCE(run_token,'')=''",
-                (QUEUED, _js(case), "human step completed; ready to continue", now,
-                  mission_id, NEEDS_YOU))
+                (QUEUED, _js(_compact_case_storage(case)),
+                 "human step completed; ready to continue", now,
+                 mission_id, NEEDS_YOU))
             if cur.rowcount:
                 self.db.execute(
                     "UPDATE mission_runtime SET active_phase=?,progress_at=?,human_since=0,"
                     "human_escalate_at=0,human_deadline_at=0,escalation_level=0 WHERE mission_id=?",
                     (QUEUED, now, mission_id))
+            else:
+                self.db.rollback()
+                return {"ok": False, "error": "the Mission changed state while the "
+                                              "instruction was being accepted"}
             self.db.commit()
-        return cur.rowcount == 1
+        return {"ok": True, **info}
 
     def record_step(self, mission_id, name, nonce, verdict):
         with self._lock:
@@ -3523,24 +3883,71 @@ class MissionDriver:
         if update.get("cancel"):
             self.store.cancel(mission_id, "cancel acknowledged at a safe action boundary")
             return self._state(mission_id, CANCELLED)
-        steers = [str(text).strip() for text in (update.get("steers") or [])
-                  if str(text).strip()]
-        if steers:
-            m = self.store.get(mission_id)
-            case = dict(m.case)
-            human = list(case.get("human_updates") or [])
-            now = int(time.time())
-            human.extend({"at": now, "note": text[:1000], "steer": True}
-                         for text in steers)
-            case["human_updates"] = human[-20:]
-            if not self.store.set_case_owned(mission_id, token, case):
+        # A steer may arrive as plain text or as ``{"text":..., "id":...}``; the
+        # id lets the transport hold the message until it is durable here.
+        incoming = []
+        for item in (update.get("steers") or []):
+            if isinstance(item, dict):
+                incoming.append((str(item.get("text") or ""), item.get("id")))
+            else:
+                incoming.append((str(item or ""), None))
+        incoming = [(text, ident) for text, ident in incoming if text.strip()]
+        if not incoming:
+            return ""
+        ack = update.get("ack") if callable(update.get("ack")) else None
+        # Admission is per message: one oversized steer is refused with a reason
+        # its sender can act on, and the messages beside it are still accepted.
+        good, refused = [], []
+        for text, ident in incoming:
+            _admitted, error = admit_human_note(text)
+            (refused if error else good).append((text, ident, error))
+        saved = self.store.add_human_notes_owned(
+            mission_id, token, [(text, "steer", False) for text, _i, _e in good]) \
+            if good else {"ok": True, "note_ids": [], "revision": "", "case": None}
+        if not saved.get("ok"):
+            if saved.get("lost_ownership"):
+                # Nothing was written and nothing is acknowledged, so the steer
+                # stays queued for whoever owns the Mission next.
                 return self._lost_state(mission_id, token)
+            # A storage-level refusal (the ledger is full) is the sender's to
+            # see; acknowledging it here would delete their instruction.
+            refused.extend((text, ident, saved.get("error") or "not accepted")
+                           for text, ident, _e in good)
+            good = []
+        if refused:
             self.store.record_event(
-                mission_id, "control", "steer", payload={"messages": steers[-10:]})
-            self.store.record_checkpoint(
-                mission_id, token, "steered", {"messages": steers[-10:]}, case=case)
-            return "_steered"
-        return ""
+                mission_id, "control", "steer_refused",
+                payload={"refusals": [{"reason": reason, "chars": len(text),
+                                       "message_id": ident}
+                                      for text, ident, reason in refused][-10:]})
+        if ack:
+            # Only now, after the instruction is durably stored (or explicitly
+            # refused), is the transport told it may stop redelivering.
+            try:
+                ack([ident for _t, ident, _e in good if ident is not None],
+                    [{"id": ident, "error": reason}
+                     for _t, ident, reason in refused if ident is not None])
+            except Exception as exc:
+                self.store.record_event(
+                    mission_id, "control", "steer_ack_failed",
+                    payload={"error": "%s: %s" % (type(exc).__name__, exc)})
+        if not good:
+            return ""
+        texts = [text for text, _i, _e in good]
+        self.store.record_event(
+            mission_id, "control", "steer",
+            payload={"messages": [text[:1000] for text in texts][-10:],
+                     "note_ids": saved.get("note_ids"),
+                     "chars": [len(text) for text in texts],
+                     "goal_revision": saved.get("revision"),
+                     "superseded_verification": saved.get("superseded") or {}})
+        self.store.record_checkpoint(
+            mission_id, token, "steered",
+            {"messages": [text[:1000] for text in texts][-10:],
+             "note_ids": saved.get("note_ids"),
+             "goal_revision": saved.get("revision")},
+            case=saved.get("case"))
+        return "_steered"
 
     def _state(self, mission_id, fallback=FAILED_S):
         m = self.store.get(mission_id)
@@ -4210,11 +4617,22 @@ class MissionDriver:
         delivery = case.get("code_delivery") if isinstance(
             case.get("code_delivery"), dict) else {}
         state = dict(case.get("code_dispatch") or {})
-        updates = len([x for x in (case.get("human_updates") or [])
-                       if isinstance(x, dict)])
+        # The authoritative ledger, not the bounded case projection: this is the
+        # text that becomes scope, so it must be the exact and complete set.
+        notes = self.store.human_notes(mission_id)
+        revision = _note_digest(notes)
+        max_note_id = max([int(x.get("note_id") or 0) for x in notes] or [0])
         # "Did a person say something since the last dispatch?" is the one signal
-        # that distinguishes a fresh instruction from an automatic re-run.
-        steered = updates != int(state.get("human_updates", 0) or 0)
+        # that distinguishes a fresh instruction from an automatic re-run.  It is
+        # a content digest and a monotonic note id, never a list length: once a
+        # rolling window is full, counting entries reports "nothing new" for
+        # every correction a user makes for the rest of the Mission's life.
+        if "revision" in state or "max_note_id" in state:
+            steered = (revision != str(state.get("revision") or "") or
+                       max_note_id != int(state.get("max_note_id", 0) or 0))
+        else:
+            # A dispatch recorded before this upgrade only knows the old count.
+            steered = len(notes) != int(state.get("human_updates", 0) or 0)
         if ((delivery.get("cancelled") or delivery.get("error")) and
                 not delivery.get("continue_needed") and not steered):
             # A stopped or errored run is never repeated on its own.  Only an
@@ -4229,6 +4647,18 @@ class MissionDriver:
                     "it will not be repeated automatically",
                     dict(delivery, verification=case.get("code_verification"))))
         finishing = 0 if steered else int(state.get("finishing", 0) or 0)
+        if case.get("code_verified") and steered:
+            # Admission normally retires the old verdict the moment new scope is
+            # accepted.  A Mission steered by an older build, or through a path
+            # that never reached admission, can still arrive here green against
+            # a goal nobody is asking for any more.  A check that passed before
+            # the request changed is history, so record it as history and work.
+            superseded = _supersede_code_evidence(
+                case, revision, [max_note_id], int(time.time()))
+            self.store.record_event(
+                mission_id, "control", "code_verification_superseded",
+                payload={"goal_revision": revision, "max_note_id": max_note_id,
+                         **superseded})
         if case.get("code_verified"):
             # The host check is green against an attributed patch.  If the run
             # that produced it was cut off at its turn limit, it never got to
@@ -4279,7 +4709,7 @@ class MissionDriver:
                     "it is not making progress on its own" % unproductive,
                     dict(delivery, verification=case.get("code_verification"))))
         attempt = int(state.get("attempts", 0) or 0) + 1
-        goal = code_mission_goal(m)
+        goal = code_mission_goal(m, notes=notes)
         if not goal.strip():
             return None
         workspace = str(case.get("_isolated_workspace") or "")
@@ -4296,7 +4726,10 @@ class MissionDriver:
             "attempts": attempt,
             "unproductive": unproductive,
             "finishing": finishing,
-            "human_updates": updates,
+            # Kept so a build without this change still reads a sane count.
+            "human_updates": len(notes),
+            "revision": revision,
+            "max_note_id": max_note_id,
             "goal_chars": len(goal),
             # The workspace as this dispatch found it.  The next dispatch
             # compares against it to answer "did the slice I just paid for change
@@ -5574,7 +6007,9 @@ _SYS = (
     '{"action": <a primitive name | "wait" | "update_coverage" | "needs_authorization" | "needs_human" | "done">, '
     '"args": {..}, "reason": "<one short clause>"}\n'
     "Rules: use only a listed primitive. CASE.human_updates are durable user/operator "
-    "steering in chronological order: the newest explicit instruction overrides conflicting "
+    "steering in chronological order (a bounded view of the Mission's instruction "
+    "ledger; an entry marked projection_only is a fragment, not the whole "
+    "instruction): the newest explicit instruction overrides conflicting "
     "older GOAL wording, but never expands the Leash or bypasses a security boundary. If a newer "
     "update authorizes ordinary account creation, being signed out by itself is not a terminal "
     "blocker: attempt the normal signup/sign-in path before recording the exact remaining blocker. "

@@ -1321,6 +1321,11 @@ def _optional_nonnegative_int(value, name):
 # uses.
 _DEFAULT_CODE_SLICE_TURNS = 24
 _MAX_CODE_SLICE_TURNS = 50
+# How much of a coding run's final report the Mission case keeps.  The case is
+# reloaded, compacted and handed to a planner constantly, so it cannot hold an
+# unbounded report; the durable session journal holds the complete text and the
+# delivery record says explicitly which of the two is whole.
+CODE_DELIVERY_ANSWER_CHARS = 4000
 
 
 def _code_slice_turn_cap(slice_turns, model_call_limit):
@@ -2388,8 +2393,21 @@ def _real_code(runner=None):
         # a bare ``result`` string is how a read-only survey came to be reported
         # as "code edited but not executed-verified".
         mutation_reported = ("slice_mutated" in out or "patch_attributed" in out)
+        # The case is a working set that has to stay loadable and survive
+        # compaction, so the copy of the answer kept here is capped.  That cap
+        # is stated rather than implied: ``code_stop_report`` used to advertise
+        # this field as "the complete answer", so a long report looked like it
+        # was preserved somewhere it was not.  The session journal below is the
+        # copy that is always whole.
+        answer_kept = answer[:CODE_DELIVERY_ANSWER_CHARS]
         delivery = {
-            "answer": answer[:4000],
+            "answer": answer_kept,
+            "answer_chars": len(answer),
+            "answer_chars_kept": len(answer_kept),
+            "answer_truncated": len(answer_kept) < len(answer),
+            # Where the complete text lives when this copy is short of it.
+            "answer_source": "durable coding session journal",
+            "session_id": str(out.get("session_id") or "")[:120],
             "verified": bool(out.get("verified")),
             "mutation_reported": mutation_reported,
             "slice_mutated": bool(out.get("slice_mutated")),

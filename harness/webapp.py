@@ -456,7 +456,9 @@ def _public_specialist(value):
         out["events"] = [{k: event.get(k) for k in ("event_id", "kind", "at")
                           if event.get(k) is not None}
                          for event in value["events"] if isinstance(event, dict)]
-    for key in ("mission_id", "run_id", "available", "attached", "queued", "message_id", "error"):
+    for key in ("mission_id", "run_id", "available", "attached", "queued", "message_id", "error",
+                # A refused instruction has to say what the caller must change.
+                "note_rejected", "note_chars", "note_limit"):
         if value.get(key) is not None: out[key] = value.get(key)
     return out
 
@@ -2896,13 +2898,22 @@ class Handler(BaseHTTPRequestHandler):
                         text = str(body.get("text") or "").strip()
                         if not text:
                             return self._send_json({"error": "text required"}, 400)
-                        value = svc.steer_specialist(run_id, text[:4000],
+                        # Not sliced here: the service admits or refuses the
+                        # instruction with a reason, so an over-length steer is
+                        # rejected to the sender instead of silently shortened
+                        # on its way to becoming the run's scope.
+                        value = svc.steer_specialist(run_id, text,
                                                      str(body.get("sender_run_id") or "")[:100])
                     else:
                         value = svc.cancel_specialist(
                             run_id, str(body.get("sender_run_id") or "")[:100])
                     value = _public_specialist(value)
-                    return self._send_json(value, 404 if value.get("error") else 200)
+                    status = 200
+                    if value.get("note_rejected"):
+                        status = 400  # the caller's own input, not a missing run
+                    elif value.get("error"):
+                        status = 404
+                    return self._send_json(value, status)
                 finally:
                     svc.close()
             if path == "/api/checkpoint/restore":
