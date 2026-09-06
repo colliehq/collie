@@ -148,7 +148,7 @@ def test_tool_self_declaration_used_only_when_unknown():
     "browser_click", "browser_type", "browser_press", "browser_upload",
     "browser_eval", "browser_script", "desktop_click", "desktop_type",
     "desktop_uia", "desktop_win32",
-    "enable_capability", "delegate",
+    "enable_capability",
 ])
 def test_reaching_off_machine_is_external(name):
     assert R.classify(name) is RiskClass.EXTERNAL
@@ -156,7 +156,7 @@ def test_reaching_off_machine_is_external(name):
 
 @pytest.mark.parametrize("name", [
     "browser_read", "browser_snapshot", "browser_links", "browser_screenshot",
-    "read_file", "grep", "glob", "web_fetch", "desktop_read",
+    "read_file", "grep", "glob", "web_fetch", "desktop_read", "delegate",
 ])
 def test_observing_is_read(name):
     assert R.classify(name) is RiskClass.READ

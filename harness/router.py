@@ -76,17 +76,6 @@ _CODE_ACTION = re.compile(
     r"(?:添加|新增|构建|创建|调试|删除|编辑|修复|实现|修改|补丁|重构|移除|重命名|替换|更新|编写)",
     re.I,
 )
-_BEHAVIORAL = re.compile(
-    r"\b(?:bug|fix|regression|security|migration|schema|auth|permission|api|database|"
-    r"concurren(?:cy|t)|race|test|flaky|production|release)\b|"
-    r"(?:缺陷|修复|回归|安全|迁移|架构|认证|授权|权限|接口|数据库|并发|竞态|测试|不稳定|生产|发布)",
-    re.I,
-)
-_FAILURE = re.compile(
-    r"\b(?:failed|failure|error|verification required|turn limit|timed? out|did not pass|"
-    r"could not complete|no winner)\b|(?:失败|报错|错误|验证未通过|没有通过|未通过|超时|无法完成)",
-    re.I,
-)
 _TINY_TASK = re.compile(
     r"\b(?:typo|copy|comment|docs?|string|label|rename|one[- ]line|tiny|small|"
     r"format(?:ting)?)\b|(?:错别字|文案|注释|文档|字符串|标签|重命名|一行|小改|微调|格式化)",
@@ -147,23 +136,105 @@ def parse_explicit_axes(value) -> tuple[str, ...]:
                          if str(v).strip().lower() in _AXES}))
 
 
-def _text(value) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return " ".join(str(x.get("text", "")) if isinstance(x, dict) else str(x)
-                        for x in value)
-    return str(value or "")
+@dataclass(frozen=True)
+class FailureSignal:
+    """Did the most recent COMPLETED run actually fail?
+
+    Structured run receipts are the only evidence.  Prose is not: an assistant
+    that says "the error is fixed" is reporting success, and a model failure need
+    not appear in the transcript at all, so scanning messages for words like
+    "error" escalated resolved problems and missed real ones.
+
+    The signal is deliberately transient — it reflects the latest conclusive
+    receipt only, so one failure escalates the next run and the next clean
+    receipt clears it again.
+    """
+
+    failed: bool = False
+    reason: str = ""
+    source: str = "none"          # "receipt" | "none"
+
+    def __bool__(self) -> bool:
+        return self.failed
 
 
-def _recent_failures(history) -> int:
-    # Only the tail matters: a failure twenty successful turns ago should not pin
-    # every future message to the strongest model forever.
-    count = 0
-    for msg in list(history or [])[-8:]:
-        if msg.get("role") == "assistant" and _FAILURE.search(_text(msg.get("content"))):
-            count += 1
-    return count
+NO_FAILURE = FailureSignal()
+
+# How far back a conclusive outcome is looked for.  Older receipts describe a
+# different problem and must not pin every later message to the biggest model.
+_RECEIPT_SCAN = 8
+
+# A row is a run OUTCOME (and therefore able to clear an escalation) only if it
+# carries at least one verdict field.  A decision-only row is a routing note, not
+# evidence that anything ran.
+_OUTCOME_KEYS = ("error", "verified", "verification_evidence", "attempts",
+                 "applied", "check_pass", "winner")
+
+
+def _evidence_verdict(evidence: dict):
+    """('failed'|'clean'|None, reason) for one verification-evidence blob.
+
+    ``None`` means inconclusive.  Crucially, "no check was run" is inconclusive,
+    NOT a failure: web and terminal callers frequently have no repo check to
+    detect, and a missing check must never escalate the next turn.
+    """
+    if evidence.get("cancelled") or evidence.get("canceled"):
+        return None, ""
+    executed = evidence.get("executed")
+    if isinstance(executed, bool):
+        ran = executed
+    else:                                   # receipts written before ``executed``
+        command = evidence.get("command")
+        ran = (isinstance(command, str) and bool(command.strip()) and
+               isinstance(evidence.get("exit_code"), int))
+    if not ran or evidence.get("freshness") == "not_run":
+        return None, ""
+    passed = evidence.get("passed")
+    if passed is True:
+        return "clean", ""
+    if passed is False:
+        return "failed", "the executed check did not pass"
+    return None, ""                          # malformed verdict: do not guess
+
+
+def _receipt_verdict(row):
+    """('failed'|'clean'|None, reason) for one persisted run receipt."""
+    if not isinstance(row, dict):
+        return None, ""                      # malformed row: not evidence of anything
+    if row.get("canceled") or row.get("cancelled"):
+        return None, ""                      # a user stop is not a failed attempt
+    error = row.get("error")
+    if error is not None and not isinstance(error, str):
+        return None, ""                      # malformed outcome: refuse to guess either way
+    if isinstance(error, str) and error.strip():
+        return "failed", error.strip()[:120]
+    evidence = row.get("verification_evidence")
+    if isinstance(evidence, dict):
+        verdict, reason = _evidence_verdict(evidence)
+        if verdict:
+            return verdict, reason
+    elif evidence is not None:
+        return None, ""                      # malformed evidence
+    if any(key in row for key in _OUTCOME_KEYS):
+        return "clean", ""
+    return None, ""
+
+
+def failure_signal(receipts) -> FailureSignal:
+    """Resolve run receipts into the typed, transient failure signal."""
+    if isinstance(receipts, FailureSignal):
+        return receipts
+    try:
+        rows = list(receipts or [])[-_RECEIPT_SCAN:]
+    except TypeError:                        # not iterable == no evidence
+        return NO_FAILURE
+    for row in reversed(rows):
+        verdict, reason = _receipt_verdict(row)
+        if verdict == "failed":
+            return FailureSignal(True, reason or "the last run failed", "receipt")
+        if verdict == "clean":
+            return NO_FAILURE
+    return NO_FAILURE
 
 
 def _infer_kind(text: str, route_kind: str | None) -> str:
@@ -175,13 +246,12 @@ def _infer_kind(text: str, route_kind: str | None) -> str:
     return "code" if _CODE_ACTION.search(text or "") else "chat"
 
 
-def _complexity(text: str, kind: str, history) -> tuple[str, int]:
-    failures = _recent_failures(history)
-    if failures or _HARD_TASK.search(text or "") or len(text or "") > 900:
-        return "hard", failures
+def _complexity(text: str, kind: str, signal: FailureSignal) -> str:
+    if signal.failed or _HARD_TASK.search(text or "") or len(text or "") > 900:
+        return "hard"
     if len(text or "") < 180 and (kind == "chat" or _TINY_TASK.search(text or "")):
-        return "simple", failures
-    return "standard", failures
+        return "simple"
+    return "standard"
 
 
 def _automatic_model(provider: str, kind: str, complexity: str, quality: str) -> str:
@@ -207,13 +277,19 @@ def resolve_run_decision(text: str, provider: str, model: str | None = None,
                          route_kind: str | None = None,
                          intent: str = "build", quality: str = "balanced",
                          verification: str = "auto", workspace: str = "current",
-                         strategy: str = "single", explicit_axes=(), history=None) -> RunDecision:
+                         strategy: str = "single", explicit_axes=(), history=None,
+                         receipts=None) -> RunDecision:
     """Resolve one task-aware execution policy.
 
     Priority is explicit per-run choice > configured model/effort > task policy >
     provider default.  Provider is never changed here: doing so would silently
     change credentials, billing, and data policy.  Unsupported effort levels are
     capability-resolved by the provider layer and the downgrade is recorded.
+
+    ``receipts`` are structured run outcomes (or an already-resolved
+    :class:`FailureSignal`) and are the ONLY source of failure escalation.
+    ``history`` is accepted for call-site compatibility and no longer contributes
+    to that decision — see :class:`FailureSignal`.
     """
     provider = (provider or "").strip()
     if not provider:
@@ -230,7 +306,8 @@ def resolve_run_decision(text: str, provider: str, model: str | None = None,
             raise ValueError("%s must be %s" % (axis, " or ".join(allowed)))
     explicit = set(parse_explicit_axes(explicit_axes))
     kind = _infer_kind(text or "", route_kind)
-    complexity, failures = _complexity(text or "", kind, history)
+    signal = failure_signal(receipts)
+    complexity = _complexity(text or "", kind, signal)
     routing_quality = (requested["quality"] if "quality" in explicit else
                        ("thorough" if complexity == "hard" else "balanced"))
     sources = {"provider": "configured"}
@@ -275,16 +352,27 @@ def resolve_run_decision(text: str, provider: str, model: str | None = None,
         sources["quality"] = "task-policy"
     reasons.append("quality: %s (%s)" % (resolved_quality, sources["quality"]))
 
+    # Required is a hard gate: it fails an otherwise successful edit that did not
+    # produce an executed post-edit assertion.  Keywords describe the SUBJECT of a
+    # task ("auth", "migration"), never whether evidence exists, so they are not
+    # allowed to impose that gate — an ordinary auth fix stays Auto.  Required is
+    # therefore only ever a choice someone made.
     if "verification" in explicit:
         resolved_verification = requested["verification"]
         sources["verification"] = "user"
+    elif requested["verification"] == "required":
+        # No default anywhere in the product is "required", so a caller that asks
+        # for it (benchmark protocol, legacy web mode, an API client) meant it
+        # even without naming the axis.  Never silently downgrade that.
+        resolved_verification = "required"
+        sources["verification"] = "caller-request"
     else:
-        resolved_verification = (
-            "required" if resolved_intent == "build" and complexity == "hard" and
-            _BEHAVIORAL.search(text or "") else "auto")
+        resolved_verification = "auto"
         sources["verification"] = "task-policy"
-    reasons.append("verification: %s (%s)" %
-                   (resolved_verification, sources["verification"]))
+    reasons.append("verification: %s (%s%s)" % (
+        resolved_verification, sources["verification"],
+        "; Required is only ever an explicit choice"
+        if sources["verification"] == "task-policy" else ""))
 
     # Isolation and Pack affect where writes land and how much work is spent.
     # They therefore stay conservative unless the user explicitly chose them.
@@ -318,9 +406,10 @@ def resolve_run_decision(text: str, provider: str, model: str | None = None,
     reasons.append("speed: %s (%s%s)" % (
         resolved_speed, sources["speed"],
         "; " + caps["fast_note"] if resolved_speed == "fast" else ""))
-    if failures:
-        reasons.append("complexity: escalated after %d recent failure signal%s" %
-                       (failures, "" if failures == 1 else "s"))
+    if signal.failed:
+        reasons.append(
+            "complexity: escalated to hard after the last run receipt failed (%s); "
+            "the next clean run clears this" % signal.reason)
     else:
         reasons.append("complexity: %s from task scope and risk" % complexity)
 

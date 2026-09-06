@@ -62,7 +62,13 @@ class Checkpoint:
 
 def _git(cwd: str, args, env=None, check=True, timeout=120) -> str:
     from . import plat
-    p = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
+    # These commits are internal undo snapshots, not user-authored changes.
+    # A fresh Git installation may have no identity configured; snapshotting
+    # must still work without changing the user's local or global Git config.
+    identity = (["-c", "user.name=Collie Checkpoint", "-c",
+                 "user.email=checkpoint@collie.local"]
+                if args and args[0] in {"commit-tree", "stash"} else [])
+    p = subprocess.run(["git"] + identity + ["-C", cwd] + list(args), capture_output=True, text=True,
                        env=env, timeout=timeout, **plat.no_window_kwargs())
     if check and p.returncode != 0:
         raise CheckpointError("git %s failed (%d): %s"

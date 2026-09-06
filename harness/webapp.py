@@ -4388,6 +4388,10 @@ class Handler(BaseHTTPRequestHandler):
         # seed the full prior thread so the web UI has the same --continue continuity the CLI has
         prior = sessions.load(sid) if qs.get("session", [""])[0] else None
         history = (prior or {}).get("messages") or []
+        # Structured outcomes of this thread's earlier runs — the router's only
+        # failure evidence, so the web surface escalates on the same facts the
+        # terminal does instead of on words in the transcript.
+        prior_receipts = (prior or {}).get("run_receipts") or []
         cwd = os.getcwd()
 
         # New clients send a non-empty sentinel ("none") when every axis is Auto. Older clients
@@ -4433,7 +4437,8 @@ class Handler(BaseHTTPRequestHandler):
                 speed=speed_request, route_kind=qs.get("route_kind", [""])[0],
                 intent=requested_opts["intent"], quality=requested_opts["quality"],
                 verification=requested_opts["verification"], workspace=workspace,
-                strategy=strategy, explicit_axes=explicit_axes, history=history)
+                strategy=strategy, explicit_axes=explicit_axes, history=history,
+                receipts=prior_receipts)
         except ValueError as e:
             self._sse("done", {"session": sid, "answer": "", "error": str(e)})
             return
@@ -5295,6 +5300,8 @@ class Handler(BaseHTTPRequestHandler):
                                            "codex-sub", "codex")}
             review_findings = (_review_findings(res.answer or "")
                                if run_opts["intent"] == "review" else None)
+            from .recorder import run_outcome
+            done_d.update(run_outcome(res))
             if review_findings is not None:
                 done_d["review_findings"] = review_findings
             # An isolated run's result is a branch, not a claim. Say which one, and what is on it,
@@ -5309,6 +5316,7 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 sessions.append_run_receipt(sid, {
+                    **run_outcome(res),
                     "run": run_id, "decision": decision_payload,
                     "model": res.model, "effort": decision.effort,
                     "requested_speed": decision.speed, "actual_speed": actual_speed,

@@ -337,13 +337,68 @@ def recovery_state(sid, directory=None):
         return None
     out = dict(active)
     state = out.get("state") or "unknown"
-    uncertain = state in ("executing_tool", "external_action")
+    uncertain = state in ("executing_tool", "external_action") and not _replay_safe_read(active)
     out["recovery_required"] = uncertain
     out["auto_resumable"] = not uncertain and state not in ("terminal", "canceled")
     if uncertain:
         out["reason"] = ("the process stopped while a tool was executing; inspect the outside "
                          "world before retrying so an irreversible effect is not duplicated")
     return out
+
+
+def _replay_safe_read(active):
+    """Only a host-attested built-in read can bypass effect reconciliation.
+
+    Tool names and MCP read-only hints alone are not authority. The execution
+    loop records this flag from the actual built-in implementation, before the
+    call starts. An inner read cannot make its enclosing script replay-safe.
+    """
+    detail = active.get("detail") or {}
+    return (active.get("state") == "executing_tool"
+            and detail.get("replay_safe") is True
+            and not detail.get("internal")
+            and detail.get("tool_name") in {
+                "read_file", "glob", "grep", "memory_search", "delegate"})
+
+
+def _pending_calls(messages):
+    """Find unanswered calls without replaying any of them."""
+    pending = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for call in msg.get("tool_calls") or []:
+                if isinstance(call, dict) and call.get("id"):
+                    pending[call["id"]] = call
+        elif msg.get("role") == "tool":
+            pending.pop(msg.get("tool_call_id"), None)
+    return list(pending.values())
+
+
+def _resume_messages(raw):
+    """Pair interrupted safe calls in the resume view; preserve the disk journal.
+
+    A model/tool boundary can interrupt a batch before its remaining calls run.
+    Providers reject these orphaned calls. Backfilling observations lets the
+    agent decide what still needs doing; loading a thread never executes tools.
+    The next normal checkpoint persists this augmented, prefix-compatible view.
+    """
+    messages = list(raw.get("messages") or [])
+    active = raw.get("active_run") or {}
+    state = active.get("state")
+    safe_read = _replay_safe_read(active)
+    if state not in ("turn_boundary", "calling_model", "model_complete", "tool_complete") \
+            and not safe_read:
+        return messages
+    detail = active.get("detail") or {}
+    for call in _pending_calls(messages):
+        interrupted = safe_read and call["id"] == detail.get("tool_call_id")
+        content = ("RECOVERY: this read was interrupted and its result is unavailable. "
+                   "Run the read again if its output is still needed." if interrupted else
+                   "RECOVERY: this queued tool call did not execute before the run was "
+                   "interrupted. Reassess whether it is still needed before requesting it again.")
+        messages.append({"role": "tool", "tool_call_id": call["id"],
+                         "name": call.get("name") or "tool", "content": content})
+    return messages
 
 
 def active_runs(limit=100, directory=None):
@@ -382,13 +437,21 @@ def reconcile_recovery(sid, resolution, note="", confirmed=False, directory=None
         if not isinstance(active, dict) or active.get("state") not in (
                 "executing_tool", "external_action"):
             raise ValueError("session is not awaiting recovery reconciliation")
+        detail = active.get("detail") if isinstance(active.get("detail"), dict) else {}
+        call_id = detail.get("tool_call_id")
+        name = detail.get("tool_name") or "tool"
+        messages = list(raw.get("messages") or [])
         if resolution == "cancel":
+            for call in _pending_calls(messages):
+                content = ("RECOVERY: the user canceled recovery. This action's result is "
+                           "unknown; inspect its effects before considering a retry."
+                           if call["id"] == call_id else
+                           "RECOVERY: this queued tool call was canceled before execution.")
+                messages.append({"role": "tool", "tool_call_id": call["id"],
+                                 "name": call.get("name") or "tool", "content": content})
+            raw["messages"] = messages
             raw.pop("active_run", None)
         else:
-            detail = active.get("detail") if isinstance(active.get("detail"), dict) else {}
-            call_id = detail.get("tool_call_id")
-            name = detail.get("tool_name") or "tool"
-            messages = list(raw.get("messages") or [])
             if call_id:
                 outcome = ("the user inspected the external system and confirmed the action completed"
                            if resolution == "completed" else
@@ -495,7 +558,7 @@ def load(sid):
         s = _load_raw(p)
     try:
         s = _validate_raw(s, sid)
-        s["messages"] = _msgs_in(s.get("messages"))
+        s["messages"] = _msgs_in(_resume_messages(s))
         return s
     except Exception:
         return None
@@ -516,7 +579,7 @@ def load_checked(sid, directory=None):
             with open(p, encoding="utf-8") as fh:
                 raw = json.load(fh, parse_constant=_reject_json_constant)
         raw = _validate_raw(raw, sid)
-        messages = raw.get("messages", [])
+        messages = _resume_messages(raw)
         raw["messages"] = _msgs_in(messages)
         return {"status": "ok", "session": raw}
     except Exception as exc:

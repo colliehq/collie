@@ -368,30 +368,21 @@ def resolve_turn_decision(text, provider, configured_model=None, history=None, r
                           route_kind=None):
     """Resolve the shared per-turn policy used by terminal/editor conversations.
 
-    ``receipts`` supplies structured failure truth.  Model error text is not
-    guaranteed to appear in the assistant transcript, so relying on messages
-    alone made the advertised failure escalation mostly synthetic.
+    ``receipts`` supplies structured failure truth and is handed to the router
+    as-is.  This used to translate a receipt into synthetic assistant prose
+    ("error: verification failed") for a regex to find again — which invented a
+    failure whenever a receipt merely lacked a check, and could not distinguish a
+    real failure from an assistant sentence about a fixed one.
     """
     from . import settings
     from .router import resolve_run_decision
-
-    routing_history = list(history or [])
-    for row in list(receipts or [])[-4:]:
-        if not isinstance(row, dict):
-            continue
-        evidence = row.get("verification_evidence")
-        failed_check = isinstance(evidence, dict) and evidence.get("passed") is False
-        if row.get("error") or failed_check:
-            # A fixed token is enough for router._FAILURE and avoids copying
-            # tool output, prompts, or other private receipt details.
-            routing_history.append({"role": "assistant", "content": "error: verification failed"})
 
     return resolve_run_decision(
         text, provider=provider, model=configured_model,
         effort=settings.get("REASONING_EFFORT", "auto") or "auto",
         speed="standard", route_kind=route_kind,
         intent="build", quality="balanced", verification="auto",
-        explicit_axes=(), history=routing_history,
+        explicit_axes=(), history=history, receipts=receipts,
     )
 
 
@@ -406,7 +397,7 @@ def apply_turn_decision(h, decision, gate=None):
     if not hasattr(h, "_turn_option_baseline"):
         defaults = {
             "mode": "act", "force_edit": False, "self_verify": True,
-            "max_turns": 50, "turn_target": 50, "verify_max": 2, "verify_gate": False,
+            "max_turns": 0, "turn_target": 50, "verify_max": 2, "verify_gate": False,
             "require_assert": False,
         }
         h._turn_option_baseline = {
@@ -1624,6 +1615,7 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
 
 def cmd_run(args):
     import json as _json
+    from .recorder import run_outcome
     _, runs_db, out_html, _ = _paths()
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
@@ -1632,6 +1624,7 @@ def cmd_run(args):
     # escalation signal, and therefore belongs in the same decision on CLI and Web.
     from . import sessions as sess
     history, sid = None, None
+    prior_receipts = []
     def _recovery_refusal(candidate):
         state = sess.recovery_state(candidate) if candidate else None
         if not (state and state.get("recovery_required")):
@@ -1649,6 +1642,7 @@ def cmd_run(args):
         s = sess.load(args.resume)
         if s:
             history, sid = (s.get("messages") or []), args.resume
+            prior_receipts = s.get("run_receipts") or []
         else:
             print("  [session] no such session %r — starting fresh" % args.resume,
                   file=sys.stderr if getattr(args, "json", False) else sys.stdout)
@@ -1657,7 +1651,9 @@ def cmd_run(args):
         if sid:
             if _recovery_refusal(sid):
                 return 2
-            history = (sess.load(sid) or {}).get("messages")
+            loaded = sess.load(sid) or {}
+            history = loaded.get("messages")
+            prior_receipts = loaded.get("run_receipts") or []
     sid = sid or sess.new_id()
 
     from . import settings
@@ -1696,7 +1692,7 @@ def cmd_run(args):
         intent=requested_intent,
         quality=getattr(args, "quality", None) or "balanced",
         verification=getattr(args, "verification", None) or "auto",
-        explicit_axes=explicit, history=history)
+        explicit_axes=explicit, history=history, receipts=prior_receipts)
     decision_payload = decision.to_dict()
 
     # WHO carries out the task is a second axis beside which Brain answers it. The
@@ -1869,6 +1865,7 @@ def cmd_run(args):
     receipt_error = ""
     try:
         run_receipt = {
+            **run_outcome(res),
             "decision": decision_payload, "model": res.model,
             "actual_speed": actual_speed, "verified": bool(getattr(res, "verified", False)),
             "verification_evidence": verification_evidence, "error": res.error or "",
@@ -1915,6 +1912,7 @@ def cmd_run(args):
         res.error = ((res.error + "; ") if res.error else "") + save_error
     if getattr(args, "json", False) or getattr(args, "stream_json", False):
         print(_json.dumps({
+            **run_outcome(res),
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
             "decision": decision_payload, "actual_speed": actual_speed,
             "runner": runner_payload,

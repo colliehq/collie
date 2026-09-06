@@ -41,8 +41,10 @@ def test_shared_turn_policy_scales_and_structured_failure_escalates(monkeypatch)
 
     assert (tiny.provider, tiny.model, tiny.effort) == (
         "codex-oauth", "gpt-5.6-luna", "low")
+    # A hard-sounding task earns the strongest model, never the Required gate:
+    # that gate fails a good edit that produced no executed post-edit assertion.
     assert (hard.model, hard.effort, hard.verification) == (
-        "gpt-5.6-sol", "high", "required")
+        "gpt-5.6-sol", "high", "auto")
     assert retry.model == "gpt-5.6-sol" and retry.complexity == "hard"
 
 

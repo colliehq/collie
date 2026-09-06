@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 @dataclass
 class RunResult:
     run_id: int = 0
+    parent_run_id: int | None = None
     task_id: str = ""
     harness: str = "collie"
     model: str = ""
@@ -35,6 +36,9 @@ class RunResult:
     # True only when the harness consumed its declared turn ceiling.  Evaluators use this to
     # distinguish a normal unresolved attempt from a provider or adapter failure.
     turns_exhausted: bool = False
+    budget_exhausted: bool = False
+    canceled: bool = False
+    stop_reason: str = ""
     tool_calls: int = 0
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
     contract_repairs: int = 0  # bounded structured-response corrections (not transport retries)
@@ -99,6 +103,8 @@ class Recorder:
             ("runs", "prefix_measured", "INTEGER"),
             ("runs", "verified", "INTEGER DEFAULT 0"),
             ("runs", "contract_repairs", "INTEGER DEFAULT 0"),
+            ("runs", "parent_run_id", "INTEGER"),
+            ("runs", "stop_reason", "TEXT"),
         ]:
             try:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, decl))
@@ -143,14 +149,16 @@ class Recorder:
                     """UPDATE runs SET prefix_tokens=?,input_tokens=?,output_tokens=?,
                          total_tokens=?,cache_read=?,cache_creation=?,cache_miss_tokens=?,
                          cache_waste_usd=?,prefix_measured=?,turns=?,tool_calls=?,contract_repairs=?,mem_recalls=?,
-                         wall_ms=?,success=?,verified=?,quality=?,cost_usd=?,answer=?,error=?
+                         wall_ms=?,success=?,verified=?,quality=?,cost_usd=?,answer=?,error=?,
+                         parent_run_id=?,stop_reason=?
                          WHERE run_id=?""",
                     (res.prefix_tokens, res.input_tokens, res.output_tokens, res.total_tokens,
                      res.cache_read, res.cache_creation, res.cache_miss_tokens, res.cache_waste_usd,
                       res.prefix_measured, res.turns, res.tool_calls, res.contract_repairs,
                       res.mem_recalls, res.wall_ms,
                      int(res.success), int(res.verified), res.quality, res.cost_usd,
-                     (res.answer or "")[:2000], (res.error or "")[:500], res.run_id))
+                     (res.answer or "")[:2000], (res.error or "")[:500],
+                     getattr(res, "parent_run_id", None), run_stop_reason(res), res.run_id))
                 self.db.commit()
             except sqlite3.OperationalError as e:
                 import warnings
@@ -158,3 +166,36 @@ class Recorder:
 
     def close(self):
         self.db.close()
+
+
+def run_stop_reason(result):
+    """Execution outcome, separate from whether the result was independently verified.
+
+    Re-evaluate host errors: a check or transcript save can fail after run().
+    """
+    if getattr(result, "canceled", False):
+        return "canceled"
+    if getattr(result, "error", ""):
+        return "error"
+    if getattr(result, "turns_exhausted", False):
+        return "turn_limit"
+    if getattr(result, "budget_exhausted", False):
+        return "budget_limit"
+    return getattr(result, "stop_reason", "") or "completed"
+
+
+def root_run_filter(db):
+    """Avoid counting child usage twice; tolerate unmigrated read-only databases."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+    return "parent_run_id IS NULL" if "parent_run_id" in columns else "1=1"
+
+
+def run_outcome(result):
+    """Shared terminal fields for CLI, live events and durable run receipts."""
+    reason = run_stop_reason(result)
+    return {"stop_reason": reason, "completed": reason == "completed",
+            "turns_exhausted": bool(getattr(result, "turns_exhausted", False)),
+            "budget_exhausted": bool(getattr(result, "budget_exhausted", False)),
+            "canceled": bool(getattr(result, "canceled", False)),
+            "model_calls": getattr(result, "model_calls", 0),
+            "parent_run_id": getattr(result, "parent_run_id", None)}

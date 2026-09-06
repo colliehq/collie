@@ -444,7 +444,7 @@ class Harness:
     def __init__(self, provider: ModelProvider, memory, registry: ToolRegistry,
                  composer: ContextComposer, recorder: Recorder,
                  cwd: str, project: str = "global", mode: str = "act",
-                 max_turns: int = 50, self_verify: bool = True,
+                 max_turns: int = 0, self_verify: bool = True,
                  force_edit: bool = False):
         self.provider = provider
         self.memory = memory
@@ -843,7 +843,8 @@ class Harness:
         rid = self.recorder.start_run(task_id, "collie", self.provider.model,
                                       self.provider.name, note="v" + __version__)
         res = RunResult(run_id=rid, task_id=task_id, harness="collie",
-                        model=self.provider.model, provider=self.provider.name)
+                        model=self.provider.model, provider=self.provider.name,
+                        parent_run_id=getattr(self, "parent_run_id", None))
         ctx = ToolCtx(cwd=self.cwd, project=self.project, memory=self.memory,
                       recorder=self.recorder, registry=self.registry,
                       checkpoint_scope=self.checkpoint_scope)
@@ -919,6 +920,33 @@ class Harness:
         # Tool output uses the same vault initialized before the prompt above.
         total = Usage()
         model_calls = 0
+        if not getattr(self, "delegation_depth", 0):
+            parent = self
+
+            class DelegationBudget:
+                def account(_budget, model, usage):
+                    parent._account_usage(total, usage, model)
+
+                def exceeded(_budget):
+                    return (parent._cancel_requested() or
+                            bool(parent.shared_budget and parent.shared_budget.exceeded()) or
+                            bool(_budget_exceeded(parent.provider.model, total,
+                                bool(getattr(parent.provider, "subscription_only", False)))))
+
+            def delegate_runner(task, limit):
+                nonlocal model_calls
+                from .delegate import run_child
+                budget = DelegationBudget()
+                cap = max(0, int(self.max_model_calls or 0))
+                if budget.exceeded() or (cap and model_calls >= cap):
+                    return 'ERROR: parent run has no remaining delegation budget or was canceled'
+                child_result, payload = run_child(
+                    self, task, limit, budget, max(0, cap - model_calls) if cap else 0,
+                    parent_run_id=rid, parent_request=safe_user_msg)
+                model_calls += child_result.model_calls
+                return payload
+
+            ctx.delegate_runner = delegate_runner
         # --- cache-waste ledger (point #3): the prefix SHOULD cache turn-to-turn; when it doesn't,
         # attribute the re-billed tokens to a cause (schema change / history elision / TTL) and price
         # the waste. Seed reported_cache from the provider so a 100%-from-turn-0 bust still counts
@@ -1440,6 +1468,16 @@ class Harness:
                                     "tool_name": parent.get("tool_name") or tc.name,
                                     "tool_call_id": parent.get("tool_call_id") or tc.id,
                                 }
+                                # Attest the implementation, not a plugin's name or
+                                # read-only hint. A killed built-in read can resume
+                                # without asking the user to inspect external effects.
+                                if record_result and not parent:
+                                    from .tools import (ReadFileTool, GlobTool, GrepTool,
+                                                        MemorySearchTool)
+                                    from .delegate import DelegateTool
+                                    if type(tool) in (ReadFileTool, GlobTool, GrepTool,
+                                                      MemorySearchTool, DelegateTool):
+                                        detail["replay_safe"] = True
                                 if not record_result:
                                     detail.update(internal=True, inner_tool_name=tc.name,
                                                   inner_tool_call_id=tc.id)
@@ -2067,6 +2105,7 @@ class Harness:
                                 res.output_tokens, res.cache_read, res.cache_creation)
         res.wall_ms = int((time.time() - t0) * 1000)
         res.canceled = canceled
+        res.budget_exhausted = budget_hit
         # Keep this assignment before finish_run: recorder implementations/adapters are allowed to
         # inspect the complete result synchronously, and previously always observed the dataclass's
         # default False even on a verified run.
@@ -2081,6 +2120,10 @@ class Harness:
             # was explicitly disabled.
             res.error = _redact.redact(str(res.error), self._secret_vault)[:4_000]
             res.success = False
+        from .recorder import run_stop_reason
+        res.stop_reason = "output_limit" if last_stop == "length" else "completed"
+        res.stop_reason = run_stop_reason(res)
+        res.success = res.stop_reason == "completed"
         # ensure the thread ENDS with the final answer (the no-tool-call path breaks without
         # appending it) so a --continue'd next turn sees what this turn concluded.
         m = session["messages"]
@@ -2105,7 +2148,8 @@ class Harness:
         # actually executed an assertion — matching the gate's own definition, so the receipt can't
         # claim "verified" for a print-only repro under require_assert. Same verifier.py decision
         # as the finish gate, so the receipt can never disagree with why the run was allowed to stop.
-        self._emit("receipt", verified=res.verified,
+        self._emit("receipt", verified=res.verified, stop_reason=res.stop_reason,
+                   completed=res.stop_reason == "completed", parent_run_id=res.parent_run_id,
                    prefix_tokens=res.prefix_tokens, prefix_measured=res.prefix_measured,
                    input_tokens=res.input_tokens,
                    output_tokens=res.output_tokens, total_tokens=res.total_tokens,

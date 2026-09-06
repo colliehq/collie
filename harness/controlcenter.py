@@ -448,9 +448,11 @@ def budget_snapshot(path=None, *, live_quota: bool = False) -> dict:
         uri = "file:%s?mode=ro" % os.path.abspath(runs_db).replace("\\", "/")
         try:
             db = sqlite3.connect(uri, uri=True, timeout=2)
+            from .recorder import root_run_filter
             row = db.execute(
                 "SELECT count(*),COALESCE(sum(total_tokens),0),COALESCE(sum(cost_usd),0),"
-                "COALESCE(sum(wall_ms),0) FROM runs WHERE ts>=?", (int(time.time()) - 30*86400,)
+                "COALESCE(sum(wall_ms),0) FROM runs WHERE " + root_run_filter(db) +
+                " AND ts>=?", (int(time.time()) - 30*86400,)
             ).fetchone()
             history = {"runs": int(row[0]), "tokens": int(row[1]),
                        "cost_usd": round(float(row[2]), 6), "wall_ms": int(row[3])}

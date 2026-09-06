@@ -118,6 +118,9 @@ class ToolCtx:
     # tools derive their idempotency key from it, so a resumed/replayed turn cannot perform the
     # same external action twice. It is set only around Tool.run() and is never model-controlled.
     tool_call_id: str = ""
+    # Host-only callback. Child investigation prompts cannot create another
+    # execution context or obtain the parent's credentials through tool args.
+    delegate_runner: object = None
 
 
 class Tool:

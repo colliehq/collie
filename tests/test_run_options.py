@@ -72,6 +72,7 @@ def test_zero_turn_environment_value_means_no_hard_cap(monkeypatch, tmp_path):
     h = cli.make_harness(str(tmp_path), provider="mock", project="turn-unlimited", embed="hash")
     try:
         assert h._max_turns_hard_cap is None
+        assert h.max_turns == 0
         configure_run_options(h, quality="balanced")
         assert h.max_turns == 0 and h.turn_target == 40
     finally:

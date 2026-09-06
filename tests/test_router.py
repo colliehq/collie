@@ -9,7 +9,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from harness.router import classify, prefix_override, ModelUnavailable, MISSION_THRESHOLD  # noqa: E402
+from harness.router import (classify, failure_signal, prefix_override,  # noqa: E402
+                            FailureSignal, ModelUnavailable, MISSION_THRESHOLD,
+                            resolve_run_decision)
 
 _fails = []
 
@@ -157,6 +159,32 @@ def test_prefix_override_skips_model():
     check(prefix_override("please use /mission later") is None, "a slash word in prose is not a command")
 
 
+def test_failure_signal_is_receipt_typed_and_transient():
+    # Plain asserts: this contract must fail the run under pytest too, not only
+    # when the file is executed directly.
+    print("test_failure_signal_is_receipt_typed_and_transient")
+    prose = [{"role": "assistant", "content": "the error failed verification, then I fixed it"}]
+    assert failure_signal(None) == FailureSignal(), "no receipts == no failure"
+    assert not failure_signal(prose).failed, "assistant prose is not a run outcome"
+    assert failure_signal([{"error": "provider timeout"}]).failed, "a real error escalates"
+    assert not failure_signal([{"error": "provider timeout"},
+                               {"error": "", "verified": True}]).failed, \
+        "the next clean receipt clears the escalation"
+    assert not failure_signal([None, "junk", 7, {"error": 5}]).failed, \
+        "malformed receipts never manufacture a failure"
+
+    # ... and the decision above it moves with the signal, not with the words.
+    calm = resolve_run_decision("Fix the bug", "codex-oauth", route_kind="code",
+                                history=prose)
+    escalated = resolve_run_decision("Fix the bug", "codex-oauth", route_kind="code",
+                                     history=prose, receipts=[{"error": "turn limit"}])
+    keyworded = resolve_run_decision("Fix the auth bug", "codex-oauth", route_kind="code")
+    assert calm.complexity == "standard" and escalated.complexity == "hard"
+    assert keyworded.complexity == "hard", "risk keywords still buy capability"
+    assert calm.verification == escalated.verification == keyworded.verification == "auto", \
+        "Required is a choice; neither a keyword nor a failure may impose it"
+
+
 def main():
     test_three_kinds()
     test_mission_route_is_explicit_only()
@@ -165,6 +193,7 @@ def main():
     test_transient_overload_retries_then_succeeds()
     test_persistent_overload_raises_after_retries()
     test_prefix_override_skips_model()
+    test_failure_signal_is_receipt_typed_and_transient()
     if _fails:
         print(f"\n{len(_fails)} FAILED")
         sys.exit(1)

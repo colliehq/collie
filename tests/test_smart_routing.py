@@ -19,7 +19,10 @@ def test_run_decision_keeps_provider_and_pinned_model_but_scales_task_policy():
     assert decision.intent == "build"
     assert decision.quality == "thorough"
     assert decision.effort == "high"
-    assert decision.verification == "required"
+    # Risk words buy capability, not a gate: Required fails a successful edit that
+    # produced no executed assertion, so it stays an explicit choice.
+    assert decision.verification == "auto"
+    assert decision.sources["verification"] == "task-policy"
     assert "automatic routing never crosses providers" in " ".join(decision.reasons)
 
 
@@ -52,13 +55,14 @@ def test_ordinary_chat_does_not_auto_enter_plan_but_explicit_plan_still_wins():
 def test_recent_failure_escalates_auto_model_without_crossing_provider():
     from harness.router import resolve_run_decision
 
-    history = [{"role": "assistant", "content": "verification required but no test passed"}]
+    # The failure signal is a structured run receipt, not words in the transcript.
+    receipts = [{"verified": False, "error": "verification required but no test passed"}]
     decision = resolve_run_decision(
-        "Fix the bug", "codex-oauth", route_kind="code", history=history)
+        "Fix the bug", "codex-oauth", route_kind="code", receipts=receipts)
 
     assert decision.model == "gpt-5.6-sol"
     assert decision.complexity == "hard"
-    assert any("recent failure" in reason for reason in decision.reasons)
+    assert any("the last run receipt failed" in reason for reason in decision.reasons)
 
 
 @pytest.mark.parametrize("task", [
@@ -85,7 +89,7 @@ def test_auto_uses_sol_for_high_risk_english_and_chinese_tasks(task):
     assert decision.complexity == "hard"
     assert decision.model == "gpt-5.6-sol"
     assert decision.effort == "high"
-    assert decision.verification == "required"
+    assert decision.verification == "auto", "capability escalates; the gate stays a choice"
 
 
 def test_quick_is_run_depth_while_fast_is_same_model_service_tier():

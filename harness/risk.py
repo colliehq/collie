@@ -129,7 +129,7 @@ _BASE: dict[str, RiskClass] = {
     "desktop_menu": RiskClass.EXTERNAL,
     # Changing what collie itself can do next.
     "enable_capability": RiskClass.EXTERNAL,
-    "delegate": RiskClass.EXTERNAL,
+    "delegate": RiskClass.READ,  # host-owned child has only local inspection tools
     "mcpctl_add": RiskClass.EXTERNAL,
     # Opens the user's browser to authorize a service and registers whatever tools it
     # exposes into THIS session — the single widest-reaching call collie has. Its own

@@ -274,9 +274,10 @@ def _history(runs_db: str, key: str, now: float) -> tuple[HistorySnapshot | None
     try:
         db = sqlite3.connect(uri, uri=True, timeout=2)
         db.row_factory = sqlite3.Row
+        from .recorder import root_run_filter
         rows = db.execute(
             "SELECT ts,success,verified,cost_usd,wall_ms,error FROM runs "
-            "WHERE harness=? AND ts>=? ORDER BY ts DESC LIMIT 200",
+            "WHERE " + root_run_filter(db) + " AND harness=? AND ts>=? ORDER BY ts DESC LIMIT 200",
             (key, int(now - HISTORY_WINDOW_S))).fetchall()
     except (OSError, sqlite3.Error) as exc:
         return None, 0, None, runner_specs.redact_text(
