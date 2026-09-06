@@ -2332,6 +2332,12 @@ class MissionStore:
                 verdict = str(payload.get("verdict") or "").lower()
                 status = {VERIFIED: "completed", FAILED: "failed",
                           INCONCLUSIVE: "uncertain"}.get(verdict, verdict or "recorded")
+                result = payload.get("result")
+                if (isinstance(result, dict) and result.get("continue_needed") is True
+                        and result.get("session_id")):
+                    # Verified here certifies the durable slice checkpoint;
+                    # the coding task itself is still in progress.
+                    status = "in_progress"
                 detail = " ".join(str(
                     payload.get("reason") or "%s %s" % (name, status)).split())[:500]
                 pending = pending_by_capability.get(name) or []

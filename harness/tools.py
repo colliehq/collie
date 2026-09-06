@@ -449,7 +449,9 @@ class BashTool(Tool):
     name = "bash"
     description = ("Run a shell command in the working dir. Args: command, optional timeout_s "
                   "(seconds; default 120, max 600 — RAISE it for slow test suites / builds). For a "
-                  "command that never returns (a server, tail -f) background it with & instead.")
+                  "command that never returns (a server, tail -f) background it with & instead. "
+                  "Output is already bounded; run checks directly without head/tail pipes or "
+                  "echo suffixes so their real exit status remains visible.")
     # accept BOTH `timeout_s` and `timeout` (execute_code uses `timeout`) so an override never
     # silently falls back to the default just because the model picked the other name.
     schema = {"type": "object", "properties": {

@@ -245,6 +245,12 @@ class ContextComposer:
         # (the desktop persona in webapp.py replaces self.identity wholesale but never touches these
         # lines). Both are byte-stable, so they stay inside the cached prefix.
         stable_parts = [self.identity, _response_language_line(), _grounding_line(),
+                        "DELIVERY: Keep the user's requested language, length, and format through "
+                        "tool use, delegation, and internal verification reminders. Tool reports "
+                        "are evidence to synthesize, not a template for your final response. "
+                        "Lead with the result, include only checks and limitations relevant to "
+                        "that request, and do not repeat the investigation transcript. When the "
+                        "user asks for one sentence or paragraph, honor that format.",
                         mode_role, tool_names]
         if skill_index:
             stable_parts.append(skill_index)         # after tools, before workdir (STABLE slot)

@@ -48,6 +48,7 @@ class RunResult:
     wall_ms: int = 0
     success: bool = False
     verified: bool = False   # edited + a repro ran on the fixed code & passed (the gate's verdict)
+    edited: bool = False
     # Claims distilled from this run begin as proposals.  An outer host can use these ids to
     # promote/reject them after a verification command that necessarily runs after Harness.run().
     memory_claim_ids: list[int] = field(default_factory=list)
@@ -194,6 +195,7 @@ def run_outcome(result):
     """Shared terminal fields for CLI, live events and durable run receipts."""
     reason = run_stop_reason(result)
     return {"stop_reason": reason, "completed": reason == "completed",
+            "edited": bool(getattr(result, "edited", False)),
             "turns_exhausted": bool(getattr(result, "turns_exhausted", False)),
             "budget_exhausted": bool(getattr(result, "budget_exhausted", False)),
             "canceled": bool(getattr(result, "canceled", False)),

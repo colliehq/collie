@@ -51,7 +51,11 @@ FORMAT_REPAIR_NUDGE = (
 VERIFY_NUDGE = ("Before finalizing, use the bash tool to run the project's relevant tests "
                 "(`python -m pytest -q`, `npm test`, `go test ./...`, `cargo test`, or this "
                 "repository's equivalent). If anything fails, read the error, fix it, and re-run. "
-                "Only give your final answer once an actually executed test run passes.")
+                "Run the check directly, without piping to head/tail, appending echo, or hiding "
+                "its exit status; the tool already bounds long output. This is an internal "
+                "verification reminder for the original task, not a new user request. "
+                "Then answer the original request in the user's requested format and level of "
+                "detail, briefly noting the result and any remaining limitations.")
 
 # Evidence-gated verify (SWE): after an edit, don't accept "done" until a reproduction has
 # actually been RUN on the fixed code and didn't error. This is the loop lever the audit +
@@ -1823,10 +1827,13 @@ class Harness:
                             verify_rounds += 1
                             res.turns = turn + 1
                             continue
-                    elif not verified:
+                    elif not verified and not self._repro_verified(
+                            did_edit, last_edit_turn, last_repro_turn,
+                            last_repro_failed, last_repro_asserted):
                         session["messages"].append({"role": "assistant", "content": comp.text})
                         session["messages"].append(
-                            {"role": "user", "content": self.verify_nudge or VERIFY_NUDGE})
+                            {"role": "user", "content": self.verify_nudge or VERIFY_NUDGE,
+                             "source": "harness", "kind": "verification_reminder"})
                         verified = True
                         res.turns = turn + 1
                         continue
@@ -2106,6 +2113,7 @@ class Harness:
         res.wall_ms = int((time.time() - t0) * 1000)
         res.canceled = canceled
         res.budget_exhausted = budget_hit
+        res.edited = did_edit
         # Keep this assignment before finish_run: recorder implementations/adapters are allowed to
         # inspect the complete result synchronously, and previously always observed the dataclass's
         # default False even on a verified run.

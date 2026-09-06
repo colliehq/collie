@@ -87,6 +87,24 @@ def test_child_receives_original_user_request_beside_model_authored_subtask(agen
     assert "contradicts" in delegated_result(result)["answer"]
 
 
+def test_child_does_not_write_into_parent_durable_conversation(agent, monkeypatch, tmp_path):
+    from harness import sessions
+    h = agent
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    h.checkpoint_scope = "session:parent-thread"
+    h.provider = _ScriptProvider([
+        response(name="delegate", args={"task": "inspect fact.txt"}),
+        response(name="read_file", args={"path": "fact.txt"}, call_id="child-read"),
+        response("Private child finding."), response("Public parent result."),
+    ])
+    result = h.run("parent", "Inspect this workspace.", consolidate=False)
+    durable = sessions.load("parent-thread")["messages"]
+    assert durable == result.messages
+    assert len(durable) == 4
+    assert not any(m.get("tool_call_id") == "child-read" for m in durable)
+    assert sessions.recovery_state("parent-thread") is None
+
+
 def test_child_cannot_write_or_nest_even_if_model_requests_it(agent):
     h = agent
     h.provider = _ScriptProvider([

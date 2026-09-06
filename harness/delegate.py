@@ -83,7 +83,11 @@ def run_child(parent, task, max_turns, budget, model_call_limit=0, parent_run_id
     child.approve = parent.approve
     child.audit = parent.audit
     child._secret_vault = parent._secret_vault
-    child.checkpoint_scope = parent.checkpoint_scope
+    # A web:/session: scope also selects the durable transcript. Reusing it
+    # would merge the child's private conversation into the parent's journal
+    # and leave the parent's delegate call interleaved with orphan tool calls.
+    # This read-only child has no file-undo journal to inherit.
+    child.checkpoint_scope = ""
     child.max_retries = parent.max_retries
     child.retry_base = parent.retry_base
     child.max_contract_repairs = parent.max_contract_repairs

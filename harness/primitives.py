@@ -1357,9 +1357,10 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     if not roots or not approved:
         return {"answer": "Mission code is disabled for this workspace; add an approved root to "
                           "COLLIE_MISSION_CODE_ROOTS and explicitly allow the code capability.",
-                "verified": False}
+                "verified": False, "needs_human": True, "configuration_error": True}
     if not os.path.isdir(cwd):
-        return {"answer": "approved code workspace does not exist", "verified": False}
+        return {"answer": "approved code workspace does not exist", "verified": False,
+                "needs_human": True, "configuration_error": True}
     profile = dict(execution_profile or {})
     provider = str(profile.get("provider") or _s.get("PROVIDER") or "").strip()
     model = str(profile.get("model") or _s.get("MODEL") or "").strip() or None
@@ -2114,12 +2115,26 @@ def _code_verify(rec, result):
     broken code, an edit that flips it, a re-run that passes). Verified only when the
     coding loop reported that gate green; an edit without it is INCONCLUSIVE, not done."""
     r = result or {}
+    if not isinstance(r, dict):
+        return Verdict(FAILED, "coding task returned an invalid result")
     if r.get("recovery_required"):
         return Verdict(FAILED, "code worker stopped at an outcome-uncertain edit boundary")
-    if r.get("verified"):
+    if r.get("configuration_error"):
+        return Verdict(INCONCLUSIVE, str(r.get("answer") or "coding setup is incomplete")[:700])
+    if r.get("verified") is True:
         return Verdict(VERIFIED, "Mission patch passed the configured fresh host check")
     if r.get("continue_needed") and r.get("session_id"):
         return Verdict(VERIFIED, "bounded code slice durably checkpointed; continuing automatically")
+    if r.get("error"):
+        return Verdict(FAILED, str(r["error"])[:700])
+    if r.get("answer"):
+        verification = r.get("verification") or {}
+        detail = verification.get("detail") if isinstance(verification, dict) else ""
+        if r.get("slice_mutated") or r.get("patch_attributed"):
+            return Verdict(INCONCLUSIVE, "A patch was produced but has no fresh verification. " +
+                           str(detail or "Run a check against the changed workspace.")[:500])
+        return Verdict(INCONCLUSIVE, "Coding work returned a result without completion-grade "
+                       "evidence: " + str(r["answer"])[:500])
     if r.get("result"):
         return Verdict(INCONCLUSIVE, "code edited but not executed-verified — a human should check")
     return Verdict(FAILED, "coding task produced no result")
