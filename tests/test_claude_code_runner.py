@@ -493,10 +493,26 @@ def test_shell_tools_are_refused():
     for tool in ("Bash", "bash", "WebFetch", "Task"):
         with pytest.raises(ValueError):
             ClaudeCodeRunner(tools=("Read", tool), environ=PARENT)
-    for bad in ("--model", "mcp__server__tool", "Read,Bash"):
+    for bad in ("--model", "mcp__server__tool", "Read,Bash", "UnreviewedFutureTool"):
         with pytest.raises(ValueError):
             ClaudeCodeRunner(tools=(bad,), environ=PARENT)
     assert "bash" not in {name.lower() for name in CAPABILITIES.tools}
+
+
+def test_read_only_resume_cannot_reacquire_the_previous_edit_tools(tmp_path):
+    from harness import runner_registry
+    process = FakeProcessRunner(_outcome())
+    runner = runner_registry.make_runner("claude-code",read_only=True)
+    runner.process_runner = process; runner._environ = PARENT
+    runner.snapshotter = Snapshots("before","before")
+    previous = RunnerSnapshot(runner="claude-code",workspace=os.path.realpath(str(tmp_path)),thread_id=SESSION)
+    runner.resume(previous,"Explain the previous change. Do not edit files.")
+    argv = process.calls[0]["argv"]
+    assert argv[argv.index("--tools")+1] == "Read,Grep,Glob"
+    assert argv[argv.index("--allowedTools")+1] == "Read,Grep,Glob"
+    assert argv[argv.index("--resume")+1] == SESSION
+    with pytest.raises(ValueError,match="read-only"):
+        runner_registry.make_runner("codex-exec",read_only=True)
 
 
 def test_probe_is_metadata_only(monkeypatch, tmp_path):

@@ -1493,9 +1493,12 @@ class HarnessDecision:
     probe_digest: str           # sha256 over every candidate probe considered
     signals_digest: str = ""
     error: str = ""
+    read_only: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "error", redact_text(self.error))
+        if type(self.read_only) is not bool:
+            raise ValueError("read_only must be a boolean")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1512,6 +1515,7 @@ class HarnessDecision:
             "probe_digest": self.probe_digest,
             "signals_digest": self.signals_digest,
             "error": self.error,
+            "read_only": self.read_only,
         }
 
     @classmethod
@@ -1535,6 +1539,7 @@ class HarnessDecision:
             probe_digest=str(value.get("probe_digest") or ""),
             signals_digest=str(value.get("signals_digest") or ""),
             error=str(value.get("error") or ""),
+            read_only=value.get("read_only", False),
         )
 
 

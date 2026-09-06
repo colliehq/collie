@@ -242,9 +242,11 @@ def _hard_reasons(req: HarnessRequest, key: str, spec: HarnessSpec | None,
             hard.append("H1: surface %r cannot use an external worker in phase %d"
                         % (req.surface, req.phase))
 
-    # H2 — read-only intents.  Plan/review are enforced by Collie's own gate;
-    # an external CLI has no way to promise it only read.
-    if external and (req.intent in ("plan", "review") or req.route_kind == "chat"):
+    # H2 — Claude Code can reduce this invocation to Read/Grep/Glob, including
+    # when resuming an earlier coding session. Other adapters still need their
+    # own implemented restriction before receiving a read-only request.
+    read_only = req.intent in ("plan", "review") or req.route_kind == "chat"
+    if external and read_only and key != "claude-code":
         hard.append("H2: %s runs under Collie's read-only gate"
                     % (req.intent if req.intent in ("plan", "review") else "chat"))
 
@@ -676,13 +678,16 @@ def decide(req: HarnessRequest, specs: Mapping[str, HarnessSpec],
                        % " → ".join((chosen,) + chain))
     for note in soft_of.get(chosen, []):
         reasons.append(note)
+    read_only = req.intent in ("plan", "review") or req.route_kind == "chat"
+    if chosen == "claude-code" and read_only:
+        reasons.append("read-only turn: Claude Code is limited to Read, Grep and Glob")
 
     return HarnessDecision(
         runner=chosen, source=source, credential_family=family,
         billing_class=probe.billing_class, billing_mode=probe.billing_mode,
         reasons=tuple(reasons), rejected=rejected, candidates=tuple(scored),
         fallback_chain=chain, probe=probe.to_dict(), probe_digest=probe_digest,
-        signals_digest=signals_digest, error="")
+        signals_digest=signals_digest, error="", read_only=read_only)
 
 
 def _refusal(req: HarnessRequest, keys: Sequence[str], rejected: dict[str, str],

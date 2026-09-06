@@ -129,16 +129,21 @@ def test_h1_allows_run_surface():
     assert decision.rejected == {}
 
 
-def test_h2_plan_intent_locks_collie():
+def test_h2_claude_plan_uses_an_enforced_read_only_turn():
     decision = _decide(_req(intent="plan", needs=frozenset({"code"}),
                             pin="claude-code"))
-    assert decision.rejected["claude-code"].startswith("H2:")
+    assert decision.runner == "claude-code" and decision.read_only
 
 
-def test_h2_chat_route_locks_collie():
+def test_h2_claude_chat_preserves_the_worker_with_read_only_tools():
     decision = _decide(_req(route_kind="chat", needs=frozenset({"code"}),
                             pin="claude-code"))
-    assert decision.rejected["claude-code"].startswith("H2:")
+    assert decision.runner == "claude-code" and decision.read_only
+
+
+def test_h2_other_workers_still_need_an_implemented_read_only_policy():
+    decision = _decide(_req(route_kind="chat", needs=frozenset({"code"}),pin="codex-exec"))
+    assert decision.rejected["codex-exec"].startswith("H2:")
 
 
 def test_h3_probe_unusable_is_rejected():

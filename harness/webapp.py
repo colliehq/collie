@@ -125,6 +125,9 @@ def _build_run_plan(decision, worker_capabilities, *, workspace, strategy,
         if reason and reason not in reasons:
             reasons.append(reason)
     limits = []
+    if worker_key == "claude-code":
+        limits.append("Read-only file tools for this turn" if worker.get("read_only") else
+                      "File tools only; shell commands run through Collie's configured host check")
     if not caps.get("steer"):
         limits.append("worker cannot accept steering during this run")
     if not caps.get("approval_round_trip"):

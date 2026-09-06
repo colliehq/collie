@@ -202,7 +202,7 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
             })
         outcome = _attempt(key, prompt, root, prior, timeout_s, model, speed,
                            cancelled, emit,
-                           approval_callback, steering)
+                           approval_callback, steering, read_only=decision.read_only)
         if not (outcome.pre_prompt_failure and index + 1 < len(chain)):
             break
 
@@ -264,7 +264,7 @@ def _attempt(key: str, prompt: str | runner_specs.RunInput, workspace: str,
              cancelled: Callable[[], bool] | None,
              emit: Callable[[str, dict], Any] | None,
              approval_callback: Callable[[str, dict], str] | None,
-             steering: Callable[[], list[Any]] | None) -> _Attempt:
+             steering: Callable[[], list[Any]] | None, *, read_only: bool = False) -> _Attempt:
     """Build the worker, run one turn under a cancel watcher, and describe it."""
     spec = registry.SPECS.get(key)
     if spec is None:
@@ -276,7 +276,8 @@ def _attempt(key: str, prompt: str | runner_specs.RunInput, workspace: str,
     try:
         runner = registry.make_runner(key, model=model, speed=speed,
                                       timeout_s=timeout_s,
-                                      env_policy=spec.env_policy)
+                                      env_policy=spec.env_policy,
+                                      **({"read_only":True} if read_only else {}))
     except (FileNotFoundError, RunnerUnavailableError) as exc:
         # The worker does not exist on this host: nothing was launched, nothing
         # was billed, so the next entry in the chain is still fair game.

@@ -143,6 +143,16 @@ def test_run_result_harness_is_runner_key(monkeypatch, workspace):
     assert runner_slice.receipt_of(res).runner == "codex-exec"
 
 
+def test_read_only_decision_reaches_the_worker_factory_and_receipt(monkeypatch,workspace):
+    runner = _FakeRunner("claude-code",result=_snapshot("claude-code",workspace,mutated=False))
+    calls = []
+    monkeypatch.setattr(runner_registry,"make_runner",lambda key,**kw:calls.append((key,kw)) or runner)
+    decision = _decision("claude-code",credential_family="claude",read_only=True)
+    result = runner_slice.run_adhoc(decision,"Explain the earlier patch",workspace)
+    assert calls[0][1]["read_only"] is True
+    assert runner_slice.receipt_of(result).decision["read_only"] is True
+
+
 def test_structured_input_reaches_multimodal_runner_without_losing_images(
         monkeypatch, workspace):
     runner = _FakeRunner("codex-sdk", result=_snapshot("codex-sdk", workspace))

@@ -85,6 +85,7 @@ ENV_POLICY = "claude"
 # The five file tools.  Adding to this list is a capability change, not a
 # configuration change — see the module docstring and `_check_tools`.
 DEFAULT_TOOLS: tuple[str, ...] = ("Read", "Edit", "Write", "Grep", "Glob")
+READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
 
 # What this runner claims it can do.  `runner_registry` intersects the claim with
 # the last conformance report before showing it to anyone, so an unverified True
@@ -167,7 +168,10 @@ def _check_tools(tools: Any) -> tuple[str, ...]:
             raise ValueError(
                 "%s would let claude-code act with no approval path back into "
                 "Collie's gate; this runner declares confinement=tools-allowlist "
-                "and the selector offers it work on that basis" % name)
+                             "and the selector offers it work on that basis" % name)
+        if name not in DEFAULT_TOOLS:
+            raise ValueError("claude-code only supports the reviewed file tools: %s" %
+                             ", ".join(DEFAULT_TOOLS))
     return names
 
 
