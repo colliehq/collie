@@ -36,6 +36,13 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+if __name__ == "__main__":
+    # `python -m harness.webapp` and imports from the execution manager must
+    # share one Handler, token, run registry and cancel-event table. Otherwise
+    # the socket serves __main__.Handler while web_tasks executes through a
+    # second harness.webapp.Handler invisible to /api/runs and /api/stop.
+    sys.modules["harness.webapp"] = sys.modules[__name__]
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX_HTML = os.path.join(HERE, "webui", "index.html")
 # logo ships INSIDE the package (webui/logo.svg) so a pip-installed wheel serves it; the repo's
