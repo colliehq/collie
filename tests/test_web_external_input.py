@@ -326,7 +326,9 @@ def test_steering_is_journalled_before_it_is_offered_to_the_transport(worker, mo
 
     assert handed == ["also rename the flag"], "the worker really was given the text"
     # The order that makes a crash survivable: durable, acknowledged, then sent.
-    assert order["before_drain"] == []
+    # The initial composer request is already durable before the worker starts;
+    # the steer is appended later, at its own transport boundary.
+    assert order["before_drain"] == ["fix the parser"]
     assert order["after_drain"] == ["fix the parser", "also rename the flag"]
     assert order["state"] == "consumed"
 

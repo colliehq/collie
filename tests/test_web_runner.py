@@ -82,6 +82,11 @@ def test_web_external_worker_streams_identity_saves_history_and_receipt(monkeypa
     def fake_run(decision, task, workspace, **kwargs):
         seen.update(kwargs)
         seen.update(decision=decision, task=task, workspace=workspace)
+        # A refresh or process failure DURING transport must retain the live
+        # composer's original request, even when it did not use the inbox.
+        in_flight = sessions.load("web-worker")
+        assert [m["content"] for m in in_flight["messages"]] == ["fix the parser"]
+        assert sessions.recovery_state("web-worker")["recovery_required"]
         kwargs["emit"]("runner", {"event": "native", "runner": "codex-exec",
                                     "cursor": 1, "type": "turn.completed"})
         receipt = _receipt()

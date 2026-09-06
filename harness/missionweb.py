@@ -38,6 +38,7 @@ from .mission import (_campaign_coverage, _compact_case_storage,
                       _open_campaign_coverage,
                       _resolved_authorization, admit_human_note,
                       completion_contract, HUMAN_NOTE_MAX_CHARS,
+                      HUMAN_LEDGER_MAX_CHARS, HUMAN_LEDGER_MAX_NOTES,
                       STEER_NOTE_MAX_CHARS,
                       MissionDriver, MissionStore,
                       ModelDecider, ResourceBusy, create_mission, world_leash)
@@ -242,6 +243,21 @@ def _clean(d: dict) -> dict:
 def _short(value, limit=500):
     value = " ".join(str(value or "").split())
     return value[:limit]
+
+
+def _note_view(row: dict) -> dict:
+    """The public shape of one instruction: stable id, exact text, honest state.
+
+    ``text`` is the admitted characters verbatim — no escaping and no
+    shortening. Rendering it safely is the surface's job; changing it here
+    would mean the person is shown something other than what the agent got.
+    """
+    out = {"id": row["id"], "text": row["text"], "state": row["state"]}
+    if row.get("error"):
+        out["error"] = row["error"]
+    if row.get("at"):
+        out["at"] = int(row["at"])
+    return out
 
 
 def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait,
@@ -2060,6 +2076,20 @@ class MissionService:
         """
         if self._run_tree is None:
             return {"error": "no durable run-tree store configured", "run_id": run_id}
+        # A root Mission's run has a mailbox but no specialist worker claiming
+        # it, so a steer queued here would sit there for ever while the sender
+        # was told "queued".  Refuse it, and name the surface that does reach
+        # the Mission, rather than accepting an instruction nobody will read.
+        run = self._run_tree.get(run_id)
+        root_mid = str((run or {}).get("mission_id") or "")
+        if root_mid and self.store.runtime(root_mid).get("lane") != "specialist":
+            return {"error": (
+                "this run is a root Mission, and steers sent here are never "
+                "delivered to it. Add the requirement to the Mission itself: "
+                "POST /api/mission/note with {\"id\": \"%s\", \"text\": ..., "
+                "\"client_id\": ...}." % root_mid),
+                "run_id": run_id, "mission_id": root_mid, "queued": False,
+                "use": "/api/mission/note"}
         admitted, refusal = admit_human_note(text, STEER_NOTE_MAX_CHARS)
         if refusal:
             return {"error": refusal, "run_id": run_id, "queued": False,
@@ -2802,6 +2832,20 @@ class MissionService:
             # Acceptance is immutable audit history. Returning work to Collie
             # therefore creates a successor rather than falsifying that terminal
             # record, while inherited semantic keys prevent replay of fired work.
+            # The note becomes the successor's scope, so it is admitted BEFORE
+            # any Mission is created: an over-length instruction is refused with
+            # its reason and leaves no half-scoped successor behind, and an
+            # accepted one carries the user's exact bytes, not a 2,000-character
+            # prefix of them.
+            if str(note or "").strip():
+                admitted_note, refusal = admit_human_note(note)
+                if refusal:
+                    return {**self.status(mid), "error": refusal,
+                            "note_rejected": True,
+                            "note_chars": len(str(note or "")),
+                            "note_limit": HUMAN_NOTE_MAX_CHARS}
+            else:
+                admitted_note = ""
             live_actions = [r for r in self.actions.list()
                             if r.get("job_id") == mid and r.get("state") == EXECUTING]
             if live_actions or self.store.active_resources(mid):
@@ -2817,7 +2861,7 @@ class MissionService:
                 "evidence": _short(r.get("evidence"), 1000),
             } for r in prior_receipts]
             now = int(time.time())
-            continuation_note = _short(note, 2000) or (
+            continuation_note = admitted_note or (
                 "Return control to Collie. Inspect predecessor receipts before every "
                 "external action and never duplicate fired work.")
             case = {
@@ -2829,12 +2873,16 @@ class MissionService:
                     "receipts": receipt_context,
                     "case": _clean(m.case),
                 },
-                "human_updates": [{"at": now, "recovery": True,
-                                   "note": continuation_note}],
             }
             self._inherit_execution_contract(m, case)
             successor = "msn_" + secrets.token_hex(6)
             create_mission(self.store, successor, m.goal, case=case, leash=dict(m.leash))
+            # Into the ledger, not the case: the founding instruction is scope,
+            # and the case field is a 500-character-per-entry projection.
+            self.store.seed_human_notes(
+                successor, [(continuation_note, "continued", True,
+                             "continued:%s" % mid)])
+            case = dict(self.store.get(successor).case or {})
             if not self._bind_successor_workspace(successor):
                 return self.status(successor)
             inherited = self.store.inherit_completed_action_keys(mid, successor)
@@ -2865,6 +2913,51 @@ class MissionService:
             self._run_tree.resume(specialist["run_id"])
             self._tick_specialists(int(time.time()))
         return self.status(mid)
+
+    def add_note(self, mid: str, text, client_id: str) -> dict:
+        """Add one requirement to a Mission that is already under way.
+
+        This is the whole write path for "and also do X" while Collie is
+        working.  It never resumes a paused or human-gated Mission, never waits
+        for the model or a tool, and never touches the case — the note becomes
+        authority only when the process that owns the Mission consumes it, in
+        one transaction, at its next safe boundary.
+
+        ``client_id`` is the person's retry identity.  Sending it again returns
+        the same acknowledgment for ever, including after a restart and after
+        the Mission has finished; sending it with different text is a conflict
+        and changes nothing.
+        """
+        if not isinstance(text, str):
+            return {"error": "text must be a string", "code": 400,
+                    "mission_id": mid}
+        if not isinstance(client_id, str) or not client_id.strip():
+            return {"error": "client_id required", "code": 400, "mission_id": mid}
+        if len(client_id) > 200:
+            return {"error": "client_id must be at most 200 characters",
+                    "code": 400, "mission_id": mid}
+        out = self.store.add_pending_note(mid, client_id, text)
+        if not out.get("ok"):
+            answer = {"accepted": False, "mission_id": mid,
+                      "error": out.get("error"), "code": int(out.get("code") or 409)}
+            if out.get("note"):
+                answer["note"] = _note_view(out["note"])
+            for key in ("note_limit", "note_chars", "conflict"):
+                if key in out:
+                    answer[key] = out[key]
+            return answer
+        return {"accepted": True, "mission_id": mid,
+                "note": _note_view(out["note"]), "replay": bool(out.get("replay")),
+                "note_limit": HUMAN_NOTE_MAX_CHARS}
+
+    def notes(self, mid: str) -> dict:
+        """The exact accepted/pending instruction history. No model, no writes."""
+        if not self.store.get(mid):
+            return {"error": "unknown mission", "mission_id": mid, "code": 404}
+        return {"mission_id": mid, "notes": self.store.note_history(mid),
+                "note_limit": HUMAN_NOTE_MAX_CHARS,
+                "max_notes": HUMAN_LEDGER_MAX_NOTES,
+                "max_chars": HUMAN_LEDGER_MAX_CHARS}
 
     def check(self, mid: str) -> dict:
         m = self.store.get(mid)
@@ -3011,7 +3104,12 @@ class MissionService:
                 continue
             text = (message.get("payload") or {}).get("text")
             if text:
-                steers.append({"text": text, "id": message["message_id"]})
+                # ``ref`` is the durable identity of THIS message.  The ledger
+                # refuses a second row for it, so a delivery that was recorded
+                # and then failed to acknowledge is not appended again when the
+                # lease expires and the mailbox redelivers it.
+                steers.append({"text": text, "id": message["message_id"],
+                               "ref": "steer:%s:%s" % (run_id, message["message_id"])})
             else:
                 empty.append(message["message_id"])
 
@@ -3339,6 +3437,14 @@ class MissionService:
         runtime = self.store.runtime(mid)
         aggregate_runtime = self.store.aggregate_runtime(mid)
         activity = self.store.activity_ledger(mid, 24)
+        if (m.case or {}).get("code_profile", {}).get("direct_dispatch"):
+            # The dedicated worker's args.goal contains the entire request plus
+            # every later instruction and model framing. Repeating it as each
+            # activity title makes a phone-sized task page unusable. The goal,
+            # saved instructions and underlying audit events remain available.
+            activity = [dict(item, summary="Code changes")
+                        if item.get("capability") == "code" else item
+                        for item in activity]
         checkpoint = self.store.latest_checkpoint(mid)
         run_tree = None
         if self._run_tree and m.case.get("_run_id"):

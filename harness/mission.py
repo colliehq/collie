@@ -581,6 +581,19 @@ HUMAN_LEDGER_MAX_NOTES = 500
 # This is a display/context convenience; it is never the dispatch source.
 HUMAN_PROJECTION_NOTE_CHARS = 500
 HUMAN_PROJECTION_NOTES = 20
+# HTTP bodies that carry an instruction are sized in BYTES, and the limits above
+# are in CHARACTERS.  One CJK character is three UTF-8 bytes, and a client that
+# escapes non-ASCII writes ``\uXXXX`` — six bytes per character.  An 8 KiB body
+# cap therefore refused a perfectly legal 4,000-character Chinese steer as a
+# malformed request.  These are the byte budgets for the character limits above
+# at their worst encoding, so admission (not the transport) decides, and an
+# over-cap request is refused whole rather than parsed from a prefix.
+STEER_BODY_MAX_BYTES = 64 * 1024            # 4,000 chars escaped + envelope
+NOTE_BODY_MAX_BYTES = 256 * 1024            # 20,000 chars escaped + envelope
+# Mission lifecycle states that may take a new requirement.  Everything else is
+# either finished (its record is history) or uncertain (nobody knows what the
+# Mission did), and both are refused explicitly rather than queued into a void.
+NOTE_OPEN_STATES = (QUEUED, RUNNING, PAUSING, PAUSED, WAITING, NEEDS_YOU)
 
 
 def admit_human_note(note, limit=HUMAN_NOTE_MAX_CHARS):
@@ -770,8 +783,11 @@ def code_mission_goal(mission, notes=None) -> str:
     for item in notes or ():
         if not isinstance(item, dict):
             continue
-        note = str(item.get("note") or "").strip()
-        if not note:
+        # The admitted bytes, unchanged.  Whitespace can be the instruction —
+        # indentation in a pasted snippet, a trailing newline before a block —
+        # so emptiness is TESTED with strip() and the text is never stripped.
+        note = str(item.get("note") or "")
+        if not note.strip():
             continue
         label = ""
         if item.get("host"):
@@ -789,6 +805,14 @@ def code_mission_goal(mission, notes=None) -> str:
     lines.extend("%d. %s%s" % (index, label, note)
                  for index, (note, label) in enumerate(updates, 1))
     return "\n".join(lines)
+
+
+# The composer is not specific to code dispatch.  A mixed Mission's planner used
+# to see only ``case['human_updates']`` — 20 entries of 500 characters — so a
+# long or old requirement reached the actual decider as a fragment while the
+# ledger truthfully reported it as retained in full.  Both deciders now compose
+# scope from the same authoritative rows.
+mission_goal_with_notes = code_mission_goal
 
 
 def code_stop_report(reason, result, limit=1800) -> str:
@@ -1108,10 +1132,45 @@ class MissionStore:
             note_id INTEGER PRIMARY KEY AUTOINCREMENT,
             mission_id TEXT NOT NULL, at INTEGER NOT NULL,
             source TEXT NOT NULL DEFAULT '', host INTEGER NOT NULL DEFAULT 0,
-            note TEXT NOT NULL)""")
+            note TEXT NOT NULL, source_ref TEXT NOT NULL DEFAULT '')""")
+        try:  # guarded migration for ledgers written before transport identity
+            self.db.execute(
+                "ALTER TABLE mission_human_notes ADD COLUMN source_ref "
+                "TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS mission_human_notes_order "
             "ON mission_human_notes(mission_id,note_id)")
+        # Exactly-once ingress.  A transport (a TaskTree steer, a pending note
+        # row) can legitimately re-deliver a message it never saw acknowledged:
+        # the worker may have committed the ledger row and died before the ACK.
+        # Identity is the MESSAGE, never the text — the same sentence sent again
+        # deliberately is new scope and must be appended again.
+        self.db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS mission_human_notes_source_ref "
+            "ON mission_human_notes(mission_id,source_ref) WHERE source_ref<>''")
+        # Instructions a person added from outside the run.  They are durable the
+        # moment they are accepted, but they are NOT authority yet: only the
+        # process that owns the Mission may move them into the ledger, in one
+        # transaction, at a safe boundary.  Writing straight into the case would
+        # be overwritten by the running worker's next case save.
+        self.db.execute("""CREATE TABLE IF NOT EXISTS mission_pending_notes(
+            pending_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id TEXT NOT NULL, client_id TEXT NOT NULL,
+            note TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'note',
+            at INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+            note_id INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+            settled_at INTEGER NOT NULL DEFAULT 0)""")
+        # The acknowledgment a person was given is the row itself, so the same
+        # client_id can never become two requirements — including across the
+        # restart that made them press the button again.
+        self.db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS mission_pending_notes_client "
+            "ON mission_pending_notes(mission_id,client_id)")
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS mission_pending_notes_open "
+            "ON mission_pending_notes(mission_id,state,pending_id)")
         self.db.execute("""CREATE TABLE IF NOT EXISTS mission_action_keys(
             mission_id TEXT NOT NULL, action_key TEXT NOT NULL, nonce TEXT NOT NULL DEFAULT '',
             state TEXT NOT NULL, at INTEGER NOT NULL,
@@ -2016,8 +2075,18 @@ class MissionStore:
             self.db.commit()
         return cur.rowcount
 
-    def finish_run(self, mission_id, token, state, result=None):
-        """Token-guarded transition; a stale worker cannot overwrite pause/cancel."""
+    def finish_run(self, mission_id, token, state, result=None,
+                   block_on_pending=False):
+        """Token-guarded transition; a stale worker cannot overwrite pause/cancel.
+
+        ``block_on_pending`` closes the completion race.  ``add_pending_note``
+        reads the Mission's state in its own immediate transaction, so exactly
+        one of the two writes wins the database lock: either the note lands while
+        the Mission is still open and this transaction sees it and refuses to
+        publish, or this transaction commits first and the note is refused at the
+        surface with "this Mission is done". A queued requirement is never lost
+        to a clean finish, and acceptance is never claimed after the fact.
+        """
         now = int(time.time())
         vals = [state]
         extra = ""
@@ -2026,6 +2095,14 @@ class MissionStore:
             vals.append(result)
         vals.extend([now, mission_id, RUNNING, token])
         with self._lock:
+            if block_on_pending:
+                self.db.execute("BEGIN IMMEDIATE")
+                blocked = self.db.execute(
+                    "SELECT 1 FROM mission_pending_notes WHERE mission_id=? "
+                    "AND state='pending' LIMIT 1", (mission_id,)).fetchone()
+                if blocked:
+                    self.db.rollback()
+                    return False
             cur = self.db.execute(
                 "UPDATE missions SET state=?,run_token='',lease_until=0%s,updated_at=? "
                 "WHERE mission_id=? AND state=? AND run_token=?" % extra, vals)
@@ -2356,10 +2433,11 @@ class MissionStore:
 
     def _ledger_rows_locked(self, mission_id):
         rows = self.db.execute(
-            "SELECT note_id,at,source,host,note FROM mission_human_notes "
+            "SELECT note_id,at,source,host,note,source_ref FROM mission_human_notes "
             "WHERE mission_id=? ORDER BY note_id", (mission_id,)).fetchall()
         return [{"note_id": r["note_id"], "at": r["at"], "source": r["source"],
-                 "host": bool(r["host"]), "note": r["note"]} for r in rows]
+                 "host": bool(r["host"]), "note": r["note"],
+                 "source_ref": r["source_ref"]} for r in rows]
 
     def _backfill_ledger_locked(self, mission_id, case, now):
         """Migrate a pre-ledger Mission's case entries once, in the caller's txn.
@@ -2381,18 +2459,34 @@ class MissionStore:
     def _admit_notes_locked(self, mission_id, case, notes, now):
         """Admit exact human instructions inside the caller's transaction.
 
-        ``notes`` is a sequence of ``(text, source, host)``.  Returns
-        ``(ok, error, info)``: on refusal NOTHING is written, so a caller that
-        also moves lifecycle state simply abandons its transaction and reports
-        the refusal instead of half-accepting the message.
+        ``notes`` is a sequence of ``(text, source, host)`` or, when the caller
+        has a durable transport identity for the message, ``(text, source, host,
+        source_ref)``.  A ``source_ref`` already in this Mission's ledger is a
+        RE-DELIVERY, not a second instruction: the worker committed the row and
+        then died before it could acknowledge.  It is reported in ``duplicates``
+        so the caller acknowledges the transport instead of appending the same
+        requirement twice.  Identity is the message, never the text — sending
+        the same sentence again on purpose is new scope.
+
+        Returns ``(ok, error, info)``: on refusal NOTHING is written, so a caller
+        that also moves lifecycle state simply abandons its transaction and
+        reports the refusal instead of half-accepting the message.
         """
         existing = self._ledger_rows_locked(mission_id)
         if not existing:
             self._backfill_ledger_locked(mission_id, case, now)
             existing = self._ledger_rows_locked(mission_id)
+        seen_refs = {str(x.get("source_ref") or ""): int(x["note_id"])
+                     for x in existing if x.get("source_ref")}
         accepted, total = [], sum(len(x["note"]) for x in existing)
         count = len(existing)
-        for text, source, host in notes:
+        duplicates = {}
+        for item in notes:
+            text, source, host = item[0], item[1], item[2]
+            source_ref = str(item[3] or "") if len(item) > 3 else ""
+            if source_ref and source_ref in seen_refs:
+                duplicates[source_ref] = seen_refs[source_ref]
+                continue
             admitted, error = admit_human_note(text)
             if error:
                 return False, error, {}
@@ -2409,13 +2503,15 @@ class MissionStore:
                     "characters, above the %d limit; none are discarded to "
                     "make room. Continue in a new Mission."
                     % (total, HUMAN_LEDGER_MAX_CHARS)), {}
-            accepted.append((admitted, str(source or ""), bool(host)))
+            accepted.append((admitted, str(source or ""), bool(host), source_ref))
+            if source_ref:
+                seen_refs[source_ref] = 0
         note_ids = []
-        for admitted, source, host in accepted:
+        for admitted, source, host, source_ref in accepted:
             cur = self.db.execute(
-                "INSERT INTO mission_human_notes(mission_id,at,source,host,note) "
-                "VALUES(?,?,?,?,?)",
-                (mission_id, now, source, 1 if host else 0, admitted))
+                "INSERT INTO mission_human_notes"
+                "(mission_id,at,source,host,note,source_ref) VALUES(?,?,?,?,?,?)",
+                (mission_id, now, source, 1 if host else 0, admitted, source_ref))
             note_ids.append(cur.lastrowid)
         entries = self._ledger_rows_locked(mission_id)
         case["human_updates"] = _human_note_projection(entries)
@@ -2425,8 +2521,8 @@ class MissionStore:
             "authoritative": "MissionStore.human_notes(); case.human_updates is a "
                              "bounded projection of it"}
         info = {"note_ids": note_ids, "revision": _note_digest(entries),
-                "notes": len(entries)}
-        if any(not host for _text, _source, host in accepted):
+                "notes": len(entries), "duplicates": duplicates}
+        if any(not host for _t, _s, host, _r in accepted):
             info["superseded"] = _supersede_code_evidence(
                 case, info["revision"], note_ids, now)
         return True, "", info
@@ -2481,6 +2577,323 @@ class MissionStore:
                         "lost_ownership": True}
             self.db.commit()
         return {"ok": True, "case": _compact_case_storage(case), **info}
+
+    def seed_human_notes(self, mission_id, notes):
+        """Write a brand-new Mission's founding instructions into the ledger.
+
+        A successor Mission inherits the exact words that sent it back to work.
+        Seeding them through the case would have handed them to the projection
+        writer first, which keeps 500 characters per entry — so the successor
+        would start out working from a prefix of its own remit.  Only a QUEUED,
+        unowned Mission qualifies, so no worker can be racing this write.
+        """
+        now = int(time.time())
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                r = self.db.execute(
+                    "SELECT case_json FROM missions WHERE mission_id=? AND state=? "
+                    "AND COALESCE(run_token,'')=''",
+                    (mission_id, QUEUED)).fetchone()
+                if not r:
+                    self.db.rollback()
+                    return {"ok": False, "error": "mission is not a fresh queued row"}
+                case = _jl(r["case_json"])
+                ok, error, info = self._admit_notes_locked(mission_id, case, notes, now)
+                if not ok:
+                    self.db.rollback()
+                    return {"ok": False, "error": error}
+                self.db.execute(
+                    "UPDATE missions SET case_json=?,updated_at=? WHERE mission_id=? "
+                    "AND state=? AND COALESCE(run_token,'')=''",
+                    (_js(_compact_case_storage(case)), now, mission_id, QUEUED))
+            except BaseException:
+                self.db.rollback()
+                raise
+            else:
+                self.db.commit()
+        return {"ok": True, "case": _compact_case_storage(case), **info}
+
+    # --- requirements added from outside the run --------------------------
+
+    @staticmethod
+    def _pending_row(row):
+        out = {"id": "pn_%d" % int(row["pending_id"]),
+               "pending_id": int(row["pending_id"]),
+               "client_id": row["client_id"], "text": row["note"],
+               "state": row["state"], "at": int(row["at"]),
+               "source": row["source"], "note_id": int(row["note_id"] or 0)}
+        if row["error"]:
+            out["error"] = row["error"]
+        return out
+
+    def pending_note_result(self, mission_id, client_id):
+        """The durable acknowledgment for one client_id, or None.
+
+        This is what makes a retry safe forever: the answer the person was given
+        is a row, so pressing the button again after a restart — or after the
+        Mission finished — replays that answer instead of creating a second
+        requirement or refusing work that was already accepted.
+        """
+        with self._lock:
+            row = self.db.execute(
+                "SELECT * FROM mission_pending_notes WHERE mission_id=? AND client_id=?",
+                (mission_id, str(client_id))).fetchone()
+        return self._pending_row(row) if row else None
+
+    def add_pending_note(self, mission_id, client_id, text, source="note"):
+        """Accept a new requirement for a Mission that is still open.
+
+        Returns ``{"ok":True, "note": <row>, "replay": bool}`` or
+        ``{"ok":False, "error":..., "code": <http status>}``.  Nothing here waits
+        for the model or a tool: it is one short SQLite transaction, so a person
+        can add a requirement while a coding slice is running.
+
+        The write is deliberately NOT into the case.  A worker owns the case and
+        would overwrite it at its next save; the note becomes authority only when
+        that worker consumes it, under its own token, in a single transaction.
+        """
+        client_id = str(client_id or "")
+        if not client_id.strip():
+            return {"ok": False, "code": 400, "error": "client_id required"}
+        now = int(time.time())
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                prior = self.db.execute(
+                    "SELECT * FROM mission_pending_notes WHERE mission_id=? "
+                    "AND client_id=?", (mission_id, client_id)).fetchone()
+                if prior is not None:
+                    if prior["note"] != str(text if text is not None else ""):
+                        return {"ok": False, "code": 409,
+                                "error": ("this client_id was already accepted with "
+                                          "different text; nothing was changed. Use a "
+                                          "new client_id for a new requirement."),
+                                "conflict": True,
+                                "note": self._pending_row(prior)}
+                    # An exact replay — including one that arrives after the
+                    # Mission became terminal — answers with what was promised.
+                    return {"ok": True, "replay": True,
+                            "note": self._pending_row(prior)}
+                mission = self.db.execute(
+                    "SELECT state,case_json FROM missions WHERE mission_id=?",
+                    (mission_id,)).fetchone()
+                if mission is None:
+                    return {"ok": False, "code": 404, "error": "unknown mission"}
+                state = mission["state"]
+                if state not in NOTE_OPEN_STATES:
+                    return {"ok": False, "code": 409, "error": (
+                        "this Mission is %s; it cannot take a new requirement and "
+                        "nothing was recorded. Its record stays as it is — start a "
+                        "new Mission for further work." % state)}
+                case = _jl(mission["case_json"])
+                if case.get("code_recovery_required") or state == RECONCILING:
+                    return {"ok": False, "code": 409, "error": (
+                        "this Mission is at an unresolved recovery boundary: nobody "
+                        "yet knows what its last run actually did, so a new "
+                        "requirement is not accepted. Reconcile it first, then add "
+                        "the requirement.")}
+                admitted, refusal = admit_human_note(text)
+                if refusal:
+                    return {"ok": False, "code": 400, "error": refusal,
+                            "note_limit": HUMAN_NOTE_MAX_CHARS,
+                            "note_chars": len(str(text or ""))}
+                ok, error = self._ledger_headroom_locked(mission_id, case, admitted)
+                if not ok:
+                    return {"ok": False, "code": 409, "error": error}
+                cur = self.db.execute(
+                    "INSERT INTO mission_pending_notes"
+                    "(mission_id,client_id,note,source,at,state) "
+                    "VALUES(?,?,?,?,?,'pending')",
+                    (mission_id, client_id, admitted, str(source or "note"), now))
+                row = self.db.execute(
+                    "SELECT * FROM mission_pending_notes WHERE pending_id=?",
+                    (cur.lastrowid,)).fetchone()
+                accepted = self._pending_row(row)
+            except BaseException:
+                self.db.rollback()
+                raise
+            else:
+                self.db.commit()
+            finally:
+                # Replay/refusal returns above still have to release BEGIN
+                # IMMEDIATE. A long-lived service must not retain a writer lock
+                # merely because a browser retried its already-saved request.
+                if self.db.in_transaction:
+                    self.db.rollback()
+        self.record_event(mission_id, "control", "note_accepted",
+                          payload={"id": accepted["id"], "chars": len(admitted),
+                                   "mission_state": state})
+        return {"ok": True, "replay": False, "note": accepted}
+
+    def _ledger_headroom_locked(self, mission_id, case, admitted):
+        """Would this note fit once every already-accepted note is applied?
+
+        Bounds are checked across accepted AND still-pending text.  Checking only
+        the ledger would let a burst of accepted notes be admitted and then
+        rejected one by one at consumption, which is exactly the "accepted input
+        silently discarded" failure the ledger exists to prevent.
+        """
+        existing = self._ledger_rows_locked(mission_id) or _legacy_case_notes(case)
+        queued = self.db.execute(
+            "SELECT note FROM mission_pending_notes WHERE mission_id=? AND state='pending'",
+            (mission_id,)).fetchall()
+        count = len(existing) + len(queued) + 1
+        total = (sum(len(x["note"]) for x in existing) +
+                 sum(len(r["note"]) for r in queued) + len(admitted))
+        if count > HUMAN_LEDGER_MAX_NOTES:
+            return False, ("this Mission already holds %d instructions, the maximum; "
+                           "none are discarded to make room. Continue in a new "
+                           "Mission." % HUMAN_LEDGER_MAX_NOTES)
+        if total > HUMAN_LEDGER_MAX_CHARS:
+            return False, ("this Mission's instructions would reach %d characters, "
+                           "above the %d limit; none are discarded to make room. "
+                           "Continue in a new Mission."
+                           % (total, HUMAN_LEDGER_MAX_CHARS))
+        return True, ""
+
+    def pending_notes(self, mission_id):
+        """Accepted-but-not-yet-applied requirements, oldest first."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM mission_pending_notes WHERE mission_id=? "
+                "AND state='pending' ORDER BY pending_id", (mission_id,)).fetchall()
+        return [self._pending_row(r) for r in rows]
+
+    def note_history(self, mission_id):
+        """The full accepted history: applied ledger entries, then still-open ones.
+
+        Every entry has a stable id.  A note that came through the note API keeps
+        the id its acknowledgment promised; a ledger entry written by any other
+        surface (a steer, a hand-off continuation, a migrated pre-ledger note)
+        gets a stable synthetic id derived from its durable row id.  No model
+        runs and no text is shortened.
+        """
+        with self._lock:
+            ledger = self._ledger_rows_locked(mission_id)
+            rows = self.db.execute(
+                "SELECT * FROM mission_pending_notes WHERE mission_id=? "
+                "ORDER BY pending_id", (mission_id,)).fetchall()
+            if not ledger:
+                r = self.db.execute(
+                    "SELECT case_json FROM missions WHERE mission_id=?",
+                    (mission_id,)).fetchone()
+                ledger = _legacy_case_notes(_jl(r["case_json"])) if r else []
+        by_note_id = {}
+        pending = []
+        for row in rows:
+            item = self._pending_row(row)
+            if item["state"] == "applied" and item["note_id"]:
+                by_note_id[item["note_id"]] = item["id"]
+            else:
+                pending.append(item)
+        out = []
+        for entry in ledger:
+            note_id = int(entry.get("note_id") or 0)
+            row = {"id": by_note_id.get(note_id) or "hn_%d" % note_id,
+                   "text": entry.get("note") or "", "state": "applied",
+                   "at": int(entry.get("at") or 0),
+                   "source": str(entry.get("source") or "")}
+            if entry.get("host"):
+                row["source"] = row["source"] or "host"
+                row["host"] = True
+            out.append(row)
+        for item in pending:
+            row = {"id": item["id"], "text": item["text"], "state": item["state"],
+                   "at": item["at"], "source": item["source"]}
+            if item.get("error"):
+                row["error"] = item["error"]
+            out.append(row)
+        return out
+
+    def consume_pending_notes_owned(self, mission_id, token):
+        """Move accepted requirements into the authoritative ledger, atomically.
+
+        Only the process that owns the Mission may do this, and the ledger insert,
+        the case projection and the pending rows' settlement all commit together.
+        A crash before the commit leaves every note pending, so it is applied once
+        by whoever owns the Mission next — never zero times, never twice.
+
+        A note the ledger can no longer accept is settled as ``rejected`` with the
+        reason, because leaving it pending forever would be a silent drop wearing
+        the word "pending".
+        """
+        now = int(time.time())
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                r = self.db.execute(
+                    "SELECT case_json FROM missions WHERE mission_id=? "
+                    "AND state IN (?,?) AND run_token=?",
+                    (mission_id, RUNNING, PAUSING, token)).fetchone()
+                if not r:
+                    self.db.rollback()
+                    return {"ok": False, "applied": 0, "lost_ownership": True,
+                            "error": "this run no longer owns the Mission"}
+                rows = self.db.execute(
+                    "SELECT * FROM mission_pending_notes WHERE mission_id=? "
+                    "AND state='pending' ORDER BY pending_id", (mission_id,)).fetchall()
+                if not rows:
+                    self.db.rollback()
+                    return {"ok": True, "applied": 0, "note_ids": [], "ids": []}
+                case = _jl(r["case_json"])
+                self.db.execute("SAVEPOINT pending_note_admission")
+                ok, error, info = self._admit_notes_locked(
+                    mission_id, case,
+                    [(row["note"], row["source"] or "note", False,
+                      "pending:%d" % row["pending_id"]) for row in rows], now)
+                if not ok:
+                    # Settle rather than retry: the reason is durable and the
+                    # person can read it back from the history endpoint.
+                    # Undo any legacy ledger backfill without dropping the
+                    # owner transaction. A new note or owner cannot slip into
+                    # the gap and be rejected for this batch's failure.
+                    self.db.execute("ROLLBACK TO pending_note_admission")
+                    self.db.execute("RELEASE pending_note_admission")
+                    self.db.execute(
+                        "UPDATE mission_pending_notes SET state='rejected',error=?,"
+                        "settled_at=? WHERE mission_id=? AND state='pending'",
+                        (str(error)[:1000], now, mission_id))
+                    self.db.commit()
+                    self.record_event(
+                        mission_id, "control", "note_rejected",
+                        payload={"reason": str(error)[:500], "count": len(rows)})
+                    return {"ok": False, "applied": 0, "rejected": len(rows),
+                            "error": error}
+                self.db.execute("RELEASE pending_note_admission")
+                duplicates = info.get("duplicates") or {}
+                note_ids, ids = [], []
+                fresh = list(info.get("note_ids") or [])
+                for row in rows:
+                    ref = "pending:%d" % row["pending_id"]
+                    note_id = duplicates.get(ref)
+                    if note_id is None:
+                        note_id = fresh.pop(0) if fresh else 0
+                    self.db.execute(
+                        "UPDATE mission_pending_notes SET state='applied',note_id=?,"
+                        "settled_at=? WHERE pending_id=?",
+                        (int(note_id or 0), now, row["pending_id"]))
+                    note_ids.append(int(note_id or 0))
+                    ids.append("pn_%d" % row["pending_id"])
+                cur = self.db.execute(
+                    "UPDATE missions SET case_json=?,updated_at=? WHERE mission_id=? "
+                    "AND state IN (?,?) AND run_token=?",
+                    (_js(_compact_case_storage(case)), now, mission_id,
+                     RUNNING, PAUSING, token))
+                if not cur.rowcount:
+                    self.db.rollback()
+                    return {"ok": False, "applied": 0, "lost_ownership": True,
+                            "error": "this run no longer owns the Mission"}
+            except BaseException:
+                self.db.rollback()
+                raise
+            else:
+                self.db.commit()
+        return {"ok": True, "applied": len(rows), "note_ids": note_ids, "ids": ids,
+                "case": _compact_case_storage(case),
+                "revision": info.get("revision") or "",
+                "superseded": info.get("superseded") or {},
+                "texts": [row["note"] for row in rows]}
 
     def continue_handoff(self, mission_id, note=""):
         """Return a human-assisted hand-off to Collie without declaring it done."""
@@ -3794,8 +4207,12 @@ class MissionDriver:
             {"verdict": verdict.status, "reason": verdict.reason,
              "evidence": evidence}, case=mission.case)
         if verdict.status == VERIFIED:
+            # The only publication boundary, and the only place that may declare
+            # this Mission finished — so it is where a requirement queued during
+            # the verification itself has to be rechecked.
             return self._finish(mission_id, token, DONE_VERIFIED,
-                                verdict.reason or "goal independently verified")
+                                verdict.reason or "goal independently verified",
+                                block_on_pending=True)
         if verdict.status == FAILED:
             return self._finish(mission_id, token, FAILED_S,
                                 verdict.reason or "goal verification failed")
@@ -3870,10 +4287,47 @@ class MissionDriver:
                 payload={"error": "%s: %s" % (type(exc).__name__, exc)})
             return None
 
+    def _consume_pending_notes(self, mission_id, token):
+        """Turn accepted requirements into authority, once, under this token.
+
+        Returns ``""`` when there was nothing, ``"_steered"`` when new scope was
+        admitted (the caller re-enters its loop so the next decision sees it), or
+        a Mission state when ownership was lost meanwhile.
+        """
+        if not self.store.pending_notes(mission_id):
+            return ""
+        consumed = self.store.consume_pending_notes_owned(mission_id, token)
+        if consumed.get("lost_ownership"):
+            return self._lost_state(mission_id, token)
+        if not consumed.get("ok"):
+            # Settled as rejected, with a reason the person can read back.  The
+            # Mission keeps working on the scope it already has.
+            return ""
+        if not consumed.get("applied"):
+            return ""
+        texts = list(consumed.get("texts") or [])
+        payload = {"ids": consumed.get("ids") or [],
+                   "note_ids": consumed.get("note_ids") or [],
+                   "chars": [len(text) for text in texts],
+                   "messages": [text[:1000] for text in texts][-10:],
+                   "goal_revision": consumed.get("revision") or "",
+                   "superseded_verification": consumed.get("superseded") or {}}
+        self.store.record_event(mission_id, "control", "note_applied", payload=payload)
+        self.store.record_checkpoint(
+            mission_id, token, "note_applied", payload, case=consumed.get("case"))
+        return "_steered"
+
     def _control_boundary(self, mission_id, token):
         """Consume durable steer/cancel input between model/action boundaries."""
+        # Requirements a person added from outside the run are consumed here
+        # first, and for EVERY Mission — a root Mission has no external control
+        # channel, which is precisely why writing them into the case from the
+        # HTTP thread would have been overwritten by this worker's next save.
+        notes_state = self._consume_pending_notes(mission_id, token)
+        if notes_state not in ("", "_steered"):
+            return notes_state
         if self.control is None:
-            return ""
+            return notes_state
         try:
             update = self.control(mission_id) or {}
         except Exception as exc:
@@ -3885,24 +4339,29 @@ class MissionDriver:
             return self._state(mission_id, CANCELLED)
         # A steer may arrive as plain text or as ``{"text":..., "id":...}``; the
         # id lets the transport hold the message until it is durable here.
+        # ``ref`` is the transport's durable message identity.  It is what makes
+        # re-delivery after a crashed acknowledgment idempotent AT THE LEDGER,
+        # rather than at the surface where nobody can see it.
         incoming = []
         for item in (update.get("steers") or []):
             if isinstance(item, dict):
-                incoming.append((str(item.get("text") or ""), item.get("id")))
+                incoming.append((str(item.get("text") or ""), item.get("id"),
+                                 str(item.get("ref") or "")))
             else:
-                incoming.append((str(item or ""), None))
-        incoming = [(text, ident) for text, ident in incoming if text.strip()]
+                incoming.append((str(item or ""), None, ""))
+        incoming = [(text, ident, ref) for text, ident, ref in incoming if text.strip()]
         if not incoming:
-            return ""
+            return notes_state
         ack = update.get("ack") if callable(update.get("ack")) else None
         # Admission is per message: one oversized steer is refused with a reason
         # its sender can act on, and the messages beside it are still accepted.
         good, refused = [], []
-        for text, ident in incoming:
+        for text, ident, ref in incoming:
             _admitted, error = admit_human_note(text)
-            (refused if error else good).append((text, ident, error))
+            (refused if error else good).append((text, ident, error, ref))
         saved = self.store.add_human_notes_owned(
-            mission_id, token, [(text, "steer", False) for text, _i, _e in good]) \
+            mission_id, token,
+            [(text, "steer", False, ref) for text, _i, _e, ref in good]) \
             if good else {"ok": True, "note_ids": [], "revision": "", "case": None}
         if not saved.get("ok"):
             if saved.get("lost_ownership"):
@@ -3911,29 +4370,42 @@ class MissionDriver:
                 return self._lost_state(mission_id, token)
             # A storage-level refusal (the ledger is full) is the sender's to
             # see; acknowledging it here would delete their instruction.
-            refused.extend((text, ident, saved.get("error") or "not accepted")
-                           for text, ident, _e in good)
+            refused.extend((text, ident, saved.get("error") or "not accepted", ref)
+                           for text, ident, _e, ref in good)
             good = []
         if refused:
             self.store.record_event(
                 mission_id, "control", "steer_refused",
                 payload={"refusals": [{"reason": reason, "chars": len(text),
                                        "message_id": ident}
-                                      for text, ident, reason in refused][-10:]})
+                                      for text, ident, reason, _r in refused][-10:]})
+        # A message whose ledger row already exists was written by a previous
+        # delivery whose acknowledgment never landed.  It is settled, not new:
+        # acknowledge it so the transport stops, and do not re-announce it.
+        duplicates = saved.get("duplicates") or {}
+        replayed = [item for item in good if item[3] and item[3] in duplicates]
+        good = [item for item in good if not (item[3] and item[3] in duplicates)]
+        if replayed:
+            self.store.record_event(
+                mission_id, "control", "steer_already_recorded",
+                payload={"note_ids": [duplicates[item[3]] for item in replayed],
+                         "message_ids": [item[1] for item in replayed]})
         if ack:
             # Only now, after the instruction is durably stored (or explicitly
             # refused), is the transport told it may stop redelivering.
             try:
-                ack([ident for _t, ident, _e in good if ident is not None],
+                ack([ident for _t, ident, _e, _r in good + replayed
+                     if ident is not None],
                     [{"id": ident, "error": reason}
-                     for _t, ident, reason in refused if ident is not None])
+                     for _t, ident, reason, _r in refused if ident is not None])
             except Exception as exc:
                 self.store.record_event(
                     mission_id, "control", "steer_ack_failed",
                     payload={"error": "%s: %s" % (type(exc).__name__, exc)})
         if not good:
-            return ""
-        texts = [text for text, _i, _e in good]
+            # A replay changed nothing, so it is not re-announced as a steer.
+            return notes_state
+        texts = [text for text, _i, _e, _r in good]
         self.store.record_event(
             mission_id, "control", "steer",
             payload={"messages": [text[:1000] for text in texts][-10:],
@@ -4534,7 +5006,8 @@ class MissionDriver:
             return "payment amount must be explicit and payload-bound"
         return ""
 
-    def _finish(self, mission_id, token, state, result=None):
+    def _finish(self, mission_id, token, state, result=None,
+                block_on_pending=False):
         if state in _TERMINAL:
             hook = self._dispatch_hook(
                 "Stop", {"mission_id": mission_id, "state": state,
@@ -4544,9 +5017,38 @@ class MissionDriver:
                 result = "Stop hook blocked completion: %s" % (
                     getattr(hook, "reason", "policy check did not pass") or
                     "policy check did not pass")
-        if not self.store.finish_run(mission_id, token, state, result):
+        if not self.store.finish_run(mission_id, token, state, result,
+                                     block_on_pending=block_on_pending):
+            if block_on_pending and self.store.pending_notes(mission_id):
+                return self._absorb_late_notes(mission_id, token, state)
             return self._lost_state(mission_id, token)
         return self._state(mission_id, state)
+
+    def _absorb_late_notes(self, mission_id, token, blocked_state):
+        """A requirement landed before completion was published; work, don't finish.
+
+        The person was told their instruction is saved for the next safe
+        boundary.  This IS that boundary, and it arrived first, so the Mission
+        takes the new scope and keeps going instead of publishing a completion
+        that ignores it.  Any evidence that certified the old goal is retired by
+        admission in the same transaction.
+        """
+        consumed = self.store.consume_pending_notes_owned(mission_id, token)
+        if consumed.get("lost_ownership"):
+            return self._lost_state(mission_id, token)
+        self.store.record_event(
+            mission_id, "control", "completion_deferred_for_note",
+            payload={"blocked_state": blocked_state,
+                     "applied": int(consumed.get("applied") or 0),
+                     "rejected": int(consumed.get("rejected") or 0),
+                     "note_ids": consumed.get("note_ids") or [],
+                     "goal_revision": consumed.get("revision") or "",
+                     "superseded_verification": consumed.get("superseded") or {}})
+        self.store.schedule_wait(mission_id, int(time.time()))
+        return self._finish(
+            mission_id, token, WAITING,
+            "a new instruction arrived before completion was recorded; it is "
+            "durable scope now and the Mission continues instead of finishing")
 
     def _lost_state(self, mission_id, token):
         # PAUSING becomes resumable only after the owner reaches this boundary.
@@ -4772,6 +5274,23 @@ class MissionDriver:
             # Identity discovery is additive context.  A corrupt optional
             # connection record must not take the whole Mission down.
             pass
+        # The planner is the actual decider for mixed work, so it gets the exact
+        # admitted instructions in order — the same authoritative rows a code
+        # dispatch uses — appended to the GOAL, which is never compacted.  The
+        # in-case ``human_updates`` stays as a bounded projection, and the ledger
+        # marker says plainly where the complete text is, so nothing advertises
+        # "retained in full" while the decision sees only fragments.
+        planner_notes = self.store.human_notes(mission_id)
+        planner_goal = mission_goal_with_notes(m, notes=planner_notes)
+        model_case["_human_note_ledger"] = {
+            "notes": len(planner_notes),
+            "chars": sum(len(str(x.get("note") or "")) for x in planner_notes),
+            "revision": _note_digest(planner_notes),
+            "authoritative": "the complete exact text of every instruction is "
+                             "appended to GOAL in the order it was given; "
+                             "case.human_updates is only a bounded projection "
+                             "for display and must not be treated as the scope",
+        }
         model_case["_activity_ledger"] = self.store.activity_ledger(
             mission_id, 24)
         model_case["_do_not_repeat"] = self.store.do_not_repeat(
@@ -4819,13 +5338,13 @@ class MissionDriver:
                     return None
                 return request_id
             decide_call = lambda: self.decider(
-                m.goal, model_case, self._primitives(m.leash),
+                planner_goal, model_case, self._primitives(m.leash),
                 request_gate=reserve_request,
                 request_complete=self.store.complete_model_request,
                 request_scope=mission_id)
         else:
             decide_call = lambda: self.decider(
-                m.goal, model_case, self._primitives(m.leash))
+                planner_goal, model_case, self._primitives(m.leash))
         outcome = self._bounded_call(
             decide_call,
             step_timeout,

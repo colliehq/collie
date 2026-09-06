@@ -1373,6 +1373,17 @@
   .mission-delivery > h3 { margin: 0 0 12px; font-size: 14px; color: var(--ink); }
   .mission-delivery .bubble { max-width: none; padding: 0; overflow-wrap: anywhere; }
   .mission-delivery > .mbtn { margin-top: 12px; }
+  .mission-updates { margin: 18px 0; padding: 14px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--surface-2); display: grid; gap: 10px; }
+  .mission-updates > h3 { margin: 0; font-size: 14px; }
+  .mission-updates textarea { box-sizing: border-box; width: 100%; min-height: 90px;
+    padding: 10px; resize: vertical; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); color: var(--ink); font: inherit; }
+  .mission-updates .mbtn { justify-self: start; }
+  .mission-updates .mnote { margin: 0; }
+  .mission-note-history { max-height: 360px; overflow: auto; }
+  .mission-note-entry { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .mission-note-entry > p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .mactivity { display: grid; gap: 6px; padding: 2px 1px; }
   .mactivity-title { color: var(--faint); font-size: 11px; text-transform: uppercase;
                      letter-spacing: .04em; }
@@ -2866,6 +2877,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var IDE_QUERY = new URLSearchParams(location.search);
   var INITIAL_SESSION = IDE_QUERY.get("session") || "";
+  var INITIAL_MISSION = IDE_QUERY.get("mission") || "";
   var IDE_EMBED = IDE_QUERY.has("vscode_embed");
   var IDE_SURFACE = IDE_QUERY.get("surface") || "";
   var NATIVE_SHELL = IDE_QUERY.get("native_shell") === "1";
@@ -3228,6 +3240,15 @@
     "building large or new files: it is N× the cost, and nothing is written unless you choose apply winner (otherwise it is preview-only). For a large feature, use Single run and let it write incrementally.": "构建大型或全新文件。它的成本约为 N 倍；除非选择“应用胜出结果”，否则只预览、不写入。大型功能请使用“单次运行”，让 Collie 逐步写入。",
     "Attached context": "附加上下文",
     "Latest coding report": "最近的编码报告", "Read full coding report": "查看完整编码报告",
+    "Updates to this task": "补充这项任务", "Saved instructions": "已保存的补充说明",
+    "Add a requirement or correction to this task…": "补充要求，或纠正这项任务的做法…",
+    "Code changes": "代码修改", "Update this task": "补充这项任务", "Save instruction": "保存补充说明",
+    "Read by Collie": "Collie 已读取", "Not accepted": "未接受",
+    "Saved · awaiting next boundary": "已保存，等待下一步读取",
+    "No saved instructions yet.": "还没有补充说明。", "Saving instruction…": "正在保存…",
+    "Instruction was not accepted.": "补充说明未被接受。",
+    "Saved. Collie will read it at the next safe boundary. Paused tasks stay paused.": "已保存，Collie 会在下一次安全执行边界读取。已暂停的任务仍保持暂停。",
+    "This task cannot accept an update now. Your draft is kept.": "这项任务目前无法接受补充说明，你的草稿已保留。",
     "Saved Pack changes": "已保存的 Pack 修改", "Review saved changes": "查看已保存的修改",
     "Apply saved changes": "应用已保存的修改", "Refresh review": "刷新预览",
     "Winning changes need attention": "胜出修改需要处理",
@@ -3547,6 +3568,15 @@
     "building large or new files: it is N× the cost, and nothing is written unless you choose apply winner (otherwise it is preview-only). For a large feature, use Single run and let it write incrementally.": "構建大型或全新檔案。它的成本約為 N 倍；除非選擇「套用勝出結果」，否則只預覽、不寫入。大型功能請使用「單次執行」，讓 Collie 逐步寫入。",
     "Attached context": "附加上下文",
     "Latest coding report": "最近的編碼報告", "Read full coding report": "查看完整編碼報告",
+    "Updates to this task": "補充這項任務", "Saved instructions": "已儲存的補充說明",
+    "Add a requirement or correction to this task…": "補充要求，或修正這項任務的做法…",
+    "Code changes": "程式碼修改", "Update this task": "補充這項任務", "Save instruction": "儲存補充說明",
+    "Read by Collie": "Collie 已讀取", "Not accepted": "未接受",
+    "Saved · awaiting next boundary": "已儲存，等待下一步讀取",
+    "No saved instructions yet.": "還沒有補充說明。", "Saving instruction…": "正在儲存…",
+    "Instruction was not accepted.": "補充說明未被接受。",
+    "Saved. Collie will read it at the next safe boundary. Paused tasks stay paused.": "已儲存，Collie 會在下一次安全執行邊界讀取。已暫停的任務仍保持暫停。",
+    "This task cannot accept an update now. Your draft is kept.": "這項任務目前無法接受補充說明，你的草稿已保留。",
     "Saved Pack changes": "已儲存的 Pack 修改", "Review saved changes": "查看已儲存的修改",
     "Apply saved changes": "套用已儲存的修改", "Refresh review": "重新整理預覽",
     "Winning changes need attention": "勝出修改需要處理",
@@ -7066,7 +7096,8 @@
     var card = document.createElement("div");
     card.className = "msg assistant mission";
     card.innerHTML = '<div class="av"><img src="/logo.svg" alt=""/></div>' +
-      '<div class="bubble"><div class="who">Collie · delegate</div><div class="mbody"></div></div>';
+      '<div class="bubble"><div class="who"></div><div class="mbody"></div></div>';
+    card.querySelector(".who").textContent = "Collie · " + t("Task");
     var w = $("welcome"); if (w) w.remove();
     $("log").appendChild(card); scrollDown(true);
     return card;
@@ -7076,11 +7107,12 @@
   }
   function scheduleMissionPoll(card, st) {
     if (card._missionTimer) clearTimeout(card._missionTimer);
-    if (!st || !st.mission_id || missionTerminal(st.state) || st.state === "paused") return;
+    if (!card.isConnected || !st || !st.mission_id || missionTerminal(st.state) || st.state === "paused") return;
     var delay = st.state === "waiting" || st.state === "needs_you" ? 10000 : 2000;
     card._missionTimer = setTimeout(function () {
+      if (!card.isConnected) return;
       missionGet("/api/mission?id=" + encodeURIComponent(st.mission_id)).then(function (fresh) {
-        renderMission(card, fresh);
+        if (card.isConnected) renderMission(card, fresh);
       }).catch(function (error) {
         missionError(card, error, "Mission refresh failed");
         scheduleMissionPoll(card, st);
@@ -7090,7 +7122,24 @@
   function runMissionCard(card, mid, button) {
     return missionAction(card, button, missionPost("/api/mission/run", { id: mid }));
   }
+  var selectedMission = "", selectedMissionTitle = "";
+  function rememberMission(mid) {
+    try {
+      var address = new URL(location.href); address.searchParams.delete("session");
+      if (mid) address.searchParams.set("mission", mid); else address.searchParams.delete("mission");
+      history.replaceState(null, "", address.href);
+    } catch (_) {}
+  }
+  function prepareMissionCanvas(mid) {
+    detachRun(); currentSession = null; currentRun = null; currentTitle = "";
+    selectedMission = mid || ""; selectedMissionTitle = ""; rememberMission(mid);
+    loadTaskQueue(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
+    $("log").textContent = "";
+    setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setActivityOpen(false); setLibraryOpen(false);
+    setProductNav("missions"); $("composer").hidden = true;
+  }
   function _startMissionCard(goal, autonomous, bounds) {
+    prepareMissionCanvas("");
     var card = newMissionCard();
     card.querySelector(".mbody").textContent = t("creating the mission…");
     var payload = Object.assign({ goal: goal }, bounds || {});
@@ -7101,10 +7150,11 @@
     }).catch(function (e) { missionError(card, e, "Could not create the mission"); });
   }
   function showMission(mid, openReport) {
-    setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
+    prepareMissionCanvas(mid);
     var card = newMissionCard();
     card.querySelector(".mbody").textContent = t("loading mission…");
     missionGet("/api/mission?id=" + encodeURIComponent(mid)).then(function (st) {
+      if (!card.isConnected) return;
       renderMission(card, st);
       if (openReport) {
         var report = card.querySelector(".mreport");
@@ -7158,7 +7208,8 @@
   }
   function setMissionsOpen(open) {
     if (!missionsPanel) return;
-    if (open) { setActivityOpen(false); setLibraryOpen(false); setEmbeddedSurfaceOpen(false); setRunDetailsOpen(false); }
+    if (open) { selectedMission = ""; selectedMissionTitle = ""; rememberMission("");
+      setActivityOpen(false); setLibraryOpen(false); setEmbeddedSurfaceOpen(false); setRunDetailsOpen(false); }
     missionsPanel.hidden = !open; $("scroll").hidden = !!open; $("composer").hidden = !!open;
     $("scrollDownBtn").hidden = !!open; if (open) loadMissions().catch(function () {});
   }
@@ -7252,7 +7303,91 @@
     $("log").appendChild(m); scrollDown();
     return m;
   }
+  function renderMissionUpdates(card, st) {
+    var box = card.querySelector(".mission-updates");
+    if (!box) {
+      box = document.createElement("section"); box.className = "mission-updates";
+      var title = document.createElement("h3"); title.textContent = t("Updates to this task"); box.appendChild(title);
+      var history = document.createElement("details");
+      var historyTitle = document.createElement("summary"); historyTitle.textContent = t("Saved instructions");
+      history.appendChild(historyTitle);
+      var historyText = document.createElement("div"); historyText.className = "mission-note-history"; history.appendChild(historyText);
+      box.appendChild(history);
+      var input = document.createElement("textarea"); input.rows = 3;
+      input.placeholder = t("Add a requirement or correction to this task…");
+      input.setAttribute("aria-label", t("Update this task")); box.appendChild(input);
+      var submit = document.createElement("button"); submit.type = "button"; submit.className = "mbtn confirm";
+      submit.textContent = t("Save instruction"); box.appendChild(submit);
+      var notice = document.createElement("div"); notice.className = "mnote"; notice.setAttribute("role", "status"); box.appendChild(notice);
+      var storageKey = "collie:mission-draft:" + st.mission_id, attempt = null;
+      try {
+        var draft = JSON.parse(sessionStorage.getItem(storageKey) || "null");
+        if (draft && typeof draft.text === "string") { input.value = draft.text; attempt = draft; }
+      } catch (_) {}
+      function saveDraft() {
+        try {
+          if (input.value) sessionStorage.setItem(storageKey, JSON.stringify({text: input.value,
+            client_id: attempt && attempt.text === input.value ? attempt.client_id : ""}));
+          else sessionStorage.removeItem(storageKey);
+        } catch (_) {}
+      }
+      input.oninput = saveDraft;
+      function readNotes() {
+        box._lastRead = Date.now();
+        var sequence = box._readSequence = (box._readSequence || 0) + 1;
+        return missionGet("/api/mission/notes?id=" + encodeURIComponent(st.mission_id)).then(function (out) {
+          if (!box.isConnected || sequence !== box._readSequence) return;
+          historyText.textContent = "";
+          var notes = out.notes || [];
+          historyTitle.textContent = t("Saved instructions") + " (" + notes.length + ")";
+          notes.forEach(function (note) {
+            var row = document.createElement("div"); row.className = "mission-note-entry";
+            var state = document.createElement("small");
+            state.textContent = t(note.state === "applied" ? "Read by Collie" : note.state === "rejected" ? "Not accepted" : "Saved · awaiting next boundary");
+            if (note.error) state.textContent += " · " + note.error;
+            row.appendChild(state);
+            var text = document.createElement("p"); text.textContent = note.text || ""; row.appendChild(text);
+            historyText.appendChild(row);
+          });
+          if (!notes.length) historyText.textContent = t("No saved instructions yet.");
+        }).catch(function (error) { if (box.isConnected) historyText.textContent = error.message || String(error); });
+      }
+      history.addEventListener("toggle", function () { if (history.open) readNotes(); });
+      submit.onclick = function () {
+        if (box._sending || !box._canSend || !input.value.trim()) return;
+        var text = input.value;
+        if (!attempt || attempt.text !== text || !attempt.client_id) attempt = {text:text,
+          client_id: window.crypto && crypto.randomUUID ? crypto.randomUUID() : "note-" + Date.now() + "-" + Math.random().toString(36).slice(2)};
+        var sent = {id:st.mission_id, text:text, client_id:attempt.client_id}; saveDraft();
+        box._sending = true; submit.disabled = true; notice.textContent = t("Saving instruction…");
+        missionPost("/api/mission/note", sent).then(function (out) {
+          if (!out.accepted) throw new Error(out.error || t("Instruction was not accepted."));
+          if (input.value === sent.text) { input.value = ""; attempt = null; saveDraft(); }
+          notice.textContent = t("Saved. Collie will read it at the next safe boundary. Paused tasks stay paused.");
+          readNotes();
+        }).catch(function (error) { notice.textContent = error.message || String(error); })
+          .finally(function () { box._sending = false; submit.disabled = !box._canSend; });
+      };
+      box._input = input; box._submit = submit; box._notice = notice;
+      box._readNotes = readNotes; box._history = history;
+      card.querySelector(".bubble").appendChild(box);
+      readNotes();
+    }
+    // Notes use their own durable ingress and must remain available while a
+    // run/pause action owns the Mission. They never start a second executor.
+    box._canSend = /^(queued|running|pausing|waiting|paused|needs_you)$/.test(st.state || "");
+    box._input.hidden = !box._canSend && !box._input.value;
+    box._submit.hidden = !box._canSend;
+    box._submit.disabled = !!box._sending || !box._canSend;
+    if (!box._canSend && box._input.value) box._notice.textContent = t("This task cannot accept an update now. Your draft is kept.");
+    if (box._history.open && Date.now() - (box._lastRead || 0) > 5000) box._readNotes();
+  }
   function renderMission(card, st) {
+    if (!card.isConnected) return;
+    if (st.mission_id && document.body.getAttribute("data-surface") === "missions") {
+      selectedMission = st.mission_id; selectedMissionTitle = cleanThreadTitle((st.summary || {}).title || st.goal || "");
+      rememberMission(st.mission_id); applyPageTitle("missions"); $("composer").hidden = true;
+    }
     var b = card.querySelector(".mbody");
     var reportWasOpen = !!(b && b.querySelector(".mreport[open]"));
     b.textContent = "";
@@ -7273,8 +7408,8 @@
       val.textContent = Array.isArray(value) ? (value.length ? value.join(" · ") : t("Nothing verified yet")) : value;
       row.appendChild(lab); row.appendChild(val); sb.appendChild(row);
     }
-    summaryRow("Current", summary.current || st.result || missionStateLabel(st.state));
-    summaryRow("Completed", summary.completed || []);
+    summaryRow("Current", t(summary.current || st.result || missionStateLabel(st.state)));
+    if (!(st.case || {}).code_delivery) summaryRow("Completed", summary.completed || []);
     var coverage = summary.coverage || {};
     var coverageValue = coverage.total ?
       ((coverage.completed || 0) + " / " + coverage.total + " " + t("complete") +
@@ -7292,13 +7427,16 @@
     b.appendChild(sb);
     var codeDelivery = (st.case || {}).code_delivery || {};
     if (codeDelivery.answer) {
+      var deliveryKey = JSON.stringify(codeDelivery);
+      var cachedDelivery = card._fullDelivery && card._fullDelivery.key === deliveryKey ? card._fullDelivery : null;
       var deliveryBox = document.createElement("section"); deliveryBox.className = "mission-delivery";
       var deliveryTitle = document.createElement("h3"); deliveryTitle.textContent = t("Latest coding report");
       deliveryBox.appendChild(deliveryTitle);
       var deliveryText = document.createElement("div"); deliveryText.className = "bubble";
-      renderMd(deliveryText, codeDelivery.answer); deliveryBox.appendChild(deliveryText);
+      renderMd(deliveryText, cachedDelivery ? cachedDelivery.answer : codeDelivery.answer); deliveryBox.appendChild(deliveryText);
       var fullReport = document.createElement("button"); fullReport.type = "button"; fullReport.className = "mbtn";
       fullReport.textContent = t("Read full coding report"); deliveryBox.appendChild(fullReport);
+      fullReport.hidden = !!cachedDelivery;
       var deliveryNotice = document.createElement("div"); deliveryNotice.className = "mnote";
       deliveryNotice.setAttribute("role", "status"); deliveryBox.appendChild(deliveryNotice);
       fullReport.onclick = function () {
@@ -7310,7 +7448,7 @@
             renderMd(deliveryText, data.answer || "");
             addCopy(deliveryText, data.answer || "");
             deliveryNotice.textContent = data.notice || "";
-            if (data.complete) fullReport.hidden = true;
+            if (data.complete) { fullReport.hidden = true; card._fullDelivery = {key:deliveryKey, answer:data.answer || ""}; }
           }).catch(function (error) { deliveryNotice.textContent = error.message || String(error); })
           .finally(function () { fullReport.disabled = false; });
       };
@@ -7371,7 +7509,7 @@
           when.textContent = item.at ? new Date(item.at * 1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "—";
           var event = document.createElement("div"); event.className = "mreport-log-text";
           event.textContent = t(item.status || "recorded") + " · " +
-            (item.summary || item.capability || t("Activity")) +
+            t(item.summary || item.capability || "Activity") +
             (item.count > 1 ? " · " + item.count + " " + t("times") : "") +
             (item.detail ? " — " + item.detail : "");
           recentGrid.appendChild(when); recentGrid.appendChild(event);
@@ -7389,7 +7527,7 @@
         line.className = "mactivity-item " + (item.status || "recorded");
         var dot = document.createElement("span"); dot.className = "mactivity-dot";
         var text = document.createElement("div"); text.className = "mactivity-text";
-        var main = document.createElement("div"); main.textContent = item.summary || item.capability || t("Activity");
+        var main = document.createElement("div"); main.textContent = t(item.summary || item.capability || "Activity");
         text.appendChild(main);
         if (item.detail) {
           var detail = document.createElement("div"); detail.className = "mactivity-detail";
@@ -7555,6 +7693,7 @@
       acts.appendChild(xbtn);
     }
     if (acts.children.length) b.appendChild(acts);
+    if (st.mission_id) renderMissionUpdates(card, st);
     scheduleMissionPoll(card, st);
     scrollDown();
   }
@@ -8199,6 +8338,7 @@
   function rememberSession(id) {
     try {
       var address = new URL(location.href);
+      address.searchParams.delete("mission");
       if (id) address.searchParams.set("session", id);
       else address.searchParams.delete("session");
       history.replaceState(null, "", address.href);
@@ -8680,6 +8820,7 @@
     // task" is only true until there IS a task; leaving it up afterwards makes the header disagree
     // with the sidebar row for the very thread you are reading.
     if (id === "home" && currentTitle) { el.textContent = currentTitle; el.title = currentTitle; return; }
+    if (id === "missions" && selectedMissionTitle) { el.textContent = selectedMissionTitle; el.title = selectedMissionTitle; return; }
     var key = SURFACE_TITLES[id];
     if (id === "home" && currentSession) key = "Task";
     if (!key) return;
@@ -8695,6 +8836,7 @@
     if (document.body.getAttribute("data-surface") === "home") { applyPageTitle("home"); renderCollieIdentity(); }
   }
   function setProductNav(id) {
+    if (id !== "missions" && selectedMission) { selectedMission = ""; selectedMissionTitle = ""; rememberSession(currentSession); }
     document.body.setAttribute("data-surface", id);
     var selectedNav = id === "today"
       ? "navHome"
@@ -10808,7 +10950,8 @@
   })();
 
   loadSessions();
-  if (INITIAL_SESSION) openSession(INITIAL_SESSION);
+  if (INITIAL_MISSION) showMission(INITIAL_MISSION);
+  else if (INITIAL_SESSION) openSession(INITIAL_SESSION);
   focusComposer(false);
 })();
 </script>

@@ -461,7 +461,10 @@ def _public_specialist(value):
                          for event in value["events"] if isinstance(event, dict)]
     for key in ("mission_id", "run_id", "available", "attached", "queued", "message_id", "error",
                 # A refused instruction has to say what the caller must change.
-                "note_rejected", "note_chars", "note_limit"):
+                "note_rejected", "note_chars", "note_limit",
+                # A refusal that names the surface which DOES reach the Mission
+                # is only useful if the pointer survives to the caller.
+                "use"):
         if value.get(key) is not None: out[key] = value.get(key)
     return out
 
@@ -2297,6 +2300,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(out, 404 if out.get("error") else 200)
                 finally:
                     svc.close()
+            if path == "/api/mission/notes":     # the exact instruction history
+                # Read-only and model-free: the accepted/pending requirements for
+                # one Mission, complete and verbatim, with stable ids.  Text is
+                # returned unescaped — the surface renders it safely.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .missionweb import MissionService
+                mid = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
+                svc = MissionService()
+                try:
+                    if not mid:
+                        return self._send_json({"error": "id required"}, 400)
+                    out = svc.notes(mid)
+                    return self._send_json(
+                        {k: v for k, v in out.items() if k != "code"},
+                        int(out.get("code") or 200) if out.get("error") else 200)
+                finally:
+                    svc.close()
             if path == "/api/mission":                    # delegate: one mission's live status
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2914,9 +2935,17 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api/mission/specialist/steer", "/api/mission/specialist/cancel"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                body = self._read_json(8192)
+                # 4,000 characters is the admitted steer limit; an 8 KiB body cap
+                # could not carry 4,000 Chinese characters (3 UTF-8 bytes each,
+                # 6 when a client escapes them as \uXXXX), so a legal steer came
+                # back as a malformed request.  The body budget is now the real
+                # worst-case encoding of the stated character limit, and an
+                # over-cap request is refused whole — never read as a prefix.
+                from .mission import STEER_BODY_MAX_BYTES
+                body, detail, status = self._read_json_sized(STEER_BODY_MAX_BYTES)
                 if body is None:
-                    return self._send_json({"error": "expected JSON object"}, 400)
+                    return self._send_json({"error": detail or "expected JSON object"},
+                                           status or 400)
                 run_id = str(body.get("run_id") or "").strip()
                 if not run_id:
                     return self._send_json({"error": "run_id required"}, 400)
@@ -2924,8 +2953,10 @@ class Handler(BaseHTTPRequestHandler):
                 svc = MissionService()
                 try:
                     if path.endswith("/steer"):
-                        text = str(body.get("text") or "").strip()
-                        if not text:
+                        # The admitted bytes, not a stripped copy: leading and
+                        # trailing whitespace can be part of the instruction.
+                        text = str(body.get("text") or "")
+                        if not text.strip():
                             return self._send_json({"error": "text required"}, 400)
                         # Not sliced here: the service admits or refuses the
                         # instruction with a reason, so an over-length steer is
@@ -2940,6 +2971,8 @@ class Handler(BaseHTTPRequestHandler):
                     status = 200
                     if value.get("note_rejected"):
                         status = 400  # the caller's own input, not a missing run
+                    elif value.get("use"):
+                        status = 409  # the run exists; this is the wrong surface
                     elif value.get("error"):
                         status = 404
                     return self._send_json(value, status)
@@ -3576,15 +3609,25 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api/mission", "/api/mission/run", "/api/mission/confirm",
                         "/api/mission/pause", "/api/mission/resume", "/api/mission/cancel",
                         "/api/mission/continue", "/api/mission/accept", "/api/mission/check",
-                        "/api/mission/reconcile", "/api/mission/tick"):
+                        "/api/mission/reconcile", "/api/mission/tick",
+                        "/api/mission/note"):
                 # The NL front door: start/gate/carry a delegate mission from the chat.
                 # CSRF-gated like every state-changing route — a mission runs the model
                 # and can fire (gated) real-world actions, so a drive-by must never start one.
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                body = self._read_json(8192)
+                # A route that carries an instruction is sized for that
+                # instruction's real encoding, and an over-cap body is refused
+                # whole (413 with the limit) rather than parsed from a prefix.
+                from .mission import NOTE_BODY_MAX_BYTES
+                body, detail, status = self._read_json_sized(
+                    NOTE_BODY_MAX_BYTES if path in (
+                        "/api/mission", "/api/mission/note",
+                        "/api/mission/continue", "/api/mission/reconcile")
+                    else 8192)
                 if body is None:
-                    return self._send_json({"error": "bad body"}, 400)
+                    return self._send_json({"error": detail or "bad body"},
+                                           status or 400)
                 from . import settings
                 settings.apply()                          # run on the Settings-panel provider
                 from .missionweb import MissionService
@@ -3661,6 +3704,16 @@ class Handler(BaseHTTPRequestHandler):
                     mid = (body.get("id") or "").strip()
                     if not mid and path != "/api/mission/tick":
                         return self._send_json({"error": "id required"}, 400)
+                    if path == "/api/mission/note":
+                        # Add one requirement to a Mission already under way.
+                        # It never resumes anything and never runs the model:
+                        # the note is durable now and becomes scope at the
+                        # Mission's next safe boundary.
+                        out = svc.add_note(mid, body.get("text"),
+                                           body.get("client_id") or "")
+                        return self._send_json(
+                            {k: v for k, v in out.items() if k != "code"},
+                            200 if out.get("accepted") else int(out.get("code") or 409))
                     if path == "/api/mission/confirm":
                         nonce = (body.get("nonce") or "").strip()
                         if not nonce:
@@ -5254,7 +5307,13 @@ class Handler(BaseHTTPRequestHandler):
         if durable_external_boundary:
             if input_entry is not None:
                 journaled = journaled + [task_inbox.journal_message(input_entry)]
-                request_journaled = True
+            else:
+                # The initial live composer request needs the same write-ahead
+                # guarantee as a queued follow-up. Otherwise refresh shows an
+                # empty conversation until the worker returns, and a crash
+                # retains an external-action fence with no original request.
+                journaled = journaled + [{"role": "user", "content": user_msg}]
+            request_journaled = True
             try:
                 sessions.checkpoint(
                     sid, journaled, project="web", cwd=cwd, run_id=run_id,
