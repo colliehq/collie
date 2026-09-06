@@ -226,6 +226,8 @@
   .thread .t-state.running { color: var(--pine); }
   .thread .t-state.running::before { animation: tpulse 1.4s ease-in-out infinite; }
   .thread .t-state.failed { color: var(--coral); }
+  /* Terminal, but not finished: a turn/budget/output cap stopped the run part-way. */
+  .thread .t-state.paused { color: var(--amber); }
   .thread.r-running { border-left: 2px solid var(--pine); }
   @keyframes tpulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   .thread .t-acts { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; opacity: 0;
@@ -243,7 +245,10 @@
     display: flex; align-items: center; gap: 14px;
     padding: 12px 22px; border-bottom: 1px solid var(--line); background: var(--surface);
   }
-  .topbar h1 { font-size: 16px; margin: 0; }
+  /* The header names the thread you are in, so it carries a user-written title of any length.
+     Clamp it here or a long first sentence pushes the whole toolbar off the right edge. */
+  .topbar h1 { font-size: 16px; margin: 0; flex: 0 1 auto; min-width: 0; max-width: 46ch;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .topbar .spacer { flex: 1; }
   @media (max-width: 560px) {
     .topbar { padding: 10px 12px; gap: 6px; }
@@ -491,8 +496,14 @@
   .gate[data-state="verifying"]::before { background: var(--amber); }
   .gate[data-state="fail"]::before      { background: var(--coral); }
   .gate[data-state="pass"]::before       { background: var(--meadow); }
+  /* Work happened but nothing executable confirmed it. That is a neutral fact, not a failure —
+     and not the same thing as a task that never needed a check (which hides the card entirely). */
+  .gate[data-state="unverified"]::before { background: var(--amber); }
+  .gate[data-state="missing"]::before    { background: var(--coral); }
   .gate[data-state="pass"]  { border-color: color-mix(in srgb, var(--meadow) 40%, var(--line)); }
   .gate[data-state="fail"]  { border-color: color-mix(in srgb, var(--coral) 40%, var(--line)); }
+  .gate[data-state="unverified"] { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); }
+  .gate[data-state="missing"]    { border-color: color-mix(in srgb, var(--coral) 34%, var(--line)); }
 
   .ring { width: 38px; height: 38px; position: relative; flex: none; }
   .ring svg { width: 38px; height: 38px; transform: rotate(-90deg); }
@@ -505,8 +516,12 @@
                      stroke-dasharray: 60; stroke-dashoffset: 60; }
   .gate[data-state="idle"]      .ring .prog { stroke-dashoffset: 264; stroke: var(--faint); }
   .gate[data-state="none"]      .ring .prog { stroke-dashoffset: 0;   stroke: var(--azure); opacity: .5; }
-  .gate[data-state="working"]   .ring .prog { stroke: var(--azure); animation: spin 1.7s linear infinite; }
-  .gate[data-state="working"]::before { background: var(--azure); }
+  .gate[data-state="unverified"] .ring .prog { stroke-dashoffset: 0;  stroke: var(--amber); animation: none; }
+  .gate[data-state="missing"]    .ring .prog { stroke-dashoffset: 0;  stroke: var(--coral); animation: none; }
+  .gate[data-state="working"]   .ring .prog,
+  .gate[data-state="pending"]   .ring .prog { stroke: var(--azure); animation: spin 1.7s linear infinite; }
+  .gate[data-state="working"]::before,
+  .gate[data-state="pending"]::before { background: var(--azure); }
   .gate[data-state="verifying"] .ring .prog { stroke: var(--amber); animation: spin 1.1s linear infinite; }
   @keyframes spin { from{stroke-dashoffset:200;} 50%{stroke-dashoffset:70;} to{stroke-dashoffset:200; transform:rotate(360deg);} }
   .gate[data-state="fail"] .ring .prog { stroke-dashoffset: 0; stroke: var(--coral); animation: none; }
@@ -531,6 +546,8 @@
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .gate[data-state="fail"] .g-status { color: var(--coral); }
   .gate[data-state="pass"] .g-status { color: var(--meadow); }
+  .gate[data-state="unverified"] .g-status { color: var(--amber); }
+  .gate[data-state="missing"] .g-status { color: var(--coral); }
   .gate .g-sub { color: var(--muted); font-size: 11px; line-height: 1.35;
                  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .gate .g-sub code { font-family: var(--mono); font-size: 10px; background: var(--surface);
@@ -1262,6 +1279,15 @@
   .pack-summary code { font-family: var(--mono); font-size: 12px; }
   .pack-summary.fail { background: var(--coral-bg); border-color: color-mix(in srgb,var(--coral) 34%,transparent); }
   .pack-summary.warn { background: color-mix(in srgb,var(--amber) 12%,var(--surface-2)); border-color: color-mix(in srgb,var(--amber) 34%,transparent); }
+  /* A run stopped by a cap is not a failure and not a finished answer. It keeps the text it did
+     produce, names the cap in plain words, and offers the one safe next move where there is one. */
+  .stop-note { display: grid; gap: 7px; }
+  .stop-note .sn-why { color: var(--muted); font-size: 12px; }
+  .stop-note .sn-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .stop-note button { font: 600 12px var(--sans); color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 11px; cursor: pointer; }
+  .stop-note button:hover { background: var(--surface-2); }
+  .stop-note button[disabled] { opacity: .55; cursor: default; }
   .handoff-card { margin: 12px 0 8px 48px; max-width: 760px; border: 1px solid var(--line);
     border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
   .handoff-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex;
@@ -1628,6 +1654,7 @@
   .thread .t-state.running:before { content:""; display:inline-block; width:5px; height:5px; margin-right:5px;
     border-radius:50%; background:var(--meadow); animation:statusPulse 1.7s ease-in-out infinite; }
   .thread .t-state.failed { color:var(--coral); background:var(--coral-bg); }
+  .thread .t-state.paused { color:var(--amber); background:color-mix(in srgb,var(--amber) 14%,transparent); }
   .thread-group { padding:10px 7px 4px; color:var(--faint); font:650 8px var(--sans);
     letter-spacing:.11em; text-transform:uppercase; }
   .threads .empty { margin:8px 7px; padding:12px 9px; border:1px dashed var(--line);
@@ -3205,6 +3232,62 @@
     "failed": "失败",
     "verified": "已验证",
     "done": "完成",
+    "paused": "已暂停",
+    "turn limit": "轮次上限",
+    "budget limit": "预算上限",
+    "output limit": "输出长度上限",
+    "Stopped at the turn limit": "在轮次上限处停下",
+    "The run used every turn it was allowed, so the work above may be partway through.":
+      "本次运行用完了允许的全部轮次，上面的内容可能只完成了一部分。",
+    "Stopped at the budget limit": "在预算上限处停下",
+    "The run reached the spending limit set for it. Raising that limit is your decision, so Collie stopped rather than spending more.":
+      "本次运行达到了为它设定的花费上限。是否提高上限由你决定，因此 Collie 选择停下，而不是继续花费。",
+    "Stopped at the output limit": "在输出长度上限处停下",
+    "The reply reached its maximum length and was cut off before the end.":
+      "回答达到了最大长度，在写完之前被截断。",
+    "Continue this task": "继续这项任务",
+    "Continuing…": "正在继续…",
+    "Continue from where you stopped. Do not start over.": "从你停下的地方继续，不要重新开始。",
+    "Nothing was undone by stopping. Change this run's budget yourself if you want it to go further.":
+      "停下不会撤销已经完成的部分。如果希望它继续，请你自己调整本次运行的预算。",
+    "Changed work, not checked": "有改动，未经检查",
+    "Collie edited files but ran no check, so this result is unconfirmed.":
+      "Collie 修改了文件但没有运行检查，因此这个结果尚未得到确认。",
+    "Required check did not run": "必需的检查没有运行",
+    "Verification was set to required for this run, but no check was executed.":
+      "本次运行要求必须验证，但没有执行任何检查。",
+    "Required check pending": "等待必需的检查",
+    "This run must end with a named check; its result appears here.":
+      "本次运行必须以一项具名检查收尾；检查结果会显示在这里。",
+    "Investigating": "调查中",
+    "Investigated": "已调查",
+    "Investigation": "调查",
+    "starting…": "正在开始…",
+    "investigating…": "正在调查…",
+    "investigation started": "调查开始",
+    "investigation finished": "调查结束",
+    "Investigation ended": "调查已结束",
+    "{n} steps": "{n} 步",
+    "model calls": "次模型调用",
+    "tool calls": "次工具调用",
+    "finished": "已完成",
+    "could not finish": "未能完成",
+    "stopped at its turn limit": "在轮次上限处停下",
+    "stopped at its budget limit": "在预算上限处停下",
+    "stopped at its output limit": "在输出长度上限处停下",
+    "Shortening context": "正在压缩上下文",
+    "Shortened context": "上下文已压缩",
+    "summarizing earlier turns…": "正在总结较早的对话…",
+    "shortening context…": "正在压缩上下文…",
+    "context compaction started": "上下文压缩开始",
+    "context compaction": "上下文压缩",
+    "earlier turns summarized": "较早的对话已总结",
+    "full history restored": "已恢复完整历史",
+    "could not shorten — continuing with the full history": "未能压缩——继续使用完整历史",
+    "not needed": "无需压缩",
+    "no change": "没有变化",
+    "tokens": "tokens",
+    "{n} turns kept": "保留 {n} 轮",
     "queued": "排队中",
     "steering": "已插话",
     "run already finished — send again to start a new turn": "运行已结束——再发一次将开启新的一轮",
@@ -3434,6 +3517,62 @@
     "failed": "失敗",
     "verified": "已驗證",
     "done": "完成",
+    "paused": "已暫停",
+    "turn limit": "輪次上限",
+    "budget limit": "預算上限",
+    "output limit": "輸出長度上限",
+    "Stopped at the turn limit": "在輪次上限處停下",
+    "The run used every turn it was allowed, so the work above may be partway through.":
+      "本次執行用完了允許的全部輪次，上面的內容可能只完成了一部分。",
+    "Stopped at the budget limit": "在預算上限處停下",
+    "The run reached the spending limit set for it. Raising that limit is your decision, so Collie stopped rather than spending more.":
+      "本次執行達到了為它設定的花費上限。是否提高上限由你決定，因此 Collie 選擇停下，而不是繼續花費。",
+    "Stopped at the output limit": "在輸出長度上限處停下",
+    "The reply reached its maximum length and was cut off before the end.":
+      "回答達到了最大長度，在寫完之前被截斷。",
+    "Continue this task": "繼續這項任務",
+    "Continuing…": "正在繼續…",
+    "Continue from where you stopped. Do not start over.": "從你停下的地方繼續，不要重新開始。",
+    "Nothing was undone by stopping. Change this run's budget yourself if you want it to go further.":
+      "停下不會撤銷已經完成的部分。如果希望它繼續，請你自己調整本次執行的預算。",
+    "Changed work, not checked": "有改動，未經檢查",
+    "Collie edited files but ran no check, so this result is unconfirmed.":
+      "Collie 修改了檔案但沒有執行檢查，因此這個結果尚未得到確認。",
+    "Required check did not run": "必需的檢查沒有執行",
+    "Verification was set to required for this run, but no check was executed.":
+      "本次執行要求必須驗證，但沒有執行任何檢查。",
+    "Required check pending": "等待必需的檢查",
+    "This run must end with a named check; its result appears here.":
+      "本次執行必須以一項具名檢查收尾；檢查結果會顯示在這裡。",
+    "Investigating": "調查中",
+    "Investigated": "已調查",
+    "Investigation": "調查",
+    "starting…": "正在開始…",
+    "investigating…": "正在調查…",
+    "investigation started": "調查開始",
+    "investigation finished": "調查結束",
+    "Investigation ended": "調查已結束",
+    "{n} steps": "{n} 步",
+    "model calls": "次模型呼叫",
+    "tool calls": "次工具呼叫",
+    "finished": "已完成",
+    "could not finish": "未能完成",
+    "stopped at its turn limit": "在輪次上限處停下",
+    "stopped at its budget limit": "在預算上限處停下",
+    "stopped at its output limit": "在輸出長度上限處停下",
+    "Shortening context": "正在壓縮上下文",
+    "Shortened context": "上下文已壓縮",
+    "summarizing earlier turns…": "正在總結較早的對話…",
+    "shortening context…": "正在壓縮上下文…",
+    "context compaction started": "上下文壓縮開始",
+    "context compaction": "上下文壓縮",
+    "earlier turns summarized": "較早的對話已總結",
+    "full history restored": "已恢復完整歷史",
+    "could not shorten — continuing with the full history": "未能壓縮——繼續使用完整歷史",
+    "not needed": "無需壓縮",
+    "no change": "沒有變化",
+    "tokens": "tokens",
+    "{n} turns kept": "保留 {n} 輪",
     "queued": "排隊中",
     "steering": "已插話",
     "run already finished — send again to start a new turn": "執行已結束——再發一次將開啟新的一輪",
@@ -4066,7 +4205,8 @@
       img.onerror = function () { this.onerror = null; COLLIE_IDENTITY.avatarFailedFor = avatarUrl; this.src = "/logo.svg"; };
     });
     var surface = document.body.getAttribute("data-surface") || "today";
-    var section = surface === "today" ? t("Today") : (surface === "home" ? t("Task") : t("Home"));
+    var section = surface === "today" ? t("Today")
+      : (surface === "home" ? (currentTitle || t(currentSession ? "Task" : "New task")) : t("Home"));
     document.title = name === "Collie" ? "Collie · " + section : name + " · " + section;
   }
   function refreshCollieIdentity() {
@@ -5009,6 +5149,10 @@
 
   // ---- state ------------------------------------------------------------
   var currentSession = null, currentRun = null;
+  // The header names the thread you are in — the same label the sidebar shows, which is the user's
+  // own first sentence (or a rename). It is read off text already on the page or already returned by
+  // /api/sessions; naming a thread never costs a model call.
+  var currentTitle = "", SESSION_TITLES = {};
   var priorTurns = -1;   // user-turns before the running run; interrupt recovery's baseline (-1 = unknown)
   var es = null, running = false, runCanSteer = false, shownRunPlan = "",
       runStart = 0, tlCount = 0, diffCount = 0, streamRAF = 0;
@@ -5021,6 +5165,12 @@
     verifying: ["Checking evidence…", "Running the named check against the current result."],
     fail:      ["✗ Check failed", "The recorded check did not pass; Collie must repair the result or report it as inconclusive."],
     pass:      ["✓ Check passed", "The named check passed. Open Run details to inspect its scope and evidence."],
+    // Files changed and nothing executable confirmed them. A plain fact, stated neutrally — not a
+    // failure, and not the same as a task that had nothing to check.
+    unverified:["Changed work, not checked", "Collie edited files but ran no check, so this result is unconfirmed."],
+    // The run was explicitly set to REQUIRE a check, and none ran. That promise is worth keeping.
+    missing:   ["Required check did not run", "Verification was set to required for this run, but no check was executed."],
+    pending:   ["Required check pending", "This run must end with a named check; its result appears here."],
     none:      ["No executed check", "This run made no code edit or no relevant executable check was selected."]
   };
   function setGate(state, subOverride) {
@@ -5028,6 +5178,24 @@
     var pair = GATE[state] || GATE.idle;
     $("gateStatus").textContent = t(pair[0]);
     $("gateSub").innerHTML = subOverride ? esc(subOverride) : t(pair[1]);
+  }
+  // One rule for "what did this run's verification actually establish", used both live at the end of
+  // a run and when a finished thread is reopened. `idle` is display:none — a read-only informational
+  // answer has nothing to verify, so it gets no card rather than an empty one that reads as failure.
+  // Nothing here is inferred from the model's prose; only executed checks and observed edits count.
+  function settleGate(o) {
+    o = o || {};
+    var ev = o.evidence;
+    if (o.canceled) { setGate("none", t("Run stopped by the user.")); return "none"; }
+    if (ev && (ev.command || ev.cmd)) {
+      setGate(ev.passed === true ? "pass" : "fail", ev.command || ev.cmd);
+      return ev.passed === true ? "pass" : "fail";
+    }
+    if (o.verified === true) { setGate("pass"); return "pass"; }
+    if (o.checkFailed) { setGate("fail", o.checkCommand || undefined); return "fail"; }
+    if (o.required) { setGate("missing"); return "missing"; }
+    if (o.edited) { setGate("unverified"); return "unverified"; }
+    setGate("idle"); return "idle";
   }
 
   // ---- pills ------------------------------------------------------------
@@ -7314,7 +7482,7 @@
         .then(function (s) {
           var msgs = (s && s.messages) || [];
           var users = 0;
-          for (var i = 0; i < msgs.length; i++) if (msgs[i].role === "user") users++;
+          for (var i = 0; i < msgs.length; i++) if (msgs[i].role === "user" && msgs[i].source !== "harness") users++;
           var last = msgs[msgs.length - 1];
           // this run's own turn is saved, and it ends in an assistant answer -> done
           if (base >= 0 && users > base && last && last.role === "assistant" && answerText(last)) return finish();
@@ -7524,6 +7692,20 @@
     s.querySelector(".ts-target").textContent = target || "";
     if (result) s.querySelector(".ts-restext").textContent = result;
     flowEl.insertBefore(s, statusEl); scrollDown();
+    return s;                                // callers that keep updating one step need the node
+  }
+  // A step whose result line keeps changing while the work runs (a child investigation, a context
+  // compaction). Same shape as traceStep, but it always has a result row to write into.
+  function liveStep(icon, verb, target, result) {
+    var s = traceStep(icon, verb, target, result || " ", "");
+    return s ? {
+      set: function (text, cls, verbText, targetText) {
+        var r = s.querySelector(".ts-restext"); if (r) r.textContent = text || "";
+        if (verbText != null) s.querySelector(".ts-verb").textContent = verbText;
+        if (targetText != null) s.querySelector(".ts-target").textContent = targetText;
+        s.className = "trace-step" + (cls ? " " + cls : "");
+      }
+    } : null;
   }
   // one place mapping a tool call -> {verb, target}, cc-style (Read file.py, Bash <cmd>, Grep <pat>…)
   function ccLabel(name, args) {
@@ -7678,6 +7860,10 @@
     if (r.state === "canceling") return t("stopping…");
     if (r.state === "canceled") return t("stopped");
     if (r.state === "failed") return t("failed");
+    // A run halted by a cap is terminal but NOT finished. `state` stays "done" for every existing
+    // consumer; the row says what actually happened.
+    var label = RUN_STATE_LABEL[r.stop_reason || ""];
+    if (label && isUnfinished(r)) return t("paused") + " · " + t(label);
     return r.verified ? t("verified") : t("done");
   }
   function pollRuns() {
@@ -7733,6 +7919,13 @@
       // an opened conversation restore the full list through their own loadSessions() call.
       if (document.body.getAttribute("data-surface") === "today") list = list.slice(0, 6);
       if (!list.length) { box.innerHTML = '<div class="empty">' + esc(t("Your recent work will appear here.")) + '</div>'; return; }
+      // The server derives a thread's name from its first user message (or a rename). Cache it so
+      // the header can show the same label the sidebar does, including after a rename.
+      list.forEach(function (s) {
+        var known = cleanThreadTitle(s.title || s.last);
+        if (known && known !== t("Untitled task")) SESSION_TITLES[s.id] = known;
+      });
+      if (currentSession && SESSION_TITLES[currentSession]) setThreadTitle(SESSION_TITLES[currentSession]);
       var lastGroup = "";
       list.forEach(function (s) {
         var group = recentThreadGroup(s.updated);
@@ -7748,11 +7941,12 @@
         if (s.id === currentSession) el.setAttribute("aria-current", "true");
         var rs = liveRuns[s.id];
         if (rs) el.className += " r-" + rs.state;
+        var stateClass = rs ? rs.state + (isUnfinished(rs) ? " paused" : "") : "";
         el.innerHTML = '<div class="t-last">' + esc(threadTitle) + '</div>' +
           // What this thread is doing right now, decided by the server rather than by whether this
           // window happens to be the one watching it. Without it, a run started here and left, or
           // started from the phone, is invisible — and invisible work is work you start twice.
-          (rs ? '<div class="t-state ' + rs.state + '">' + esc(runLabel(rs)) + '</div>' : '') +
+          (rs ? '<div class="t-state ' + stateClass + '">' + esc(runLabel(rs)) + '</div>' : '') +
           '<div class="t-turns">' + (s.turns || 0) + ' ' + esc(t(s.turns === 1 ? "turn" : "turns")) + '</div>' +
           '<div class="t-acts">' +
           '<button class="t-act" data-a="rename" title="Rename" aria-label="Rename thread">✎</button>' +
@@ -7798,29 +7992,67 @@
     finishRunUI();                       // this window goes idle; the run does not
   }
 
+  // Re-state a reopened thread's last run from its durable receipt: what was checked, and whether
+  // the run actually reached the end. Only recorded facts are used — a receipt that never carried
+  // an `edited` flag stays silent rather than guessing at what the run touched.
+  function restoreLastOutcome(id, receipt) {
+    if (!receipt) return;
+    var decision = receipt.decision || {}, evidence = receipt.verification_evidence;
+    settleGate({
+      canceled: !!receipt.canceled,
+      edited: !!receipt.edited,
+      verified: !!receipt.verified,
+      evidence: (evidence && (evidence.command || evidence.cmd)) ? evidence : null,
+      required: runRequiresCheck({ verification: decision.verification, intent: decision.intent })
+    });
+    if (!isUnfinished(receipt)) return;
+    showTerminalRunState(receipt);
+    var bubbles = $("log").querySelectorAll(".msg.assistant .bubble");
+    if (bubbles.length) addStopNote(receipt, bubbles[bubbles.length - 1], id);
+  }
+
   function openSession(id) {
     detachRun();
+    var loadToken = routeToken;
     currentSession = id;
+    currentTitle = SESSION_TITLES[id] || "";     // sidebar label first; the transcript refines it below
     if (typeof setProductNav === "function") setProductNav("home");
     if (typeof setActivityOpen === "function") setActivityOpen(false);
     if (typeof setLibraryOpen === "function") setLibraryOpen(false);
     clearTimeline(); setGate("idle"); NOW.reset();
     setReceipt({}); loadSessions();
     $("log").innerHTML = "";
-    fetch("/api/session/" + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (s) {
-      var msgs = (s && s.messages) || [];
+    Promise.all([
+      fetch("/api/session/" + encodeURIComponent(id)).then(function (r) { return r.json(); }),
+      fetch("/api/runs").then(function (r) { return r.json(); })
+    ]).then(function (loaded) {
+      if (currentSession !== id || routeToken !== loadToken) return;
+      var s = loaded[0], run = ((loaded[1] || {}).runs || []).filter(function (row) {
+        return row.session === id;
+      })[0];
+      if (run) liveRuns[id] = run; else delete liveRuns[id];
+      var msgs = (s && s.messages) || [], firstAsk = "";
       msgs.forEach(function (m) {
-        if (m.role === "user" && typeof m.content === "string") addMsg("user", m.content);
-        else if (m.role === "assistant" && m.content) {
-          var t = addMsg("assistant", ""); renderMd(t, m.content); addCopy(t, m.content);
+        if (m.role === "user" && m.source !== "harness" && typeof m.content === "string") {
+          if (!firstAsk) firstAsk = m.content;
+          addMsg("user", m.content);
+        } else if (m.role === "assistant" && m.content) {
+          var el = addMsg("assistant", ""); renderMd(el, m.content); addCopy(el, m.content);
         }
       });
+      // A reopened thread is named by the same first sentence the sidebar uses. No rename stored and
+      // no cached row (deep link, fresh reload) still has to produce the right header.
+      if (!SESSION_TITLES[id] && firstAsk) setThreadTitle(firstAsk);
       var receipts = (s && s.run_receipts) || [], latestArtifactIntent = "";
       for (var ri = receipts.length - 1; ri >= 0; ri--) {
         var rd = receipts[ri] && receipts[ri].decision;
         if (rd && (rd.intent === "plan" || rd.intent === "review")) { latestArtifactIntent = rd.intent; break; }
       }
       if (latestArtifactIntent) loadHandoffArtifact(id, latestArtifactIntent);
+      // Reopening a thread must say the same thing about its last run as watching it live did:
+      // which check ran, and whether the run actually finished. Reading a stale "DONE" over a
+      // half-finished answer is the whole reason a person asks for the same work twice.
+      restoreLastOutcome(id, receipts[receipts.length - 1]);
       scrollDown();
       // Reopening a thread that is STILL WORKING must not look like reading a finished one. The
       // saved file holds the PREVIOUS turn mid-run — the last thing written, not what is happening
@@ -7854,8 +8086,9 @@
     try {
       src = new EventSource("/api/mirror?session=" + encodeURIComponent(sid) +
                             "&token=" + encodeURIComponent(CT));
+      es = src; // detachRun owns every stream opened by this window, including mirrors.
     } catch (e) { return; }
-    function stop() { if (src) { try { src.close(); } catch (e) {} src = null; } }
+    function stop() { if (src) { try { src.close(); } catch (e) {} if (es === src) es = null; src = null; } }
     // The bus hands over what already happened before this window arrived. Those events are history,
     // not news: rendering them as live activity would make a run look like it was doing ten things
     // in the same instant you opened it.
@@ -7877,7 +8110,7 @@
           NOW.act(toolIcon(d.name), lab.verb, lab.target, ev);
         } catch (e) {}
       });
-    }).catch(function (e) { b.textContent = ""; missionError(card, e, "Could not load missions"); });
+    });
     src.addEventListener("permission", function (m) {
       if (currentSession !== sid) { stop(); return; }
       try { addPermission(JSON.parse(m.data || "{}"), sid); pstat("waiting for you…"); } catch (e) {}
@@ -7894,7 +8127,8 @@
       stop();
       if (currentSession !== sid) return;
       if(d.canceled)addEvent("meta","flag",t("run cancelled"),t("the run emitted its final canceled verdict"));
-      if(liveRuns[sid])liveRuns[sid].state=d.canceled?"canceled":(d.error?"failed":"done");
+      if(liveRuns[sid]){liveRuns[sid].state=d.canceled?"canceled":(d.error?"failed":"done");
+        liveRuns[sid].stop_reason=stopReason(d);}
       if (note && note.parentNode) note.parentNode.removeChild(note);
       curMsg = flowEl = statusEl = pstatEl = curTextEl = null;   // drop the follow bubble
       finishRunUI();
@@ -8126,11 +8360,11 @@
   }
   function prepareTaskCanvas() {
     if (!$("todayDashboard")) { setProductNav("home"); return; }
-    currentSession = null; currentRun = null;
+    currentSession = null; currentRun = null; currentTitle = "";
     $("log").innerHTML = WELCOME_HTML; applyLang(); renderCollieIdentity(); setProductNav("home");
   }
   function showToday(userRequested) {
-    detachRun(); currentSession = null; currentRun = null; queuedFollowUps = [];
+    detachRun(); currentSession = null; currentRun = null; queuedFollowUps = []; currentTitle = "";
     clearAttached(); clearManualIdeContexts(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     $("log").innerHTML = TODAY_HTML; applyLang(); renderCollieIdentity();
     setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setProductNav("today");
@@ -8143,18 +8377,40 @@
   }
   new MutationObserver(syncHomeState).observe($("log"), { childList:true, subtree:true });
   document.body.setAttribute("data-surface", "today"); syncHomeState();
+  var SURFACE_TITLES = { today: "Today", home: "New task", missions: "Tasks", live: "Live Copilot",
+    pack: "Devices & team", online: "Sync & cloud", library: "Apps & connections",
+    activity: "System activity", needsYou: "Needs You" };
+  function applyPageTitle(id) {
+    var el = $("pageTitle"); if (!el) return;
+    // A conversation is named by its own first sentence, not by the generic surface label. "New
+    // task" is only true until there IS a task; leaving it up afterwards makes the header disagree
+    // with the sidebar row for the very thread you are reading.
+    if (id === "home" && currentTitle) { el.textContent = currentTitle; el.title = currentTitle; return; }
+    var key = SURFACE_TITLES[id];
+    if (id === "home" && currentSession) key = "Task";
+    if (!key) return;
+    el.textContent = t(key); el.title = "";
+  }
+  // Adopt a thread name from text the user already wrote (or a rename already stored). Empty
+  // clears it, which is what "New task" means.
+  function setThreadTitle(value) {
+    var next = value ? cleanThreadTitle(value) : "";
+    if (next === t("Untitled task")) next = "";
+    if (next === currentTitle) return;
+    currentTitle = next;
+    if (document.body.getAttribute("data-surface") === "home") { applyPageTitle("home"); renderCollieIdentity(); }
+  }
   function setProductNav(id) {
     document.body.setAttribute("data-surface", id);
     var selectedNav = id === "today"
       ? "navHome"
       : (id === "home" ? "" : "nav" + id.charAt(0).toUpperCase() + id.slice(1));
     document.querySelectorAll(".side-nav-item").forEach(function (node) {
-      node.classList.toggle("on", node.id === selectedNav);
+      node.classList.toggle("on", !!selectedNav && node.id === selectedNav);
     });
     var sideMore = $("sideMore");
     if (sideMore) sideMore.open = ["pack", "online", "activity"].indexOf(id) >= 0;
-    var titles = { today: "Today", home: currentSession ? "Task" : "New task", missions: "Tasks", live: "Live Copilot", pack: "Devices & team", online: "Sync & cloud", library: "Apps & connections", activity: "System activity", needsYou: "Needs You" };
-    var title = $("pageTitle"); if (title && titles[id]) title.textContent = t(titles[id]);
+    applyPageTitle(id);
     var input = $("input"); if (input && !running) input.placeholder = t(id === "today" ?
       "Ask about today, or tell Collie what to handle…" : "Describe the outcome you want…");
     renderCollieIdentity();
@@ -8167,7 +8423,7 @@
   }
   function newThread(userRequestedFocus) {
     detachRun();                         // start a second thing while the first one runs
-    currentSession = null; currentRun = null;
+    currentSession = null; currentRun = null; currentTitle = "";
     queuedFollowUps = []; clearAttached(); clearManualIdeContexts();
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     setProductNav("home"); setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
@@ -8681,6 +8937,10 @@
     input.value = ""; input.style.height = "auto";
     var userTextEl = addMsg("user", q, imgs); // show text + attached image thumbnails
     var userMsgEl = userTextEl && userTextEl.closest ? userTextEl.closest(".msg") : null;
+    // The thread takes its name from its first request, the moment that request is made — the same
+    // rule the server uses when it writes the file, so the header and the sidebar never disagree
+    // and no title ever costs a model call.
+    if (!currentTitle) setThreadTitle(q);
     clearAttached(); clearManualIdeContexts();
     // The classifying head handles only chat/code. Mission is slash-command-only.
     if (forced) runConfig.route_kind = forced;
@@ -8705,6 +8965,111 @@
     });
   }
 
+  // How a finished child investigation is described in one phrase. Its own stop reason, in the same
+  // vocabulary the parent run uses for itself.
+  var DELEGATE_STATUS = {
+    completed: "finished", canceled: "stopped", error: "could not finish",
+    turn_limit: "stopped at its turn limit", budget_limit: "stopped at its budget limit",
+    output_limit: "stopped at its output limit"
+  };
+  // What happened to the run's own context housekeeping. None of these are task outcomes.
+  var COMPACTION_END = {
+    applied: "earlier turns summarized",
+    restored: "full history restored",
+    failed: "could not shorten — continuing with the full history",
+    skipped: "not needed",
+    ignored: "no change"
+  };
+  function compactionDetail(d) {
+    var parts = [];
+    if (d.before_tokens != null && d.after_tokens != null) {
+      parts.push(fmtInt(d.before_tokens) + " → " + fmtInt(d.after_tokens) + " " + t("tokens"));
+    }
+    if (d.kept != null) parts.push(t("{n} turns kept").replace("{n}", d.kept));
+    return parts.join(" · ");
+  }
+  // Same rule the server uses to decide whether it owes this run an executed check.
+  function runRequiresCheck(config) {
+    config = config || {};
+    return config.verification === "required" || config.intent === "test";
+  }
+
+  // ---- terminal outcome -------------------------------------------------
+  // The run's own verdict, in the run's own vocabulary. Before stop_reason existed the page could
+  // only tell an error from a cancellation, so a run halted by a turn or budget cap was presented
+  // as DONE — a finished answer that was really a half-finished one.
+  var STOP_REASONS = ["completed", "canceled", "error", "turn_limit", "budget_limit", "output_limit"];
+  function stopReason(d) {
+    d = d || {};
+    var reason = String(d.stop_reason || "");
+    if (STOP_REASONS.indexOf(reason) >= 0) return reason;
+    if (d.canceled) return "canceled";
+    if (d.error) return "error";
+    if (d.turns_exhausted) return "turn_limit";
+    if (d.budget_exhausted) return "budget_limit";
+    // Receipts written before stop_reason reported only the cap they hit.
+    if (d.max_turns && d.turns != null && d.turns >= d.max_turns) return "turn_limit";
+    return "completed";
+  }
+  function isUnfinished(d) {
+    var reason = stopReason(d);
+    return reason !== "completed" && reason !== "canceled" && reason !== "error";
+  }
+  var RUN_STATE_LABEL = { canceled: "stopped", error: "failed", turn_limit: "turn limit",
+                          budget_limit: "budget limit", output_limit: "output limit" };
+  function showTerminalRunState(d) {
+    var label = RUN_STATE_LABEL[stopReason(d)];
+    if (label) setRunState(label, false);
+  }
+  // Copy for each way a run can stop short of finishing. `resume` says whether simply asking for
+  // another turn is a safe next move; a budget cap is not, because only the user can decide to
+  // spend more, and Collie must never quietly raise it.
+  var STOP_NOTE = {
+    turn_limit: { title: "Stopped at the turn limit", resume: true,
+                  why: "The run used every turn it was allowed, so the work above may be partway through." },
+    budget_limit: { title: "Stopped at the budget limit", resume: false,
+                    why: "The run reached the spending limit set for it. Raising that limit is your decision, so Collie stopped rather than spending more." },
+    output_limit: { title: "Stopped at the output limit", resume: true,
+                    why: "The reply reached its maximum length and was cut off before the end." }
+  };
+  function addStopNote(d, flow, session) {
+    var copy = STOP_NOTE[stopReason(d)];
+    if (!copy || !flow) return null;
+    var box = document.createElement("div");
+    box.className = "pack-summary warn stop-note";
+    var counts = [];
+    if (d.turns != null) counts.push(d.turns + (d.max_turns ? "/" + d.max_turns : "") + " " +
+                                     t(d.turns === 1 ? "turn" : "turns"));
+    if (d.model_calls) counts.push(d.model_calls + " " + t("model calls"));
+    box.innerHTML = '<div><b>⏸ ' + esc(t(copy.title)) + '</b>' +
+                    (counts.length ? ' · ' + esc(counts.join(" · ")) : '') + '</div>' +
+                    '<div class="sn-why">' + esc(t(copy.why)) + '</div>' +
+                    '<div class="sn-acts"></div>';
+    var acts = box.querySelector(".sn-acts");
+    if (copy.resume) {
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.textContent = t("Continue this task");
+      btn.onclick = function () { continueRun(session, btn); };
+      acts.appendChild(btn);
+    } else {
+      acts.innerHTML = '<span class="sn-why">' +
+        esc(t("Nothing was undone by stopping. Change this run's budget yourself if you want it to go further.")) +
+        '</span>';
+    }
+    flow.appendChild(box);
+    return box;
+  }
+  // Resume as one more user turn in the SAME thread, sent once, by hand. Nothing here re-runs a
+  // tool, replays a queued follow-up or lifts a limit; the thread's own history is the context.
+  function continueRun(session, btn) {
+    if (running || routePending) return;
+    if (session && currentSession !== session) return;   // the user moved on; do not send elsewhere
+    if (btn) { btn.disabled = true; btn.textContent = t("Continuing…"); }
+    var input = $("input");
+    input.value = t("Continue from where you stopped. Do not start over.");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    send();
+  }
   // the interactive stream run (chat/code) — extracted so the classifying head can gate it
   function runStream(q, imgs, runConfig, runSession, userMsgEl, contexts) {
     var input = $("input");
@@ -8714,7 +9079,10 @@
 
     // reset live surfaces for this run
     clearTimeline(); setReceipt({});
-    setGate("working");                 // neutral while exploring — NOT "verifying" until an edit
+    // The evidence card is about checks. A run that has not touched anything yet has no checks to
+    // report, so it stays out of the way until an edit or a check actually happens — unless this
+    // run was explicitly set to require one, which is a promise worth showing from the start.
+    setGate(runRequiresCheck(runConfig) ? "pending" : "idle");
     setRunState("running", true);
     running = true; runCanSteer = false; shownRunPlan = ""; currentRun = null; runStart = Date.now();
     var thisLaunch = ++streamLaunchToken;
@@ -8730,6 +9098,7 @@
     if (thisLaunch !== streamLaunchToken || !running) return;
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false,
         packCardEl = null, packRows = [];
+    var delegateEl = null, delegateActs = 0, compactEl = null;
 
     var intent = runConfig.intent, quality = runConfig.quality,
         verification = runConfig.verification, workspace = runConfig.workspace,
@@ -8814,6 +9183,10 @@
                : nm.indexOf("read") >= 0 ? "read"
                : nm.indexOf("bash") >= 0 || nm.indexOf("exec") >= 0 ? "bash" : "search";
       NOW.act(toolIcon(d.name), lab.verb, lab.target, kind);
+      // A successful write IS a change to the user's files, whoever reported it. Older receipts and
+      // external workers do not always emit a separate `edit` frame, and the evidence card must not
+      // call such a run read-only.
+      if (kind === "edit" && d.ok !== false) sawEdit = true;
       var f0 = a.path || a.file_path || a.file;
       if (f0) NOW.touch(f0, kind === "edit" ? "edit" : kind === "read" ? "read" : "seen");
       else if (a.command) NOW.bash(a.command);
@@ -8865,6 +9238,74 @@
       setGate(d.passed ? "pass" : "fail", d.cmd || undefined);   // evidence: WHICH command went green/red
       NOW.act(d.passed ? "✓" : "✗", d.passed ? "Repro passed" : "Repro failed",
               d.cmd || "", d.passed ? "pass" : "fail");
+    });
+
+    // ---- delegated investigation ---------------------------------------------------------
+    // A child run is real work the user is waiting on, and it used to be a silent gap in the middle
+    // of a task. What is shown is that it is happening and how far along it is — never the child's
+    // transcript, which belongs to the parent's reasoning and not to this conversation.
+    es.addEventListener("delegate_start", function (e) {
+      var d = JSON.parse(e.data);
+      delegateEl = liveStep("◇", t("Investigating"), (d.task || "").slice(0, 120),
+                            t("starting…"));
+      delegateActs = 0;
+      pstat(t("investigating…"));
+      addEvent("meta", "flag", t("investigation started"),
+               (d.model || "") + (d.task ? " · " + String(d.task).slice(0, 120) : ""));
+      NOW.act("◇", t("Investigating"), (d.task || "").slice(0, 60), "search");
+    });
+
+    es.addEventListener("delegate_progress", function (e) {
+      var d = JSON.parse(e.data);
+      if (!delegateEl) return;                       // progress without a start frame: nothing to fill
+      if (d.event === "tool") delegateActs++;
+      var turns = (d.turns == null) ? null : Number(d.turns);
+      // Counts and the tool name only. The child's arguments and output stay inside the parent run.
+      delegateEl.set([t("{n} steps").replace("{n}", delegateActs),
+                      d.tool ? d.tool : (d.event || ""),
+                      turns == null ? "" : turns + " " + t(turns === 1 ? "turn" : "turns")]
+                     .filter(Boolean).join(" · "),
+                     d.ok === false ? "bad" : "");
+      pstat(t("investigating…"));
+    });
+
+    es.addEventListener("delegate_done", function (e) {
+      var d = JSON.parse(e.data);
+      var status = d.status || "completed", ok = status === "completed";
+      var counts = [(d.turns || 0) + " " + t(d.turns === 1 ? "turn" : "turns"),
+                    (d.model_calls || 0) + " " + t("model calls"),
+                    (d.tool_calls || 0) + " " + t("tool calls")].join(" · ");
+      if (delegateEl) {
+        delegateEl.set(t(DELEGATE_STATUS[status] || "Investigation ended") + " · " + counts,
+                       ok ? "ok" : "bad", t(ok ? "Investigated" : "Investigation"));
+      }
+      addEvent("meta", ok ? "ok" : "bad", t("investigation finished"),
+               status + " · " + counts, ok ? "" : "bad");
+      delegateEl = null; pstat("thinking…");
+    });
+
+    // ---- context compaction ---------------------------------------------------------------
+    // Compaction is housekeeping the run does to keep going. It is worth seeing while it happens,
+    // and its FAILURE is not the task's failure — the run simply carries on with the full history.
+    es.addEventListener("compaction", function (e) {
+      var d = JSON.parse(e.data), status = d.status || "started";
+      var detail = compactionDetail(d);
+      if (status === "started") {
+        compactEl = liveStep("⌂", t("Shortening context"), "", t("summarizing earlier turns…"));
+        pstat(t("shortening context…"));
+        addEvent("meta", "flag", t("context compaction started"), detail);
+        return;
+      }
+      var copy = COMPACTION_END[status] || COMPACTION_END.ignored;
+      // Deliberately never styled as an error: whatever compaction did or did not manage, the run
+      // itself is unaffected, and a red step here would read as "the task went wrong".
+      var compactTitle = t(status === "applied" || status === "restored" ?
+                           "Shortened context" : "context compaction");
+      if (compactEl) compactEl.set(t(copy) + (detail ? " · " + detail : ""), "", compactTitle);
+      else liveStep("⌂", compactTitle, "", t(copy) + (detail ? " · " + detail : ""));
+      addEvent("meta", "flag", t("context compaction") + " · " + status,
+               [t(copy), detail, d.reason || ""].filter(Boolean).join(" · "));
+      compactEl = null; pstat("thinking…");
     });
 
     es.addEventListener("receipt", function (e) {
@@ -9016,37 +9457,45 @@
                        : t("no files changed"));
           flowEl.appendChild(br);
         }
-        if (d.max_turns && d.turns >= d.max_turns) {
-          var cap = document.createElement("div"); cap.className = "pack-summary";
-          cap.innerHTML = "⏱ <b>Turn limit reached</b> (" + d.turns + "/" + d.max_turns +
-                          ") — the run stopped mid-task; the text above may be a plan, not a result. " +
-                          "Reply “continue” to resume.";
-          flowEl.appendChild(cap);
-        }
+        // Stopped at a cap rather than finished. The text above is kept — it is real work — but it
+        // is labelled for what it is, and resuming is offered only where resuming is safe.
+        addStopNote(d, flowEl, d.session || currentSession);
       }
       pstatEl = curTextEl = null; curMsg = flowEl = null;
       // settle the gate on the final truth — TRUST the backend's verified signal (from the
       // receipt) over the client's own event bookkeeping, so a passing repro shows green.
-      if (d.canceled) setGate("none",t("Run stopped by the user."));
-      else if (d.pack) {
+      if (d.pack) {
         var wa = d.winner != null && d.attempts && d.attempts[d.winner];
         var wv = !!(wa && (wa.verified || wa.check_pass === true));
         setGate(d.winner == null ? "fail" : (wv ? "pass" : "none"),
                 d.winner == null ? "No attempt passed — Collie applied nothing." :
                 (wv ? null : "A winner was chosen, but no attempt's reproduction ran green."));
+      } else {
+        settleGate({
+          canceled: d.canceled,
+          // `edited` is the run's own answer where the receipt carries it; older receipts and
+          // external workers are covered by the edit/write events this window actually saw.
+          edited: !!d.edited || sawEdit,
+          verified: runVerified || !!d.verified,
+          evidence: (d.verification_evidence &&
+                     (d.verification_evidence.command || d.verification_evidence.cmd))
+                    ? d.verification_evidence : null,
+          checkFailed: sawEdit && sawRepro && !lastReproPass,
+          required: runRequiresCheck(runConfig)
+        });
       }
-      else if (runVerified) setGate("pass");
-      else if (!sawEdit) setGate("none");
-      else if (sawRepro) setGate(lastReproPass ? "pass" : "fail");
-      else setGate("none", "An edit was made but no reproduction ran — Collie could not confirm it green.");
       // The terminal frame is newer than the 2.5s registry poll.  Update the
       // sidebar's local mirror before redrawing it, otherwise a finished run is
       // briefly labelled "working" beside an already-idle conversation.
       if (currentSession && liveRuns[currentSession]) {
         liveRuns[currentSession].state = d.canceled ? "canceled" : (d.error ? "failed" : "done");
+        liveRuns[currentSession].stop_reason = stopReason(d);
         liveRuns[currentSession].verified = !!d.verified;
       }
       finishStreamUI();
+      // finishRunUI() resets the pill to "idle", which is true of this window but not of the run:
+      // a cap or an error is a verdict worth leaving on screen until the next thing starts.
+      showTerminalRunState(d);
       if (!d.error && !d.canceled) loadHandoffArtifact(d.session, intent);
       loadSessions();
       window.setTimeout(drainQueuedFollowUp, 0);

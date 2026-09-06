@@ -457,7 +457,8 @@ def _read_line(console, have_rich):
         return None
 
 
-def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=None):
+def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=None,
+            cwd_explicit=False):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
     from .cli import (apply_turn_decision, make_harness, resolve_turn_decision,
                       turn_decision_receipt)
@@ -481,8 +482,17 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
             return None, "no such session: %s" % rid
         return checked.get("session"), ""
 
-    sid = resume or (sess.latest() if cont else None) or sess.new_id()
-    loaded, resume_error = checked_resume(sid) if (resume or cont) else (None, "")
+    resume_id = resume or (sess.latest() if cont else None)
+    sid = resume_id or sess.new_id()
+    loaded, resume_error = checked_resume(sid) if resume_id else (None, "")
+    if not resume_error:
+        try:
+            cwd = sess.resolve_cwd(loaded, requested=cwd if cwd_explicit else None,
+                                   fallback=cwd)
+            if loaded and cwd_explicit:
+                sess.relocate(sid, cwd)
+        except ValueError as exc:
+            resume_error = str(exc)
     if resume_error:
         message = "collie refused to resume %s: %s" % (sid, resume_error)
         console.print("[red]%s[/red]" % message) if have_rich else print(message)
@@ -500,7 +510,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
     if goal:
         h.memory.set_block("project:" + project, "goal", goal[:390], char_limit=400)
 
-    prior = sum(1 for m in history if m.get("role") == "user")
+    prior = sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness")
     ui.banner(sid, provider, model, prior, cwd)
 
     # ONE stdin owner for the whole session (only on a real TTY — piped input stays on _read_line so
@@ -540,11 +550,26 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 rid = parts[1].strip() if len(parts) > 1 else sess.latest()
                 s, resume_error = checked_resume(rid)
                 if s:
+                    try:
+                        resumed_cwd = sess.resolve_cwd(s, fallback=cwd)
+                        if os.path.normcase(resumed_cwd) != os.path.normcase(cwd):
+                            next_gate = default_gate(resumed_cwd)
+                            next_h = make_harness(
+                                resumed_cwd, provider=provider, model=model, project=project,
+                                code_search=True, web_search=True, exec_code=True, delegate=True,
+                                gate=next_gate)
+                            h.memory.close(); h.recorder.close()
+                            h, _gate, cwd = next_h, next_gate, resumed_cwd
+                    except Exception as exc:
+                        resume_error = "could not open session workspace: %s" % exc
+                        s = None
+                if s:
                     history, receipts, sid = (s.get("messages") or [],
                                               list(s.get("run_receipts") or []), rid)
                     h.checkpoint_scope = "session:" + sid
-                    msg = "resumed %s (%d prior turns)" % (
-                        sid, sum(1 for m in history if m.get("role") == "user"))
+                    saved = True
+                    msg = "resumed %s (%d prior turns) · %s" % (
+                        sid, sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness"), cwd)
                 else:
                     msg = resume_error or "no such session: %s" % rid
                 if have_rich:
@@ -680,8 +705,9 @@ def main(argv=None):
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
     model = configured_model_for(
         provider, args.model, provider_was_explicit=bool(args.provider))
-    return run_tui(args.cwd or os.getcwd(), provider, model, project=args.project,
-                   resume=args.resume, cont=args.cont, goal=args.goal)
+    return run_tui(args.cwd, provider, model, project=args.project,
+                   resume=args.resume, cont=args.cont, goal=args.goal,
+                   cwd_explicit=bool(args.cwd))
 
 
 if __name__ == "__main__":

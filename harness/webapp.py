@@ -949,7 +949,7 @@ class Handler(BaseHTTPRequestHandler):
             cls._runs[sid] = {"session": sid, "state": "running", "started": time.time(),
                               "ask": (ask or "")[:120], "cwd": cwd, "turns": 0,
                               "verified": None, "error": "", "ended": None,
-                              "run": run_id, "cancel_requested": None}
+                              "stop_reason": "", "run": run_id, "cancel_requested": None}
             cls._cancel_events[sid] = (run_id, cancel)
             return run_id
 
@@ -962,6 +962,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @classmethod
     def _run_end(cls, sid, res=None, error="", canceled=False, run_id=None):
+        from .recorder import run_stop_reason      # outside the lock: never import while holding it
         with cls._runs_lock:
             r = cls._runs.get(sid)
             # First verdict wins. The success path records the real one and the `finally` guard runs
@@ -972,8 +973,22 @@ class Handler(BaseHTTPRequestHandler):
             entry = cls._cancel_events.get(sid)
             was_canceled = bool(canceled or getattr(res, "canceled", False)
                                 or (entry and entry[0] == r.get("run") and entry[1].is_set()))
+            # A run halted by a turn, budget or output cap is terminal but NOT finished, and `state`
+            # alone cannot say so: it has exactly three verdicts and every consumer (sidebar, mobile
+            # cancel watcher, wallpaper) already branches on them. So the enum is left untouched and
+            # the run's own stop reason is published beside it. Without this, an unfinished answer is
+            # listed as "done", which is how a person ends up asking for the same work twice.
+            if was_canceled:
+                reason = "canceled"
+            elif error or getattr(res, "error", ""):
+                reason = "error"
+            elif res is not None:
+                reason = run_stop_reason(res)
+            else:
+                reason = "completed"
+            r["stop_reason"] = reason
             r["state"] = ("canceled" if was_canceled else
-                          ("failed" if (error or getattr(res, "error", "")) else "done"))
+                          ("failed" if reason == "error" else "done"))
             r["error"] = ("canceled by user" if was_canceled else
                           (error or getattr(res, "error", "") or "")[:200])
             r["ended"] = time.time()
@@ -4724,7 +4739,8 @@ class Handler(BaseHTTPRequestHandler):
         # content-addressed and is never reconstructed from mutable UI state.
         decision_payload["run_plan"] = run_plan
         start_d = {"session": sid, "run": run_id, "provider": prov, "cwd": cwd,
-                   "prior_turns": sum(1 for m in history if m.get("role") == "user"),
+                   "prior_turns": sum(1 for m in history if m.get("role") == "user"
+                                      and m.get("source") != "harness"),
                    "intent": run_opts["intent"], "quality": run_opts["quality"],
                    "verification": run_opts["verification"], "workspace": workspace,
                    "strategy": strategy, "model": decision.model,

@@ -231,6 +231,44 @@ def _merge_messages(old, new):
     return merged
 
 
+def resolve_cwd(session=None, requested=None, fallback=None):
+    """Resolve the execution root before creating tools, gates or project memory.
+
+    An explicit directory wins. Otherwise a resumed thread belongs to its saved
+    workspace, even when the terminal was opened somewhere else. A missing saved
+    workspace is an actionable error, never a reason to run in an unrelated tree.
+    """
+    saved = (session or {}).get("cwd") or ""
+    path = os.path.abspath(os.path.expanduser(requested or saved or fallback or os.getcwd()))
+    if not os.path.isdir(path):
+        label = "session workspace" if saved and not requested else "workspace"
+        raise ValueError("%s does not exist or is not a directory: %s; "
+                         "use --cwd to select its current location" % (label, path))
+    return path
+
+
+def relocate(sid, cwd):
+    """Remember an explicitly selected workspace without rewriting its transcript."""
+    path = resolve_cwd(requested=cwd)
+    p = _path(sid)
+    if not p or not os.path.exists(p):
+        raise ValueError("no such session: %s" % sid)
+    with _locked(p):
+        raw = _validate_raw(_load_raw(p), sid)
+        old_cwd = raw.get("cwd") or ""
+        if old_cwd and os.path.normcase(os.path.abspath(old_cwd)) == os.path.normcase(path):
+            return path
+        now = time.time()
+        workspace = {"mode": "local", "path": path}
+        handoffs = list(raw.get("handoffs") or [])
+        handoffs.append({"at": now, "target": "directory", "previous_cwd": old_cwd,
+                         "previous_workspace": raw.get("workspace") or {},
+                         "workspace": workspace})
+        raw.update(cwd=path, workspace=workspace, handoffs=handoffs[-50:], updated=now)
+        _atomic_dump(raw, p)
+    return path
+
+
 def save(sid, messages, project="demo", cwd="", answer="",
          preserve_active=False):
     p = _path(sid)
@@ -462,7 +500,8 @@ def reconcile_recovery(sid, resolution, note="", confirmed=False, directory=None
                     msg.get("role") == "tool" and msg.get("tool_call_id") == call_id
                     for msg in messages if isinstance(msg, dict))
                 if already_paired:
-                    messages.append({"role": "user", "content": "RECOVERY: " + outcome})
+                    messages.append({"role": "user", "content": "RECOVERY: " + outcome,
+                                     "source": "harness", "kind": "recovery_notice"})
                 else:
                     messages.append({"role": "tool", "tool_call_id": call_id,
                                      "name": name, "content": "RECOVERY: " + outcome})
@@ -652,13 +691,13 @@ def recent(n=10):
     for f in files[:n]:
         s = load(f[:-5]) or {}
         msgs = s.get("messages", [])
-        turns = sum(1 for m in msgs if m.get("role") == "user")
+        turns = sum(1 for m in msgs if m.get("role") == "user" and m.get("source") != "harness")
         # the thread's TITLE is the first user message (what a person recognizes it by), not the
         # model's answer, which tends to be a generic lead-in that reads poorly as a sidebar label.
         title = (s.get("title") or "").strip()
         if not title:
             for m in msgs:
-                if m.get("role") != "user":
+                if m.get("role") != "user" or m.get("source") == "harness":
                     continue
                 c = m.get("content")
                 if isinstance(c, list):        # multimodal (attached image) -> title from text blocks
@@ -709,6 +748,8 @@ def timeline(sid):
         if isinstance(content, list):
             content = " ".join(str(x.get("text") or "") for x in content if isinstance(x, dict))
         nodes.append({"index": index, "role": role,
+                      "source": message.get("source") or "",
+                      "kind": message.get("kind") or "",
                       "summary": " ".join(str(content or "").split())[:240],
                       "tool_calls": len(message.get("tool_calls") or [])})
     children = []

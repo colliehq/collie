@@ -546,7 +546,29 @@ def cmd_repl(args):
     across turns (and persists it as a session, so you can --resume later). collie's answer to
     'no interactive mode' without a heavy TUI: one input() loop over the same harness."""
     from . import sessions as sess
-    cwd = args.cwd or os.getcwd()
+    resume_id = args.resume or (sess.latest() if getattr(args, "cont", False) else None)
+    sid = resume_id or sess.new_id()
+    loaded = None
+    if resume_id:
+        recovery = sess.recovery_state(sid)
+        checked = sess.load_checked(sid)
+        if (recovery and recovery.get("recovery_required")) or \
+                checked.get("status") == "invalid":
+            reason = ((recovery or {}).get("reason") or checked.get("reason") or
+                      "session journal requires inspection")
+            print("collie refused to resume %s: %s" % (sid, reason), file=sys.stderr)
+            return 2
+        loaded = checked.get("session") if checked.get("status") == "ok" else None
+        if loaded is None:
+            print("collie could not resume: no such session %s" % sid, file=sys.stderr)
+            return 2
+    try:
+        cwd = sess.resolve_cwd(loaded, requested=args.cwd)
+        if loaded and args.cwd:
+            sess.relocate(sid, cwd)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
     configured_model = configured_model_for(
         provider, args.model, provider_was_explicit=bool(args.provider))
@@ -556,26 +578,13 @@ def cmd_repl(args):
                      gate=_gate)
     from .approve import tty_approver
     h.approve = tty_approver(gate=_gate)
-    sid = args.resume or (sess.latest() if getattr(args, "cont", False) else None) or sess.new_id()
     h.checkpoint_scope = "session:" + sid
-    loaded = None
-    if args.resume or getattr(args, "cont", False):
-        recovery = sess.recovery_state(sid)
-        checked = sess.load_checked(sid)
-        if (recovery and recovery.get("recovery_required")) or \
-                checked.get("status") == "invalid":
-            reason = ((recovery or {}).get("reason") or checked.get("reason") or
-                      "session journal requires inspection")
-            print("collie refused to resume %s: %s" % (sid, reason), file=sys.stderr)
-            h.memory.close(); h.recorder.close()
-            return 2
-        loaded = checked.get("session") if checked.get("status") == "ok" else None
     history = (loaded or {}).get("messages") or []
     receipts = list((loaded or {}).get("run_receipts") or [])
     if getattr(args, "goal", None):
         h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
     print("collie repl · session %s · %s · %d prior turns · /exit to quit, /new for a fresh thread"
-          % (sid, provider, sum(1 for m in history if m.get("role") == "user")))
+          % (sid, provider, sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness")))
     try:
         while True:
             try:
@@ -626,8 +635,9 @@ def cmd_tui(args):
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
     configured_model = configured_model_for(
         provider, args.model, provider_was_explicit=bool(args.provider))
-    return run_tui(args.cwd or os.getcwd(), provider, configured_model, project=args.project,
-                   resume=args.resume, cont=getattr(args, "cont", False), goal=args.goal)
+    return run_tui(args.cwd, provider, configured_model, project=args.project,
+                   resume=args.resume, cont=getattr(args, "cont", False), goal=args.goal,
+                   cwd_explicit=bool(args.cwd))
 
 
 def cmd_web(args):
@@ -1623,7 +1633,7 @@ def cmd_run(args):
     # Resolve continuity before routing: a recent failed turn is a legitimate
     # escalation signal, and therefore belongs in the same decision on CLI and Web.
     from . import sessions as sess
-    history, sid = None, None
+    history, sid, loaded = None, None, None
     prior_receipts = []
     def _recovery_refusal(candidate):
         state = sess.recovery_state(candidate) if candidate else None
@@ -1641,11 +1651,17 @@ def cmd_run(args):
             return 2
         s = sess.load(args.resume)
         if s:
+            loaded = s
             history, sid = (s.get("messages") or []), args.resume
             prior_receipts = s.get("run_receipts") or []
         else:
-            print("  [session] no such session %r — starting fresh" % args.resume,
-                  file=sys.stderr if getattr(args, "json", False) else sys.stdout)
+            error = "no such session: %s" % args.resume
+            if getattr(args, "json", False) or getattr(args, "stream_json", False):
+                print(_json.dumps({"answer": "", "error": error,
+                                   "session": args.resume}, ensure_ascii=False))
+            else:
+                print(error, file=sys.stderr)
+            return 2
     elif getattr(args, "cont", False):
         sid = sess.latest()
         if sid:
@@ -1655,6 +1671,18 @@ def cmd_run(args):
             history = loaded.get("messages")
             prior_receipts = loaded.get("run_receipts") or []
     sid = sid or sess.new_id()
+    if loaded:
+        try:
+            cwd = sess.resolve_cwd(loaded, requested=args.cwd)
+            if args.cwd:
+                sess.relocate(sid, cwd)
+        except ValueError as exc:
+            if getattr(args, "json", False) or getattr(args, "stream_json", False):
+                print(_json.dumps({"answer": "", "error": str(exc), "session": sid},
+                                  ensure_ascii=False))
+            else:
+                print(str(exc), file=sys.stderr)
+            return 2
 
     from . import settings
     from .router import resolve_run_decision

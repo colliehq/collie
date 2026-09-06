@@ -320,6 +320,12 @@ var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New
   "The run is still starting; wait for its session id before stopping.":"任务仍在启动，请拿到会话编号后再停止。",
   "Steer not delivered":"补充要求未送达","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任务已停止。",
   "Could not stop the run":"无法停止任务","Open chat":"打开对话",
+  "Stopped at the turn limit":"在轮次上限处停下",
+  "The work above may be partway through — send “continue” to carry on.":"上面的内容可能只完成了一部分——发送“继续”即可接着做。",
+  "Stopped at the budget limit":"在预算上限处停下",
+  "Collie stopped rather than spending more; changing that limit is your decision.":"Collie 选择停下而不是继续花费；是否调整上限由你决定。",
+  "Stopped at the output limit":"在输出长度上限处停下",
+  "The reply reached its maximum length and was cut off.":"回答达到了最大长度，已被截断。",
   "Run setup":"运行设置","Intent":"任务意图","Build":"构建","Plan · read-only":"计划 · 只读",
   "Saved default":"已保存的默认值","Auto worker pool":"自动工作进程池","Use the worker selected in Settings":"使用设置中选择的工作进程",
   "Native tools, approvals, streaming, and steering":"原生工具、审批、流式输出与运行中追加指令","Codex CLI":"Codex CLI","Claude Code":"Claude Code",
@@ -378,6 +384,12 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "The run is still starting; wait for its session id before stopping.":"任務仍在啟動，請取得工作階段編號後再停止。",
   "Steer not delivered":"補充要求未送達","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任務已停止。",
   "Could not stop the run":"無法停止任務","Open chat":"開啟對話",
+  "Stopped at the turn limit":"在輪次上限處停下",
+  "The work above may be partway through — send “continue” to carry on.":"上面的內容可能只完成了一部分——傳送「繼續」即可接著做。",
+  "Stopped at the budget limit":"在預算上限處停下",
+  "Collie stopped rather than spending more; changing that limit is your decision.":"Collie 選擇停下而不是繼續花費；是否調整上限由你決定。",
+  "Stopped at the output limit":"在輸出長度上限處停下",
+  "The reply reached its maximum length and was cut off.":"回答達到了最大長度，已被截斷。",
   "Run setup":"執行設定","Intent":"任務意圖","Build":"構建","Plan · read-only":"計畫 · 唯讀",
   "Saved default":"已儲存的預設值","Auto worker pool":"自動工作程序池","Use the worker selected in Settings":"使用設定中選擇的工作程序",
   "Native tools, approvals, streaming, and steering":"原生工具、核准、串流輸出與執行中追加指令","Codex CLI":"Codex CLI","Claude Code":"Claude Code",
@@ -824,7 +836,20 @@ function onEvent(kind,data,sourceSession){
   else if(kind==="pack_attempt")packAttempt(data);
   else if(kind==="verification_evidence"){ if(!curTurn)curTurn=addAsst();var ev=data.evidence||data;
     addStep(curTurn,ev.passed?t('check passed'):t('check failed'),ev.command||'',!ev.passed); }
-  else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.pack)packDone(data);if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.canceled)addStep(curTurn,t('Stop run'),t('Run stopped.'),false);else if(data.error)addStep(curTurn,t('Error'),data.error,true);endCursor(curTurn);curTurn=null;packRows=[]; }
+  else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.pack)packDone(data);if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.canceled)addStep(curTurn,t('Stop run'),t('Run stopped.'),false);else if(data.error)addStep(curTurn,t('Error'),data.error,true);else{var stopped=mobileStopNote(data);if(stopped)addStep(curTurn,t(stopped[0]),t(stopped[1]),false);}endCursor(curTurn);curTurn=null;packRows=[]; }
+}
+// A run halted by a turn, budget or output cap is terminal but NOT finished, and the phone is often
+// where the result is actually read. Keep the text it produced; say plainly why it stopped.
+var MOBILE_STOP={
+  turn_limit:["Stopped at the turn limit","The work above may be partway through — send “continue” to carry on."],
+  budget_limit:["Stopped at the budget limit","Collie stopped rather than spending more; changing that limit is your decision."],
+  output_limit:["Stopped at the output limit","The reply reached its maximum length and was cut off."]};
+function mobileStopNote(d){
+  d=d||{};var r=String(d.stop_reason||"");
+  if(!r&&d.turns_exhausted)r="turn_limit";
+  if(!r&&d.budget_exhausted)r="budget_limit";
+  if(!r&&d.max_turns&&d.turns!=null&&d.turns>=d.max_turns)r="turn_limit";
+  return MOBILE_STOP[r]||null;
 }
 function terminalWasHandled(data){
   if(!data||!data.run)return false;

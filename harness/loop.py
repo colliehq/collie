@@ -1089,8 +1089,10 @@ class Harness:
                         self._session_checkpoint(
                             session["messages"], rid, turn, journal_state,
                             {"attempt": attempts + 1})
-                        comp = self.provider.complete(
-                            system, call_messages, schemas, on_text=self.stream_cb)
+                        from .cancellation import complete as complete_cancelable
+                        comp = complete_cancelable(
+                            self.provider, system, call_messages, schemas,
+                            on_text=self.stream_cb, cancelled=self.cancelled)
                     except Exception as e:
                         comp = _error_completion(getattr(self.provider, "name", "?"), e)
                     journal_state = "model_complete"
@@ -1102,6 +1104,12 @@ class Harness:
                     # sees the same record exactly once, so N candidates share one budget.
                     self._account_usage(total, comp.usage)
                     model_calls += max(1, int(getattr(comp, "request_count", 1) or 1))
+                    if self._cancel_requested():
+                        canceled = True
+                        res.error = "canceled by user"
+                        if comp.stop_reason != "error" and comp.text:
+                            answer = comp.text
+                        break
                     if comp.stop_reason != "error":
                         break
                     cls = classify_error(
@@ -1134,6 +1142,7 @@ class Harness:
                         # turn that becomes durable history.
                         call_messages = list(msgs) + [{
                             "role": "user", "content": FORMAT_REPAIR_NUDGE,
+                            "source": "harness", "kind": "format_repair",
                         }]
                         self.recorder.log_turn(
                             rid, turn, "format_repair",
@@ -1288,7 +1297,8 @@ class Harness:
                             self._emit("tool", name=tc.name, args=tc.args, ok=False)  # visible to surfaces
                     else:
                         session["messages"].append({"role": "assistant", "content": comp.text or "(truncated)"})
-                        session["messages"].append({"role": "user", "content": TRUNC_CONTINUE})
+                        session["messages"].append({"role": "user", "content": TRUNC_CONTINUE,
+                                                    "source": "harness", "kind": "output_continuation"})
                     res.turns = turn + 1
                     # KEY: retrying at the SAME output ceiling truncates again -> the loop the user hit.
                     # Give the retry real room by escalating the cap (x2, bounded). A task that legit
@@ -1596,7 +1606,8 @@ class Harness:
                             for img in ctx.images:
                                 label = img.get("label") or "screen"
                                 source = img.get("source") or "screenshot"
-                                session["messages"].append({"role": "user", "content": [
+                                session["messages"].append({"role": "user", "source": "harness",
+                                    "kind": "tool_attachment", "content": [
                                     {"type": "text", "text": "[%s: %s]" % (source, label)},
                                     {"type": "image",
                                      "media_type": img.get("media_type", "image/png"),
@@ -1727,6 +1738,7 @@ class Harness:
                     if hook_contexts and not canceled:
                         session["messages"].append({
                             "role": "user",
+                            "source": "harness", "kind": "lifecycle_context",
                             "content": "[Trusted lifecycle context]\n" + "\n".join(hook_contexts),
                         })
                     if canceled:
@@ -1742,7 +1754,8 @@ class Harness:
                     if (self.force_edit and not did_edit and not edit_forced
                             and turn + 1 >= force_at and _has_next_turn(turn)):
                         session["messages"].append(
-                            {"role": "user", "content": EDIT_FORCE_NUDGE})
+                            {"role": "user", "content": EDIT_FORCE_NUDGE,
+                             "source": "harness", "kind": "edit_reminder"})
                         edit_forced = True
                     # embedding-driven multi-file coverage: right after the first edit,
                     # surface sibling locations (by similarity to the edit) that likely
@@ -1764,7 +1777,8 @@ class Harness:
                             # coordinated sibling edits even when told + given turns — a model
                             # ceiling, not a prompt bug) and risked over-editing. Kept the mild,
                             # neutral wording; only the k (recall) bump above is retained.
-                            session["messages"].append({"role": "user", "content":
+                            session["messages"].append({"role": "user", "source": "harness",
+                                "kind": "coverage_reminder", "content":
                                 "Embedding-related locations in OTHER files that may need "
                                 "the SAME change — check each and `edit_file` the ones that "
                                 "do (ignore those that don't):\n" + "\n".join(rels)})
@@ -1790,7 +1804,8 @@ class Harness:
                                 last_repro_failed, last_repro_asserted)
                             if not _repro_ok and verify_rounds < self.verify_max:
                                 session["messages"].append(
-                                    {"role": "user", "content": self.repair_nudge or REPAIR_NUDGE})
+                                    {"role": "user", "content": self.repair_nudge or REPAIR_NUDGE,
+                                     "source": "harness", "kind": "verification_reminder"})
                                 verify_rounds += 1
                                 res.turns = turn + 1
                                 continue
@@ -1800,7 +1815,8 @@ class Harness:
                         if (rollback_rounds < 1 and best_diff
                                 and _has_next_turn(turn) and _tree_empty(self.cwd)):
                             session["messages"].append(
-                                {"role": "user", "content": ROLLBACK_NUDGE})
+                                {"role": "user", "content": ROLLBACK_NUDGE,
+                                 "source": "harness", "kind": "rollback_reminder"})
                             rollback_rounds += 1
                             res.turns = turn + 1
                             continue
@@ -1823,7 +1839,8 @@ class Harness:
                                      if last_repro_turn < last_edit_turn
                                      else (self.repair_nudge or REPAIR_NUDGE))
                             session["messages"].append({"role": "assistant", "content": comp.text})
-                            session["messages"].append({"role": "user", "content": nudge})
+                            session["messages"].append({"role": "user", "content": nudge,
+                                "source": "harness", "kind": "verification_reminder"})
                             verify_rounds += 1
                             res.turns = turn + 1
                             continue
@@ -1842,7 +1859,8 @@ class Harness:
                 # accept the empty result — push it to make the change.
                 if (self.force_edit and not did_edit and _has_next_turn(turn)):
                     session["messages"].append({"role": "assistant", "content": comp.text})
-                    session["messages"].append({"role": "user", "content": EDIT_FORCE_NUDGE})
+                    session["messages"].append({"role": "user", "content": EDIT_FORCE_NUDGE,
+                        "source": "harness", "kind": "edit_reminder"})
                     res.turns = turn + 1
                     continue
 
@@ -1862,7 +1880,8 @@ class Harness:
                         if cand and coverage_rounds < self.coverage_max:
                             locs = "\n".join("%s (rel %.2f)" % (l, s) for l, s in cand)
                             session["messages"].append({"role": "assistant", "content": comp.text})
-                            session["messages"].append({"role": "user", "content":
+                            session["messages"].append({"role": "user", "source": "harness",
+                                "kind": "coverage_reminder", "content":
                                 COVERAGE_NUDGE + "\nSame-package files closest to your change "
                                 "(edit the ones that need the SAME fix; ignore those that "
                                 "don't, then finish):\n" + locs})
@@ -1871,7 +1890,8 @@ class Harness:
                             continue
                     elif not covered:
                         session["messages"].append({"role": "assistant", "content": comp.text})
-                        session["messages"].append({"role": "user", "content": COVERAGE_NUDGE})
+                        session["messages"].append({"role": "user", "content": COVERAGE_NUDGE,
+                            "source": "harness", "kind": "coverage_reminder"})
                         covered = True
                         res.turns = turn + 1
                         continue
@@ -1904,7 +1924,8 @@ class Harness:
                             self._critic_request_count = None
                         if not _ok:
                             session["messages"].append({"role": "assistant", "content": comp.text})
-                            session["messages"].append({"role": "user", "content":
+                            session["messages"].append({"role": "user", "source": "harness",
+                                "kind": "review_feedback", "content":
                                 "An INDEPENDENT reviewer (fresh read of the issue — did NOT see your "
                                 "reasoning or your test) examined your diff and raised this concern:\n\n"
                                 + _obj + "\n\nIf it is valid, fix it and re-verify in run_in_env. If you "
@@ -1937,7 +1958,8 @@ class Harness:
                 if (self.force_edit and did_edit and rollback_rounds < 1 and best_diff
                         and _has_next_turn(turn) and _tree_empty(self.cwd)):
                     session["messages"].append({"role": "assistant", "content": comp.text})
-                    session["messages"].append({"role": "user", "content": ROLLBACK_NUDGE})
+                    session["messages"].append({"role": "user", "content": ROLLBACK_NUDGE,
+                        "source": "harness", "kind": "rollback_reminder"})
                     rollback_rounds += 1
                     res.turns = turn + 1
                     continue
@@ -1954,7 +1976,8 @@ class Harness:
                     reason = stop_hook.reason or "completion policy says work remains"
                     if _has_next_turn(turn) and hook_stop_rounds < 3:
                         session["messages"].append({"role": "assistant", "content": comp.text})
-                        session["messages"].append({"role": "user", "content":
+                        session["messages"].append({"role": "user", "source": "harness",
+                            "kind": "completion_reminder", "content":
                             "A trusted completion hook blocked stopping: %s\n"
                             "Address it with evidence, then try to finish again." % reason})
                         hook_stop_rounds += 1
@@ -1986,7 +2009,7 @@ class Harness:
                     last_repro_turn, last_repro_failed, last_repro_asserted = -100, False, False
 
             if canceled:
-                answer = "_[stopped by user]_"
+                answer = ((answer.rstrip() + "\n\n") if answer else "") + "_[stopped by user]_"
             elif not answer:
                 # The loop ended WITHOUT the voluntary no-tool finish (spin-break, range exhaustion,
                 # or a tool call on the FINAL available turn — a common case). Never return an empty
