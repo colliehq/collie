@@ -5217,7 +5217,7 @@
   // The header names the thread you are in — the same label the sidebar shows, which is the user's
   // own first sentence (or a rename). It is read off text already on the page or already returned by
   // /api/sessions; naming a thread never costs a model call.
-  var currentTitle = "", SESSION_TITLES = {};
+  var currentTitle = "", SESSION_TITLES = {}, THREAD_ACTION_ERRORS = {};
   var priorTurns = -1;   // user-turns before the running run; interrupt recovery's baseline (-1 = unknown)
   var es = null, running = false, runCanSteer = false, shownRunPlan = "",
       runStart = 0, tlCount = 0, diffCount = 0, streamRAF = 0;
@@ -8039,6 +8039,27 @@
           '<div class="t-acts">' +
           '<button class="t-act" data-a="rename" title="Rename" aria-label="Rename thread">✎</button>' +
           '<button class="t-act" data-a="delete" title="Delete" aria-label="Delete thread">✕</button></div>';
+        function showThreadError(message) {
+          THREAD_ACTION_ERRORS[s.id] = message || "";
+          var note = el.querySelector(".thread-error");
+          if (!note) {
+            note = document.createElement("div"); note.className = "thread-error";
+            note.setAttribute("role", "alert"); note.style.cssText = "font-size:11px;color:var(--danger,#b42318);white-space:normal;margin-top:6px";
+            el.appendChild(note);
+          }
+          note.textContent = message || ""; note.hidden = !message;
+        }
+        if (THREAD_ACTION_ERRORS[s.id]) showThreadError(THREAD_ACTION_ERRORS[s.id]);
+        function sessionAction(url, completed) {
+          showThreadError("");
+          return fetch(url).then(function (response) {
+            return response.json().catch(function () { return {}; }).then(function (body) {
+              if (!response.ok || body.error) throw new Error(body.error || ("HTTP " + response.status));
+              return body;
+            });
+          }).then(function () { delete THREAD_ACTION_ERRORS[s.id]; completed(); })
+            .catch(function (error) { showThreadError(error.message || t("Could not reach Collie.")); });
+        }
         el.onclick = function () { openSession(s.id); };
         el.onkeydown = function (ev) {
           if ((ev.key === "Enter" || ev.key === " ") && ev.target === el) {
@@ -8049,15 +8070,13 @@
           ev.stopPropagation();
           var t = prompt("Rename thread:", s.title || s.last || "");
           if (t == null) return;
-          fetch("/api/rename/" + encodeURIComponent(s.id) + "?title=" + encodeURIComponent(t) +
-                "&token=" + encodeURIComponent(CT))
-            .then(function () { loadSessions(); });
+          sessionAction("/api/rename/" + encodeURIComponent(s.id) + "?title=" + encodeURIComponent(t) +
+                "&token=" + encodeURIComponent(CT), loadSessions);
         };
         el.querySelector('[data-a="delete"]').onclick = function (ev) {
           ev.stopPropagation();
           if (!confirm("Delete this thread?")) return;
-          fetch("/api/delete/" + encodeURIComponent(s.id) + "?token=" + encodeURIComponent(CT))
-            .then(function () {
+          sessionAction("/api/delete/" + encodeURIComponent(s.id) + "?token=" + encodeURIComponent(CT), function () {
             if (s.id === currentSession) newThread(); else loadSessions();
           });
         };

@@ -443,6 +443,23 @@ def ui(server, browser):
     context.close()
 
 
+def test_refused_delete_keeps_open_thread_and_shows_server_reason(ui):
+    page = ui.page
+    row = page.locator(".thread").first
+    row.click()
+    page.wait_for_timeout(250)
+    title = ui.title()
+    page.route("**/api/delete/**", lambda route: route.fulfill(
+        status=409, content_type="application/json",
+        body=json.dumps({"error": "This conversation still has pending requests."})))
+    page.on("dialog", lambda dialog: dialog.accept())
+    row.get_by_role("button", name="Delete thread").click()
+    page.wait_for_function("document.querySelector('.thread-error')?.textContent.includes('pending requests')")
+    assert ui.title() == title
+    assert page.locator(".thread.active").count() == 1
+    assert "pending requests" in page.locator(".thread-error").inner_text()
+
+
 # ------------------------------------------------- the registry behind the sidebar
 class _Res:
     def __init__(self, **kw):
