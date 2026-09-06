@@ -514,6 +514,31 @@ def test_external_worker_failure_closes_initiator_mirror_and_global_activity(
     assert "sk-super-secret" not in json.dumps(saved)
 
 
+def test_external_worker_error_does_not_launch_a_fresh_required_check(monkeypatch, tmp_path):
+    from harness import router, verification
+
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(router, "resolve_run_decision", lambda *a, **kw:
+                        _decision(verification="required"))
+    monkeypatch.setattr(runner_registry, "probe_all",
+                        lambda keys=None, **kw: {"codex-exec": _probe()})
+    monkeypatch.setattr(runner_slice, "run_adhoc", lambda *a, **kw:
+                        RunResult(task_id="web", error="worker transport failed", answer="partial work"))
+    monkeypatch.setattr(verification, "run_verification_command", lambda *a, **kw:
+                        (_ for _ in ()).throw(AssertionError("failed work cannot start a check")))
+    events = []
+    webapp.Handler._serve_stream(_handler(events), {
+        "q": ["fix and check"], "session": ["failed-check"], "runner": ["codex-exec"],
+        "verification": ["required"], "verify_command": ["python -m unittest"],
+    })
+    evidence = next(data["evidence"] for kind, data in events if kind == "verification_evidence")
+    assert evidence["executed"] is False
+    done = next(data for kind, data in events if kind == "done")
+    assert done["answer"] == "partial work"
+    assert "worker transport failed" in done["error"]
+    assert "required check failed" not in done["error"]
+
+
 def test_run_capability_payload_shape_exposes_worker_truth():
     """The UI contract names availability explicitly; installed is not enough."""
     row = _probe().to_dict()

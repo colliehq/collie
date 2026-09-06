@@ -691,7 +691,8 @@ def test_cli_clean_run_still_runs_and_settles_its_required_check(monkeypatch,
                         lambda command, cwd, **kw: calls.append(command) or {
                             "command": command, "exit_code": 0, "passed": True,
                             "command_passed": True, "output": "2 passed",
-                            "freshness": "fresh", "source": "user"})
+                            "freshness": "fresh", "source": "user",
+                            "executed": True, "process_tree_terminated": True})
 
     def run(h, task_id, task, history):
         return RunResult(task_id=task_id, harness="collie", model="mock-coder-v1",

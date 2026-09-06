@@ -3284,6 +3284,11 @@
     "earlier turns summarized": "较早的对话已总结",
     "saved context restored": "已恢复保存的上下文",
     "Check was not run": "未运行检查",
+    "Check stopped": "检查已停止",
+    "The check was interrupted; this run has no completed verification result.": "检查已中断，本次任务没有完整的验证结果。",
+    "Running project check": "正在运行项目检查",
+    "verifying…": "正在检查…",
+    "finalizing…": "正在保存结果…",
     "could not shorten — continuing with the full history": "未能压缩——继续使用完整历史",
     "not needed": "无需压缩",
     "no change": "没有变化",
@@ -3570,6 +3575,11 @@
     "earlier turns summarized": "較早的對話已總結",
     "saved context restored": "已恢復儲存的上下文",
     "Check was not run": "未執行檢查",
+    "Check stopped": "檢查已停止",
+    "The check was interrupted; this run has no completed verification result.": "檢查已中斷，本次任務沒有完整的驗證結果。",
+    "Running project check": "正在執行專案檢查",
+    "verifying…": "正在檢查…",
+    "finalizing…": "正在儲存結果…",
     "could not shorten — continuing with the full history": "未能壓縮——繼續使用完整歷史",
     "not needed": "無需壓縮",
     "no change": "沒有變化",
@@ -5173,6 +5183,7 @@
     // The run was explicitly set to REQUIRE a check, and none ran. That promise is worth keeping.
     missing:   ["Required check did not run", "Verification was set to required for this run, but no check was executed."],
     pending:   ["Required check pending", "This run must end with a named check; its result appears here."],
+    stopped:   ["Check stopped", "The check was interrupted; this run has no completed verification result."],
     none:      ["No executed check", "This run made no code edit or no relevant executable check was selected."]
   };
   function setGate(state, subOverride) {
@@ -5188,6 +5199,9 @@
   function settleGate(o) {
     o = o || {};
     var ev = o.evidence;
+    if (ev && ev.cancelled && ev.executed !== false) {
+      setGate("stopped", ev.command || ev.cmd); return "stopped";
+    }
     if (ev && ev.executed !== false && (ev.command || ev.cmd)) {
       setGate(ev.passed === true ? "pass" : "fail", ev.command || ev.cmd);
       return ev.passed === true ? "pass" : "fail";
@@ -7765,6 +7779,23 @@
   // update the CURRENT action collie is doing; each label change restarts the elapsed clock so
   // "thinking… · 12s" is per-step, not run-total (the old "Bash… · 154s" read as a 154s command)
   function pstat(s) { pendStart = Date.now(); pendAction = s; pendRender(); }
+  function watchVerificationProgress(source, current) {
+    ["verification_started", "verification_canceling", "verification_finished"].forEach(function (kind) {
+      source.addEventListener(kind, function (event) {
+        if (!current()) return;
+        var d; try { d = JSON.parse(event.data || "{}"); } catch (_) { return; }
+        if (currentRun && d.run && currentRun !== d.run) return;
+        if (kind === "verification_started") {
+          sealText(); pstat(t("verifying…")); setGate("pending", d.command || undefined);
+          addEvent("meta", "clock", t("Running project check"), d.command || "");
+        } else if (kind === "verification_canceling") {
+          pstat(t("stopping…"));
+        } else {
+          pstat(t(d.cancelled ? "stopping…" : "finalizing…"));
+        }
+      });
+    });
+  }
   function toolIcon(name) {
     if (name === "read_file") return "▤";
     if (name === "grep" || name === "code_search" || name === "web_search") return "⌕";
@@ -8099,6 +8130,7 @@
       $("input").placeholder=t(runCanSteer?"Steer while the worker runs — Enter to send":
         "This worker cannot be steered — stop it or wait");showRunPlan(d.run_plan);}catch(_){}});
     src.addEventListener("mirror_replay", function () { replaying = true; });
+    watchVerificationProgress(src, function () { return currentSession === sid; });
     src.addEventListener("mirror_live", function () { replaying = false; });
     ["tool", "edit", "repro"].forEach(function (ev) {
       src.addEventListener(ev, function (m) {
@@ -9140,6 +9172,8 @@
              (papply ? "&apply=1" : "");
     }
     es = new EventSource(url);
+    var verificationSource = es;
+    watchVerificationProgress(verificationSource, function () { return es === verificationSource; });
 
     es.addEventListener("token", function (e) {
       // stream text into the current flow segment (interleaved with tool steps in event order)
@@ -9382,6 +9416,12 @@
 
     es.addEventListener("verification_evidence", function (e) {
       var payload = JSON.parse(e.data), d = payload.evidence || payload;
+      if (d.cancelled && d.executed !== false) {
+        runVerified = false;
+        addEvent("meta", "flag", t("Check stopped"), d.command || "");
+        setGate("stopped", d.command || undefined);
+        return;
+      }
       if (d.executed === false) {
         addEvent("meta", "flag", t("Check was not run"), d.skipped_reason || d.output || d.command || "");
         return;

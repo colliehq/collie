@@ -1913,6 +1913,7 @@ def cmd_run(args):
     else:
         res = h.run("adhoc", args.task, history=history)
     verification_evidence = None
+    check_boundary_hold = False
     if will_verify:
         # A stop is not a starting gun. Launching the project's check after a
         # canceled or errored run spends time on a tree the run never finished,
@@ -1925,19 +1926,54 @@ def cmd_run(args):
             if callable(getattr(h, "emit", None)):
                 h.emit("verification_evidence", {"evidence": verification_evidence})
         else:
-            from .verification import run_verification_command
-            verification_evidence = run_verification_command(
-                verify_command, cwd, source=verify_source or "detected", after_last_edit=True)
+            from . import verification as _verification
+            # The check runs project code that can write files, and run()'s own
+            # journal boundary is already closed. Arm a fence before its first
+            # byte; an existing uncertain boundary (the external-worker fence
+            # above, or an interrupted tool) is left alone and covers it.
+            check_boundary = _verification.open_check_boundary(
+                sid, getattr(res, "messages", None) or [], project=args.project,
+                cwd=cwd, run_id=getattr(res, "run_id", "") or "cli-verification",
+                command=verify_command, surface="cli")
+            if check_boundary["error"]:
+                # Refuse to start rather than run an unfenced host command.
+                verification_evidence = skipped_verification_evidence(
+                    verify_command, verify_source,
+                    "the check was not started: " + check_boundary["error"])
+                res.verified = False
+                res.error = ((res.error + "; ") if res.error else "") + \
+                    check_boundary["error"]
+            else:
+                verification_evidence = _verification.run_verification_command(
+                    verify_command, cwd, source=verify_source or "detected",
+                    after_last_edit=True,
+                    on_event=(h.emit if callable(getattr(h, "emit", None)) else None))
+                # Ctrl-C during the check comes back as evidence, not a
+                # traceback: the answer above is real work and still owes the
+                # user a receipt. Honour it as the stop it was.
+                if verification_evidence.get("cancelled"):
+                    res.canceled = True
+                    res.verified = False
+                    res.error = ((res.error + "; ") if res.error else "") + (
+                        "stopped by user during the required check")
+                else:
+                    res.verified = bool(
+                        verification_evidence["passed"] and not res.error)
+                    if not verification_evidence["passed"]:
+                        check_error = "required check failed: %s (exit %s)" % (
+                            verify_command, verification_evidence.get("exit_code"))
+                        res.error = ((res.error + "; ") if res.error else "") + check_error
+                    h.settle_run_memory(
+                        res, bool(res.verified), verification_evidence,
+                        source="cli_verification")
+                closed = _verification.close_check_boundary(
+                    check_boundary, verification_evidence)
+                check_boundary_hold = bool(closed["fenced"])
+                verification_evidence["effect_boundary"] = closed["detail"]
+                if closed["error"]:
+                    res.error = ((res.error + "; ") if res.error else "") + closed["error"]
             if callable(getattr(h, "emit", None)):
                 h.emit("verification_evidence", {"evidence": verification_evidence})
-            res.verified = bool(verification_evidence["passed"] and not res.error)
-            if not verification_evidence["passed"]:
-                check_error = "required check failed: %s (exit %s)" % (
-                    verify_command, verification_evidence.get("exit_code"))
-                res.error = ((res.error + "; ") if res.error else "") + check_error
-            h.settle_run_memory(
-                res, bool(res.verified), verification_evidence,
-                source="cli_verification")
         # Persist the final host-side verdict; run() could only record its in-loop evidence.
         h.recorder.finish_run(res)
     actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
@@ -1981,19 +2017,25 @@ def cmd_run(args):
         hd.runner != "collie" and
         (runner_payload is None or receipt_error or
          (runner_payload or {}).get("recovery_required") is True))
+    # A verifier whose tree could not be proved extinct keeps this thread fenced
+    # through the save, exactly like an unsettled worker.
+    preserve_fence = bool(external_recovery or check_boundary_hold)
     try:
         sess.save(sid, res.messages, project=args.project, cwd=cwd,
-                  answer=session_answer, preserve_active=external_recovery)
+                  answer=session_answer, preserve_active=preserve_fence)
     except Exception as exc:
         from .runner_specs import redact_text
         save_error = "session transcript could not be persisted: " + redact_text(
             "%s: %s" % (type(exc).__name__, exc), 500)
         res.error = ((res.error + "; ") if res.error else "") + save_error
-    if hd.runner != "collie" and not external_recovery and not save_error:
+    if (hd.runner != "collie" and not external_recovery and not save_error
+            and not check_boundary_hold):
         # The pre-launch fence is retired only by this explicit act, once the
         # worker settled AND both its receipt and the exchange are durable.
         # Saving a transcript is not evidence that an external effect resolved,
         # so `save` no longer clears an uncertain boundary on anyone's behalf.
+        # A host check whose tree is still unaccounted for blocks it too: the
+        # worker's fence is not this check's to retire, and vice versa.
         try:
             sess.checkpoint(sid, [], project=args.project, cwd=cwd,
                             run_id="external-cli", terminal=True)

@@ -21,6 +21,15 @@ _GENERATED_CACHE_DIRS = frozenset({
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 })
 _VERIFICATION_OUTPUT_CHARS = 4_000
+# The stop predicate belongs to one request, so polling it is cheap and short.
+# Anything longer would let a Stop press sit behind a check that runs for minutes.
+_CANCEL_POLL_SECONDS = 0.05
+# The durable boundary a host check arms before it can touch the workspace.
+CHECK_BOUNDARY_TOOL = "verification"
+
+
+class _VerificationCancelled(Exception):
+    """Internal signal: this exact request was stopped before its command ran."""
 
 
 class _TailCapture:
@@ -399,16 +408,28 @@ def _wait_verification_process(proc, timeout_s: float = 5.0) -> bool:
         return False
 
 
-def cancel_verification_process(proc, timeout_s: float = 5.0) -> bool:
+def cancel_verification_process(proc, timeout_s: float = 5.0, *,
+                                cancel_request: bool = True) -> bool:
     """Cancel an owned verifier and return only after the complete tree is gone.
 
     ``proc`` is the trusted start-gate process passed to ``on_process``.  The
     per-process lock serializes an external cancellation with timeout/finally
     cleanup.  Signal/TerminateJobObject delivery is never treated as extinction
     evidence: Windows polls Job accounting and POSIX polls the dedicated group.
+
+    ``cancel_request`` records that somebody deliberately stopped this verifier,
+    which the evidence then reports.  Routine post-run reaping passes ``False``:
+    every check ends here, and a completed run is not a cancelled one.
     """
     if proc is None:
         return True
+    if cancel_request:
+        # An `on_process` holder that stops the tree has stopped the task.  Its
+        # exit code cannot come back later as "the required check passed".
+        try:
+            setattr(proc, "_collie_verification_cancel_requested", True)
+        except Exception:
+            pass
     from . import plat
     lock = getattr(proc, "_collie_verification_tree_lock", None)
     if lock is None:
@@ -449,17 +470,114 @@ def cancel_verification_process(proc, timeout_s: float = 5.0) -> bool:
         return False
 
 
+def _stop_requested(predicate) -> tuple[bool, str]:
+    """Read one request's own stop predicate without ever trusting it to behave.
+
+    A predicate that raises is a broken caller, not evidence that the user
+    pressed Stop.  Report the fault and keep running: terminating on a bug here
+    would kill work nobody asked to stop.
+    """
+    if not callable(predicate):
+        return False, ""
+    try:
+        return bool(predicate()), ""
+    except Exception as exc:
+        return False, "%s: %s" % (type(exc).__name__, exc)
+
+
+def _emit_event(on_event, kind: str, data: dict) -> None:
+    """Publish progress for the UI.  Observability never changes the verdict."""
+    if not callable(on_event):
+        return
+    try:
+        on_event(str(kind), dict(data))
+    except Exception:
+        return
+
+
+class _CancelWatcher:
+    """Stop exactly one verifier tree when this request's own predicate fires.
+
+    The watcher holds nothing global: one trusted gate, one predicate, one stop
+    Event that the owning call always sets in its ``finally``.  That is why a
+    Stop pressed on another session cannot reach this tree, and why no thread
+    can outlive the call that created it.  A predicate that raises ends the poll
+    and is reported; it never terminates anybody's process.
+    """
+
+    def __init__(self, proc, predicate, on_fire=None,
+                 interval: float = _CANCEL_POLL_SECONDS):
+        self._proc = proc
+        self._predicate = predicate
+        self._on_fire = on_fire
+        self._interval = max(0.005, float(interval))
+        self._done = threading.Event()
+        self._thread = None
+        self.fired = False
+        self.probe_error = ""
+
+    def _poll(self) -> None:
+        while not self._done.wait(self._interval):
+            wants_stop, probe_error = _stop_requested(self._predicate)
+            if probe_error:
+                self.probe_error = probe_error
+                return
+            if not wants_stop:
+                continue
+            self.fired = True
+            if callable(self._on_fire):
+                try:
+                    self._on_fire()
+                except Exception:
+                    pass
+            try:
+                cancel_verification_process(self._proc)
+            except Exception as exc:
+                self.probe_error = self.probe_error or "%s: %s" % (
+                    type(exc).__name__, exc)
+            return
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._poll, name="collie-verifier-cancel", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """End the poll and join it, so no watcher survives its own request."""
+        self._done.set()
+        thread, self._thread = self._thread, None
+        if thread is None:
+            return
+        # cancel_verification_process proves extinction before returning, which
+        # is bounded by its own timeout; this join only has to outlast that.
+        thread.join(timeout=15)
+        if thread.is_alive():
+            self.probe_error = (self.probe_error or
+                                "verification cancel watcher did not stop")
+
+
 def run_verification_command(command: str, cwd: str, timeout: int = 300,
                              source: str = "user", after_last_edit: bool = True,
-                             on_process=None) -> dict:
+                             on_process=None, cancelled=None, on_event=None) -> dict:
     """Execute a proposed check and return receipt-ready evidence.
 
     ``on_process`` receives the still-blocked trusted gate after process-tree
     ownership is installed.  The caller may retain it for
     :func:`cancel_verification_process`; returning ``False`` cancels without
     ever launching the repository command.
+
+    ``cancelled`` is an optional predicate scoped to THIS request (the Web
+    surface passes its per-run cancel Event).  It is read before the gate is
+    created, again after registration but before one command byte is released,
+    and then polled by a watcher bound to this call alone.  A stop at any of
+    those points yields ``cancelled`` evidence, never a pass.
+
+    ``on_event(kind, data)`` mirrors check progress onto an existing event
+    stream so a UI can say "verifying" instead of leaving a heartbeat to imply
+    the agent vanished.
     """
     from . import plat
+    from .runner_specs import redact_text
     command = (command or "").strip()
     started = datetime.now(timezone.utc).isoformat()
     before = _git_snapshot(cwd)
@@ -481,6 +599,7 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         "source": source,
         "tree_digest": before.get("tree_digest", ""),
         "snapshot_complete": bool(before.get("snapshot_complete")),
+        "executed": False, "cancelled": False, "process_tree_terminated": False,
     }
     if not command:
         evidence["output"] = "no verification command"
@@ -497,7 +616,10 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         return ""
 
     executed = False
-    cancelled = False
+    cancelled_flag = False
+    cancel_reason = ""
+    cancel_probe_error = ""
+    watcher = None
     proc = None
     windows_job = None
     owned_posix_pgid = None
@@ -506,6 +628,14 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
     bounded_tail = None
     bounded_reader = None
     try:
+        # A Stop pressed while the run was still finishing must not be answered
+        # by creating a gate at all.
+        stop_now, cancel_probe_error = _stop_requested(cancelled)
+        if stop_now:
+            cancelled_flag = True
+            cancel_reason = "before_start"
+            evidence["output"] = "verification cancelled before command start"
+            raise _VerificationCancelled()
         # On POSIX a verifier must have a group Collie can safely kill without
         # signalling itself.  Continuing in a shared group would allow an
         # exit-zero command to leave a background writer behind and would make
@@ -517,10 +647,11 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         if on_process is not None and not callable(on_process):
             raise ValueError("on_process must be callable")
         proc = subprocess.Popen(
-            [sys.executable, "-I", "-c", _VERIFICATION_START_GATE_SCRIPT],
+            [(getattr(sys, "_base_executable", None) or sys.executable)
+             if windows else sys.executable, "-I", "-c", _VERIFICATION_START_GATE_SCRIPT],
             shell=False, cwd=cwd, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace",
+            encoding="utf-8", errors="replace", env=plat.shell_environment(),
             **group_kwargs, **plat.no_window_kwargs())
         proc._collie_verification_tree_lock = threading.RLock()
         # Until the JSON request is written and stdin is closed, the isolated
@@ -545,7 +676,9 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         except Exception as owner_error:
             # No target request has crossed the gate, so direct-gate extinction
             # proves that no repository command or descendant ever existed.
-            confirmed = cancel_verification_process(proc)
+            # A failed launch is not a user cancellation, so it is not recorded
+            # as one.
+            confirmed = cancel_verification_process(proc, cancel_request=False)
             if not confirmed:
                 raise RuntimeError(
                     "verification ownership failed and trusted-gate extinction "
@@ -555,9 +688,16 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         # Registration is the launch latch.  A concurrent cancellation can keep
         # the target at zero executions by returning False here.
         registered = on_process(proc) if callable(on_process) else True
-        if registered is False:
-            cancelled = True
-            if not cancel_verification_process(proc):
+        # A Stop can land between registration and release: the caller now holds
+        # a handle, but no command byte has moved.  Read the predicate again on
+        # this side of the latch so that window cannot execute anything.
+        stop_now, probe_error = _stop_requested(cancelled)
+        if probe_error:
+            cancel_probe_error = probe_error
+        if registered is False or stop_now:
+            cancelled_flag = True
+            cancel_reason = "before_start"
+            if not cancel_verification_process(proc, cancel_request=False):
                 raise RuntimeError(
                     "verification was cancelled before start but process-tree "
                     "extinction could not be confirmed")
@@ -568,6 +708,18 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
                 ensure_ascii=True, separators=(",", ":"), allow_nan=False)
             proc._collie_verification_gate_closed = False
             executed = True
+            _emit_event(on_event, "verification_started", {
+                "command": redact_text(command, 4_000), "cwd": evidence["cwd"],
+                "source": source, "timeout_s": int(timeout)})
+            # The watcher exists only for the span in which a repository command
+            # can actually be running, and only for this one tree.
+            if callable(cancelled):
+                watcher = _CancelWatcher(
+                    proc, cancelled,
+                    on_fire=lambda: _emit_event(on_event, "verification_canceling", {
+                        "command": redact_text(command, 4_000),
+                        "cwd": evidence["cwd"]}))
+                watcher.start()
             # Production Popen pipes take the bounded path.  Several embedders
             # and process doubles expose only ``communicate``; keep that narrow
             # compatibility path, while a real child can never accumulate an
@@ -604,13 +756,25 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
             evidence["exit_code"] = int(proc.returncode)
             evidence["command_passed"] = proc.returncode == 0
             evidence["output"] = (output or "")[-_VERIFICATION_OUTPUT_CHARS:]
+    except _VerificationCancelled:
+        # The stop is already written into the evidence above; the finally below
+        # is still what proves nothing was left running.
+        pass
+    except KeyboardInterrupt:
+        # Ctrl-C during a host check is a STOP, not a crash.  Unwinding out of
+        # here would take the surface's receipt, session save and the agent's
+        # already-produced answer with it.  Convert it into honest evidence and
+        # let the caller honour `cancelled` instead.
+        cancelled_flag = True
+        cancel_reason = "keyboard_interrupt"
+        evidence["output"] = (evidence.get("output") or "")[-3500:]
     except subprocess.TimeoutExpired as e:
         executed = True
         # ``Popen.communicate`` does not kill its child on timeout.  More importantly, killing
         # only the shell leaves backgrounded test runners holding the output pipe and editing the
         # workspace after their receipt was issued.  The process was started in its own group so
         # the platform layer can reap the shell and every descendant before we snapshot again.
-        tree_cleanup_ok = cancel_verification_process(proc)
+        tree_cleanup_ok = cancel_verification_process(proc, cancel_request=False)
         if not tree_cleanup_ok:
             tree_cleanup_error = str(
                 getattr(proc, "_collie_verification_tree_error", "") or
@@ -645,8 +809,13 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
     except Exception as e:
         evidence["output"] = "check failed to run: %s: %s" % (type(e).__name__, e)
     finally:
+        # The watcher is joined before anything reads its result, so this call
+        # can never leave a thread polling a predicate it no longer owns.
+        if watcher is not None:
+            watcher.stop()
         if proc is not None:
-            confirmed = cancel_verification_process(proc)
+            # Routine reaping, not a cancellation: every run ends here.
+            confirmed = cancel_verification_process(proc, cancel_request=False)
             tree_cleanup_ok = bool(tree_cleanup_ok or confirmed)
             if not tree_cleanup_ok and not tree_cleanup_error:
                 tree_cleanup_error = str(
@@ -660,6 +829,40 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
                     type(cleanup_error).__name__, cleanup_error)
                 tree_cleanup_error = (tree_cleanup_error + "; " + close_error
                                       if tree_cleanup_error else close_error)
+    if bounded_reader is not None:
+        bounded_reader.join(timeout=.25)
+        # Ctrl-C can interrupt wait() before the normal path copies stdout. The
+        # pipe reader already owns that evidence; preserve it after tree cleanup.
+        if bounded_tail is not None and not evidence.get("output"):
+            evidence["output"] = bounded_tail.text()
+    # Resolve cancellation from what actually happened, never from a snapshot
+    # taken before the command ran.
+    if watcher is not None:
+        if watcher.probe_error and not cancel_probe_error:
+            cancel_probe_error = watcher.probe_error
+        if watcher.fired and not cancelled_flag:
+            cancelled_flag = True
+            cancel_reason = "during_execution"
+    if not cancelled_flag and bool(
+            getattr(proc, "_collie_verification_cancel_requested", False)):
+        # An `on_process` holder stopped this tree itself.  Whatever exit code
+        # the race produced, the check was not allowed to finish.
+        cancelled_flag = True
+        cancel_reason = "caller_cancelled_process"
+    _CANCEL_NOTES = {
+        "during_execution": "\n(verification stopped by user request)",
+        "keyboard_interrupt":
+            "\n(verification interrupted by user; the check did not finish)",
+        "caller_cancelled_process":
+            "\n(verification process was cancelled by its caller)",
+    }
+    if cancel_reason in _CANCEL_NOTES:
+        evidence["output"] = ((evidence.get("output") or "")[-3500:] +
+                              _CANCEL_NOTES[cancel_reason])[-4000:]
+    if cancel_probe_error:
+        evidence["output"] = ((evidence.get("output") or "")[-3500:] +
+                              "\n(cancellation check failed: %s)" %
+                              cancel_probe_error)[-4000:]
     if executed and not tree_cleanup_ok:
         suffix = "\n(could not terminate verification process tree"
         if tree_cleanup_error:
@@ -677,29 +880,164 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         "post_working_tree": after.get("working_tree", "unknown"),
         "post_dirty_files": after.get("dirty_files", []),
         "working_tree_changed_during_check": (not unchanged) if comparable else None,
+        # A stopped check never ran to completion, so it cannot certify the tree
+        # it was pointed at, however clean that tree happens to look afterwards.
         "ran_after_last_edit": bool(
-            executed and tree_cleanup_ok and after_last_edit and unchanged),
+            executed and tree_cleanup_ok and after_last_edit and unchanged and
+            not cancelled_flag),
         "freshness": ("not_run" if not executed else
                       "process_tree_cleanup_failed" if not tree_cleanup_ok else
+                      "cancelled" if cancelled_flag else
                       "caller_marked_stale" if not after_last_edit else "fresh" if unchanged else
                       "changed_during_check" if comparable else "unknown"),
         "snapshot_kind": before.get("snapshot_kind", "unknown"),
         "post_tree_digest": after.get("tree_digest", ""),
         "post_snapshot_complete": bool(after.get("snapshot_complete")),
         "executed": executed,
-        "cancelled": cancelled,
+        "cancelled": cancelled_flag,
+        "cancel_reason": cancel_reason,
+        "cancel_probe_error": cancel_probe_error,
         "process_tree_terminated": bool(proc is not None and tree_cleanup_ok),
     })
     # ``passed`` is the completion-grade verdict consumed by CLI/Web/Pack. Exit zero remains
     # separately visible as ``command_passed``, but it cannot certify bytes that changed during
-    # the check or whose freshness snapshot was incomplete.
+    # the check or whose freshness snapshot was incomplete.  A cancellation racing an exit-zero
+    # callback is excluded here too: a stop the user asked for cannot be laundered into a pass.
     evidence["passed"] = bool(
-        evidence["command_passed"] and evidence["ran_after_last_edit"])
+        evidence["command_passed"] and evidence["ran_after_last_edit"] and
+        not cancelled_flag)
     # Command lines and test output are durable and are streamed to remote UI
     # clients.  Execute the original command above, but persist only a bounded,
     # redacted projection; verification status/digests are untouched.
-    from .runner_specs import redact_text
     evidence["command"] = redact_text(evidence.get("command", ""), 4_000)
     evidence["output"] = redact_text(
         evidence.get("output", ""), _VERIFICATION_OUTPUT_CHARS)
+    _emit_event(on_event, "verification_finished", {
+        "command": evidence["command"], "executed": evidence["executed"],
+        "passed": evidence["passed"], "cancelled": evidence["cancelled"],
+        "exit_code": evidence["exit_code"], "freshness": evidence["freshness"],
+        "duration_ms": evidence["duration_ms"]})
     return evidence
+
+
+# ── the durable effect fence around a host check ─────────────────────────────
+# A repository check is a real external action: it runs project code that can
+# write files, and the surrounding turn cannot be replayed afterwards without
+# knowing whether it did.  The native harness has already closed its own journal
+# boundary by the time the host check starts, so the check needs its own — armed
+# BEFORE the first command byte, retired only on evidence.
+
+
+def open_check_boundary(sid, messages, project="", cwd="", run_id="",
+                        command="", surface="") -> dict:
+    """Fence a host check's possible file effects before it can run.
+
+    Returns a boundary the caller passes back to :func:`close_check_boundary`.
+    ``error`` is non-empty when no durable fence could be established, and the
+    caller must then NOT start the command: an unfenced check that dies with the
+    process leaves a workspace nobody knows the state of.
+
+    An older uncertain boundary is never overwritten.  Its detail describes an
+    effect a human still has to inspect, and hiding that behind this check's own
+    detail would quietly retire someone else's unreconciled action.
+    """
+    from . import sessions
+    from .runner_specs import redact_text
+    state = {"armed": False, "preexisting": False, "error": "", "sid": sid,
+             "project": project, "cwd": cwd, "run_id": str(run_id or "")}
+    if not sid or not isinstance(sid, str):
+        state["error"] = ("verification boundary needs a durable session id "
+                          "before a host check may run")
+        return state
+    try:
+        existing = sessions.recovery_state(sid)
+    except Exception as exc:
+        state["error"] = redact_text(
+            "verification boundary could not read the session journal: %s: %s"
+            % (type(exc).__name__, exc), 500)
+        return state
+    if isinstance(existing, dict) and existing.get("recovery_required"):
+        state["preexisting"] = True
+        return state
+    try:
+        sessions.checkpoint(
+            sid, list(messages or []), project=project, cwd=cwd,
+            run_id=str(run_id or ""), state="external_action",
+            detail={"tool_name": CHECK_BOUNDARY_TOOL,
+                    "surface": surface or "host",
+                    "command": redact_text(str(command or ""), 500)})
+        armed = sessions.recovery_state(sid)
+    except Exception as exc:
+        state["error"] = redact_text(
+            "verification recovery boundary could not be persisted: %s: %s"
+            % (type(exc).__name__, exc), 500)
+        return state
+    # checkpoint() is a no-op for an id that maps to no session file, so the
+    # write is only believed once the journal reads it back as a live fence.
+    if not (isinstance(armed, dict) and armed.get("recovery_required") and
+            (armed.get("detail") or {}).get("tool_name") == CHECK_BOUNDARY_TOOL):
+        state["error"] = ("verification recovery boundary did not become durable "
+                          "for this session")
+        return state
+    state["armed"] = True
+    return state
+
+
+def check_boundary_verdict(evidence) -> tuple[bool, str]:
+    """May a host check's fence be retired, and what does the receipt owe?
+
+    Termination is not the same claim as "nothing happened".  A verifier that
+    ran and was proved extinct may still have written files; the boundary can be
+    retired because nothing is *still* running, and the receipt says so.
+    """
+    ev = evidence if isinstance(evidence, dict) else {}
+    if ev.get("executed") is False:
+        return True, "the check did not execute, so it changed nothing"
+    if ev.get("executed") is True and ev.get("process_tree_terminated") is True:
+        return True, ("the check executed and may have changed files in the "
+                      "workspace; its process tree is confirmed gone")
+    return False, ("the check's execution or process-tree termination could not be "
+                   "confirmed; files may still be changing")
+
+
+def close_check_boundary(boundary, evidence) -> dict:
+    """Retire only a fence this check armed, and only on real evidence.
+
+    A boundary that belongs to somebody else — an external worker's pre-launch
+    fence, an interrupted tool — is left exactly where it was.  That is the rule
+    which stops "the check returned" from being read as "that other effect
+    resolved".
+    """
+    from . import sessions
+    from .runner_specs import redact_text
+    retire, detail = check_boundary_verdict(evidence)
+    out = {"retired": False, "fenced": False, "detail": detail, "error": ""}
+    state = boundary if isinstance(boundary, dict) else {}
+    if state.get("preexisting"):
+        # Somebody else's fence is already open.  Report only what THIS check
+        # left unaccounted for; retiring the other boundary is not ours to do,
+        # and neither is holding it open on this check's behalf.
+        out["fenced"] = not retire
+        out["detail"] = (detail + "; an earlier unreconciled boundary still "
+                                  "fences this thread")
+        return out
+    if not state.get("armed"):
+        out["fenced"] = not retire
+        return out
+    if not retire:
+        out["fenced"] = True
+        return out
+    try:
+        sessions.checkpoint(state.get("sid"), [], project=state.get("project", ""),
+                            cwd=state.get("cwd", ""),
+                            run_id=state.get("run_id", ""), terminal=True)
+    except Exception as exc:
+        # A fence that could not be retired stays a fence.  Saying so is the
+        # point: silently dropping it is the failure mode this guards against.
+        out["fenced"] = True
+        out["error"] = redact_text(
+            "verification recovery boundary could not be cleared: %s: %s"
+            % (type(exc).__name__, exc), 500)
+        return out
+    out["retired"] = True
+    return out

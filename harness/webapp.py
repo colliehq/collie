@@ -4689,6 +4689,58 @@ class Handler(BaseHTTPRequestHandler):
                     persist_exc,
                     prefix="external-worker recovery boundary could not be cleared: ")
 
+        def _host_check(res, surface):
+            """Run the required check as a stoppable, fenced, visible host action.
+
+            Returns ``(evidence, fenced)``.  Stop presses reach the check itself
+            through this session's own cancel Event, so pressing Stop kills the
+            owned tree instead of waiting out its timeout; the heartbeat keeps
+            the stream warm while a real check runs, and the events say what is
+            happening rather than leaving a silent ping to imply the agent went
+            away.  ``fenced`` means the durable effect boundary is still open.
+            """
+            from . import verification as _verification
+
+            def _check_event(kind, data):
+                payload = dict(data, session=sid, run=run_id)
+                _tx(kind, payload)
+                Handler._live_pub(kind, payload)
+                Handler._mirror_pub(sid, kind, payload)
+
+            boundary = _verification.open_check_boundary(
+                sid, getattr(res, "messages", None) or [], project="web", cwd=cwd,
+                run_id=run_id, command=verify_command, surface=surface)
+            if boundary["error"]:
+                # Refuse to launch rather than run an unfenced host command.
+                from .cli import skipped_verification_evidence
+                evidence = skipped_verification_evidence(
+                    verify_command, verify_source,
+                    "the check was not started: " + boundary["error"])
+                evidence["effect_boundary"] = boundary["error"]
+                return evidence, False
+            stop_check_hb = threading.Event()
+
+            def _check_heartbeat():
+                while not stop_check_hb.wait(10):
+                    try:
+                        self._sse("ping", {})
+                    except Exception:
+                        break
+            threading.Thread(target=_check_heartbeat, daemon=True).start()
+            try:
+                evidence = _verification.run_verification_command(
+                    verify_command, cwd, source=verify_source or "detected",
+                    after_last_edit=True,
+                    cancelled=lambda: Handler._run_cancelled(sid, run_id),
+                    on_event=_check_event)
+            finally:
+                stop_check_hb.set()
+            closed = _verification.close_check_boundary(boundary, evidence)
+            evidence["effect_boundary"] = closed["detail"]
+            if closed["error"]:
+                evidence["effect_boundary"] += "; " + closed["error"]
+            return evidence, bool(closed["fenced"])
+
         raw_worker_caps = ((runner_decision.probe or {}).get("capabilities")
                            if isinstance(runner_decision.probe, dict) else None)
         # Synthesised/incomplete probes legitimately carry an empty capability
@@ -5004,21 +5056,36 @@ class Handler(BaseHTTPRequestHandler):
                 should_check = (run_opts["intent"] == "test" or
                                 run_opts["verification"] == "required")
                 verification_evidence = None
-                if should_check and verify_command and not canceled:
-                    from .verification import run_verification_command
-                    verification_evidence = run_verification_command(
-                        verify_command, cwd, source=verify_source or "detected",
-                        after_last_edit=True)
+                check_fenced = False
+                if should_check and verify_command:
+                    from .cli import stopped_before_verification, skipped_verification_evidence
+                    stop_reason_text = stopped_before_verification(res)
+                    if canceled and not stop_reason_text:
+                        stop_reason_text = "the run was stopped before verification"
+                    if stop_reason_text:
+                        verification_evidence = skipped_verification_evidence(
+                            verify_command, verify_source, stop_reason_text)
+                    else:
+                        verification_evidence, check_fenced = _host_check(res, "worker")
                     evidence_event = {"session": sid, "run": run_id,
                                       "evidence": verification_evidence}
                     _tx("verification_evidence", evidence_event)
                     Handler._live_pub("verification_evidence", evidence_event)
                     Handler._mirror_pub(sid, "verification_evidence", evidence_event)
-                    res.verified = bool(verification_evidence["passed"] and not res.error)
-                    if not verification_evidence["passed"]:
-                        check_error = "required check failed: %s (exit %s)" % (
-                            verify_command, verification_evidence.get("exit_code"))
-                        res.error = ((res.error + "; ") if res.error else "") + check_error
+                    # Re-read the stop after the check, not before it.
+                    if (verification_evidence.get("cancelled") or
+                            Handler._run_cancelled(sid, run_id)):
+                        canceled = True
+                        res.canceled = True
+                        res.verified = False
+                    elif stop_reason_text:
+                        res.verified = False
+                    else:
+                        res.verified = bool(verification_evidence["passed"] and not res.error)
+                        if not verification_evidence["passed"]:
+                            check_error = "required check failed: %s (exit %s)" % (
+                                verify_command, verification_evidence.get("exit_code"))
+                            res.error = ((res.error + "; ") if res.error else "") + check_error
                 # The initial external outcome was inserted by runner_slice;
                 # update that row with the host verifier's final verdict.  This
                 # remains telemetry: a locked/corrupt runs.db cannot rewrite
@@ -5066,7 +5133,10 @@ class Handler(BaseHTTPRequestHandler):
                     res.error = ((res.error + "; ") if res.error else "") + persistence_error
                     res.success = False
                 recovery_required = bool(
-                    worker_receipt is None or worker_receipt.recovery_required)
+                    worker_receipt is None or worker_receipt.recovery_required
+                    # A host check whose tree is unaccounted for is its own
+                    # unsettled effect; the worker's fence stays until both are.
+                    or check_fenced)
                 if receipt_saved and history_saved and not recovery_required:
                     boundary_error = _clear_durable_external_boundary()
                     if boundary_error:
@@ -5292,18 +5362,28 @@ class Handler(BaseHTTPRequestHandler):
                         verify_command, verify_source, stop_reason_text)
                     res.verified = False
                 else:
-                    from .verification import run_verification_command
-                    verification_evidence = run_verification_command(
-                        verify_command, cwd, source=verify_source or "detected",
-                        after_last_edit=True)
-                    res.verified = bool(verification_evidence["passed"] and not res.error)
-                    if not verification_evidence["passed"]:
-                        check_error = "required check failed: %s (exit %s)" % (
-                            verify_command, verification_evidence.get("exit_code"))
-                        res.error = ((res.error + "; ") if res.error else "") + check_error
-                    h.settle_run_memory(
-                        res, bool(res.verified), verification_evidence,
-                        source="web_verification")
+                    # A fence this check leaves open needs no separate handling
+                    # here: save() keeps an uncertain boundary, and the
+                    # recovery_state read below reports it with the run.
+                    verification_evidence, _check_fenced = _host_check(res, "web")
+                    # Stop is re-read from the registry AFTER the check: the
+                    # snapshot taken above is older than the press that just
+                    # killed this tree, and a stale "not canceled" there is how a
+                    # stopped run gets filed as a failed or, worse, a green one.
+                    if (verification_evidence.get("cancelled") or
+                            Handler._run_cancelled(sid, run_id)):
+                        canceled = True
+                        res.canceled = True
+                        res.verified = False
+                    else:
+                        res.verified = bool(verification_evidence["passed"] and not res.error)
+                        if not verification_evidence["passed"]:
+                            check_error = "required check failed: %s (exit %s)" % (
+                                verify_command, verification_evidence.get("exit_code"))
+                            res.error = ((res.error + "; ") if res.error else "") + check_error
+                        h.settle_run_memory(
+                            res, bool(res.verified), verification_evidence,
+                            source="web_verification")
                 evidence_event = {"session": sid, "run": run_id,
                                   "evidence": verification_evidence}
                 _tx("verification_evidence", evidence_event)

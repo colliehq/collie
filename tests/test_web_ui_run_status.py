@@ -66,6 +66,20 @@ def _script(text):
                           canceled=canceled, stop_reason="canceled" if canceled else "error",
                           completed=False, edited=edited)),
         ]
+    if "cancel the required check" in q:
+        evidence = {"command": "python -m unittest", "executed": True, "passed": False,
+                    "cancelled": True, "exit_code": 1}
+        return [
+            ("start", {"session": "s-check-stop", "run": "r-check-stop", "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "The requested fix is ready."}),
+            ("verification_started", {"command": evidence["command"], "run": "r-check-stop"}),
+            ("verification_canceling", {"command": evidence["command"]}),
+            ("verification_finished", evidence),
+            ("verification_evidence", {"evidence": evidence}),
+            ("done", dict(DONE_BASE, session="s-check-stop", run="r-check-stop",
+                          answer="The requested fix is ready.", canceled=True, completed=False,
+                          stop_reason="canceled", verification_evidence=evidence)),
+        ]
     if "readme" in q:
         return [
             ("start", {"session": "s-read", "run": "r1", "model": "mock", "prior_turns": 0}),
@@ -742,6 +756,16 @@ def test_skipped_check_is_not_shown_as_a_failed_check(ui):
     assert not ui.gate_visible()
     assert "_[stopped by user]_" not in ui.log_text()
     assert ui.page.locator(".interruption-note").count() == 1
+
+
+def test_a_stopped_required_check_keeps_progress_and_an_honest_verdict(ui):
+    ui.ask("Cancel the required check")
+    assert ui.gate_state() == "stopped"
+    assert "The requested fix is ready." in ui.log_text()
+    timeline = ui.page.locator("#timeline").text_content()
+    assert "Running project check" in timeline
+    assert "proposed check failed" not in timeline
+    assert not ui.errors
 
 
 def test_stop_does_not_automatically_launch_a_queued_follow_up(ui):
