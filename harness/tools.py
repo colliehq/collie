@@ -508,6 +508,8 @@ class BashTool(Tool):
                     "written was written.")
         out = (r.stdout or "") + (("\n[stderr] " + r.stderr) if r.stderr else "")
         out = out.strip() or "(no output)"
+        omitted = (getattr(r, "stdout_omitted_chars", 0) +
+                   getattr(r, "stderr_omitted_chars", 0))
         if r.status == _proc.CANCELED:
             return self._interrupted(
                 out, r, "canceled by the user after %.1fs" % r.elapsed_s,
@@ -518,7 +520,7 @@ class BashTool(Tool):
         if r.status == _proc.TIMEOUT:
             # highest-value spill: re-running a timed-out command costs another full timeout.
             return self._interrupted(out, r, "timed out after %ds (killed)" % timeout,
-                                     "full pre-kill output")
+                                     "captured pre-kill output" if omitted else "full pre-kill output")
         if r.status == _proc.HANDOVER_ERROR:
             # Released, then lost. This is NOT "it did not run": say what is actually unknown.
             return self._interrupted(
@@ -527,6 +529,9 @@ class BashTool(Tool):
                 stopped=" — the owned process tree was stopped.",
                 tail=" Check whether it took effect before re-running it.")
         head = "" if r.returncode == 0 else "[exit %d]\n" % r.returncode
+        if omitted:
+            head += ("[Output capture limit reached: %d characters omitted from the middle; "
+                     "the beginning and tail were retained.]\n" % omitted)
         if r.effect_uncertain:
             # The command itself finished; what it deliberately backgrounded could not be
             # handed over cleanly. Never claim a background start we cannot stand behind.
@@ -539,9 +544,10 @@ class BashTool(Tool):
         if len(out) > 8000:
             sp = _spill_full_output(out)
             if sp:
-                marker = ("…[truncated %d chars — full output (%d lines) saved to %s; grep it or "
+                marker = ("…[truncated %d chars — %s output (%d lines) saved to %s; grep it or "
                           "read_file offset=1, do NOT re-run to see more]\n"
-                          % (len(out) - 8000, out.count("\n") + 1, sp))
+                          % (len(out) - 8000, "captured" if omitted else "full",
+                             out.count("\n") + 1, sp))
             else:
                 marker = "…[truncated %d chars]\n" % (len(out) - 8000)
             out = marker + out[-8000:]
@@ -566,6 +572,11 @@ class BashTool(Tool):
                      "clean stop and do not re-run the command until you have checked."
                      % (r.detail or "no confirmation available"))
         head += tail
+        omitted = (getattr(r, "stdout_omitted_chars", 0) +
+                   getattr(r, "stderr_omitted_chars", 0))
+        if omitted:
+            head += (" Output capture limit reached: %d characters omitted from the middle."
+                     % omitted)
         if len(out) > 4000:
             sp = _spill_full_output(out)
             if sp:
@@ -715,7 +726,12 @@ class GrepTool(Tool):
         if r.status == _proc.OK:
             # A search that finished is conclusive even if it left something behind it (it
             # cannot: rg/grep background nothing). Status, not tree state, decides this.
-            return (out or "(no matches)")[:6000]
+            visible = (out or "(no matches)")[:6000]
+            omitted = getattr(r, "stdout_omitted_chars", 0)
+            if len(out) > 6000 or omitted:
+                visible += ("\n[Search output truncated; narrow the pattern or path to inspect "
+                            "additional matches.]")
+            return visible
         # Everything below is an UNFINISHED search. A completed search that finds nothing returns
         # "(no matches)" above, and the two used to read almost identically — so a search that was
         # KILLED was taken as proof the thing does not exist, and whatever was searched for got

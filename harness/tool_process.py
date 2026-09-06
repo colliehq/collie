@@ -44,6 +44,7 @@ runs.
 from __future__ import annotations
 
 import base64
+from collections import deque
 import json
 import os
 import subprocess
@@ -61,6 +62,11 @@ CANCEL_POLL_S = .05
 # Bounded wait for the pipes to close once the tree has been killed. Never unbounded: a
 # descendant we could not reap must not be able to wedge the agent loop.
 DRAIN_S = 5.0
+# Capture both ends of noisy commands without letting output grow with runtime.
+# Tools may persist this captured text, and explicitly report any omitted middle.
+OUTPUT_CAPTURE_CHARS = 1_048_576
+OUTPUT_HEAD_CHARS = 32_768
+PIPE_READ_CHARS = 65_536
 
 OK = "ok"
 TIMEOUT = "timeout"
@@ -204,6 +210,8 @@ class Outcome:
     # must not spend the fence on every ordinary command.
     release_failed: bool = False
     detail: str = ""            # why it could not be confirmed, or the launch error
+    stdout_omitted_chars: int = 0
+    stderr_omitted_chars: int = 0
 
     @property
     def executed(self) -> bool:
@@ -227,26 +235,63 @@ class Outcome:
 
 
 class _Reader(threading.Thread):
-    """Drain one pipe line-by-line so partial output survives a kill.
+    """Drain bounded line fragments, keeping the beginning and most recent output.
 
-    Line granularity is what makes PARTIAL output real: a single blocking ``read()`` would
-    hold everything the command printed inside the buffer and lose it if the pipe never
-    reaches EOF (an unreaped descendant still holding the write end)."""
+    Both a giant line and many tiny lines have a fixed memory ceiling. Newline
+    reads still make ordinary progress output available before the process exits.
+    """
 
     def __init__(self, stream):
         super().__init__(daemon=True, name="collie-tool-pipe")
         self._stream = stream
-        self._chunks: list = []
+        self._head = ""
+        self._tail = deque()
+        self._tail_chars = 0
+        self._total_chars = 0
+        self._lock = threading.Lock()
+
+    def _append(self, chunk):
+        with self._lock:
+            self._total_chars += len(chunk)
+            head_room = OUTPUT_HEAD_CHARS - len(self._head)
+            if head_room > 0:
+                self._head += chunk[:head_room]
+                chunk = chunk[head_room:]
+            if not chunk:
+                return
+            self._tail.append(chunk)
+            self._tail_chars += len(chunk)
+            tail_limit = OUTPUT_CAPTURE_CHARS - OUTPUT_HEAD_CHARS
+            while self._tail_chars > tail_limit:
+                excess = self._tail_chars - tail_limit
+                first = self._tail.popleft()
+                if len(first) > excess:
+                    self._tail.appendleft(first[excess:])
+                    self._tail_chars -= excess
+                else:
+                    self._tail_chars -= len(first)
 
     def run(self):
         try:
-            for line in iter(self._stream.readline, ""):
-                self._chunks.append(line)
+            while True:
+                chunk = self._stream.readline(PIPE_READ_CHARS)
+                if not chunk:
+                    break
+                self._append(chunk)
         except Exception:
             pass                      # a pipe closed under us is an end, not a failure
 
     def text(self) -> str:
-        return "".join(self._chunks[:])
+        with self._lock:
+            omitted = self._total_chars - len(self._head) - self._tail_chars
+            marker = ("\n[... %d output characters omitted from the middle ...]\n" % omitted
+                      if omitted else "")
+            return self._head + marker + "".join(self._tail)
+
+    @property
+    def omitted_chars(self) -> int:
+        with self._lock:
+            return self._total_chars - len(self._head) - self._tail_chars
 
 
 def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
@@ -706,7 +751,9 @@ def run_owned(argv, *, use_shell: bool, cwd: str, timeout_s: float, cancelled=No
                    stderr=readers[1].text() if len(readers) > 1 else "",
                    elapsed_s=time.monotonic() - t0,
                    tree_terminated=confirmed, background_detached=detached,
-                   release_failed=failed, detail=detail)
+                   release_failed=failed, detail=detail,
+                   stdout_omitted_chars=readers[0].omitted_chars,
+                   stderr_omitted_chars=readers[1].omitted_chars if len(readers) > 1 else 0)
 
 
 def _wait(proc, readers, t0, timeout_s, cancelled, poll_s) -> str:
