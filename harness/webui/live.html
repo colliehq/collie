@@ -43,7 +43,7 @@
   </section>
 
   <section class="grid" id="activeArea" hidden>
-    <article class="card full"><div class="eyebrow">CURRENT UNDERSTANDING</div><h2 id="summaryTitle">What Collie is carrying</h2><div class="summary" id="summary"><div class="empty">Listening for enough context…</div></div><p class="review-hint" id="reviewHint" hidden>Export this review before starting a new session. Only the latest session is retained here.</p><div class="live-controls"><span class="capture" id="capture"><i></i><span id="captureText">Context active</span></span><button class="quiet" id="toggleUnderstand">Pause understanding</button><button class="quiet" id="stop">Stop session</button></div><div class="review-tools"><button class="secondary" id="exportSession">Export Markdown</button><label><input type="checkbox" id="exportContext"> Include context log</label></div><div class="notice" id="exportNotice" role="status"></div><div class="notice" id="activeNotice"></div></article>
+    <article class="card full"><div class="eyebrow">CURRENT UNDERSTANDING</div><h2 id="summaryTitle">What Collie is carrying</h2><div class="summary" id="summary"><div class="empty">Listening for enough context…</div></div><p class="review-hint" id="reviewHint" hidden>Export this review before starting a new session. Only the latest session is retained here.</p><div class="live-controls"><span class="capture" id="capture"><i></i><span id="captureText">Context active</span></span><button class="quiet" id="toggleUnderstand">Pause understanding</button><button class="quiet" id="stop">Stop session</button></div><div class="review-tools"><button class="secondary" id="exportSession">Export Markdown</button><label><input type="checkbox" id="exportContext"> Include context log</label></div><div class="notice" id="exportNotice" role="status"></div><div class="notice" id="audioNotice" role="status" aria-live="polite"></div><div class="notice" id="activeNotice"></div></article>
     <article class="card full"><div class="eyebrow">LIVE LOG</div><h2>What Collie has observed</h2><div class="timeline" id="events"><div class="empty">No events yet.</div></div></article>
     <article class="card"><div class="eyebrow">READY WHEN NEEDED</div><h2>Timely cues</h2><div class="suggestions" id="suggestions"><div class="empty">Collie will keep this quiet until something useful emerges.</div></div></article>
     <article class="card full"><div class="eyebrow">ASYNCHRONOUS WORK</div><h2>Still working while you continue</h2><div class="work" id="work"><div class="empty">No work handed off yet.</div></div></article>
@@ -79,14 +79,108 @@ function notice(id,text,bad){var e=document.getElementById(id);e.textContent=tex
 function time(ms){if(!ms)return"";return new Date(Number(ms)).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
 function mime(){var a=["audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus","audio/mp4"];for(var i=0;i<a.length;i++)if(window.MediaRecorder&&MediaRecorder.isTypeSupported(a[i]))return a[i];return""}
 async function captureSources(){var sources=[],mic=null;if(!NATIVE_HOST){mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});streams.push(mic);sources.push({name:"microphone",stream:new MediaStream(mic.getAudioTracks())})}return sources}
-function startCycler(item){var seq=0,format=mime();if(!format)throw new Error("This runtime cannot record supported audio chunks.");function cycle(){if(!runningCapture||!STATE.active||!STATE.listen||!item.stream.getAudioTracks().some(function(t){return t.readyState==="live"}))return;var parts=[],rec=new MediaRecorder(item.stream,{mimeType:format,audioBitsPerSecond:48000}),timer;cyclers.push(rec);rec.ondataavailable=function(e){if(e.data&&e.data.size)parts.push(e.data)};rec.onstop=function(){clearTimeout(timer);cyclers=cyclers.filter(function(x){return x!==rec});if(parts.length){var blob=new Blob(parts,{type:format});fetch(q("/api/live-copilot/audio",{session:STATE.session_id,source:item.name,seq:seq++}),{method:"POST",headers:{"content-type":format},body:blob}).catch(function(){})}if(runningCapture)setTimeout(cycle,70)};rec.start();timer=setTimeout(function(){if(rec.state!=="inactive")rec.stop()},6500)}cycle()}
-async function beginCapture(sources){sources=sources||await captureSources();runningCapture=true;sources.forEach(startCycler)}
-function endCapture(){runningCapture=false;cyclers.forEach(function(r){try{if(r.state!=="inactive")r.stop()}catch(e){}});cyclers=[];streams.forEach(function(s){s.getTracks().forEach(function(t){t.stop()})});streams=[]}
+Object.assign(ZH,{
+  "Recording paused while the audio upload catches up. Retrying the same clip.":"音频上传暂时跟不上，已暂停采集，正在重试同一片段。",
+  "Audio upload was rejected. Recording stopped.":"音频上传被拒绝，已停止录音。",
+  "Audio recording failed. Recording stopped.":"音频采集失败，已停止录音。",
+  "Microphone active":"麦克风采集中"
+});
+var captureEpoch=0,captureSession="",captureRequests=new Set();
+function captureCurrent(epoch,session){
+  return runningCapture&&captureEpoch===epoch&&STATE.active&&STATE.listen&&STATE.session_id===session;
+}
+function audioNotice(text,bad){notice("audioNotice",text?tr(text):"",bad)}
+function captureWait(ms,signal){
+  return new Promise(function(resolve){
+    var timer=setTimeout(done,ms);
+    function done(){clearTimeout(timer);signal.removeEventListener("abort",done);resolve()}
+    signal.addEventListener("abort",done,{once:true});if(signal.aborted)done();
+  });
+}
+async function uploadAudioChunk(item,blob,session,seq,epoch){
+  var lifetime=new AbortController(),failures=0;
+  captureRequests.add(lifetime);
+  try{
+    while(captureCurrent(epoch,session)&&!lifetime.signal.aborted){
+      var request=new AbortController(),timedOut=false,retryMs=750;
+      function abort(){request.abort()}
+      lifetime.signal.addEventListener("abort",abort,{once:true});
+      var timer=setTimeout(function(){timedOut=true;request.abort()},10000);
+      try{
+        var response=await fetch(q("/api/live-copilot/audio",{session:session,source:item.name,seq:seq}),
+          {method:"POST",headers:{"content-type":blob.type},body:blob,signal:request.signal});
+        var data=await response.json().catch(function(){return{}});
+        if(!captureCurrent(epoch,session)||lifetime.signal.aborted)return false;
+        if(response.ok&&data.ok===true){audioNotice("");return true}
+        if(response.status!==429&&response.status<500){
+          endCapture();audioNotice(data.error||"Audio upload was rejected. Recording stopped.",true);return false;
+        }
+        var seconds=Number(response.headers.get("Retry-After"));
+        retryMs=Number(data.retry_after_ms)||(seconds>0?seconds*1000:750);
+      }catch(error){
+        if(!captureCurrent(epoch,session)||lifetime.signal.aborted)return false;
+        if(error.name==="AbortError"&&!timedOut)return false;
+      }finally{
+        clearTimeout(timer);lifetime.signal.removeEventListener("abort",abort);
+      }
+      failures++;
+      audioNotice("Recording paused while the audio upload catches up. Retrying the same clip.",true);
+      var delay=Math.max(250,Math.min(5000,Math.max(retryMs,750*Math.pow(1.5,Math.min(failures-1,5)))));
+      await captureWait(delay,lifetime.signal);
+    }
+    return false;
+  }finally{captureRequests.delete(lifetime)}
+}
+function startCycler(item){
+  var session=captureSession,epoch=captureEpoch,previous=Number((STATE.audio||{})[item.name+"_seq"]);
+  var seq=Number.isSafeInteger(previous)&&previous>=0?previous+1:0,format=mime();
+  if(!format)throw new Error("This runtime cannot record supported audio chunks.");
+  function cycle(){
+    if(!captureCurrent(epoch,session)||!item.stream.getAudioTracks().some(function(t){return t.readyState==="live"}))return;
+    var parts=[],rec=new MediaRecorder(item.stream,{mimeType:format,audioBitsPerSecond:48000}),timer;
+    cyclers.push(rec);
+    rec.ondataavailable=function(e){if(e.data&&e.data.size)parts.push(e.data)};
+    rec.onstop=async function(){
+      clearTimeout(timer);cyclers=cyclers.filter(function(x){return x!==rec});
+      if(!captureCurrent(epoch,session))return;
+      try{
+        if(parts.length){
+          var blob=new Blob(parts,{type:format});parts=[];
+          if(!await uploadAudioChunk(item,blob,session,seq,epoch))return;
+          seq++;
+        }
+        if(captureCurrent(epoch,session))setTimeout(cycle,70);
+      }catch(error){if(captureCurrent(epoch,session)){endCapture();audioNotice(error.message,true)}}
+    };
+    rec.onerror=function(){if(captureCurrent(epoch,session)){endCapture();audioNotice("Audio recording failed. Recording stopped.",true)}};
+    rec.start();timer=setTimeout(function(){if(rec.state!=="inactive")rec.stop()},6500);
+  }
+  cycle();
+}
+async function beginCapture(sources){
+  if(runningCapture)endCapture();
+  var epoch=++captureEpoch,session=STATE.session_id;
+  sources=sources||await captureSources();
+  // Permission/session changes while the browser permission sheet was open do
+  // not authorize starting these newly returned tracks in a different session.
+  if(epoch!==captureEpoch||!STATE.active||!STATE.listen||STATE.session_id!==session){
+    sources.forEach(function(item){item.stream.getTracks().forEach(function(track){track.stop()})});return;
+  }
+  captureSession=session;runningCapture=true;audioNotice("");sources.forEach(startCycler);
+}
+function endCapture(){
+  runningCapture=false;captureEpoch++;captureSession="";
+  captureRequests.forEach(function(controller){controller.abort()});captureRequests.clear();
+  cyclers.forEach(function(rec){try{if(rec.state!=="inactive")rec.stop()}catch(error){}});cyclers=[];
+  streams.forEach(function(stream){stream.getTracks().forEach(function(track){track.stop()})});streams=[];
+  audioNotice("");
+}
+
 function speakAvatar(text){text=String(text||"").trim();if(!text||!("speechSynthesis" in window))return;window.speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(text);u.lang=LANG.indexOf("zh")===0?"zh-CN":"en-US";u.rate=1.02;u.volume=1;window.speechSynthesis.speak(u)}
 function clearAvatarSurface(){AVATAR_JOIN="";document.getElementById("openAvatar").disabled=true;document.getElementById("avatarLocal").hidden=false}
 function openAvatarRoom(){if(!AVATAR_JOIN)return false;var w=window.open(AVATAR_JOIN,"collie-avatar-room");if(w)try{w.opener=null}catch(e){}return!!w}
 function render(s){STATE=s||{};var active=!!s.active,events=s.events||[],suggestions=(s.suggestions||[]).filter(function(x){return!x.dismissed}),work=s.work||[],cap=s.capabilities||{},audio=s.audio||{},analysis=s.analysis||{};
- if(!active&&runningCapture)endCapture();
+ if(runningCapture&&(!active||!s.listen||s.session_id!==captureSession))endCapture();
  document.getElementById("status").classList.toggle("on",active);document.getElementById("statusText").textContent=tr(active?"Maintaining context":s.session_id?"Session ended":"Not active");document.getElementById("setup").hidden=active;document.getElementById("handoffGuide").hidden=active;document.getElementById("activeArea").hidden=!s.session_id;document.getElementById("eventCount").textContent=events.length;document.getElementById("suggestionCount").textContent=suggestions.length;document.getElementById("workCount").textContent=work.length;
  document.getElementById("summaryTitle").textContent=tr(active?"What Collie is carrying":"Session review");document.getElementById("reviewHint").hidden=active;document.getElementById("toggleUnderstand").hidden=!active;document.getElementById("stop").hidden=!active;document.getElementById("boardEdit").disabled=!active;
  document.getElementById("listen").disabled=!(cap.speech_ready||(NATIVE_HOST&&cap.capsule_voice_local));document.getElementById("listen").title=(cap.speech_ready||(NATIVE_HOST&&cap.capsule_voice_local))?"":"Configure a speech provider before using conversation understanding";
@@ -94,7 +188,7 @@ function render(s){STATE=s||{};var active=!!s.active,events=s.events||[],suggest
  var ev=document.getElementById("events");ev.innerHTML=events.length?events.slice(-120).reverse().map(function(x){var label=x.kind||x.source||"context",where=x.app?(x.app+(x.title?" · "+x.title:"")):"";return'<div class="event"><b>'+esc(label)+'</b><span>'+esc(x.text)+'<small>'+esc(time(x.at_ms)+(where?" · "+where:""))+'</small></span></div>'}).join(""):'<div class="empty">No events yet.</div>';
  var sg=document.getElementById("suggestions");sg.innerHTML="";if(!suggestions.length)sg.innerHTML='<div class="empty">Collie will keep this quiet until something useful emerges.</div>';suggestions.forEach(function(x){var d=document.createElement("div");d.className="suggestion";d.innerHTML='<div class="shead"><span class="pill '+esc(x.urgency)+'">'+esc(x.kind)+" · "+esc(x.urgency)+'</span></div><p>'+esc(x.text)+'</p><div class="actions"><button class="secondary now">Do now</button><button class="secondary bg">Background</button><button class="quiet dismiss">Dismiss</button></div>';d.querySelector(".now").onclick=function(){runNow(x.text)};d.querySelector(".bg").onclick=function(){background(x.text,x.id)};d.querySelector(".dismiss").onclick=function(){api("/api/live-copilot/dismiss","POST",{suggestion_id:x.id}).then(render)};d.querySelectorAll("button").forEach(function(b){b.disabled=!active});sg.appendChild(d)});
  var wk=document.getElementById("work");wk.innerHTML=work.length?work.slice().reverse().map(function(x){return'<div class="workrow"><b>'+esc(x.goal)+'</b><span>'+esc(x.state||"queued")+" · "+esc(x.mission_id||"")+'</span></div>'}).join(""):'<div class="empty">No work handed off yet.</div>';
- document.getElementById("toggleUnderstand").textContent=tr(s.understand?"Pause understanding":"Resume understanding");document.getElementById("capture").classList.toggle("on",active&&s.listen&&(runningCapture||NATIVE_HOST));document.getElementById("captureText").textContent=!active?tr("Session ended"):s.listen?(audio.last_error?"Speech needs attention":NATIVE_HOST?(streams.some(function(x){return x.getAudioTracks().length})?"Local microphone + shared audio active":"Local microphone active"):runningCapture?"Hearing both sides":"Conversation enabled"):tr("Context active");document.getElementById("boardEdit").checked=!!s.board_edit;document.getElementById("boardState").textContent=s.board?(s.board.service_name+" · "+(s.board.title||"attached")):tr("No surface attached");document.getElementById("attach").disabled=!active;
+ document.getElementById("toggleUnderstand").textContent=tr(s.understand?"Pause understanding":"Resume understanding");document.getElementById("capture").classList.toggle("on",active&&s.listen&&(runningCapture||NATIVE_HOST));document.getElementById("captureText").textContent=!active?tr("Session ended"):s.listen?(audio.last_error?"Speech needs attention":NATIVE_HOST?(streams.some(function(x){return x.getAudioTracks().length})?"Local microphone + shared audio active":"Local microphone active"):runningCapture?"Microphone active":"Conversation enabled"):tr("Context active");document.getElementById("boardEdit").checked=!!s.board_edit;document.getElementById("boardState").textContent=s.board?(s.board.service_name+" · "+(s.board.title||"attached")):tr("No surface attached");document.getElementById("attach").disabled=!active;
  var avatar=s.avatar||{},avatarOn=!!avatar.active,hand=s.handoff||{},handoff=document.getElementById("handoff");handoff.hidden=!active||(NATIVE_HOST&&!hand.pending);handoff.classList.toggle("pending",!!hand.pending);if(hand.pending&&hand.suggested&&!document.getElementById("task").value)document.getElementById("task").placeholder=hand.suggested;document.getElementById("useContext").disabled=!active;document.getElementById("doNow").disabled=!active;document.getElementById("background").disabled=!active;document.getElementById("startAvatar").disabled=!active||avatarOn;document.getElementById("speakAvatar").disabled=!avatarOn||avatar.mode!=="simulation";document.getElementById("openAvatar").disabled=!AVATAR_JOIN;document.getElementById("stopAvatar").disabled=!avatarOn;document.getElementById("avatarStage").hidden=!avatarOn;if(avatar.script)document.getElementById("avatarSpeech").textContent=avatar.script;document.getElementById("avatarMeta").textContent=!active?"Start a Live Session first. This mode never represents itself as you.":avatarOn?(avatar.mode==="mcp"?"External avatar service active · maximum 10 minutes · AI disclosure enforced":"Local simulation active · connect an avatar MCP service for live video"):cap.avatar_provider_ready?"Avatar MCP service is ready. The room is private and capped at 10 minutes.":"Local simulation is ready now. No avatar MCP service is connected."}
 function load(){var missions=Date.now()-missionLast>5000?api("/api/missions").then(function(d){MISSIONS={};(d.missions||[]).forEach(function(m){MISSIONS[m.mission_id]=m.state});missionLast=Date.now()}).catch(function(){}):Promise.resolve();return Promise.all([api("/api/live-copilot"),missions]).then(function(values){var live=values[0];(live.work||[]).forEach(function(w){if(MISSIONS[w.mission_id])w.state=MISSIONS[w.mission_id]});render(live)}).catch(function(e){notice("activeNotice",e.message,true)})}
 document.getElementById("listen").onchange=function(){var on=this.checked;document.getElementById("consentWrap").hidden=!on;document.getElementById("voiceDialogue").disabled=!on;if(!on)document.getElementById("voiceDialogue").checked=false};
