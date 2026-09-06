@@ -199,6 +199,8 @@ class _KillOnCloseJob:
         self._kernel = kernel
         self._handle = handle
         self._accounting_type = BASIC_ACCOUNTING
+        self._limits_type = EXTENDED_LIMITS
+        self._name = str(name) if name else ""
         self._lock = threading.RLock()
         self._extinct = False
 
@@ -291,6 +293,70 @@ class _KillOnCloseJob:
             self._handle = None
             if not self._kernel.CloseHandle(handle):
                 raise OSError("Windows Job handle could not be closed")
+
+    def release_without_terminating(self) -> None:
+        """Give up ownership of processes that are MEANT to keep running, and keep them.
+
+        This is the opposite of :meth:`close` and exists for exactly one caller shape: a
+        foreground command that finished normally after deliberately backgrounding something
+        (``server &``, the workflow the bash tool's own description recommends). Such a tree
+        must outlive both the tool call and the Collie process that started it — but the Job
+        was created with KILL_ON_JOB_CLOSE, so merely closing the handle would kill it, and
+        holding the handle open would kill it later when Collie exits. Clearing the limit
+        first is what makes closing safe.
+
+        Never reachable from a cancellation, a timeout or an error path: those must prove
+        extinction, and ``close``/``terminate_and_wait`` keep their strong semantics
+        unchanged for Mission and the Claude Agent SDK worker. A NAMED Job is refused
+        outright — those are durable Mission receipts whose whole purpose is that another
+        process can still terminate the tree through them.
+
+        Raises on any failure. The caller must NOT then close the handle (that would kill
+        the survivors); reporting the failure is the honest move.
+        """
+        import ctypes
+        with self._lock:
+            if self._name:
+                raise RuntimeError(
+                    "named Windows Jobs are durable cancellation receipts and must not be "
+                    "released while processes are still in them")
+            handle = self._handle
+            if handle is None:
+                raise RuntimeError("Windows Job handle is already closed")
+            info = self._limits_type()
+            info.BasicLimitInformation.LimitFlags = 0      # drop KILL_ON_JOB_CLOSE
+            if not self._kernel.SetInformationJobObject(
+                    handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError()
+            # Only now is CloseHandle a plain handle close rather than a kill. The Job itself
+            # lives on, unnamed and unreferenced, until its last process exits.
+            self._handle = None
+            if not self._kernel.CloseHandle(handle):
+                raise OSError("Windows Job handle could not be closed")
+
+
+def shell_environment(env=None):
+    """Keep ordinary Python commands inside the shell's owned process tree.
+
+    Windows App Execution Aliases can launch Python through the install manager,
+    outside the caller's Job. Prefer Collie's resolved interpreter for that alias
+    only. A selected venv or any real Python already on PATH retains priority.
+    Explicit absolute commands are not rewritten; this is not an OS sandbox.
+    """
+    import sys
+    if not is_windows():
+        return env
+    values = dict(os.environ if env is None else env)
+    executable = shutil.which("python", path=values.get("PATH", "")) or ""
+    normalized = executable.replace("\\", "/").lower()
+    if "/microsoft/windowsapps/" not in normalized:
+        return env
+    actual = sys.executable
+    if not actual or not os.path.isfile(actual):
+        return env
+    directory = os.path.dirname(os.path.abspath(actual))
+    values["PATH"] = directory + os.pathsep + values.get("PATH", "")
+    return values
 
 
 def attach_kill_on_close_job(proc, name=None):

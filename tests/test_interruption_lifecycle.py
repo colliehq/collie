@@ -53,6 +53,60 @@ def _batch(*names_and_paths):
 # --------------------------------------------------------------------------- #
 # the loop: an interrupted batch
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("name,args", [
+    ("bash", {"command": "echo partial"}), ("grep", {"pattern": "anything"}),
+])
+def test_unconfirmed_process_tree_fences_batch_and_survives_final_save(tmp_path, monkeypatch, name, args):
+    from harness import tool_process
+    h = _harness(tmp_path, monkeypatch, sid="uncertain-tree")
+    monkeypatch.setattr(tool_process, "run_owned", lambda *a, **kw:
+                        tool_process.Outcome(tool_process.CANCELED, stdout="partial", tree_terminated=False))
+    h.provider = _ScriptProvider([Completion(tool_calls=[
+        ToolCall("running", name, args),
+        ToolCall("not-started", "write_file", {"path": "must-not-exist", "content": "bad"}),
+    ])])
+    try:
+        res = h.run("uncertain", "run the requested steps")
+        assert "recovery inspection" in res.error
+        assert not (tmp_path / "must-not-exist").exists()
+        assert not _paired(res.messages)
+        sessions.save("uncertain-tree", res.messages, answer=res.answer)
+        state = sessions.recovery_state("uncertain-tree")
+        assert state["recovery_required"]
+        assert state["detail"]["tool_call_id"] == "running"
+        assert state["state"] == "external_action", "even a grep process must carry its unknown lifetime"
+    finally:
+        h.memory.close(); h.recorder.close()
+
+
+def test_cancel_nested_python_command_stops_descendants_and_resumes(tmp_path, monkeypatch):
+    import time
+    h = _harness(tmp_path, monkeypatch, sid="nested-stop", exec_code=True)
+    delayed = "import time; time.sleep(2); open('late', 'w').write('bad')"
+    (tmp_path / "probe.py").write_text(
+        "import subprocess,sys,time\n"
+        "subprocess.Popen([sys.executable,'-c',%r], stdin=subprocess.DEVNULL, "
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL, "
+        "creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))\n"
+        "print('Probe has started',flush=True)\n"
+        "open('ready','w').write('ready')\n"
+        "time.sleep(30)\n" % delayed, encoding="utf-8")
+    h.cancelled = lambda: (tmp_path / "ready").exists()
+    h.provider = _ScriptProvider([Completion(tool_calls=[
+        ToolCall("script", "execute_code", {"code": "print(bash('python probe.py'))", "timeout": 60}),
+    ])])
+    try:
+        res = h.run("nested", "run the probe")
+        assert res.canceled
+        assert not _paired(res.messages)
+        assert "Probe has started" in _results(res.messages)["script"]
+        assert sessions.recovery_state("nested-stop") is None
+        time.sleep(2.2)
+        assert not (tmp_path / "late").exists()
+    finally:
+        h.memory.close(); h.recorder.close()
 def test_interrupted_batch_keeps_done_work_and_closes_the_rest(tmp_path, monkeypatch):
     """One killed tool must not erase the tool before it or forgive the one after."""
     from harness.tools import WriteFileTool

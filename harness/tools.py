@@ -17,6 +17,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from . import plat
+from . import tool_process as _proc
 
 _SHIM_DIR = None
 
@@ -27,7 +28,7 @@ def _shim_env():
     reproductions fail 'python: not found', wasting a turn AND falsely failing the verification gate."""
     global _SHIM_DIR
     if shutil.which("python"):
-        return None                                    # already resolves — inherit os.environ
+        return plat.shell_environment()                # normalize Windows brokered app aliases
     py3 = shutil.which("python3")
     if not py3:
         return None
@@ -121,6 +122,21 @@ class ToolCtx:
     # Host-only callback. Child investigation prompts cannot create another
     # execution context or obtain the parent's credentials through tool args.
     delegate_runner: object = None
+    # Host-only cooperative cancellation: () -> bool, True once the surface's Stop has been
+    # pressed. Set by the loop from the embedding surface, never by a model argument — a tool
+    # can ask whether to stop, it can never decide that someone asked. Tools that own a
+    # subprocess poll it while waiting, so Stop ends the command instead of leaving it to run
+    # out its timeout. Default None (and read via getattr) so every simpler ToolCtx-shaped
+    # context — embedders, the small test doubles — keeps working unchanged.
+    cancelled: object = None
+    # Host-only, tool-SET (the only field here that flows outward): True once a tool has done
+    # something whose extent it cannot account for — an executed command whose process tree
+    # could not be proved stopped, or one whose deliberate background survivors could not be
+    # handed over cleanly. The tool's own text says so too, but text is only advice to the
+    # model; the loop needs a fact to fence the turn with, so that a run cannot be finalized
+    # as cleanly finished while a command it started may still be writing files. Never
+    # model-controlled: no tool argument can set or clear it.
+    tool_effect_uncertain: bool = False
 
 
 class Tool:
@@ -465,48 +481,57 @@ class BashTool(Tool):
         # [1, 600] so a typo'd huge value can't wedge the loop. Either arg name works.
         _t = args.get("timeout_s", args.get("timeout"))
         timeout = 120 if _t in (None, "") else max(1, min(600, int(_t)))
-        # Popen + start_new_session (NOT subprocess.run) so a timeout kills the WHOLE process group.
-        # subprocess.run kills only the direct `sh`; a backgrounded grandchild that inherited the
-        # stdout pipe keeps its write end open, so the follow-up drain would block forever and wedge
-        # the whole agent loop — the same hazard GrepTool already guards against.
         try:
             # Route through plat.shell_argv so `;`, `&&`, pipes and heredocs mean the same on every
             # OS: POSIX uses /bin/sh; Windows uses Git Bash/MSYS2 if present (else cmd.exe, degraded).
             # Inside the try so a missing `command` key returns a graceful ERROR, never raises.
             _cmdargs, _use_shell = plat.shell_argv(args["command"])
-            # no_window: this is the single most-run subprocess in the codebase, and started from a
-            # windowless parent (pythonw — the Slack dog, the wallpaper, the desktop app) Windows
-            # gives each child its OWN console. A run doing twenty shell steps threw twenty black
-            # boxes across the screen of whoever happened to be using the machine. Harmless to the
-            # run and impossible to ignore. new_group_kwargs() is {} on Windows, so the two spread
-            # cleanly side by side rather than one overwriting the other's creationflags.
-            p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                 env=_shim_env(), **plat.new_group_kwargs(),
-                                 **plat.no_window_kwargs())
         except Exception as e:
             return "ERROR: %s" % e
-        timed_out = False
-        try:
-            stdout, stderr = p.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            plat.kill_tree(p)                                  # sh + every grandchild (cross-platform)
-            try:
-                stdout, stderr = p.communicate(timeout=5)      # drain what was buffered
-            except Exception:
-                stdout, stderr = "", ""
-        out = (stdout or "") + (("\n[stderr] " + stderr) if stderr else "")
+        # tool_process owns the whole tree (POSIX group / Windows Job), keeps the shell windowless,
+        # drains both pipes as they fill, and polls the host's Stop callback between sleeps — so a
+        # cancelled command dies now instead of running out a deadline of up to ten minutes, and
+        # whatever it had already printed comes back with it.
+        r = _proc.run_owned(_cmdargs, use_shell=_use_shell, cwd=ctx.cwd, env=_shim_env(),
+                            timeout_s=timeout, cancelled=_proc.cancel_check(ctx))
+        # An action whose extent nobody can account for is reported to the HOST as data, not
+        # only as prose in the model's transcript: the loop fences such a turn instead of
+        # finalizing it as clean. Prose alone is advice; a flag is a fact the loop can use.
+        if r.effect_uncertain:
+            _proc.mark_effect_uncertain(ctx)
+        if r.status == _proc.LAUNCH_ERROR:
+            return "ERROR: %s" % r.detail
+        if r.status == _proc.PRELAUNCH_CANCELED:
+            # The one case where "it did not run" is a fact: no process was ever created.
+            return ("ERROR: canceled before the command started — it was NOT executed. Nothing "
+                    "here says whether it would have succeeded, and no file it would have "
+                    "written was written.")
+        out = (r.stdout or "") + (("\n[stderr] " + r.stderr) if r.stderr else "")
         out = out.strip() or "(no output)"
-        if timed_out:
+        if r.status == _proc.CANCELED:
+            return self._interrupted(
+                out, r, "canceled by the user after %.1fs" % r.elapsed_s,
+                "partial pre-cancel output",
+                stopped=" — the owned process tree was stopped.",
+                tail=" The command did NOT finish, so this output is PARTIAL and says nothing "
+                     "about whether it would have succeeded.")
+        if r.status == _proc.TIMEOUT:
             # highest-value spill: re-running a timed-out command costs another full timeout.
-            if len(out) > 4000:
-                sp = _spill_full_output(out)
-                if sp:
-                    return ("ERROR: command timed out after %ds (killed) — full pre-kill output "
-                            "saved to %s\n%s" % (timeout, sp, out[-4000:]))
-            return "ERROR: command timed out after %ds (killed)\n%s" % (timeout, out[-4000:])
-        head = "" if p.returncode == 0 else "[exit %d]\n" % p.returncode
+            return self._interrupted(out, r, "timed out after %ds (killed)" % timeout,
+                                     "full pre-kill output")
+        if r.status == _proc.HANDOVER_ERROR:
+            # Released, then lost. This is NOT "it did not run": say what is actually unknown.
+            return self._interrupted(
+                out, r, "may have started but Collie lost control of it (%s)" % r.detail,
+                "partial output",
+                stopped=" — the owned process tree was stopped.",
+                tail=" Check whether it took effect before re-running it.")
+        head = "" if r.returncode == 0 else "[exit %d]\n" % r.returncode
+        if r.effect_uncertain:
+            # The command itself finished; what it deliberately backgrounded could not be
+            # handed over cleanly. Never claim a background start we cannot stand behind.
+            head += ("[WARNING: this command finished, but %s. Verify that what you "
+                     "backgrounded is running before relying on it.]\n" % r.detail)
         # keep the TAIL on overflow: errors/tracebacks print last, and head-truncation
         # dropped exactly the part that says what went wrong. Spill the FULL output to a file so
         # the model can grep/read_file it instead of paying to re-run the command. The pointer is
@@ -521,6 +546,31 @@ class BashTool(Tool):
                 marker = "…[truncated %d chars]\n" % (len(out) - 8000)
             out = marker + out[-8000:]
         return head + out
+
+    @staticmethod
+    def _interrupted(out, r, what, spill_label, stopped="", tail=""):
+        """One shape for the two ways a command can end WITHOUT finishing: the deadline and Stop.
+
+        Both are ERROR-prefixed, which is not cosmetic — the finish gate reads that prefix as a
+        FAILED reproduction (loop._repro_failed), so an interrupted `pytest` can never be counted
+        as a check that passed. And whether the tree really stopped is stated, never assumed: a
+        kill the OS would not confirm gets the warning in the FIRST line, because the next thing
+        anyone does with "it stopped" is re-run the command on top of a tree still writing.
+        """
+        head = "ERROR: command %s" % what
+        if r.tree_terminated:
+            head += stopped
+        else:
+            head += (" — WARNING: the process tree could NOT be confirmed stopped (%s), so child "
+                     "processes may still be RUNNING and writing files; do not treat this as a "
+                     "clean stop and do not re-run the command until you have checked."
+                     % (r.detail or "no confirmation available"))
+        head += tail
+        if len(out) > 4000:
+            sp = _spill_full_output(out)
+            if sp:
+                return "%s — %s saved to %s\n%s" % (head, spill_label, sp, out[-4000:])
+        return "%s\n%s" % (head, out[-4000:])
 
 
 class RunInEnvTool(Tool):
@@ -649,39 +699,47 @@ class GrepTool(Tool):
         gr = "grep -rnIE %s -e %s %s" % (excl_gr, _sh(pat), _sh(path))
         grf = "grep -rnIF %s -e %s %s" % (excl_gr, _sh(pat), _sh(path))
         cmd = rg + " || " + gr + " || " + grf
-        # Popen (not run) so a timeout still returns the matches found SO FAR — a huge tree should
-        # yield partial results, not nothing (the user's ask: even very large grep output must still
-        # be capturable). start_new_session so
-        # we can kill the WHOLE process group on timeout: p.kill() alone leaves the rg/grep children
-        # holding the stdout pipe and communicate() hangs forever.
-        import os as _os
-        import signal as _sig
+        # Owned + cancellable (not subprocess.run) for two reasons. A timeout still returns the
+        # matches found SO FAR — a huge tree should yield partial results, not nothing — and the
+        # kill reaches the WHOLE tree: p.kill() alone leaves the rg/grep children holding the
+        # stdout pipe and the drain hangs forever. Stop is honored the same way as in bash: a
+        # `grep pattern /` started by mistake ends when the user says so, not 25 seconds later.
         _cmdargs, _use_shell = plat.shell_argv(cmd)          # POSIX shell on every OS (Git Bash on Win)
-        p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, **plat.new_group_kwargs(),
-                             **plat.no_window_kwargs())
-        try:
-            out, _ = p.communicate(timeout=25)
-            return ((out or "").strip() or "(no matches)")[:6000]
-        except subprocess.TimeoutExpired:
-            plat.kill_tree(p)                                  # kill sh + rg + grep together
-            out = ""
-            try:
-                out, _ = p.communicate(timeout=5)
-            except Exception:
-                pass
-            out = (out or "").strip()
-            if out:
-                return out[:6000] + "\n… (hit 25s; PARTIAL results — pass a narrower `path` for the rest)"
-            # ERROR, not "(no match…)". A completed search that finds nothing returns "(no matches)"
-            # one branch up, and the two strings were near-identical — so a search that was KILLED
-            # read as proof the thing does not exist, and whatever was searched for got treated as
-            # absent. An inconclusive result must never wear the shape of a conclusive one.
-            return ("ERROR: the search was killed at 25s before it finished, so this says NOTHING "
-                    "about whether the pattern exists — it was not searched to the end. Narrow "
-                    "`path` (e.g. a subdirectory) or use a more specific pattern, then re-run.")
-        except Exception as e:
-            return "ERROR: %s" % e
+        r = _proc.run_owned(_cmdargs, use_shell=_use_shell, cwd=ctx.cwd, timeout_s=25,
+                            capture_stderr=False, cancelled=_proc.cancel_check(ctx))
+        if r.effect_uncertain:                   # host-visible fence, same rule as bash
+            _proc.mark_effect_uncertain(ctx)
+        if r.status == _proc.LAUNCH_ERROR:
+            return "ERROR: %s" % r.detail
+        out = (r.stdout or "").strip()
+        if r.status == _proc.OK:
+            # A search that finished is conclusive even if it left something behind it (it
+            # cannot: rg/grep background nothing). Status, not tree state, decides this.
+            return (out or "(no matches)")[:6000]
+        # Everything below is an UNFINISHED search. A completed search that finds nothing returns
+        # "(no matches)" above, and the two used to read almost identically — so a search that was
+        # KILLED was taken as proof the thing does not exist, and whatever was searched for got
+        # treated as absent. An inconclusive result must never wear the shape of a conclusive one,
+        # whichever way it was cut short.
+        if r.status == _proc.PRELAUNCH_CANCELED:
+            return ("ERROR: canceled before the search started — it was NOT run, so this says "
+                    "NOTHING about whether the pattern exists.")
+        if r.status == _proc.CANCELED:
+            why = "was CANCELED by the user after %.0fs" % r.elapsed_s
+        elif r.status == _proc.HANDOVER_ERROR:
+            why = "may have started but was lost by Collie (%s)" % r.detail
+        else:
+            why = "was killed at 25s before it finished"
+        warn = ("" if r.tree_terminated else
+                " (WARNING: the search process tree could not be confirmed stopped: %s)"
+                % (r.detail or "no confirmation available"))
+        if out:
+            return ("ERROR: the search %s, so the results below are PARTIAL and say NOTHING about "
+                    "whether the pattern exists elsewhere%s. Matches found so far:\n%s"
+                    % (why, warn, out[:6000]))
+        return ("ERROR: the search %s, so this says NOTHING about whether the pattern exists — it "
+                "was not searched to the end%s. Narrow `path` (e.g. a subdirectory) or use a more "
+                "specific pattern, then re-run." % (why, warn))
 
 
 class GlobTool(Tool):

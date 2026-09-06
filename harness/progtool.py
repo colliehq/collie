@@ -20,7 +20,6 @@ they are deliberately not described as an OS sandbox.
 """
 from __future__ import annotations
 
-import ctypes
 import hmac
 import json
 import os
@@ -109,154 +108,21 @@ def _drain_pipe(pipe, capture: _BoundedCapture) -> None:
             pass
 
 
-class _WindowsJob:
-    """Kill-on-close owner for an execute_code process and every descendant.
-
-    The child waits on a one-byte stdin gate until assignment succeeds. This closes the usual
-    race where model code creates a detached child between Popen and AssignProcessToJobObject.
-    BREAKAWAY is intentionally not enabled, so descendants cannot opt out of this job.
-    """
-
-    def __init__(self, child: subprocess.Popen):
-        self.handle = None
-        self._kernel = None
-        if os.name != "nt":
-            return
-        from ctypes import wintypes
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_ulonglong) for name in (
-                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-        class BASIC_LIMITS(ctypes.Structure):
-            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
-                        ("PerJobUserTimeLimit", ctypes.c_longlong),
-                        ("LimitFlags", wintypes.DWORD),
-                        ("MinimumWorkingSetSize", ctypes.c_size_t),
-                        ("MaximumWorkingSetSize", ctypes.c_size_t),
-                        ("ActiveProcessLimit", wintypes.DWORD),
-                        ("Affinity", ctypes.c_size_t),
-                        ("PriorityClass", wintypes.DWORD),
-                        ("SchedulingClass", wintypes.DWORD)]
-
-        class EXTENDED_LIMITS(ctypes.Structure):
-            _fields_ = [("BasicLimitInformation", BASIC_LIMITS),
-                        ("IoInfo", IO_COUNTERS),
-                        ("ProcessMemoryLimit", ctypes.c_size_t),
-                        ("JobMemoryLimit", ctypes.c_size_t),
-                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-        class BASIC_ACCOUNTING(ctypes.Structure):
-            _fields_ = [("TotalUserTime", ctypes.c_longlong),
-                        ("TotalKernelTime", ctypes.c_longlong),
-                        ("ThisPeriodTotalUserTime", ctypes.c_longlong),
-                        ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
-                        ("TotalPageFaultCount", wintypes.DWORD),
-                        ("TotalProcesses", wintypes.DWORD),
-                        ("ActiveProcesses", wintypes.DWORD),
-                        ("TotalTerminatedProcesses", wintypes.DWORD)]
-
-        self._accounting_type = BASIC_ACCOUNTING
-        # Explicit prototypes matter on 64-bit Windows: ctypes otherwise defaults arguments to
-        # C ``int`` and may truncate an opaque HANDLE before Assign/Query/Close sees it.
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
-        kernel.CreateJobObjectW.restype = wintypes.HANDLE
-        kernel.SetInformationJobObject.argtypes = [
-            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-        kernel.SetInformationJobObject.restype = wintypes.BOOL
-        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-        kernel.AssignProcessToJobObject.restype = wintypes.BOOL
-        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-        kernel.TerminateJobObject.restype = wintypes.BOOL
-        kernel.QueryInformationJobObject.argtypes = [
-            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
-            ctypes.POINTER(wintypes.DWORD)]
-        kernel.QueryInformationJobObject.restype = wintypes.BOOL
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel.CloseHandle.restype = wintypes.BOOL
-        handle = kernel.CreateJobObjectW(None, None)
-        if not handle:
-            raise ctypes.WinError(ctypes.get_last_error())
-        limits = EXTENDED_LIMITS()
-        limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
-        try:
-            if not kernel.SetInformationJobObject(
-                    handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
-                raise ctypes.WinError(ctypes.get_last_error())
-            if not kernel.AssignProcessToJobObject(
-                    handle, wintypes.HANDLE(int(child._handle))):
-                raise ctypes.WinError(ctypes.get_last_error())
-        except Exception:
-            kernel.CloseHandle(handle)
-            raise
-        self._kernel = kernel
-        self.handle = handle
-
-    def terminate_and_wait(self, wait_s: float = 5.0) -> None:
-        if self.handle is None:
-            return
-        kernel = self._kernel
-        if not kernel.TerminateJobObject(self.handle, 137):
-            # KILL_ON_JOB_CLOSE is the fallback if an unusual host refuses explicit termination.
-            self.close()
-            return
-        deadline = time.monotonic() + wait_s
-        while time.monotonic() < deadline:
-            info = self._accounting_type()
-            if not kernel.QueryInformationJobObject(
-                    self.handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
-                break
-            if info.ActiveProcesses == 0:
-                break
-            time.sleep(0.01)
-
-    def close(self) -> None:
-        if self.handle is not None:
-            self._kernel.CloseHandle(self.handle)
-            self.handle = None
-
-
 class _ProcessTree:
-    """Own one child tree and synchronously terminate it on every return path."""
+    """Reuse the common owned-tree proof; scripts always reap their descendants."""
 
-    def __init__(self, child: subprocess.Popen):
-        self.child = child
-        self.job = _WindowsJob(child) if os.name == "nt" else None
+    def __init__(self, child):
+        from . import tool_process
+        self.owner = tool_process.own_gated_process(
+            child, {"start_new_session": os.name != "nt"})
+        self.detail = ""
 
-    def terminate_and_wait(self) -> None:
-        if os.name == "nt":
-            if self.job is not None:
-                self.job.terminate_and_wait()
-        else:
-            # execute_code always starts a new session, therefore pgid == the original child PID.
-            # Use that known ID rather than getpgid(child.pid): the leader may already have exited
-            # while a background grandchild still owns stdout and is preparing a late side effect.
-            # This owns ordinary background/detached descendants that remain in the group. It is
-            # not an OS sandbox: deliberately calling setsid()/double-fork to enter another group
-            # can escape this portable boundary and must be contained by the caller's VM/container.
-            try:
-                import signal
-                os.killpg(self.child.pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                try:
-                    self.child.kill()
-                except (OSError, ProcessLookupError):
-                    pass
-        try:
-            self.child.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                self.child.kill()
-                self.child.wait(timeout=1)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+    def terminate_and_wait(self):
+        confirmed, self.detail = self.owner.terminate()
+        return confirmed
 
-    def close(self) -> None:
-        if self.job is not None:
-            self.job.close()
+    def close(self):
+        self.owner.discard()
 
 
 def _child_env(port: int, token: str) -> dict:
@@ -377,6 +243,10 @@ class ExecuteCodeTool(Tool):
         self._registry = registry
 
     def run(self, args, ctx):
+        from . import tool_process
+        cancelled = tool_process.cancel_check(ctx)
+        if tool_process.is_cancelled(cancelled):
+            return "ERROR: execute_code canceled before execution"
         code = args.get("code") or ""
         if not code.strip():
             return "ERROR: empty code"
@@ -394,6 +264,9 @@ class ExecuteCodeTool(Tool):
         stdout_capture = _BoundedCapture(24 * 1024)
         stderr_capture = _BoundedCapture(16 * 1024, keep_tail=True)
         timed_out = False
+        stopped = False
+        released = False
+        tree_terminated = False
         run_error = None
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
@@ -423,19 +296,36 @@ class ExecuteCodeTool(Tool):
                     reader = threading.Thread(target=_drain_pipe, args=(pipe, capture), daemon=True)
                     reader.start()
                     readers.append(reader)
-                proc.stdin.write(b"G")
-                proc.stdin.close()
-                try:
-                    proc.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
+                if tool_process.is_cancelled(cancelled):
+                    stopped = True
+                else:
+                    # From the first release byte onward, user code may have run.
+                    released = True
+                    proc.stdin.write(b"G")
+                    proc.stdin.close()
+                    deadline = time.monotonic() + timeout
+                    while True:
+                        if tool_process.is_cancelled(cancelled):
+                            stopped = True
+                            break
+                        if proc.poll() is not None:
+                            break
+                        if time.monotonic() >= deadline:
+                            timed_out = True
+                            break
+                        time.sleep(.05)
             except Exception as e:               # bad interpreter, exec failure, etc. — never escape
                 run_error = e
             finally:
+                revoke = getattr(getattr(srv, "collie_tool_broker", None), "revoke", None)
+                if callable(revoke):
+                    revoke()
                 # Reap descendants even when the direct script returned successfully or raised.
                 # This runs before output-drain joins, so inherited pipe handles cannot wedge us.
                 if owner is not None:
-                    owner.terminate_and_wait()
+                    tree_terminated = owner.terminate_and_wait()
+                    if released and not tree_terminated:
+                        tool_process.mark_effect_uncertain(ctx)
                 elif proc is not None:
                     try:
                         proc.kill()
@@ -444,9 +334,14 @@ class ExecuteCodeTool(Tool):
                         pass
                 for reader in readers:
                     reader.join(timeout=5)
+                quiesce = getattr(getattr(srv, "collie_tool_broker", None), "quiesce", None)
+                if callable(quiesce):
+                    quiesce()
                 if proc is not None:
                     for pipe in (proc.stdin, proc.stdout, proc.stderr):
                         try:
+                            if pipe is not proc.stdin and any(r.is_alive() for r in readers):
+                                continue       # a blocked reader owns the pipe; close can block too
                             if pipe is not None:
                                 pipe.close()
                         except (OSError, ValueError):
@@ -454,10 +349,23 @@ class ExecuteCodeTool(Tool):
                 if owner is not None:
                     owner.close()
 
+            partial = stdout_capture.text()[:6000]
+            capture = getattr(getattr(srv, "collie_tool_broker", None), "captured_results", None)
+            if (stopped or timed_out or not tree_terminated) and callable(capture):
+                inner_results = capture()
+                if inner_results:
+                    partial += "\nPartial tool results:\n" + json.dumps(inner_results, ensure_ascii=False)[:6000]
+            if released and not tree_terminated:
+                return ("ERROR: execute_code process-tree termination could not be confirmed; "
+                        "recovery inspection is required.\n" + partial)
+            if stopped:
+                return ("ERROR: execute_code canceled by the user; " +
+                        ("partial output:\n" + partial if released else
+                         "the script was not executed"))
             if run_error is not None:
                 return "ERROR(execute_code): %s" % run_error
             if timed_out:
-                return "ERROR: execute_code timed out after %ds" % timeout
+                return "ERROR: execute_code timed out after %ds\n%s" % (timeout, partial)
             out = stdout_capture.text()[:6000]
             err = stderr_capture.text()
             if proc.returncode != 0:

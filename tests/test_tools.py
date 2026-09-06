@@ -290,26 +290,30 @@ def test_grep_timeout_is_not_reported_as_no_match():
     tree was NOT searched to the end, so it says nothing about whether the pattern exists. Anything
     reading results would conclude the thing is absent. The timeout path is an ERROR now.
     """
-    import ast, textwrap
+    # Asserted on the RESULT, not on the shape of the code that produces it: grep now waits
+    # through the cancellable owned-process helper (harness/tool_process.py), so the timeout is a
+    # returned outcome rather than a caught TimeoutExpired. The guarantee is unchanged, and this
+    # form also holds it for the second way a search can end early — the user pressing Stop.
+    from harness import tool_process as P
     import harness.tools as T
-    fn = ast.parse(textwrap.dedent(inspect.getsource(T.GrepTool.run))).body[0]
-    # the TimeoutExpired handler ONLY — a looser slice picks up the generic `except Exception:
-    # return "ERROR: %s"` below it and passes no matter what this branch does.
-    handlers = [h for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)
-                and "TimeoutExpired" in ast.dump(h.type or ast.Pass())]
-    assert len(handlers) == 1, "expected exactly one timeout handler in grep, found %d" % len(handlers)
-    rets = []
-    for n in ast.walk(handlers[0]):
-        if isinstance(n, ast.Return):
-            for c in ast.walk(n):
-                if isinstance(c, ast.Constant) and isinstance(c.value, str):
-                    rets.append(c.value)
-    assert rets, "the timeout handler returns nothing constant to inspect"
-    empty = [r for r in rets if "25s" in r and "PARTIAL" not in r]
-    assert empty, "could not find the no-results-on-timeout message"
-    for r in empty:
-        assert r.lstrip().upper().startswith("ERROR"), \
-            "a killed search must announce itself, not return a no-match-shaped string: %r" % r[:60]
+    ctx = _ctx(tempfile.gettempdir())
+    for status in (P.TIMEOUT, P.CANCELED):
+        for partial in ("", "src/a.py:1:hit"):
+            orig = T._proc.run_owned
+            T._proc.run_owned = lambda *a, **k: P.Outcome(
+                status, stdout=partial, elapsed_s=25.0, tree_terminated=True)
+            try:
+                r = T.GrepTool().run({"pattern": "x", "path": "."}, ctx)
+            finally:
+                T._proc.run_owned = orig
+            assert r.lstrip().upper().startswith("ERROR"), \
+                "a killed search must announce itself, not return a no-match-shaped string: %r" % r[:80]
+            assert "no matches" not in r, \
+                "an unfinished search must not read like a completed empty one: %r" % r[:80]
+            assert "NOTHING" in r, "it must say what it does NOT establish: %r" % r[:120]
+            if partial:
+                assert partial in r and "PARTIAL" in r, \
+                    "partial matches are kept, but only as partial: %r" % r[:120]
 
 # ------------------------------------------------------------------ reserved tool names
 def test_no_tool_name_reserved_by_the_api():

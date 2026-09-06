@@ -1095,7 +1095,13 @@ class Harness:
                         parent_run_id=getattr(self, "parent_run_id", None))
         ctx = ToolCtx(cwd=self.cwd, project=self.project, memory=self.memory,
                       recorder=self.recorder, registry=self.registry,
-                      checkpoint_scope=self.checkpoint_scope)
+                      checkpoint_scope=self.checkpoint_scope,
+                      # The surface's Stop, reachable from INSIDE a running tool. The loop's own
+                      # cancellation checks sit between calls, so a tool that owns a subprocess was
+                      # the one place Stop could not reach: the command kept running to its own
+                      # deadline. Passing the bound method (not self.cancelled) keeps the late-bound
+                      # lookup and the never-raises discipline of _cancel_requested.
+                      cancelled=self._cancel_requested)
         self._hook("SessionStart", {
             "run_id": rid, "task_id": task_id, "project": self.project,
             "provider": self.provider.name, "model": self.provider.model,
@@ -1856,6 +1862,12 @@ class Harness:
                             if _redact_on:
                                 out = _redact.redact_obj(out, self._secret_vault)
                             return out
+                        if getattr(ctx, "tool_effect_uncertain", False):
+                            uncertain_boundary = True
+                            res.error = ("a tool returned without confirming its process lifetime; "
+                                         "recovery inspection is required")
+                            if not str(out).startswith("ERROR"):
+                                out = "ERROR: %s\n%s" % (res.error, out)
                         # A custom or deferred tool may return structured data.  Redact it before
                         # lifecycle hooks, event sinks, transcripts, or the RPC response can see it;
                         # limiting this boundary to strings would leak nested secret values.
@@ -1939,6 +1951,9 @@ class Harness:
                                 self.state_lock = threading.Lock()
                                 self.effects_in_flight = 0
                                 self.uncertain = False
+                                self.effects_idle = threading.Event()
+                                self.effects_idle.set()
+                                self.partial_results = []
 
                             def revoke(self):
                                 # Non-blocking: an inbox approver can be waiting on another thread.
@@ -1951,19 +1966,37 @@ class Harness:
                             def active(self):
                                 return not self.revoked.is_set()
 
+                            def quiesce(self, timeout=.25):
+                                # Cancellation reaches owned subprocess tools cooperatively.
+                                # Give their already-running handlers a short chance to close
+                                # before deciding that the parent's effect is still unknown.
+                                self.effects_idle.wait(timeout)
+                                with self.state_lock:
+                                    if not self.effects_in_flight:
+                                        self.uncertain = bool(getattr(ctx, "tool_effect_uncertain", False))
+
+                            def captured_results(self):
+                                with self.state_lock:
+                                    return list(self.partial_results)
+
                             def begin_effect(self):
                                 with self.state_lock:
                                     if self.revoked.is_set():
                                         return False
                                     self.effects_in_flight += 1
+                                    self.effects_idle.clear()
                                     return True
 
                             def end_effect(self):
                                 with self.state_lock:
                                     self.effects_in_flight = max(0, self.effects_in_flight - 1)
+                                    if not self.effects_in_flight:
+                                        self.effects_idle.set()
 
                             def __call__(self, name, args):
                               with self.lock:
+                                if getattr(ctx, "tool_effect_uncertain", False):
+                                    return "DENIED: an earlier tool requires recovery inspection"
                                 if self.revoked.is_set():
                                     return "DENIED: parent execute_code invocation is no longer active"
                                 self.sequence += 1
@@ -1998,11 +2031,19 @@ class Harness:
                                     return ("DENIED: parent execute_code invocation ended before "
                                             "the inner tool could execute")
                                 try:
-                                    return _execute_prepared_tool(
+                                    result = _execute_prepared_tool(
                                         *prepared, record_result=False,
                                         journal_parent={"tool_name": "execute_code",
                                                         "tool_call_id": parent_call_id},
                                         still_active=self.active)
+                                    # The script may be killed before receiving its HTTP
+                                    # response. Keep a bounded, already-redacted record so
+                                    # the parent's interrupted result retains this evidence.
+                                    with self.state_lock:
+                                        self.partial_results.append({"tool": inner.name,
+                                                                     "result": str(result)[:2000]})
+                                        del self.partial_results[:-16]
+                                    return result
                                 finally:
                                     self.end_effect()
                         return InnerBroker()
@@ -2032,6 +2073,8 @@ class Harness:
                             break
                         _execute_prepared_tool(tc, tool, repairs, _denied)
                         if journal_state == "external_action":
+                            if self._cancel_requested():
+                                canceled = True
                             break
                     if hook_contexts and not canceled:
                         session["messages"].append({
