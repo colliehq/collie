@@ -7,6 +7,8 @@ Collie still owns the system prompt, tool protocol, loop, and request budget.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import os
@@ -18,11 +20,205 @@ import time
 import uuid
 
 from .providers import (ClaudeCliProvider, Completion, ModelProvider, Usage,
-                        _parse_response_envelope)
+                        _parse_response_envelope, content_text, provider_default_model)
 
 
 _MAX_STDOUT = 2 * 1024 * 1024
 _MAX_STDERR = 128 * 1024
+
+# Attachment transport bounds.  The canonical bundle limit (24MB) is a storage
+# limit, not a model-request limit: everything here has to survive one JSON
+# stdin write to a short-lived worker.  Every bound refuses explicitly; the
+# latest user message's images are never truncated to fit.
+_IMAGE_MEDIA_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+_MAX_IMAGE_B64 = 5 * 1024 * 1024
+_MAX_REQUEST_IMAGES = 16
+_MAX_REQUEST_IMAGE_B64 = 8 * 1024 * 1024
+_MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
+
+
+class _AttachmentRefused(ValueError):
+    """A refusal raised before any physical model request is spent.
+
+    Malformed, unsupported, or over-budget attachments must fail visibly.  The
+    one thing this transport may never do is quietly deliver a conversation
+    whose pixels were dropped, since the caller cannot tell the difference
+    between "the model looked and disagreed" and "the model never saw it".
+    """
+
+
+def _sniffed_media_type(raw: bytes) -> str:
+    """Identify the container of decoded image bytes; "" when unrecognized."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _checked_image(block) -> dict:
+    """Validate one canonical image block for model-facing transport.
+
+    Never quotes the attachment itself: a refusal message is logged by the
+    caller, and base64 payload bytes must not reach any log or transcript.
+    """
+    media_type = block.get("media_type") or "image/png"
+    data = block.get("data")
+    if not isinstance(media_type, str) or media_type not in _IMAGE_MEDIA_TYPES:
+        raise _AttachmentRefused(
+            "unsupported image media type; supported: " + ", ".join(_IMAGE_MEDIA_TYPES))
+    if not isinstance(data, str) or not data:
+        raise _AttachmentRefused("image attachment is missing base64 data")
+    if len(data) > _MAX_IMAGE_B64:
+        raise _AttachmentRefused(
+            "one image attachment exceeds %d base64 bytes; nothing was truncated"
+            % _MAX_IMAGE_B64)
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise _AttachmentRefused("invalid base64 image data") from exc
+    if not raw:
+        raise _AttachmentRefused("image attachment decoded to no bytes")
+    sniffed = _sniffed_media_type(raw)
+    if sniffed != media_type:
+        # A declared type the model cannot decode is worse than a refusal: the
+        # request would burn quota and come back describing nothing.
+        raise _AttachmentRefused(
+            "image data does not match its declared %s media type" % media_type)
+    return {"media_type": media_type, "data": data}
+
+
+def _attachments(messages) -> list:
+    """Validated canonical images, in conversation order, newest message last."""
+    last_user = -1
+    for index, message in enumerate(messages):
+        if str(message.get("role") or "") == "user":
+            last_user = index
+    found = []
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        role = str(message.get("role") or "")
+        images = []
+        for block in content:
+            if not isinstance(block, dict):
+                raise _AttachmentRefused("conversation content block is not an object")
+            kind = str(block.get("type") or "")
+            if kind == "text":
+                continue
+            if kind != "image":
+                raise _AttachmentRefused(
+                    "unsupported conversation content block type: %s"
+                    % (kind or "unknown")[:40])
+            if role != "user":
+                raise _AttachmentRefused(
+                    "image attachments are only supported on user messages")
+            images.append(_checked_image(block))
+        for position, entry in enumerate(images, 1):
+            entry.update(message=index, position=position, count=len(images),
+                         latest=(index == last_user))
+            found.append(entry)
+    return found
+
+
+def _apply_attachment_budget(entries) -> None:
+    """Fit the request to its byte/count bounds, newest attachments first.
+
+    The current turn's images are mandatory — a caller that just attached a
+    screenshot must either get it delivered or get an error.  Older images are
+    dropped oldest-first and only with a visible in-conversation marker, so the
+    model is told an earlier attachment is absent rather than being left to
+    mistake some other image for it.
+    """
+    latest = [entry for entry in entries if entry["latest"]]
+    history = [entry for entry in entries if not entry["latest"]]
+    used = sum(len(entry["data"]) for entry in latest)
+    if len(latest) > _MAX_REQUEST_IMAGES or used > _MAX_REQUEST_IMAGE_B64:
+        raise _AttachmentRefused(
+            "the latest message's %d image attachments exceed this request's "
+            "budget of %d images / %d base64 bytes; nothing was truncated"
+            % (len(latest), _MAX_REQUEST_IMAGES, _MAX_REQUEST_IMAGE_B64))
+    kept = len(latest)
+    exhausted = False
+    for entry in reversed(history):
+        size = len(entry["data"])
+        if (exhausted or kept + 1 > _MAX_REQUEST_IMAGES
+                or used + size > _MAX_REQUEST_IMAGE_B64):
+            # Everything older than the first drop goes too: a conversation
+            # that keeps image 1 and drops image 2 reads as if image 1 were the
+            # recent one.
+            exhausted = True
+            entry["dropped"] = True
+            continue
+        used += size
+        kept += 1
+
+
+def _marked_messages(messages, entries, nonce: str) -> list:
+    """Render attachments as placeholders inside the existing text protocol.
+
+    Collie's prompt text (tool list, response contract, role labels) stays owned
+    by one implementation.  Each image becomes a labelled placeholder line in
+    its own message, which the splice below replaces with a real image block —
+    so an attachment cannot drift away from the message it belongs to.
+    """
+    by_message = {}
+    for entry in entries:
+        by_message.setdefault(entry["message"], []).append(entry)
+    marked = []
+    for index, message in enumerate(messages):
+        images = by_message.get(index)
+        if not images:
+            marked.append(message)
+            continue
+        lines = []
+        text = content_text(message.get("content"))
+        if text:
+            lines.append(text)
+        for entry in images:
+            label = "attachment %d of %d (%s)" % (
+                entry["position"], entry["count"], entry["media_type"])
+            if entry.get("dropped"):
+                lines.append("[%s was omitted: this request's attachment budget "
+                             "was reached]" % label)
+                continue
+            entry["token"] = "collie-attachment-%s-%d-%d" % (
+                nonce, index, entry["position"])
+            lines.append("[%s follows]" % label)
+            lines.append(entry["token"])
+        copy = dict(message)
+        copy["content"] = "\n".join(lines)
+        marked.append(copy)
+    return marked
+
+
+def _spliced_blocks(text: str, entries) -> list:
+    """Placeholder text -> ordered text/image blocks; never leaks a placeholder."""
+    kept = [entry for entry in entries if entry.get("token")]
+    if not kept:
+        raise _AttachmentRefused(
+            "every image attachment was dropped by this request's budget")
+    for entry in kept:
+        if text.count(entry["token"]) != 1:
+            raise _AttachmentRefused("attachment placement could not be verified")
+    blocks = []
+    rest = text
+    for entry in kept:
+        head, separator, rest = rest.partition(entry["token"])
+        if not separator:
+            raise _AttachmentRefused("attachment order could not be verified")
+        if head.strip():
+            blocks.append({"type": "text", "text": head})
+        blocks.append({"type": "image", "media_type": entry["media_type"],
+                       "data": entry["data"]})
+    if rest.strip():
+        blocks.append({"type": "text", "text": rest})
+    return blocks
 
 
 def _reject_json_constant(value):
@@ -82,8 +278,9 @@ class ClaudeAgentSdkProvider(ModelProvider):
     name = "claude-agent-sdk"
     supports_request_gate = True
 
-    def __init__(self, model: str = "opus", timeout: int = 180,
+    def __init__(self, model: str | None = None, timeout: int = 180,
                  effort: str | None = None, subscription_only: bool = False):
+        model = model or provider_default_model(self.name)
         self.model = "claude-agent-sdk:" + model
         self._model = model
         self.timeout = int(timeout)
@@ -108,19 +305,60 @@ class ClaudeAgentSdkProvider(ModelProvider):
         lines = ["# Conversation so far:"]
         for message in messages:
             role = str(message.get("role") or "user").capitalize()
-            content = message.get("content", "")
-            lines.append("%s: %s" % (role, str(content)))
+            # content_text, never str(content): a multimodal message's content is
+            # a block list, and stringifying it would paste base64 into prose.
+            lines.append("%s: %s" % (role, content_text(message.get("content", ""))))
         lines.append("\nRespond to the latest user message according to the system prompt.")
         return "\n".join(lines)
 
-    def _worker_request(self, system, prompt) -> dict:
-        return {
+    def _payload(self, messages, tool_schemas):
+        """The model-facing prompt: a plain string, or ordered content blocks.
+
+        Text-only conversations keep the exact byte-identical string prompt, so
+        neither the response contract nor prompt caching moves.
+        """
+        entries = _attachments(messages)
+        if not entries:
+            return (self._prompt(messages, tool_schemas) if tool_schemas
+                    else self._plain_prompt(messages))
+        _apply_attachment_budget(entries)
+        marked = _marked_messages(messages, entries, uuid.uuid4().hex)
+        text = (self._prompt(marked, tool_schemas) if tool_schemas
+                else self._plain_prompt(marked))
+        if not any(entry.get("token") for entry in entries):
+            # Reachable only when the current turn attached nothing and every
+            # older image fell outside the budget.  The text protocol still
+            # states each omission, so this is neither a silent drop nor a
+            # refusal of a turn that attached nothing.
+            return text
+        return _spliced_blocks(text, entries)
+
+    def _worker_request(self, system, payload) -> dict:
+        """Worker protocol 1 = text prompt; protocol 2 = canonical content blocks.
+
+        The version is raised only for multimodal calls, so a worker that
+        predates image transport rejects the request outright instead of
+        answering about an image it never received.
+        """
+        request = {
             "protocol": 1,
             "model": self._model,
             "system_prompt": system,
-            "prompt": prompt,
+            "prompt": payload,
             "effort": self.effort,
         }
+        if isinstance(payload, list):
+            request.pop("prompt")
+            request["protocol"] = 2
+            request["content"] = payload
+            size = len(json.dumps(request, ensure_ascii=False,
+                                  allow_nan=False).encode("utf-8"))
+            if size > _MAX_MULTIMODAL_REQUEST_BYTES:
+                raise _AttachmentRefused(
+                    "this request is %d bytes with its attachments and exceeds the "
+                    "%d byte transport limit; nothing was truncated"
+                    % (size, _MAX_MULTIMODAL_REQUEST_BYTES))
+        return request
 
     def _register_pending(self, scope: str):
         """Publish a cancellable call before its durable request reservation.
@@ -457,10 +695,9 @@ class ClaudeAgentSdkProvider(ModelProvider):
                     cancel_scope = request_id
                     self._set_pending_scope(registration, cancel_scope)
 
-            prompt = (self._prompt(messages, tool_schemas) if tool_schemas else
-                      self._plain_prompt(messages))
+            payload = self._payload(messages, tool_schemas)
             data = self._run_worker(
-                self._worker_request(system, prompt), cancel_scope=cancel_scope,
+                self._worker_request(system, payload), cancel_scope=cancel_scope,
                 registration=registration)
             api_key_source = data.get("api_key_source")
             if api_key_source != "none":
@@ -530,6 +767,13 @@ class ClaudeAgentSdkProvider(ModelProvider):
                                     stop_reason="end_turn", request_count=1)
             completion.api_key_source = api_key_source
             return completion
+        except _AttachmentRefused as exc:
+            # Refused before the worker was spawned: the reservation is released
+            # by the finally block and no physical request was consumed.
+            detail = "attachment refused: " + _safe_failure(exc)
+            return Completion(text="ERROR(claude-agent-sdk): " + detail,
+                              stop_reason="error", error_detail=detail,
+                              request_count=0)
         except Exception as exc:
             detail = _safe_failure(exc)
             return Completion(text="ERROR(claude-agent-sdk): " + detail,

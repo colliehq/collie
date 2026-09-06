@@ -6,12 +6,24 @@ stdlib-only provider registry never requires the Claude Agent SDK.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import math
 import os
 import signal
 import sys
 
+
+# Deliberately duplicated from the transport instead of imported: this file runs
+# as a script with the harness directory removed from sys.path, and host data is
+# trusted but still re-validated here so a malformed request fails loudly at the
+# process boundary rather than inside the SDK.
+_IMAGE_MEDIA_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+_MAX_IMAGE_B64 = 5 * 1024 * 1024
+_MAX_REQUEST_IMAGES = 16
+_MAX_TEXT_REQUEST_BYTES = 4 * 1024 * 1024
+_MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
 
 _SDK_ENV = {
     "CLAUDE_CODE_MAX_RETRIES": "0",
@@ -212,6 +224,86 @@ def _build_options(sdk, request: dict):
     return sdk.ClaudeAgentOptions(**kwargs)
 
 
+def _sniffed_media_type(raw: bytes) -> str:
+    """Identify the container of decoded image bytes; "" when unrecognized."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _anthropic_content(content) -> list:
+    """Canonical worker blocks -> Anthropic content blocks for stream input.
+
+    Base64 stays in memory the whole way: no attachment is ever written to a
+    temporary file, so error and cancellation paths have nothing to clean up.
+    Failure messages quote block kinds and media types only, never payload bytes.
+    """
+    if not isinstance(content, list) or not content:
+        raise RuntimeError("worker request content must be a non-empty list")
+    blocks = []
+    images = 0
+    for raw_block in content:
+        if not isinstance(raw_block, dict):
+            raise RuntimeError("worker request content block is not an object")
+        kind = raw_block.get("type")
+        if kind == "text":
+            if set(raw_block) != {"type", "text"}:
+                raise RuntimeError("worker request text block has unexpected fields")
+            text = raw_block["text"]
+            if not isinstance(text, str) or not text.strip():
+                raise RuntimeError("worker request text block is empty")
+            blocks.append({"type": "text", "text": text})
+        elif kind == "image":
+            if set(raw_block) != {"type", "media_type", "data"}:
+                raise RuntimeError("worker request image block has unexpected fields")
+            media_type, data = raw_block["media_type"], raw_block["data"]
+            if not isinstance(media_type, str) or media_type not in _IMAGE_MEDIA_TYPES:
+                raise RuntimeError("worker request image block has an unsupported "
+                                   "media type")
+            if not isinstance(data, str) or not data or len(data) > _MAX_IMAGE_B64:
+                raise RuntimeError("worker request image block has invalid base64 size")
+            try:
+                decoded = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise RuntimeError("worker request image block is not valid base64") from exc
+            if _sniffed_media_type(decoded) != media_type:
+                raise RuntimeError("worker request image block does not match its "
+                                   "declared media type")
+            images += 1
+            blocks.append({"type": "image", "source": {
+                "type": "base64", "media_type": media_type, "data": data}})
+        else:
+            raise RuntimeError("worker request has an unsupported content block type")
+    if not images:
+        raise RuntimeError("multimodal worker request carries no image block")
+    if images > _MAX_REQUEST_IMAGES:
+        raise RuntimeError("worker request exceeds the image count limit")
+    return blocks
+
+
+def _stream_prompt(blocks):
+    """One user turn as SDK stream input; the only supported multimodal path.
+
+    ``query(prompt=str)`` can carry text alone.  The SDK's streaming input is
+    the documented shape that reaches the CLI as a real user message whose
+    content is a block list, which is what carries pixels.
+    """
+    async def stream():
+        yield {
+            "type": "user",
+            "session_id": "",
+            "message": {"role": "user", "content": blocks},
+            "parent_tool_use_id": None,
+        }
+    return stream()
+
+
 def _is_empty(value) -> bool:
     return value in (None, [], {}, "")
 
@@ -283,6 +375,8 @@ def _usage_dict(value) -> dict:
 
 async def _query(request: dict, sdk) -> dict:
     options = _build_options(sdk, request)
+    prompt = (_stream_prompt(_anthropic_content(request["content"]))
+              if "content" in request else request["prompt"])
     init_seen = False
     api_key_source = ""
     assistant_id = ""
@@ -291,7 +385,7 @@ async def _query(request: dict, sdk) -> dict:
     usage = {}
     result_seen = False
 
-    async for message in sdk.query(prompt=request["prompt"], options=options):
+    async for message in sdk.query(prompt=prompt, options=options):
         kind = _message_kind(message)
         if kind == "system" and str(_field(message, "subtype", "")).lower() == "init":
             if init_seen:
@@ -349,17 +443,32 @@ async def _query(request: dict, sdk) -> dict:
 
 
 def _read_request() -> dict:
-    raw = sys.stdin.buffer.read(4 * 1024 * 1024 + 1)
-    if len(raw) > 4 * 1024 * 1024:
+    raw = sys.stdin.buffer.read(_MAX_MULTIMODAL_REQUEST_BYTES + 1)
+    if len(raw) > _MAX_MULTIMODAL_REQUEST_BYTES:
         raise RuntimeError("worker request exceeded the safety limit")
     def reject_constant(value):
         raise ValueError("non-finite JSON number is forbidden: %s" % value)
     request = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
-    if not isinstance(request, dict) or request.get("protocol") != 1:
+    protocol = request.get("protocol") if isinstance(request, dict) else None
+    if protocol not in (1, 2) or isinstance(protocol, bool):
         raise RuntimeError("invalid worker protocol")
-    for key in ("model", "system_prompt", "prompt"):
+    for key in ("model", "system_prompt"):
         if not isinstance(request.get(key), str):
             raise RuntimeError("worker request is missing %s" % key)
+    if protocol == 1:
+        # The text protocol keeps its original, smaller stdin budget.
+        if len(raw) > _MAX_TEXT_REQUEST_BYTES:
+            raise RuntimeError("worker request exceeded the safety limit")
+        if "content" in request:
+            raise RuntimeError("text worker request must not carry content blocks")
+        if not isinstance(request.get("prompt"), str):
+            raise RuntimeError("worker request is missing prompt")
+    else:
+        if "prompt" in request:
+            raise RuntimeError("multimodal worker request must not carry a prompt string")
+        # Validate the whole attachment surface before the SDK, its bundled
+        # runtime, or any network socket exists.
+        _anthropic_content(request.get("content"))
     return request
 
 

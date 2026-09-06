@@ -1161,6 +1161,14 @@ class ClaudeCliProvider(ModelProvider):
         return str(data.get("result", "")).strip(), usage
 
     def complete(self, system, messages, tool_schemas, on_text=None):
+        if any(isinstance(message.get("content"), list) and any(
+                isinstance(block, dict) and block.get("type") == "image"
+                for block in message["content"]) for message in messages):
+            detail = ("claude-cli cannot deliver image attachments. Select the "
+                      "claude-agent-sdk provider to send this conversation with its images.")
+            return Completion(text="ERROR(claude-cli): " + detail,
+                              stop_reason="error", error_detail=detail,
+                              request_count=0)
         prompt = self._prompt(messages, tool_schemas)
         total = Usage()
         text = ""
