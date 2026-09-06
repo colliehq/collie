@@ -289,6 +289,11 @@ def test_note_refuses_terminal_and_recovery_states_but_still_replays(
         code, replay = srv.note("msn_open", "继续做这个", "keep")
         assert code == 200 and replay["replay"] is True
         assert replay["note"]["id"] == accepted["note"]["id"]
+        assert replay["note"]["state"] == "rejected"
+        assert "before this saved instruction was applied" in replay["note"]["error"]
+        code, history = srv.notes("msn_open")
+        assert code == 200 and history["notes"][0]["state"] == "rejected"
+        assert history["notes"][0]["text"] == "继续做这个"
         # But a NEW client_id on the same terminal Mission is refused.
         code, fresh = srv.note("msn_open", "继续做这个", "keep-2")
         assert code == 409 and fresh["accepted"] is False

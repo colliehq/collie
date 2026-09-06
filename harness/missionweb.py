@@ -245,7 +245,7 @@ def _short(value, limit=500):
     return value[:limit]
 
 
-def _note_view(row: dict) -> dict:
+def _note_view(row: dict, mission=None) -> dict:
     """The public shape of one instruction: stable id, exact text, honest state.
 
     ``text`` is the admitted characters verbatim — no escaping and no
@@ -257,6 +257,14 @@ def _note_view(row: dict) -> dict:
         out["error"] = row["error"]
     if row.get("at"):
         out["at"] = int(row["at"])
+    if mission is not None and mission.terminal and row["state"] == "pending":
+        # Cancellation/failure can close a Mission before its next boundary.
+        # Preserve the saved text without promising a boundary that cannot run.
+        out["state"] = "rejected"
+        out["error"] = (
+            "This Mission ended (%s) before this saved instruction was applied. "
+            "Its text remains available; start a new Mission for further work."
+            % mission.state)
     return out
 
 
@@ -2947,14 +2955,17 @@ class MissionService:
                     answer[key] = out[key]
             return answer
         return {"accepted": True, "mission_id": mid,
-                "note": _note_view(out["note"]), "replay": bool(out.get("replay")),
+                "note": _note_view(out["note"], self.store.get(mid)), "replay": bool(out.get("replay")),
                 "note_limit": HUMAN_NOTE_MAX_CHARS}
 
     def notes(self, mid: str) -> dict:
         """The exact accepted/pending instruction history. No model, no writes."""
-        if not self.store.get(mid):
+        mission = self.store.get(mid)
+        if not mission:
             return {"error": "unknown mission", "mission_id": mid, "code": 404}
-        return {"mission_id": mid, "notes": self.store.note_history(mid),
+        notes = [dict(note, **_note_view(note, mission))
+                 for note in self.store.note_history(mid)]
+        return {"mission_id": mid, "notes": notes,
                 "note_limit": HUMAN_NOTE_MAX_CHARS,
                 "max_notes": HUMAN_LEDGER_MAX_NOTES,
                 "max_chars": HUMAN_LEDGER_MAX_CHARS}
