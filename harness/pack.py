@@ -172,10 +172,11 @@ def _run_check(cmd, cwd, timeout=300):
     return evidence["passed"], evidence["output"][-2000:]
 
 
-def _run_check_evidence(cmd, cwd, timeout=300):
+def _run_check_evidence(cmd, cwd, timeout=300, *, cancelled=None):
     from .verification import run_verification_command
     return run_verification_command(
-        cmd, cwd, timeout=timeout, source="pack objective check", after_last_edit=True)
+        cmd, cwd, timeout=timeout, source="pack objective check", after_last_edit=True,
+        cancelled=cancelled)
 
 
 def select(attempts, have_check):
@@ -470,7 +471,7 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
                     pass
         if have_check and not rec.get("error") and not _cancelled():
             try:
-                evidence = _run_check_evidence(check, iso)
+                evidence = _run_check_evidence(check, iso, cancelled=_cancelled)
                 rec["check_pass"] = evidence["passed"]
                 rec["check_tail"] = evidence["output"][-2000:]
                 rec["verification_evidence"] = evidence
