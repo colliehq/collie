@@ -308,6 +308,15 @@ class CodeWorkspaceGoalVerifier(GoalVerifier):
                      current_digest == receipt_digest and complete)
         changed = bool(baseline_digest and receipt_digest and
                        baseline_digest != receipt_digest)
+        # Bytes differing from the baseline is not the same claim as "this
+        # Mission's agent wrote a patch": a verifier's own build output also
+        # changes the tree.  Completion needs the agent-side provenance the code
+        # slice recorded, so a green command on somebody else's bytes — or on a
+        # read-only survey followed by a passing pre-existing suite — cannot
+        # close the goal.
+        attributed = evidence.get("patch_attributed") is True
+        executed = evidence.get("executed") is not False
+        stopped = bool(evidence.get("cancelled"))
         passed = bool(evidence.get("passed") and
                       evidence.get("command_passed") and
                       evidence.get("ran_after_last_edit"))
@@ -316,13 +325,28 @@ class CodeWorkspaceGoalVerifier(GoalVerifier):
         receipt_command = str(evidence.get("command") or "").strip()
         command_bound = bool(configured_command and receipt_command == configured_command and
                              evidence.get("source") == "mission_code_profile")
+        # Exit zero answers "do the tests pass", never "is the user's task done".
+        # A run that ended in an error, a cancellation, or an unfinished slice has
+        # not delivered the task, whatever the suite says.
+        delivery = case.get("code_delivery") if isinstance(
+            case.get("code_delivery"), dict) else {}
+        settled = not (delivery.get("cancelled") or delivery.get("error") or
+                       delivery.get("continue_needed") or
+                       delivery.get("turns_exhausted") or
+                       str(delivery.get("stop_reason") or "") in
+                       ("error", "canceled", "turn_limit"))
+        ok = bool(passed and fresh and changed and command_bound and
+                  attributed and executed and settled and not stopped)
         observation = Observation(
             "host-verification-command", self._epoch(evidence.get("timestamp")),
-            bool(passed and fresh and changed and command_bound), asserted=True,
-            detail=("configured host check passed against the current Mission patch" if
-                    passed and fresh and changed and command_bound else
-                    "verification receipt is failed, stale, incomplete, or not bound "
-                    "to the exact configured command and Mission patch"))
+            ok, asserted=True,
+            detail=("configured host check passed against the current Mission patch" if ok else
+                    "the host check passed, but the coding run was cut off before it "
+                    "finished and reported its own work" if not settled else
+                    "the host check produced no Mission-attributed patch" if
+                    passed and fresh and command_bound and not attributed else
+                    "verification receipt is failed, stale, incomplete, cancelled, or not "
+                    "bound to the exact configured command and Mission patch"))
         if observation.ok:
             return Verdict(VERIFIED, observation.detail, (observation,))
         return Verdict(INCONCLUSIVE, observation.detail, (observation,))

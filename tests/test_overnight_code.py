@@ -799,6 +799,10 @@ def test_code_goal_verifier_rechecks_current_bytes_and_rejects_stale_receipt(tmp
         "ran_after_last_edit": True, "post_tree_digest": post["tree_digest"],
         "post_snapshot_complete": post["snapshot_complete"],
         "command": "python verify.py", "source": "mission_code_profile",
+        # Provenance, not merely "the bytes differ": completion needs the agent's
+        # own patch attribution, so a green suite on unattributed bytes cannot
+        # close the goal.
+        "patch_attributed": True,
     }
     mission = SimpleNamespace(case={
         "code_profile": {"verify_command": "python verify.py"},
@@ -930,6 +934,7 @@ def test_durable_code_mission_closes_from_host_evidence_not_campaign_receipts(tm
                 "post_tree_digest": post["tree_digest"],
                 "post_snapshot_complete": post["snapshot_complete"],
                 "command": "python verify.py", "source": "mission_code_profile",
+                "patch_attributed": True,
             }},
         }
 
@@ -985,6 +990,7 @@ def test_fake_clock_eleven_hour_code_run_survives_repeated_daemon_restarts(
                 "post_tree_digest": post["tree_digest"],
                 "post_snapshot_complete": post["snapshot_complete"],
                 "command": "python verify.py", "source": "mission_code_profile",
+                "patch_attributed": True,
             }},
         }
 

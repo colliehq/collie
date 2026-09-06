@@ -387,7 +387,7 @@ def _compact_case_storage(case, max_chars=64000):
         "execution_profile", "billing_safety", "code_profile", "code_verification",
         "observe_count", "submitted", "published", "sent", "url", "draft",
         "code_verified", "code_pending", "code_session_id",
-        "code_recovery_required",
+        "code_recovery_required", "code_delivery", "code_dispatch",
         "code_baseline_tree_digest", "code_expected_tree_digest", "coded",
         "last_sent_to", "_isolated_workspace",
         "_workspace", "_run_id", "_specialist_run_id", "_parent_mission_id",
@@ -424,7 +424,7 @@ def _model_case_json(case, limit=12000):
     """
     case = dict(case or {})
     priority = ("_authority", "execution_profile", "billing_safety", "code_profile",
-                "code_verification", "code_baseline_tree_digest",
+                "code_verification", "code_delivery", "code_baseline_tree_digest",
                 "code_expected_tree_digest",
                 "_standing_authority", "_connected_work_identities", "signal",
                 "_mission_summary", "human_updates",
@@ -442,7 +442,7 @@ def _model_case_json(case, limit=12000):
     # older context.  The explicit marker prevents the model treating it as full.
     budgets = {"_authority": 1000, "execution_profile": 900,
                "billing_safety": 1800, "code_profile": 1200,
-               "code_verification": 1800,
+               "code_verification": 1800, "code_delivery": 1400,
                "code_baseline_tree_digest": 200,
                "code_expected_tree_digest": 200,
                "_standing_authority": 1000,
@@ -525,6 +525,186 @@ class Mission:
     @property
     def terminal(self) -> bool:
         return self.state in _TERMINAL
+
+
+# ── dedicated code Missions ─────────────────────────────────────────────────
+# A Mission created for one workspace with `code=True` already IS the plan: its
+# native coding loop reads, plans, edits and runs tests inside one durable
+# session.  Asking a second model to invent a "next step" for it every turn buys
+# nothing and costs the thing that matters — the user's own words.  A planner
+# that paraphrases "implement --category, run the tests" into "read the files and
+# report, do not modify anything" is obeyed exactly, and the Mission then ends
+# having done nothing.  So a dedicated code Mission dispatches its OWN complete
+# goal; mixed-work Missions, which really do have to choose between primitives,
+# keep the planner.
+CODE_DISPATCH_VERSION = 1
+# How many consecutive slices may end without changing a single file before the
+# Mission stops asking.  Reading a large repository legitimately takes a slice or
+# two; an agent that has done nothing three times running is not making progress
+# and re-running it is how a budget disappears overnight.
+CODE_UNPRODUCTIVE_SLICES = 3
+# A green suite answers "do the tests pass", never "is the user's task done".
+# When the host check is already green but the coding run was cut off at its turn
+# limit, it is given a bounded number of further slices to finish its own work
+# and report; after that the Mission stops and says exactly that, rather than
+# reading exit zero as delivery.
+CODE_FINISH_SLICES = 2
+
+
+@dataclass(frozen=True)
+class CodeDispatch:
+    """One deterministic dispatch of a dedicated code Mission's own goal."""
+
+    goal: str
+    workspace: str
+    reason: str
+    attempt: int
+    session_id: str = ""
+    state: dict = field(default_factory=dict)
+
+    def decision(self) -> dict:
+        return {"action": "code", "reason": self.reason,
+                "args": {"goal": self.goal, "workspace": self.workspace}}
+
+
+def code_mission_profile(mission):
+    """Return the durable dedicated-code contract, or None for mixed work.
+
+    Every condition is durable Mission state, so the answer is identical before
+    and after a restart: the profile the user created, the workspace that was
+    bound to it, and the leash that still permits code.
+    """
+    case = dict(getattr(mission, "case", {}) or {})
+    profile = case.get("code_profile")
+    if not isinstance(profile, dict):
+        return None
+    if profile.get("durable") is not True or profile.get("direct_dispatch") is not True:
+        return None
+    if not str(case.get("_isolated_workspace") or ""):
+        return None
+    may = list((getattr(mission, "leash", {}) or {}).get("may") or [])
+    if not any(fnmatch.fnmatchcase("code", str(pattern)) for pattern in may):
+        return None
+    return profile
+
+
+def code_mission_goal(mission) -> str:
+    """The user's complete authorized request, plus their updates in order.
+
+    The goal is never summarized, translated or truncated: it is the exact text
+    the user authorized, and the coding loop is the thing that decides how to
+    approach it.  Later human updates are appended in the order they were given
+    so a steering message refines the request instead of replacing it.
+
+    Nothing is shortened here.  Whether a very long instruction should be
+    accepted at all is a question for the surface that takes it — and the store
+    already bounds each note as it is written.  Silently dropping the tail of an
+    instruction the user did type, at the one point where it becomes the agent's
+    scope, would be the worst possible place to answer that question: the user
+    would see their words in the Mission record and never learn that the coding
+    loop was given only the first part of them.
+
+    Only durable human/operator text ever becomes scope.  Model prose, worker
+    answers and check output live in the case as evidence and stay there;
+    entries the Mission host wrote itself during recovery are passed through
+    labelled, so a housekeeping instruction cannot read as a new requirement.
+    """
+    goal = str(getattr(mission, "goal", "") or "").strip()
+    case = dict(getattr(mission, "case", {}) or {})
+    updates = []
+    for item in (case.get("human_updates") or []):
+        if not isinstance(item, dict):
+            continue
+        note = str(item.get("note") or "").strip()
+        if note:
+            updates.append((note, bool(item.get("recovery"))))
+    if not updates:
+        return goal
+    lines = [goal, "",
+             "Later instructions from the same user, in the order they were given. "
+             "They refine or override the request above; the earlier text still "
+             "applies wherever they are silent:"]
+    lines.extend("%d. %s%s" % (index, "[Mission host recovery note] " if host else "",
+                               note)
+                 for index, (note, host) in enumerate(updates, 1))
+    return "\n".join(lines)
+
+
+def code_stop_report(reason, result, limit=1800) -> str:
+    """State patch, verification and stop truthfully, then the actual deliverable.
+
+    Nothing here is inferred from prose.  Each sentence is either a structured
+    fact the worker reported or an explicit "the runner did not report it", which
+    is why this can never say "code edited" about a run that edited nothing.
+
+    This is the Mission's one-screen ``result`` line, so it is bounded — but the
+    structured facts are never the part that gets dropped, and a shortened answer
+    says so and says where the whole of it is.  The complete worker answer stays
+    in ``case['code_delivery']`` and in the durable session transcript; a
+    truncated summary must never be mistaken for the deliverable, and a stop must
+    never be dressed up as a concise successful reply.
+    """
+    row = result if isinstance(result, dict) else {}
+    parts = [str(reason or "code stopped without completion-grade evidence").strip()]
+    if "slice_mutated" in row or "patch_attributed" in row:
+        if row.get("patch_attributed"):
+            parts.append("Patch: files changed and the change is attributed to this Mission.")
+        elif row.get("slice_mutated"):
+            parts.append("Patch: files changed, but the change is not attributable "
+                         "to this Mission's agent.")
+        else:
+            parts.append("Patch: no file in the workspace was changed.")
+    else:
+        parts.append("Patch: the code runner reported no mutation evidence either way.")
+    verification = row.get("verification") if isinstance(
+        row.get("verification"), dict) else {}
+    evidence = verification.get("evidence") if isinstance(
+        verification.get("evidence"), dict) else {}
+    if row.get("verified"):
+        check = "Verification: the configured host check passed against this patch."
+    elif verification.get("skipped"):
+        check = "Verification: " + str(verification.get("detail") or "not run")
+    elif evidence:
+        check = ("Verification: %s (command %r, executed=%s, exit=%s, cancelled=%s)" % (
+            str(verification.get("detail") or "no verdict"),
+            str(evidence.get("command") or "")[:200],
+            bool(evidence.get("executed")), evidence.get("exit_code"),
+            bool(evidence.get("cancelled"))))
+    elif verification:
+        check = "Verification: " + str(verification.get("detail") or "no verdict")
+    else:
+        check = "Verification: no host check evidence was produced."
+    parts.append(check)
+    if row.get("cancelled"):
+        parts.append("Stop: the coding run was cancelled.")
+    elif row.get("error"):
+        parts.append("Stop: the coding run reported an error.")
+    elif row.get("turns_exhausted"):
+        parts.append("Stop: the coding run reached its turn limit.")
+    elif row.get("stop_reason"):
+        parts.append("Stop: %s." % str(row.get("stop_reason"))[:80])
+    facts = "\n".join(parts)
+    answer = str(row.get("answer") or row.get("result") or "").strip()
+    if not answer:
+        return facts
+    limit = max(len(facts), int(limit))
+    # The facts are short and bounded; whatever room is left belongs to the
+    # worker's own words, and the cut is announced rather than hidden behind an
+    # ellipsis that reads like the model trailed off.
+    elision = ("\n…[report shortened here; the coding run's complete answer is kept "
+               "in the Mission record (code_delivery) and its session transcript]")
+    whole_header = "\nThe coding run's own report follows.\n"
+    cut_header = "\nThe coding run's own report begins here.\n"
+    if len(facts) + len(whole_header) + len(answer) <= limit:
+        return facts + whole_header + answer
+    room = limit - len(facts) - len(cut_header) - len(elision)
+    if room < 200:
+        # Not enough space left to quote anything useful without misleading.
+        return (facts + "\nThe coding run wrote a %d-character report; it is kept in "
+                "the Mission record (code_delivery) and its session transcript."
+                % len(answer))
+    return (facts + "\nThe coding run's own report begins here.\n" +
+            answer[:room] + elision)
 
 
 @dataclass(frozen=True)
@@ -2498,13 +2678,18 @@ class MissionStore:
         return True, "", 0
 
     def reserve_decision(self, mission_id, leash, run_token=None,
-                         count_model_call=True):
+                         count_model_call=True, purpose="model"):
         """Reserve one logical planner turn against this Mission and ancestors.
 
         ``run_token`` is mandatory on the production path.  The optional legacy
         form remains for migration/tests that construct budget ledgers without
         claiming a Mission, but a token supplied by a live driver is always CAS
         checked in the same transaction as the reservation.
+
+        ``purpose`` only names the event row.  A deterministic step still costs a
+        step against ``max_total_steps`` — that budget bounds work, not spend —
+        but ``count_model_call=False`` keeps it out of the model-call ledger,
+        because no model transport was used and nobody may be charged for one.
         """
         now = int(time.time())
         with self._lock:
@@ -2538,7 +2723,8 @@ class MissionStore:
                 event_kind = "decision" if count_model_call else "planning_turn"
                 self.db.execute(
                     "INSERT INTO mission_events(mission_id,kind,name,payload_json,at) "
-                    "VALUES(?,?,?,?,?)", (mission_id, event_kind, "model", "{}", now))
+                    "VALUES(?,?,?,?,?)",
+                    (mission_id, event_kind, str(purpose or "model")[:80], "{}", now))
                 if count_model_call:
                     self.db.execute(
                         "UPDATE mission_runtime SET model_calls=model_calls+1,turns=turns+1 "
@@ -3993,6 +4179,283 @@ class MissionDriver:
             return self._state(mission_id)
         return self._drive_claimed(mission_id, token)
 
+    def _code_dispatch_plan(self, mission_id, token, m, step_timeout):
+        """Decide the next move for a dedicated code Mission without a model.
+
+        Returns ``None`` when the planner must run (this is not a dedicated code
+        Mission, or its durable state is not one this function may settle), a
+        Mission state string when the decision itself ends the run, or a
+        :class:`CodeDispatch` carrying the user's complete goal.
+
+        The safety rule is that automatic continuation requires concrete,
+        structured, settled state.  Anything uncertain — a recovery boundary, an
+        error, a cancellation, an unreported outcome — falls back to the planner
+        or stops for a human; it is never replayed, and it is never re-run
+        forever in the hope of different luck.
+        """
+        profile = code_mission_profile(m)
+        if profile is None:
+            return None
+        if self._capability("code") is None:
+            return None
+        case = dict(m.case or {})
+        if case.get("code_recovery_required"):
+            # Ownership of the workspace bytes is unsettled; reconciliation, not
+            # this function and not another slice, is what may move it.
+            return None
+        if case.get("pending_authorizations") or case.get("pending_followups"):
+            # A code Mission that has grown real world-work branches is mixed
+            # work again, and the planner owns those.
+            return None
+        delivery = case.get("code_delivery") if isinstance(
+            case.get("code_delivery"), dict) else {}
+        state = dict(case.get("code_dispatch") or {})
+        updates = len([x for x in (case.get("human_updates") or [])
+                       if isinstance(x, dict)])
+        # "Did a person say something since the last dispatch?" is the one signal
+        # that distinguishes a fresh instruction from an automatic re-run.
+        steered = updates != int(state.get("human_updates", 0) or 0)
+        if ((delivery.get("cancelled") or delivery.get("error")) and
+                not delivery.get("continue_needed") and not steered):
+            # A stopped or errored run is never repeated on its own.  Only an
+            # explicit human step moves it, and saying so beats handing the goal
+            # to a planner that would paraphrase it.  A slice that reported a
+            # retryable transport error AND asked to continue is different: it
+            # checkpointed itself and is resumed below under the same budgets.
+            return self._finish(
+                mission_id, token, NEEDS_YOU,
+                code_stop_report(
+                    "the previous coding run stopped without a settled outcome; "
+                    "it will not be repeated automatically",
+                    dict(delivery, verification=case.get("code_verification"))))
+        finishing = 0 if steered else int(state.get("finishing", 0) or 0)
+        if case.get("code_verified"):
+            # The host check is green against an attributed patch.  If the run
+            # that produced it was cut off at its turn limit, it never got to
+            # finish or report, so give it a bounded chance to do that before
+            # anyone calls this delivered.  Otherwise the one independent goal
+            # verifier decides completion — not this dispatcher, and not the
+            # coding model's prose.
+            if not delivery.get("turns_exhausted") or finishing >= CODE_FINISH_SLICES:
+                return self._verify_and_finish_goal(
+                    mission_id, token, m,
+                    "durable code reported a verified host check", step_timeout)
+            finishing += 1
+        # Progress means "the LAST slice changed something", and only that.
+        # ``patch_attributed`` is cumulative Mission provenance: once any slice
+        # has written a byte that still differs from the baseline it stays true
+        # for the rest of the Mission.  Reading it as progress let a loop that
+        # had edited once, months of slices ago, keep re-dispatching itself for
+        # ever on the strength of that one historical edit.  ``slice_mutated`` is
+        # this slice's own delta, corroborated by the agent-boundary digest
+        # having moved since the dispatch that produced it.
+        previous_digest = str(state.get("agent_tree_digest") or "")
+        current_digest = str(delivery.get("agent_post_tree_digest") or "")
+        slice_progressed = bool(
+            delivery.get("slice_mutated") or
+            (current_digest and previous_digest and current_digest != previous_digest))
+        if not delivery:
+            unproductive = 0 if steered else int(state.get("unproductive", 0) or 0)
+        elif steered:
+            # A human just gave new instructions; that is new information, so the
+            # no-progress counter starts again rather than blocking their reply.
+            unproductive = 0
+        elif not delivery.get("mutation_reported"):
+            # An outcome we cannot characterise is not evidence of progress.
+            unproductive = int(state.get("unproductive", 0) or 0) + 1
+        elif slice_progressed:
+            unproductive = 0
+        else:
+            unproductive = int(state.get("unproductive", 0) or 0) + 1
+        if unproductive >= CODE_UNPRODUCTIVE_SLICES and not case.get("code_verified"):
+            self.store.record_event(
+                mission_id, "control", "code_no_progress",
+                payload={"slices": unproductive,
+                         "attempts": int(state.get("attempts", 0) or 0)})
+            return self._finish(
+                mission_id, token, NEEDS_YOU,
+                code_stop_report(
+                    "durable code made no file change across %d consecutive slices; "
+                    "it is not making progress on its own" % unproductive,
+                    dict(delivery, verification=case.get("code_verification"))))
+        attempt = int(state.get("attempts", 0) or 0) + 1
+        goal = code_mission_goal(m)
+        if not goal.strip():
+            return None
+        workspace = str(case.get("_isolated_workspace") or "")
+        reason = ("dispatching this dedicated code Mission's own authorized goal "
+                  "into its durable coding session")
+        if finishing:
+            reason = ("the host check is green but the coding run was cut off at its "
+                      "turn limit; letting it finish and report its own work")
+        elif attempt > 1:
+            reason = ("continuing the same durable coding session on the same "
+                      "authorized goal")
+        case["code_dispatch"] = {
+            "version": CODE_DISPATCH_VERSION,
+            "attempts": attempt,
+            "unproductive": unproductive,
+            "finishing": finishing,
+            "human_updates": updates,
+            "goal_chars": len(goal),
+            # The workspace as this dispatch found it.  The next dispatch
+            # compares against it to answer "did the slice I just paid for change
+            # anything", which no cumulative flag can answer.
+            "agent_tree_digest": (current_digest or previous_digest),
+            "at": int(time.time()),
+        }
+        if not self.store.set_case_owned(mission_id, token, case):
+            return self._lost_state(mission_id, token)
+        return CodeDispatch(
+            goal=goal, workspace=workspace, reason=reason, attempt=attempt,
+            session_id=str(profile.get("session_id") or
+                           case.get("code_session_id") or ""),
+            state=dict(case["code_dispatch"]))
+
+    def _model_planning_step(self, mission_id, token, m, standing, step_index,
+                             step_timeout):
+        """Spend one planner turn to choose the next primitive for mixed work.
+
+        Returns a Mission state string when the planning boundary itself settles
+        the run, the ``"_steered"`` sentinel when the caller must re-enter its
+        loop, or ``(decision, mission)`` for dispatch.
+        """
+        _ = step_index
+        use_transport_gate = bool(
+            getattr(self.decider, "supports_request_gate", False))
+        if not self.store.reserve_decision(
+                mission_id, m.leash, token,
+                count_model_call=not use_transport_gate):
+            return self._finish(mission_id, token, NEEDS_YOU,
+                                "mission model-turn budget exhausted")
+        model_case = dict(m.case)
+        model_case["_authority"] = m.leash
+        model_case["_standing_authority"] = standing
+        try:
+            from .workidentity import connected_context
+            model_case["_connected_work_identities"] = connected_context(
+                os.path.dirname(self.store.path))
+        except Exception:
+            # Identity discovery is additive context.  A corrupt optional
+            # connection record must not take the whole Mission down.
+            pass
+        model_case["_activity_ledger"] = self.store.activity_ledger(
+            mission_id, 24)
+        model_case["_do_not_repeat"] = self.store.do_not_repeat(
+            mission_id, 20)
+        recent_events = self.store.events(mission_id, 20)
+        open_coverage = _open_campaign_coverage(model_case)
+        if open_coverage:
+            # A non-due timer is durable scheduler state, not work for
+            # the planner to reconsider every turn.  Feeding repeated
+            # schedule/refusal events back to the model creates a
+            # positive feedback loop that burns the Mission budget while
+            # the host correctly refuses to sleep with open coverage.
+            model_case.pop("pending_followups", None)
+            recent_events = [
+                event for event in recent_events
+                if not ((event.get("kind") == "followup" and
+                        event.get("name") == "scheduled") or
+                       (event.get("kind") == "coverage" and
+                        event.get("name") == "wait_refused"))
+            ]
+            branch = str(open_coverage[0].get("branch") or "")
+            model_case["signal"] = (
+                "Required campaign work remains. Non-due monitoring timers are already "
+                "durable and intentionally hidden; do not schedule them again. Continue "
+                "the first open branch now: " + branch)[:800]
+        model_case["_recent_events"] = recent_events
+        checkpoint = self.store.latest_checkpoint(mission_id)
+        if checkpoint:
+            model_case["_checkpoint"] = {
+                "seq": checkpoint["seq"], "phase": checkpoint["phase"],
+                "at": checkpoint["at"]}
+        self.store.record_checkpoint(
+            mission_id, token, "deciding",
+            {"step": _, "recent_events": model_case["_recent_events"][-5:]},
+            case=m.case)
+        if use_transport_gate:
+            def reserve_request(purpose="mission_decider"):
+                request_id = "req_" + secrets.token_hex(16)
+                provider = getattr(self.decider, "provider", None)
+                ok = self.store.reserve_model_request(
+                    mission_id, token, request_id,
+                    provider=getattr(provider, "name", ""),
+                    model=getattr(provider, "model", ""), purpose=purpose)
+                if not ok:
+                    return None
+                return request_id
+            decide_call = lambda: self.decider(
+                m.goal, model_case, self._primitives(m.leash),
+                request_gate=reserve_request,
+                request_complete=self.store.complete_model_request,
+                request_scope=mission_id)
+        else:
+            decide_call = lambda: self.decider(
+                m.goal, model_case, self._primitives(m.leash))
+        outcome = self._bounded_call(
+            decide_call,
+            step_timeout,
+            cancel_owner=getattr(self.decider, "provider", self.decider),
+            cancel_key=mission_id,
+            mission_id=mission_id, run_token=token)
+        if outcome.timed_out:
+            self.store.account_runtime(
+                mission_id, token, retries=1)
+            self.store.record_event(
+                mission_id, "watchdog", "decider_timeout",
+                payload={"timeout_seconds": step_timeout,
+                         "cancel_requested": outcome.cancelled})
+            if self.store.budget_reason(mission_id):
+                return self._finish(mission_id, token, NEEDS_YOU,
+                                    self.store.budget_reason(mission_id))
+            self.store.schedule_wait(mission_id, int(time.time()) + 60)
+            return self._finish(
+                mission_id, token, WAITING,
+                "model step timed out; retry scheduled without replaying an action")
+        if outcome.error is not None:
+            self.store.account_runtime(
+                mission_id, token, retries=1)
+            self.store.record_event(
+                mission_id, "watchdog", "decider_error",
+                payload={"error": "%s: %s" %
+                         (type(outcome.error).__name__, outcome.error)})
+            exhausted = self.store.budget_reason(mission_id)
+            if exhausted:
+                return self._finish(mission_id, token, NEEDS_YOU, exhausted)
+            self.store.schedule_wait(mission_id, int(time.time()) + 60)
+            return self._finish(mission_id, token, WAITING,
+                                "model step failed; retry scheduled")
+        decision = outcome.value or {}
+        usage = self._usage_from_decision(decision)
+        self.store.account_runtime(mission_id, token, **usage)
+        # This checkpoint exists only to prove recovery is at a safe,
+        # model-only boundary.  Persisting raw decision args here would
+        # write a credential/PII value before _bound_refusal can reject
+        # it, so retain structure rather than values.
+        public_args = decision.get("args") or {}
+        public_decision = {
+            "action": decision.get("action"),
+            "arg_keys": sorted(str(k) for k in public_args)
+            if isinstance(public_args, dict) else [],
+        }
+        self.store.record_checkpoint(
+            mission_id, token, "decision_ready", public_decision, case=m.case)
+        # A pause/cancel arriving during the model call wins before another
+        # primitive is proposed or fired.
+        if not self.store.owns_run(mission_id, token):
+            return self._lost_state(mission_id, token)
+        controlled = self._control_boundary(mission_id, token)
+        if controlled:
+            if controlled == "_steered":
+                return "_steered"
+            return controlled
+        m = self.store.get(mission_id)
+        exhausted = self.store.budget_reason(mission_id)
+        if exhausted:
+            return self._finish(mission_id, token, NEEDS_YOU, exhausted)
+        return decision, m
+
     def _drive_claimed(self, mission_id, token, heartbeat=True) -> str:
         """Drive a mission whose RUNNING slot has already been atomically claimed."""
         reads = 0                                     # consecutive reads of one target
@@ -4041,136 +4504,54 @@ class MissionDriver:
                     return self._finish(
                         mission_id, token, NEEDS_YOU,
                         "mission active wall-time budget exhausted")
-                use_transport_gate = bool(
-                    getattr(self.decider, "supports_request_gate", False))
-                if not self.store.reserve_decision(
-                        mission_id, m.leash, token,
-                        count_model_call=not use_transport_gate):
-                    return self._finish(mission_id, token, NEEDS_YOU,
-                                        "mission model-turn budget exhausted")
-                model_case = dict(m.case)
-                model_case["_authority"] = m.leash
-                model_case["_standing_authority"] = standing
-                try:
-                    from .workidentity import connected_context
-                    model_case["_connected_work_identities"] = connected_context(
-                        os.path.dirname(self.store.path))
-                except Exception:
-                    # Identity discovery is additive context.  A corrupt optional
-                    # connection record must not take the whole Mission down.
-                    pass
-                model_case["_activity_ledger"] = self.store.activity_ledger(
-                    mission_id, 24)
-                model_case["_do_not_repeat"] = self.store.do_not_repeat(
-                    mission_id, 20)
-                recent_events = self.store.events(mission_id, 20)
-                open_coverage = _open_campaign_coverage(model_case)
-                if open_coverage:
-                    # A non-due timer is durable scheduler state, not work for
-                    # the planner to reconsider every turn.  Feeding repeated
-                    # schedule/refusal events back to the model creates a
-                    # positive feedback loop that burns the Mission budget while
-                    # the host correctly refuses to sleep with open coverage.
-                    model_case.pop("pending_followups", None)
-                    recent_events = [
-                        event for event in recent_events
-                        if not ((event.get("kind") == "followup" and
-                                event.get("name") == "scheduled") or
-                               (event.get("kind") == "coverage" and
-                                event.get("name") == "wait_refused"))
-                    ]
-                    branch = str(open_coverage[0].get("branch") or "")
-                    model_case["signal"] = (
-                        "Required campaign work remains. Non-due monitoring timers are already "
-                        "durable and intentionally hidden; do not schedule them again. Continue "
-                        "the first open branch now: " + branch)[:800]
-                model_case["_recent_events"] = recent_events
-                checkpoint = self.store.latest_checkpoint(mission_id)
-                if checkpoint:
-                    model_case["_checkpoint"] = {
-                        "seq": checkpoint["seq"], "phase": checkpoint["phase"],
-                        "at": checkpoint["at"]}
-                self.store.record_checkpoint(
-                    mission_id, token, "deciding",
-                    {"step": _, "recent_events": model_case["_recent_events"][-5:]},
-                    case=m.case)
-                if use_transport_gate:
-                    def reserve_request(purpose="mission_decider"):
-                        request_id = "req_" + secrets.token_hex(16)
-                        provider = getattr(self.decider, "provider", None)
-                        ok = self.store.reserve_model_request(
-                            mission_id, token, request_id,
-                            provider=getattr(provider, "name", ""),
-                            model=getattr(provider, "model", ""), purpose=purpose)
-                        if not ok:
-                            return None
-                        return request_id
-                    decide_call = lambda: self.decider(
-                        m.goal, model_case, self._primitives(m.leash),
-                        request_gate=reserve_request,
-                        request_complete=self.store.complete_model_request,
-                        request_scope=mission_id)
-                else:
-                    decide_call = lambda: self.decider(
-                        m.goal, model_case, self._primitives(m.leash))
-                outcome = self._bounded_call(
-                    decide_call,
-                    step_timeout,
-                    cancel_owner=getattr(self.decider, "provider", self.decider),
-                    cancel_key=mission_id,
-                    mission_id=mission_id, run_token=token)
-                if outcome.timed_out:
-                    self.store.account_runtime(
-                        mission_id, token, retries=1)
-                    self.store.record_event(
-                        mission_id, "watchdog", "decider_timeout",
-                        payload={"timeout_seconds": step_timeout,
-                                 "cancel_requested": outcome.cancelled})
-                    if self.store.budget_reason(mission_id):
+                # A dedicated code Mission already has its plan: the user's own
+                # goal, executed by the native coding loop that reads, edits and
+                # runs the tests itself.  Only mixed work - where the next move
+                # really is a choice between primitives - spends a planner call.
+                dispatch = self._code_dispatch_plan(
+                    mission_id, token, m, step_timeout)
+                if isinstance(dispatch, str):
+                    return dispatch
+                if dispatch is not None:
+                    # A model-free step still costs a step against the work
+                    # budget and still needs live ownership; it must not cost a
+                    # model call, because no model transport was used.
+                    if not self.store.reserve_decision(
+                            mission_id, m.leash, token, count_model_call=False,
+                            purpose="code_dispatch"):
                         return self._finish(mission_id, token, NEEDS_YOU,
-                                            self.store.budget_reason(mission_id))
-                    self.store.schedule_wait(mission_id, int(time.time()) + 60)
-                    return self._finish(
-                        mission_id, token, WAITING,
-                        "model step timed out; retry scheduled without replaying an action")
-                if outcome.error is not None:
-                    self.store.account_runtime(
-                        mission_id, token, retries=1)
+                                            "mission step budget exhausted")
+                    decision = dispatch.decision()
                     self.store.record_event(
-                        mission_id, "watchdog", "decider_error",
-                        payload={"error": "%s: %s" %
-                                 (type(outcome.error).__name__, outcome.error)})
-                    exhausted = self.store.budget_reason(mission_id)
-                    if exhausted:
-                        return self._finish(mission_id, token, NEEDS_YOU, exhausted)
-                    self.store.schedule_wait(mission_id, int(time.time()) + 60)
-                    return self._finish(mission_id, token, WAITING,
-                                        "model step failed; retry scheduled")
-                decision = outcome.value or {}
-                usage = self._usage_from_decision(decision)
-                self.store.account_runtime(mission_id, token, **usage)
-                # This checkpoint exists only to prove recovery is at a safe,
-                # model-only boundary.  Persisting raw decision args here would
-                # write a credential/PII value before _bound_refusal can reject
-                # it, so retain structure rather than values.
-                public_args = decision.get("args") or {}
-                public_decision = {
-                    "action": decision.get("action"),
-                    "arg_keys": sorted(str(k) for k in public_args)
-                    if isinstance(public_args, dict) else [],
-                }
-                self.store.record_checkpoint(
-                    mission_id, token, "decision_ready", public_decision, case=m.case)
-                # A pause/cancel arriving during the model call wins before another
-                # primitive is proposed or fired.
-                if not self.store.owns_run(mission_id, token):
-                    return self._lost_state(mission_id, token)
-                controlled = self._control_boundary(mission_id, token)
-                if controlled:
-                    if controlled == "_steered":
-                        continue
-                    return controlled
-                m = self.store.get(mission_id)
+                        mission_id, "control", "code_dispatch",
+                        payload={"attempt": dispatch.attempt,
+                                 "session_id": dispatch.session_id,
+                                 "goal_chars": len(dispatch.goal),
+                                 "reason": dispatch.reason})
+                    self.store.record_checkpoint(
+                        mission_id, token, "code_dispatch",
+                        {"attempt": dispatch.attempt, "reason": dispatch.reason,
+                         "goal_chars": len(dispatch.goal)}, case=m.case)
+                    if not self.store.owns_run(mission_id, token):
+                        return self._lost_state(mission_id, token)
+                    controlled = self._control_boundary(mission_id, token)
+                    if controlled:
+                        if controlled == "_steered":
+                            continue
+                        return controlled
+                    m = self.store.get(mission_id)
+                    if m is None:
+                        return self._lost_state(mission_id, token)
+                else:
+                    planned = self._model_planning_step(
+                        mission_id, token, m, standing, _, step_timeout)
+                    if isinstance(planned, str):
+                        if planned == "_steered":
+                            continue
+                        return planned
+                    decision, m = planned
+                    if m is None:
+                        return self._lost_state(mission_id, token)
                 exhausted = self.store.budget_reason(mission_id)
                 if exhausted:
                     return self._finish(mission_id, token, NEEDS_YOU, exhausted)
@@ -4609,6 +4990,13 @@ class MissionDriver:
                 if isinstance(result, dict) and result.get("needs_human"):
                     if not self._fold(m, cap.name, result, token=token):
                         return self._lost_state(mission_id, token)
+                    if code_capability:
+                        return self._finish(
+                            mission_id, token, NEEDS_YOU,
+                            code_stop_report(
+                                str(result.get("error") or
+                                    "the code worker needs human inspection")[:350],
+                                result))
                     return self._finish(
                         mission_id, token, NEEDS_YOU,
                         str(result.get("error") or result.get("result") or
@@ -4663,10 +5051,20 @@ class MissionDriver:
                         # An unstructured code failure may have changed files even
                         # when a legacy runner returned no recovery metadata.  Do
                         # not spin through forty edit attempts in one claim.
+                        #
+                        # Fold FIRST: the coding run's own answer and its host
+                        # check evidence are the user's deliverable, and dropping
+                        # them here is why a Mission could stop with a sentence
+                        # that described nothing that had happened.
+                        if not self._fold(m, cap.name, result, token=token):
+                            return self._lost_state(mission_id, token)
                         return self._finish(
                             mission_id, token, NEEDS_YOU,
-                            "%s stopped without completion-grade evidence: %s" %
-                            (cap.name, str(verdict.reason or "inspect the workspace")[:350]))
+                            code_stop_report(
+                                "%s stopped without completion-grade evidence: %s" %
+                                (cap.name,
+                                 str(verdict.reason or "inspect the workspace")[:350]),
+                                result))
                     # A reversible primitive that failed or could not be verified
                     # is actionable diagnostic evidence, not a reason to stop all
                     # independent Mission branches.  The planner may repair it or

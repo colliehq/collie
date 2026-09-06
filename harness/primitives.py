@@ -1248,6 +1248,9 @@ class _BoundCodeTool:
 def _restrict_code_child(h, root):
     # `glob` can traverse directory symlinks and general shell/execute tools can
     # escape any path wrapper. code_search already provides safe repo discovery.
+    # This is the whole generic tool contract; the only other hand a Mission code
+    # slice gets is the fixed-command host check registered after this pass (see
+    # `harness.code_check`), which is not a generic tool and takes no arguments.
     allow = {"read_file", "write_file", "edit_file", "grep",
              "plan", "undo", "code_search"}
     for name in list(h.registry._tools):
@@ -1287,10 +1290,76 @@ def _optional_nonnegative_int(value, name):
     return parsed
 
 
+# ── how many logical turns one durable code slice may take ──────────────────
+# Three inputs that mean three different things, and used to collapse into one:
+#
+#   absent (None/"")  nobody chose.  Use the configured scheduling slice, which
+#                     is what every pre-existing caller relied on.
+#   explicit 0        the dedicated ordinary-code profile's own choice, and the
+#                     same value the native loop uses for interactive work: no
+#                     arbitrary turn ceiling.  Chopping one small feature into
+#                     24-turn fragments costs a resumed prompt, a re-read of the
+#                     repository and a full host check every time it resumes;
+#                     that is where a real 5-slice, 113-model-call run went.
+#   explicit positive bounded scheduling on purpose (overnight uses 3), clamped
+#                     to a sane range.
+#
+# "Unlimited" is unlimited in LOGICAL TURNS only.  Real work stays bounded by
+# four independent things that all outlive this function: the Mission
+# model-call ledger (every turn costs at least one call, and the loop breaks on
+# that ceiling), the Mission's per-step wall-clock leash enforced by the driver
+# watchdog against a killable worker process, Stop, and the Mission's own
+# active wall-time budget.  An unlimited slice therefore REQUIRES a positive
+# model-call budget: with nothing counting down, "unlimited" would be literally
+# unbounded, so the configured slice is used instead.
+#
+# Timeout responsiveness, for the record: when a slice outlives the step leash
+# the driver cancels the worker's process tree and fences the Mission as
+# recovery_required rather than pretending it checkpointed.  That is a real,
+# visible cost of an unlimited slice on a very slow repository, and it is the
+# reason a positive `slice_turns` remains available and remains what overnight
+# uses.
+_DEFAULT_CODE_SLICE_TURNS = 24
+_MAX_CODE_SLICE_TURNS = 50
+
+
+def _code_slice_turn_cap(slice_turns, model_call_limit):
+    """Resolve one slice's logical turn ceiling. Returns (cap, mode); 0 = unlimited."""
+    try:
+        configured = int(os.environ.get(
+            "COLLIE_CODE_SLICE_TURNS",
+            os.environ.get("COLLIE_CODE_TURNS", str(_DEFAULT_CODE_SLICE_TURNS))))
+    except (TypeError, ValueError, OverflowError):
+        configured = _DEFAULT_CODE_SLICE_TURNS
+    default_cap = max(1, min(_MAX_CODE_SLICE_TURNS, configured))
+    if slice_turns is None or slice_turns == "" or isinstance(slice_turns, bool):
+        return default_cap, "configured"
+    try:
+        requested = int(slice_turns)
+    except (TypeError, ValueError, OverflowError):
+        # Non-finite or unparseable authority is not an instruction to run
+        # forever; it is a broken value, and the configured slice is the safe
+        # reading of it.
+        return default_cap, "configured"
+    if requested > 0:
+        return max(1, min(_MAX_CODE_SLICE_TURNS, requested)), "bounded"
+    if requested < 0:
+        return default_cap, "configured"
+    if model_call_limit is None or int(model_call_limit) <= 0:
+        return default_cap, "configured_without_call_budget"
+    return 0, "unlimited"
+
+
 def _default_code_verifier(workspace, result, command="", baseline_digest="",
                            timeout_seconds=300, *, patch_attributed=False,
-                           agent_post_tree_digest=""):
-    """Run one exact, pre-authorized host check and bind it to current bytes."""
+                           agent_post_tree_digest="", cancelled=None, on_event=None):
+    """Run one exact, pre-authorized host check and bind it to current bytes.
+
+    ``cancelled`` is this Mission's own stop predicate.  It is handed to the
+    verifier so a Stop pressed while the repository command is running kills that
+    owned process tree and yields cancelled evidence, instead of leaving a child
+    writing files after the Mission has already moved on.
+    """
     command = str(command or "").strip()
     if not command:
         return {"verified": bool(getattr(result, "verified", False)),
@@ -1303,7 +1372,34 @@ def _default_code_verifier(workspace, result, command="", baseline_digest="",
         return {"verified": False, "detail": str(exc), "evidence": None}
     evidence = run_verification_command(
         command, workspace, timeout=max(1, min(3600, parsed_timeout or 300)),
-        source="mission_code_profile", after_last_edit=True)
+        source="mission_code_profile", after_last_edit=True,
+        cancelled=cancelled, on_event=on_event)
+    return _bind_check_evidence(
+        evidence, baseline_digest=baseline_digest,
+        patch_attributed=patch_attributed,
+        agent_post_tree_digest=agent_post_tree_digest)
+
+
+def _bind_check_evidence(evidence, baseline_digest="", *, patch_attributed=False,
+                         agent_post_tree_digest=""):
+    """Decide one host check's verdict from its receipt and the agent boundary.
+
+    Shared by the check the host runs after the slice and by an in-slice receipt
+    the host reuses, so "when is a green command a verified Mission patch" has
+    exactly one implementation and cannot drift between the two paths.
+    """
+    evidence = dict(evidence or {})
+    if evidence.get("cancelled"):
+        # A stop is never a verdict about the code.  Report it as its own state
+        # so nothing downstream can read "not failed" as "fine".
+        evidence["patch_attributed"] = bool(patch_attributed)
+        evidence["agent_post_tree_digest"] = str(agent_post_tree_digest or "")
+        evidence["agent_boundary_matches"] = bool(
+            agent_post_tree_digest and
+            str(evidence.get("tree_digest") or "") == str(agent_post_tree_digest))
+        return {"verified": False, "cancelled": True,
+                "detail": "host verification was cancelled before it could finish",
+                "evidence": evidence}
     # The verifier is allowed to execute repository code and can therefore
     # create files of its own (for example __pycache__, coverage data, or build
     # output).  Those bytes are part of the physical workspace boundary, but
@@ -1336,12 +1432,79 @@ def _default_code_verifier(workspace, result, command="", baseline_digest="",
     return {"verified": verified, "detail": detail, "evidence": evidence}
 
 
+def _acquire_code_session_lease(sid, cwd, mission_id):
+    """Take this durable code session's execution lease, or refuse without effect.
+
+    The lease is acquired BEFORE the journal is loaded and released only after the
+    last receipt, so no second executor — another Mission worker, a `collie` CLI
+    turn on the same session, a second daemon — can interleave a conversation into
+    one transcript or edit the same workspace behind our snapshots.  Refusing here
+    is safe: nothing has been read, written or launched yet.
+    """
+    from . import session_owner
+    try:
+        lease = session_owner.try_acquire(
+            sid, label="mission-code",
+            meta={"mission_id": str(mission_id or "")[:120], "cwd": str(cwd)[:400]})
+    except (OSError, ValueError) as exc:
+        return {"answer": "durable code session lease could not be taken: %s: %s"
+                          % (type(exc).__name__, exc),
+                "verified": False, "continue_needed": False,
+                "recovery_required": False,
+                "needs_human": True, "session_id": sid}
+    if lease is None:
+        return {"answer": "another executor already owns this durable code session; "
+                          "no edit was attempted",
+                "verified": False, "continue_needed": False,
+                # Nothing was read, written or launched, so this is an ordinary
+                # refusal and must never be escalated as an uncertain effect.
+                "recovery_required": False,
+                "needs_human": True, "session_id": sid}
+    return lease
+
+
 def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
                execution_profile=None, worker_profile=None, verify_command="", session_id="",
                baseline_tree_digest="", expected_tree_digest="", slice_turns=None,
                verify_timeout_seconds=None, max_session_storage_bytes=None,
                max_model_calls=None, runs_db="", mission_store_path="",
-               mission_run_token=""):
+               mission_run_token="", cancelled=None, on_event=None):
+    """Run one durable code slice while holding its session execution lease.
+
+    The lease is taken inside the slice (only once the workspace and authority are
+    known to be valid, so a refused configuration never touches the session store)
+    and released here, after the final receipt and host-check evidence exist.
+    """
+    holder = {}
+    try:
+        return _live_code_slice(
+            goal, workspace, mission_id=mission_id, host_verifier=host_verifier,
+            execution_profile=execution_profile, worker_profile=worker_profile,
+            verify_command=verify_command, session_id=session_id,
+            baseline_tree_digest=baseline_tree_digest,
+            expected_tree_digest=expected_tree_digest, slice_turns=slice_turns,
+            verify_timeout_seconds=verify_timeout_seconds,
+            max_session_storage_bytes=max_session_storage_bytes,
+            max_model_calls=max_model_calls, runs_db=runs_db,
+            mission_store_path=mission_store_path,
+            mission_run_token=mission_run_token, cancelled=cancelled,
+            on_event=on_event, _lease_holder=holder)
+    finally:
+        lease = holder.get("lease")
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:
+                pass
+
+
+def _live_code_slice(goal, workspace=None, mission_id=None, host_verifier=None,
+                     execution_profile=None, worker_profile=None, verify_command="",
+                     session_id="", baseline_tree_digest="", expected_tree_digest="",
+                     slice_turns=None, verify_timeout_seconds=None,
+                     max_session_storage_bytes=None, max_model_calls=None, runs_db="",
+                     mission_store_path="", mission_run_token="", cancelled=None,
+                     on_event=None, _lease_holder=None):
     import os
     from . import sessions
     from .cli import (make_harness, _RunnerShim, _paths, _worker_history_note,
@@ -1404,6 +1567,13 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         return {"answer": "Mission model-request budget is exhausted",
                 "verified": False, "continue_needed": False,
                 "needs_human": True, "session_id": sid}
+    lease = _acquire_code_session_lease(sid, cwd, mission_id)
+    if isinstance(lease, dict):
+        # A refusal here proves no journal read, no baseline receipt and no model
+        # or tool call happened, so it is an ordinary stop and never recovery.
+        return lease
+    if isinstance(_lease_holder, dict):
+        _lease_holder["lease"] = lease
     checked = sessions.load_checked(sid)
     if checked.get("status") == "invalid":
         return {
@@ -1608,6 +1778,13 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
                          project=project, embed="hash", rerank="off", distill="off",
                          web_search=False, code_search=True, exec_code=False,
                          subscription_only=bool(profile.get("subscription_only")))
+    # The surface already owns this session's execution lease (acquired above,
+    # before the journal was read).  Hand it to the harness rather than letting a
+    # nested run take a second one; per the native host contract the harness
+    # validates the same sid/root and never releases a supplied lease.
+    h.run_owner = lease
+    if callable(cancelled) and getattr(h, "cancelled", None) is None:
+        h.cancelled = cancelled
     request_store = None
     external_request_id = ""
     if mission_store_path and mission_run_token:
@@ -1646,11 +1823,23 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     # browser/desktop/MCP hands or a general shell behind Mission's outer gate.
     if not external_worker:
         _restrict_code_child(h, cwd)
-    # This child intentionally has no shell capability.  Verification is an
-    # exact parent-authorized host command after every slice, so the generic
-    # loop's "use bash to verify" nudge would only waste a model turn.
+    # This child still has no shell, no browser, no network and no MCP.  What it
+    # now has is one hand: the exact command the user pre-authorized for this
+    # workspace, run by the host, with its real output handed back.  Without it
+    # the loop could not see its own test failures until the slice was over, so
+    # every repair cost a whole new slice — a resumed prompt, a re-read of the
+    # repository and another full check.  It is added AFTER the restriction pass
+    # so the allow-list stays a statement about generic tools.
+    check_receipts = []
+    check_tool = None
     if not external_worker:
-        h.self_verify = False
+        h.self_verify = False   # the generic nudge is about a bash tool that is not here
+        if str(verify_command or "").strip():
+            from .code_check import VerificationCommandTool
+            check_tool = VerificationCommandTool(
+                verify_command, cwd, timeout_seconds=(verified_timeout or 300),
+                receipts=check_receipts, on_event=on_event)
+            h.registry._tools[check_tool.name] = check_tool
     if profile.get("profile") == "overnight" and not external_worker:
         # Let Mission's durable wait/backoff own transport retries.  Sleeping and
         # retrying inside a killable slice obscures the runnable-boundary auth
@@ -1658,20 +1847,16 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         # campaign call leash is folded.
         h.max_retries = 0
         h.critic = False
-    if slice_turns in (None, "", 0, "0"):
-        try:
-            slice_turns = int(os.environ.get(
-                "COLLIE_CODE_SLICE_TURNS", os.environ.get("COLLIE_CODE_TURNS", "24")))
-        except (TypeError, ValueError, OverflowError):
-            slice_turns = 24
-    try:
-        slice_turns = int(slice_turns)
-    except (TypeError, ValueError, OverflowError):
-        slice_turns = 24
-    h.max_turns = max(1, min(50, slice_turns)) if not external_worker else None
+    turn_cap, turn_mode = _code_slice_turn_cap(slice_turns, model_call_limit)
+    h.max_turns = turn_cap if not external_worker else None
     if model_call_limit is not None:
         h.max_model_calls = model_call_limit
-        if h.max_model_calls and not external_worker:
+        # A zero budget means exhausted, and is refused far above before any
+        # session or workspace is touched; it must never arrive here and be
+        # read as "no ceiling".  ``h.max_turns == 0`` is unlimited logical
+        # turns, so it is left alone: the model-call ledger is what counts it
+        # down, and min(0, N) would silently make it unlimited-with-a-number.
+        if h.max_model_calls and h.max_turns and not external_worker:
             h.max_turns = min(h.max_turns, h.max_model_calls)
     if not external_worker:
         h.durable_session_id = sid
@@ -1693,6 +1878,18 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
                 prompt += ("\n\nHost verification after the previous slice (ground truth; "
                            "repair this before finishing):\n" +
                            (feedback + "\n" if feedback else "") + output[-2500:])
+    if check_tool is not None:
+        # Say it in the prompt rather than through the generic self-verify nudge,
+        # which talks about a bash tool this loop does not have.
+        prompt += (
+            "\n\nYou can check your own work in this run. The `run_verification` tool "
+            "runs exactly `%s` in this workspace and gives you its real output. It "
+            "takes no arguments. Run it after you have made your changes; if it "
+            "fails, read the output, fix the cause and run it again. The same check "
+            "is run by the host after you stop and is what decides whether this task "
+            "is complete, so finishing on an untested guess only costs another round. "
+            "If you cannot make it pass, say so plainly and say what is wrong."
+            % str(verify_command or "").strip())
     try:
         if external_worker:
             from . import runner_slice
@@ -1775,6 +1972,19 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     agent_mutated = bool(
         agent_snapshot_complete and
         pre_slice.get("tree_digest") != agent_post_slice.get("tree_digest"))
+    # An in-slice check runs project code INSIDE the agent boundary, so unlike
+    # the end-of-slice verifier its build output lands where a naive pre/post
+    # comparison would read it as the agent's patch.  Attribute only the
+    # intervals between the checks; the intervals across them belong to the
+    # check.  ``None`` means the digests cannot answer it, and then the
+    # conservative pre/post answer stands.
+    from .code_check import agent_mutated_outside_checks, check_window_mutated
+    if check_receipts:
+        outside = agent_mutated_outside_checks(
+            pre_slice.get("tree_digest"), check_receipts,
+            agent_post_slice.get("tree_digest"))
+        if outside is not None and agent_snapshot_complete:
+            agent_mutated = outside
     # ``patch_attributed`` reconstructed above means a prior slice introduced
     # agent-owned bytes.  It must not remain sticky after a later agent slice
     # restores the exact original baseline.  This check deliberately uses the
@@ -1784,6 +1994,12 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     patch_attributed = bool(
         (patch_attributed or agent_mutated) and agent_snapshot_complete and
         baseline_digest and agent_post_digest != baseline_digest)
+    # Same rule the end-of-slice verifier already obeys: a check that rewrote a
+    # represented project byte makes this slice's ownership unprovable rather
+    # than being laundered into it.
+    checks_mutated = check_window_mutated(check_receipts) if check_receipts else False
+    if checks_mutated:
+        patch_attributed = False
     transcript_persisted = True
     transcript_error = ""
     try:
@@ -1801,17 +2017,105 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         res.error = ((str(getattr(res, "error", "") or "") + "; ")
                      if getattr(res, "error", "") else "") + transcript_error
         res.success = False
-    if host_verifier is None:
+    # The worker's own stop state is resolved BEFORE the host check, because it
+    # decides whether that check may run at all.  A cancelled or errored slice has
+    # no settled workspace to certify; starting the repository command anyway
+    # would spend real time on evidence nobody may use and risks turning somebody
+    # else's Stop into a green-looking receipt.
+    error_text = str(getattr(res, "error", "") or "")
+    if not error_text and str(getattr(res, "answer", "") or "").startswith("ERROR("):
+        error_text = str(getattr(res, "answer", "") or "")
+    run_cancelled = bool(getattr(res, "canceled", False) or
+                         getattr(res, "cancelled", False))
+    if not run_cancelled and callable(cancelled):
+        try:
+            run_cancelled = bool(cancelled())
+        except Exception:
+            # A broken predicate is a caller bug, not a user Stop.  Keep going;
+            # the verifier's own watcher reports the fault in its evidence.
+            run_cancelled = False
+    stop_reason = str(getattr(res, "stop_reason", "") or "")
+    boundary_uncertain = False
+    skip_reason = ("the code worker was cancelled" if run_cancelled else
+                   "the code worker stopped with an error" if error_text else "")
+    # If the loop ran the same command itself and nothing has moved since, the
+    # host already owns a receipt for exactly these bytes.  Running it a second
+    # time would cost the user the suite's whole wall-clock for an answer that
+    # is on disk.  Every condition for standing in is checked in
+    # ``reusable_receipt``, and the decisive one is that the tree digest before
+    # AND after that check is still the tree that exists now.
+    reused = None
+    if (host_verifier is None and not skip_reason and check_receipts and
+            str(verify_command or "").strip()):
+        from .code_check import reusable_receipt
+        reused = reusable_receipt(
+            check_receipts, verify_command,
+            str(agent_post_slice.get("tree_digest") or ""))
+    if host_verifier is not None:
+        verification = host_verifier(cwd, res)
+    elif reused is not None:
+        verification = _bind_check_evidence(
+            reused, baseline_digest=baseline_digest,
+            patch_attributed=patch_attributed,
+            agent_post_tree_digest=str(agent_post_slice.get("tree_digest") or ""))
+        verification["reused_in_slice_check"] = True
+    elif skip_reason:
+        verification = {"verified": False, "skipped": True,
+                        "detail": "host verification skipped: " + skip_reason,
+                        "evidence": None}
+    elif not str(verify_command or "").strip():
         verification = _default_code_verifier(
             cwd, res, verify_command, baseline_digest=baseline_digest,
             timeout_seconds=verified_timeout or 300,
             patch_attributed=patch_attributed,
             agent_post_tree_digest=str(agent_post_slice.get("tree_digest") or ""))
     else:
-        verification = host_verifier(cwd, res)
+        # A repository check runs project code and can write files.  Fence that
+        # possible effect durably before the first command byte, and retire the
+        # fence only on evidence that nothing is still running.
+        from .verification import close_check_boundary, open_check_boundary
+        boundary = open_check_boundary(
+            sid, [], project=project, cwd=cwd, command=verify_command,
+            surface="mission-code")
+        if boundary.get("preexisting"):
+            boundary_uncertain = True
+            verification = {
+                "verified": False, "skipped": True, "evidence": None,
+                "detail": ("host verification skipped: an earlier unreconciled "
+                           "boundary still fences this code session")}
+        elif boundary.get("error"):
+            boundary_uncertain = True
+            verification = {"verified": False, "skipped": True, "evidence": None,
+                            "detail": "host verification skipped: " +
+                                      str(boundary.get("error"))}
+        else:
+            verification = _default_code_verifier(
+                cwd, res, verify_command, baseline_digest=baseline_digest,
+                timeout_seconds=verified_timeout or 300,
+                patch_attributed=patch_attributed,
+                agent_post_tree_digest=str(agent_post_slice.get("tree_digest") or ""),
+                cancelled=(cancelled if callable(cancelled) else None),
+                on_event=on_event)
+            evidence = verification.get("evidence") if isinstance(
+                verification, dict) else None
+            closed = close_check_boundary(boundary, evidence)
+            if isinstance(verification, dict):
+                verification["check_boundary"] = {
+                    key: closed.get(key) for key in
+                    ("retired", "fenced", "detail", "error")}
+            if closed.get("fenced") or closed.get("error"):
+                boundary_uncertain = True
+                if isinstance(verification, dict):
+                    verification["verified"] = False
     if isinstance(verification, bool):
         verification = {"verified": verification}
     verification = dict(verification) if isinstance(verification, dict) else {}
+    check_evidence = verification.get("evidence") if isinstance(
+        verification.get("evidence"), dict) else {}
+    # A Stop that lands while the host check is running stops the slice too: the
+    # check never finished, so the slice has no settled outcome to continue from.
+    if verification.get("cancelled") or check_evidence.get("cancelled"):
+        run_cancelled = True
     verified = bool(verification.get("verified"))
     if usage_error:
         verified = False
@@ -1821,9 +2125,10 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         verified = False
         verification["verified"] = False
         verification["transcript_guard"] = transcript_error
-    error_text = str(getattr(res, "error", "") or "")
-    if not error_text and str(getattr(res, "answer", "") or "").startswith("ERROR("):
-        error_text = str(getattr(res, "answer", "") or "")
+    if run_cancelled:
+        verified = False
+        verification["verified"] = False
+        verification["cancelled"] = True
     transient = False
     if error_text:
         from .providers import classify_error
@@ -1849,10 +2154,13 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
     journal_uncertain = bool(session_recovery and
                              session_recovery.get("recovery_required"))
     recovery_required = bool(journal_uncertain or not slice_snapshot_complete or
-                             not transcript_persisted)
+                             not transcript_persisted or boundary_uncertain)
     needs_human = bool(error_text and not transient and not verified and
                        not recovery_required)
+    # A cancelled slice is a settled stop, not a scheduling yield: continuing it
+    # automatically would replay work the user asked to stop.
     continue_needed = bool(not verified and not recovery_required and not needs_human and
+                           not run_cancelled and
                            (getattr(res, "turns_exhausted", False) or transient or
                             profile.get("profile") == "overnight"))
     reported_cost = getattr(res, "cost_usd", None)
@@ -1892,6 +2200,13 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "patch_attributed": patch_attributed,
         "turns": int(getattr(res, "turns", 0) or 0),
         "turns_exhausted": bool(getattr(res, "turns_exhausted", False)),
+        "slice_turn_cap": turn_cap,
+        "slice_turn_mode": turn_mode,
+        "in_slice_checks": len(check_receipts),
+        "in_slice_check_mutated": checks_mutated,
+        "reused_in_slice_check": bool(verification.get("reused_in_slice_check")),
+        "cancelled": run_cancelled,
+        "stop_reason": stop_reason,
         "verified": verified, "continue_needed": continue_needed,
         "verification": verification,
         "transcript_persisted": transcript_persisted,
@@ -1947,6 +2262,10 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "continue_needed": continue_needed, "session_id": sid,
         "turns_exhausted": bool(getattr(res, "turns_exhausted", False)),
         "turns": int(getattr(res, "turns", 0) or 0),
+        "slice_turn_cap": turn_cap,
+        "slice_turn_mode": turn_mode,
+        "in_slice_checks": len(check_receipts),
+        "reused_in_slice_check": bool(verification.get("reused_in_slice_check")),
         "model_calls": int(getattr(res, "model_calls", 0) or
                            getattr(res, "turns", 0) or 0),
         "_model_calls_reserved": bool(request_store is not None),
@@ -1967,6 +2286,8 @@ def _live_code(goal, workspace=None, mission_id=None, host_verifier=None,
         "slice_mutated": slice_mutated,
         "verifier_mutated": verifier_mutated,
         "patch_attributed": patch_attributed,
+        "cancelled": run_cancelled,
+        "stop_reason": stop_reason,
         "runner": worker_receipt.to_dict() if worker_receipt is not None else None,
         "_external_storage_bytes": session_bytes,
     }
@@ -2060,11 +2381,42 @@ def _real_code(runner=None):
             out.get("verification"), dict) else {}
         evidence = verification.get("evidence") if isinstance(
             verification.get("evidence"), dict) else {}
+        answer = str(out.get("answer") or "")
+        # Mutation/outcome facts are the difference between "a patch exists that
+        # nobody checked" and "the run changed nothing at all".  They must reach
+        # the done-check and the Mission case: reshaping the worker's result into
+        # a bare ``result`` string is how a read-only survey came to be reported
+        # as "code edited but not executed-verified".
+        mutation_reported = ("slice_mutated" in out or "patch_attributed" in out)
+        delivery = {
+            "answer": answer[:4000],
+            "verified": bool(out.get("verified")),
+            "mutation_reported": mutation_reported,
+            "slice_mutated": bool(out.get("slice_mutated")),
+            "patch_attributed": bool(out.get("patch_attributed")),
+            # The agent-owned boundary of THIS slice.  ``patch_attributed`` is
+            # cumulative and cannot answer "did the last slice do anything";
+            # comparing this digest with the one the dispatch recorded can.
+            "agent_post_tree_digest": str(out.get("agent_post_tree_digest") or "")[:128],
+            "continue_needed": pending,
+            "turns": int(out.get("turns", 0) or 0),
+            "turns_exhausted": bool(out.get("turns_exhausted")),
+            "slice_turn_cap": int(out.get("slice_turn_cap", 0) or 0),
+            "slice_turn_mode": str(out.get("slice_turn_mode") or "")[:40],
+            "in_slice_checks": int(out.get("in_slice_checks", 0) or 0),
+            "cancelled": bool(out.get("cancelled")),
+            "stop_reason": str(out.get("stop_reason") or "")[:80],
+            "error": str(out.get("error") or "")[:500],
+            "verification_detail": str(verification.get("detail") or "")[:500],
+            "at": int(time.time()),
+        }
         case_update = {
             "coded": True, "code_verified": bool(out.get("verified")),
             "code_pending": pending,
             "code_session_id": str(out.get("session_id") or ""),
             "code_recovery_required": bool(out.get("recovery_required")),
+            # The user's actual deliverable survives case compaction and restart.
+            "code_delivery": delivery,
         }
         if out.get("post_tree_digest") and not out.get("recovery_required"):
             case_update["code_expected_tree_digest"] = str(
@@ -2077,16 +2429,20 @@ def _real_code(runner=None):
             case_update["code_baseline_tree_digest"] = str(
                 out.get("baseline_tree_digest") or
                 evidence.get("baseline_tree_digest") or "")
-        return {
+        result = {
             "case": case_update,
-            "result": out.get("answer", ""), "verified": bool(out.get("verified")),
+            "answer": answer,
+            "result": answer, "verified": bool(out.get("verified")),
             "continue_needed": pending, "session_id": out.get("session_id", ""),
             "recovery_required": bool(out.get("recovery_required")),
             "needs_human": bool(out.get("needs_human")),
+            "configuration_error": bool(out.get("configuration_error")),
             "transient": bool(out.get("transient")),
             "retry_after_seconds": int(out.get("retry_after_seconds", 0) or 0),
             "turns_exhausted": bool(out.get("turns_exhausted")),
             "turns": int(out.get("turns", 0) or 0),
+            "cancelled": bool(out.get("cancelled")),
+            "stop_reason": str(out.get("stop_reason") or ""),
             "model_calls": int(out.get("model_calls", 0) or 0),
             "_model_calls_reserved": bool(out.get("_model_calls_reserved")),
             "_usage": dict(out.get("_usage") or {}),
@@ -2100,6 +2456,18 @@ def _real_code(runner=None):
             "_external_storage_bytes": int(
                 out.get("_external_storage_bytes", 0) or 0),
         }
+        if mutation_reported:
+            # Absent keys mean "this runner reported nothing", which must stay
+            # distinguishable from a runner that reported "nothing changed".
+            result["slice_mutated"] = bool(out.get("slice_mutated"))
+            result["patch_attributed"] = bool(out.get("patch_attributed"))
+            result["verifier_mutated"] = bool(out.get("verifier_mutated"))
+            result["agent_post_tree_digest"] = str(
+                out.get("agent_post_tree_digest") or "")
+            result["post_tree_digest"] = str(out.get("post_tree_digest") or "")
+            result["baseline_tree_digest"] = str(
+                out.get("baseline_tree_digest") or "")
+        return result
     return execute
 
 
@@ -2120,23 +2488,35 @@ def _code_verify(rec, result):
     if r.get("recovery_required"):
         return Verdict(FAILED, "code worker stopped at an outcome-uncertain edit boundary")
     if r.get("configuration_error"):
-        return Verdict(INCONCLUSIVE, str(r.get("answer") or "coding setup is incomplete")[:700])
+        return Verdict(INCONCLUSIVE, str(r.get("answer") or r.get("result") or
+                                         "coding setup is incomplete")[:700])
     if r.get("verified") is True:
         return Verdict(VERIFIED, "Mission patch passed the configured fresh host check")
+    if r.get("cancelled"):
+        # A stop is a settled outcome with no verdict about the code; it must not
+        # be reported as a checkpointed yield that will be resumed on its own.
+        return Verdict(INCONCLUSIVE,
+                       "the coding run was cancelled before it produced verified work")
     if r.get("continue_needed") and r.get("session_id"):
         return Verdict(VERIFIED, "bounded code slice durably checkpointed; continuing automatically")
     if r.get("error"):
         return Verdict(FAILED, str(r["error"])[:700])
-    if r.get("answer"):
+    answer = str(r.get("answer") or r.get("result") or "")
+    if answer:
         verification = r.get("verification") or {}
         detail = verification.get("detail") if isinstance(verification, dict) else ""
         if r.get("slice_mutated") or r.get("patch_attributed"):
             return Verdict(INCONCLUSIVE, "A patch was produced but has no fresh verification. " +
                            str(detail or "Run a check against the changed workspace.")[:500])
+        if "slice_mutated" in r or "patch_attributed" in r:
+            # The runner explicitly reported that nothing changed.  Saying "code
+            # edited" here is the false claim that made a read-only survey look
+            # like an unverified patch.
+            return Verdict(INCONCLUSIVE,
+                           "The coding run changed no file in the workspace, so its answer is a "
+                           "report rather than a patch: " + answer[:500])
         return Verdict(INCONCLUSIVE, "Coding work returned a result without completion-grade "
-                       "evidence: " + str(r["answer"])[:500])
-    if r.get("result"):
-        return Verdict(INCONCLUSIVE, "code edited but not executed-verified — a human should check")
+                       "evidence: " + answer[:500])
     return Verdict(FAILED, "coding task produced no result")
 
 

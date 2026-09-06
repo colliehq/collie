@@ -1485,6 +1485,13 @@ class MissionService:
                 "verify_timeout_seconds": 300,
                 "max_session_storage_bytes": 15_000_000 if overnight else 0,
                 "session_id": _code_session_id(mid, workspace) if workspace else "",
+                # This Mission was created for one workspace with one coding job.
+                # Its native coding loop plans, reads, edits and runs the tests,
+                # so the driver dispatches the user's complete goal into that
+                # session instead of paying another model to invent a sub-step.
+                # Missions without a bound workspace, and ordinary world Missions
+                # that merely allow `code`, keep the planner.
+                "direct_dispatch": bool(workspace),
             }
             if baseline_digest:
                 case["code_baseline_tree_digest"] = baseline_digest
@@ -3290,7 +3297,8 @@ class MissionService:
         checkpoint = self.store.latest_checkpoint(mid)
         run_tree = None
         if self._run_tree and m.case.get("_run_id"):
-            run_tree = self._run_tree.tree(m.case["_run_id"])
+            run_tree = self._project_root_lifecycle(
+                m, self._run_tree.tree(m.case["_run_id"]), runtime)
         pending_hooks = list(getattr(self._hooks, "pending", ()) or ())
         code_session_recovery = None
         code_session_id = str((m.case or {}).get("code_session_id") or
@@ -3398,6 +3406,63 @@ class MissionService:
             # useful progress summary both slow and visually overwhelming.
             "receipts": receipts[-40:],
         }
+
+    # A root Mission run is leased by MissionStore, never by TaskTree: see
+    # ``TaskTreeStore.complete_mission_root``, which requires an ownerless root so
+    # the two views stay coherent without making it claimable as a specialist.
+    # The consequence is that the durable row keeps saying "queued" while the
+    # Mission runs, needs you, or waits — and usage charged through
+    # ``project_mission_usage`` does not touch its progress/updated columns
+    # either.  Nobody may claim that row, so the honest repair is on the read
+    # side: report the Mission's real lifecycle, and keep the durable value
+    # beside it rather than quietly replacing it.
+    _ROOT_LIFECYCLE = {
+        RUNNING: "running", PAUSING: "running", QUEUED: "queued",
+        WAITING: "waiting", NEEDS_YOU: "needs_you", PAUSED: "paused",
+        RECOVERY_REQUIRED: "recovery_required", RECONCILING: "recovery_required",
+        DONE_VERIFIED: "completed", DONE_ACCEPTED: "completed",
+        FAILED_S: "failed", CANCELLED: "cancelled",
+    }
+    # Only a row that is still ownerless and non-terminal may be re-labelled; a
+    # durable terminal projection is authority and is never overwritten.
+    _ROOT_PROJECTABLE = {"queued", "running", "waiting", "needs_you", "paused"}
+
+    def _project_root_lifecycle(self, mission, tree, runtime):
+        """Show the Mission's own lifecycle on its ownerless durable root row."""
+        if not isinstance(tree, dict) or not mission:
+            return tree
+        run_id = str((mission.case or {}).get("_run_id") or "")
+        lifecycle = self._ROOT_LIFECYCLE.get(str(mission.state or ""), "")
+        if not run_id or not lifecycle:
+            return tree
+        runtime = runtime if isinstance(runtime, dict) else {}
+
+        def project(row):
+            if (not isinstance(row, dict) or row.get("run_id") != run_id or
+                    row.get("parent_run_id") or
+                    row.get("mission_id") != mission.mission_id or
+                    row.get("owner_token") or
+                    str(row.get("status") or "") not in self._ROOT_PROJECTABLE):
+                return row
+            out = dict(row)
+            out["durable_status"] = row.get("status")
+            out["status"] = lifecycle
+            out["status_source"] = "mission"
+            out["mission_state"] = mission.state
+            out["progress_seq"] = max(int(row.get("progress_seq") or 0),
+                                      int(runtime.get("progress_seq") or 0))
+            out["progress_at"] = max(int(row.get("progress_at") or 0),
+                                     int(runtime.get("progress_at") or 0))
+            out["updated_at"] = max(int(row.get("updated_at") or 0),
+                                    int(mission.updated_at or 0))
+            return out
+
+        projected = dict(tree)
+        if isinstance(tree.get("root"), dict):
+            projected["root"] = project(tree["root"])
+        if isinstance(tree.get("flat"), list):
+            projected["flat"] = [project(row) for row in tree["flat"]]
+        return projected
 
     def report(self, mid: str) -> dict:
         """Integration-safe Mission progress report without raw case or action args."""
