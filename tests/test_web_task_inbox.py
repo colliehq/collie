@@ -324,7 +324,8 @@ def test_a_retry_after_the_settings_panel_moved_on_is_still_the_same_request(web
     assert code == 200
     frozen = accepted["entry"]["config"]["frozen"]
     assert frozen == {"provider": "mock", "model": "model-a",
-                      "interactive_speed": "standard", "reasoning_effort": "auto"}
+                      "interactive_speed": "standard", "reasoning_effort": "auto",
+                      "runner_settings": {"RUNNER": "collie", "RUNNER_POOL": "collie"}}
 
     # Somebody opens Settings and picks a different model, and a different payer.
     PANEL.update({"MODEL": "model-b", "PROVIDER": "anthropic-oauth",

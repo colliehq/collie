@@ -189,7 +189,8 @@ def semantic_config(raw):
     return out
 
 
-def freeze_config(raw, *, provider, model="", interactive_speed="", reasoning_effort=""):
+def freeze_config(raw, *, provider, model="", interactive_speed="", reasoning_effort="",
+                  runner_settings=None):
     """Pin every setting this request was typed under, at acceptance.
 
     A follow-up accepted while the composer said "Plan / thorough / Required"
@@ -208,6 +209,8 @@ def freeze_config(raw, *, provider, model="", interactive_speed="", reasoning_ef
     out["frozen"] = {"provider": str(provider or ""), "model": str(model or ""),
                      "interactive_speed": str(interactive_speed or ""),
                      "reasoning_effort": str(reasoning_effort or "")}
+    if runner_settings is not None:
+        out["frozen"]["runner_settings"] = dict(runner_settings)
     return out
 
 
@@ -833,6 +836,13 @@ def _run_detached(sink, session, owner, entry):
     try:
         serve_managed_stream(sink, stream_query(session, entry.get("config")),
                              owner=owner, entry=entry)
+        if sink.done and sink.done.get("error"):
+            # A normal preflight refusal has a done frame, not an exception,
+            # and may happen before any run registry row exists. Keep that
+            # reason visible to the browser which clicked Send next.
+            note_queue_error(session, sink.done["error"],
+                             entry_id=(entry or {}).get("id") or "",
+                             kind="scheduled_run")
     except Exception as exc:
         # A detached turn has nobody to raise at, but "nothing happened, silently"
         # is the one outcome a person cannot act on.  Publish the failure, end the

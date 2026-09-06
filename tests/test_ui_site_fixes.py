@@ -607,8 +607,8 @@ def test_desktop_dialogs_and_dynamic_model_count_are_accessible():
     assert 'event.key !== "Tab"' in page
     assert "modelStatus.textContent = optionCount" in page
     assert 'role="switch"' in page and 'aria-checked="true"' in page
-    steer_catch = page.split('fetch("/api/steer?', 1)[1].split("function send()", 1)[0]
-    assert 'classList.add("dropped")' in steer_catch and "Steer not delivered" in steer_catch
+    # Durable queue acceptance/retry errors are exercised in the browser by
+    # test_web_ui_run_status; the former volatile /api/steer UI was removed.
 
 
 def test_desktop_shows_the_resolved_server_run_plan_and_worker_limits():

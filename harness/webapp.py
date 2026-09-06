@@ -4516,7 +4516,9 @@ class Handler(BaseHTTPRequestHandler):
         frozen = web_tasks.freeze_config(
             config, provider=provider, model=settings.get("MODEL", "") or "",
             interactive_speed=settings.get("INTERACTIVE_SPEED", "") or "",
-            reasoning_effort=settings.get("REASONING_EFFORT", "") or "")
+            reasoning_effort=settings.get("REASONING_EFFORT", "") or "",
+            runner_settings={"RUNNER": settings.get("RUNNER", "collie") or "collie",
+                             "RUNNER_POOL": settings.get("RUNNER_POOL", "collie") or "collie"})
         return web_tasks.accept(sid, entry_id=entry_id, text=text, mode=mode,
                                 config=frozen, images=image_payloads,
                                 contexts=context_items, client=client,
@@ -4782,7 +4784,7 @@ class Handler(BaseHTTPRequestHandler):
         # Frozen settings are resolved here, locally, for this run only.  Replaying
         # a snapshot by writing Settings or the environment would change every
         # other run in this process, including ones the person is watching.
-        configured_model = frozen.get("model") or settings.get("MODEL", "") or None
+        configured_model = (frozen["model"] if "model" in frozen else settings.get("MODEL", "")) or None
         effort_request = qs.get("effort", [frozen.get("reasoning_effort") or
                                            settings.get("REASONING_EFFORT", "auto") or "auto"])[0]
         if "speed" in explicit_axes:
@@ -4941,6 +4943,16 @@ class Handler(BaseHTTPRequestHandler):
         from . import runner_select
         from . import runner_registry as runner_reg
         requested_runner = (qs.get("runner", [""])[0] or "").strip()
+        frozen_runner = frozen.get("runner_settings")
+        if isinstance(frozen_runner, dict) and any(
+                frozen_runner.get(key) != (settings.get(key, "collie") or "collie")
+                for key in ("RUNNER", "RUNNER_POOL")):
+            error = ("the worker settings changed after this request was accepted; "
+                     "the request was kept pending. Re-send it to use the current worker settings")
+            error += _discard_unused_worktree()
+            self._sse("done", {"session": sid, "answer": "", "error": error,
+                               "worker_changed": True})
+            return
         gate_mode = (run_opts["intent"] if run_opts["intent"] in
                      ("plan", "review", "test") else "project")
         try:

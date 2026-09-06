@@ -2848,6 +2848,7 @@
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var IDE_QUERY = new URLSearchParams(location.search);
+  var INITIAL_SESSION = IDE_QUERY.get("session") || "";
   var IDE_EMBED = IDE_QUERY.has("vscode_embed");
   var IDE_SURFACE = IDE_QUERY.get("surface") || "";
   var NATIVE_SHELL = IDE_QUERY.get("native_shell") === "1";
@@ -8129,11 +8130,20 @@
   }
 
   var sessionLoadPending;
+  function rememberSession(id) {
+    try {
+      var address = new URL(location.href);
+      if (id) address.searchParams.set("session", id);
+      else address.searchParams.delete("session");
+      history.replaceState(null, "", address.href);
+    } catch (_) {}
+  }
   function openSession(id) {
     detachRun();
     var loadToken = routeToken;
     sessionLoadPending = {id:id, token:loadToken};
     currentSession = id;
+    rememberSession(id);
     loadTaskQueue();
     currentTitle = SESSION_TITLES[id] || "";     // sidebar label first; the transcript refines it below
     if (typeof setProductNav === "function") setProductNav("home");
@@ -8143,7 +8153,10 @@
     setReceipt({}); loadSessions();
     $("log").innerHTML = "";
     Promise.all([
-      fetch("/api/session/" + encodeURIComponent(id)).then(function (r) { return r.json(); }),
+      fetch("/api/session/" + encodeURIComponent(id)).then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      }),
       fetch("/api/runs").then(function (r) { return r.json(); })
     ]).then(function (loaded) {
       if (currentSession !== id || routeToken !== loadToken) return;
@@ -8151,6 +8164,7 @@
       var s = loaded[0], run = ((loaded[1] || {}).runs || []).filter(function (row) {
         return row.session === id;
       })[0];
+      if (s && s.error) throw new Error(s.error);
       if (run) liveRuns[id] = run; else delete liveRuns[id];
       var msgs = (s && s.messages) || [], firstAsk = "";
       msgs.forEach(function (m) {
@@ -8500,6 +8514,7 @@
   }
   function showToday(userRequested) {
     detachRun(); currentSession = null; currentRun = null; currentTitle = ""; loadTaskQueue();
+    rememberSession(null);
     clearAttached(); clearManualIdeContexts(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     $("log").innerHTML = TODAY_HTML; applyLang(); renderCollieIdentity();
     setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setProductNav("today");
@@ -8559,6 +8574,7 @@
   function newThread(userRequestedFocus) {
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null; currentTitle = "";
+    rememberSession(null);
     loadTaskQueue(); clearAttached(); clearManualIdeContexts();
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     setProductNav("home"); setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
@@ -9077,6 +9093,7 @@
         if (state.loadError && state.notice === state.loadError) { state.notice = ""; changed = true; }
         state.loadError = "";
         var serverNotice = (data.queue_error || {}).error || "";
+        if (serverNotice) state.starting = false;
         if (serverNotice !== (state.serverNotice || "")) {
           if (serverNotice || state.notice === state.serverNotice) state.notice = serverNotice;
           state.serverNotice = serverNotice; changed = true;
@@ -9447,6 +9464,7 @@
     es.addEventListener("start", function (e) {
       var d = JSON.parse(e.data);
       currentSession = d.session;
+      rememberSession(currentSession);
       currentRun = d.run || null;
       runCanSteer = !!((d.worker_capabilities || {}).steer);
       input.placeholder = followUpPlaceholder();
@@ -9704,6 +9722,7 @@
       var d = JSON.parse(e.data);
       if(currentRun&&d.run&&d.run!==currentRun)return;
       currentSession = d.session;
+      rememberSession(currentSession);
       clearTimeout(cancelPollTimer);cancelPollTimer=0;
       setReceipt(d);
       pendStop();
@@ -10644,6 +10663,7 @@
   })();
 
   loadSessions();
+  if (INITIAL_SESSION) openSession(INITIAL_SESSION);
   focusComposer(false);
 })();
 </script>

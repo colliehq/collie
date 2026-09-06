@@ -783,6 +783,8 @@ def test_reopened_active_session_receives_mirror_completion(ui):
     ui.page.get_by_text("Finished after reconnect", exact=True).wait_for(timeout=8000)
     assert state["mirrors"] == 1 and state["reads"] >= 2
     assert not ui.page.locator("#send").evaluate("el => el.classList.contains('stop')")
+    assert not ui.page.locator("#statePill").evaluate("el => el.classList.contains('live')")
+    assert ui.page.locator("#stateText").inner_text() == "idle"
 
 
 def test_late_transcript_cannot_replace_the_newly_selected_thread(ui):
@@ -991,6 +993,20 @@ def test_reopened_canceled_multimodal_thread_preserves_its_request_and_status(ui
     assert "_[stopped by user]_" not in ui.log_text()
     assert ui.page.locator('#log .msg.user img[src^="data:image/png"]').count() == 1
     assert ui.page.locator(".interruption-note").count() == 1
+
+
+def test_refresh_restores_the_selected_conversation_without_another_run(ui):
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_function("() => document.getElementById('log').textContent.includes('README')")
+    assert "session=s-read" in ui.page.url
+    ui.page.reload(wait_until="load")
+    ui.page.wait_for_function("() => document.getElementById('log').textContent.includes('README')")
+    assert ui.page.locator('.thread.active').count() == 1
+    assert not _Fixture.stream_requests, "opening or reloading history must not execute a turn"
+    ui.page.get_by_role("button", name="New task", exact=True).click()
+    assert "session=" not in ui.page.url
+    ui.page.reload(wait_until="load")
+    assert not ui.page.locator('.thread.active').count()
 
 
 def test_steering_is_only_labeled_delivered_after_the_model_boundary(ui):

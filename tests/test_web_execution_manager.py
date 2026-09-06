@@ -782,6 +782,37 @@ def test_a_queued_request_runs_under_the_settings_it_was_accepted_with(lab, monk
     assert lab.settings["MODEL"] == "model-b"
 
 
+@pytest.mark.parametrize("key,value", [("RUNNER", "claude-code"), ("RUNNER_POOL", "claude-code")])
+def test_changed_worker_settings_leave_the_accepted_request_visible(lab,key,value):
+    session="worker-changed"
+    _accept(lab,session,"queued-1","keep working")
+    lab.settings[key]=value
+    code,started=_post(lab,"/api/task-inbox/start",{"session":session})
+    assert code==200 and started["started"]
+    _settle()
+    assert not lab.calls
+    assert _states(session)=={"queued-1":"pending"}
+    assert "worker settings changed" in web_tasks.queue_error(session)["error"]
+
+
+def test_frozen_auto_model_is_not_replaced_by_a_later_explicit_model(lab,monkeypatch):
+    from harness import router
+    session="frozen-auto"
+    lab.settings["MODEL"]=""
+    _accept(lab,session,"queued-1","keep working")
+    lab.settings["MODEL"]="model-b"
+    seen={}; original=router.resolve_run_decision
+    def resolve(*a,**kw):
+        seen.update(kw)
+        return original(*a,**kw)
+    monkeypatch.setattr(router,"resolve_run_decision",resolve)
+    code,started=_post(lab,"/api/task-inbox/start",{"session":session})
+    assert code==200 and started["started"]
+    _settle()
+    assert seen["model"] is None
+    assert _states(session)=={"queued-1":"consumed"}
+
+
 def test_a_changed_provider_refuses_the_run_instead_of_charging_another_account(
         lab, monkeypatch):
     from harness import webapp
