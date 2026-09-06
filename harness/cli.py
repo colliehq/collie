@@ -585,6 +585,7 @@ def cmd_repl(args):
         h.memory.set_block("project:" + args.project, "goal", args.goal[:390], char_limit=400)
     print("collie repl · session %s · %s · %d prior turns · /exit to quit, /new for a fresh thread"
           % (sid, provider, sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness")))
+    fenced = ""
     try:
         while True:
             try:
@@ -596,9 +597,14 @@ def cmd_repl(args):
             if line in ("/exit", "/quit"):
                 break
             if line == "/new":
-                history, receipts, sid = [], [], sess.new_id()
+                history, receipts, sid, fenced = [], [], sess.new_id(), ""
                 h.checkpoint_scope = "session:" + sid
                 print("  [new session %s]" % sid)
+                continue
+            if fenced:
+                # Continuing here would ask a model to reason about a thread whose
+                # last action has an unknown outcome. Refuse the turn, not the user.
+                print("\n" + fenced)
                 continue
             try:
                 decision = resolve_turn_decision(
@@ -611,21 +617,55 @@ def cmd_repl(args):
             print("  [decision] %s · %s · %s/%s/%s" % (
                 decision.model, decision.effort, decision.intent,
                 decision.quality, decision.verification))
-            res = h.run("repl", line, consolidate=True, history=history)
+            try:
+                res = h.run("repl", line, consolidate=True, history=history)
+            except KeyboardInterrupt:
+                # run() turns Ctrl-C into a canceled result, so reaching here means
+                # the interrupt landed outside it. Recover the thread from the
+                # durable journal rather than silently dropping this turn's work.
+                recovered = sess.resume_after_interrupt(sid, fallback=history)
+                history = recovered["messages"]
+                print("\n⏹ turn interrupted — kept the %d messages already recorded"
+                      % len(history))
+                fenced = (recovery_notice(sid, recovered["recovery"])
+                          if recovered["blocked"] else "")
+                if fenced:
+                    print("\n" + fenced)
+                continue
             print("\n" + (res.answer or res.error or "(no output)"))
             history = res.messages
             receipt = turn_decision_receipt(decision, res, getattr(h, "provider", None))
-            saved_sid = sess.save(
-                sid, history, project=args.project, cwd=cwd, answer=res.answer or "")
+            try:
+                saved_sid = sess.save(
+                    sid, history, project=args.project, cwd=cwd, answer=res.answer or "")
+            except Exception as exc:
+                # A journal that refuses the write is evidence, not a hiccup: this
+                # turn happened and is now unrecorded, so stop rather than pile
+                # more unrecorded turns on top of it.
+                from .runner_specs import redact_text
+                fenced = ("session transcript could not be persisted: %s\n"
+                          "  this thread is no longer being recorded — inspect %s, then "
+                          "/new for a fresh thread" % (
+                              redact_text("%s: %s" % (type(exc).__name__, exc), 500), sid))
+                print("\n" + fenced)
+                continue
             if saved_sid:
                 try:
                     sess.append_run_receipt(sid, receipt)
                 except Exception:
                     pass
             receipts.append(receipt)
+            # The save above deliberately keeps an uncertain fence. Re-read it here:
+            # the next turn must not continue over an effect nobody has inspected.
+            state = sess.recovery_state(sid)
+            if state and state.get("recovery_required"):
+                fenced = recovery_notice(sid, state)
+                print("\n" + fenced)
     finally:
         h.memory.close(); h.recorder.close()
-        print("\nsession saved: %s  ·  resume: collie repl --resume %s" % (sid, sid))
+        # A fenced thread would refuse that resume, so say why instead of inviting it.
+        print("\nsession %s cannot be resumed yet — %s" % (sid, fenced) if fenced else
+              "\nsession saved: %s  ·  resume: collie repl --resume %s" % (sid, sid))
     return 0
 
 
@@ -1874,19 +1914,30 @@ def cmd_run(args):
         res = h.run("adhoc", args.task, history=history)
     verification_evidence = None
     if will_verify:
-        from .verification import run_verification_command
-        verification_evidence = run_verification_command(
-            verify_command, cwd, source=verify_source or "detected", after_last_edit=True)
-        if callable(getattr(h, "emit", None)):
-            h.emit("verification_evidence", {"evidence": verification_evidence})
-        res.verified = bool(verification_evidence["passed"] and not res.error)
-        if not verification_evidence["passed"]:
-            check_error = "required check failed: %s (exit %s)" % (
-                verify_command, verification_evidence.get("exit_code"))
-            res.error = ((res.error + "; ") if res.error else "") + check_error
-        h.settle_run_memory(
-            res, bool(res.verified), verification_evidence,
-            source="cli_verification")
+        # A stop is not a starting gun. Launching the project's check after a
+        # canceled or errored run spends time on a tree the run never finished,
+        # and a pass there cannot retroactively make the attempt a success.
+        stop_reason_text = stopped_before_verification(res)
+        if stop_reason_text:
+            verification_evidence = skipped_verification_evidence(
+                verify_command, verify_source, stop_reason_text)
+            res.verified = False
+            if callable(getattr(h, "emit", None)):
+                h.emit("verification_evidence", {"evidence": verification_evidence})
+        else:
+            from .verification import run_verification_command
+            verification_evidence = run_verification_command(
+                verify_command, cwd, source=verify_source or "detected", after_last_edit=True)
+            if callable(getattr(h, "emit", None)):
+                h.emit("verification_evidence", {"evidence": verification_evidence})
+            res.verified = bool(verification_evidence["passed"] and not res.error)
+            if not verification_evidence["passed"]:
+                check_error = "required check failed: %s (exit %s)" % (
+                    verify_command, verification_evidence.get("exit_code"))
+                res.error = ((res.error + "; ") if res.error else "") + check_error
+            h.settle_run_memory(
+                res, bool(res.verified), verification_evidence,
+                source="cli_verification")
         # Persist the final host-side verdict; run() could only record its in-loop evidence.
         h.recorder.finish_run(res)
     actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
@@ -1938,10 +1989,31 @@ def cmd_run(args):
         save_error = "session transcript could not be persisted: " + redact_text(
             "%s: %s" % (type(exc).__name__, exc), 500)
         res.error = ((res.error + "; ") if res.error else "") + save_error
+    if hd.runner != "collie" and not external_recovery and not save_error:
+        # The pre-launch fence is retired only by this explicit act, once the
+        # worker settled AND both its receipt and the exchange are durable.
+        # Saving a transcript is not evidence that an external effect resolved,
+        # so `save` no longer clears an uncertain boundary on anyone's behalf.
+        try:
+            sess.checkpoint(sid, [], project=args.project, cwd=cwd,
+                            run_id="external-cli", terminal=True)
+        except Exception as exc:
+            from .runner_specs import redact_text
+            res.error = ((res.error + "; ") if res.error else "") + (
+                "external-worker recovery boundary could not be cleared: " +
+                redact_text("%s: %s" % (type(exc).__name__, exc), 500))
+    # A run stopped over a live tool leaves this thread fenced. Say so on the same
+    # surface that would otherwise offer `--continue` as if nothing were pending.
+    try:
+        recovery = sess.recovery_state(sid)
+    except Exception:
+        recovery = None
+    fenced = bool(recovery and recovery.get("recovery_required"))
     if getattr(args, "json", False) or getattr(args, "stream_json", False):
         print(_json.dumps({
             **run_outcome(res),
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
+            "recovery_required": fenced, "recovery": recovery if fenced else None,
             "decision": decision_payload, "actual_speed": actual_speed,
             "runner": runner_payload,
             "verification_evidence": verification_evidence,
@@ -1973,7 +2045,11 @@ def cmd_run(args):
         visible_result = (res.answer + "\n\n[run error] " + res.error
                           if res.answer and res.error else (res.answer or res.error))
         print("\n%s" % visible_result)
-        print("\n  session %s · continue: collie run \"…\" --continue  (or --resume %s)" % (sid, sid))
+        if fenced:
+            print("\n  " + recovery_notice(sid, recovery, fresh="run without --continue"))
+        else:
+            print("\n  session %s · continue: collie run \"…\" --continue  (or --resume %s)"
+                  % (sid, sid))
         dash.build(runs_db, out_html)
     h.memory.close(); h.recorder.close()
     return 1 if res.error else 0
@@ -2358,6 +2434,45 @@ def cmd_library(args):
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0
+
+
+def skipped_verification_evidence(command, source, reason):
+    """Receipt-shaped evidence for a check that was deliberately NOT launched.
+
+    A canceled or failed run must not start a fresh host command afterwards: the
+    tree it would grade is whatever the stop left behind, and a green exit code
+    there would read as "this run succeeded". Reporting the same evidence shape
+    with ``executed`` false keeps the receipt honest instead of empty.
+    """
+    from datetime import datetime, timezone
+    return {
+        "command": command or "", "exit_code": None, "command_passed": False,
+        "passed": False, "timestamp": datetime.now(timezone.utc).isoformat(),
+        "duration_ms": 0, "output": reason, "executed": False, "cancelled": False,
+        "ran_after_last_edit": False, "freshness": "not_run",
+        "source": source or "detected", "skipped_reason": reason,
+    }
+
+
+def stopped_before_verification(res):
+    """Why a required check must not run after this result, or ''."""
+    if getattr(res, "canceled", False):
+        return "the run was stopped before it finished, so this check was not run"
+    if getattr(res, "error", ""):
+        return "the run ended with an error before this check could mean anything"
+    return ""
+
+
+def recovery_notice(sid, state, fresh="/new to start a fresh thread"):
+    """The one actionable paragraph a fenced thread owes the user."""
+    detail = (state or {}).get("detail") or {}
+    what = detail.get("tool_name") or "an action"
+    return ("this thread is paused: %s may have already taken effect and nothing has "
+            "confirmed it.\n  inspect it, then close the boundary:\n"
+            "    collie recovery show %s\n"
+            "    collie recovery reconcile %s --resolution completed --yes\n"
+            "  use --resolution not_fired instead only if the action did not execute.\n"
+            "  (or %s)" % (what, sid, sid, fresh))
 
 
 def cmd_recovery(args):

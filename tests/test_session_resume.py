@@ -79,6 +79,13 @@ def test_reconciliation_closes_entire_interrupted_batch(tmp_path, monkeypatch, r
 
 
 def test_loop_attests_builtin_read_before_interruption(tmp_path, monkeypatch):
+    """Ctrl-C inside a built-in read ends the run without fencing the thread.
+
+    The contract changed deliberately: an interrupt is a stop, so run() returns a
+    canceled result instead of unwinding past every surface's bookkeeping. What
+    it must NOT change is the attestation — the boundary stays the auto-resumable
+    ``executing_tool`` a host-attested read earns, never a generic external fence.
+    """
     from harness import cli
     from harness.providers import Completion, ToolCall
     from harness.tools import ReadFileTool
@@ -94,12 +101,20 @@ def test_loop_attests_builtin_read_before_interruption(tmp_path, monkeypatch):
         raise KeyboardInterrupt()
     monkeypatch.setattr(ReadFileTool, "run", interrupt)
     try:
-        with pytest.raises(KeyboardInterrupt):
-            h.run("test", "inspect a.txt", consolidate=False)
+        res = h.run("test", "inspect a.txt", consolidate=False)
+        assert res.canceled and res.stop_reason == "canceled" and not res.success
+        assert "interrupted by user" in res.error
         state = sessions.recovery_state(h.durable_session_id)
         assert state["state"] == "executing_tool"
         assert state["auto_resumable"] is True
-        assert sessions.load(h.durable_session_id)["messages"][-1]["tool_call_id"] == "r1"
+        assert state["recovery_required"] is False
+        # The killed read is closed honestly in the transcript rather than left
+        # as an orphan tool_use, and it is not described as having produced data.
+        saved = sessions.load(h.durable_session_id)["messages"]
+        closures = [m for m in saved if m.get("tool_call_id") == "r1"]
+        assert len(closures) == 1 and closures[0]["role"] == "tool"
+        assert "stopped before returning a result" in closures[0]["content"]
+        assert saved[-1] == {"role": "assistant", "content": "_[stopped by user]_"}
     finally:
         h.memory.close()
         h.recorder.close()

@@ -767,6 +767,51 @@ class Harness:
         except Exception:
             return False
 
+    def _close_unanswered_calls(self, messages, state, detail):
+        """Give every unanswered tool_use an honest, protocol-valid result.
+
+        A run that stops mid-batch leaves tool_use blocks with no paired result;
+        providers reject that thread, so the next turn in this same process would
+        fail on history the user cannot see or fix.  Closing them here says only
+        what the host actually knows: the call that was RUNNING keeps its
+        uncertainty, the calls that never started say they never started.  This
+        is transcript hygiene, not reconciliation — the durable recovery fence is
+        written separately and is not cleared by anything here.
+        """
+        pending = {}
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                for call in msg.get("tool_calls") or []:
+                    cid = (call.get("id") if isinstance(call, dict)
+                           else getattr(call, "id", None))
+                    if cid:
+                        pending[cid] = (call.get("name") if isinstance(call, dict)
+                                        else getattr(call, "name", "")) or "tool"
+            elif msg.get("role") == "tool":
+                pending.pop(msg.get("tool_call_id"), None)
+        if not pending:
+            return 0
+        from . import sessions as _sessions
+        detail = detail if isinstance(detail, dict) else {}
+        running = (detail.get("tool_call_id")
+                   if state in ("executing_tool", "external_action") else None)
+        safe_read = _sessions.replay_safe_boundary(state, detail)
+        for cid, name in pending.items():
+            if cid == running and safe_read:
+                content = ("INTERRUPTED: this call stopped before returning a result. "
+                           "It is host-attested as effect-free, so run it again if its "
+                           "output is still needed.")
+            elif cid == running:
+                content = ("INTERRUPTED: this call stopped while it was running. Its effect "
+                           "is UNKNOWN — check the outside world before requesting it again.")
+            else:
+                content = "CANCELED: run stopped before execution"
+            messages.append({"role": "tool", "tool_call_id": cid,
+                             "name": name, "content": content})
+            self._emit("tool", name=name, args={}, ok=False, canceled=True,
+                       result=content.split(":", 1)[0].lower())
+        return len(pending)
+
     def _account_usage(self, total, usage, model=None):
         """Add one provider usage record to local totals and an optional Pack-wide budget."""
         total.add(usage)
@@ -1175,6 +1220,7 @@ class Harness:
         compaction_since_overflow = False
         last_stop = ""              # stop_reason of the last completion (for the memory-consolidation gate)
         answer = ""
+        interrupt_partial = []      # streamed text of a completion that never returned
         did_edit = verified = covered = multifile_hinted = edit_forced = False
         edited_files, last_edit_text, last_edit_path = set(), "", ""
         last_edit_turn = -100
@@ -1210,6 +1256,7 @@ class Harness:
         hard_at = max(force_at + 2, int(turn_target * _hr))  # then remove explore tools
         budget_hit = False
         canceled = False
+        interrupted_child = False   # a nested run must not swallow the user's Ctrl-C
         # Ran out of turns, as opposed to deciding it was finished. Every voluntary ending leaves the
         # loop through a `break`, so `for … else` marks exactly the case where the range simply ran
         # out — mid-task, by definition. Without this the two endings were indistinguishable
@@ -1310,11 +1357,24 @@ class Harness:
                             session["messages"], rid, turn, journal_state,
                             {"attempt": attempts + 1})
                         from .cancellation import complete as complete_cancelable
+                        # Ctrl-C during generation raises through the provider, so the
+                        # text the user already watched arrive would be lost with it.
+                        # Tap it ONLY when streaming is already on: handing a provider
+                        # an on_text it was not given would change its request mode.
+                        del interrupt_partial[:]
+                        on_text = self.stream_cb
+                        if on_text is not None:
+                            def on_text(piece, _cb=self.stream_cb):
+                                interrupt_partial.append(piece)
+                                _cb(piece)
                         comp = complete_cancelable(
                             self.provider, system, call_messages, schemas,
-                            on_text=self.stream_cb, cancelled=self.cancelled)
+                            on_text=on_text, cancelled=self.cancelled)
                     except Exception as e:
                         comp = _error_completion(getattr(self.provider, "name", "?"), e)
+                    # The completion owns its text from here; only an unreturned call
+                    # leaves the tap as the sole record of what was produced.
+                    del interrupt_partial[:]
                     journal_state = "model_complete"
                     self._session_checkpoint(
                         session["messages"], rid, turn, journal_state,
@@ -2356,6 +2416,25 @@ class Harness:
                                 evidence={"kind": "post_edit_repro", "run_id": rid},
                                 source="verification_gate",
                                 provenance={"run_id": rid, "task_id": task_id})
+        except KeyboardInterrupt:
+            # Ctrl-C is a STOP, not a crash.  Unwinding out of run() used to leave
+            # each surface holding its pre-turn history, so completed edits vanished
+            # from the conversation while their effects stayed on disk.  Take the
+            # ordinary canceled ending instead: the finalization below closes the
+            # transcript, keeps the recovery fence, and returns a usable result.
+            canceled = True
+            res.error = res.error or "interrupted by user"
+            self._emit("canceled", at="interrupt")
+            # A delegated child finishes its own books below, then lets the
+            # interrupt continue to the run the person was actually watching.
+            interrupted_child = bool(getattr(self, "delegation_depth", 0))
+            partial = "".join(interrupt_partial).strip()
+            if partial and not answer:
+                answer = partial
+            answer = ((answer.rstrip() + "\n\n") if answer else "") + "_[stopped by user]_"
+            # The normal ending assigns this inside the try we just left. A stop still
+            # owes the caller whatever answer text the run had actually produced.
+            res.answer = answer
         except Exception as e:
             res.error = "%s: %s" % (type(e).__name__, e)
 
@@ -2396,6 +2475,11 @@ class Harness:
         # ensure the thread ENDS with the final answer (the no-tool-call path breaks without
         # appending it) so a --continue'd next turn sees what this turn concluded.
         m = session["messages"]
+        # A stopped run can end holding tool_use blocks that never got a result.
+        # Close them honestly BEFORE the answer, so this thread stays valid for
+        # the next turn (in this process or after --resume) without any call
+        # being described as more finished, or more untouched, than it was.
+        self._close_unanswered_calls(m, journal_state, journal_detail)
         if answer and not (m and m[-1].get("role") == "assistant" and m[-1].get("content") == answer):
             m.append({"role": "assistant", "content": answer})
         res.messages = m                      # expose the thread so a session can be saved/continued
@@ -2405,7 +2489,14 @@ class Harness:
             # failed. Preserve the fence for explicit reconciliation.
             recovery_detail = dict(journal_detail)
             recovery_detail["error"] = res.error
-            self._session_checkpoint(m, rid, res.turns, "external_action",
+            from . import sessions as _sessions
+            # An interrupted host-attested built-in read cannot have changed
+            # anything, and demanding inspection for it would strand the thread.
+            # Keep that boundary auto-resumable; everything else stays fenced.
+            fence_state = ("executing_tool"
+                           if _sessions.replay_safe_boundary(journal_state, journal_detail)
+                           else "external_action")
+            self._session_checkpoint(m, rid, res.turns, fence_state,
                                      recovery_detail, terminal=False)
         else:
             self._session_checkpoint(m, rid, res.turns, "terminal",
@@ -2444,6 +2535,10 @@ class Harness:
                                "messages": session["messages"]}, f, default=str, ensure_ascii=False)
             except Exception:
                 pass
+        if interrupted_child:
+            # Books closed: usage accounted, receipt emitted, journal written. Now
+            # the stop reaches the parent, which owns the surface the user stopped.
+            raise KeyboardInterrupt("delegated run interrupted by user")
         return res
 
     def settle_run_memory(self, res: RunResult, passed: bool, evidence=None,

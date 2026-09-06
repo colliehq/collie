@@ -5273,33 +5273,56 @@ class Handler(BaseHTTPRequestHandler):
             canceled = bool(getattr(res, "canceled", False)
                             or Handler._run_cancelled(sid, run_id))
             verification_evidence = None
-            if should_check and verify_command and not canceled:
-                from .verification import run_verification_command
-                verification_evidence = run_verification_command(
-                    verify_command, cwd, source=verify_source or "detected",
-                    after_last_edit=True)
+            if should_check and verify_command:
+                # Stopping is not a starting gun: neither a cancel nor a failed run
+                # may launch the project's check afterwards, and no exit code from
+                # after the stop can turn that outcome into a success.
+                from .cli import (skipped_verification_evidence,
+                                  stopped_before_verification)
+                stop_reason_text = ("the run was stopped before it finished, so this "
+                                    "check was not run" if canceled else
+                                    stopped_before_verification(res))
+                if stop_reason_text:
+                    verification_evidence = skipped_verification_evidence(
+                        verify_command, verify_source, stop_reason_text)
+                    res.verified = False
+                else:
+                    from .verification import run_verification_command
+                    verification_evidence = run_verification_command(
+                        verify_command, cwd, source=verify_source or "detected",
+                        after_last_edit=True)
+                    res.verified = bool(verification_evidence["passed"] and not res.error)
+                    if not verification_evidence["passed"]:
+                        check_error = "required check failed: %s (exit %s)" % (
+                            verify_command, verification_evidence.get("exit_code"))
+                        res.error = ((res.error + "; ") if res.error else "") + check_error
+                    h.settle_run_memory(
+                        res, bool(res.verified), verification_evidence,
+                        source="web_verification")
                 evidence_event = {"session": sid, "run": run_id,
                                   "evidence": verification_evidence}
                 _tx("verification_evidence", evidence_event)
                 Handler._live_pub("verification_evidence", evidence_event)
                 Handler._mirror_pub(sid, "verification_evidence", evidence_event)
-                res.verified = bool(verification_evidence["passed"] and not res.error)
-                if not verification_evidence["passed"]:
-                    check_error = "required check failed: %s (exit %s)" % (
-                        verify_command, verification_evidence.get("exit_code"))
-                    res.error = ((res.error + "; ") if res.error else "") + check_error
-                h.settle_run_memory(
-                    res, bool(res.verified), verification_evidence,
-                    source="web_verification")
                 # run() records its own gate before this outer check; update the durable receipt.
                 h.recorder.finish_run(res)
+            # save() keeps an uncertain in-flight boundary on purpose: this thread
+            # stays fenced until it is reconciled, and /api/run refuses to continue
+            # it. Report that with the run instead of only on the next attempt.
             sessions.save(sid, res.messages, project="web", cwd=cwd, answer=res.answer or "")
+            try:
+                run_recovery = sessions.recovery_state(sid)
+            except Exception:
+                run_recovery = None
+            recovery_required = bool(run_recovery and run_recovery.get("recovery_required"))
             Handler._live_pub("done", {"session": sid, "run": run_id,
                                         "turns": res.turns, "canceled": canceled})
             actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
             done_d = {
                 "session": sid, "run": run_id, "answer": res.answer or "", "error": res.error,
                 "canceled": canceled,
+                "recovery_required": recovery_required,
+                "recovery": run_recovery if recovery_required else None,
                 "model": res.model, "prefix_tokens": res.prefix_tokens,
                 "input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
                 "total_tokens": res.total_tokens, "turns": res.turns,
@@ -5339,6 +5362,7 @@ class Handler(BaseHTTPRequestHandler):
                     "verified": bool(getattr(res, "verified", False)),
                     "verification_evidence": verification_evidence,
                     "error": res.error or "", "canceled": canceled,
+                    "recovery_required": recovery_required,
                     "review_findings": review_findings,
                 })
             except Exception:

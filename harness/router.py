@@ -1,33 +1,14 @@
-"""Front-door router — the classifying "head" that types each message and routes it.
+"""Resolve interactive execution policy and explicit Mission commands.
 
-Ordinary messages get ONE cheap model call that classifies them into a small,
-principled set of interactive task kinds; the caller then routes to the right executor. The
-taxonomy is not ad-hoc — it is two orthogonal axes from the literature,
-discretized into three kinds (see docs/ROUTER_DESIGN.md for citations):
+Normal Web, mobile and terminal requests use resolve_run_decision directly: a
+single managed run selects its model, effort and intent without a preliminary
+model request. An explicit provider/model choice always wins; inferred task kinds
+never grant permissions or start a Mission.
 
-  AXIS 1 — know vs do (Parasuraman/Sheridan/Wickens 2000 information-vs-action
-           stages; Kirsh & Maglio 1994 epistemic-vs-pragmatic action; Searle
-           assertives-vs-directives): separates CHAT from CODE+MISSION.
-  AXIS 2 — reversibility of the action (Amodei et al. 2016 side-effects/safe-
-           exploration; Krakovna et al. 2019 reachability): separates reversible
-           workspace edits (CODE) from consequential, possibly irreversible
-           real-world action (MISSION).
-
-  chat    — produce information (answer / explain / find out on the web). Research
-            lives HERE (epistemic, read-only) — never its own top-level kind.
-  code    — create/modify/debug code or files in the workspace (reversible).
-  mission — a durable, multi-step real-world errand, entered ONLY through an
-            explicit `/mission ...` (or legacy `/delegate ...`) command.
-
-The irreversible route is command-only. Even if the classifier calls ordinary
-language a mission, it is defensively collapsed to chat. This makes starting a
-durable campaign an unambiguous user action rather than a probabilistic guess.
-
-Honesty about the model: the model is a HARD dependency of every route (chat,
-code, and mission all need it). So if the model is genuinely unavailable, we do
-NOT silently fall back to a heuristic — we raise ModelUnavailable and the caller
-says so. The ONLY fallback is: the model responded but its label was unparseable
-(the model IS up) -> route chat, the cheapest working path.
+classify() is retained for diagnostic and legacy clients of /api/route. It may
+call a provider, reports genuine model unavailability, and collapses inferred
+missions to chat. Durable Missions remain explicit /mission (or /delegate)
+commands. The classifier is not on the normal conversation's critical path.
 """
 
 from __future__ import annotations

@@ -533,7 +533,9 @@ def test_pack_terminal_verdicts_keep_candidate_evidence():
     desktop = read("harness/webui/index.html")
     mobile = read("harness/webui/mobile.html")
 
-    assert "if(curMsg && !d.pack)curMsg.remove()" in desktop
+    # A canceled regular task keeps its evidence too; deleting its whole bubble
+    # used to be the implementation this static Pack check accidentally required.
+    assert "renderInterruptedRun(d)" in desktop
     assert "Pack finished with an error" in desktop
     assert "apply failed — winner was not written" in desktop
     assert 'sum.classList.add(d.canceled ? "warn" : "fail")' in desktop

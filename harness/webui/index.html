@@ -3282,7 +3282,8 @@
     "context compaction started": "上下文压缩开始",
     "context compaction": "上下文压缩",
     "earlier turns summarized": "较早的对话已总结",
-    "full history restored": "已恢复完整历史",
+    "saved context restored": "已恢复保存的上下文",
+    "Check was not run": "未运行检查",
     "could not shorten — continuing with the full history": "未能压缩——继续使用完整历史",
     "not needed": "无需压缩",
     "no change": "没有变化",
@@ -3567,7 +3568,8 @@
     "context compaction started": "上下文壓縮開始",
     "context compaction": "上下文壓縮",
     "earlier turns summarized": "較早的對話已總結",
-    "full history restored": "已恢復完整歷史",
+    "saved context restored": "已恢復儲存的上下文",
+    "Check was not run": "未執行檢查",
     "could not shorten — continuing with the full history": "未能壓縮——繼續使用完整歷史",
     "not needed": "無需壓縮",
     "no change": "沒有變化",
@@ -5186,14 +5188,13 @@
   function settleGate(o) {
     o = o || {};
     var ev = o.evidence;
-    if (o.canceled) { setGate("none", t("Run stopped by the user.")); return "none"; }
-    if (ev && (ev.command || ev.cmd)) {
+    if (ev && ev.executed !== false && (ev.command || ev.cmd)) {
       setGate(ev.passed === true ? "pass" : "fail", ev.command || ev.cmd);
       return ev.passed === true ? "pass" : "fail";
     }
     if (o.verified === true) { setGate("pass"); return "pass"; }
     if (o.checkFailed) { setGate("fail", o.checkCommand || undefined); return "fail"; }
-    if (o.required) { setGate("missing"); return "missing"; }
+    if (o.required && !o.canceled) { setGate("missing"); return "missing"; }
     if (o.edited) { setGate("unverified"); return "unverified"; }
     setGate("idle"); return "idle";
   }
@@ -8536,24 +8537,29 @@
     if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }  // no late frame over the final render
     finishRunUI();
   }
-  var cancelPending = false, cancelPollTimer = 0;
+  var cancelPending = false, cancelPollTimer = 0, settleCanceledGate = null;
   function settleCancelFromRegistry(row) {
     clearTimeout(cancelPollTimer);cancelPollTimer=0;pendStop();
     if(statusEl){statusEl.remove();statusEl=null;}
     if(currentSession&&liveRuns[currentSession])liveRuns[currentSession].state=row.state;
     if(row.state==="canceled"){
-      if(curMsg)curMsg.remove();addEvent("meta","flag",t("run cancelled"),t("the run registry confirmed the canceled verdict"));
+      renderInterruptedRun({canceled:true});
+      if (settleCanceledGate) settleCanceledGate(); else setGate("idle");
+      addEvent("meta","flag",t("run cancelled"),t("the run registry confirmed the canceled verdict"));
     }else{
       addEvent("meta",row.state==="failed"?"bad":"flag",row.state==="failed"?t("failed"):t("done"),
                row.state==="failed"?(row.error||""):t("the run finished before cancellation took effect"));
       recoverAfterInterrupt();
     }
     pstatEl=curTextEl=null;curMsg=flowEl=null;finishStreamUI();loadSessions();
+    showTerminalRunState({canceled:row.state==="canceled",error:row.state==="failed"?row.error||"failed":""});
   }
   function pollCancelTerminal() {
     var watchSession=currentSession,watchRun=currentRun;
     clearTimeout(cancelPollTimer);cancelPollTimer=setTimeout(function poll(){
+      if(!cancelPending||currentSession!==watchSession||currentRun!==watchRun)return;
       fetch("/api/runs?token="+encodeURIComponent(CT)).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}).then(function(d){
+        if(!cancelPending||currentSession!==watchSession||currentRun!==watchRun)return;
         var row=(d.runs||[]).find(function(x){return x.session===watchSession&&x.run===watchRun;});
         if(row&&["canceled","done","failed"].indexOf(row.state)>=0){settleCancelFromRegistry(row);return;}
         cancelPollTimer=setTimeout(poll,700);
@@ -8566,11 +8572,13 @@
     // the pending launch locally; its eventual upload response is ignored by the launch token.
     if (!currentRun && !es) {
       streamLaunchToken++;
-      if (curMsg) curMsg.remove();
+      if (statusEl) { statusEl.remove(); statusEl = null; }
+      renderInterruptedRun({canceled:true});
       curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
       addEvent("meta", "flag", t("run cancelled"), t("stopped before the run started"));
-      setGate("none", t("Run stopped by the user."));
+      setGate("idle");
       finishStreamUI();
+      showTerminalRunState({canceled:true});
       return Promise.resolve(true);
     }
     if (!currentSession || !currentRun) {
@@ -8607,6 +8615,7 @@
     streamLaunchToken++;
     clearTimeout(cancelPollTimer);cancelPollTimer=0;
     cancelPending = false;
+    settleCanceledGate = null;
     running = false;
     runCanSteer = false;
     currentRun = null;
@@ -8942,27 +8951,28 @@
     // and no title ever costs a model call.
     if (!currentTitle) setThreadTitle(q);
     clearAttached(); clearManualIdeContexts();
-    // The classifying head handles only chat/code. Mission is slash-command-only.
+    // Ordinary requests start the same managed run immediately. The backend resolves
+    // model/effort/intent once, with the actual task and history; no hidden classifier
+    // request can delay the Stop button or fail before a durable run exists.
     if (forced) runConfig.route_kind = forced;
-    if (forced || imgs.length) { runStream(q, imgs, runConfig, runSession, userMsgEl, contexts); return; }
-    var routeHint = addRoutingHint();
-    var thisRoute = ++routeToken; setRoutePending(true);
-    missionPost("/api/route", { text: q }).then(function (d) {
-      if (thisRoute !== routeToken) return;
-      setRoutePending(false);
-      if (routeHint && routeHint.remove) routeHint.remove();
-      if (d && d.error === "model_unavailable") {
-        input.value = q; input.dispatchEvent(new Event("input", { bubbles:true }));
-        attached = imgs.slice(); renderAttached(); restoreIdeContexts(contexts);
-        addErr(t("model unavailable — set a working provider in Settings")); return;
-      }
-      if (d && (d.kind === "chat" || d.kind === "code")) runConfig.route_kind = d.kind;
-      runStream(q, imgs, runConfig, runSession, userMsgEl, contexts);
-    }).catch(function () {          // the local server itself is unreachable -> let the stream surface it
-      if (thisRoute !== routeToken) return;
-      setRoutePending(false);
-      if (routeHint && routeHint.remove) routeHint.remove(); runStream(q, imgs, runConfig, runSession, userMsgEl, contexts);
-    });
+    runStream(q, imgs, runConfig, runSession, userMsgEl, contexts);
+  }
+
+  function renderInterruptedRun(d) {
+    // A terminal verdict must not erase already observed work. Preserve buffered
+    // text and tool rows, including when only a registry acknowledgement arrives.
+    sealText();
+    if (!flowEl) return;
+    var answer = String(d.answer || "").replace(/\s*_\[stopped by user\]_\s*$/, "");
+    if (!streamedAll && answer) {
+      var partial = document.createElement("div"); partial.className = "text md";
+      flowEl.appendChild(partial); renderMd(partial, answer); addCopy(partial, answer);
+    }
+    var note = document.createElement("div");
+    note.className = "pack-summary interruption-note " + (d.canceled ? "warn" : "fail");
+    note.textContent = d.canceled ? t("Run stopped by the user.") : (d.error || t("failed"));
+    flowEl.appendChild(note);
+    scrollDown();
   }
 
   // How a finished child investigation is described in one phrase. Its own stop reason, in the same
@@ -8975,7 +8985,7 @@
   // What happened to the run's own context housekeeping. None of these are task outcomes.
   var COMPACTION_END = {
     applied: "earlier turns summarized",
-    restored: "full history restored",
+    restored: "saved context restored",
     failed: "could not shorten — continuing with the full history",
     skipped: "not needed",
     ignored: "no change"
@@ -9070,7 +9080,7 @@
     input.dispatchEvent(new Event("input", { bubbles: true }));
     send();
   }
-  // the interactive stream run (chat/code) — extracted so the classifying head can gate it
+  // Every interactive request uses one managed stream from launch through its verdict.
   function runStream(q, imgs, runConfig, runSession, userMsgEl, contexts) {
     var input = $("input");
     contexts = Array.isArray(contexts) ? contexts.slice(0,24) : [];
@@ -9098,6 +9108,10 @@
     if (thisLaunch !== streamLaunchToken || !running) return;
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false,
         packCardEl = null, packRows = [];
+    settleCanceledGate = function () {
+      settleGate({canceled:true, edited:sawEdit, verified:runVerified,
+                  checkFailed:sawEdit&&sawRepro&&!lastReproPass});
+    };
     var delegateEl = null, delegateActs = 0, compactEl = null;
 
     var intent = runConfig.intent, quality = runConfig.quality,
@@ -9368,6 +9382,10 @@
 
     es.addEventListener("verification_evidence", function (e) {
       var payload = JSON.parse(e.data), d = payload.evidence || payload;
+      if (d.executed === false) {
+        addEvent("meta", "flag", t("Check was not run"), d.skipped_reason || d.output || d.command || "");
+        return;
+      }
       sawRepro = true; lastReproPass = !!d.passed; runVerified = !!d.passed;
       addEvent("repro", d.passed ? "ok" : "bad",
         d.passed ? "proposed check passed" : "proposed check failed",
@@ -9423,14 +9441,11 @@
       }
       if (statusEl) { statusEl.remove(); statusEl = null; }   // drop the thinking line
       if (d.canceled) {
-        /* A Pack's completed candidate rows are evidence. Cancellation is a terminal verdict,
-           not a reason to delete that evidence from the conversation. */
-        if(curMsg && !d.pack)curMsg.remove();
+        renderInterruptedRun(d);
         addEvent("meta","flag",t("run cancelled"),t("the run emitted its final canceled verdict"));
       } else if (d.error) {
         if (!d.pack) {
-          if (curMsg) curMsg.remove();
-          addErr(d.error);
+          renderInterruptedRun(d);
         } else {
           addEvent("meta", "bad", t("Pack finished with an error"), d.error, "bad");
         }
@@ -9498,7 +9513,7 @@
       showTerminalRunState(d);
       if (!d.error && !d.canceled) loadHandoffArtifact(d.session, intent);
       loadSessions();
-      window.setTimeout(drainQueuedFollowUp, 0);
+      if (stopReason(d) === "completed") window.setTimeout(drainQueuedFollowUp, 0);
     });
 
     es.onerror = function () {

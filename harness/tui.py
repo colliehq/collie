@@ -460,8 +460,8 @@ def _read_line(console, have_rich):
 def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=None,
             cwd_explicit=False):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
-    from .cli import (apply_turn_decision, make_harness, resolve_turn_decision,
-                      turn_decision_receipt)
+    from .cli import (apply_turn_decision, make_harness, recovery_notice,
+                      resolve_turn_decision, turn_decision_receipt)
     from . import sessions as sess
 
     have_rich = _HAVE_RICH
@@ -520,6 +520,11 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
         console.print("[dim]tip: type while the agent works to steer it; Ctrl-C aborts the turn[/dim]")
 
     saved = bool(history)          # a resumed session already has a file; a fresh one has nothing yet
+    fenced = ""                    # set while an uninspected effect blocks the next turn
+
+    def say(text, style="dim"):
+        console.print("[%s]%s[/%s]" % (style, text, style)) if have_rich else print(text)
+
     try:
         while True:
             if feed is not None:
@@ -538,7 +543,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
             if line == "/sessions":
                 ui.sessions(sess.recent(10)); continue
             if line == "/new":
-                history, receipts, sid = [], [], sess.new_id()
+                history, receipts, sid, fenced = [], [], sess.new_id(), ""
                 h.checkpoint_scope = "session:" + sid
                 if have_rich:
                     console.print("[dim]new session[/dim] [yellow]%s[/yellow]" % sid)
@@ -567,7 +572,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     history, receipts, sid = (s.get("messages") or [],
                                               list(s.get("run_receipts") or []), rid)
                     h.checkpoint_scope = "session:" + sid
-                    saved = True
+                    saved, fenced = True, ""
                     msg = "resumed %s (%d prior turns) · %s" % (
                         sid, sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness"), cwd)
                 else:
@@ -627,6 +632,11 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
                 continue
 
+            if fenced:
+                # An uninspected effect is not something the next prompt can route
+                # around: refuse the turn and say exactly how to close the boundary.
+                say(fenced, "yellow")
+                continue
             try:
                 decision = resolve_turn_decision(
                     line, provider, configured_model=model,
@@ -649,19 +659,40 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                         write=_w, gate=_gate)
                 res = ui.run_turn(h, "tui", line, history)
             except KeyboardInterrupt:
-                # Ctrl-C DURING a turn aborts just this turn, not the whole session — h.run only
-                # catches Exception, and an uncaught KeyboardInterrupt (a BaseException) would
-                # otherwise print a traceback and tear down the interactive loop.
-                msg = "⏹ turn interrupted — back to the prompt (Ctrl-C again at an empty prompt to exit)"
-                console.print("\n[dim]%s[/dim]" % msg) if have_rich else print("\n" + msg)
+                # Ctrl-C DURING a turn aborts just this turn, not the whole session.
+                # run() converts an interrupt it sees into a canceled result, so
+                # arriving here means the interrupt landed outside it. Continuing
+                # from the pre-turn history would delete whatever the turn did from
+                # the conversation while its effects remain on disk — so take the
+                # durable journal, and stop if it is fenced on an unknown effect.
+                recovered = sess.resume_after_interrupt(sid, fallback=history)
+                history = recovered["messages"]
+                saved = saved or bool(recovered["recovery"])
+                say("\n⏹ turn interrupted — kept the %d messages already recorded "
+                    "(Ctrl-C again at an empty prompt to exit)" % len(history))
+                fenced = (recovery_notice(sid, recovered["recovery"])
+                          if recovered["blocked"] else "")
+                if fenced:
+                    say(fenced, "yellow")
                 continue
             finally:
                 h.steering = None               # steering only during a run
                 h.approve = None                # and nobody is at the prompt between turns
             history = res.messages
             receipt = turn_decision_receipt(decision, res, getattr(h, "provider", None))
-            saved_sid = sess.save(
-                sid, history, project=project, cwd=cwd, answer=res.answer or "")
+            try:
+                saved_sid = sess.save(
+                    sid, history, project=project, cwd=cwd, answer=res.answer or "")
+            except Exception as exc:
+                # This turn happened and is now unrecorded. Say so and stop, rather
+                # than stacking more unrecorded turns on a journal that refuses writes.
+                from .runner_specs import redact_text
+                fenced = ("session transcript could not be persisted: %s\n"
+                          "  this thread is no longer being recorded — inspect %s, then "
+                          "/new for a fresh thread" % (
+                              redact_text("%s: %s" % (type(exc).__name__, exc), 500), sid))
+                say(fenced, "red")
+                continue
             if saved_sid:
                 try:
                     sess.append_run_receipt(sid, receipt)
@@ -669,15 +700,24 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     pass
             receipts.append(receipt)
             saved = True
+            # The transcript save keeps an uncertain fence on purpose; re-read it so
+            # the next turn cannot continue over an effect nobody has inspected.
+            state = sess.recovery_state(sid)
+            if state and state.get("recovery_required"):
+                fenced = recovery_notice(sid, state)
+                say(fenced, "yellow")
     finally:
         try:
             h.memory.close(); h.recorder.close()
         except Exception:
             pass
         # only advertise --resume if a turn actually completed + saved; a fresh open->/exit leaves no
-        # file, so the resume hint would load None and start empty.
+        # file, so the resume hint would load None and start empty. A fenced thread would refuse
+        # that resume anyway, so it gets the reason and the way out instead of a broken invitation.
         tail = ("session saved: %s   ·   resume: collie tui --resume %s" % (sid, sid)
                 if saved else "(no turns — nothing saved)")
+        if fenced:
+            tail = "session %s cannot be resumed yet — %s" % (sid, fenced)
         if have_rich:
             console.print("\n[dim]%s[/dim]" % tail)
         else:

@@ -271,6 +271,17 @@ def relocate(sid, cwd):
 
 def save(sid, messages, project="demo", cwd="", answer="",
          preserve_active=False):
+    """Persist the conversation. Never clears a boundary nobody has inspected.
+
+    ``save`` closes an in-flight ``active_run`` because a finished turn has no
+    checkpoint to keep.  An UNCERTAIN boundary is different evidence: the tool
+    may have already changed the outside world, and only ``checkpoint(terminal)``
+    (the run's own clean ending) or an explicit ``reconcile_recovery`` may retire
+    it.  Every surface saves the transcript after a run, so this fence lives here
+    rather than in each caller.  ``preserve_active`` additionally keeps a
+    still-certain checkpoint, which external-worker callers use before their
+    receipt lands.
+    """
     p = _path(sid)
     if not p:
         return sid
@@ -292,11 +303,15 @@ def save(sid, messages, project="demo", cwd="", answer="",
         # ``active_run`` checkpoint, which save() intentionally closes.
         if old.get("run_receipts"):
             obj["run_receipts"] = old["run_receipts"]
-        if preserve_active and isinstance(old.get("active_run"), dict):
+        active = old.get("active_run")
+        if isinstance(active, dict) and (preserve_active or _recovery_required(active)):
             # An external worker may have returned useful text while still
             # requiring reconciliation (or while its receipt failed to land).
             # Saving that text must not erase the pre-launch replay fence.
-            obj["active_run"] = old["active_run"]
+            # The same holds for a native run stopped while a tool was running:
+            # writing its partial transcript must not make the unknown effect
+            # look replay-safe on the next resume.
+            obj["active_run"] = active
         _atomic_dump(obj, p)
     return sid
 
@@ -376,13 +391,32 @@ def recovery_state(sid, directory=None):
         return None
     out = dict(active)
     state = out.get("state") or "unknown"
-    uncertain = state in ("executing_tool", "external_action") and not _replay_safe_read(active)
+    uncertain = _recovery_required(active)
     out["recovery_required"] = uncertain
     out["auto_resumable"] = not uncertain and state not in ("terminal", "canceled")
     if uncertain:
         out["reason"] = ("the process stopped while a tool was executing; inspect the outside "
                          "world before retrying so an irreversible effect is not duplicated")
     return out
+
+
+def _recovery_required(active):
+    """One definition of 'a human must look before this thread moves again'."""
+    if not isinstance(active, dict):
+        return False
+    return (active.get("state") in ("executing_tool", "external_action")
+            and not _replay_safe_read(active))
+
+
+def replay_safe_boundary(state, detail):
+    """Is this in-flight boundary a host-attested built-in read?
+
+    Exposed for the execution loop, which decides at the end of an interrupted
+    run whether the boundary it stopped at still deserves auto-resume.  Sharing
+    this predicate keeps that decision identical to the one recovery/resume use.
+    """
+    return _replay_safe_read({"state": state,
+                              "detail": detail if isinstance(detail, dict) else {}})
 
 
 def _replay_safe_read(active):
@@ -438,6 +472,38 @@ def _resume_messages(raw):
         messages.append({"role": "tool", "tool_call_id": call["id"],
                          "name": call.get("name") or "tool", "content": content})
     return messages
+
+
+def resume_after_interrupt(sid, fallback=None):
+    """Rebuild an interactive surface's live thread after Ctrl-C ended a turn.
+
+    A REPL/TUI holds the PRE-turn history in memory.  Continuing from it after an
+    interrupt deletes everything the turn actually did from the conversation and
+    invites the agent to ask for the same edits again.  The durable journal is
+    the only record that saw those actions, so recover from it — and report
+    plainly when the thread is fenced on an effect nobody has inspected yet,
+    because then no next turn may run at all.
+    """
+    previous = list(fallback or [])
+    recovery = recovery_state(sid)
+    checked = load_checked(sid)
+    blocked = bool(recovery and recovery.get("recovery_required"))
+    reason = (recovery or {}).get("reason", "") if blocked else ""
+    if checked.get("status") == "invalid":
+        blocked = True
+        reason = reason or checked.get("reason") or "session journal requires inspection"
+    messages = previous
+    if checked.get("status") == "ok":
+        durable = (checked.get("session") or {}).get("messages") or []
+        # Only ever move forward: a journal that is somehow shorter than what
+        # this process already holds is not a reason to forget the difference.
+        # A fenced thread still recovers its messages — they are what the user
+        # is shown and reconciles against; ``blocked`` is what stops the turn.
+        if len(durable) >= len(previous):
+            messages = durable
+    return {"messages": messages, "recovery": recovery,
+            "blocked": blocked,
+            "reason": reason or ("session journal requires inspection" if blocked else "")}
 
 
 def active_runs(limit=100, directory=None):

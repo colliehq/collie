@@ -41,6 +41,31 @@ DONE_BASE = {"model": "mock", "turns": 1, "tool_calls": 0, "wall_ms": 1200,
 def _script(text):
     """Pick a staged run from the request text, the way a router would pick a route."""
     q = (text or "").lower()
+    if "stop before checking" in q:
+        skipped = {"command": "pytest -q", "executed": False, "passed": False,
+                   "freshness": "not_run", "skipped_reason": "The user stopped the run."}
+        return [
+            ("start", {"session": "s-stop-check", "run": "r-sc", "model": "mock", "prior_turns": 0}),
+            ("verification_evidence", {"evidence": skipped}),
+            ("done", dict(DONE_BASE, session="s-stop-check", run="r-sc", answer="_[stopped by user]_",
+                          error="", canceled=True, stop_reason="canceled", completed=False,
+                          edited=False, verification_evidence=skipped)),
+        ]
+    if "interrupt" in q:
+        canceled = "error" not in q
+        edited = "edit" in q
+        return [
+            ("start", {"session": "s-interrupt", "run": "r-stop", "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "I found the parsing boundary."}),
+            ("tool", {"name": "read_file", "args": {"path": "parser.py"}, "ok": True,
+                      "result": "The date parser accepts extra whitespace."}),
+            *([("edit", {"path": "parser.py", "old": "old", "new": "new"})] if edited else []),
+            ("token", {"t": "The next step would be a strict-date check."}),
+            ("done", dict(DONE_BASE, session="s-interrupt", run="r-stop", answer="",
+                          error="Provider connection was interrupted" if not canceled else "",
+                          canceled=canceled, stop_reason="canceled" if canceled else "error",
+                          completed=False, edited=edited)),
+        ]
     if "readme" in q:
         return [
             ("start", {"session": "s-read", "run": "r1", "model": "mock", "prior_turns": 0}),
@@ -178,6 +203,7 @@ RUNS = [{"session": "s-cap", "run": "r3", "state": "done", "stop_reason": "turn_
 
 class _Fixture(BaseHTTPRequestHandler):
     stream_requests = []                 # every /api/stream the page opened, in order
+    route_requests = []
     lang = "en"                          # what /api/settings reports, so t() can be exercised
 
     def log_message(self, *_a):
@@ -215,6 +241,7 @@ class _Fixture(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         self.rfile.read(length)
         if path == "/api/route":
+            _Fixture.route_requests.append(path)
             return self._json({"kind": "chat"})
         return self._json({})
 
@@ -286,8 +313,7 @@ def browser():
 def await_run(page):
     """Wait for a run to actually start before waiting for it to end.
 
-    Sending goes through the classifying head first, so the pill is still idle for a moment; a
-    single "not running any more" wait would pass before the run had begun. The pill's `live` class
+    A single "not running any more" wait could pass before the run had begun. The pill's `live` class
     is the signal rather than its text, which is translated.
     """
     live = "() => document.getElementById('statePill').classList.contains('live')"
@@ -324,6 +350,7 @@ class Page:
 @pytest.fixture
 def ui(server, browser):
     _Fixture.stream_requests = []
+    _Fixture.route_requests = []
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors = []
@@ -381,6 +408,7 @@ def test_read_only_answer_shows_no_check_card(ui):
     assert not ui.gate_visible(), "the evidence card must stay away from a read-only answer"
     assert "No executed check" not in ui.log_text()
     assert "It reads a CSV" in ui.log_text()
+    assert _Fixture.route_requests == [], "normal messages start a run without a classifier call"
 
 
 def test_header_follows_the_task_not_the_surface(ui):
@@ -688,3 +716,40 @@ def test_internal_reminders_do_not_reappear_as_user_requests(ui):
     ui.page.locator(".thread").filter(has_text="Read README.md").click()
     ui.page.get_by_text("It reads a CSV and prints per-category totals.", exact=True).wait_for()
     assert "INTERNAL CHECK REMINDER" not in ui.log_text()
+
+
+@pytest.mark.parametrize("ending", ["cancel", "error"])
+def test_interrupted_run_keeps_text_tools_and_buffered_partial_answer(ui, ending):
+    ui.ask("Interrupt this review with " + ending)
+    text = ui.log_text()
+    assert "I found the parsing boundary." in text
+    assert "parser.py" in text
+    assert "The next step would be a strict-date check." in text
+    expected = "Run stopped by the user." if ending == "cancel" else "Provider connection was interrupted"
+    assert expected in ui.page.inner_text(".interruption-note")
+    assert not ui.gate_visible()
+    assert ui.page.inner_text("#stateText") == ("stopped" if ending == "cancel" else "failed")
+
+
+def test_canceled_edits_keep_the_unverified_evidence(ui):
+    ui.ask("Interrupt the edit with cancel")
+    assert ui.gate_state() == "unverified"
+    assert "parser.py" in ui.log_text()
+
+
+def test_skipped_check_is_not_shown_as_a_failed_check(ui):
+    ui.ask("Stop before checking")
+    assert not ui.gate_visible()
+    assert "_[stopped by user]_" not in ui.log_text()
+    assert ui.page.locator(".interruption-note").count() == 1
+
+
+def test_stop_does_not_automatically_launch_a_queued_follow_up(ui):
+    ui.page.fill("#input", "Interrupt the current review with cancel")
+    ui.page.press("#input", "Enter")
+    ui.page.wait_for_function("() => document.getElementById('input').placeholder.includes('Queue') || "
+                              "document.getElementById('input').placeholder.includes('Follow')")
+    ui.page.fill("#input", "This follow-up must remain queued after Stop")
+    ui.page.press("#input", "Enter")
+    ui.page.wait_for_timeout(900)
+    assert len(_Fixture.stream_requests) == 1
