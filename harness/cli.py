@@ -2785,8 +2785,7 @@ def recovery_notice(sid, state, fresh="/new to start a fresh thread"):
 def cmd_recovery(args):
     """Inspect or explicitly reconcile crash-uncertain interactive tool boundaries."""
     from . import sessions
-    sessions_dir = os.path.join(os.path.abspath(os.path.expanduser(args.state_dir)), "sessions") \
-        if args.state_dir else None
+    sessions_dir = sessions.store_root(args.state_dir or None)
     if args.action == "ls":
         value = {"runs": sessions.active_runs(limit=args.limit, directory=sessions_dir)}
     elif not args.session:

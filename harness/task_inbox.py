@@ -1098,6 +1098,13 @@ def pending_sessions(*, directory=None, limit=200):
         if not sessions._path(sid, directory=base):
             continue                       # not an id we could have written
         try:
+            # Completed inboxes are common. Do not decode their entire backing
+            # conversations just to learn that no input is waiting.
+            path = store_path(sid, root=root)
+            with sessions._locked(path):
+                doc = _load(path, sid)
+            if not any(entry["state"] in ("pending", "claimed") for entry in doc["entries"]):
+                continue
             row = status(sid, directory=root)
         except InboxError as exc:
             rows.append({"session": sid, "error": str(exc)})

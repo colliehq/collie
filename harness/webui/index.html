@@ -2574,9 +2574,11 @@
           <div class="mode-menu" id="modeMenu" role="dialog" aria-label="Run setup" data-i18n-aria-label="Run setup" hidden>
             <div class="mode-menu-head">
               <div class="mode-menu-title"><strong data-i18n="Run setup">Run setup</strong><span data-i18n="Auto is the default.">Auto is the default.</span></div>
+              <button type="button" id="resetRunSetup" data-i18n="Reset to Auto">Reset to Auto</button>
               <button type="button" class="mode-close" id="modeClose" aria-label="Close run setup">×</button>
             </div>
             <p class="mode-auto-note"><strong data-i18n="Auto is the default.">Auto is the default.</strong> <span data-i18n="Collie chooses a run plan from the task; override only when you need a specific boundary.">Collie chooses a run plan from the task; override only when you need a specific boundary.</span></p>
+            <p class="mode-auto-note" data-i18n="Your choices stay with this conversation in this tab, including after refresh.">Your choices stay with this conversation in this tab, including after refresh.</p>
             <fieldset class="mode-group" data-run-group="runner" role="radiogroup">
               <legend class="mode-group-title" data-i18n="Worker">Worker</legend>
               <button type="button" class="mode-item is-active" data-axis="runner" data-val="" role="radio" aria-checked="true" tabindex="0">
@@ -3775,6 +3777,10 @@
   // Strings introduced by operational surfaces are kept in one additive block
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
+    "Automatic task progress is temporarily blocked":"自动推进任务暂时受阻",
+    "Saved tasks are kept. Open Settings to check the model connection.":"已保存任务仍然保留。可在设置中检查模型连接。",
+    "{n} saved requests waiting":"{n} 条已保存要求待继续","Saved requests need inspection":"已保存要求需要检查",
+    "Reset to Auto":"恢复自动选择","Your choices stay with this conversation in this tab, including after refresh.":"这个标签页会记住每段对话的运行选择，刷新后也保留。",
     "Overview":"概览","Habits":"常用工作流","Budgets":"用量限制","None":"暂无","Automations":"自动化","Memory":"记忆","Recovery":"恢复",
     "Services":"服务","Session recovery":"会话恢复","Hooks (read-only)":"扩展事件（只读）","Doctor":"运行诊断",
     "Service status, ongoing tasks and checks for this installation.":"查看服务状态、进行中的任务和本机安装检查。",
@@ -3953,6 +3959,10 @@
     "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
   });
   Object.assign(ZHTW, {
+    "Automatic task progress is temporarily blocked":"自動推進任務暫時受阻",
+    "Saved tasks are kept. Open Settings to check the model connection.":"已儲存任務仍然保留。可在設定中檢查模型連線。",
+    "{n} saved requests waiting":"{n} 個已儲存要求待繼續","Saved requests need inspection":"已儲存要求需要檢查",
+    "Reset to Auto":"恢復自動選擇","Your choices stay with this conversation in this tab, including after refresh.":"這個分頁會記住每段對話的執行選擇，重新整理後也保留。",
     "Overview":"概覽","Habits":"常用工作流程","Budgets":"用量限制","None":"暫無","Automations":"自動化","Memory":"記憶","Recovery":"復原",
     "Services":"服務","Session recovery":"工作階段復原","Hooks (read-only)":"擴充事件（唯讀）","Doctor":"執行診斷",
     "Service status, ongoing tasks and checks for this installation.":"查看服務狀態、進行中的任務與本機安裝檢查。",
@@ -4949,7 +4959,7 @@
   // ---- onboarding: adopt/name this companion, then pick a brain ------------------------------
   var nameOverlay = $("nameOverlay"), namePreviewTimer = 0;
   function nameOnboardSkipped() {
-    try { sessionStorage.setItem("collie-name-onboard-skip", "1"); } catch (e) {}
+    try { localStorage.setItem("collie-name-onboard-skip", "1"); } catch (e) {}
     nameOverlay.classList.remove("open"); dialogClosed(nameOverlay, $("input"));
     maybeOpenBrainOnboarding();
   }
@@ -5117,7 +5127,7 @@
   }
   COLLIE_IDENTITY_READY.then(function () {
     var skipped = false;
-    try { skipped = !!sessionStorage.getItem("collie-name-onboard-skip"); } catch (e) {}
+    try { skipped = !!localStorage.getItem("collie-name-onboard-skip"); } catch (e) {}
     if (!skipped && COLLIE_IDENTITY.name_source === "default" && COLLIE_IDENTITY.name_editable !== false) nameOnboardOpen();
     else maybeOpenBrainOnboarding();
   });
@@ -5488,9 +5498,10 @@
   // through addEvent, because this one is not a record of something that happened — it is
   // a question, and the run stays suspended until it is answered from here, from a phone,
   // or from the desktop. Whoever answers first wins; the rest see the row settle.
-  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, ONLINE_NEEDS = 0, MISSION_NEEDS = [], PERMISSION_EPOCH = 0;
+  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, ONLINE_NEEDS = 0, MISSION_NEEDS = [], QUEUED_SESSIONS = [], PERMISSION_EPOCH = 0;
   function updateNeedsYou() {
-    var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS + MISSION_NEEDS.length, nav = $("needsYouNav"), count = $("needsYouCount");
+    var waiting = QUEUED_SESSIONS.filter(function (row) { return row.owner_busy !== true; });
+    var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS + MISSION_NEEDS.length + waiting.length, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
     nav.hidden = n === 0; count.textContent = String(n);
     if (!n && nav.classList.contains("on") && typeof returnToPrimarySurface === "function") returnToPrimarySurface();
@@ -7167,6 +7178,7 @@
     } catch (_) {}
   }
   function prepareMissionCanvas(mid) {
+    if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun(); currentSession = null; currentRun = null; currentTitle = "";
     selectedMission = mid || ""; selectedMissionTitle = ""; rememberMission(mid);
     loadTaskQueue(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
@@ -7236,7 +7248,10 @@
     if (!missionsPanel || missionsPanel.hidden) return Promise.resolve();
     $("missionsNotice").textContent = t("Refreshing tasks…"); $("missionsNotice").classList.remove("bad");
     return missionGet("/api/missions").then(function (out) {
-      renderMissionList((out && out.missions) || []); $("missionsNotice").textContent = "";
+      renderMissionList((out && out.missions) || []);
+      var issue = missionSchedulerIssue(out);
+      $("missionsNotice").textContent = issue ? t("Automatic task progress is temporarily blocked") + ": " + issue : "";
+      $("missionsNotice").classList.toggle("bad", !!issue);
     }).catch(function (error) {
       $("missionsNotice").textContent = t("Mission list could not refresh:") + " " + ((error && error.message) || error);
       $("missionsNotice").classList.add("bad"); throw error;
@@ -8297,6 +8312,10 @@
     var title = String(value || "").replace(/^\s*(?:#{1,6}|[-*>])\s*/, "").replace(/\s+/g, " ").trim();
     return title || t("Untitled task");
   }
+  function queuedSessionLabel(row) {
+    return row.error || row.journal === "invalid" ? t("Saved requests need inspection") :
+      t("{n} saved requests waiting").replace("{n}", Number(row.pending || 0) + Number(row.claimed || 0));
+  }
   function recentThreadGroup(updated) {
     var stamp = Number(updated || 0) * 1000;
     if (!Number.isFinite(stamp) || stamp <= 0) return "Earlier";
@@ -8315,6 +8334,12 @@
       // whether or not it has been written to disk yet.
       var known = {};
       list.forEach(function (s) { known[s.id] = true; });
+      QUEUED_SESSIONS.forEach(function (row) {
+        if (!known[row.session]) {
+          known[row.session] = true;
+          list.unshift({id:row.session,title:row.title || "",updated:row.updated || 0,turns:0});
+        }
+      });
       Object.keys(liveRuns).forEach(function (id) {
         if (known[id]) return;
         var r = liveRuns[id];
@@ -8347,6 +8372,7 @@
         el.setAttribute("aria-label", "Open thread " + threadTitle);
         if (s.id === currentSession) el.setAttribute("aria-current", "true");
         var rs = liveRuns[s.id];
+        var waitingInput = QUEUED_SESSIONS.filter(function (row) { return row.session === s.id; })[0];
         if (rs) el.className += " r-" + rs.state;
         var stateClass = rs ? rs.state + (isUnfinished(rs) ? " paused" : "") : "";
         el.innerHTML = '<div class="t-last">' + esc(threadTitle) + '</div>' +
@@ -8354,6 +8380,7 @@
           // window happens to be the one watching it. Without it, a run started here and left, or
           // started from the phone, is invisible — and invisible work is work you start twice.
           (rs ? '<div class="t-state ' + stateClass + '">' + esc(runLabel(rs)) + '</div>' : '') +
+          (waitingInput ? '<div class="t-state queued-input">' + esc(queuedSessionLabel(waitingInput)) + '</div>' : '') +
           '<div class="t-turns">' + (s.turns || 0) + ' ' + esc(t(s.turns === 1 ? "turn" : "turns")) + '</div>' +
           '<div class="t-acts">' +
           '<button class="t-act" data-a="rename" title="Rename" aria-label="Rename thread">✎</button>' +
@@ -8522,6 +8549,7 @@
     host.appendChild(card);
   }
   function openSession(id) {
+    if (window.switchTaskSetup) window.switchTaskSetup(id);
     detachRun();
     var loadToken = routeToken;
     sessionLoadPending = {id:id, token:loadToken};
@@ -8781,7 +8809,7 @@
   function renderToday(values) {
     if (document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return;
     var personal = values[0] || {}, missionData = values[1] || {}, approvalData = values[2] || {};
-    var procedures = values[3] || {}, runData = values[4] || {}, meetingData = values[5] || {};
+    var procedures = values[3] || {}, runData = values[4] || {}, meetingData = values[5] || {}, queuedData = values[6] || {};
     var events = Array.isArray(personal.events) ? personal.events : [];
     var reminders = Array.isArray(personal.reminders) ? personal.reminders : [];
     var sources = Array.isArray(personal.sources) ? personal.sources : [];
@@ -8792,7 +8820,7 @@
     var meetings = Array.isArray(meetingData.events) ? meetingData.events : [];
     var unavailable = values.some(function (value) { return value && value.__unavailable; });
     var timelineUnavailable = !!personal.__unavailable || !!missionData.__unavailable || !!runData.__unavailable || !!meetingData.__unavailable;
-    var attentionUnavailable = !!personal.__unavailable || !!missionData.__unavailable || !!approvalData.__unavailable;
+    var attentionUnavailable = !!personal.__unavailable || !!missionData.__unavailable || !!approvalData.__unavailable || !!queuedData.__unavailable;
     var now = new Date(), start = new Date(now); start.setHours(0,0,0,0);
     var end = new Date(start); end.setDate(end.getDate() + 1);
     $("todayDate").textContent = todayDateText(now);
@@ -8856,6 +8884,14 @@
         action:function () { setProductNav("missions"); setMissionsOpen(true); }});
     });
     var attentionBox = $("todayAttention"); attentionBox.textContent = "";
+    var schedulerIssue = missionSchedulerIssue(missionData);
+    if (schedulerIssue) attention.push({icon:"!",title:t("Automatic task progress is temporarily blocked"),
+      meta:schedulerIssue + " · " + t("Saved tasks are kept. Open Settings to check the model connection."),tone:"attention",
+      action:function () { $("settingsBtn").click(); }});
+    (queuedData.sessions || []).filter(function (row) { return row.owner_busy !== true; }).forEach(function (row) {
+      attention.push({icon:"↳",title:row.title || t("Ongoing task"),meta:queuedSessionLabel(row),tone:"brief",
+        action:function () { openSession(row.session); }});
+    });
     attention.slice(0,3).forEach(function (item) { todayRow(attentionBox,item); });
     $("todayAttentionCount").textContent = attention.length ? String(attention.length) : "";
     if (!attention.length && attentionUnavailable)
@@ -8899,7 +8935,8 @@
     todayLoading = true;
     var button = $("todayRefresh"); if (button) { button.disabled = true; button.classList.add("loading"); }
     return Promise.all([todayJson("/api/personal"),todayJson("/api/missions"),todayJson("/api/approvals"),
-      todayJson("/api/procedures?limit=20"),todayJson("/api/runs"),todayJson("/api/meetings/schedule")]).then(renderToday).finally(function () {
+      todayJson("/api/procedures?limit=20"),todayJson("/api/runs"),todayJson("/api/meetings/schedule"),
+      todayJson("/api/task-inbox/pending")]).then(renderToday).finally(function () {
         todayLoading = false; var refresh = $("todayRefresh");
         if (refresh) { refresh.disabled = false; refresh.classList.remove("loading"); refresh.onclick = function () { loadToday(true); }; }
       });
@@ -8910,6 +8947,7 @@
     $("log").innerHTML = WELCOME_HTML; applyLang(); renderCollieIdentity(); setProductNav("home");
   }
   function showToday(userRequested) {
+    if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun(); currentSession = null; currentRun = null; currentTitle = ""; loadTaskQueue();
     rememberSession(null);
     clearAttached(); clearManualIdeContexts(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
@@ -8971,6 +9009,7 @@
     if (surface === "today") loadToday(false);
   }
   function newThread(userRequestedFocus) {
+    if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null; currentTitle = "";
     rememberSession(null);
@@ -9041,6 +9080,8 @@
     if (!rec && ONLINE_NEEDS) {
       openOnlinePage(); return;
     }
+    var waiting = QUEUED_SESSIONS.filter(function (row) { return row.owner_busy !== true; });
+    if (!rec && waiting.length) { openSession(waiting[0].session); return; }
     if (!rec) return;
     if (rec.session && rec.session !== currentSession) openSession(rec.session);
     if (!PERM_ROWS[id]) addPermission(rec.data, rec.session);
@@ -9067,6 +9108,20 @@
     }).catch(function () {});
   }
   pollMissionNeeds(); window.setInterval(pollMissionNeeds, 10000);
+  function pollQueuedSessions() {
+    return authenticatedFetch("/api/task-inbox/pending").then(function (r) {
+      if (!r.ok) throw new Error("Saved request status unavailable"); return r.json();
+    }).then(function (data) {
+      var rows = data.sessions || [], changed = JSON.stringify(rows) !== JSON.stringify(QUEUED_SESSIONS);
+      QUEUED_SESSIONS = rows; updateNeedsYou(); if (changed) loadSessions();
+    }).catch(function () {});
+  }
+  function missionSchedulerIssue(data) {
+    return data && data.scheduler && data.scheduler.last_error && (data.missions || []).some(function (row) {
+      return /^(queued|waiting|running)$/.test(row.state || "");
+    }) ? data.scheduler.last_error : "";
+  }
+  pollQueuedSessions(); window.setInterval(pollQueuedSessions, 10000);
   pollOnlineNeeds(); window.setInterval(pollOnlineNeeds, 10000);
   window.setInterval(function () {
     todayFreshness();
@@ -9875,6 +9930,7 @@
 
     es.addEventListener("start", function (e) {
       var d = JSON.parse(e.data);
+      if (window.adoptTaskSetup) window.adoptTaskSetup(d.session);
       currentSession = d.session;
       rememberSession(currentSession);
       currentRun = d.run || null;
@@ -10580,8 +10636,58 @@
           strategy: $("runStrategy"), effort: $("runEffort"), speed: $("runSpeed"),
           runner: $("runRunner") };
     var setupLocked = false, capabilities = null;
+    var setupSession = null, setupCwd = "", scopeRequest = 0;
+    var defaults = {intent:"build",quality:"balanced",verification:"auto",workspace:"current",
+      strategy:"single",effort:"auto",speed:"standard",runner:""};
     window.runExplicitAxes = window.runExplicitAxes || {};
     if (!pick) return;
+    function storageKey(sid) { return "collie-task-setup:v1:" + (sid || "new"); }
+    function saveSetup() {
+      var values = {};
+      Object.keys(fields).forEach(function (key) { values[key] = fields[key].value; });
+      try { sessionStorage.setItem(storageKey(setupSession), JSON.stringify({version:1,
+        values:values, explicit:window.runExplicitAxes, cwd:setupCwd,
+        verify:verifyCommand.value, verifySource:verifyCommand.dataset.source || "",
+        check:packCheck.value, checkSource:packCheck.dataset.source || "", n:$("packN").value}));
+      } catch (_) {}
+    }
+    function restoreSetup(sid) {
+      var saved = null;
+      try { saved = JSON.parse(sessionStorage.getItem(storageKey(sid)) || "null"); } catch (_) {}
+      if (!saved || saved.version !== 1) saved = {};
+      window.runExplicitAxes = {};
+      Object.keys(fields).forEach(function (axis) {
+        var value = (saved.values || {})[axis], valid = false;
+        menu.querySelectorAll('.mode-item[data-axis="' + axis + '"]').forEach(function (item) {
+          if (item.getAttribute("data-val") === value) valid = true;
+        });
+        fields[axis].value = valid ? value : defaults[axis];
+        if (valid && (saved.explicit || {})[axis] === true) window.runExplicitAxes[axis] = true;
+      });
+      verifyCommand.value = typeof saved.verify === "string" ? saved.verify : "";
+      verifyCommand.dataset.source = typeof saved.verifySource === "string" ? saved.verifySource : "";
+      packCheck.value = typeof saved.check === "string" ? saved.check : "";
+      packCheck.dataset.source = typeof saved.checkSource === "string" ? saved.checkSource : "";
+      $("packN").value = /^[2-6]$/.test(saved.n || "") ? saved.n : "3";
+      // Applying a Pack result is a choice for one run, never a remembered grant.
+      $("packApply").checked = false;
+      setupCwd = typeof saved.cwd === "string" ? saved.cwd : "";
+      [verifyCommand, packCheck, $("packN")].forEach(function (el) { el.setCustomValidity(""); });
+      paint();
+    }
+    window.switchTaskSetup = function (sid) {
+      sid = sid || null;
+      if (setupSession !== sid) { saveSetup(); setupSession = sid; restoreSetup(sid); }
+      window.refreshVerificationCandidates();
+    };
+    window.adoptTaskSetup = function (sid) {
+      if (!sid || setupSession === sid) return;
+      if (!setupSession) {
+        try { sessionStorage.removeItem(storageKey(null)); } catch (_) {}
+      }
+      setupSession = sid; saveSetup();
+    };
+    window.addEventListener("pagehide", saveSetup);
     function positionMenu() {
       /* Pack and Required reveal extra composer rows. Keep the desktop sheet above the live
          composer edge instead of relying on a fixed gap that can cover Send after it grows. */
@@ -10686,6 +10792,7 @@
       if (packCheck) packCheck.required = packing;
       if (verifyCommand) verifyCommand.required = testing || (!nonBuild && verification === "required");
       trig.disabled = setupLocked;
+      $("resetRunSetup").disabled = setupLocked;
       [$("packN"), packCheck, $("packApply"), verifyCommand].forEach(function (el) {
         if (el) el.disabled = setupLocked;
       });
@@ -10712,9 +10819,13 @@
                  !window.runExplicitAxes.speed && capabilities) {
         fields.speed.value = capabilities.interactive_speed_default || "standard";
       }
-      paint();
+      paint(); saveSetup();
     }
     trig.addEventListener("click", function (e) { e.stopPropagation(); open(menu.hidden); });
+    $("resetRunSetup").onclick = function () {
+      try { sessionStorage.removeItem(storageKey(setupSession)); } catch (_) {}
+      restoreSetup(setupSession); saveSetup(); window.refreshVerificationCandidates();
+    };
     var modeClose = $("modeClose");
     if (modeClose) modeClose.addEventListener("click", function () { open(false); trig.focus(); });
     trig.addEventListener("keydown", function (e) {
@@ -10794,22 +10905,37 @@
       });
     };
     window.refreshVerificationCandidates = function () {
-      return fetch("/api/verification").then(function (r) { return r.json(); }).then(function (data) {
-        var first = (data.candidates || [])[0]; if (!first) return;
+      var request = ++scopeRequest, sid = setupSession, beforeVerify = verifyCommand.value,
+          beforeCheck = packCheck.value, beforeCwd = setupCwd;
+      var path = "/api/verification" + (sid ? "?session=" + encodeURIComponent(sid) : "");
+      return authenticatedFetch(path).then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
+      }).then(function (data) {
+        if (request !== scopeRequest || setupSession !== sid) return;
+        if (beforeCwd && data.cwd && beforeCwd !== data.cwd) {
+          if (verifyCommand.value === beforeVerify) { verifyCommand.value = ""; verifyCommand.dataset.source = ""; }
+          if (packCheck.value === beforeCheck) { packCheck.value = ""; packCheck.dataset.source = ""; }
+        }
+        setupCwd = data.cwd || "";
+        var first = (data.candidates || [])[0];
+        if (!first) { saveSetup(); return; }
         if (verifyCommand && !verifyCommand.value) {
           verifyCommand.value = first.command;
           verifyCommand.dataset.source = first.source || "detected";
         }
-        if (packCheck && !packCheck.value) packCheck.value = first.command;
+        if (packCheck && !packCheck.value) { packCheck.value = first.command; packCheck.dataset.source = first.source || "detected"; }
+        saveSetup();
       }).catch(function () {});
     };
+    menu.addEventListener("click", saveSetup);
+    [$("packN"),packCheck,verifyCommand].forEach(function (el) { el.addEventListener("input", saveSetup); });
     var packN = $("packN");
     if (packN) packN.addEventListener("input", function () { this.setCustomValidity(""); });
-    if (packCheck) packCheck.addEventListener("input", function () { this.setCustomValidity(""); });
+    if (packCheck) packCheck.addEventListener("input", function () { this.setCustomValidity(""); this.dataset.source = "user"; saveSetup(); });
     if (verifyCommand) verifyCommand.addEventListener("input", function () {
-      this.setCustomValidity(""); this.dataset.source = "user";
+      this.setCustomValidity(""); this.dataset.source = "user"; saveSetup();
     });
-    paint();
+    restoreSetup(null);
     window.refreshRunCapabilities();
     window.refreshVerificationCandidates();
   })();

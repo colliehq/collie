@@ -482,6 +482,14 @@ def _public_specialist(value):
 _MISSION_TICK_LOCK = threading.Lock()
 _MISSION_TICK_THREAD = None
 _MISSION_TICK_ERROR = ""
+_MISSION_TICK_STARTED = 0.0
+_MISSION_TICK_COMPLETED = 0.0
+
+
+def mission_ticker_status():
+    return {"running": bool(_MISSION_TICK_THREAD and _MISSION_TICK_THREAD.is_alive()),
+            "last_started_at": _MISSION_TICK_STARTED,
+            "last_completed_at": _MISSION_TICK_COMPLETED, "last_error": _MISSION_TICK_ERROR}
 
 
 def start_mission_ticker(interval=30.0):
@@ -492,9 +500,10 @@ def start_mission_ticker(interval=30.0):
             return _MISSION_TICK_THREAD
 
         def _loop():
-            global _MISSION_TICK_ERROR
+            global _MISSION_TICK_ERROR, _MISSION_TICK_STARTED, _MISSION_TICK_COMPLETED
             while True:
                 svc = None
+                _MISSION_TICK_STARTED = time.time()
                 try:
                     from . import settings
                     from .missionweb import MissionService
@@ -509,6 +518,7 @@ def start_mission_ticker(interval=30.0):
                     # and try again. The Web request/status surface stays available.
                     _MISSION_TICK_ERROR = _public_error(e)
                 finally:
+                    _MISSION_TICK_COMPLETED = time.time()
                     if svc is not None:
                         try:
                             svc.close()
@@ -1793,7 +1803,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(_public_activity(activity(_state_root(), limit=250)))
                 if path == "/api/healthz":
                     from .controlplane import health
-                    return self._send_json(_public_health(health(_state_root())))
+                    report = _public_health(health(_state_root()))
+                    report["mission_scheduler"] = mission_ticker_status()
+                    return self._send_json(report)
                 if path == "/api/doctor":
                     from .doctor import report
                     return self._send_json(_public_doctor(report(_state_root())))
@@ -1839,7 +1851,7 @@ class Handler(BaseHTTPRequestHandler):
                                                         for x in manager.pending],
                                             "trust_changes_allowed": False})
                 from . import sessions
-                session_dir = os.path.join(_state_root(), "sessions")
+                session_dir = sessions.store_root()
                 if path == "/api/recovery":
                     return self._send_json({"sessions": [
                         _public_recovery(row) for row in
@@ -1945,8 +1957,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(payload)
             if path == "/api/verification":
                 from .verification import detect_verification_commands
-                return self._send_json({"cwd": os.getcwd(),
-                                        "candidates": detect_verification_commands(os.getcwd())})
+                from . import sessions
+                query = urllib.parse.parse_qs(parsed.query)
+                sid = str(query.get("session", [""])[0] or "").strip()
+                if sid and not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                saved = None
+                if sid:
+                    loaded = sessions.load_checked(sid)
+                    if loaded["status"] != "ok":
+                        return self._send_json({"error": "session " + loaded["status"]},
+                                               404 if loaded["status"] == "missing" else 409)
+                    saved = loaded["session"]
+                try:
+                    cwd = sessions.resolve_cwd(saved)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
+                return self._send_json({"session": sid, "cwd": cwd,
+                                        "candidates": detect_verification_commands(cwd)})
             if path == "/api/mcp":
                 # The MCP control plane: what is configured and what state it is really in. Read-only
                 # and deliberately out-of-band — when a bad server is what is breaking collie, you
@@ -2224,6 +2252,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "forbidden"}, 403)
                 qs = urllib.parse.parse_qs(parsed.query)
                 return self._serve_pack_artifact({key: values[0] for key, values in qs.items()})
+            if path == "/api/task-inbox/pending":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import sessions, task_inbox, web_tasks
+                rows = task_inbox.pending_sessions()
+                summaries = {row["id"]: row for row in sessions.recent(80)} if rows else {}
+                for row in rows:
+                    sid = row["session"]
+                    row["owner_busy"] = web_tasks.owner_busy(sid)
+                    row["title"] = summaries.get(sid, {}).get("title") or ""
+                    if not row["title"] and not row.get("error"):
+                        try:
+                            entries = task_inbox.list_entries(sid, states=["pending", "claimed"], limit=1)
+                            row["title"] = " ".join(str((entries or [{}])[0].get("text") or "").split())[:72]
+                        except task_inbox.InboxError:
+                            pass
+                return self._send_json({"sessions": rows})
             if path == "/api/task-inbox":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2344,7 +2389,8 @@ class Handler(BaseHTTPRequestHandler):
                 from .missionweb import MissionService
                 svc = MissionService()
                 try:
-                    return self._send_json({"missions": svc.missions()})
+                    return self._send_json({"missions": svc.missions(),
+                                            "scheduler": mission_ticker_status()})
                 finally:
                     svc.close()
             if path == "/api/stream":
@@ -2748,7 +2794,7 @@ class Handler(BaseHTTPRequestHandler):
                 # session that is executing right now is not that, and rewriting
                 # its boundary underneath it would erase evidence about work in
                 # progress.
-                recovery_root = os.path.join(_state_root(), "sessions")
+                recovery_root = sessions.store_root()
                 try:
                     lease = session_owner.try_acquire(sid, label="web-reconcile",
                                                       directory=recovery_root)
@@ -2761,7 +2807,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     state = sessions.reconcile_recovery(
                         sid, resolution, note=str(body.get("note") or "")[:1000], confirmed=True,
-                        directory=os.path.join(_state_root(), "sessions"))
+                        directory=recovery_root)
                 except KeyError:
                     return self._send_json({"error": "no such session"}, 404)
                 except ValueError as exc:

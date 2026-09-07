@@ -67,6 +67,23 @@ def _path(sid, directory=None):
     return p
 
 
+def store_root(state_dir=None):
+    """Resolve the journal store shared by execution, recovery and ownership.
+
+    A request for another installation's state reads its data/sessions store.
+    The current installation also honors explicit data/session overrides and
+    the source-checkout data location, exactly as normal session writers do.
+    """
+    if state_dir is None:
+        return _dir()
+    requested = os.path.realpath(os.path.expanduser(state_dir))
+    current = os.path.realpath(os.environ.get("COLLIE_STATE_DIR") or
+                               os.path.expanduser("~/.collie"))
+    if os.path.normcase(requested) == os.path.normcase(current):
+        return _dir()
+    return os.path.join(requested, "data", "sessions")
+
+
 @contextlib.contextmanager
 def _locked(p):
     """Serialize a session's complete read/modify/write transaction across threads and processes."""
@@ -510,10 +527,10 @@ def active_runs(limit=100, directory=None):
     """List durable in-flight/recovery sessions for Activity and health views."""
     d = _dir(directory)
     rows = []
-    for name in os.listdir(d):
-        if not name.endswith(".json"):
+    for metadata in _indexed_rows(directory=d):
+        if metadata.get("_has_active") is False:
             continue
-        sid = name[:-5]
+        sid = metadata["id"]
         state = recovery_state(sid, directory)
         if state:
             state = dict(state); state["session_id"] = sid
@@ -711,6 +728,8 @@ def delete(sid):
     with _locked(p):
         try:
             os.remove(p)
+            from . import session_index
+            session_index.forget(os.path.dirname(p), sid)
             return True
         except OSError:
             return False
@@ -750,55 +769,107 @@ def latest():
     return newest[:-5]
 
 
-def recent(n=10):
-    d = _dir()
-    files = [f for f in os.listdir(d) if f.endswith(".json")]
-    files.sort(key=lambda f: _mtime(os.path.join(d, f)), reverse=True)
-    out = []
-    for f in files[:n]:
-        s = load(f[:-5]) or {}
-        msgs = s.get("messages", [])
-        turns = sum(1 for m in msgs if m.get("role") == "user" and m.get("source") != "harness")
-        # the thread's TITLE is the first user message (what a person recognizes it by), not the
-        # model's answer, which tends to be a generic lead-in that reads poorly as a sidebar label.
-        title = (s.get("title") or "").strip()
-        if not title:
-            for m in msgs:
-                if m.get("role") != "user" or m.get("source") == "harness":
-                    continue
-                c = m.get("content")
-                if isinstance(c, list):        # multimodal (attached image) -> title from text blocks
-                    c = " ".join(b.get("text", "") for b in c
-                                 if isinstance(b, dict) and b.get("type") == "text") or "[image]"
-                if isinstance(c, str) and c.strip():
-                    title = " ".join(c.split()); break
-        # cheap edit/touch counts so the Map's run picker can flag (and sort) the runs that actually
-        # changed code — the ones worth a diff — instead of burying them under chatty Q&A runs.
-        # DISTINCT files, not tool calls. Counting calls made a run that read one file eleven times
-        # read as "·11" beside a run that changed eleven files, and the map's landing view believed
-        # it: it opened on a run whose whole footprint was two stars. What the picker promises is
-        # how much of the codebase the run is about, so that is what it has to count.
-        touched, edited = set(), set()
+def _recent_row(sid, s, mtime):
+    msgs = s.get("messages", [])
+    turns = sum(1 for m in msgs if m.get("role") == "user" and m.get("source") != "harness")
+    # the thread's TITLE is the first user message (what a person recognizes it by), not the
+    # model's answer, which tends to be a generic lead-in that reads poorly as a sidebar label.
+    title = (s.get("title") or "").strip()
+    if not title:
         for m in msgs:
-            for tc in (m.get("tool_calls") or []):
-                name = (getattr(tc, "name", None) or (tc.get("name") if isinstance(tc, dict) else "") or "").lower()
-                args = getattr(tc, "args", None) or (tc.get("args") if isinstance(tc, dict) else {}) or {}
-                p = args.get("path") or args.get("file_path") or args.get("file")
-                if p:
-                    touched.add(str(p))
-                    if any(k in name for k in ("edit", "write", "create")):
-                        edited.add(str(p))
-        n_edit, n_touch = len(edited), len(touched)
-        # `cwd` is where the run happened, and it is the only DURABLE record of where this user keeps
-        # code: the web server is spawned without a cwd of its own, so on a shortcut launch it
-        # inherits whatever Explorer hands it, and the in-memory run list is empty at startup. The
-        # star-map's project discovery seeds from these.
-        out.append({"id": f[:-5], "turns": turns, "title": title[:72], "cwd": s.get("cwd") or "",
-                    "updated": float(s.get("updated") or _mtime(os.path.join(d, f))),
-                    "last": (s.get("last_answer") or "")[:60], "edits": n_edit, "touches": n_touch,
-                    "forked_from": s.get("forked_from") or "",
-                    "workspace": s.get("workspace") if isinstance(s.get("workspace"), dict) else {}})
+            if m.get("role") != "user" or m.get("source") == "harness":
+                continue
+            c = m.get("content")
+            if isinstance(c, list):        # multimodal (attached image) -> title from text blocks
+                c = " ".join(b.get("text", "") for b in c
+                             if isinstance(b, dict) and b.get("type") == "text") or "[image]"
+            if isinstance(c, str) and c.strip():
+                title = " ".join(c.split()); break
+    # cheap edit/touch counts so the Map's run picker can flag (and sort) the runs that actually
+    # changed code — the ones worth a diff — instead of burying them under chatty Q&A runs.
+    # DISTINCT files, not tool calls. Counting calls made a run that read one file eleven times
+    # read as "·11" beside a run that changed eleven files, and the map's landing view believed
+    # it: it opened on a run whose whole footprint was two stars. What the picker promises is
+    # how much of the codebase the run is about, so that is what it has to count.
+    touched, edited = set(), set()
+    for m in msgs:
+        for tc in (m.get("tool_calls") or []):
+            name = (getattr(tc, "name", None) or (tc.get("name") if isinstance(tc, dict) else "") or "").lower()
+            args = getattr(tc, "args", None) or (tc.get("args") if isinstance(tc, dict) else {}) or {}
+            p = args.get("path") or args.get("file_path") or args.get("file")
+            if p:
+                touched.add(str(p))
+                if any(k in name for k in ("edit", "write", "create")):
+                    edited.add(str(p))
+    n_edit, n_touch = len(edited), len(touched)
+    # `cwd` is where the run happened, and it is the only DURABLE record of where this user keeps
+    # code: the web server is spawned without a cwd of its own, so on a shortcut launch it
+    # inherits whatever Explorer hands it, and the in-memory run list is empty at startup. The
+    # star-map's project discovery seeds from these.
+    return {"id": sid, "turns": turns, "title": title[:72], "cwd": s.get("cwd") or "",
+                "updated": float(s.get("updated") or mtime),
+                "last": (s.get("last_answer") or "")[:60], "edits": n_edit, "touches": n_touch,
+                "forked_from": s.get("forked_from") or "",
+                "workspace": s.get("workspace") if isinstance(s.get("workspace"), dict) else {},
+                "_has_active": "active_run" in s,
+                "_fork_index": s.get("fork_index", 0), "_custom_title": s.get("title") or ""}
+
+
+def _indexed_rows(n=None, directory=None):
+    from . import session_index
+
+    d = _dir(directory)
+    files = []
+    for name in os.listdir(d):
+        if not name.endswith(".json"):
+            continue
+        sid = name[:-5]
+        path = _path(sid, d)
+        if not path:
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        files.append((sid, path, stat))
+    files.sort(key=lambda item: item[2].st_mtime_ns, reverse=True)
+    selected = files if n is None else files[:max(0, int(n))]
+    stamps = {sid: session_index.fingerprint(stat) for sid, _, stat in selected}
+    cached = session_index.read(d, stamps) if selected else {}
+    out, updates = [], []
+    for sid, path, stat in selected:
+        row = cached.get(sid)
+        if row is None:
+            # Only immutable display metadata is cached. Recovery and resume
+            # continue to validate the full journal on every authoritative read.
+            with _locked(path):
+                try:
+                    before = os.stat(path)
+                except OSError:
+                    continue
+                raw = _load_raw(path)
+                try:
+                    data = _validate_raw(raw, sid)
+                    data["messages"] = _msgs_in(data.get("messages", []))
+                    row = _recent_row(sid, data, before.st_mtime)
+                except (ValueError, TypeError, AttributeError):
+                    row = _recent_row(sid, {}, before.st_mtime)
+                    row["_has_active"] = True  # unreadable journals must remain visible in recovery
+                try:
+                    after = os.stat(path)
+                except OSError:
+                    continue
+                stamp = session_index.fingerprint(before)
+                if stamp == session_index.fingerprint(after):
+                    updates.append((sid, stamp, row))
+        out.append(row)
+    session_index.write(d, updates)
     return out
+
+
+def recent(n=10):
+    return [{key: value for key, value in row.items() if not key.startswith("_")}
+            for row in _indexed_rows(n)]
 
 
 def timeline(sid):
@@ -820,14 +891,10 @@ def timeline(sid):
                       "summary": " ".join(str(content or "").split())[:240],
                       "tool_calls": len(message.get("tool_calls") or [])})
     children = []
-    d = _dir()
-    for name in os.listdir(d):
-        if not name.endswith(".json") or name[:-5] == sid:
-            continue
-        child = load(name[:-5]) or {}
-        if child.get("forked_from") == sid:
-            children.append({"id": name[:-5], "fork_index": child.get("fork_index", 0),
-                             "title": child.get("title") or "", "updated": child.get("updated", 0)})
+    for child in _indexed_rows():
+        if child["id"] != sid and child.get("forked_from") == sid:
+            children.append({"id": child["id"], "fork_index": child.get("_fork_index", 0),
+                             "title": child.get("_custom_title") or "", "updated": child.get("updated", 0)})
     children.sort(key=lambda x: float(x.get("updated") or 0))
     return {"id": sid, "title": raw.get("title") or "", "nodes": nodes, "children": children,
             "forked_from": raw.get("forked_from") or "", "fork_index": raw.get("fork_index"),

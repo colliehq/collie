@@ -33,7 +33,7 @@ def activity(path: str | None = None, *, limit: int = 100) -> dict:
     try:
         from . import sessions
         out["sessions"] = sessions.active_runs(
-            limit=limit, directory=os.path.join(root, "sessions"))
+            limit=limit, directory=sessions.store_root(root))
     except Exception as exc:
         out["errors"]["sessions"] = "%s: %s" % (type(exc).__name__, exc)
 
