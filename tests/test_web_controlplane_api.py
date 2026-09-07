@@ -954,7 +954,7 @@ def test_activity_ui_and_auto_model_contracts():
     page = (Path(__file__).parents[1] / "harness" / "webui" / "index.html").read_text("utf-8")
     for value in ("activityPanel", "/api/activity", "/api/healthz", "/api/hooks",
                   "/api/recovery/reconcile", "/api/mission/specialist/steer",
-                  "/api/mission/specialist/cancel", "Control Center", "/api/doctor",
+                  "/api/mission/specialist/cancel", "System activity", "/api/doctor",
                   "/api/recovery-center", "/api/automations", "/api/memory/claims",
                   "/api/budgets", "/api/security"):
         assert value in page

@@ -804,7 +804,7 @@
   .wphead button { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid var(--line);
     border-radius: 7px; background: var(--surface-2); color: var(--muted); cursor: pointer; font-size: 17px; }
   .wphead button:hover { color: var(--ink); border-color: var(--pine); }
-  .activity-panel { border-top: 1px solid var(--line); background: var(--surface); max-height: 44vh;
+  .activity-panel { border-top: 1px solid var(--line); background: var(--surface);
     overflow: auto; padding: 12px 22px 16px; }
   .activity-panel[hidden] { display: none; }
   .activity-inner { max-width: 980px; margin: 0 auto; }
@@ -2508,17 +2508,17 @@
 
     <section class="activity-panel" id="activityPanel" role="region" aria-label="Activity and health" data-i18n-aria-label="Activity and health" hidden>
       <div class="activity-inner">
-        <div class="activity-head"><strong id="activityTitle">Control Center</strong><span class="activity-health" id="activityHealth">loading</span>
-          <span class="spacer"></span><button type="button" id="activityRefresh">Refresh</button>
+        <div class="activity-head"><strong id="activityTitle" data-i18n="System activity">System activity</strong><span class="activity-health" id="activityHealth">loading</span>
+          <span class="spacer"></span><button type="button" id="activityRefresh" data-i18n="Refresh">Refresh</button>
           <button type="button" id="activityClose" aria-label="Close activity" data-i18n-aria-label="Close activity">×</button></div>
-        <div class="control-tabs" id="controlTabs" role="tablist" aria-label="Control Center">
-          <button type="button" class="on" data-control-tab="overview">Overview</button>
-          <button type="button" data-control-tab="recovery">Recovery</button>
-          <button type="button" data-control-tab="automations">Automations</button>
-          <button type="button" data-control-tab="memory">Memory</button>
-          <button type="button" data-control-tab="procedures">Habits</button>
-          <button type="button" data-control-tab="budgets">Budgets</button>
-          <button type="button" data-control-tab="security">Permissions</button>
+        <div class="control-tabs" id="controlTabs" role="tablist" aria-label="System activity" data-i18n-aria-label="System activity">
+          <button type="button" class="on" data-control-tab="overview" data-i18n="Overview">Overview</button>
+          <button type="button" data-control-tab="recovery" data-i18n="Recovery">Recovery</button>
+          <button type="button" data-control-tab="automations" data-i18n="Automations">Automations</button>
+          <button type="button" data-control-tab="memory" data-i18n="Memory">Memory</button>
+          <button type="button" data-control-tab="procedures" data-i18n="Habits">Habits</button>
+          <button type="button" data-control-tab="budgets" data-i18n="Budgets">Budgets</button>
+          <button type="button" data-control-tab="security" data-i18n="Permissions">Permissions</button>
         </div>
         <div class="activity-notice" id="activityNotice" role="status" aria-live="polite"></div>
         <div class="control-summary" id="controlSummary"></div>
@@ -3775,6 +3775,10 @@
   // Strings introduced by operational surfaces are kept in one additive block
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
+    "Overview":"概览","Habits":"常用工作流","Budgets":"用量限制","None":"暂无","Automations":"自动化","Memory":"记忆","Recovery":"恢复",
+    "Services":"服务","Session recovery":"会话恢复","Hooks (read-only)":"扩展事件（只读）","Doctor":"运行诊断",
+    "Service status, ongoing tasks and checks for this installation.":"查看服务状态、进行中的任务和本机安装检查。",
+    "degraded":"部分不可用","unknown":"未知","ok":"正常","missing":"未运行","fresh":"最近有响应","stale":"未收到近期状态","down":"不可用","stopped":"已停止","not installed":"未安装",
     "What should Collie take care of?":"今天想让 Collie 处理什么？",
     "Describe the outcome. Collie can work across your files and connected apps, ask before consequential actions, and bring back a clear result.":"描述你想要的结果。Collie 可以操作你的文件和已连接应用，在重要操作前先询问你，并带回清晰的结果。",
     "Organize my day":"安排好今天","Review my calendar and priorities, then resolve conflicts.":"检查我的日历和优先事项，然后解决时间冲突。",
@@ -3949,6 +3953,10 @@
     "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
   });
   Object.assign(ZHTW, {
+    "Overview":"概覽","Habits":"常用工作流程","Budgets":"用量限制","None":"暫無","Automations":"自動化","Memory":"記憶","Recovery":"復原",
+    "Services":"服務","Session recovery":"工作階段復原","Hooks (read-only)":"擴充事件（唯讀）","Doctor":"執行診斷",
+    "Service status, ongoing tasks and checks for this installation.":"查看服務狀態、進行中的任務與本機安裝檢查。",
+    "degraded":"部分無法使用","unknown":"未知","ok":"正常","missing":"未執行","fresh":"最近有回應","stale":"未收到近期狀態","down":"無法使用","stopped":"已停止","not installed":"未安裝",
     "What should Collie take care of?":"今天想讓 Collie 處理什麼？",
     "Describe the outcome. Collie can work across your files and connected apps, ask before consequential actions, and bring back a clear result.":"描述你想要的結果。Collie 可以操作你的檔案和已連線應用程式，在重要操作前先詢問你，並帶回清楚的結果。",
     "Organize my day":"安排好今天","Review my calendar and priorities, then resolve conflicts.":"檢查我的行事曆和優先事項，然後解決時間衝突。",
@@ -5870,10 +5878,10 @@
   }
   function activityLane(title, rows, render) {
     var lane = document.createElement("section"); lane.className = "activity-lane";
-    var head = document.createElement("h4"); head.textContent = title; lane.appendChild(head);
+    var head = document.createElement("h4"); head.textContent = t(title); lane.appendChild(head);
     var box = document.createElement("div"); box.className = "activity-rows"; lane.appendChild(box);
     if (!(rows || []).length) { var empty = document.createElement("div"); empty.className = "activity-empty";
-      empty.textContent = "None"; box.appendChild(empty); return lane; }
+      empty.textContent = t("None"); box.appendChild(empty); return lane; }
     rows.forEach(function (data) {
       var row = document.createElement("div"); row.className = "activity-row";
       render(row, data); box.appendChild(row);
@@ -5882,7 +5890,8 @@
   }
   function activityText(row, id, state) {
     var name = document.createElement("span"); name.className = "activity-id"; name.textContent = id || "—";
-    var status = document.createElement("span"); status.className = "activity-state"; status.textContent = state || "unknown";
+    var status = document.createElement("span"); status.className = "activity-state";
+    status.textContent = String(state || "unknown").split(" · ").map(t).join(" · ");
     row.appendChild(name); row.appendChild(status);
   }
   function activityDetail(row, text) {
@@ -5895,7 +5904,7 @@
     node.textContent = message || ""; node.classList.toggle("bad", !!bad);
   }
   function activityAction(row, label, fn) {
-    var button = document.createElement("button"); button.type = "button"; button.textContent = label;
+    var button = document.createElement("button"); button.type = "button"; button.textContent = t(label);
     button.onclick = function () {
       button.disabled = true; activityNotice("");
       Promise.resolve(fn()).catch(function (error) {
@@ -5906,7 +5915,7 @@
   }
   var currentControlTab = "overview", controlData = {};
   function renderOverview(activity, health, hooks, doctor) {
-    var badge = $("activityHealth"); badge.textContent = health.status || "unknown";
+    var badge = $("activityHealth"); badge.textContent = t(health.status || "unknown");
     badge.classList.toggle("bad", !health.ok);
     var unavailable = Object.keys(activity.errors || {}).concat(Object.keys(health.activity_errors || {}));
     activityNotice(unavailable.length ? ("Some operational lanes are unavailable: " + unavailable.join(", ")) : "", unavailable.length > 0);
@@ -5975,7 +5984,7 @@
         return activityPost("/api/doctor/repair", { action:"test_notifications" }).then(loadActivity);
       });
     }));
-    $("controlSummary").textContent = "Live services, durable work, delivery and installed-version alignment.";
+    $("controlSummary").textContent = t("Service status, ongoing tasks and checks for this installation.");
   }
   function renderRecovery(data) {
     var badge = $("activityHealth"); badge.textContent = data.status || "unknown";
@@ -6518,7 +6527,8 @@
   function setActivityMode(mode) {
     activityPageMode = mode === "online" ? "online" : "activity";
     activityPanel.classList.toggle("online-page", activityPageMode === "online");
-    $("activityTitle").textContent = activityPageMode === "online" ? "Collie Online" : "Control Center";
+    $("activityTitle").textContent = activityPageMode === "online" ? "Collie Online" : t("System activity");
+    $("activityTitle").setAttribute("data-i18n", activityPageMode === "online" ? "Collie Online" : "System activity");
     $("controlTabs").hidden = activityPageMode === "online";
     if (activityPageMode === "online") currentControlTab = "online";
     else if (currentControlTab === "online") currentControlTab = "overview";
@@ -9017,7 +9027,7 @@
       }).catch(function () {});
   }
   syncLiveNav(); window.setInterval(syncLiveNav, 1500);
-  $("navPack").onclick = function () { openEmbeddedSurface("Pack", "/remote?embedded=1", "pack"); };
+  $("navPack").onclick = function () { openEmbeddedSurface("Devices & team", "/remote?embedded=1", "pack"); };
   $("navOnline").onclick = openOnlinePage;
   $("navLibrary").onclick = function () { setProductNav("library"); setLibraryOpen(true); };
   $("navActivity").onclick = function () { setActivityMode("activity"); setProductNav("activity"); setActivityOpen(true); };

@@ -236,7 +236,7 @@ def test_missions_pack_and_studio_stay_in_the_native_application_shell():
         "function missionHelp()", 1)[0]
     assert 'id="surfacePanel"' in desktop and 'id="surfaceFrame"' in desktop
     assert '<button type="button" class="side-nav-item" id="navPack">' in desktop
-    assert 'openEmbeddedSurface("Pack", "/remote?embedded=1", "pack")' in desktop
+    assert 'openEmbeddedSurface("Devices & team", "/remote?embedded=1", "pack")' in desktop
     assert 'openEmbeddedSurface("Studio", "/studio?embedded=1")' in desktop
     assert 'openEmbeddedSurface("Meeting notes", "/meetings?embedded=1")' in desktop
     assert 'openEmbeddedSurface("Comfy", "/comfy?embedded=1")' in desktop

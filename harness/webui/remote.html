@@ -122,36 +122,39 @@
 <script>if(new URLSearchParams(location.search).get("embedded")==="1")document.body.classList.add("embedded");</script>
 <div class="wrap">
   <a class="back" href="/">← <span data-i="Back to Collie">Back to Collie</span></a>
-  <h1><img src="logo.svg" alt="Collie"> <span data-i="Pack">Pack</span></h1>
-  <div class="sub">Your approved devices and workers. Cloud coordinates availability; every device keeps its own execution authority.</div>
+  <h1><img src="logo.svg" alt="Collie"> <span data-i="Devices & team">Devices &amp; team</span></h1>
+  <div class="sub" data-i="See your devices, current work and phone connections.">See your devices, current work and phone connections.</div>
 
   <div class="card" id="packcard">
-    <h2><span>Pack overview</span> <span id="packhealth" class="pill idle" role="status" aria-live="polite" data-i="Loading…">Loading…</span></h2>
+    <h2><span data-i="Devices & team">Devices &amp; team</span> <span id="packhealth" class="pill idle" role="status" aria-live="polite" data-i="Loading…">Loading…</span></h2>
     <div class="packerr" id="packerr" role="alert" aria-live="assertive"></div>
-    <div class="packtopology" aria-label="Pack trust and coordination model">
-      <div class="packtopology-node"><strong>Control devices</strong><span>Sign assignments, mandates and scoped approvals.</span></div>
-      <div class="packtopology-arrow" aria-hidden="true">→</div>
-      <div class="packtopology-node hub"><strong>Collie Online</strong><span id="packcoordstatus">Checking coordinator…</span><small>Routes presence, encrypted sync and queues. Holds no endpoint execution authority.</small></div>
-      <div class="packtopology-arrow" aria-hidden="true">→</div>
-      <div class="packtopology-node"><strong>Execution endpoints</strong><span>Pull, verify and enforce their own Authority policy.</span></div>
-    </div>
     <div class="packidentity"><img id="packavatar" src="/api/avatar.png" alt="">
       <div><div class="packwho" id="packwho">Collie</div><div class="packmeta" id="packdevice" data-i="Checking this device…">Checking this device…</div>
         <div class="packmeta" id="packmodel" data-i="Checking provider and model…">Checking provider and model…</div></div></div>
-    <div class="packboundary"><strong>Cloud coordinates. Devices decide.</strong>
-      <span>Each Collie pulls endpoint-signed assignments over an outbound connection, verifies their scope, and enforces its own Authority. Online cannot open an inbound shell or grant itself new device permissions.</span></div>
     <div class="packstats">
-      <div class="packstat"><b id="statDevices">—</b><span>Devices</span></div>
+      <div class="packstat"><b id="statDevices">—</b><span data-i="Devices">Devices</span></div>
       <div class="packstat"><b id="statMissions">—</b><span data-i="Missions">Missions</span></div>
       <div class="packstat"><b id="statSpecialists">—</b><span data-i="Specialists">Specialists</span></div>
       <div class="packstat"><b id="statAutomations">—</b><span data-i="Automations">Automations</span></div>
       <div class="packstat"><b id="statNeeds">—</b><span data-i="Needs You">Needs You</span></div>
     </div>
     <div class="packgrid">
-      <section class="packlane"><h3>Endpoints &amp; local workers</h3><div class="packrows" id="packmembers"><div class="packempty" data-i="Loading availability…">Loading availability…</div></div></section>
+      <section class="packlane"><h3 data-i="Devices & services">Devices &amp; services</h3><div class="packrows" id="packmembers"><div class="packempty" data-i="Loading availability…">Loading availability…</div></div></section>
       <section class="packlane"><h3 data-i="Active assignments">Active assignments</h3><div class="packrows" id="packassignments"><div class="packempty" data-i="Loading assignments…">Loading assignments…</div></div></section>
     </div>
-    <div class="truthnote">Availability comes from bounded heartbeats. A connected endpoint is not remotely controllable until it accepts an endpoint-signed assignment under its own Authority policy.</div>
+    <p class="truthnote" data-i="Connecting a device does not grant new permissions. Each device checks tasks before running them.">Connecting a device does not grant new permissions. Each device checks tasks before running them.</p>
+    <details class="tech" id="coordinationDetails">
+      <summary data-i="How device coordination works">How device coordination works</summary>
+      <div class="packtopology" aria-label="Pack trust and coordination model" data-i-aria="Pack trust and coordination model">
+        <div class="packtopology-node"><strong data-i="Control devices">Control devices</strong><span data-i="Sign assignments, mandates and scoped approvals.">Sign assignments, mandates and scoped approvals.</span></div>
+        <div class="packtopology-arrow" aria-hidden="true">→</div>
+        <div class="packtopology-node hub"><strong>Collie Online</strong><span id="packcoordstatus" data-i="Checking coordinator…">Checking coordinator…</span><small data-i="Routes presence, encrypted sync and queues. Holds no endpoint execution authority.">Routes presence, encrypted sync and queues. Holds no endpoint execution authority.</small></div>
+        <div class="packtopology-arrow" aria-hidden="true">→</div>
+        <div class="packtopology-node"><strong data-i="Execution endpoints">Execution endpoints</strong><span data-i="Pull, verify and enforce their own Authority policy.">Pull, verify and enforce their own Authority policy.</span></div>
+      </div>
+      <div class="packboundary"><strong data-i="Cloud coordinates. Devices decide.">Cloud coordinates. Devices decide.</strong>
+        <span data-i="Each Collie pulls endpoint-signed assignments over an outbound connection, verifies their scope, and enforces its own Authority. Online cannot open an inbound shell or grant itself new device permissions.">Each Collie pulls endpoint-signed assignments over an outbound connection, verifies their scope, and enforces its own Authority. Online cannot open an inbound shell or grant itself new device permissions.</span></div>
+    </details>
   </div>
 
   <div class="card" id="activitycard">
@@ -172,7 +175,7 @@
   </div>
 
   <div class="card" id="paircard">
-    <h2><span>Local phone supervision</span> <span id="statuspill" class="pill idle" role="status" aria-live="polite">…</span></h2>
+    <h2><span data-i="Local phone supervision">Local phone supervision</span> <span id="statuspill" class="pill idle" role="status" aria-live="polite">…</span></h2>
     <div class="pairgrid">
       <div class="pendcard" id="pendingbox" role="region" aria-label="Pending pairing request" data-i-aria="Pending pairing request" aria-live="assertive" hidden>
         <div class="pwho" id="pwho"></div>
@@ -270,6 +273,17 @@ var ZHTW = {
   "Services":"服務","Service":"服務","Worker":"工作程序","Mission":"任務","Automation":"自動化","Queued":"排隊中","Running":"執行中","Blocked":"已封鎖","Waiting":"等待中","Paused":"已暫停","Completed status":"已完成","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿"
 }; // falls back to zh where older strings are missing (see t())
 Object.assign(ZH,{
+  "Devices & team":"设备与协作","Devices":"设备","Devices & services":"设备与服务","Local phone supervision":"手机连接",
+  "See your devices, current work and phone connections.":"查看设备状态、当前分工和手机连接。",
+  "Connecting a device does not grant new permissions. Each device checks tasks before running them.":"连接设备不会授予新的权限。每台设备都会检查任务是否在授权范围内。",
+  "How device coordination works":"设备如何协作","Pack trust and coordination model":"设备之间的信任与协作方式",
+  "Control devices":"发起任务的设备","Sign assignments, mandates and scoped approvals.":"签署任务及其授权范围。",
+  "Execution endpoints":"执行任务的设备","Pull, verify and enforce their own Authority policy.":"接收任务，核对签名，并遵守本机权限设置。",
+  "Checking coordinator…":"正在检查协作连接…","Optional coordinator · not connected":"未连接云端协作 · 本机仍可使用",
+  "Connected · {devices} devices · {trusted} trusted signers":"已连接 · {devices} 台设备 · {trusted} 个可信签署方",
+  "Routes presence, encrypted sync and queues. Holds no endpoint execution authority.":"协调在线状态、加密同步和任务队列，不持有设备执行权限。",
+  "Cloud coordinates. Devices decide.":"云端负责协调，设备控制权限。",
+  "Each Collie pulls endpoint-signed assignments over an outbound connection, verifies their scope, and enforces its own Authority. Online cannot open an inbound shell or grant itself new device permissions.":"每台 Collie 主动获取已签署的任务，核对任务范围并遵守本机权限。云端不能直接打开设备终端，也不能自行增加设备权限。",
   "A device":"一台设备",
   "Pending pairing request":"待处理的配对请求","Check this matches the number on the phone.":"请确认此号码与手机上显示的一致。","Not me":"不是我","Allow":"允许",
   "Unknown OS":"未知操作系统","Repository not reported":"未报告代码库","Device identity unavailable":"设备身份信息不可用","Provider default":"提供方默认设置","Provider and model unavailable":"提供方和模型信息不可用",
@@ -277,6 +291,17 @@ Object.assign(ZH,{
   "heartbeat {n}s ago":"心跳 · {n} 秒前","Supervisor":"监督服务","Local coordination service":"本地协调服务","Stopped":"已停止","Not running":"未运行","Assignments unavailable.":"分工信息不可用。","{n} more active assignments":"还有 {n} 条进行中的分工"
 });
 Object.assign(ZHTW,{
+  "Devices & team":"裝置與協作","Devices":"裝置","Devices & services":"裝置與服務","Local phone supervision":"手機連線",
+  "See your devices, current work and phone connections.":"查看裝置狀態、目前分工與手機連線。",
+  "Connecting a device does not grant new permissions. Each device checks tasks before running them.":"連接裝置不會授予新的權限。每台裝置都會檢查任務是否在授權範圍內。",
+  "How device coordination works":"裝置如何協作","Pack trust and coordination model":"裝置之間的信任與協作方式",
+  "Control devices":"發起任務的裝置","Sign assignments, mandates and scoped approvals.":"簽署任務及其授權範圍。",
+  "Execution endpoints":"執行任務的裝置","Pull, verify and enforce their own Authority policy.":"接收任務，核對簽章，並遵守本機權限設定。",
+  "Checking coordinator…":"正在檢查協作連線…","Optional coordinator · not connected":"未連接雲端協作 · 本機仍可使用",
+  "Connected · {devices} devices · {trusted} trusted signers":"已連接 · {devices} 台裝置 · {trusted} 個可信簽署方",
+  "Routes presence, encrypted sync and queues. Holds no endpoint execution authority.":"協調上線狀態、加密同步與任務佇列，不持有裝置執行權限。",
+  "Cloud coordinates. Devices decide.":"雲端負責協調，裝置控制權限。",
+  "Each Collie pulls endpoint-signed assignments over an outbound connection, verifies their scope, and enforces its own Authority. Online cannot open an inbound shell or grant itself new device permissions.":"每台 Collie 主動取得已簽署的任務，核對任務範圍並遵守本機權限。雲端不能直接開啟裝置終端，也不能自行增加裝置權限。",
   "A device":"一台裝置","Action failed":"操作失敗","Active assignments":"進行中的分工","Automations":"自動化",
   "Available":"可用","Available here":"本機可用","Back to Collie":"返回 Collie","Connection details":"連線詳情",
   "Copy failed; select the link above.":"複製失敗，請選取上方連結。","Copy is unavailable; select the link above.":"無法自動複製，請選取上方連結。",
@@ -301,6 +326,8 @@ Object.assign(ZHTW,{
   "Operational lanes":"執行通道","Some Pack state is unavailable":"部分夥伴群狀態無法使用","This Collie":"此 Collie","Health endpoint did not respond":"健康檢查端點未回應","This device":"此裝置","Unknown":"未知",
   "heartbeat {n}s ago":"心跳 · {n} 秒前","Supervisor":"監督服務","Local coordination service":"本機協調服務","Stopped":"已停止","Not running":"未執行","Assignments unavailable.":"分工資訊無法使用。","{n} more active assignments":"還有 {n} 個進行中的分工"
 });
+
+
 function t(en){ if(UI_LANG==="zh") return ZH[en]||en; if(UI_LANG==="zh-tw") return ZHTW[en]||ZH[en]||en; return en; }
 function applyStatic(){ document.querySelectorAll("[data-i]").forEach(function(el){ el.textContent=t(el.getAttribute("data-i")); }); document.querySelectorAll("[data-i-aria]").forEach(function(el){el.setAttribute("aria-label",t(el.getAttribute("data-i-aria")));}); document.documentElement.lang=UI_LANG; }
 
@@ -377,8 +404,8 @@ function renderPack(parts,failures){
   var onlineNodes=online.nodes||[],onlineDevice=(online.device||{}).id||'',trustedDevices=online.trusted_devices||{},trustedIds={};
   (Array.isArray(trustedDevices)?trustedDevices:[]).forEach(function(row){trustedIds[String(row.device_id||'')]=true;});
   document.getElementById('packcoordstatus').textContent=online.mode==='connected'?
-    'Connected · '+onlineNodes.length+' endpoint'+(onlineNodes.length===1?'':'s')+' registered · '+Object.keys(trustedIds).length+' trusted signer'+(Object.keys(trustedIds).length===1?'':'s'):
-    'Optional coordinator · not connected';
+    t('Connected · {devices} devices · {trusted} trusted signers').replace('{devices}',onlineNodes.length).replace('{trusted}',Object.keys(trustedIds).length):
+    t('Optional coordinator · not connected');
   var work=(health&&health.work)||{};
   document.getElementById('statDevices').textContent=online.mode==='connected'?Math.max(1,onlineNodes.length):'1';
   [['statMissions','missions_active'],['statSpecialists','task_runs_active'],['statAutomations','automations_active']].forEach(function(pair){
