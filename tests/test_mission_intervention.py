@@ -5,7 +5,7 @@ import pytest
 
 from harness.actions import ActionStore
 from harness.jobs import Capability, DONE_VERIFIED, NEEDS_YOU, WAITING, PAUSED, QUEUED
-from harness.mission import (MissionDriver, MissionStore, _authorization_request,
+from harness.mission import (MissionDriver, MissionStore, _authorization_request, _resolved_authorization,
                              _standing_authorizes, create_mission, world_leash)
 from harness.mission_intervention import optional_skip
 from harness.verifier import Observation, Verdict, VERIFIED
@@ -181,6 +181,22 @@ def test_optional_skip_does_not_erase_an_unrelated_nonblocking_requirement(lab):
     case=lab[0].get('m').case
     assert case['pending_authorizations'][0]['summary']=='Need access to the client invoice'
     assert case['skipped_steps'][0]['summary']=='Bonus stock photo requires an account'
+
+
+def test_shared_long_prefix_cannot_alias_an_acknowledgement_or_an_omission(lab):
+    prefix='x'*1000
+    first=_authorization_request({'kind':'security_key','summary':prefix+' sign in'})
+    second=_authorization_request({'kind':'security_key','summary':prefix+' approve transfer'})
+    assert first['id']!=second['id']
+    assert first['summary']==second['summary']
+    assert _resolved_authorization(second,[dict(first,resolution='user_handled')]) is None
+    one=optional_skip({'optional':True,'summary':prefix+' photo'},'No account',[])
+    two=optional_skip({'optional':True,'summary':prefix+' invoice'},'No account',[])
+    assert one['id']!=two['id']
+    assert run(lab,[{'action':'needs_authorization','args':{'summary':prefix+' transfer'}},
+                    {'action':'needs_human','args':{'summary':'Concise essential question'}}])==NEEDS_YOU
+    assert not lab[0].get('m').case.get('pending_authorizations')
+    assert any(e['name']=='summary_refused' for e in lab[0].events('m'))
 
 
 @pytest.mark.parametrize('args', [

@@ -28,7 +28,8 @@ def optional_skip(args: dict, reason: str, coverage: list[dict]) -> dict | None:
     """
     if args.get("optional") is not True or args.get("blocking"):
         return None
-    summary = str(args.get("summary") or "").strip()[:1000]
+    raw_summary = str(args.get("summary") or "").strip()
+    summary = raw_summary[:1000]
     explanation = str(reason or args.get("reason") or "").strip()[:1000]
     branch = str(args.get("campaign_branch") or args.get("branch") or "").strip()[:180]
     if not summary or not explanation:
@@ -39,6 +40,7 @@ def optional_skip(args: dict, reason: str, coverage: list[dict]) -> dict | None:
         if len(matches) != 1 or matches[0].get("required", True):
             return None
     identity = {"branch": branch, "summary": summary,
+                "summary_digest": hashlib.sha256(raw_summary.encode("utf-8")).hexdigest(),
                 "domain": str(args.get("domain") or "")[:253],
                 "kind": str(args.get("kind") or "optional")[:80]}
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]

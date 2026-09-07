@@ -119,7 +119,8 @@ def _standing_authority() -> dict:
 def _authorization_request(args, reason="") -> dict:
     """Normalize one model request into a stable, receipt-safe authorization key."""
     args = dict(args or {})
-    summary = str(args.get("summary") or reason or "authorization required").strip()[:1000]
+    raw_summary = str(args.get("summary") or reason or "authorization required").strip()
+    summary = raw_summary[:1000]
     kind = str(args.get("kind") or args.get("category") or "routine").strip().lower()
     kind = re.sub(r"[^a-z0-9_.-]", "_", kind)[:80] or "routine"
     claim = str(args.get("claim") or "").strip().lower()
@@ -145,10 +146,11 @@ def _authorization_request(args, reason="") -> dict:
                 "domain": domain, "operation": operation,
                 # An acknowledgement is bound to the requirement the person
                 # actually saw, not every similarly classified action on a site.
-                "summary_digest": hashlib.sha256(summary.encode("utf-8")).hexdigest()}
+                "summary_digest": hashlib.sha256(raw_summary.encode("utf-8")).hexdigest()}
     key = hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:20]
     return {"id": "auth_" + key, **material, "summary": summary,
+            "summary_chars": len(raw_summary),
             "inferred_claim": inferred_claim,
             "blocking": bool(args.get("blocking")), "requested_at": int(time.time())}
 
@@ -172,9 +174,13 @@ def _resolved_authorization(request, resolved) -> dict | None:
         if not isinstance(raw, dict) or not raw.get("resolution"):
             continue
         item = dict(raw)
-        if item.get("resolution") == "user_handled" and (
-                str(item.get("summary") or "") != str(request.get("summary") or "")):
-            continue
+        if item.get("resolution") == "user_handled":
+            shown = str(item.get("summary") or "")
+            requested = str(request.get("summary") or "")
+            prior_digest = item.get("summary_digest") or hashlib.sha256(shown.encode("utf-8")).hexdigest()
+            request_digest = request.get("summary_digest") or hashlib.sha256(requested.encode("utf-8")).hexdigest()
+            if shown != requested or prior_digest != request_digest:
+                continue
         if request_id and str(item.get("id") or "") == request_id:
             return item
         if str(item.get("kind") or "") != request_kind:
@@ -2950,6 +2956,8 @@ class MissionStore:
                 request = next((x for x in pending if x.get("id") == request_id), None)
                 if not request:
                     return {"ok": False, "error": "this exact requirement is no longer waiting"}
+                if request.get("summary_chars", len(str(request.get("summary") or ""))) > 1000:
+                    return {"ok": False, "error": "the requirement must be restated in full within 1000 characters"}
                 note = ("I handled this specific requirement: %s (%s, %s). Continue the "
                         "remaining work and verify the current state before acting. This "
                         "does not grant broader permissions or declare the task complete." % (
@@ -4885,6 +4893,18 @@ class MissionDriver:
         branch is currently available and parks the Mission instead of spinning.
         """
         request = _authorization_request(args, reason)
+        if request["summary_chars"] > 1000:
+            case = dict(mission.case)
+            case["signal"] = (
+                "Authorization request was not shown or approved: summary exceeds 1000 "
+                "characters. Restate the complete specific requirement concisely; preserve "
+                "the actual action, target, amount, and essential conditions. Do not hide "
+                "scope after a long preamble.")
+            if not self.store.set_case_owned(mission_id, token, case):
+                return self._lost_state(mission_id, token)
+            self.store.record_event(mission_id, "authorization", "summary_refused",
+                                    payload={"characters": request["summary_chars"]})
+            return "_continue"
         authority = _standing_authority()
         ok, why = _standing_authorizes(request, authority)
         case = dict(mission.case)
