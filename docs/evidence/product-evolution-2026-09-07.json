@@ -1,0 +1,530 @@
+{
+  "schema_version": 1,
+  "round_date_utc": "2026-09-07",
+  "product_version": "0.25.0",
+  "baseline_commit": "34084d0e",
+  "functional_commit": "561298a5178ab177d632b3824656c6c52831fb94",
+  "platform": "Windows; local Web UI tested with Playwright",
+  "claude": {
+    "native_version": "2.1.221",
+    "model": "claude-opus-5",
+    "authentication": "Claude Code subscription OAuth",
+    "audits": [
+      {
+        "name": "product-review",
+        "exit_code": 0,
+        "elapsed_seconds": 501.823
+      },
+      {
+        "name": "storage-review",
+        "exit_code": 0,
+        "elapsed_seconds": 483.09
+      },
+      {
+        "name": "continuity-review",
+        "exit_code": 0,
+        "elapsed_seconds": 736.201
+      },
+      {
+        "name": "final-boundary-review",
+        "exit_code": 0,
+        "elapsed_seconds": 565.167
+      }
+    ],
+    "reported_api_equivalent_cost_is_not_a_subscription_invoice": true
+  },
+  "primary_coding_experiments": [
+    {
+      "task": "intervals",
+      "worker": "claude-code",
+      "passed": true,
+      "elapsed_seconds": 165.836,
+      "followup_passed": true,
+      "browser_errors": 0,
+      "mobile_overflow": false,
+      "phases": [
+        {
+          "phase": 1,
+          "passed": true,
+          "elapsed_seconds": 94.525,
+          "independent_assertions": 106,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        },
+        {
+          "phase": 2,
+          "passed": true,
+          "elapsed_seconds": 65.656,
+          "independent_assertions": 207,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        }
+      ]
+    },
+    {
+      "task": "intervals",
+      "worker": "collie",
+      "passed": true,
+      "elapsed_seconds": 147.343,
+      "followup_passed": true,
+      "browser_errors": 0,
+      "mobile_overflow": false,
+      "phases": [
+        {
+          "phase": 1,
+          "passed": true,
+          "elapsed_seconds": 84.819,
+          "independent_assertions": 106,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        },
+        {
+          "phase": 2,
+          "passed": true,
+          "elapsed_seconds": 56.873,
+          "independent_assertions": 207,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        }
+      ]
+    },
+    {
+      "task": "config",
+      "worker": "claude-code",
+      "passed": true,
+      "elapsed_seconds": 158.579,
+      "followup_passed": true,
+      "browser_errors": 0,
+      "mobile_overflow": false,
+      "phases": [
+        {
+          "phase": 1,
+          "passed": true,
+          "elapsed_seconds": 63.431,
+          "independent_assertions": 7,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        },
+        {
+          "phase": 2,
+          "passed": true,
+          "elapsed_seconds": 89.879,
+          "independent_assertions": 12,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        }
+      ]
+    },
+    {
+      "task": "config",
+      "worker": "collie",
+      "passed": true,
+      "elapsed_seconds": 163.72,
+      "followup_passed": true,
+      "browser_errors": 0,
+      "mobile_overflow": false,
+      "phases": [
+        {
+          "phase": 1,
+          "passed": true,
+          "elapsed_seconds": 68.644,
+          "independent_assertions": 7,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        },
+        {
+          "phase": 2,
+          "passed": true,
+          "elapsed_seconds": 89.269,
+          "independent_assertions": 12,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        }
+      ]
+    }
+  ],
+  "primary_independent_assertions": 664,
+  "isolated_workflows": {
+    "claude_original": {
+      "task": "intervals",
+      "worker": "claude-code",
+      "passed": false,
+      "elapsed_seconds": 194.413,
+      "followup_passed": true,
+      "browser_errors": 0,
+      "mobile_overflow": null,
+      "phases": [
+        {
+          "phase": 1,
+          "passed": true,
+          "elapsed_seconds": 84.912,
+          "independent_assertions": 106,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        },
+        {
+          "phase": 2,
+          "passed": true,
+          "elapsed_seconds": 73.876,
+          "independent_assertions": 207,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        }
+      ],
+      "failure": "UI handoff timed out: binary Git patch was transported as text; original failure retained."
+    },
+    "claude_same_session_retry_after_fix": {
+      "passed": true,
+      "main_project_assertions": 207,
+      "isolated_folder_retained": true,
+      "browser_errors": 0,
+      "mobile_overflow": false
+    },
+    "collie": {
+      "task": "config",
+      "worker": "collie",
+      "passed": true,
+      "elapsed_seconds": 214.985,
+      "followup_passed": true,
+      "browser_errors": 0,
+      "mobile_overflow": false,
+      "phases": [
+        {
+          "phase": 1,
+          "passed": true,
+          "elapsed_seconds": 76.891,
+          "independent_assertions": 7,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        },
+        {
+          "phase": 2,
+          "passed": true,
+          "elapsed_seconds": 131.167,
+          "independent_assertions": 12,
+          "host_verification": {
+            "selected": "required",
+            "verified": true,
+            "command": "python -m unittest -q",
+            "executed": true,
+            "exit_code": 0,
+            "after_last_edit": true
+          }
+        }
+      ],
+      "main_project_assertions_after_apply": 12,
+      "isolated_folder_retained": true
+    },
+    "claude_post_handoff_continuation": {
+      "passed": true,
+      "new_native_session": true,
+      "workspace_correct": true,
+      "file_in_main": true,
+      "old_isolated_untouched": true,
+      "elapsed_seconds": 7.128,
+      "browser_errors": 0,
+      "host_verification": {
+        "selected": "required",
+        "verified": true,
+        "command": "python -m unittest -q",
+        "executed": true,
+        "exit_code": 0,
+        "after_last_edit": true
+      }
+    }
+  },
+  "history_navigation": {
+    "session_count": 80,
+    "source_bytes": 91801342,
+    "user_exchanges_per_session": 200,
+    "warm_samples": 6,
+    "before": {
+      "phase": "before",
+      "session_count": 80,
+      "bytes": 91801342,
+      "samples": [
+        {
+          "seconds": 0.502112,
+          "full_history_reads": 80
+        },
+        {
+          "seconds": 0.182748,
+          "full_history_reads": 80
+        },
+        {
+          "seconds": 0.17904,
+          "full_history_reads": 80
+        },
+        {
+          "seconds": 0.172714,
+          "full_history_reads": 80
+        },
+        {
+          "seconds": 0.17059,
+          "full_history_reads": 80
+        },
+        {
+          "seconds": 0.171258,
+          "full_history_reads": 80
+        },
+        {
+          "seconds": 0.168032,
+          "full_history_reads": 80
+        }
+      ],
+      "warm_median_seconds": 0.171986
+    },
+    "after": {
+      "phase": "after-final",
+      "session_count": 80,
+      "bytes": 91801342,
+      "samples": [
+        {
+          "seconds": 0.231605,
+          "full_history_reads": 80
+        },
+        {
+          "seconds": 0.02208,
+          "full_history_reads": 0
+        },
+        {
+          "seconds": 0.022736,
+          "full_history_reads": 0
+        },
+        {
+          "seconds": 0.021542,
+          "full_history_reads": 0
+        },
+        {
+          "seconds": 0.020446,
+          "full_history_reads": 0
+        },
+        {
+          "seconds": 0.024877,
+          "full_history_reads": 0
+        },
+        {
+          "seconds": 0.02241,
+          "full_history_reads": 0
+        }
+      ],
+      "warm_median_seconds": 0.022245
+    },
+    "warm_speedup_ratio": 7.731,
+    "scope": "Repeated recent(80) over unchanged local histories; not checkpoint-write or overall application speed."
+  },
+  "ui_reviews": [
+    {
+      "stage": "after-evolution",
+      "browser_errors": 0,
+      "views": [
+        {
+          "name": "today"
+        },
+        {
+          "name": "tasks"
+        },
+        {
+          "name": "new"
+        },
+        {
+          "name": "settings"
+        },
+        {
+          "name": "mobile",
+          "overflow": false
+        },
+        {
+          "name": "apps",
+          "overflow": false
+        },
+        {
+          "name": "live",
+          "overflow": false
+        },
+        {
+          "name": "devices",
+          "overflow": false
+        },
+        {
+          "name": "activity",
+          "overflow": false
+        },
+        {
+          "name": "requirement",
+          "overflow": false
+        },
+        {
+          "name": "recovery",
+          "overflow": false
+        }
+      ]
+    },
+    {
+      "stage": "release-final",
+      "browser_errors": 0,
+      "views": [
+        {
+          "name": "today"
+        },
+        {
+          "name": "tasks"
+        },
+        {
+          "name": "new"
+        },
+        {
+          "name": "settings"
+        },
+        {
+          "name": "mobile",
+          "overflow": false
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "command": "bash tests/run_all.sh",
+    "environment": {
+      "COLLIE_SKIP_NET": "1",
+      "isolated_state": true
+    },
+    "earlier_runs": [
+      {
+        "exit_code": 1,
+        "elapsed_seconds": 876.309,
+        "pytest": {
+          "passed": 3303,
+          "skipped": 17,
+          "failed": 2
+        },
+        "gui": null,
+        "cli": {
+          "passed": 41,
+          "total": 41
+        },
+        "all_gates_green": false
+      },
+      {
+        "exit_code": 1,
+        "elapsed_seconds": 876.25,
+        "pytest": {
+          "passed": 3313,
+          "skipped": 17,
+          "failed": 0
+        },
+        "gui": null,
+        "cli": {
+          "passed": 41,
+          "total": 41
+        },
+        "all_gates_green": false
+      }
+    ],
+    "final": {
+      "exit_code": 0,
+      "elapsed_seconds": 863.963,
+      "pytest": {
+        "passed": 3319,
+        "skipped": 17,
+        "failed": 0
+      },
+      "gui": {
+        "passed": 59,
+        "total": 59
+      },
+      "cli": {
+        "passed": 41,
+        "total": 41
+      },
+      "all_gates_green": true
+    },
+    "focused_final_pytest": {
+      "passed": 75,
+      "elapsed_seconds": 18.07
+    }
+  },
+  "package": {
+    "filename": "collie_harness-0.25.0-py3-none-any.whl",
+    "version": "0.25.0",
+    "sha256": "9473684fd8f9cb74eb918da773ac8e9c353afb665bdb4fccc3672d5fd5d1cce5",
+    "bytes": 2723035,
+    "installed_import": true,
+    "session_roundtrip": true,
+    "ui_matches_source": true,
+    "index_included": true
+  },
+  "limitations": [
+    "Small controlled standard-library projects, not SWE-bench or a broad worker ranking.",
+    "No physical phone, microphone, camera, payment, messaging or third-party account verification.",
+    "Draft/setup persistence is per browser tab; opaque native worker state is not migrated across folders.",
+    "Full JSON checkpoint rewriting remains; the index only accelerates navigation and scans.",
+    "Wheel build and isolated install are not a Windows installer release or live application deployment."
+  ]
+}

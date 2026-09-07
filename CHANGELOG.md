@@ -13,6 +13,9 @@
 - Isolated tasks save and reuse their workspace across turns. The UI shows the actual folder and
   offers an explicit handoff to the main project, preserving the isolated copy. Dirty main projects
   are refused; execution leases and a durable effect boundary protect interrupted handoffs.
+  New workspaces live beside the session store. Handoffs preserve binary and CRLF patch bytes;
+  confirmed recovery advances the saved folder, and native workers restart in a changed folder
+  with a recent text recap. Missing folders have an explicit recovery control.
 - Desktop shortcuts share the conversation execution lease and record their results in that thread.
   Recovery reads and writes use the same store and owner lock as the executor.
 - A disposable SQLite metadata index makes repeated history navigation independent of transcript
@@ -20,6 +23,8 @@
   recovery; a missing, corrupt or unavailable index falls back to those journals.
 - Optional name customization can be skipped across browser restarts. Simplified and Traditional
   Chinese cover the new workspace and draft controls.
+- Background verification discovery no longer blocks Send for an unchanged folder, and the Run
+  setup popup stays above the composer when Pack settings expand.
 
 ## v0.24.0 — Live Copilot becomes a general work mode
 
