@@ -1852,7 +1852,7 @@
   }
 
   .composer { position:relative; padding:9px 16px 11px; border-top-color:var(--line-2);
-    background:color-mix(in srgb,var(--surface) 94%,transparent); backdrop-filter:blur(18px); }
+    background:var(--surface); }
   .composer-context { display:flex; align-items:center; gap:8px; max-width:820px; margin:0 auto 6px; color:var(--faint); font-size:9.5px; }
   .composer-context .context-private { display:flex; align-items:center; gap:4px; color:var(--pine-ink); font-weight:600; }
   .composer-context svg { width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
@@ -2174,6 +2174,8 @@
   @media(max-width:640px) {.task-queue-list {max-height:140px;}}
   .task-workspace { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
   .task-workspace summary { cursor: pointer; display: flex; gap: 8px; min-width: 0; align-items: baseline; }
+  .task-workspace summary::after { content: ""; width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); flex-shrink: 0; align-self: center; }
+  .task-workspace[open] summary::after { transform: rotate(225deg); }
   #taskWorkspaceLabel { flex-shrink: 0; }
   #taskWorkspacePath { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, monospace); }
   .task-workspace-controls { padding: 10px 0 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -2182,6 +2184,7 @@
   .task-workspace-controls button, #draftNotice button { border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; background: var(--surface); color: var(--ink); cursor: pointer; }
   #draftNotice { font-size: 12px; color: var(--muted); }
   #draftNotice button { margin-left: 8px; }
+  @media (max-width: 760px) { .composer .hint { display: none; } }
   #taskWorkspaceStatus:empty, #taskWorkspaceNote:empty { display: none; }
 </style>
 
@@ -11039,7 +11042,7 @@
       if (e.key === "Escape" && !menu.hidden) { open(false); trig.focus(); }
     });
     window.addEventListener("resize", function () { if (!menu.hidden) positionMenu(); });
-    window.refreshRunSetup = paint;
+    window.refreshRunSetup = function () { paint(); paintWorkspace(); };
     window.setRunSetupLocked = function (value) { setupLocked = !!value; paint(); paintWorkspace(); };
     window.refreshRunCapabilities = function () {
       return fetch("/api/run-capabilities").then(function (r) { return r.json(); }).then(function (caps) {
@@ -11091,7 +11094,8 @@
       var requestedFolder = !sid ? folder.value.trim() : "";
       var path = "/api/verification" + (sid ? "?session=" + encodeURIComponent(sid) :
         requestedFolder ? "?cwd=" + encodeURIComponent(requestedFolder) : "");
-      if (requestedFolder) folder.setCustomValidity(t("Checking folder..."));
+      if (requestedFolder && (requestedFolder !== beforeCwd || folder.validationMessage))
+        folder.setCustomValidity(t("Checking folder..."));
       return authenticatedFetch(path).then(function (r) {
         return r.json().then(function (data) {
           if (!r.ok) {

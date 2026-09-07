@@ -584,6 +584,20 @@ def reconcile_recovery(sid, resolution, note="", confirmed=False, directory=None
                 "executing_tool", "external_action"):
             raise ValueError("session is not awaiting recovery reconciliation")
         detail = active.get("detail") if isinstance(active.get("detail"), dict) else {}
+        if detail.get("operation") == "workspace_handoff" and resolution == "completed":
+            previous = raw.get("workspace") or {}
+            if (previous.get("mode") != "isolated" or
+                    detail.get("source") != previous.get("path") or
+                    detail.get("destination") != previous.get("origin")):
+                raise ValueError("handoff recovery does not match this conversation's workspace")
+            destination = resolve_cwd(requested=detail.get("destination"))
+            workspace = {"mode": "local", "path": destination,
+                         "from_branch": previous.get("branch") or "",
+                         "reconciled": "completed"}
+            raw.update(cwd=destination, workspace=workspace)
+            raw["handoffs"] = (list(raw.get("handoffs") or []) + [{"at": time.time(),
+                "target": "local", "workspace": workspace, "previous_workspace": previous,
+                "reconciled": "completed"}])[-50:]
         call_id = detail.get("tool_call_id")
         name = detail.get("tool_name") or "tool"
         messages = list(raw.get("messages") or [])
@@ -1035,4 +1049,3 @@ def _handoff_owned(sid, target, *, confirm=False, remove_isolated=False):
         released = worktree.release(old_path, force=True)
         workspace["isolated_removed"] = bool(released.get("ok"))
     return {"ok": True, "session": sid, "workspace": workspace}
-

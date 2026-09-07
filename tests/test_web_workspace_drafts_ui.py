@@ -103,6 +103,38 @@ def test_folder_selection_is_checked_before_send_and_changes_check_discovery(ui)
     assert streams[-1]['cwd']==['/selected']
 
 
+def test_background_check_refresh_does_not_block_sending_in_the_unchanged_folder(ui):
+    page=ui.page; pending=[]; hold=False
+    def detect(route):
+        if hold:
+            pending.append(route); return
+        route.fulfill(content_type='application/json',body='{"cwd":"/project","candidates":[]}')
+    page.route('**/api/verification*',detect)
+    page.reload(wait_until='load')
+    expect(page.locator('#taskWorkspacePath')).to_have_text('/project')
+    hold=True
+    page.locator('#newChat').click()
+    page.locator('#input').fill('/code keep working')
+    page.locator('#input').press('Enter')
+    expect(page.locator('#input')).to_have_value('')
+    for route in pending:
+        route.fulfill(content_type='application/json',body='{"cwd":"/project","candidates":[]}')
+
+
+def test_expanding_pack_setup_keeps_send_reachable(ui):
+    page=ui.page
+    page.set_viewport_size({'width':1200,'height':820})
+    page.locator('#newChat').click()
+    page.locator('#modeTrigger').click()
+    page.locator('[data-axis="strategy"][data-val="pack"]').click()
+    page.locator('#packN').fill('7')
+    page.locator('#packCheck').fill('pytest -q')
+    page.locator('#input').fill('/code invalid pack should stay local')
+    page.locator('#send').click(timeout=3000)
+    expect(page.locator('#packN')).to_be_focused()
+    assert not _Fixture.stream_requests
+
+
 def test_isolated_folder_is_visible_and_apply_is_an_explicit_action(ui):
     page=ui.page; applied=[]; isolated=True
     def session(route):

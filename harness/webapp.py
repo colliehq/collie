@@ -2618,6 +2618,12 @@ class Handler(BaseHTTPRequestHandler):
                                 recovery = sessions.recovery_state(sid)
                                 if recovery and recovery.get("recovery_required"):
                                     return self._send_json({"error": "inspect the interrupted operation before moving its workspace"}, 409)
+                                saved = sessions.load(sid) or {}
+                                workspace = saved.get("workspace") or {}
+                                if (workspace.get("mode") == "isolated" and os.path.isdir(workspace.get("path") or "") and
+                                        os.path.normcase(os.path.realpath(cwd.strip())) !=
+                                        os.path.normcase(os.path.realpath(workspace["path"]))):
+                                    return self._send_json({"error": "the isolated folder still exists; apply its changes before switching projects"}, 409)
                                 value = {"session": sid, "cwd": sessions.relocate(sid, cwd.strip())}
                             finally:
                                 lease.release()
@@ -5786,7 +5792,7 @@ class Handler(BaseHTTPRequestHandler):
                             break
                 threading.Thread(target=_worker_heartbeat, daemon=True).start()
                 worker_spec = runner_reg.SPECS.get(runner_decision.runner)
-                resume_from = (_worker_session(sid, runner_decision.runner)
+                resume_from = (_worker_session(sid, runner_decision.runner, cwd=cwd)
                                if qs.get("session", [""])[0] else None)
                 worker_approval_callback = None
                 if runner_decision.runner == "codex-app-server":

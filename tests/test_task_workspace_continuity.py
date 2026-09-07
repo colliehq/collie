@@ -57,6 +57,20 @@ def test_saved_workspaces_and_byte_exact_binary_crlf_handoff(project):
     assert (project/'artifact.bin').read_bytes()==binary
 
 
+def test_handoff_refuses_when_new_files_cannot_enter_the_patch(project, monkeypatch):
+    sid, workspace=isolated(project)
+    original=worktree._git
+    def locked_index(args,cwd,**kwargs):
+        if args==['add','-A','--intent-to-add']:
+            return False,'index is locked'
+        return original(args,cwd,**kwargs)
+    monkeypatch.setattr(worktree,'_git',locked_index)
+    with pytest.raises(ValueError,match='could not include new files'):
+        sessions.handoff(sid,'local',confirm=True)
+    assert (project/'a.txt').read_text()=='original\n'
+    assert sessions.recovery_state(sid) is None
+
+
 def test_readers_and_title_changes_do_not_wait_for_git_apply(project, monkeypatch):
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -114,6 +128,11 @@ def test_applied_patch_with_failed_journal_save_requires_inspection(project, mon
     with pytest.raises(ValueError, match='inspect the interrupted operation'):
         sessions.handoff(sid, 'local', confirm=True)
     assert sessions.load(sid)['cwd'] == workspace['path']
+    monkeypatch.setattr(sessions,'_atomic_dump',write)
+    sessions.reconcile_recovery(sid,'completed',confirmed=True)
+    assert Path(sessions.load(sid)['cwd'])==project
+    assert sessions.handoff(sid,'local',confirm=True)['existing']
+    assert (project/'a.txt').read_text()=='improved\n'
 
 
 def test_isolated_followups_reuse_the_saved_folder_even_with_another_requested_cwd(project, monkeypatch):
@@ -216,3 +235,42 @@ def test_workspace_bind_failure_ends_registry_and_releases_the_owner(project, mo
     assert 'workspace could not be saved' in events[-1][1]['error']
     assert webapp.Handler._runs['bind-failure']['ended'] is not None
     assert not session_owner.probe_busy('bind-failure')
+
+
+def test_relocation_cannot_detach_an_existing_isolated_workspace(web, monkeypatch):
+    base,token,state=web
+    source=state/'isolated'; source.mkdir()
+    destination=state/'main'; destination.mkdir()
+    sessions.save('isolated',[],cwd=str(source))
+    sessions.bind_isolated_workspace('isolated',{'ok':True,'dir':str(source),'root':str(destination),'branch':'test'})
+    code,_=_post(base,token,'/api/session/relocate',{'session':'isolated','cwd':str(destination)})
+    assert code==409 and sessions.load('isolated')['workspace']['mode']=='isolated'
+    assert _post(base,token,'/api/session/relocate',{'session':'isolated','cwd':str(source)})[0]==200
+    assert sessions.load('isolated')['workspace']['mode']=='isolated'
+
+
+def test_native_locator_is_reused_only_in_its_current_workspace(project):
+    from harness.cli import _worker_session
+    sid='native-move'
+    sessions.save(sid,[],cwd=str(project))
+    def receipt(path,locator):
+        sessions.append_run_receipt(sid,{'runner':{'runner':'claude-code',
+            'native_session':{'runner':'claude-code','workspace':str(path),'locator':locator}}})
+    receipt(project,'main-thread')
+    assert _worker_session(sid,'claude-code',cwd=str(project))['locator']=='main-thread'
+    receipt(project.parent/'old-isolated','isolated-thread')
+    assert _worker_session(sid,'claude-code',cwd=str(project)) is None
+    receipt(project,'new-main-thread')
+    assert _worker_session(sid,'claude-code',cwd=str(project))['locator']=='new-main-thread'
+
+
+def test_release_only_removes_the_named_registered_worktree(project):
+    root=project.parent
+    manual=root/'manual-worktree'
+    sibling=root/'keep.txt'; sibling.write_text('keep unrelated data')
+    subprocess.run(['git','worktree','add','-b','collie/manual',str(manual)],cwd=project,
+                   check=True,capture_output=True)
+    assert worktree.release(str(project),force=True)['ok'] is False
+    assert worktree.release(str(root),force=True)['ok'] is False
+    assert worktree.release(str(manual),force=True)['ok'] is True
+    assert project.is_dir() and sibling.read_text()=='keep unrelated data' and not manual.exists()

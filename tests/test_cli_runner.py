@@ -391,7 +391,9 @@ def test_run_resume_continues_the_workers_own_thread(monkeypatch, tmp_path, caps
         {"role": "assistant", "content": "first answer"},
     ])
     sessions.append_run_receipt(sid, {"runner": _receipt("claude-code", "cc_1").to_dict()})
-    sessions.append_run_receipt(sid, {"runner": _receipt("codex-exec", "th_prev").to_dict()})
+    previous = _receipt("codex-exec", "th_prev").to_dict()
+    previous["native_session"]["workspace"] = str(tmp_path)
+    sessions.append_run_receipt(sid, {"runner": previous})
 
     assert cli.cmd_run(_args(cwd=str(tmp_path), runner="codex-exec", resume=sid)) == 0
     capsys.readouterr()

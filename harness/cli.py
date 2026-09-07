@@ -1746,7 +1746,7 @@ def _worker_history_note(history):
     return "\n".join(lines) or None
 
 
-def _worker_session(sid, runner):
+def _worker_session(sid, runner, *, cwd=None):
     """This session's most recent locator for `runner`, from the receipt that minted it.
 
     Collie's transcript is not the worker's conversation: what continues a
@@ -1762,6 +1762,13 @@ def _worker_session(sid, runner):
             continue
         native = section.get("native_session")
         if isinstance(native, dict) and native.get("locator"):
+            if cwd and native.get("workspace"):
+                previous = os.path.normcase(os.path.realpath(native["workspace"]))
+                current = os.path.normcase(os.path.realpath(cwd))
+                if previous != current:
+                    # A handoff/relocation starts a fresh native thread with Collie's recap.
+                    # Never resume an older locator merely because it matches a past directory.
+                    return None
             return native
     return None
 
@@ -1802,7 +1809,7 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
     # travels only when the worker signs in to the same vendor the router picked;
     # an explicit --model is the user's own instruction and always travels.
     model = _worker_model(getattr(args, "model", None), decision, request, spec)
-    resume_from = (_worker_session(sid, hd.runner)
+    resume_from = (_worker_session(sid, hd.runner, cwd=cwd)
                    if (getattr(args, "resume", None) or getattr(args, "cont", False))
                    else None)
     worker_speed = decision.speed

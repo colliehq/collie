@@ -152,7 +152,9 @@ def handoff_to_local(wt_dir, local_root, base_commit, *, confirm=False, before_a
     if not ok:
         return {"ok": False, "applied": False, "error": "handoff base commit is unavailable"}
     # Intent-to-add includes new files in the binary-safe patch without staging their contents.
-    _git(["add", "-A", "--intent-to-add"], wt_dir)
+    staged, detail = _git(["add", "-A", "--intent-to-add"], wt_dir)
+    if not staged:
+        return {"ok": False, "applied": False, "error": ("could not include new files: " + detail)[:500]}
     ok, patch = _git_input(["diff", "--binary", str(base_commit)], wt_dir, timeout=180)
     if not ok:
         return {"ok": False, "applied": False, "error": patch.decode("utf-8", "replace")[:300]}
@@ -236,6 +238,15 @@ def release(wt_dir, force=False):
     """
     if not wt_dir or not os.path.isdir(wt_dir):
         return {"ok": True, "removed": False, "error": ""}
+    wt_dir = os.path.realpath(os.path.abspath(wt_dir))
+    root = main_root(wt_dir)
+    if not root or os.path.normcase(os.path.realpath(root)) == os.path.normcase(wt_dir):
+        return {"ok": False, "removed": False, "error": "refusing to remove the main checkout or an unregistered directory"}
+    listed, trees = _git(["worktree", "list", "--porcelain"], root)
+    registered = {os.path.normcase(os.path.realpath(line[9:])) for line in trees.splitlines()
+                  if line.startswith("worktree ")}
+    if not listed or os.path.normcase(wt_dir) not in registered:
+        return {"ok": False, "removed": False, "error": "refusing to remove an unregistered directory"}
     st = status(wt_dir)
     if not force and (st["dirty"] or st["commits"]):
         return {"ok": False, "removed": False,
@@ -244,7 +255,6 @@ def release(wt_dir, force=False):
                             st["commits"], "" if st["commits"] == 1 else "s")}
     # NOT repo_root(wt_dir): that answers with the worktree itself, and git would then be deleting
     # the directory it is standing in — see main_root.
-    root = main_root(wt_dir) or repo_root(wt_dir) or wt_dir
     args = ["worktree", "remove", wt_dir] + (["--force"] if force else [])
     ok, out = _git(args, root, timeout=120)
     if not ok and os.path.isdir(wt_dir):
@@ -258,7 +268,12 @@ def release(wt_dir, force=False):
         if not os.path.isdir(wt_dir):
             ok, out = True, ""
     if ok:
-        shutil.rmtree(os.path.dirname(wt_dir), ignore_errors=True)
+        parent = os.path.dirname(wt_dir)
+        if os.path.basename(parent).startswith("collie_wt_"):
+            try:
+                os.rmdir(parent)   # only the empty allocation wrapper, never siblings or ancestors
+            except OSError:
+                pass
     return {"ok": ok, "removed": ok, "error": "" if ok else out[:300]}
 
 
