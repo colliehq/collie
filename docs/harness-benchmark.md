@@ -1,5 +1,10 @@
 # Collie cross-harness benchmark protocol
 
+The [2026-09-07 high-concurrency local experiment](harness-benchmark-2026-09-07.md)
+provides separate native-product and adapted-loop observations, candidate patches,
+and offline reproduction checks. It remains exploratory and non-publishable under
+this protocol; it does not change the formal roster or admission requirements below.
+
 ## Scope and claim boundary
 
 Prime Agent is a **methodological reference, not a benchmark arm**. Its useful contribution here

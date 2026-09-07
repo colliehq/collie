@@ -1,0 +1,15 @@
+{
+  "checked_at_utc": "2026-09-07T18:56:00.958558+00:00",
+  "candidate_hashes": 90,
+  "primary_candidates_regraded": 60,
+  "baseline_gold_checks": 14,
+  "model_calls_during_bundle_validation": 0,
+  "replay_prepare_only": [
+    "native",
+    "normalized",
+    "web"
+  ],
+  "normalized_image_preflight": "passed",
+  "original_adapter_source_commit": "e0b3a235cfc4912433f4f71595468bfe97109638",
+  "source_commit": "8577c10a33370bf84ae9cf953db64354be92a30d"
+}

@@ -83,6 +83,10 @@ bench/*
 !bench/results/
 bench/results/*
 !bench/results/claude-agent-sdk-overnight-e2e-2026-08-12.json
+# Reviewed, credential-free local experiment and reproducibility bundle.
+!bench/experiments/
+bench/experiments/*
+!bench/experiments/2026-09-07/
 !bench/subscription_guard.py
 !bench/subscription_smoke.py
 !bench/subscription_rank.py

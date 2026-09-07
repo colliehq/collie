@@ -1,0 +1,455 @@
+diff --git a/patchkit/__init__.py b/patchkit/__init__.py
+index c6e8438..fa5fabe 100644
+--- a/patchkit/__init__.py
++++ b/patchkit/__init__.py
+@@ -1,12 +1,43 @@
+ """Tiny transactional directory patch applier."""
+ 
+-from .paths import PathError, normalize_relpath, resolve_within
+-from .digest import ALGORITHM, content_digest, digest_bytes, digests_equal
+-from .ops import KINDS, Op, OpError, ordered, parse_ops
++from .paths import PathError, is_safe_relpath, normalize_relpath, resolve_within
++from .digest import (
++    ALGORITHM,
++    content_digest,
++    digest_bytes,
++    digests_equal,
++    parse_digest,
++)
++from .ops import KINDS, ORDER, Op, OpError, ordered, parse_ops
+ from .apply import (
+     PatchError,
++    PatchFailed,
+     PatchReport,
+     PreconditionError,
+     apply_ops,
+     apply_patch,
+ )
++
++__all__ = [
++    "ALGORITHM",
++    "KINDS",
++    "ORDER",
++    "Op",
++    "OpError",
++    "PatchError",
++    "PatchFailed",
++    "PatchReport",
++    "PathError",
++    "PreconditionError",
++    "apply_ops",
++    "apply_patch",
++    "content_digest",
++    "digest_bytes",
++    "digests_equal",
++    "is_safe_relpath",
++    "normalize_relpath",
++    "ordered",
++    "parse_digest",
++    "parse_ops",
++    "resolve_within",
++]
+diff --git a/patchkit/apply.py b/patchkit/apply.py
+index b15765d..99446c8 100644
+--- a/patchkit/apply.py
++++ b/patchkit/apply.py
+@@ -16,15 +16,33 @@ class PreconditionError(PatchError):
+     """Raised when the tree does not match the expected state."""
+ 
+ 
++class PatchFailed(PatchError):
++    """Raised when an operation failed and the tree was rolled back."""
++
++    def __init__(self, path, cause, rolled_back=True):
++        super().__init__("%s failed: %s" % (path, cause))
++        self.path = path
++        self.cause = cause
++        self.rolled_back = rolled_back
++
++
+ @dataclass(frozen=True)
+ class PatchReport:
+     applied: tuple
++    digests: tuple
+     bytes_written: int
+     dry_run: bool
+ 
++    def paths(self):
++        """Return the touched paths in applied order."""
++        return [path for _, path in self.applied]
++
++    def digest_map(self):
++        """Return a fresh path -> digest mapping."""
++        return dict(self.digests)
++
+ 
+ def _default_writer(path, data):
+-    path.parent.mkdir(parents=True, exist_ok=True)
+     path.write_bytes(data)
+ 
+ 
+@@ -32,36 +50,114 @@ def _default_remover(path):
+     path.unlink()
+ 
+ 
+-def apply_patch(root, raw_ops, dry_run=False, writer=None, remover=None):
+-    """Apply *raw_ops* under *root* and return a PatchReport."""
+-    base = Path(root)
+-    write = _default_writer if writer is None else writer
+-    remove = _default_remover if remover is None else remover
+-    ops = ordered(parse_ops(raw_ops))
+-    applied = []
+-    written = 0
++class _Journal:
++    """Records enough of the pre-call state to undo a partial patch."""
++
++    def __init__(self):
++        self._files = []
++        self._seen = set()
++        self._dirs = []
++
++    def make_parents(self, target):
++        """Create the missing parent directories of *target*."""
++        missing = []
++        parent = target.parent
++        while not parent.exists():
++            missing.append(parent)
++            if parent.parent == parent:
++                break
++            parent = parent.parent
++        for directory in reversed(missing):
++            directory.mkdir()
++            self._dirs.append(directory)
++
++    def save(self, target):
++        """Snapshot the current content of *target*, if any."""
++        if target in self._seen:
++            return
++        self._seen.add(target)
++        original = target.read_bytes() if target.is_file() else None
++        self._files.append((target, original))
++
++    def rollback(self):
++        """Restore the tree to its pre-call state, best effort."""
++        for target, original in reversed(self._files):
++            try:
++                if original is None:
++                    if target.is_file() or target.is_symlink():
++                        target.unlink()
++                else:
++                    target.parent.mkdir(parents=True, exist_ok=True)
++                    target.write_bytes(original)
++            except OSError:
++                pass
++        for directory in sorted(self._dirs, key=lambda p: len(p.parts), reverse=True):
++            try:
++                directory.rmdir()
++            except OSError:
++                pass
++
++
++def _check_preconditions(base, ops):
++    """Verify every operation against the tree without touching it."""
++    targets = {}
+     for op in ops:
+         target = resolve_within(base, op.path)
++        targets[op.path] = target
+         if op.kind == "add":
+-            if target.exists():
++            if target.exists() or target.is_symlink():
+                 raise PreconditionError("already exists: %s" % op.path)
+-        else:
+-            if not target.exists():
+-                raise PreconditionError("missing: %s" % op.path)
+-            if op.expect is not None:
+-                actual = digest_bytes(target.read_bytes())
+-                if not digests_equal(actual, op.expect):
+-                    raise PreconditionError("digest mismatch: %s" % op.path)
+-        if not dry_run:
++            continue
++        if not target.is_file():
++            raise PreconditionError("not a regular file: %s" % op.path)
++        if op.expect is not None:
++            actual = digest_bytes(target.read_bytes())
++            if not digests_equal(actual, op.expect):
++                raise PreconditionError("digest mismatch: %s" % op.path)
++    return targets
++
++
++def apply_patch(root, raw_ops, *, dry_run=False, writer=None, remover=None):
++    """Apply *raw_ops* under *root* and return a PatchReport."""
++    ops = ordered(parse_ops(raw_ops))
++
++    base = Path(root)
++    if not base.is_dir():
++        raise PreconditionError("root is not a directory: %s" % (root,))
++    targets = _check_preconditions(base, ops)
++
++    applied = tuple((op.kind, op.path) for op in ops)
++    digests = tuple(
++        sorted((op.path, digest_bytes(op.data)) for op in ops if op.kind != "delete")
++    )
++    written = sum(len(op.data) for op in ops if op.kind != "delete")
++
++    if dry_run:
++        return PatchReport(applied, digests, 0, True)
++
++    write = _default_writer if writer is None else writer
++    remove = _default_remover if remover is None else remover
++    journal = _Journal()
++    current = None
++    try:
++        for op in ops:
++            current = op.path
++            target = targets[op.path]
++            journal.save(target)
+             if op.kind == "delete":
+                 remove(target)
+             else:
++                journal.make_parents(target)
+                 write(target, op.data)
+-                written += len(op.data)
+-        applied.append((op.kind, op.path))
+-    return PatchReport(tuple(applied), written, dry_run)
++    except BaseException as exc:
++        journal.rollback()
++        if isinstance(exc, Exception):
++            raise PatchFailed(current, exc) from exc
++        raise
++
++    return PatchReport(applied, digests, written, False)
+ 
+ 
+ def apply_ops(root, raw_ops):
+     """Legacy entry point returning the touched paths."""
+-    return list(apply_patch(root, raw_ops).applied)
++    return apply_patch(root, raw_ops).paths()
+diff --git a/patchkit/digest.py b/patchkit/digest.py
+index 31600be..1c999c1 100644
+--- a/patchkit/digest.py
++++ b/patchkit/digest.py
+@@ -4,19 +4,49 @@ import hashlib
+ 
+ ALGORITHM = "sha256"
+ 
++_HEX_DIGITS = frozenset("0123456789abcdef")
++_HEX_LENGTH = 64
++
++
++def _as_bytes(data):
++    """Return an immutable copy of a bytes-like object."""
++    if isinstance(data, bytes):
++        return data
++    if isinstance(data, (bytearray, memoryview)):
++        return bytes(data)
++    raise TypeError("data must be bytes-like, got %r" % (type(data).__name__,))
++
+ 
+ def digest_bytes(data):
+     """Return the canonical digest string for *data*."""
+-    if not isinstance(data, (bytes, bytearray)):
+-        data = str(data).encode("utf-8")
+-    return hashlib.sha256(bytes(data)).hexdigest()
++    return "%s:%s" % (ALGORITHM, hashlib.sha256(_as_bytes(data)).hexdigest())
+ 
+ 
+ def content_digest(data):
+     """Legacy helper returning the bare hex digest."""
+-    return hashlib.sha256(bytes(data)).hexdigest()
++    return hashlib.sha256(_as_bytes(data)).hexdigest()
++
++
++def parse_digest(text):
++    """Return the ``(algorithm, hex)`` pair encoded by *text*."""
++    if not isinstance(text, str):
++        raise ValueError("digest must be a string, got %r" % (type(text).__name__,))
++    if ":" in text:
++        algorithm, _, hexpart = text.partition(":")
++    else:
++        algorithm, hexpart = ALGORITHM, text
++    algorithm = algorithm.strip().lower()
++    hexpart = hexpart.strip().lower()
++    if algorithm != ALGORITHM:
++        raise ValueError("unsupported digest algorithm: %r" % (algorithm,))
++    if len(hexpart) != _HEX_LENGTH or not _HEX_DIGITS.issuperset(hexpart):
++        raise ValueError("malformed digest: %r" % (text,))
++    return algorithm, hexpart
+ 
+ 
+ def digests_equal(left, right):
+     """Return True when two digest strings denote the same content."""
+-    return left == right
++    try:
++        return parse_digest(left) == parse_digest(right)
++    except ValueError:
++        return False
+diff --git a/patchkit/ops.py b/patchkit/ops.py
+index e7c1101..b6a9c37 100644
+--- a/patchkit/ops.py
++++ b/patchkit/ops.py
+@@ -1,11 +1,19 @@
+ """Patch operation records."""
+ 
++from collections.abc import Mapping
+ from dataclasses import dataclass
+ 
++from .digest import parse_digest
+ from .paths import normalize_relpath
+ 
+ KINDS = ("add", "update", "delete")
+ 
++#: Kinds are applied deletes first, then updates, then adds.
++ORDER = {"delete": 0, "update": 1, "add": 2}
++
++_FIELDS = ("kind", "path", "data", "expect")
++_BYTES_LIKE = (bytes, bytearray, memoryview)
++
+ 
+ class OpError(ValueError):
+     """Raised when a raw operation is malformed."""
+@@ -19,24 +27,67 @@ class Op:
+     expect: str | None = None
+ 
+ 
++def _fields_of(raw):
++    """Return the ``(kind, path, data, expect)`` quadruple of a raw operation."""
++    if isinstance(raw, Op):
++        return raw.kind, raw.path, raw.data, raw.expect
++    if isinstance(raw, Mapping):
++        unknown = sorted(repr(key) for key in raw if key not in _FIELDS)
++        if unknown:
++            raise OpError("unknown keys: %s" % ", ".join(unknown))
++        return (
++            raw.get("kind"),
++            raw.get("path"),
++            raw.get("data"),
++            raw.get("expect"),
++        )
++    raise OpError("operation must be an Op or a mapping, got %r" % (type(raw).__name__,))
++
++
++def _build(raw):
++    """Return the validated Op described by a single raw operation."""
++    kind, path, data, expect = _fields_of(raw)
++
++    if kind not in KINDS:
++        raise OpError("unknown kind: %r" % (kind,))
++
++    # Path problems keep their own exception type.
++    path = normalize_relpath(path)
++
++    if kind == "delete":
++        if data is not None:
++            raise OpError("delete must not carry data: %s" % path)
++    else:
++        if not isinstance(data, _BYTES_LIKE):
++            raise OpError("%s requires bytes data: %s" % (kind, path))
++        data = bytes(data)
++
++    if kind == "add" and expect is not None:
++        raise OpError("add must not carry an expect digest: %s" % path)
++    if expect is not None:
++        if not isinstance(expect, str):
++            raise OpError("expect must be a digest string: %s" % path)
++        try:
++            parse_digest(expect)
++        except ValueError as exc:
++            raise OpError("bad expect digest for %s: %s" % (path, exc)) from exc
++
++    return Op(kind, path, data, expect)
++
++
+ def parse_ops(raw_ops):
+-    """Return a tuple of Op records built from raw mappings."""
++    """Return a tuple of Op records built from raw operations."""
+     ops = []
++    seen = set()
+     for raw in raw_ops:
+-        kind = raw.get("kind")
+-        if kind not in KINDS:
+-            raise OpError("unknown kind: %r" % (kind,))
+-        path = normalize_relpath(raw.get("path"))
+-        data = raw.get("data")
+-        expect = raw.get("expect")
+-        if kind == "delete" and data is not None:
+-            raise OpError("delete must not carry data: %s" % path)
+-        if kind in ("add", "update") and data is None:
+-            raise OpError("%s requires data: %s" % (kind, path))
+-        ops.append(Op(kind, path, data, expect))
++        op = _build(raw)
++        if op.path in seen:
++            raise OpError("duplicate path: %s" % op.path)
++        seen.add(op.path)
++        ops.append(op)
+     return tuple(ops)
+ 
+ 
+ def ordered(ops):
+     """Return ops in the order they must be applied."""
+-    return tuple(sorted(ops, key=lambda op: (op.kind, op.path)))
++    return tuple(sorted(ops, key=lambda op: (ORDER[op.kind], op.path)))
+diff --git a/patchkit/paths.py b/patchkit/paths.py
+index 8a9e559..a18f933 100644
+--- a/patchkit/paths.py
++++ b/patchkit/paths.py
+@@ -2,6 +2,8 @@
+ 
+ from pathlib import Path
+ 
++_SEPARATOR = "/"
++
+ 
+ class PathError(ValueError):
+     """Raised when a patch target is not a safe relative path."""
+@@ -10,18 +12,42 @@ class PathError(ValueError):
+ def normalize_relpath(raw):
+     """Return the normalized POSIX form of a safe relative path."""
+     if not isinstance(raw, str):
+-        raise PathError("path must be a string")
+-    if raw.startswith("/"):
++        raise PathError("path must be a string, got %r" % (type(raw).__name__,))
++    if not raw:
++        raise PathError("empty path")
++    if "\x00" in raw:
++        raise PathError("NUL character in path: %r" % (raw,))
++    if "\\" in raw:
++        raise PathError("backslash in path: %r" % (raw,))
++    if raw.startswith(_SEPARATOR):
+         raise PathError("absolute path: %r" % (raw,))
+-    if ".." in raw:
+-        raise PathError("parent traversal: %r" % (raw,))
+-    parts = [seg for seg in raw.split("/") if seg != "."]
+-    if not parts:
+-        raise PathError("empty path: %r" % (raw,))
+-    return "/".join(parts)
++    if len(raw) >= 2 and raw[1] == ":":
++        raise PathError("drive-qualified path: %r" % (raw,))
++
++    segments = []
++    for segment in raw.split(_SEPARATOR):
++        if not segment:
++            raise PathError("empty segment in path: %r" % (raw,))
++        if segment == "..":
++            raise PathError("parent traversal: %r" % (raw,))
++        if segment == ".":
++            continue
++        segments.append(segment)
++    if not segments:
++        raise PathError("path resolves to nothing: %r" % (raw,))
++    return _SEPARATOR.join(segments)
++
++
++def is_safe_relpath(raw):
++    """Return True when *raw* is a safe relative path."""
++    try:
++        normalize_relpath(raw)
++    except PathError:
++        return False
++    return True
+ 
+ 
+ def resolve_within(root, raw):
+     """Return the concrete path of *raw* inside *root*."""
+     rel = normalize_relpath(raw)
+-    return Path(root).joinpath(*rel.split("/"))
++    return Path(root).joinpath(*rel.split(_SEPARATOR))
