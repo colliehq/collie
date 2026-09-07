@@ -64,8 +64,8 @@ from .verifier import FAILED, INCONCLUSIVE, VERIFIED, Verdict
 _TERMINAL = {DONE_VERIFIED, DONE_ACCEPTED, FAILED_S, CANCELLED}
 _HEARTBEAT_SECONDS = 20
 # control moves the decider can return instead of a primitive name
-WAIT, DONE, NEEDS_HUMAN, NEEDS_AUTHORIZATION, UPDATE_COVERAGE = (
-    "wait", "done", "needs_human", "needs_authorization", "update_coverage")
+WAIT, DONE, NEEDS_HUMAN, NEEDS_AUTHORIZATION, UPDATE_COVERAGE, SKIP_OPTIONAL = (
+    "wait", "done", "needs_human", "needs_authorization", "update_coverage", "skip_optional")
 _AWAITING = "awaiting-confirm"
 
 _AUTH_RISK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -123,11 +123,12 @@ def _authorization_request(args, reason="") -> dict:
     kind = str(args.get("kind") or args.get("category") or "routine").strip().lower()
     kind = re.sub(r"[^a-z0-9_.-]", "_", kind)[:80] or "routine"
     claim = str(args.get("claim") or "").strip().lower()
+    inferred_claim = ""
     if not claim:
         age = re.search(r"(?:at least|age(?:d)?|满)\s*(16|18|21)|"
                         r"(16|18|21)\s*(?:years? old|岁)", summary, re.I)
         if age:
-            claim = "age_at_least_%s" % next(x for x in age.groups() if x)
+            inferred_claim = "age_at_least_%s" % next(x for x in age.groups() if x)
     if claim and not re.fullmatch(r"[a-z0-9_.-]{1,100}", claim):
         claim = ""
     risk = str(args.get("risk") or "medium").strip().lower()
@@ -141,10 +142,14 @@ def _authorization_request(args, reason="") -> dict:
     operation = str(args.get("operation") or args.get("button") or
                     args.get("action") or "authorize").strip().lower()[:120]
     material = {"kind": kind, "claim": claim, "risk": risk,
-                "domain": domain, "operation": operation}
+                "domain": domain, "operation": operation,
+                # An acknowledgement is bound to the requirement the person
+                # actually saw, not every similarly classified action on a site.
+                "summary_digest": hashlib.sha256(summary.encode("utf-8")).hexdigest()}
     key = hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:20]
     return {"id": "auth_" + key, **material, "summary": summary,
+            "inferred_claim": inferred_claim,
             "blocking": bool(args.get("blocking")), "requested_at": int(time.time())}
 
 
@@ -167,6 +172,9 @@ def _resolved_authorization(request, resolved) -> dict | None:
         if not isinstance(raw, dict) or not raw.get("resolution"):
             continue
         item = dict(raw)
+        if item.get("resolution") == "user_handled" and (
+                str(item.get("summary") or "") != str(request.get("summary") or "")):
+            continue
         if request_id and str(item.get("id") or "") == request_id:
             return item
         if str(item.get("kind") or "") != request_kind:
@@ -277,6 +285,8 @@ def _standing_authorizes(request, authority) -> tuple[bool, str]:
         return False, "%s risk exceeds the %s standing ceiling" % (risk, ceiling)
     claim = str(request.get("claim") or "")
     if claim:
+        if kind != "profile_claim":
+            return False, "standing profile facts only authorize an explicit profile_claim"
         if not authority.get("auto_apply_profile_claims"):
             return False, "automatic profile claims are disabled"
         if not bool((authority.get("claims") or {}).get(claim)):
@@ -380,7 +390,7 @@ def _compact_case_storage(case, max_chars=64000):
 
     priority_names = {
         "_mission_summary", "_recent_results", "human_updates", "browse_sites", "signal",
-        "pending_authorizations", "resolved_authorizations",
+        "pending_authorizations", "resolved_authorizations", "skipped_steps",
         "pending_followups", "_due_followups", "resolved_followups",
         "_campaign_coverage",
         # These are execution authority, not conversational context.  An overnight
@@ -431,7 +441,7 @@ def _model_case_json(case, limit=12000):
                 "code_expected_tree_digest",
                 "_standing_authority", "_connected_work_identities", "signal",
                 "_mission_summary", "_human_note_ledger", "human_updates",
-                "pending_authorizations", "resolved_authorizations",
+                "pending_authorizations", "resolved_authorizations", "skipped_steps",
                 "_campaign_coverage", "pending_followups", "_due_followups", "_activity_ledger",
                 "_do_not_repeat", "browse_sites", "_recent_results",
                 "_recent_events", "_checkpoint")
@@ -453,6 +463,7 @@ def _model_case_json(case, limit=12000):
                "_mission_summary": 900, "_human_note_ledger": 400,
                "human_updates": 700,
                "pending_authorizations": 1000, "resolved_authorizations": 600,
+               "skipped_steps": 1200,
                "_campaign_coverage": 1800,
                "pending_followups": 1000, "_due_followups": 800,
                "_activity_ledger": 2200, "_do_not_repeat": 900,
@@ -1133,6 +1144,10 @@ class MissionStore:
             mission_id TEXT NOT NULL, at INTEGER NOT NULL,
             source TEXT NOT NULL DEFAULT '', host INTEGER NOT NULL DEFAULT 0,
             note TEXT NOT NULL, source_ref TEXT NOT NULL DEFAULT '')""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS mission_authorization_responses(
+            mission_id TEXT NOT NULL, request_id TEXT NOT NULL,
+            response_json TEXT NOT NULL, at INTEGER NOT NULL,
+            PRIMARY KEY(mission_id,request_id))""")
         try:  # guarded migration for ledgers written before transport identity
             self.db.execute(
                 "ALTER TABLE mission_human_notes ADD COLUMN source_ref "
@@ -2899,6 +2914,70 @@ class MissionStore:
         """Return a human-assisted hand-off to Collie without declaring it done."""
         return bool(self.continue_handoff_result(mission_id, note).get("ok"))
 
+    def handled_authorization(self, mission_id, request_id):
+        with self._lock:
+            row = self.db.execute("SELECT response_json FROM mission_authorization_responses "
+                                  "WHERE mission_id=? AND request_id=?", (mission_id, request_id)).fetchone()
+        return _jl(row["response_json"]) if row else None
+
+    def acknowledge_authorization(self, mission_id, request_id):
+        """Record the person's exact handled requirement; never execute its action.
+
+        Only a parked, unowned Mission can change scope here. The requirement,
+        human ledger entry, and runnable state commit together. Retrying the
+        same acknowledgement is harmless, including after execution resumes.
+        """
+        now = int(time.time())
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.db.execute("SELECT * FROM missions WHERE mission_id=?", (mission_id,)).fetchone()
+                if not row:
+                    return {"ok": False, "error": "unknown mission"}
+                case = _jl(row["case_json"])
+                resolved = [dict(x) for x in case.get("resolved_authorizations", []) if isinstance(x, dict)]
+                if self.db.execute("SELECT 1 FROM mission_authorization_responses WHERE mission_id=? AND request_id=?",
+                                   (mission_id, request_id)).fetchone():
+                    return {"ok": True, "duplicate": True}
+                if any(x.get("id") == request_id and x.get("resolution") == "user_handled" for x in resolved):
+                    return {"ok": True, "duplicate": True}
+                if row["state"] not in (NEEDS_YOU, PAUSED) or row["run_token"]:
+                    return {"ok": False, "error": "the Mission must be waiting for you or paused"}
+                if self.db.execute("SELECT 1 FROM mission_steps WHERE mission_id=? AND verdict=? LIMIT 1",
+                                   (mission_id, _AWAITING)).fetchone():
+                    return {"ok": False, "error": "review the prepared action separately"}
+                pending = [dict(x) for x in case.get("pending_authorizations", []) if isinstance(x, dict)]
+                request = next((x for x in pending if x.get("id") == request_id), None)
+                if not request:
+                    return {"ok": False, "error": "this exact requirement is no longer waiting"}
+                note = ("I handled this specific requirement: %s (%s, %s). Continue the "
+                        "remaining work and verify the current state before acting. This "
+                        "does not grant broader permissions or declare the task complete." % (
+                            request.get("summary") or request_id, request.get("domain") or "local",
+                            request.get("kind") or "requirement"))
+                ok, error, _info = self._admit_notes_locked(
+                    mission_id, case, [(note, "authorization", False,
+                                        "authorization:" + request_id)], now)
+                if not ok:
+                    return {"ok": False, "error": error}
+                response = {**request, "resolution": "user_handled", "resolved_at": now}
+                self.db.execute("INSERT INTO mission_authorization_responses(mission_id,request_id,response_json,at) VALUES(?,?,?,?)",
+                                (mission_id, request_id, _js(response), now))
+                resolved.append(response)
+                case["resolved_authorizations"] = resolved[-40:]
+                case["pending_authorizations"] = [x for x in pending if x.get("id") != request_id]
+                state = PAUSED if row["state"] == PAUSED else QUEUED
+                self.db.execute("UPDATE missions SET state=?,case_json=?,result=?,updated_at=? WHERE mission_id=?",
+                                (state, _js(_compact_case_storage(case)), "requirement handled; progress preserved", now, mission_id))
+                self.db.execute("UPDATE mission_runtime SET active_phase=?,progress_at=?,human_since=0,"
+                                "human_escalate_at=0,human_deadline_at=0,escalation_level=0 WHERE mission_id=?",
+                                (state, now, mission_id))
+                self.db.commit()
+                return {"ok": True, "duplicate": False}
+            finally:
+                if self.db.in_transaction:
+                    self.db.rollback()
+
     def continue_handoff_result(self, mission_id, note=""):
         """``continue_handoff`` with the reason a refusal happened.
 
@@ -4434,8 +4513,11 @@ class MissionDriver:
         resolved = list(case.get("resolved_authorizations") or [])
         keep, changed = [], False
         for request in pending:
-            existing = _resolved_authorization(request, resolved)
+            durable = self.store.handled_authorization(mission_id, request.get("id") or "")
+            existing = _resolved_authorization(request, resolved + ([durable] if durable else []))
             if existing:
+                if not any(x.get("id") == existing.get("id") for x in resolved if isinstance(x, dict)):
+                    resolved.append(existing)
                 changed = True
                 self.store.record_event(
                     mission_id, "authorization", "resolved_reused",
@@ -4591,13 +4673,9 @@ class MissionDriver:
         due = [dict(x) for x in (case.get("_due_followups") or [])
                if isinstance(x, dict)]
         previous = next((x for x in pending if x.get("id") == request["id"]), None)
-        recent = [e for e in self.store.events(mission_id, 8)
-                  if e.get("kind") != "decision"]
-        last = recent[-1] if recent else {}
-        immediate_repeat = bool(
-            previous and last.get("kind") == "followup" and
-            last.get("name") == "scheduled" and
-            last.get("nonce") == request["id"])
+        from .mission_intervention import repeated_without_progress
+        immediate_repeat = bool(previous and repeated_without_progress(
+            self.store.events(mission_id, 80), "followup", "scheduled", request["id"]))
 
         if previous:
             request["scheduled_at"] = int(previous.get("scheduled_at") or
@@ -4758,6 +4836,46 @@ class MissionDriver:
             {"branch": branch, "status": status}, case=case)
         return "_continue"
 
+    def _skip_optional_step(self, mission_id, token, mission, args, reason):
+        from .mission_intervention import optional_skip
+        rows = _campaign_coverage(mission.case)
+        item = optional_skip(args, reason, rows)
+        if item is None:
+            return None
+        case = dict(mission.case)
+        request = _authorization_request(args, reason)
+        if any(isinstance(x, dict) and x.get("id") == request["id"] and x.get("blocking")
+               for x in case.get("pending_authorizations", [])):
+            return None
+        skipped = [dict(x) for x in case.get("skipped_steps", []) if isinstance(x, dict)]
+        previous = next((x for x in skipped if x.get("id") == item["id"]), None)
+        item["at"] = (previous or {}).get("at") or int(time.time())
+        if not previous:
+            skipped.append(item)
+        case["skipped_steps"] = skipped[-40:]
+        # Skips never enter resolved_authorizations: they grant no permission.
+        case["pending_authorizations"] = [
+            x for x in case.get("pending_authorizations", [])
+            if not isinstance(x, dict) or x.get("id") != request["id"] or
+            x.get("summary") != request["summary"]]
+        if rows:
+            for row in rows:
+                if row["branch"].casefold() == item["branch"].casefold():
+                    row.update(status="skipped", summary=item["reason"], updated_at=item["at"])
+            case["_campaign_coverage"] = rows
+        case["signal"] = (
+            "Optional step was skipped, not authorized or completed: %s. "
+            "Continue independent work; include the omission in the final report. "
+            "Do not request this optional step again." % item["summary"])
+        if not self.store.set_case_owned(mission_id, token, case):
+            return self._lost_state(mission_id, token)
+        if not previous:
+            self.store.record_step(mission_id, SKIP_OPTIONAL, item["id"], "skipped")
+            self.store.record_event(mission_id, "intervention", "optional_skipped", item["id"], item)
+        self.store.record_checkpoint(mission_id, token, "optional_skipped",
+                                     {"id": item["id"]}, case=case)
+        return "_continue"
+
     def _handle_authorization(self, mission_id, token, mission, args, reason):
         """Resolve or defer one authorization request at branch scope.
 
@@ -4773,8 +4891,11 @@ class MissionDriver:
         pending = [dict(x) for x in (case.get("pending_authorizations") or [])
                    if isinstance(x, dict)]
         resolved = list(case.get("resolved_authorizations") or [])
-        existing = _resolved_authorization(request, resolved)
+        durable = self.store.handled_authorization(mission_id, request["id"])
+        existing = _resolved_authorization(request, resolved + ([durable] if durable else []))
         if existing:
+            if not any(x.get("id") == existing.get("id") for x in resolved if isinstance(x, dict)):
+                resolved.append(existing)
             pending = [x for x in pending
                        if not _resolved_authorization(x, [existing])]
             case["pending_authorizations"] = pending
@@ -4790,13 +4911,9 @@ class MissionDriver:
                  "resolution": existing.get("resolution")})
             return "_continue"
         previous = next((x for x in pending if x.get("id") == request["id"]), None)
-        recent_non_decisions = [e for e in self.store.events(mission_id, 8)
-                                if e.get("kind") != "decision"]
-        last_nondecision = recent_non_decisions[-1] if recent_non_decisions else {}
-        immediate_repeat = bool(
-            previous and last_nondecision.get("kind") == "authorization" and
-            last_nondecision.get("name") == "deferred" and
-            last_nondecision.get("nonce") == request["id"])
+        from .mission_intervention import repeated_without_progress
+        immediate_repeat = bool(previous and repeated_without_progress(
+            self.store.events(mission_id, 80), "authorization", "deferred", request["id"]))
         if ok:
             pending = [x for x in pending if x.get("id") != request["id"]]
             resolved.append({**request, "resolved_at": int(time.time()),
@@ -4832,6 +4949,19 @@ class MissionDriver:
 
         should_park = (request.get("blocking") or immediate_repeat or
                        not authority.get("defer_missing_authorizations"))
+        open_coverage = _open_campaign_coverage(case)
+        if (should_park and open_coverage and not request.get("blocking") and
+                authority.get("defer_missing_authorizations")):
+            case["signal"] = (
+                "Authorization deferred; required coverage remains: %s. Continue an "
+                "independent branch. If every remaining branch needs this permission, "
+                "explain that dependency with blocking=true." % ", ".join(
+                    str(x.get("branch") or "") for x in open_coverage[:6]))
+            if not self.store.set_case_owned(mission_id, token, case):
+                return self._lost_state(mission_id, token)
+            self.store.record_event(mission_id, "authorization", "park_refused",
+                                    request["id"], {"open": len(open_coverage)})
+            return "_continue"
         if should_park:
             return self._finish(
                 mission_id, token, NEEDS_YOU,
@@ -5521,6 +5651,28 @@ class MissionDriver:
                     if routed == "_continue":
                         continue
                     return routed
+                if action in (SKIP_OPTIONAL, NEEDS_HUMAN, NEEDS_AUTHORIZATION):
+                    skip_args = dict(args)
+                    if action == SKIP_OPTIONAL:
+                        skip_args["optional"] = True
+                    skipped = self._skip_optional_step(
+                        mission_id, token, m, skip_args, reason)
+                    if skipped == "_continue":
+                        continue
+                    if skipped:
+                        return skipped
+                    if action == SKIP_OPTIONAL:
+                        case = dict(m.case)
+                        case["signal"] = (
+                            "Optional skip refused: provide a summary and reason, and use an "
+                            "exact non-required coverage branch. Required or blocking work "
+                            "cannot be silently omitted. Continue safe work or explain the "
+                            "essential dependency with needs_human.")
+                        if not self.store.set_case_owned(mission_id, token, case):
+                            return self._lost_state(mission_id, token)
+                        self.store.record_event(mission_id, "intervention", "skip_refused",
+                                                payload={"summary": str(args.get("summary") or "")[:1000]})
+                        continue
                 if action == DONE:
                     open_coverage = _open_campaign_coverage(m.case)
                     if open_coverage:
@@ -5942,6 +6094,22 @@ class MissionDriver:
                 if isinstance(result, dict) and result.get("needs_human"):
                     if not self._fold(m, cap.name, result, token=token):
                         return self._lost_state(mission_id, token)
+                    if action_reversible and not code_capability:
+                        current = self.store.get(mission_id)
+                        skip_args = dict(args)
+                        branch = str(args.get("campaign_branch") or args.get("branch") or "")
+                        coverage = _campaign_coverage(current.case)
+                        if any(row["branch"].casefold() == branch.casefold() and not row["required"]
+                               for row in coverage):
+                            skip_args["optional"] = True
+                        skip_args["summary"] = str(args.get("summary") or branch or cap.name)
+                        skipped = self._skip_optional_step(
+                            mission_id, token, current, skip_args,
+                            str(result.get("error") or result.get("result") or "optional route needs a person"))
+                        if skipped == "_continue":
+                            continue
+                        if skipped:
+                            return skipped
                     if code_capability:
                         return self._finish(
                             mission_id, token, NEEDS_YOU,
@@ -6523,9 +6691,23 @@ _SYS = (
     "You are collie's mission driver. You are pursuing ONE goal over time. Given the "
     "goal, what you already know (the case), and the actions available, choose the "
     "SINGLE next action. Reply with STRICT JSON and nothing else:\n"
-    '{"action": <a primitive name | "wait" | "update_coverage" | "needs_authorization" | "needs_human" | "done">, '
+    '{"action": <a primitive name | "wait" | "update_coverage" | "skip_optional" | "needs_authorization" | "needs_human" | "done">, '
     '"args": {..}, "reason": "<one short clause>"}\n'
-    "Rules: use only a listed primitive. CASE.human_updates are durable user/operator "
+    "Rules: use only a listed primitive or control action. Minimize interruptions: choose "
+    "reasonable defaults for reversible work and continue all safe independent work. "
+    "If a nonessential route needs missing permission, personal authentication, payment, "
+    "or an unavailable tool, abandon that route with skip_optional (args.summary, "
+    "args.branch if there is coverage, and a concrete reason). You may also mark an "
+    "optional needs_authorization/needs_human request with args.optional=true. "
+    "When attempting an optional primitive, also set args.optional=true and its exact "
+    "args.campaign_branch so a personal-access blocker can be skipped at that boundary. "
+    "A non-blocking dependency is not necessarily optional. Never label required work "
+    "optional; the host refuses skips of required coverage. CASE.skipped_steps are "
+    "omissions, not grants or successful actions: do not ask about them again, and "
+    "briefly include them in the final report. Ask only for an essential dependency "
+    "that has no safe alternative. Never replay an outcome-uncertain side effect, "
+    "expand authority, or declare the whole goal complete merely to avoid asking. "
+    "CASE.human_updates are durable user/operator "
     "steering in chronological order (a bounded view of the Mission's instruction "
     "ledger; an entry marked projection_only is a fragment, not the whole "
     "instruction): the newest explicit instruction overrides conflicting "

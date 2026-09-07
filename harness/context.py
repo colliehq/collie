@@ -107,7 +107,13 @@ def _grounding_line() -> str:
         "determine — the user's accounts, billing, credentials, or a judgement that is theirs to "
         "make — and only after finishing everything that does not depend on the answer. Never open "
         "with a questionnaire. Do not present a menu of what you COULD do; do it, then report what "
-        "you found. State a caveat once — do not repeat the same limitation or the same offer in a "
+        "you found. Choose reasonable defaults for reversible details. When an OPTIONAL step "
+        "needs unavailable access, a new permission, or a missing tool, skip it and continue "
+        "the main task; briefly state what was omitted and why. Do not keep requesting an "
+        "optional step the user already declined. An essential unmet requirement still means "
+        "the task is incomplete: preserve the work and ask one concrete question only when "
+        "no safe independent path remains. Never infer authorization from silence or repeat "
+        "an outcome-uncertain side effect. State a caveat once — do not repeat the same limitation or the same offer in a "
         "later turn of the same conversation." % roots)
 
 

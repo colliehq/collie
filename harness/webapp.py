@@ -3617,7 +3617,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/mission/pause", "/api/mission/resume", "/api/mission/cancel",
                         "/api/mission/continue", "/api/mission/accept", "/api/mission/check",
                         "/api/mission/reconcile", "/api/mission/tick",
-                        "/api/mission/note"):
+                        "/api/mission/note", "/api/mission/authorization"):
                 # The NL front door: start/gate/carry a delegate mission from the chat.
                 # CSRF-gated like every state-changing route — a mission runs the model
                 # and can fire (gated) real-world actions, so a drive-by must never start one.
@@ -3721,6 +3721,11 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send_json(
                             {k: v for k, v in out.items() if k != "code"},
                             200 if out.get("accepted") else int(out.get("code") or 409))
+                    if path == "/api/mission/authorization":
+                        if body.get("decision") != "handled":
+                            return self._send_json({"error": "decision must be handled"}, 400)
+                        out = svc.acknowledge_authorization(mid, body.get("request_id"))
+                        return self._send_json(out, 409 if out.get("error") else 200)
                     if path == "/api/mission/confirm":
                         nonce = (body.get("nonce") or "").strip()
                         if not nonce:

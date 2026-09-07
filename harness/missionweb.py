@@ -356,6 +356,7 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait,
         "next": next_step,
         "blocker": blocker,
         "authorization_waiting": len(pending_auth),
+        "pending_authorizations": [_clean(x) for x in pending_auth],
         "coverage": {
             "total": len(coverage),
             "completed": sum(1 for x in coverage if x.get("status") == "completed"),
@@ -440,6 +441,10 @@ def _mission_report(mission, summary, activity, receipts, runtime):
         },
         "receipts": receipt_counts,
         "needs_you": needs_you,
+        "skipped_steps": [{"summary": _short(x.get("summary"), 1000),
+                           "reason": _short(x.get("reason"), 1000),
+                           "branch": _short(x.get("branch"), 180)}
+                          for x in case.get("skipped_steps", []) if isinstance(x, dict)],
         "log": log,
         "runtime": {
             "model_calls": int(runtime.get("model_calls") or 0),
@@ -478,6 +483,10 @@ def _mission_report(mission, summary, activity, receipts, runtime):
             detail = (" — " + item["summary"]) if item["summary"] else ""
             lines.append("- [%s] %s%s" %
                          (item["status"], item["branch"] or "Unnamed branch", detail))
+    if report["skipped_steps"]:
+        lines.extend(["", "## Optional steps skipped"])
+        for item in report["skipped_steps"]:
+            lines.append("- %s: %s" % (item["summary"], item["reason"]))
     if needs_you:
         lines.extend(["", "## Needs you"])
         for item in needs_you:
@@ -2831,6 +2840,21 @@ class MissionService:
                 pass
         self._sync_terminal_mission_tree(mid)
         return self.status(mid)
+
+    def acknowledge_authorization(self, mid: str, request_id: str) -> dict:
+        if not isinstance(request_id, str) or not request_id or len(request_id) > 100:
+            return {"error": "an exact request_id is required", "mission_id": mid}
+        status = self.status(mid)
+        if status.get("error"):
+            return status
+        if self.store.handled_authorization(mid, request_id):
+            return {**status, "acknowledged": True, "duplicate": True}
+        if status.get("action_in_flight") or self.store.active_resources(mid):
+            return {**status, "error": "the prior action outcome must be reconciled first"}
+        result = self.store.acknowledge_authorization(mid, request_id)
+        if not result.get("ok"):
+            return {**self.status(mid), "error": result.get("error")}
+        return {**self.status(mid), "acknowledged": True, "duplicate": result.get("duplicate", False)}
 
     def continue_after_human(self, mid: str, note: str = "") -> dict:
         m = self.store.get(mid)

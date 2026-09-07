@@ -67,6 +67,19 @@ def test_review_mode_still_asks_for_external_preparation():
     assert result.decision is AuthorityDecision.ASK
 
 
+def test_review_mode_does_not_offer_unusable_persistent_grants(tmp_path):
+    from harness.gate import Gate
+    store=AuthorityStore(str(tmp_path/'review-authority.db'))
+    try:
+        gate=Gate(tmp_path,authority_mode='review',authority_engine=AuthorityEngine(store))
+        gate.begin_request('Prepare the message',project='repo',mission_id='m')
+        intent=ActionIntent('send',Effect.COMMIT,target='https://example.test')
+        assert gate._grant_options(intent)==()
+        gate.authority_context.mode='hands_off'
+        assert 'project' in gate._grant_options(intent)
+    finally:store.close()
+
+
 def test_durable_grant_is_bounded_and_revocable(tmp_path):
     store = AuthorityStore(str(tmp_path / "authority.db"))
     grant = store.add(scope=GrantScope.PROJECT, action="publish", project="collie",

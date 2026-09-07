@@ -1468,6 +1468,14 @@
   .mbtn.return { background: color-mix(in srgb, var(--pine) 24%, transparent); }
   .mbtn:disabled { opacity: .5; cursor: default; }
   .margs { font-size: 12px; color: var(--faint); word-break: break-all; }
+  .mission-recovery { flex-basis:100%; min-width:0; margin:4px 0;
+    padding:12px 16px 16px; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+  .mission-recovery legend { padding:0 6px; font-weight:600; }
+  .mission-recovery .mnote { margin:4px 0 10px; color:var(--muted); }
+  .mission-recovery label { display:flex; align-items:center; gap:8px; min-height:40px;
+    cursor:pointer; line-height:1.4; }
+  .mission-recovery input { flex:none; accent-color:var(--pine); }
+  .mission-skipped p { color:var(--muted); line-height:1.6; }
 
   /* --------------------------------------------------- onboarding (first-run "pick a brain") */
   .ob-overlay { position: fixed; inset: 0; z-index: 130; display: none; align-items: center;
@@ -3085,6 +3093,15 @@
     "Live Copilot": "实时协作", "Maintaining context": "正在保持理解", "Not active": "未开启",
     "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Online": "在线协作", "Library": "能力库", "Activity": "活动", "Worker": "工作进程", "Service": "服务",
     "Needs You": "需要你", "New task": "新任务", "Recent work": "最近工作",
+    "Optional steps skipped": "已省略的可选步骤", "Detailed steps": "详细步骤",
+    "These steps were left out. No permission was granted.": "这些步骤已省略，没有授予新的权限。",
+    "Check the outcome before continuing": "确认实际结果后继续",
+    "Progress is saved. Check the files or target service so Collie can avoid repeating an action.": "进度已保存。请查看文件或目标服务的实际结果，避免重复操作。",
+    "The action happened": "操作已经发生", "The action did not happen": "操作没有发生",
+    "Close this interrupted turn": "结束这一轮中断的操作", "I checked the actual outcome": "我已检查实际结果",
+    "Save outcome and continue": "保存结果并继续",
+    "I handled this requirement": "我已处理这项要求",
+    "Task": "任务",
     "No sessions yet.": "还没有对话。", "Loading model…": "正在加载模型…", "Model unavailable": "模型不可用",
     "idle": "空闲", "running": "运行中", "stopping": "正在停止",
     "Auto — Collie chooses per task": "自动 — Collie 按任务选择", "task-aware routing": "按任务智能路由",
@@ -3428,6 +3445,15 @@
     "Live Copilot": "即時協作", "Maintaining context": "正在保持理解", "Not active": "未開啟",
     "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Online": "線上協作", "Library": "能力庫", "Activity": "活動", "Worker": "工作程序", "Service": "服務",
     "Needs You": "需要你", "New task": "新任務", "Recent work": "最近工作",
+    "Optional steps skipped": "已省略的可選步驟", "Detailed steps": "詳細步驟",
+    "These steps were left out. No permission was granted.": "這些步驟已省略，沒有授予新的權限。",
+    "Check the outcome before continuing": "確認實際結果後繼續",
+    "Progress is saved. Check the files or target service so Collie can avoid repeating an action.": "進度已儲存。請查看檔案或目標服務的實際結果，避免重複操作。",
+    "The action happened": "操作已經發生", "The action did not happen": "操作沒有發生",
+    "Close this interrupted turn": "結束這一輪中斷的操作", "I checked the actual outcome": "我已檢查實際結果",
+    "Save outcome and continue": "儲存結果並繼續",
+    "I handled this requirement": "我已處理這項要求",
+    "Task": "任務",
     "No sessions yet.": "還沒有對話。", "Loading model…": "正在載入模型…", "Model unavailable": "模型無法使用",
     "idle": "閒置", "running": "執行中", "stopping": "正在停止",
     "Auto — Collie chooses per task": "自動 — Collie 依任務選擇", "task-aware routing": "依任務智慧路由",
@@ -4390,6 +4416,9 @@
     if (typeof renderCollieIdentity === "function") renderCollieIdentity();
     if (typeof SURFACE_TITLES !== "undefined") applyPageTitle(document.body.getAttribute("data-surface"));
     if (window.refreshRunSetup) window.refreshRunSetup();
+    document.querySelectorAll(".mission").forEach(function (card) {
+      if (card._missionState) renderMission(card, card._missionState);
+    });
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -5451,9 +5480,9 @@
   // through addEvent, because this one is not a record of something that happened — it is
   // a question, and the run stays suspended until it is answered from here, from a phone,
   // or from the desktop. Whoever answers first wins; the rest see the row settle.
-  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, ONLINE_NEEDS = 0, PERMISSION_EPOCH = 0;
+  var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, ONLINE_NEEDS = 0, MISSION_NEEDS = [], PERMISSION_EPOCH = 0;
   function updateNeedsYou() {
-    var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS, nav = $("needsYouNav"), count = $("needsYouCount");
+    var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS + MISSION_NEEDS.length, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
     nav.hidden = n === 0; count.textContent = String(n);
     if (!n && nav.classList.contains("on") && typeof returnToPrimarySurface === "function") returnToPrimarySurface();
@@ -5921,7 +5950,6 @@
           return activityPost("/api/mission/specialist/steer", { run_id: data.run_id, text: text }).then(loadActivity);
         });
         activityAction(row, "Cancel", function () {
-          if (!window.confirm("Request specialist cancellation?")) return;
           return activityPost("/api/mission/specialist/cancel", { run_id: data.run_id }).then(loadActivity);
         });
       }
@@ -6062,7 +6090,7 @@
       activityAction(row, "Preview", function () { return activityPost("/api/automations/preview",
         {automation_id:spec.automation_id}).then(function (d) { activityNotice(d.fired ?
           "Trigger matches now; nothing was queued." : "Trigger does not match now.", false); }); });
-      activityAction(row, "Run now", function () { if (!window.confirm("Queue one bounded run now?")) return;
+      activityAction(row, "Run now", function () {
         return activityPost("/api/automations/run", {automation_id:spec.automation_id,
           confirmed:true}).then(loadActivity); });
     }));
@@ -6145,11 +6173,9 @@
         Math.round(100 * Number(candidate.confidence || 0)) + "% confidence · no execution authority");
       if (candidate.status === "proposed") {
         activityAction(row, "Accept", function () {
-          if (!window.confirm("Keep this learned workflow? It will still have no execution authority.")) return;
           return activityPost("/api/procedures/review",
             {id:candidate.candidate_id,action:"accept",confirm:true}).then(loadActivity); });
         activityAction(row, "Dismiss", function () {
-          if (!window.confirm("Dismiss this workflow suggestion?")) return;
           return activityPost("/api/procedures/review",
             {id:candidate.candidate_id,action:"dismiss",confirm:true}).then(loadActivity); });
       }
@@ -7246,9 +7272,6 @@
       if (action === "status") { showMission(mid); return true; }
       if (action === "report") { showMission(mid, true); return true; }
       var card = newMissionCard(); card.querySelector(".mbody").textContent = t("updating mission…");
-      if (action === "cancel" && !window.confirm(t("Cancel this mission? Its audit history will be kept."))) {
-        card.remove(); return true;
-      }
       if (action === "reconcile" && !window.confirm(t(
           "The previous worker crashed while an external action may have fired. Inspect the site and receipts first. Continue only if a duplicate is safe."))) {
         card.remove(); return true;
@@ -7370,11 +7393,17 @@
       };
       box._input = input; box._submit = submit; box._notice = notice;
       box._readNotes = readNotes; box._history = history;
+      box._language = UI_LANG;
       card.querySelector(".bubble").appendChild(box);
       readNotes();
     }
     // Notes use their own durable ingress and must remain available while a
     // run/pause action owns the Mission. They never start a second executor.
+    box.querySelector("h3").textContent = t("Updates to this task");
+    box._input.placeholder = t("Add a requirement or correction to this task…");
+    box._input.setAttribute("aria-label", t("Update this task"));
+    box._submit.textContent = t("Save instruction");
+    if (box._language !== UI_LANG) { box._language = UI_LANG; box._readNotes(); }
     box._canSend = /^(queued|running|pausing|waiting|paused|needs_you)$/.test(st.state || "");
     box._input.hidden = !box._canSend && !box._input.value;
     box._submit.hidden = !box._canSend;
@@ -7384,12 +7413,30 @@
   }
   function renderMission(card, st) {
     if (!card.isConnected) return;
+    card._missionState = st;
+    card.querySelector(".who").textContent = "Collie · " + t("Task");
+    if (st.mission_id) {
+      MISSION_NEEDS = MISSION_NEEDS.filter(function (x) { return x.mission_id !== st.mission_id; });
+      if (/^(needs_you|recovery_required|review_required)$/.test(st.state || "")) MISSION_NEEDS.push(st);
+      updateNeedsYou();
+    }
+    var recoveryKey = (st.controls || []).indexOf("reconcile") >= 0 ? JSON.stringify([
+      st.mission_id, (st.latest_checkpoint || {}).seq, st.recovery_actions || [], st.code_session_recovery || {}
+    ]) : "";
+    if (card._recoveryKey !== recoveryKey) {
+      card._recoveryKey = recoveryKey; card._recoveryOpen = false;
+      card._recoveryChoice = ""; card._recoveryInspected = false;
+    }
     if (st.mission_id && document.body.getAttribute("data-surface") === "missions") {
       selectedMission = st.mission_id; selectedMissionTitle = cleanThreadTitle((st.summary || {}).title || st.goal || "");
       rememberMission(st.mission_id); applyPageTitle("missions"); $("composer").hidden = true;
     }
     var b = card.querySelector(".mbody");
     var reportWasOpen = !!(b && b.querySelector(".mreport[open]"));
+    var openDetails = {};
+    if (b) b.querySelectorAll("details[data-detail-key][open]").forEach(function (node) {
+      openDetails[node.getAttribute("data-detail-key")] = true;
+    });
     b.textContent = "";
     if (st.error && !st.state) { b.textContent = "error: " + st.error; return; }
     var head = document.createElement("div"); head.className = "mhead";
@@ -7552,18 +7599,32 @@
       inflight.textContent = t("An approved action is executing or outcome-uncertain. Refresh or cancel; Continue cannot replay it.");
       b.appendChild(inflight);
     }
-    var pendingAuth = ((st.case || {}).pending_authorizations || []).filter(function (x) { return x && typeof x === "object"; });
+    var pendingAuth = (summary.pending_authorizations || (st.case || {}).pending_authorizations || []).filter(function (x) { return x && typeof x === "object"; });
     pendingAuth.forEach(function (auth) {
       var box = document.createElement("div"); box.className = "mauth";
       var title = document.createElement("strong"); title.textContent = t("Authorization waiting") + (auth.domain ? " · " + auth.domain : "");
       var text = document.createElement("div"); text.textContent = auth.summary || auth.operation || auth.kind || t("Needs You");
       var note = document.createElement("div"); note.className = "mnote";
-      note.textContent = st.state === "needs_you" ? missionStateLabel(st.state) : t("Collie is continuing independent work.");
-      box.appendChild(title); box.appendChild(text); box.appendChild(note); b.appendChild(box);
+      note.textContent = /^(needs_you|paused)$/.test(st.state || "") ? missionStateLabel(st.state) : t("Collie is continuing independent work.");
+      box.appendChild(title); box.appendChild(text); box.appendChild(note);
+      if (auth.id && /^(needs_you|paused)$/.test(st.state || "") && !st.action_in_flight && !st.inbox) {
+        var handled = document.createElement("button"); handled.type = "button"; handled.className = "mbtn";
+        handled.textContent = t("I handled this requirement");
+        handled.onclick = function () {
+          missionAction(card, handled, missionPost("/api/mission/authorization", {
+            id: st.mission_id, request_id: auth.id, decision: "handled"
+          }), function (x) {
+            renderMission(card, x); if (x.acknowledged && !x.duplicate && x.state === "queued") runMissionCard(card, st.mission_id);
+          });
+        };
+        box.appendChild(handled);
+      }
+      b.appendChild(box);
     });
     var keys = Object.keys(st.case || {});
     if (keys.length || st.result) {
       var details = document.createElement("details"); details.className = "mdetails";
+      details.setAttribute("data-detail-key", "case"); details.open = !!openDetails.case;
       var detailsTitle = document.createElement("summary"); detailsTitle.textContent = t("Mission details");
       details.appendChild(detailsTitle);
       var cl = document.createElement("div"); cl.className = "mcase";
@@ -7575,13 +7636,33 @@
       });
       details.appendChild(cl); b.appendChild(details);
     }
+    var skippedSteps = ((st.report || {}).skipped_steps || (st.case || {}).skipped_steps || []);
+    if (skippedSteps.length) {
+      var omissions = document.createElement("details"); omissions.className = "mdetails mission-skipped";
+      omissions.setAttribute("data-detail-key", "skipped"); omissions.open = !!openDetails.skipped;
+      var omittedTitle = document.createElement("summary");
+      omittedTitle.textContent = t("Optional steps skipped") + " (" + skippedSteps.length + ")";
+      omissions.appendChild(omittedTitle);
+      var omittedNote = document.createElement("p"); omittedNote.className = "mnote";
+      omittedNote.textContent = t("These steps were left out. No permission was granted."); omissions.appendChild(omittedNote);
+      skippedSteps.forEach(function (item) {
+        var line = document.createElement("p"); line.textContent = (item.summary || "") + ": " + (item.reason || "");
+        omissions.appendChild(line);
+      });
+      b.insertBefore(omissions, sb.nextSibling);
+    }
     if ((st.steps || []).length) {
+      var stepDetails = document.createElement("details"); stepDetails.className = "mdetails";
+      stepDetails.setAttribute("data-detail-key", "steps"); stepDetails.open = !!openDetails.steps;
+      var stepTitle = document.createElement("summary");
+      stepTitle.textContent = t("Detailed steps") + " (" + st.steps.length + ")"; stepDetails.appendChild(stepTitle);
       var sl = document.createElement("div"); sl.className = "msteps";
       st.steps.forEach(function (s) { sl.appendChild(mchip(s.name + " · " + s.verdict, "step")); });
-      b.appendChild(sl);
+      stepDetails.appendChild(sl); b.appendChild(stepDetails);
     }
     if ((st.receipts || []).length) {
       var receiptDetails = document.createElement("details"); receiptDetails.className = "mdetails";
+      receiptDetails.setAttribute("data-detail-key", "receipts"); receiptDetails.open = !!openDetails.receipts;
       var receiptTitle = document.createElement("summary");
       receiptTitle.textContent = t("Technical audit trail") + " (" +
         (((st.report || {}).receipts || {}).total || st.receipts.length) + ")";
@@ -7615,7 +7696,7 @@
         tp.textContent = t("target page") + ": " + JSON.stringify(st.inbox.target).slice(0, 260);
         acts.appendChild(tp);
       }
-    } else if (st.needs_human) {            // hand-off: your call
+    } else if (st.needs_human) { // other pending requirements must not hide this handoff
       var hbtn = document.createElement("button"); hbtn.className = "mbtn confirm";
       hbtn.textContent = t("I handled this step — continue");
       hbtn.onclick = function () { missionAction(card, hbtn, missionPost("/api/mission/continue", { id: st.mission_id }), function (x) {
@@ -7667,32 +7748,54 @@
       var qbtn = document.createElement("button"); qbtn.className = "mbtn confirm";
       qbtn.textContent = t("Reconcile uncertain run");
       qbtn.onclick = function () {
-        var codeResolution = "";
-        if (st.code_session_recovery && st.code_session_recovery.recovery_required) {
-          codeResolution = window.prompt(t(
-            "Inspect the workspace/tool outcome, then type exactly: completed (it happened), not_fired (it did not happen), or cancel (close the interrupted code turn)."
-          ), "not_fired") || "";
-          if (["completed", "not_fired", "cancel"].indexOf(codeResolution) < 0) return;
-          if (!window.confirm(t("Confirm this inspected code outcome: ") + codeResolution + "?")) return;
-        } else if (!window.confirm(t("The prior external action may already have fired. Inspect the target site and receipts before continuing."))) return;
-        missionAction(card, qbtn, missionPost("/api/mission/reconcile", {
-          id: st.mission_id, note: "user inspected uncertain external state",
-          code_resolution: codeResolution
-        }), function (x) {
-          reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
-        });
+        card._recoveryOpen = !card._recoveryOpen; renderMission(card, st);
       };
       acts.appendChild(qbtn);
+      if (card._recoveryOpen) {
+        var recovery = document.createElement("fieldset"); recovery.className = "mission-recovery";
+        var legend = document.createElement("legend"); legend.textContent = t("Check the outcome before continuing"); recovery.appendChild(legend);
+        var explanation = document.createElement("p"); explanation.className = "mnote";
+        explanation.textContent = t("Progress is saved. Check the files or target service so Collie can avoid repeating an action."); recovery.appendChild(explanation);
+        var codeRecovery = st.code_session_recovery && st.code_session_recovery.recovery_required;
+        if (codeRecovery) {
+          [["completed", "The action happened"], ["not_fired", "The action did not happen"],
+           ["cancel", "Close this interrupted turn"]].forEach(function (choice) {
+            var label = document.createElement("label");
+            var radio = document.createElement("input"); radio.type = "radio"; radio.name = "recovery-" + st.mission_id;
+            radio.value = choice[0]; radio.checked = card._recoveryChoice === choice[0];
+            radio.onchange = function () { card._recoveryChoice = choice[0]; updateRecoveryButton(); };
+            label.appendChild(radio); label.appendChild(document.createTextNode(" " + t(choice[1]))); recovery.appendChild(label);
+          });
+        }
+        var checkedLabel = document.createElement("label");
+        var inspected = document.createElement("input"); inspected.type = "checkbox"; inspected.checked = !!card._recoveryInspected;
+        inspected.onchange = function () { card._recoveryInspected = inspected.checked; updateRecoveryButton(); };
+        checkedLabel.appendChild(inspected); checkedLabel.appendChild(document.createTextNode(" " + t("I checked the actual outcome")));
+        recovery.appendChild(checkedLabel);
+        var reconcileNow = document.createElement("button"); reconcileNow.type = "button"; reconcileNow.className = "mbtn confirm";
+        reconcileNow.textContent = t("Save outcome and continue");
+        function updateRecoveryButton() { reconcileNow.disabled = !card._recoveryInspected || (codeRecovery && !card._recoveryChoice); }
+        updateRecoveryButton(); recovery.appendChild(reconcileNow);
+        reconcileNow.onclick = function () {
+          missionAction(card, reconcileNow, missionPost("/api/mission/reconcile", {
+            id: st.mission_id, note: "user inspected uncertain external state",
+            code_resolution: codeRecovery ? card._recoveryChoice : ""
+          }), function (x) {
+            if (!x.error) { card._recoveryOpen = false; card._recoveryChoice = ""; card._recoveryInspected = false; }
+            reload(x); if (x.state === "queued" && !x.error) runMissionCard(card, st.mission_id);
+          });
+        };
+        acts.appendChild(recovery);
+      }
     }
     if ((st.controls || []).indexOf("cancel") >= 0) {
       var xbtn = document.createElement("button"); xbtn.className = "mbtn"; xbtn.textContent = t("Cancel");
       xbtn.onclick = function () {
-        if (!window.confirm(t("Cancel this mission? Its audit history will be kept."))) return;
         missionAction(card, xbtn, missionPost("/api/mission/cancel", { id: st.mission_id }));
       };
       acts.appendChild(xbtn);
     }
-    if (acts.children.length) b.appendChild(acts);
+    if (acts.children.length) b.insertBefore(acts, sb.nextSibling);
     if (st.mission_id) renderMissionUpdates(card, st);
     scheduleMissionPoll(card, st);
     scrollDown();
@@ -8212,7 +8315,7 @@
       // Today is a brief, not a task archive. Keep only a small recency preview here; New task and
       // an opened conversation restore the full list through their own loadSessions() call.
       if (document.body.getAttribute("data-surface") === "today") list = list.slice(0, 6);
-      if (!list.length) { box.innerHTML = '<div class="empty">' + esc(t("Your recent work will appear here.")) + '</div>'; return; }
+      if (!list.length) { box.innerHTML = '<div class="empty" data-i18n="Your recent work will appear here.">' + esc(t("Your recent work will appear here.")) + '</div>'; return; }
       // The server derives a thread's name from its first user message (or a rename). Cache it so
       // the header can show the same label the sidebar does, including after a rename.
       list.forEach(function (s) {
@@ -8922,6 +9025,9 @@
     setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     var ids = typeof GLOBAL_PERMS === "undefined" ? [] : Object.keys(GLOBAL_PERMS);
     var id = ids.length ? ids[0] : "", rec = id ? GLOBAL_PERMS[id] : null;
+    if (!rec && MISSION_NEEDS.length) {
+      showMission(MISSION_NEEDS[0].mission_id); return;
+    }
     if (!rec && ONLINE_NEEDS) {
       openOnlinePage(); return;
     }
@@ -8941,6 +9047,16 @@
       updateNeedsYou();
     }).catch(function () {});
   }
+  function pollMissionNeeds() {
+    authenticatedFetch("/api/missions").then(function (r) {
+      if (!r.ok) throw new Error("Mission status unavailable"); return r.json();
+    }).then(function (data) {
+      MISSION_NEEDS = (data.missions || []).filter(function (item) {
+        return /^(needs_you|recovery_required|review_required)$/.test(item.state || "");
+      }); updateNeedsYou();
+    }).catch(function () {});
+  }
+  pollMissionNeeds(); window.setInterval(pollMissionNeeds, 10000);
   pollOnlineNeeds(); window.setInterval(pollOnlineNeeds, 10000);
   window.setInterval(function () {
     todayFreshness();

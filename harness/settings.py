@@ -257,12 +257,13 @@ SCHEMA = [
              "inside the Mission leash without asking at every publish/send step. It still stops "
              "for credentials or identity that have not been connected, CAPTCHA/MFA that requires "
              "a person, new consent choices, new spending "
-             "authority, scope expansion, and uncertain duplicate risk. Use /mission --review "
+             "authority, scope expansion, and uncertain duplicate risk when these are essential. "
+             "Optional routes with missing access are skipped and recorded while useful work continues. Use /mission --review "
              "to override one Mission.",
      "hint_zh": "普通 /mission 的默认模式。放手执行会让 Collie 在 Mission Leash 范围内直接执行"
                 "已有能力，不再每次发布/发送都询问；尚未连接的凭据或工作身份、必须由本人完成的"
                 " CAPTCHA/MFA、新的同意选择、新增支出权限、扩大范围，以及结果不确定可能重复时"
-                "仍会停下来。已连接并授权的邮箱、号码、验证码收件箱和登录态可直接使用。单次任务可用 "
+                "涉及必要步骤时仍会停下来；缺少权限的可选路径会省略并记录，继续其余工作。已连接并授权的邮箱、号码、验证码收件箱和登录态可直接使用。单次任务可用 "
                 "/mission --review 覆盖。"},
     {"group": "Autonomy", "key": "AUTO_APPLY_PROFILE_CLAIMS",
      "label": "Use confirmed profile facts automatically", "label_zh": "自动使用已确认的个人事实",
@@ -285,9 +286,9 @@ SCHEMA = [
     {"group": "Autonomy", "key": "DEFER_MISSING_AUTHORIZATIONS",
      "label": "Keep working while authorization waits", "label_zh": "等待授权时继续其他工作",
      "type": "bool", "default": "on",
-     "hint": "Put a missing authorization in Needs You and continue independent Mission work. "
+     "hint": "Skip blocked optional routes with a record of the omission. Put a required missing authorization in Needs You and continue independent Mission work. "
              "The whole Mission pauses only when every remaining path depends on it.",
-     "hint_zh": "把缺失授权放入 Needs You，同时继续不依赖它的 Mission 工作；只有所有剩余路径都依赖"
+     "hint_zh": "受阻的可选路径会省略并保留说明；必要的缺失授权放入“需要你”，同时继续不依赖它的工作。只有所有剩余路径都依赖"
                 "该授权时，整个 Mission 才暂停。"},
 
     {"group": "Limits", "key": "MAX_TURNS", "label": "Turn cap (optional)", "type": "number", "default": "0", "min": "0", "max": "120",

@@ -354,6 +354,10 @@ class Gate:
 
     def _grant_options(self, intent: ActionIntent) -> tuple[str, ...]:
         """Scopes the current card may truthfully mint."""
+        if self.authority_context.mode == "review":
+            # Review mode deliberately asks per action before consulting grants.
+            # Do not offer a persistent promise this mode will never honor.
+            return ()
         if intent.effect.value != "commit" or not intent.action \
                 or intent.action == "external_change" or self.authority_engine is None \
                 or self.authority_engine.store is None:
