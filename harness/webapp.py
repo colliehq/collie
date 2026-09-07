@@ -1286,26 +1286,41 @@ class Handler(BaseHTTPRequestHandler):
         NOTIFY_AFTER_MS = 45_000
 
     @staticmethod
-    def _record_command(sid, said, answer):
-        """Write a fast-path command into the conversation it was typed in.
-
-        The intent router is an optimisation — instant and free where a model call is neither — but
-        it is not a different place for things to happen. A chat that cannot show you the thing you
-        just asked for is one you stop believing.
-        """
-        said = (said or "").strip()
-        if not said or not answer:
-            return None
+    def _desktop_command(sid, said, perform, summary):
+        """Own the conversation before executing a shortcut, just like an agent run."""
+        from . import sessions, session_owner, web_tasks
+        sid = str(sid or "").strip() or sessions.new_id()
+        web_tasks.check_session_id(sid)
+        lease = session_owner.try_acquire(sid, label="desktop-command")
+        if lease is None:
+            raise web_tasks.WebInputError("this conversation is running; try the command after it stops", 409)
         try:
-            from . import sessions            # imported per-use here, as everywhere else in this file
-            # No session yet means this command is the first thing said in a new chat. Start one, and
-            # hand the id back so the client continues in it — otherwise the very first thing a
-            # person does is the one thing the history cannot show them.
-            sid = str(sid or "").strip() or sessions.new_id()
-            sessions.append_exchange(sid, said, answer, cwd=os.getcwd())
-            return sid
-        except Exception:
-            return None                 # the command already happened; logging it is not worth failing
+            recovery = sessions.recovery_state(sid)
+            if recovery and recovery.get("recovery_required"):
+                raise web_tasks.WebInputError("inspect the interrupted operation before sending another command", 409)
+            prior = sessions.load(sid) or {}
+            cwd = prior.get("cwd") or os.getcwd()
+            sessions.checkpoint(sid, prior.get("messages") or [], cwd=cwd,
+                run_id="desktop-command", state="external_action",
+                detail={"operation": "desktop_command", "request": str(said or "")[:500]})
+            result = perform()
+            result["session"] = sid
+            try:
+                answer = summary(result)
+                if said and answer:
+                    sessions.append_exchange(sid, said, answer, cwd=cwd)
+                saved = sessions.load_checked(sid)
+                if saved["status"] != "ok":
+                    raise ValueError("command journal could not be read")
+                sessions.checkpoint(sid, saved["session"].get("messages") or [], cwd=cwd, terminal=True)
+            except Exception:
+                # The effect already happened. Keep its recovery fence and report the result
+                # without inviting an automatic fallback to execute the command again.
+                result["recovery_required"] = True
+                result["recording_warning"] = "Command finished, but its history could not be saved. Inspect before retrying."
+            return result
+        finally:
+            lease.release()
 
     @staticmethod
     def _notify_done(sid, res, wall_ms=None):
@@ -1960,7 +1975,8 @@ class Handler(BaseHTTPRequestHandler):
                 from . import sessions
                 query = urllib.parse.parse_qs(parsed.query)
                 sid = str(query.get("session", [""])[0] or "").strip()
-                if sid and not self._authed(parsed):
+                requested_cwd = query.get("cwd", [""])[0]
+                if (sid or requested_cwd) and not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 saved = None
                 if sid:
@@ -1970,9 +1986,9 @@ class Handler(BaseHTTPRequestHandler):
                                                404 if loaded["status"] == "missing" else 409)
                     saved = loaded["session"]
                 try:
-                    cwd = sessions.resolve_cwd(saved)
+                    cwd = sessions.resolve_cwd(saved, requested=requested_cwd if not sid else None)
                 except ValueError as exc:
-                    return self._send_json({"error": str(exc)}, 409)
+                    return self._send_json({"error": str(exc), "workspace_missing": True}, 409)
                 return self._send_json({"session": sid, "cwd": cwd,
                                         "candidates": detect_verification_commands(cwd)})
             if path == "/api/mcp":
@@ -2467,7 +2483,7 @@ class Handler(BaseHTTPRequestHandler):
                     path.startswith("/api/personal/") or
                     path.startswith("/api/migrations/") or
                     path.startswith("/api/annotations/") or
-                    path in ("/api/session/fork", "/api/session/handoff",
+                    path in ("/api/session/fork", "/api/session/handoff", "/api/session/relocate",
                              "/api/plan/claim", "/api/plan/renew", "/api/plan/release") or
                     path.startswith("/api/meetings/reminders/native/")):
                 if not self._authed(parsed):
@@ -2584,12 +2600,27 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send_json({"ok": True, "result": value})
                         finally:
                             store.close()
-                    if path in ("/api/session/fork", "/api/session/handoff"):
+                    if path in ("/api/session/fork", "/api/session/handoff", "/api/session/relocate"):
                         from . import sessions
                         sid = str(body.get("session") or "").strip()
                         if path.endswith("/fork"):
                             value = sessions.fork(sid, body.get("index"),
                                 child_id=str(body.get("child_id") or ""), title=body.get("title") or "")
+                        elif path.endswith("/relocate"):
+                            from . import session_owner
+                            cwd = body.get("cwd")
+                            if not isinstance(cwd, str) or not cwd.strip() or len(cwd) > 4096 or "\x00" in cwd:
+                                raise ValueError("choose a valid folder for this conversation")
+                            lease = session_owner.try_acquire(sid, label="workspace-relocate")
+                            if lease is None:
+                                return self._send_json({"error": "this conversation is running; stop it before moving its workspace"}, 409)
+                            try:
+                                recovery = sessions.recovery_state(sid)
+                                if recovery and recovery.get("recovery_required"):
+                                    return self._send_json({"error": "inspect the interrupted operation before moving its workspace"}, 409)
+                                value = {"session": sid, "cwd": sessions.relocate(sid, cwd.strip())}
+                            finally:
+                                lease.release()
                         else:
                             value = sessions.handoff(sid, body.get("target"),
                                 confirm=body.get("confirm") is True,
@@ -3575,43 +3606,33 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         ok = False
                     return self._send_json({"ok": ok})
-                if action == "play":
-                    # Play it HERE, on the computer. The existing music path resolves a stream and
-                    # hands the URL to the caller's own audio element, which a phone does not have —
-                    # so "play Cruel Summer" found the track and then nothing happened.
-                    r = dt.play_here(
-                        body.get("q") or body.get("query") or "",
-                        artist=body.get("artist") or "", title=body.get("title") or "",
-                        region=body.get("region") or "")
-                    sid = Handler._record_command(body.get("session"), body.get("said"),
-                                                  _play_summary(r))
-                    if sid:
-                        r["session"] = sid
-                    return self._send_json(r)
-                if action == "intent":
-                    # Routes to app/system/project/stop/music, and to `agent` for everything else.
-                    # `music` is still in the reply so an older page keeps working unchanged.
-                    r = dt.desktop_intent(body.get("text") or "")
-                    if r.get("action") == "music":
-                        m = dt.music_intent(body.get("text") or "")
-                        r.update({k: v for k, v in m.items() if k != "action"})
-                    r["music"] = r.get("action") == "music" and bool(r.get("query") or r.get("arg"))
-                    if r["music"] and not r.get("query"):
-                        r["query"] = r.get("arg") or ""
-                    # "stop the music" used to be a message TO the caller: the router returned
-                    # action=stop and the web page paused its own <audio>. Now that the desktop plays
-                    # music itself there was nothing on this machine that could stop it — no button
-                    # anywhere, and the words did nothing. If something is playing here, stop it.
-                    if r.get("action") == "stop" and dt.playing_here().get("track"):
-                        dt.stop_here()
-                        r["stopped_audio"] = True
-                    # A command carried out here is still something that happened in a conversation.
-                    # Music is recorded by /play instead, once it knows what it actually started.
-                    if r.get("action") not in ("agent", "music"):
-                        sid = Handler._record_command(body.get("session"), body.get("text"),
-                                                      _intent_summary(r))
-                        if sid:
-                            r["session"] = sid
+                if action in ("play", "intent"):
+                    from .web_tasks import WebInputError
+                    def perform():
+                        if action == "play":
+                            return dt.play_here(body.get("q") or body.get("query") or "",
+                                artist=body.get("artist") or "", title=body.get("title") or "",
+                                region=body.get("region") or "")
+                        r = dt.desktop_intent(body.get("text") or "")
+                        if r.get("action") == "music":
+                            m = dt.music_intent(body.get("text") or "")
+                            r.update({k: v for k, v in m.items() if k != "action"})
+                        r["music"] = r.get("action") == "music" and bool(r.get("query") or r.get("arg"))
+                        if r["music"] and not r.get("query"):
+                            r["query"] = r.get("arg") or ""
+                        if r.get("action") == "stop" and dt.playing_here().get("track"):
+                            dt.stop_here()
+                            r["stopped_audio"] = True
+                        return r
+                    def summary(r):
+                        if action == "play":
+                            return _play_summary(r)
+                        return _intent_summary(r) if r.get("action") not in ("agent", "music") else ""
+                    try:
+                        r = Handler._desktop_command(body.get("session"),
+                            body.get("said") if action == "play" else body.get("text"), perform, summary)
+                    except WebInputError as exc:
+                        return self._send_json({"error": str(exc)}, exc.status)
                     return self._send_json(r)
                 return self._send_json({"error": "unknown action"}, 404)
             if path == "/api/model":
@@ -5025,7 +5046,9 @@ class Handler(BaseHTTPRequestHandler):
         # terminal does instead of on words in the transcript.
         prior_receipts = (prior or {}).get("run_receipts") or []
         try:
-            cwd = sessions.resolve_cwd(prior, fallback=os.getcwd())
+            # A new task may choose its folder. Follow-ups remain bound to the saved workspace.
+            cwd = sessions.resolve_cwd(prior, requested=qs.get("cwd", [""])[0] if not prior else None,
+                                       fallback=os.getcwd())
         except ValueError as exc:
             self._sse("done", {"session": sid, "answer": "", "error": str(exc),
                                "workspace_missing": True})
@@ -5167,7 +5190,14 @@ class Handler(BaseHTTPRequestHandler):
         # the shared tree is exactly the collision that was asked to be avoided, and saying nothing
         # about it is how you find out afterwards.
         wt_info = None
-        if workspace == "isolated":
+        saved_workspace = (prior or {}).get("workspace") or {}
+        if (saved_workspace.get("mode") == "isolated" and
+                os.path.normcase(os.path.realpath(saved_workspace.get("path") or "")) ==
+                os.path.normcase(os.path.realpath(cwd))):
+            wt_info = {"ok": True, "dir": cwd, "branch": saved_workspace.get("branch") or "",
+                       "root": saved_workspace.get("origin") or "",
+                       "base_commit": saved_workspace.get("base_commit") or "", "reused": True}
+        if workspace == "isolated" and wt_info is None:
             from . import worktree as _wt
             wt_info = _wt.prepare(cwd, sid, label=q)
             if not wt_info["ok"]:
@@ -5185,7 +5215,7 @@ class Handler(BaseHTTPRequestHandler):
             orphaned checkout is recoverable, but silently losing its location
             makes it unnecessarily hard to find and remove.
             """
-            if wt_info and wt_info.get("dir"):
+            if wt_info and wt_info.get("dir") and not wt_info.get("reused"):
                 try:
                     from . import worktree as _unused_wt
                     from .runner_specs import redact_text as _redact_cleanup
@@ -5497,7 +5527,19 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
                 pass
 
+        try:
+            if wt_info and not wt_info.get("reused"):
+                saved_workspace = sessions.bind_isolated_workspace(sid, wt_info, cwd=wt_info["root"])
+        except Exception as persist_exc:
+            error = _public_error(persist_exc, prefix="workspace could not be saved: ")
+            error += _discard_unused_worktree()
+            Handler._run_end(sid, error=error, run_id=run_id)
+            self._sse("done", {"session": sid, "run": run_id, "answer": "", "error": error})
+            return
         decision_payload = decision.to_dict()
+        decision_payload["cwd"] = cwd
+        if saved_workspace:
+            decision_payload["workspace_info"] = saved_workspace
         decision_payload["runner"] = runner_decision.to_dict()
         if execution_speed != decision.speed:
             decision_payload["execution_speed"] = execution_speed
@@ -5518,6 +5560,7 @@ class Handler(BaseHTTPRequestHandler):
         # content-addressed and is never reconstructed from mutable UI state.
         decision_payload["run_plan"] = run_plan
         start_d = {"session": sid, "run": run_id, "provider": prov, "cwd": cwd,
+                   "workspace_info": saved_workspace,
                    "prior_turns": sum(1 for m in history if m.get("role") == "user"
                                       and m.get("source") != "harness"),
                    "intent": run_opts["intent"], "quality": run_opts["quality"],

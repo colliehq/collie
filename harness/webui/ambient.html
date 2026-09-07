@@ -917,8 +917,11 @@
     var q = input.value.trim(); if (!q || running || pending) return;
     input.value = ""; autosize(); curQ = q; pending = true;
     showReply("", '<span class="status">…</span>');
-    api("/api/desktop/intent", {text: q}).then(function(r){
+    api("/api/desktop/intent", {text: q, session: sid}).then(function(r){
+      if (r.session) sid = r.session;
       pending = false;
+      if (r.recording_warning) { showReply("err", "⚠ " + esc(r.recording_warning)); return; }
+      if (r.error && !r.action) { showReply("err", "⚠ " + esc(r.error)); return; }
       var a = (r && r.action) || "agent";
       if (a === "music" && r.query) { playMusic(r.query, r.artist, r.title); return; }
       // The desktop actions already RAN on the server — the reply just reports what happened.

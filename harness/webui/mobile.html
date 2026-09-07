@@ -638,11 +638,19 @@ function refreshRunCapabilities(){fetch(api('/api/run-capabilities')).then(funct
   });
   paintRunSetup();
 });}
-function refreshVerification(){fetch(api('/api/verification')).then(function(r){return r.json();}).then(function(d){
-  var first=(d.candidates||[])[0];if(!first)return;
-  if(!$("mVerifyCommand").value){$("mVerifyCommand").value=first.command;$("mVerifyCommand").dataset.source=first.source||'detected';}
-  if(!$("mPackCheck").value)$("mPackCheck").value=first.command;
-}).catch(function(){});}
+var verificationScope=null, verificationEpoch=0;
+function refreshVerification(){
+  var sid=currentSession||'',epoch=++verificationEpoch;
+  if(verificationScope!==sid){$("mVerifyCommand").value='';$("mPackCheck").value='';verificationScope=sid;}
+  fetch(api('/api/verification'+(sid?'?session='+encodeURIComponent(sid):''))).then(function(r){
+    if(!r.ok)throw new Error('HTTP '+r.status);return r.json();
+  }).then(function(d){
+    if(epoch!==verificationEpoch||(currentSession||'')!==sid)return;
+    var first=(d.candidates||[])[0];if(!first)return;
+    if(!$("mVerifyCommand").value){$("mVerifyCommand").value=first.command;$("mVerifyCommand").dataset.source=first.source||'detected';}
+    if(!$("mPackCheck").value)$("mPackCheck").value=first.command;
+  }).catch(function(){});
+}
 
 var IDENTITY={name:"Collie",machine:"",os:"",avatar:LOGO},currentHeaderTitle="",connectionState="connecting";
 var currentSession=null,currentRun=null,running=false,externalRunning=false;
@@ -915,10 +923,10 @@ function stopRun(){ var active=running||externalRunning; if(!active||cancelling)
     .catch(function(e){cancelling=false;showBanner(t('Could not stop the run')+': '+e.message);setSendMode();}); }
 function autosize(){ var i=$("input"); i.style.height='auto'; i.style.height=Math.min(i.scrollHeight,140)+'px'; }
 function detachActive(){navigationToken++;clearTimeout(cancelTimer);cancelTimer=0;if(runES){try{runES.close();}catch(_){}runES=null;}if(mirrorES){try{mirrorES.close();}catch(_){}mirrorES=null;}running=false;externalRunning=false;cancelling=false;runCanSteer=false;runCapabilitiesKnown=false;currentRun=null;curTurn=null;packRows=[];mobileRunnerEventCount=0;pendingPermissions={};hideBanner();setSendMode();}
-function newChat(){ detachActive(); currentSession=null;$("log").innerHTML='';setHeaderTitle('');welcome(); closeDrawer(false); loadSessions();refreshPendingApprovals(); $("input").focus(); }
+function newChat(){ detachActive(); currentSession=null;refreshVerification();$("log").innerHTML='';setHeaderTitle('');welcome(); closeDrawer(false); loadSessions();refreshPendingApprovals(); $("input").focus(); }
 function welcome(){ $("log").innerHTML='<div class="empty"><img src="'+LOGO+'" alt=""><div class="lead">'+t('Your personal AI operations system')+'</div><div class="sub">'+t('Ask once. Collie can work across your files, browser, desktop, and long-running missions.')+'</div></div>'; }
 function sessionTitle(msgs){ for(var i=0;i<msgs.length;i++){ if(msgs[i].role==='user'&&typeof msgs[i].content==='string') return msgs[i].content.replace(/\s+/g,' ').slice(0,40); } return ''; }
-function openSession(id){detachActive();var request=++navigationToken;currentSession=id;$("log").innerHTML='';closeDrawer(false);$("input").focus();
+function openSession(id){detachActive();var request=++navigationToken;currentSession=id;refreshVerification();$("log").innerHTML='';closeDrawer(false);$("input").focus();
   function render(s){if(request!==navigationToken||currentSession!==id)return;
     var msgs=(s&&s.messages)||[]; var tt=sessionTitle(msgs);setHeaderTitle(tt);
     msgs.forEach(function(m){ if(m.role==='user'){ addUser(typeof m.content==='string'?m.content:t('[image]')); }

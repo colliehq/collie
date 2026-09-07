@@ -56,7 +56,7 @@ BUSY_ERROR = "this session already has an active run"
 # the follow-up under something other than what the person selected.
 CONFIG_KEYS = ("intent", "quality", "verification", "workspace", "strategy",
                "effort", "speed", "runner", "explicit_axes", "verify_command",
-               "verify_source", "n", "check", "apply", "route_kind")
+               "verify_source", "n", "check", "apply", "route_kind", "cwd")
 AXES = ("intent", "quality", "verification", "workspace", "strategy", "effort", "speed")
 _ENUMS = {"workspace": ("current", "isolated"), "strategy": ("single", "pack"),
           "speed": ("standard", "fast"),
@@ -153,7 +153,7 @@ def semantic_config(raw):
             raise WebInputError("%s must be one of %s" % (key, ", ".join(allowed)), 400)
         out[key] = value.strip().lower()
     for key, limit in (("runner", 64), ("route_kind", 32), ("verify_source", 160),
-                       ("verify_command", 2000), ("check", 2000)):
+                       ("verify_command", 2000), ("check", 2000), ("cwd", 4096)):
         value = raw.get(key)
         if value in (None, ""):
             out[key] = ""
@@ -238,7 +238,7 @@ def stream_query(session, config):
     cfg = config if isinstance(config, dict) else {}
     out = {"session": [session]}
     for key in ("intent", "quality", "verification", "workspace", "strategy", "effort",
-                "speed", "runner", "verify_command", "verify_source", "check", "route_kind"):
+                "speed", "runner", "verify_command", "verify_source", "check", "route_kind", "cwd"):
         value = cfg.get(key)
         if value not in (None, ""):
             out[key] = [str(value)]

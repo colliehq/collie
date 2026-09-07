@@ -116,3 +116,30 @@ def test_multimodal_titles_and_unique_tool_paths_survive_index(store):
     cold = sessions.recent()[0]
     assert (cold["title"], cold["turns"], cold["touches"], cold["edits"]) == ("Inspect this", 1, 1, 1)
     assert sessions.recent()[0] == cold
+
+
+def test_warm_recovery_listing_reads_active_journals_but_skips_inactive_history(store, monkeypatch):
+    save('done')
+    sessions.checkpoint('running',[],state='external_action')
+    sessions.recent()
+    original=sessions._load_raw; reads=[]
+    def read(path):
+        reads.append(os.path.basename(path)); return original(path)
+    monkeypatch.setattr(sessions,'_load_raw',read)
+    active=sessions.active_runs()
+    assert [row['session_id'] for row in active]==['running']
+    assert reads==['running.json']
+    assert active[0]['recovery_required']
+
+
+def test_timeline_reads_the_parent_and_uses_index_for_fork_navigation(store, monkeypatch):
+    save('parent'); save('unrelated')
+    sessions.fork('parent',2,child_id='child',title='Alternate approach')
+    sessions.recent()
+    original=sessions._load_raw; reads=[]
+    def read(path):
+        reads.append(os.path.basename(path)); return original(path)
+    monkeypatch.setattr(sessions,'_load_raw',read)
+    timeline=sessions.timeline('parent')
+    assert timeline['children'][0]['title']=='Alternate approach'
+    assert reads==['parent.json']

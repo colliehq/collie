@@ -81,6 +81,13 @@ def store_root(state_dir=None):
                                os.path.expanduser("~/.collie"))
     if os.path.normcase(requested) == os.path.normcase(current):
         return _dir()
+    # An explicitly configured legacy/custom session store can itself identify
+    # the requested installation. Never reuse an override from an unrelated root.
+    override = os.environ.get("COLLIE_SESSIONS_DIR")
+    if override:
+        parent = os.path.normcase(os.path.dirname(os.path.realpath(os.path.expanduser(override))))
+        if parent in (os.path.normcase(requested), os.path.normcase(os.path.join(requested, "data"))):
+            return _dir()
     return os.path.join(requested, "data", "sessions")
 
 
@@ -355,6 +362,23 @@ def append_run_receipt(sid, receipt, limit=40, directory=None):
         obj["updated"] = time.time()
         _atomic_dump(obj, p)
     return True
+
+
+def bind_isolated_workspace(sid, info, cwd=""):
+    """Record a prepared workspace before dispatch, under the caller's run lease."""
+    p = _path(sid)
+    if not p or not info.get("ok") or not os.path.isdir(info.get("dir") or ""):
+        raise ValueError("isolated workspace is unavailable")
+    with _locked(p):
+        raw = _validate_raw(_load_raw(p), sid) if os.path.exists(p) else {"id": sid, "messages": []}
+        workspace = {"mode": "isolated", "path": info["dir"], "branch": info["branch"],
+                     "origin": info["root"], "base_commit": info.get("base_commit") or ""}
+        raw.update(cwd=info["dir"], workspace=workspace, updated=time.time())
+        raw["handoffs"] = (list(raw.get("handoffs") or []) + [
+            {"at": raw["updated"], "target": "isolated", "workspace": workspace,
+             "from": cwd}])[-50:]
+        _atomic_dump(raw, p)
+    return workspace
 
 
 def checkpoint(sid, messages, project="demo", cwd="", run_id="", turn=0,
@@ -934,7 +958,19 @@ def fork(sid, at_index, *, child_id="", title=""):
 
 
 def handoff(sid, target, *, confirm=False, remove_isolated=False):
-    """Move a session between its local checkout and a managed isolated worktree."""
+    """Move a stopped conversation's workspace under the same execution lease."""
+    from . import session_owner
+    lease = session_owner.try_acquire(sid, label="workspace-handoff")
+    if lease is None:
+        raise ValueError("this conversation is running; stop it before moving its workspace")
+    try:
+        return _handoff_owned(sid, target, confirm=confirm, remove_isolated=remove_isolated)
+    finally:
+        lease.release()
+
+
+def _handoff_owned(sid, target, *, confirm=False, remove_isolated=False):
+    """Move a workspace while the caller owns the execution lease, without blocking readers."""
     p = _path(sid)
     if not p or not os.path.exists(p):
         raise KeyError("no such session")
@@ -944,37 +980,59 @@ def handoff(sid, target, *, confirm=False, remove_isolated=False):
     from . import worktree
     with _locked(p):
         raw = _validate_raw(_load_raw(p), sid)
-        workspace = dict(raw.get("workspace") or {})
+    workspace = dict(raw.get("workspace") or {})
+    previous_workspace, previous_cwd = dict(workspace), raw.get("cwd")
+    previous_active = raw.get("active_run")
+    if _recovery_required(previous_active):
+        raise ValueError("inspect the interrupted operation before moving its workspace")
+    old_path = ""
+    if target == "isolated":
+        if workspace.get("mode") == "isolated" and os.path.isdir(workspace.get("path") or ""):
+            return {"ok": True, "session": sid, "workspace": workspace, "existing": True}
+        result = worktree.prepare(raw.get("cwd") or os.getcwd(), sid, label=raw.get("title") or sid)
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or "could not create isolated workspace")
+        workspace = {"mode": "isolated", "path": result["dir"], "branch": result["branch"],
+                     "origin": result["root"], "base_commit": result.get("base_commit") or ""}
+    else:
+        if workspace.get("mode") != "isolated":
+            return {"ok": True, "session": sid, "workspace": workspace, "existing": True}
+        def before_apply():
+            with _locked(p):
+                latest = _validate_raw(_load_raw(p), sid)
+                if latest.get("workspace") != previous_workspace or latest.get("cwd") != previous_cwd:
+                    raise ValueError("workspace changed before handoff; reload this conversation")
+                latest["active_run"] = {"run_id": "workspace-handoff", "turn": 0,
+                    "state": "external_action", "updated": time.time(),
+                    "detail": {"operation": "workspace_handoff", "source": workspace.get("path"),
+                               "destination": workspace.get("origin")}}
+                _atomic_dump(latest, p)
+        result = worktree.handoff_to_local(
+            workspace.get("path") or "", workspace.get("origin") or "",
+            workspace.get("base_commit") or "", confirm=confirm, before_apply=before_apply)
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or "handoff failed")
+        old_path = workspace.get("path") or ""
+        workspace = {"mode": "local", "path": workspace.get("origin") or "",
+                     "from_branch": workspace.get("branch") or "", "applied_files": result.get("files") or []}
+    with _locked(p):
+        # A title/receipt may have changed while Git ran. Preserve that metadata.
+        raw = _validate_raw(_load_raw(p), sid)
+        if dict(raw.get("workspace") or {}) != previous_workspace or raw.get("cwd") != previous_cwd:
+            raise ValueError("workspace changed during handoff; inspect before retrying")
+        if target == "local":
+            if previous_active is None:
+                raw.pop("active_run", None)
+            else:
+                raw["active_run"] = previous_active
         now = time.time()
-        if target == "isolated":
-            if workspace.get("mode") == "isolated" and os.path.isdir(workspace.get("path") or ""):
-                return {"ok": True, "session": sid, "workspace": workspace, "existing": True}
-            cwd = raw.get("cwd") or os.getcwd()
-            result = worktree.prepare(cwd, sid, label=raw.get("title") or sid)
-            if not result.get("ok"):
-                raise ValueError(result.get("error") or "could not create isolated workspace")
-            workspace = {"mode": "isolated", "path": result["dir"], "branch": result["branch"],
-                         "origin": result["root"], "base_commit": result.get("base_commit") or ""}
-            raw["cwd"] = result["dir"]
-        else:
-            if workspace.get("mode") != "isolated":
-                return {"ok": True, "session": sid, "workspace": workspace, "existing": True}
-            result = worktree.handoff_to_local(
-                workspace.get("path") or "", workspace.get("origin") or "",
-                workspace.get("base_commit") or "", confirm=confirm)
-            if not result.get("ok"):
-                raise ValueError(result.get("error") or "handoff failed")
-            old_path = workspace.get("path") or ""
-            workspace = {"mode": "local", "path": workspace.get("origin") or "",
-                         "from_branch": workspace.get("branch") or "",
-                         "applied_files": result.get("files") or []}
-            raw["cwd"] = workspace["path"]
-            if remove_isolated:
-                released = worktree.release(old_path, force=True)
-                workspace["isolated_removed"] = bool(released.get("ok"))
-        raw["workspace"] = workspace
-        handoffs = list(raw.get("handoffs") or [])
-        handoffs.append({"at": now, "target": target, "workspace": workspace})
-        raw["handoffs"] = handoffs[-50:]; raw["updated"] = now
+        raw.update(cwd=workspace["path"], workspace=workspace, updated=now)
+        raw["handoffs"] = (list(raw.get("handoffs") or []) +
+                           [{"at": now, "target": target, "workspace": workspace}])[-50:]
         _atomic_dump(raw, p)
+    # A requested cleanup happens only after the new durable location is committed.
+    if remove_isolated and old_path:
+        released = worktree.release(old_path, force=True)
+        workspace["isolated_removed"] = bool(released.get("ok"))
     return {"ok": True, "session": sid, "workspace": workspace}
+

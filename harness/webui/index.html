@@ -2172,6 +2172,17 @@
   .task-queue textarea {box-sizing:border-box;width:100%;min-height:68px;max-height:160px;resize:vertical;background:transparent;color:inherit;border:1px solid var(--line,#dedfd9);border-radius:6px;padding:6px;font:inherit;}
   .task-queue-notice {padding:0 12px 9px;color:var(--muted,#69736b);overflow-wrap:anywhere;}
   @media(max-width:640px) {.task-queue-list {max-height:140px;}}
+  .task-workspace { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+  .task-workspace summary { cursor: pointer; display: flex; gap: 8px; min-width: 0; align-items: baseline; }
+  #taskWorkspaceLabel { flex-shrink: 0; }
+  #taskWorkspacePath { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, monospace); }
+  .task-workspace-controls { padding: 10px 0 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .task-workspace-controls label, .task-workspace-controls p { width: 100%; margin: 0; overflow-wrap: anywhere; }
+  #taskFolder { flex: 1; min-width: 100px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); }
+  .task-workspace-controls button, #draftNotice button { border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; background: var(--surface); color: var(--ink); cursor: pointer; }
+  #draftNotice { font-size: 12px; color: var(--muted); }
+  #draftNotice button { margin-left: 8px; }
+  #taskWorkspaceStatus:empty, #taskWorkspaceNote:empty { display: none; }
 </style>
 
 <div class="app" data-ui="calm-os">
@@ -2532,11 +2543,23 @@
 
     <!-- composer -->
     <div class="composer" id="composer">
+      <details class="task-workspace" id="taskWorkspace">
+        <summary><span id="taskWorkspaceLabel" data-i18n="Working folder">Working folder</span><span id="taskWorkspacePath"></span></summary>
+        <div class="task-workspace-controls">
+          <label for="taskFolder" data-i18n="Folder on this computer">Folder on this computer</label>
+          <input id="taskFolder" type="text" spellcheck="false" autocomplete="off" aria-label="Folder on this computer" data-i18n-aria-label="Folder on this computer">
+          <button type="button" id="taskFolderUse" data-i18n="Use folder">Use folder</button>
+          <p id="taskWorkspaceNote"></p>
+          <button type="button" id="taskWorkspaceApply" hidden data-i18n="Apply changes to main project">Apply changes to main project</button>
+          <p id="taskWorkspaceStatus" role="status" aria-live="polite"></p>
+        </div>
+      </details>
       <section class="task-queue" id="taskQueue" aria-label="Pending requests" hidden>
         <div class="task-queue-head"><strong id="taskQueueTitle"></strong><button type="button" id="taskQueueStart" hidden></button></div>
         <div class="task-queue-list" id="taskQueueList"></div>
         <div class="task-queue-notice" id="taskQueueNotice" role="status" aria-live="polite" hidden></div>
       </section>
+      <p id="draftNotice" role="status" hidden></p>
       <div class="attach-strip" id="attachStrip" hidden></div>
       <div class="ide-context-strip" id="ideContextStrip" aria-label="Attached IDE context" hidden></div>
       <div class="composer-context" aria-label="Task privacy and access">
@@ -3780,6 +3803,13 @@
     "Automatic task progress is temporarily blocked":"自动推进任务暂时受阻",
     "Saved tasks are kept. Open Settings to check the model connection.":"已保存任务仍然保留。可在设置中检查模型连接。",
     "{n} saved requests waiting":"{n} 条已保存要求待继续","Saved requests need inspection":"已保存要求需要检查",
+    "Working folder":"工作目录","Isolated folder":"隔离目录","Folder on this computer":"这台电脑上的文件夹","Use folder":"使用此目录",
+    "Continue in this folder":"从此目录继续","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目录已丢失，请恢复原目录或选择新位置。更改位置不会复制或恢复文件。",
+    "Apply changes to main project":"将修改应用到主项目","Changes stay here until you apply them. Main project:":"应用前，修改保留在此目录。主项目：",
+    "This conversation continues in its saved folder.":"这段对话会继续使用已保存的目录。","Select Use folder to check this location.":"请点击「使用此目录」检查位置。",
+    "Checking folder...":"正在检查目录…","Applying changes...":"正在应用修改…","Changes applied. The isolated folder is kept.":"修改已应用，隔离目录已保留。",
+    "Saved in the isolated folder. Apply changes from Working folder.":"成果已保存到隔离目录，可从「工作目录」应用修改。",
+    "Text draft restored. Reattach files before sending.":"已恢复文字草稿，请在发送前重新附加文件。","Keep text only":"只保留文字",
     "Reset to Auto":"恢复自动选择","Your choices stay with this conversation in this tab, including after refresh.":"这个标签页会记住每段对话的运行选择，刷新后也保留。",
     "Overview":"概览","Habits":"常用工作流","Budgets":"用量限制","None":"暂无","Automations":"自动化","Memory":"记忆","Recovery":"恢复",
     "Services":"服务","Session recovery":"会话恢复","Hooks (read-only)":"扩展事件（只读）","Doctor":"运行诊断",
@@ -3962,6 +3992,13 @@
     "Automatic task progress is temporarily blocked":"自動推進任務暫時受阻",
     "Saved tasks are kept. Open Settings to check the model connection.":"已儲存任務仍然保留。可在設定中檢查模型連線。",
     "{n} saved requests waiting":"{n} 個已儲存要求待繼續","Saved requests need inspection":"已儲存要求需要檢查",
+    "Working folder":"工作目錄","Isolated folder":"隔離目錄","Folder on this computer":"這台電腦上的資料夾","Use folder":"使用此目錄",
+    "Continue in this folder":"從此目錄繼續","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目錄已遺失，請恢復原目錄或選擇新位置。變更位置不會複製或恢復檔案。",
+    "Apply changes to main project":"將修改套用到主專案","Changes stay here until you apply them. Main project:":"套用前，修改保留在此目錄。主專案：",
+    "This conversation continues in its saved folder.":"這段對話會繼續使用已儲存的目錄。","Select Use folder to check this location.":"請點擊「使用此目錄」檢查位置。",
+    "Checking folder...":"正在檢查目錄…","Applying changes...":"正在套用修改…","Changes applied. The isolated folder is kept.":"修改已套用，隔離目錄已保留。",
+    "Saved in the isolated folder. Apply changes from Working folder.":"成果已儲存到隔離目錄，可從「工作目錄」套用修改。",
+    "Text draft restored. Reattach files before sending.":"已恢復文字草稿，請在傳送前重新附加檔案。","Keep text only":"只保留文字",
     "Reset to Auto":"恢復自動選擇","Your choices stay with this conversation in this tab, including after refresh.":"這個分頁會記住每段對話的執行選擇，重新整理後也保留。",
     "Overview":"概覽","Habits":"常用工作流程","Budgets":"用量限制","None":"暫無","Automations":"自動化","Memory":"記憶","Recovery":"復原",
     "Services":"服務","Session recovery":"工作階段復原","Hooks (read-only)":"擴充事件（唯讀）","Doctor":"執行診斷",
@@ -7178,6 +7215,7 @@
     } catch (_) {}
   }
   function prepareMissionCanvas(mid) {
+    switchComposerDraft("mission:" + (mid || "new"));
     if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun(); currentSession = null; currentRun = null; currentTitle = "";
     selectedMission = mid || ""; selectedMissionTitle = ""; rememberMission(mid);
@@ -8549,6 +8587,7 @@
     host.appendChild(card);
   }
   function openSession(id) {
+    switchComposerDraft(id);
     if (window.switchTaskSetup) window.switchTaskSetup(id);
     detachRun();
     var loadToken = routeToken;
@@ -8576,6 +8615,7 @@
         return row.session === id;
       })[0];
       if (s && s.error) throw new Error(s.error);
+      if (window.showTaskWorkspace) window.showTaskWorkspace(s.cwd, s.workspace);
       if (run) liveRuns[id] = run; else delete liveRuns[id];
       var msgs = (s && s.messages) || [], firstAsk = "";
       msgs.forEach(function (m) {
@@ -8947,10 +8987,11 @@
     $("log").innerHTML = WELCOME_HTML; applyLang(); renderCollieIdentity(); setProductNav("home");
   }
   function showToday(userRequested) {
+    switchComposerDraft(null);
     if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun(); currentSession = null; currentRun = null; currentTitle = ""; loadTaskQueue();
     rememberSession(null);
-    clearAttached(); clearManualIdeContexts(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
+    clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     $("log").innerHTML = TODAY_HTML; applyLang(); renderCollieIdentity();
     setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setProductNav("today");
     if (userRequested && $("scroll")) $("scroll").scrollTop = 0;
@@ -9009,11 +9050,12 @@
     if (surface === "today") loadToday(false);
   }
   function newThread(userRequestedFocus) {
+    switchComposerDraft(null);
     if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null; currentTitle = "";
     rememberSession(null);
-    loadTaskQueue(); clearAttached(); clearManualIdeContexts();
+    loadTaskQueue();
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     setProductNav("home"); setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     loadSessions(); focusComposer(userRequestedFocus === true);
@@ -9312,6 +9354,71 @@
   function restoreIdeContexts(items) {
     ideManualContexts = (items || []).map(cleanContextItem).filter(Boolean); renderIdeContexts();
   }
+  var composerDraftScope, composerDrafts = {};
+  function draftKey(sid) { return "collie-composer-draft:v1:" + (sid || "new"); }
+  function storeComposerDraft(scope, row) {
+    try {
+      if (!row.text && !row.images.length && !row.contexts.length && !row.missingAttachments)
+        sessionStorage.removeItem(draftKey(scope));
+      else sessionStorage.setItem(draftKey(scope), JSON.stringify({text:row.text,
+        hasAttachments:!!(row.images.length || row.contexts.length || row.missingAttachments)}));
+    } catch (_) {} // Storage can be full or disabled; the in-page draft still survives navigation.
+  }
+  function saveComposerDraft() {
+    if (composerDraftScope === undefined) return;
+    var previous = composerDrafts[draftKey(composerDraftScope)] || {};
+    var row = {text:$("input").value, images:attached.slice(), contexts:ideManualContexts.slice(),
+      revision:queueDraftRevision, missingAttachments:previous.missingAttachments && !attached.length && !ideManualContexts.length};
+    composerDrafts[draftKey(composerDraftScope)] = row; storeComposerDraft(composerDraftScope, row);
+  }
+  function switchComposerDraft(sid) {
+    // Today is painted once before the composer is initialized. The final bootstrap restores it.
+    if (!composerDrafts) return;
+    sid = sid || null;
+    if (composerDraftScope === sid) return;
+    saveComposerDraft(); composerDraftScope = sid;
+    var row = composerDrafts[draftKey(sid)];
+    if (!row) {
+      var saved = {};
+      try { saved = JSON.parse(sessionStorage.getItem(draftKey(sid)) || "{}") || {}; } catch (_) {}
+      row = {text:typeof saved.text === "string" ? saved.text : "", images:[], contexts:[],
+        missingAttachments:!!saved.hasAttachments};
+      composerDrafts[draftKey(sid)] = row;
+    }
+    $("input").value = row.text; attached = row.images.slice(); ideManualContexts = row.contexts.slice();
+    renderAttached(); renderIdeContexts();
+    $("draftNotice").hidden = !row.missingAttachments;
+    $("draftNotice").textContent = row.missingAttachments ? t("Text draft restored. Reattach files before sending.") : "";
+    if (row.missingAttachments) {
+      var discard = document.createElement("button"); discard.type = "button";
+      discard.textContent = t("Keep text only");
+      discard.onclick = function () {
+        composerDrafts[draftKey(composerDraftScope)].missingAttachments = false;
+        $("draftNotice").hidden = true; saveComposerDraft();
+      };
+      $("draftNotice").appendChild(discard);
+    }
+    queueDraftRevision = typeof row.revision === "number" ? row.revision : 0;
+    var restoredInput = new Event("input", {bubbles:true}); restoredInput.collieDraftRestore = true;
+    $("input").dispatchEvent(restoredInput);
+  }
+  function adoptComposerDraft(sid) {
+    if (!sid || composerDraftScope === sid) return;
+    var oldKey = draftKey(composerDraftScope);
+    saveComposerDraft();
+    composerDrafts[draftKey(sid)] = composerDrafts[oldKey]; delete composerDrafts[oldKey];
+    try { sessionStorage.removeItem(oldKey); } catch (_) {}
+    composerDraftScope = sid; saveComposerDraft();
+  }
+  function acknowledgeDetachedDraft(sid, text, revision, images, contexts) {
+    var row = composerDrafts[draftKey(sid)];
+    if (!row) return;
+    if (row.text === text && row.revision === revision) row.text = "";
+    row.images = row.images.filter(function (image) { return images.indexOf(image) < 0; });
+    if (JSON.stringify(row.contexts) === contexts) row.contexts = [];
+    storeComposerDraft(sid, row);
+  }
+  window.addEventListener("pagehide", saveComposerDraft);
   function uploadIdeContexts(items) {
     if (!items || !items.length) return Promise.resolve("");
     return fetch("/api/ide/context?token=" + encodeURIComponent(CT), {
@@ -9393,6 +9500,7 @@
       return window.runExplicitAxes[k] && k !== "runner";
     });
     return {
+      cwd: ($("taskFolder") && $("taskFolder").value.trim()) || "",
       intent: ($("runIntent") && $("runIntent").value) || "build",
       quality: ($("runQuality") && $("runQuality").value) || "balanced",
       verification: ($("runVerification") && $("runVerification").value) || "auto",
@@ -9410,6 +9518,9 @@
     };
   }
   function validateRunConfig(config) {
+    if ($("taskFolder") && !$("taskFolder").checkValidity()) {
+      $("taskWorkspace").open = true; $("taskFolder").reportValidity(); return false;
+    }
     var packNEl = $("packN"), packCheckEl = $("packCheck"), verifyEl = $("verifyCommand");
     if (packNEl) packNEl.setCustomValidity("");
     if (packCheckEl) packCheckEl.setCustomValidity("");
@@ -9449,7 +9560,7 @@
 
   // Accepted requests belong to the conversation, including while its tab is closed.
   var taskQueueState, taskQueueRequests = {}, queueDraftRevision = 0;
-  $("input").addEventListener("input", function () { queueDraftRevision++; });
+  $("input").addEventListener("input", function (event) { if (!event.collieDraftRestore) queueDraftRevision++; });
   function followUpPlaceholder() {
     return t((IDE_PREFS.followUpQueueMode || "queue") === "steer" && runCanSteer ?
       "Steer while the worker runs — Enter to send" : "Follow up while the worker runs — Enter queues");
@@ -9650,7 +9761,9 @@
         if (!data.accepted || !data.entry) throw new Error(t("Request save was not confirmed"));
         try { sessionStorage.removeItem(key); } catch (_) {}
         delete taskQueueRequests[key];
-        if (currentSession !== sid) return;
+        if (currentSession !== sid) {
+          acknowledgeDetachedDraft(sid, originalDraft, originalRevision, imgs, originalManual); return;
+        }
         var state = queueState();
         state.entries = state.entries.filter(function (entry) { return entry.id !== data.entry.id; }).concat([data.entry]);
         state.entries.sort(function (a,b) { return a.seq - b.seq; }); state.notice = "";
@@ -9679,6 +9792,10 @@
     var imgs = attached.slice();
     var manualContextCount = ideManualContexts.length;
     var contexts = ideContextItems();
+    var draft = composerDrafts[draftKey(composerDraftScope)] || {};
+    if (draft.missingAttachments && !imgs.length && !manualContextCount) {
+      $("draftNotice").hidden = false; return;
+    }
     // The Today composer is universal, but a submitted request is still a task. Swap to a clean
     // conversation canvas before rendering the user's message so the dashboard never stacks above
     // a transcript and the request receives the same durable thread semantics as New task.
@@ -9902,6 +10019,7 @@
               "&quality=" + encodeURIComponent(quality) +
               "&verification=" + encodeURIComponent(verification) +
               "&workspace=" + encodeURIComponent(workspace) +
+              (runConfig.cwd ? "&cwd=" + encodeURIComponent(runConfig.cwd) : "") +
               "&strategy=" + encodeURIComponent(strategy) +
               "&effort=" + encodeURIComponent(runConfig.effort || "auto") +
               "&speed=" + encodeURIComponent(runConfig.speed || "standard") +
@@ -9930,7 +10048,9 @@
 
     es.addEventListener("start", function (e) {
       var d = JSON.parse(e.data);
+      adoptComposerDraft(d.session);
       if (window.adoptTaskSetup) window.adoptTaskSetup(d.session);
+      if (window.showTaskWorkspace) window.showTaskWorkspace(d.cwd, d.workspace_info);
       currentSession = d.session;
       rememberSession(currentSession);
       currentRun = d.run || null;
@@ -10257,8 +10377,8 @@
         if (d.isolated && d.branch) {
           var br = document.createElement("div"); br.className = "pack-summary";
           br.innerHTML = '\u2387 <b>' + esc(d.branch) + '</b> — ' +
-            (d.changed ? (d.changed + " " + t("file(s) changed") +
-                          ". <code>git diff main.." + esc(d.branch) + "</code>")
+            (d.changed ? (d.changed + " " + t("file(s) changed") + ". " +
+                          t("Saved in the isolated folder. Apply changes from Working folder."))
                        : t("no files changed"));
           flowEl.appendChild(br);
         }
@@ -10636,7 +10756,66 @@
           strategy: $("runStrategy"), effort: $("runEffort"), speed: $("runSpeed"),
           runner: $("runRunner") };
     var setupLocked = false, capabilities = null;
-    var setupSession = null, setupCwd = "", scopeRequest = 0;
+    var setupSession = null, setupCwd = "", scopeRequest = 0, workspaceInfo = {}, workspaceMissing = false;
+    var folder = $("taskFolder"), folderUse = $("taskFolderUse"), workspaceApply = $("taskWorkspaceApply");
+    function paintWorkspace() {
+      var isolated = workspaceInfo.mode === "isolated";
+      $("taskWorkspaceLabel").textContent = t(isolated ? "Isolated folder" : "Working folder");
+      $("taskWorkspacePath").textContent = setupCwd;
+      $("taskWorkspacePath").title = setupCwd;
+      folder.readOnly = !!setupSession && !workspaceMissing; folder.disabled = setupLocked;
+      folderUse.hidden = !!setupSession && !workspaceMissing; folderUse.disabled = setupLocked;
+      folderUse.textContent = t(setupSession ? "Continue in this folder" : "Use folder");
+      workspaceApply.hidden = !isolated || workspaceMissing; workspaceApply.disabled = setupLocked;
+      $("taskWorkspaceNote").textContent = workspaceMissing
+        ? t("Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.") : isolated
+        ? t("Changes stay here until you apply them. Main project:") + " " + (workspaceInfo.origin || "")
+        : setupSession ? t("This conversation continues in its saved folder.") : "";
+    }
+    window.showTaskWorkspace = function (cwd, info) {
+      if (cwd) { setupCwd = cwd; folder.value = cwd; }
+      workspaceInfo = info || {}; paintWorkspace(); saveSetup();
+    };
+    folder.addEventListener("input", function () {
+      folder.setCustomValidity(t("Select Use folder to check this location."));
+    });
+    folderUse.onclick = function () {
+      if (!setupSession) { window.refreshVerificationCandidates(); return; }
+      if (!workspaceMissing || setupLocked) return;
+      var sid = setupSession;
+      folderUse.disabled = true;
+      authenticatedFetch("/api/session/relocate", {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({session:sid,cwd:folder.value.trim()})})
+        .then(function (r) { return r.json().then(function (data) {
+          if (!r.ok || !data.ok) throw new Error(data.error || "HTTP " + r.status); return data;
+        }); }).then(function () {
+          if (setupSession !== sid) return;
+          workspaceMissing = false; folder.setCustomValidity("");
+          fields.workspace.value = "current"; delete window.runExplicitAxes.workspace;
+          saveSetup(); openSession(sid);
+        }).catch(function (error) {
+          if (setupSession === sid) $("taskWorkspaceStatus").textContent = error.message || String(error);
+        }).finally(paintWorkspace);
+    };
+    workspaceApply.onclick = function () {
+      var sid = setupSession;
+      if (!sid || setupLocked) return;
+      workspaceApply.disabled = true;
+      $("taskWorkspaceStatus").textContent = t("Applying changes...");
+      authenticatedFetch("/api/session/handoff", {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({session:sid,target:"local",confirm:true,remove_isolated:false})})
+        .then(function (r) { return r.json().then(function (data) {
+          if (!r.ok || !data.ok) throw new Error(data.error || "HTTP " + r.status);
+          return data;
+        }); }).then(function () {
+          if (setupSession !== sid) return;
+          fields.workspace.value = "current"; delete window.runExplicitAxes.workspace;
+          saveSetup(); openSession(sid);
+          $("taskWorkspaceStatus").textContent = t("Changes applied. The isolated folder is kept.");
+        }).catch(function (error) {
+          if (setupSession === sid) $("taskWorkspaceStatus").textContent = error.message || String(error);
+        }).finally(function () { paintWorkspace(); });
+    };
     var defaults = {intent:"build",quality:"balanced",verification:"auto",workspace:"current",
       strategy:"single",effort:"auto",speed:"standard",runner:""};
     window.runExplicitAxes = window.runExplicitAxes || {};
@@ -10672,6 +10851,8 @@
       // Applying a Pack result is a choice for one run, never a remembered grant.
       $("packApply").checked = false;
       setupCwd = typeof saved.cwd === "string" ? saved.cwd : "";
+      folder.value = setupCwd; folder.setCustomValidity(""); workspaceInfo = {}; workspaceMissing = false;
+      $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
       [verifyCommand, packCheck, $("packN")].forEach(function (el) { el.setCustomValidity(""); });
       paint();
     }
@@ -10685,7 +10866,7 @@
       if (!setupSession) {
         try { sessionStorage.removeItem(storageKey(null)); } catch (_) {}
       }
-      setupSession = sid; saveSetup();
+      setupSession = sid; paintWorkspace(); saveSetup();
     };
     window.addEventListener("pagehide", saveSetup);
     function positionMenu() {
@@ -10859,7 +11040,7 @@
     });
     window.addEventListener("resize", function () { if (!menu.hidden) positionMenu(); });
     window.refreshRunSetup = paint;
-    window.setRunSetupLocked = function (value) { setupLocked = !!value; paint(); };
+    window.setRunSetupLocked = function (value) { setupLocked = !!value; paint(); paintWorkspace(); };
     window.refreshRunCapabilities = function () {
       return fetch("/api/run-capabilities").then(function (r) { return r.json(); }).then(function (caps) {
         capabilities = caps || {};
@@ -10907,16 +11088,27 @@
     window.refreshVerificationCandidates = function () {
       var request = ++scopeRequest, sid = setupSession, beforeVerify = verifyCommand.value,
           beforeCheck = packCheck.value, beforeCwd = setupCwd;
-      var path = "/api/verification" + (sid ? "?session=" + encodeURIComponent(sid) : "");
+      var requestedFolder = !sid ? folder.value.trim() : "";
+      var path = "/api/verification" + (sid ? "?session=" + encodeURIComponent(sid) :
+        requestedFolder ? "?cwd=" + encodeURIComponent(requestedFolder) : "");
+      if (requestedFolder) folder.setCustomValidity(t("Checking folder..."));
       return authenticatedFetch(path).then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
+        return r.json().then(function (data) {
+          if (!r.ok) {
+            var error = new Error(data.error || "HTTP " + r.status);
+            error.workspaceMissing = !!data.workspace_missing; throw error;
+          }
+          return data;
+        });
       }).then(function (data) {
         if (request !== scopeRequest || setupSession !== sid) return;
         if (beforeCwd && data.cwd && beforeCwd !== data.cwd) {
           if (verifyCommand.value === beforeVerify) { verifyCommand.value = ""; verifyCommand.dataset.source = ""; }
           if (packCheck.value === beforeCheck) { packCheck.value = ""; packCheck.dataset.source = ""; }
         }
-        setupCwd = data.cwd || "";
+        if (!sid && folder.value.trim() !== requestedFolder) return;
+        setupCwd = data.cwd || ""; folder.value = setupCwd; folder.setCustomValidity(""); workspaceMissing = false;
+        $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
         var first = (data.candidates || [])[0];
         if (!first) { saveSetup(); return; }
         if (verifyCommand && !verifyCommand.value) {
@@ -10925,7 +11117,13 @@
         }
         if (packCheck && !packCheck.value) { packCheck.value = first.command; packCheck.dataset.source = first.source || "detected"; }
         saveSetup();
-      }).catch(function () {});
+      }).catch(function (error) {
+        if (request !== scopeRequest || setupSession !== sid) return;
+        workspaceMissing = !!error.workspaceMissing; paintWorkspace();
+        if (workspaceMissing) $("taskWorkspace").open = true;
+        $("taskWorkspaceStatus").textContent = error.message || String(error);
+        if (!sid && requestedFolder) folder.setCustomValidity(error.message || String(error));
+      });
     };
     menu.addEventListener("click", saveSetup);
     [$("packN"),packCheck,verifyCommand].forEach(function (el) { el.addEventListener("input", saveSetup); });
@@ -10989,7 +11187,7 @@
     input.style.height = "auto";
     input.style.height = Math.min(180, input.scrollHeight) + "px";
     input.style.overflowY = input.scrollHeight > 180 ? "auto" : "hidden";
-    updateSlashMenu();
+    updateSlashMenu(); saveComposerDraft();
   });
   input.addEventListener("keydown", function (e) {
     if (slashMenu && !slashMenu.hidden) {
@@ -11201,6 +11399,7 @@
     poll(); setInterval(poll, 4000);
   })();
 
+  switchComposerDraft(INITIAL_SESSION || null);
   loadSessions();
   if (INITIAL_MISSION) showMission(INITIAL_MISSION);
   else if (INITIAL_SESSION) openSession(INITIAL_SESSION);

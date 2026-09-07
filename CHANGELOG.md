@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.25.0 — Tasks keep their place
+
+- Conversations retain their run setup across refreshes in the same tab, including Required
+  verification. Check discovery follows the saved project; new tasks can choose a working folder.
+  Reset to Auto is explicit, and permission to apply a Pack result is never remembered.
+- Text drafts belong to their conversation. Attachments survive navigation within the page;
+  after reload, missing attachments must be reattached or explicitly omitted before sending.
+  Late queue acknowledgements retire only the accepted draft, including after navigation.
+- Saved requests waiting after Stop appear on Today, in the sidebar and in Needs you. Mission
+  scheduler failures are visible when scheduled tasks cannot make progress.
+- Isolated tasks save and reuse their workspace across turns. The UI shows the actual folder and
+  offers an explicit handoff to the main project, preserving the isolated copy. Dirty main projects
+  are refused; execution leases and a durable effect boundary protect interrupted handoffs.
+- Desktop shortcuts share the conversation execution lease and record their results in that thread.
+  Recovery reads and writes use the same store and owner lock as the executor.
+- A disposable SQLite metadata index makes repeated history navigation independent of transcript
+  size when files are unchanged. The original JSON journals remain authoritative for execution and
+  recovery; a missing, corrupt or unavailable index falls back to those journals.
+- Optional name customization can be skipped across browser restarts. Simplified and Traditional
+  Chinese cover the new workspace and draft controls.
+
 ## v0.24.0 — Live Copilot becomes a general work mode
 
 - Live now begins a timestamped, bounded context log immediately: foreground windows, semantic

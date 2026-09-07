@@ -105,7 +105,15 @@ def prepare(cwd, session, label=""):
                 break
             n += 1
 
-    dst = os.path.join(tempfile.mkdtemp(prefix="collie_wt_"), _slug(session))
+    # These are saved task results. OS temporary-directory cleanup must not remove them.
+    from . import sessions
+    parent = os.path.join(os.path.dirname(sessions.store_root()), "workspaces")
+    try:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        dst = os.path.join(tempfile.mkdtemp(prefix="collie_wt_", dir=parent), _slug(session))
+    except OSError as exc:
+        return {"ok": False, "dir": cwd, "branch": "", "root": root, "kind": "none",
+                "error": "could not create saved workspace: %s" % exc}
     ok, out = _git(["worktree", "add", "-b", branch, dst, "HEAD"], root, timeout=180)
     if not ok:
         shutil.rmtree(os.path.dirname(dst), ignore_errors=True)
@@ -115,18 +123,19 @@ def prepare(cwd, session, label=""):
             "base_commit": base_commit, "kind": "worktree", "error": ""}
 
 
-def _git_input(args, cwd, data, timeout=120):
+def _git_input(args, cwd, data=None, timeout=120):
+    """Transport patches as bytes: newline conversion damages binary and CRLF diffs."""
     try:
         from . import plat
         proc = subprocess.run(["git"] + list(args), cwd=cwd, timeout=timeout, input=data,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               **plat.no_window_kwargs())
-        return proc.returncode == 0, (proc.stdout or "").strip()
+        return proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr)
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, "%s: %s" % (type(exc).__name__, exc)
+        return False, ("%s: %s" % (type(exc).__name__, exc)).encode("utf-8")
 
 
-def handoff_to_local(wt_dir, local_root, base_commit, *, confirm=False):
+def handoff_to_local(wt_dir, local_root, base_commit, *, confirm=False, before_apply=None):
     """Copy an isolated diff into a clean local checkout after explicit confirmation."""
     if confirm is not True:
         return {"ok": False, "applied": False, "error": "explicit confirmation required"}
@@ -144,20 +153,19 @@ def handoff_to_local(wt_dir, local_root, base_commit, *, confirm=False):
         return {"ok": False, "applied": False, "error": "handoff base commit is unavailable"}
     # Intent-to-add includes new files in the binary-safe patch without staging their contents.
     _git(["add", "-A", "--intent-to-add"], wt_dir)
-    ok, patch = _git(["diff", "--binary", str(base_commit)], wt_dir, timeout=180)
+    ok, patch = _git_input(["diff", "--binary", str(base_commit)], wt_dir, timeout=180)
     if not ok:
-        return {"ok": False, "applied": False, "error": patch[:300]}
+        return {"ok": False, "applied": False, "error": patch.decode("utf-8", "replace")[:300]}
     if not patch:
         return {"ok": True, "applied": False, "files": [], "error": ""}
-    # _git normalizes command output with strip() for human-facing callers. A patch parser needs
-    # the final record terminator back, otherwise even a one-hunk diff is reported as corrupt.
-    patch += "\n"
     ok, detail = _git_input(["apply", "--check", "-"], local_root, patch, timeout=180)
     if not ok:
-        return {"ok": False, "applied": False, "error": ("handoff conflicts: " + detail)[:500]}
+        return {"ok": False, "applied": False, "error": ("handoff conflicts: " + detail.decode("utf-8", "replace"))[:500]}
+    if before_apply:
+        before_apply()
     ok, detail = _git_input(["apply", "-"], local_root, patch, timeout=180)
     if not ok:
-        return {"ok": False, "applied": False, "error": ("handoff apply failed: " + detail)[:500]}
+        return {"ok": False, "applied": False, "error": ("handoff apply failed: " + detail.decode("utf-8", "replace"))[:500]}
     ok, changed = _git(["status", "--porcelain"], local_root)
     files = []
     if ok:
