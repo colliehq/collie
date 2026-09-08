@@ -570,8 +570,8 @@ function paintRunSetup(){
   $("mStrategy").disabled=setupLocked||nonBuild;
   ["mPackN","mPackCheck","mPackApply","mVerifyCommand"].forEach(function(id){$(id).disabled=setupLocked;});
   $("mPackOpts").hidden=!pack; $("mPackCheck").required=pack;
-  $("mVerifyWrap").hidden=!(test||(!nonBuild&&$("mVerification").value==="required"));
-  $("mVerifyCommand").required=test||(!nonBuild&&$("mVerification").value==="required");
+  $("mVerifyWrap").hidden=!(test||(!nonBuild&&!pack&&$("mVerification").value==="required"));
+  $("mVerifyCommand").required=test||(!nonBuild&&!pack&&$("mVerification").value==="required");
   var depth=$("mQuality").value==="thorough"?t("Thorough"):($("mQuality").value==="quick"?t("Quick"):t("Balanced"));
   var parts=[intent==="plan"?t("Plan"):intent==="review"?t("Review"):test?t("Test"):depth];
   if(!nonBuild&&$("mVerification").value==="required")parts.push(t("Verify"));
@@ -587,7 +587,7 @@ function validateRunSetup(){
   var count=$("mPackN"),check=$("mPackCheck"),verify=$("mVerifyCommand"),
       pack=$("mStrategy").value==="pack", intent=$("mIntent").value;
   count.setCustomValidity("");check.setCustomValidity("");verify.setCustomValidity("");
-  if((intent==="test"||$("mVerification").value==="required")&&!verify.value.trim()){
+  if((intent==="test"||(!pack&&$("mVerification").value==="required"))&&!verify.value.trim()){
     verify.setCustomValidity(t("Test or Required verification needs a proposed check command."));
     $("runSetup").open=true;verify.reportValidity();verify.focus();return false;
   }

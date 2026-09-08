@@ -226,6 +226,15 @@ def main():
               };
             }""")
             pg.click("#modeTrigger")
+            pg.click('[data-axis="verification"][data-val="required"]')
+            # A clean installed workspace may have no detected check. Running
+            # this only from the source repo used to hide duplicate validation.
+            pg.evaluate("document.getElementById('verifyCommand').value = ''")
+            pg.fill("#input", "/code require a check for a single run")
+            pg.click("#send")
+            check("single Required verification still needs a command",
+                  pg.evaluate("window.__invalidDesktopStream === null && document.activeElement.id === 'verifyCommand'"))
+            pg.click("#modeTrigger")
             pg.click('[data-axis="strategy"][data-val="pack"]')
             pg.fill("#packN", "7")
             pg.fill("#packCheck", "pytest -q")
@@ -239,9 +248,18 @@ def main():
             check("desktop rejects out-of-range Pack attempts before launch",
                   invalid_pack["stream"] is None and invalid_pack["focused"] == "packN" and
                   "invalid pack" in invalid_pack["value"], str(invalid_pack))
+            check("desktop Pack uses its own check without a duplicate required field",
+                  pg.locator("#verifyOpts").is_hidden() and
+                  pg.eval_on_selector("#verifyCommand", "e => !e.required"))
             pg.fill("#packN", "3")
+            pg.fill("#packCheck", "")
+            pg.click("#send")
+            check("Pack still requires its own executed check",
+                  pg.evaluate("window.__invalidDesktopStream === null && document.activeElement.id === 'packCheck'"))
+            pg.fill("#packCheck", "pytest -q")
             pg.click("#modeTrigger")
             pg.click('[data-axis="strategy"][data-val="single"]')
+            pg.click('[data-axis="verification"][data-val="auto"]')
             pg.keyboard.press("Escape")
 
             # --- model picker lives in the toolbar; run details stay available without a status rail ---
@@ -485,6 +503,10 @@ def main():
                       '#mWorkspace option[value="current"]',
                       "e => /candidates isolated|候选隔离运行|候選隔離執行/.test(e.textContent)"))
             pg.fill("#mPackCheck", "pytest -q")
+            pg.evaluate("document.getElementById('mVerifyCommand').value = ''")
+            check("phone Pack uses its own check without a duplicate required field",
+                  pg.locator("#mVerifyWrap").is_hidden() and
+                  pg.eval_on_selector("#mVerifyCommand", "e => !e.required"))
             pg.check("#mPackApply")
             pg.evaluate("""() => {
               window.__lastRunUrl = null;

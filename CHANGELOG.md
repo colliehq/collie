@@ -23,6 +23,9 @@
   Waiting task cards show the next check's local date, time and timezone.
 - Output-truncation recovery restores the provider's configured generation limit when the run
   ends, so a later task does not inherit an earlier task's temporary increase.
+- Pack uses its candidate check on desktop and phone without demanding a second verification
+  command. Empty checks and invalid attempt counts still prevent launch, including in a fresh
+  installed workspace where no repository check can be detected.
 
 ## v0.25.0 — Tasks keep their place
 

@@ -9547,7 +9547,7 @@
     if (packNEl) packNEl.setCustomValidity("");
     if (packCheckEl) packCheckEl.setCustomValidity("");
     if (verifyEl) verifyEl.setCustomValidity("");
-    if ((config.intent === "test" || config.verification === "required") && !config.verify_command) {
+    if ((config.intent === "test" || (config.strategy !== "pack" && config.verification === "required")) && !config.verify_command) {
       if (verifyEl) {
         verifyEl.setCustomValidity(t("Test or Required verification needs a proposed check command."));
         verifyEl.reportValidity(); verifyEl.focus();
@@ -11026,9 +11026,9 @@
                  verification === "required" ? "verify" : quality;
       if (tdot) tdot.setAttribute("data-mode", tone);
       if (po) po.hidden = !packing;
-      if (verifyOpts) verifyOpts.hidden = !(testing || (!nonBuild && verification === "required"));
+      if (verifyOpts) verifyOpts.hidden = !(testing || (!nonBuild && !packing && verification === "required"));
       if (packCheck) packCheck.required = packing;
-      if (verifyCommand) verifyCommand.required = testing || (!nonBuild && verification === "required");
+      if (verifyCommand) verifyCommand.required = testing || (!nonBuild && !packing && verification === "required");
       trig.disabled = setupLocked;
       $("resetRunSetup").disabled = setupLocked;
       [$("packN"), packCheck, $("packApply"), verifyCommand].forEach(function (el) {
