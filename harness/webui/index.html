@@ -258,7 +258,10 @@
     .topbar .tbtn { width: 32px; height: 32px; }
   }
   @media (max-width: 480px) {
-    .topbar h1 { display: none; }
+    /* The active task stays identifiable after scrolling past its first message. */
+    .topbar h1 { flex: 1; }
+    .topbar .spacer { display: none; }
+    .topbar > .tbtn, .topbar > .topbar-more { flex-shrink: 0; }
   }
   /* 320 CSS px is the WCAG reflow baseline and still represents older iPhones and
      400%-zoom desktop windows.  Keep every action reachable without making the
