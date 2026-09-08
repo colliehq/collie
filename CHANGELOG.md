@@ -31,6 +31,9 @@
   task's actual request and token limits; separate recovered errors no longer end a long task.
 - Claude Code workers receive the selected reasoning effort on initial and resumed turns,
   including queued Web requests and every Pack candidate. Auto retains the CLI default.
+- Resuming older tool-call records no longer repeatedly appends their history. Checkpoints
+  retain original stored records and preserve new incoming metadata. Journal writes encode once
+  before the existing atomic replace, reducing serialization overhead without changing the format.
 
 ## v0.25.0 — Tasks keep their place
 

@@ -238,19 +238,65 @@ def _validate_raw(raw, sid):
     return raw
 
 
+def _message_json(message):
+    """Compare JSON representations without deleting fields from either record."""
+    try:
+        return json.dumps(message, ensure_ascii=False,
+                          sort_keys=True, default=str, allow_nan=False)
+    except Exception:
+        return None
+
+
+def _same_message(stored, live):
+    """Recognize a loaded prefix without discarding new incoming information.
+
+    Only the stored side may pass through the legacy reader. The incoming side
+    is already serialized by the caller; projecting it again would discard new
+    tool metadata or false/zero arguments. A match keeps the original stored
+    record, including information the legacy reader did not expose to the run.
+    """
+    if stored == live:
+        return True
+    right = _message_json(live)
+    if right is None:
+        return False
+    if _message_json(stored) == right:
+        return True
+    try:
+        loaded = _msgs_out(_msgs_in([stored]))[0]
+    except Exception:
+        return False
+    return _message_json(loaded) == right
+
+
 def _merge_messages(old, new):
-    """Merge two histories that grew from a common prefix, preserving both completed exchanges."""
+    """Merge two histories that grew from a common prefix, preserving both completed exchanges.
+
+    The prefix scan decides how much of ``old`` and ``new`` is the SAME
+    conversation.  Getting that wrong is not a cosmetic error: a false divergence
+    at index i makes this append the whole live history onto the stored one, so a
+    resumed thread duplicates its own past — and duplicates it again at every
+    checkpoint after that, feeding the model the same tool calls and results over
+    and over.  That is why the comparison is ``_same_message`` and not ``==``.
+
+    Where the two only match after the reader's projection, the STORED record is
+    the one kept: the incoming copy has already lost whatever the reader dropped
+    (an unparseable legacy tool_call, an unknown key on a tool_call dict), and a
+    merge is not the place to normalise a durable record away.
+    """
     old, new = list(old or []), list(new or [])
     common = 0
-    while common < min(len(old), len(new)) and old[common] == new[common]:
+    while common < min(len(old), len(new)) and _same_message(old[common], new[common]):
         common += 1
     if common == len(old):
-        return new
+        return old + new[common:]
     if common == len(new):
         return old
     merged = old + new[common:]
     # A retry may submit the identical suffix after another writer already committed it.
-    if new[common:] and len(old) >= len(new) - common and old[-(len(new) - common):] == new[common:]:
+    tail = new[common:]
+    if tail and len(old) >= len(tail) and all(
+            _same_message(a, b) for a, b in zip(old[-len(tail):], tail)):
         return old
     return merged
 
@@ -682,9 +728,14 @@ def _atomic_dump(obj, p):
     # name MUST be unique per writer: under ThreadingHTTPServer two threads saving the same session id
     # share a pid, so a pid-only name collided and corrupted the file the comment claims to protect.
     tmp = "%s.%d.%s.tmp" % (p, os.getpid(), os.urandom(6).hex())
+    # Encode once to use CPython's fast encoder and avoid per-token file writes.
+    # This allocates a temporary string the size of the journal. Encoding before
+    # opening the file also keeps serialization failures from leaving a partial
+    # temp file. Flush, fsync and atomic replacement remain the durability boundary.
+    blob = json.dumps(obj, ensure_ascii=False, default=str, allow_nan=False)
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, default=str, allow_nan=False)
+            f.write(blob)
             f.flush()
             os.fsync(f.fileno())
         try:

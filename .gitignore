@@ -93,6 +93,8 @@ bench/experiments/*
 !bench/subscription_rank_tasks.py
 !bench/subscription_rank_worker.py
 !bench/subscription-rank.Dockerfile
+# Reproduces the session-storage measurements in report.md (temp dirs only).
+!bench/session_storage_profile.py
 .bench-tmp/
 data/rebench/
 data/swebench.json
