@@ -1565,6 +1565,8 @@ class Harness:
                                  existing=getattr(self, "run_owner", None)) as lease:
                 self._lease = lease
                 res = None
+                run_provider = self.provider
+                original_max_tokens = getattr(run_provider, "max_tokens", None)
                 try:
                     # Durable input state is established BEFORE the first hook, the
                     # first journal write and the first provider call, so a request
@@ -1578,8 +1580,16 @@ class Harness:
                     # After the run's own final journal write and before the lease
                     # goes. Here rather than inside _run so that every ending — a
                     # blocking hook, an exception, a stop — settles the same way.
-                    self._settle_durable_input(res)
-                    self._lease = None
+                    try:
+                        self._settle_durable_input(res)
+                    finally:
+                        self._lease = None
+                        # Output-truncation recovery borrows more room for this
+                        # run. A reused provider must start the next task with
+                        # its configured value, including after an exception.
+                        if (original_max_tokens is not None and
+                                getattr(run_provider, "max_tokens", None) != original_max_tokens):
+                            run_provider.max_tokens = original_max_tokens
                 return res
         except _ownership.OwnershipRefused as exc:
             res = self._refusal(task_id, str(exc), "ownership_refused")
@@ -2212,7 +2222,7 @@ class Harness:
                     # needs a big output finishes; a runaway is still stopped by the round bound below.
                     try:
                         cur = int(getattr(self.provider, "max_tokens", 0) or 0)
-                        if cur:
+                        if 0 < cur < 32768:
                             self.provider.max_tokens = min(32768, cur * 2)
                     except (TypeError, ValueError):
                         pass

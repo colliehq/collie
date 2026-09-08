@@ -809,8 +809,15 @@ def test_loop_truncation_escalates_max_tokens():
     prov = _ScriptProvider([trunc, trunc, trunc, Completion(text="ok", stop_reason="end_turn", usage=Usage(input_tokens=3))])
     assert prov.max_tokens == 4096
     h.provider = prov
+    seen = []
+    original_complete = prov.complete
+    def record_limit(*args, **kwargs):
+        seen.append(prov.max_tokens)
+        return original_complete(*args, **kwargs)
+    prov.complete = record_limit
     h.run("esc", "fix")
-    assert prov.max_tokens > 4096, "each length-stop must escalate the output ceiling, got %d" % prov.max_tokens
+    assert seen == [4096, 8192, 16384]
+    assert prov.max_tokens == 4096, "the next task must retain its configured output limit"
 
 def test_judge_error_completion_neutral():
     from harness.judge import judge_quality

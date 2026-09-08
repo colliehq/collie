@@ -21,6 +21,8 @@
   workers preserve the provider's reset timestamp and resume the saved task after it, within the
   task's deadline. Incomplete tool effects and missing usage evidence still require attention.
   Waiting task cards show the next check's local date, time and timezone.
+- Output-truncation recovery restores the provider's configured generation limit when the run
+  ends, so a later task does not inherit an earlier task's temporary increase.
 
 ## v0.25.0 — Tasks keep their place
 
