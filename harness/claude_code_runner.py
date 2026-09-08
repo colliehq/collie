@@ -26,10 +26,11 @@ What that means concretely:
   from the user's subscription to their API account while the receipt still said
   "subscription", and that is not undoable after the fact.
 
-Flags that are *not* here, and why: ``--max-turns`` and
-``--permission-prompt-tool`` do not exist in the CLI this was written against
-(2.1.221) — they are in the older docs, not in ``claude --help``;
-``--no-session-persistence`` would make ``resume`` impossible; ``bypassPermissions``
+Flags that are *not* here, and why: ``--max-turns`` would impose another fixed
+turn ceiling on a product task. The comparison benchmark uses that optional
+flag, but the product runner deliberately does not. No permission-prompt tool
+is connected to Collie's approval channel. ``--no-session-persistence`` would
+make ``resume`` impossible; ``bypassPermissions``
 and the ``--dangerously-*`` family are the thing this module exists to avoid.
 ``_assert_safe_argv`` re-checks all of them at call time, because the argv is
 assembled from constructor arguments and a review of this file is not evidence
@@ -604,7 +605,7 @@ class ClaudeCodeRunner:
             data.get("result"), 1_000_000)
         subtype = str(data.get("subtype") or "").lower()
         # `error_max_turns` / `max_turns` — Claude stopped at its own ceiling.  We
-        # never ask for one (there is no --max-turns in 2.1.x), so seeing this
+        # never ask for one in this product runner, so seeing this
         # means the ceiling came from the CLI's own default.
         turns_exhausted = "max_turn" in subtype
         is_error = data.get("is_error") is True

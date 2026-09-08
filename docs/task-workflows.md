@@ -103,4 +103,4 @@ Claude 订阅额度耗尽且返回明确重置时间时，Mission 会保存进�
 
 停止状态会区分正常结束、用户取消、预算或轮数耗尽、工具失败和需要核对的未知结果。遇到恢复提示，先看实际文件或外部系统发生了什么；不要把未知动作直接当作“没有执行”再来一次。受控进程树和工作目录约束不等于完整操作系统沙箱。
 
-需要查看实测和产品取舍，可阅读 [0.25 产品复审](product-evolution-2026-09-07.md)、[产品审计](project-audit-2026-09-06.md) 与 [开源 harness 源码参考](agent-harness-reference-2026-09-06.md)。
+需要查看实测和产品取舍，可阅读 [0.26 产品复审](product-evolution-2026-09-08.md)、[0.25 产品复审](product-evolution-2026-09-07.md)、[产品审计](project-audit-2026-09-06.md) 与 [开源 harness 源码参考](agent-harness-reference-2026-09-06.md)。
