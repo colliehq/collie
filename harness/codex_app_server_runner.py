@@ -363,6 +363,8 @@ class CodexAppServerRunner:
         self._turn_done = threading.Event()
         self._cancel_requested = False
         self._write_request_id = 10_000
+        self._steer_waiters: dict[str, dict[str, Any]] = {}
+        self._steer_ack_timeout_s = 1.0
 
     def set_event_callback(self, callback: Callable[[RunnerEvent], Any] | None) -> None:
         self._event_callback = callback
@@ -391,23 +393,63 @@ class CodexAppServerRunner:
         return self._invoke(snapshot, _prompt(prompt), root, timeout_s)
 
     def steer_current(self, prompt: str) -> bool:
+        """Return True only after the server accepts input for this exact turn.
+
+        False means no write was attempted (usually the launch race). A failed
+        or unacknowledged write raises a non-replayable delivery error instead.
+        The invocation thread remains the only reader of the RPC transport.
+        """
         text = _prompt(prompt)
         with self._active_lock:
             transport = self._active
             thread_id = self._active_thread_id
-            if transport is None or not thread_id or self._turn_done.is_set():
+            turn_id = self._active_turn_id
+            if (transport is None or not thread_id or not turn_id
+                    or self._turn_done.is_set()):
                 return False
             self._write_request_id += 1
-            request_id = self._write_request_id
+            request_id = "collie-steer-%d" % self._write_request_id
+            waiter = {"event": threading.Event(), "reply": None}
+            self._steer_waiters[request_id] = waiter
             try:
                 transport.send({
                     "method": "turn/steer", "id": request_id,
                     "params": {"threadId": thread_id,
+                               "expectedTurnId": turn_id,
                                "input": [{"type": "text", "text": text}]},
                 })
-                return True
-            except Exception:
-                return False
+            except Exception as exc:
+                self._steer_waiters.pop(request_id, None)
+                raise runner_specs.RunnerMessageDeliveryError(
+                    "steering write failed; delivery is unknown") from exc
+        waiter["event"].wait(self._steer_ack_timeout_s)
+        with self._active_lock:
+            self._steer_waiters.pop(request_id, None)
+            reply = waiter["reply"]
+        if not isinstance(reply, dict):
+            raise runner_specs.RunnerMessageDeliveryError(
+                "steering acknowledgement did not arrive; delivery is unknown")
+        if "error" in reply:
+            raise runner_specs.RunnerMessageDeliveryError(
+                "server rejected steering for the active turn", delivery="rejected")
+        result = reply.get("result")
+        if not isinstance(result, dict) or result.get("turnId") != turn_id:
+            raise runner_specs.RunnerMessageDeliveryError(
+                "steering acknowledgement named a different turn; delivery is unknown")
+        return True
+
+    def _receive_steer_reply(self, message: Mapping[str, Any]) -> bool:
+        request_id = message.get("id")
+        if not isinstance(request_id, str) or not request_id.startswith("collie-steer-"):
+            return False
+        with self._active_lock:
+            waiter = self._steer_waiters.get(request_id)
+            if waiter is not None:
+                waiter["reply"] = dict(message)
+                waiter["event"].set()
+        # Late receipts belong to an expired delivery, never to a later turn
+        # or the bounded cache for ordinary request/response RPCs.
+        return True
 
     def cancel_current(self) -> bool:
         deadline = time.monotonic() + 5.0
@@ -577,6 +619,9 @@ class CodexAppServerRunner:
                     close_confirmed = False
             with self._active_lock:
                 cancelled = self._cancel_requested
+                for waiter in self._steer_waiters.values():
+                    waiter["event"].set()
+                self._steer_waiters.clear()
                 self._active = None
                 self._active_thread_id = ""
                 self._active_turn_id = ""
@@ -616,10 +661,11 @@ class CodexAppServerRunner:
 
     def _send_request(self, transport: RpcTransport, method: str,
                       params: Mapping[str, Any]) -> int:
-        self._write_request_id += 1
-        request_id = self._write_request_id
-        transport.send({"method": method, "id": request_id,
-                        "params": dict(params)})
+        with self._active_lock:
+            self._write_request_id += 1
+            request_id = self._write_request_id
+            transport.send({"method": method, "id": request_id,
+                            "params": dict(params)})
         return request_id
 
     def _request(self, transport: RpcTransport, state: dict[str, Any],
@@ -637,6 +683,8 @@ class CodexAppServerRunner:
                 message = transport.receive(remaining)
                 if "method" in message:
                     self._handle_message(transport, state, message)
+                    continue
+                if self._receive_steer_reply(message):
                     continue
                 if message.get("id") != request_id:
                     if len(state["responses"]) >= 64:
@@ -693,6 +741,8 @@ class CodexAppServerRunner:
                         message: dict[str, Any]) -> None:
         method = str(message.get("method") or "")
         if not method:
+            if self._receive_steer_reply(message):
+                return
             if "id" in message:
                 if len(state["responses"]) >= 64:
                     raise runner_specs.RunnerProtocolError(

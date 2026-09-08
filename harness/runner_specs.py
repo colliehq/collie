@@ -314,6 +314,14 @@ class RunnerProtocolError(RunnerError):
     """A runner spoke something we could not frame, decode, or correlate."""
 
 
+class RunnerMessageDeliveryError(RunnerError):
+    """A sent message was rejected or its receipt is unknown; do not replay it."""
+
+    def __init__(self, message: str, *, delivery: str = "unknown"):
+        super().__init__(message)
+        self.delivery = "rejected" if delivery == "rejected" else "unknown"
+
+
 class RunnerBillingError(RunnerError):
     """A billing route could not be evidenced, or an env override would change it.
 

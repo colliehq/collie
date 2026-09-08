@@ -560,6 +560,12 @@ class _SteerWatcher:
                     continue
                 try:
                     accepted = bool(deliver(item.text))
+                except runner_specs.RunnerMessageDeliveryError as exc:
+                    # The transport may already have delivered the message.
+                    # Retrying an ambiguous write can duplicate a user action.
+                    self._delivery(item, False, str(exc), delivery=exc.delivery)
+                    self._pending.pop(0)
+                    continue
                 except Exception:
                     accepted = False
                 if not accepted:
@@ -569,13 +575,14 @@ class _SteerWatcher:
             self._stop.wait(self._poll_s)
 
     def _delivery(self, item: runner_specs.QueuedTurnMessage,
-                  accepted: bool, reason: str) -> None:
+                  accepted: bool, reason: str, *, delivery: str = "") -> None:
         if self._emit is None:
             return
         try:
             self._emit("runner.message_delivery", {
                 "message_id": item.message_id, "mode": item.mode,
                 "accepted": accepted, "reason": reason,
+                "delivery": delivery or ("accepted" if accepted else "not_sent"),
             })
         except Exception:
             pass
