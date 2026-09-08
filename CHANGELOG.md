@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.26.0 — Reliable agent handoffs and response accounting
+
+- The Claude Agent SDK receives the tool results selected by the context composer without a
+  second, silent 2,000-character cut. Provider rejections preserve their validated category,
+  subscription authentication evidence and measured usage.
+- Request budgets count physically issued calls across the main loop, critics, compaction and
+  Mission planning. A denied request counts as zero; a multi-request completion keeps its actual
+  count. An unavailable critic follows the existing optional-check failure policy.
+- Native structured formatting remains opt-in after coding comparisons exposed completion
+  failures. A formatter refusal becomes an accounted protocol error eligible for the host's
+  bounded repair; native formatter retries are disabled before inference begins.
+- Codex steering supplies the active turn ID and waits for the server's acceptance. Rejected or
+  uncertain delivery is recorded without replaying a possibly delivered instruction.
+- Container verification uses the host's execution receipts. A passing fix can satisfy the SWE
+  finish gate, while command output imitating a successful result cannot provide evidence.
+- Continue preserves unsent text, images and IDE context for review before sending. An empty
+  composer keeps its direct continuation shortcut, and narrow screens retain the active task title.
+
 ## v0.25.0 — Tasks keep their place
 
 - Conversations retain their run setup across refreshes in the same tab, including Required
