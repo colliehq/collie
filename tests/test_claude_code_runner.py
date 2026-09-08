@@ -161,6 +161,53 @@ def test_unknown_speed_is_rejected_before_a_process_can_start():
     assert process.calls == []
 
 
+def test_effort_is_passed_on_start_and_repeated_on_resume(tmp_path):
+    # Every turn launches a process, including resumed turns: a follow-up that
+    # dropped the flag would quietly finish the person's
+    # task at a different reasoning level than the one they selected.
+    process = FakeProcessRunner(_outcome(), _outcome(result="and again"))
+    runner = _runner(process, effort="high", digests=("a", "a", "a", "a"))
+
+    first = runner.start("step one", str(tmp_path))
+    runner.resume(first, "step two")
+
+    started, resumed = process.calls[0]["argv"], process.calls[1]["argv"]
+    assert started[started.index("--effort") + 1] == "high"
+    assert resumed[resumed.index("--effort") + 1] == "high"
+    assert resumed[resumed.index("--resume") + 1] == SESSION
+
+
+@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+def test_every_documented_effort_level_reaches_argv(level, tmp_path):
+    process = FakeProcessRunner(_outcome())
+
+    _runner(process, effort=level).start("go", str(tmp_path))
+
+    argv = process.calls[0]["argv"]
+    assert argv[argv.index("--effort") + 1] == level
+
+
+@pytest.mark.parametrize("auto", ["auto", "default", "provider-default", ""])
+def test_auto_effort_passes_no_flag_and_leaves_the_cli_default_alone(auto, tmp_path):
+    process = FakeProcessRunner(_outcome())
+
+    _runner(process, effort=auto).start("go", str(tmp_path))
+
+    assert "--effort" not in process.calls[0]["argv"]
+
+
+def test_unknown_effort_is_rejected_before_a_process_can_start():
+    # The CLI itself only warns on stderr and runs at its default level
+    # ("Warning: Unknown --effort value ... ignoring it", claude 2.1.221), which
+    # is exactly the silent substitution this refusal exists to prevent.
+    process = FakeProcessRunner(_outcome())
+
+    with pytest.raises(ValueError, match="reasoning effort must be auto"):
+        _runner(process, effort="ultra")
+
+    assert process.calls == []
+
+
 def test_prompt_on_stdin(tmp_path):
     # A prompt is untrusted text of unbounded length: on Windows it would blow the
     # command-line limit, and on any platform it would be visible in `ps`.

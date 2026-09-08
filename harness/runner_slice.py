@@ -52,6 +52,7 @@ from typing import Any, Callable, Mapping
 
 from . import runner_registry as registry, runner_specs
 from .agent_runners import RunnerEvent, RunnerSnapshot
+from .claude_code_runner import normalize_effort
 from .recorder import RunResult
 from .runner_specs import (
     HarnessDecision,
@@ -121,8 +122,8 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
               steering: Callable[[], list[Any]] | None = None,
               history_note: str | None = None,
               resume_from: Any = None,
-              model: str = "", speed: str = "standard", provider: str = "",
-              task_id: str = "", recorder: Any = None) -> RunResult:
+              model: str = "", speed: str = "standard", effort: str = "auto",
+              provider: str = "", task_id: str = "", recorder: Any = None) -> RunResult:
     """Carry ``task`` to the worker ``decision`` chose and report what happened.
 
     ``decision`` must be a decision to *run*: an empty ``runner`` or a non-empty
@@ -157,6 +158,12 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
     signature; without them an external worker would silently use its CLI
     default and the row would not say which Brain answered.
 
+    ``effort`` is the person's resolved reasoning-effort choice, for the same
+    reason: the receipt records it, so it has to be what the worker was actually
+    started with.  Today only the ``claude-code`` adapter forwards it; the value
+    is still validated for every key, and ``"auto"``/``"default"`` means the worker
+    keeps its own default.
+
     Returns a ``RunResult`` with a ``RunnerReceipt`` attached (:func:`receipt_of`
     / :data:`RECEIPT_ATTR`).  ``verified`` is never set here.
     """
@@ -175,6 +182,11 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
     speed = str(speed or "standard").strip().lower()
     if speed not in ("standard", "fast"):
         raise ValueError("worker speed must be standard or fast")
+    # Same contract as `speed`: the caller's reasoning-effort choice is checked
+    # before anything is launched, so a bad level is the caller's error rather
+    # than a turn that quietly ran at the CLI's default.  "auto"/"default" (what
+    # the router says when nobody chose) normalizes to "" and passes no flag.
+    effort = normalize_effort(effort)
 
     root = _canonical_workspace(workspace)
     prompt = _prompt_text(task, history_note)
@@ -200,7 +212,7 @@ def run_adhoc(decision: HarnessDecision, task: str | runner_specs.RunInput,
                 "event": "fallback", "from": decision.runner, "to": key,
                 "reason": outcome.reason if outcome is not None else "",
             })
-        outcome = _attempt(key, prompt, root, prior, timeout_s, model, speed,
+        outcome = _attempt(key, prompt, root, prior, timeout_s, model, speed, effort,
                            cancelled, emit,
                            approval_callback, steering, read_only=decision.read_only)
         if not (outcome.pre_prompt_failure and index + 1 < len(chain)):
@@ -260,7 +272,7 @@ class _Attempt:
 
 def _attempt(key: str, prompt: str | runner_specs.RunInput, workspace: str,
              prior: RunnerSnapshot | None,
-             timeout_s: float | None, model: str, speed: str,
+             timeout_s: float | None, model: str, speed: str, effort: str,
              cancelled: Callable[[], bool] | None,
              emit: Callable[[str, dict], Any] | None,
              approval_callback: Callable[[str, dict], str] | None,
@@ -274,7 +286,7 @@ def _attempt(key: str, prompt: str | runner_specs.RunInput, workspace: str,
             pre_prompt_failure=True)
 
     try:
-        runner = registry.make_runner(key, model=model, speed=speed,
+        runner = registry.make_runner(key, model=model, speed=speed, effort=effort,
                                       timeout_s=timeout_s,
                                       env_policy=spec.env_policy,
                                       **({"read_only":True} if read_only else {}))

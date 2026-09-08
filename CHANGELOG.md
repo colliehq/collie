@@ -29,6 +29,8 @@
 - Successful model responses restore the allowance for a later response-format correction.
   Consecutive malformed replies remain bounded, and all corrections still count toward the
   task's actual request and token limits; separate recovered errors no longer end a long task.
+- Claude Code workers receive the selected reasoning effort on initial and resumed turns,
+  including queued Web requests and every Pack candidate. Auto retains the CLI default.
 
 ## v0.25.0 — Tasks keep their place
 

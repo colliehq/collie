@@ -1824,6 +1824,7 @@ def _run_on_worker(args, hd, decision, request, emit, *, cwd, sid, history,
         emit=emit, approval_callback=approval_callback, cancelled=None,
         history_note=(None if resume_from else _worker_history_note(history)),
         resume_from=resume_from, model=model, speed=worker_speed,
+        effort=decision.effort,
         provider=_worker_provider(hd),
         task_id="adhoc", recorder=recorder)
 

@@ -97,10 +97,12 @@ class _Factory:
     def __init__(self, runners: dict):
         self.runners = runners
         self.built: list[str] = []
+        self.kwargs: list[dict] = []
 
-    def __call__(self, key, *, model="", speed="standard", timeout_s=None,
-                 env_policy=""):
+    def __call__(self, key, *, model="", speed="standard", effort="auto",
+                 timeout_s=None, env_policy=""):
         self.built.append(key)
+        self.kwargs.append({"model": model, "speed": speed, "effort": effort})
         runner = self.runners.get(key)
         if runner is None:
             raise AssertionError("test built an unexpected runner: %s" % key)

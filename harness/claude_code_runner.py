@@ -142,6 +142,15 @@ _USAGE_KEYS = (
     "cache_creation_input_tokens",
 )
 
+# The effort levels `claude --effort <level>` documents (2.1.x).  This is the
+# CLI's own vocabulary, not a provider's: the worker *is* the Claude Code CLI, so
+# what it accepts is what may be asked of it.
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+# Spellings that mean "do not pass --effort at all" — the router says "default"
+# when the person chose Auto, and callers that have no opinion pass "" or None.
+_AUTO_EFFORT = frozenset({"", "auto", "default", "provider-default"})
+
 # argv elements that must never appear, whatever the caller asked for.
 _BANNED_ARGV = frozenset({
     "--dangerously-skip-permissions", "--max-turns", "--no-session-persistence",
@@ -251,6 +260,25 @@ def _assert_safe_argv(argv: list[str]) -> None:
             raise ValueError("refusing to start claude-code with %r" % item)
 
 
+def normalize_effort(value: Any) -> str:
+    """Return the ``--effort`` level to pass, or ``""`` for "let the CLI decide".
+
+    Strict on purpose, and in one place: an effort the person selected is either
+    carried to the worker exactly or refused loudly.  Silently substituting the
+    CLI default is the failure mode this function exists to prevent, so anything
+    that is neither an Auto spelling nor a documented level raises.
+    """
+    level = str(value or "").strip().lower()
+    if level in _AUTO_EFFORT:
+        return ""
+    if level not in EFFORT_LEVELS:
+        # Same sentence `providers.resolve_reasoning_effort` uses, so one wrong
+        # value reads the same whether a Brain or a worker refused it.
+        raise ValueError("reasoning effort must be auto, %s, or %s"
+                         % (", ".join(EFFORT_LEVELS[:-1]), EFFORT_LEVELS[-1]))
+    return level
+
+
 def _budget(value: float) -> str:
     """Format a dollar cap for ``--max-budget-usd`` without exponent notation."""
     return ("%.6f" % float(value)).rstrip("0").rstrip(".") or "0"
@@ -273,7 +301,7 @@ class ClaudeCodeRunner:
     credential_family = CREDENTIAL_FAMILY
 
     def __init__(self, *, executable: str = BINARY, model: str = "",
-                 speed: str = "standard",
+                 speed: str = "standard", effort: str = "auto",
                  max_budget_usd: float | None = None,
                  tools: tuple[str, ...] = DEFAULT_TOOLS,
                  process_runner: ProcessRunner | None = None,
@@ -298,6 +326,9 @@ class ClaudeCodeRunner:
         self.speed = str(speed or "standard").strip().lower()
         if self.speed not in ("standard", "fast"):
             raise ValueError("Claude Code speed must be standard or fast")
+        # Validated here rather than at launch for the same reason as env_policy:
+        # a bad level must fail the caller that chose it, not a half-built slice.
+        self.effort = normalize_effort(effort)
         self.max_budget_usd = None if max_budget_usd is None else float(max_budget_usd)
         self.tools = _check_tools(tools)
         self.process_runner = process_runner or SubprocessRunner()
@@ -441,6 +472,10 @@ class ClaudeCodeRunner:
         argv += ["--resume", session_id] if resume else ["--session-id", session_id]
         if self.model:
             argv += ["--model", self.model]
+        if self.effort:
+            # Every turn launches a process, including resumed turns. Carry the
+            # selected effort on both paths; Auto leaves the CLI default alone.
+            argv += ["--effort", self.effort]
         if self.max_budget_usd is not None:
             # The only budget that can be enforced *inside* an external worker.
             argv += ["--max-budget-usd", _budget(self.max_budget_usd)]
@@ -815,4 +850,5 @@ class ClaudeCodeRunner:
         return runner_specs.redact_text(_clean_error(value))
 
 
-__all__ = ["CAPABILITIES", "DEFAULT_TOOLS", "ClaudeCodeRunner", "KEY", "PROTOCOL"]
+__all__ = ["CAPABILITIES", "DEFAULT_TOOLS", "EFFORT_LEVELS", "ClaudeCodeRunner",
+           "KEY", "PROTOCOL", "normalize_effort"]

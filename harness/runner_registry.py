@@ -1035,8 +1035,8 @@ def handshake(key: str, *, live: bool = False, provider: str = "") -> Capability
 
 
 def make_runner(key: str, *, model: str = "", speed: str = "standard",
-                timeout_s: float | None = None, env_policy: str = "",
-                read_only: bool = False) -> Any:
+                effort: str = "auto", timeout_s: float | None = None,
+                env_policy: str = "", read_only: bool = False) -> Any:
     """Build the runner object for ``key``.
 
     Raises rather than returning ``None`` for ``collie``: it is not an external
@@ -1047,9 +1047,13 @@ def make_runner(key: str, *, model: str = "", speed: str = "standard",
 
     ``env_policy`` defaults to the spec's; passing one is for the caller that
     already resolved the spec and wants that decision to be explicit in the call.
+
+    ``effort`` is validated here and currently forwarded only to claude-code.
+    Other adapters do not yet propagate it to their native reasoning controls.
     """
     if type(read_only) is not bool:
         raise ValueError("read_only must be a boolean")
+    effort = claude_code_runner.normalize_effort(effort)
     if read_only and key != "claude-code":
         raise ValueError("this worker does not implement a read-only tool policy")
     spec = SPECS.get(key)
@@ -1075,7 +1079,7 @@ def make_runner(key: str, *, model: str = "", speed: str = "standard",
             env_policy=policy)
     if spec.key == "claude-code":
         return claude_code_runner.ClaudeCodeRunner(
-            executable=spec.binary, model=model, speed=speed,
+            executable=spec.binary, model=model, speed=speed, effort=effort,
             tools=(claude_code_runner.READ_ONLY_TOOLS if read_only else
                    claude_code_runner.DEFAULT_TOOLS),
             default_timeout_s=timeout,

@@ -138,6 +138,13 @@ the user's plugins/skills/browser bridge cannot silently enlarge that five-tool 
 only worker that reports a dollar cost of its own. Reach for `codex-exec` or `collie` when the task
 needs to run commands rather than only edit files.
 
+An explicit reasoning effort travels to this worker as `--effort <level>` (`low`, `medium`, `high`,
+`xhigh`, `max`), on the first turn and again on every resumed one, because the flag is scoped to the
+session and each turn is a new process. Auto passes no flag and leaves the CLI's own default alone.
+A level the CLI does not document is refused before anything starts rather than run at the default:
+`claude` itself only warns on stderr and continues, which would silently spend a run at a level
+nobody chose.
+
 ### `codex-app-server` — OpenAI Codex App Server
 
 Runs Codex's documented **experimental** App Server JSON-RPC protocol over local stdio, minimum

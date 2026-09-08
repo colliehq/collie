@@ -5905,7 +5905,7 @@ class Handler(BaseHTTPRequestHandler):
                         history_note=(None if resume_from else _worker_history_note(history)),
                         resume_from=resume_from,
                         model=_worker_model("", decision, runner_req, worker_spec),
-                        speed=execution_speed,
+                        speed=execution_speed, effort=decision.effort,
                         provider=_worker_provider(runner_decision),
                         task_id="web", recorder=h.recorder)
                 finally:
