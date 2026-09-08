@@ -29,6 +29,7 @@ from .providers import (ModelProvider, Usage, ToolCall, classify_error, content_
                         is_overflow, is_known_terminal, issued_requests, request_count_of,
                         _error_completion)
 from .recorder import Recorder, RunResult
+from . import tools as _tools
 from .tools import ToolRegistry, ToolCtx, repair_args
 from .verifier import CodeReproVerifier, Mutation, Observation
 
@@ -364,8 +365,16 @@ def _is_repro_cmd(name, args):
 
     A command that merely mentions a runner/interpreter (``echo pytest``, ``command -v python``)
     remains non-evidence.
+
+    ``run_in_env`` counts for the same reason ``bash`` does, and more so: it executes the command
+    in the instance's REAL environment (deps installed, edits replayed — tools.py:588-680), which
+    is the ONLY execution the SWE prompt accepts as proof ("a local check that 'passes' is
+    meaningless", swe.py:534-544). Accepting bash alone made the mandated tool produce zero
+    evidence, so a correct patch verified RED→GREEN in the container still finished as
+    "verification required but no executed post-edit assertion passed". Nothing it PRINTS is
+    trusted: ``_repro_failed`` reads the host-minted ``ExecReceipt`` the tool returns instead.
     """
-    if name != "bash":
+    if name not in ("bash", "run_in_env"):
         return False
     c = args.get("command") or ""
     if _has_unsafe_test_shell_control(c):
@@ -378,16 +387,71 @@ def _is_repro_cmd(name, args):
             or bool(_REPRO_OTHER_RE.search(c)))
 
 
-def _repro_failed(output) -> bool:
+def _repro_failed(output, name: str = "bash", command: str = "", receipt=None) -> bool:
     """Did a post-edit reproduction actually FAIL? Ground truth is the process exit code (the bash
     tool prefixes '[exit N]' for nonzero) or a tool-level ERROR — NOT a bare 'Traceback' substring.
     A passing repro can print 'Traceback' (testing error handling: a caught exception echoed via
     traceback.print_exc, or the word appearing in data) and still exit 0; reading that as failure
     made the finish-gate nag the model to 'fix' correct code it could never satisfy (the phantom
     failure that made a self-audit give up). Any real uncaught exception — including an
-    AssertionError in assert-mode — exits nonzero, so the exit-code signal keeps assert-verify."""
+    AssertionError in assert-mode — exits nonzero, so the exit-code signal keeps assert-verify.
+
+    ``run_in_env`` reports a DUAL execution (original code vs. the same command with the edits
+    applied), which no single exit code can express, and its text is interleaved with output the
+    model's own command wrote. Its verdict comes from ``_env_repro_failed`` reading the
+    host-minted ``ExecReceipt`` (``receipt``), not from this string at all."""
     o = output if isinstance(output, str) else str(output)
+    if name == "run_in_env":
+        return _env_repro_failed(receipt)
     return o.startswith("ERROR") or o.startswith("[exit")
+
+
+def _bound_receipt(out, tc, run_args):
+    """The execution receipt belonging to THIS dispatched call, or None.
+
+    Lifted off the tool's return value at the Harness execution boundary, then bound: same tool,
+    same provider-authored call id, same command string that was actually handed to ``run()``. A
+    receipt that reached here on some other call's result — a forwarded inner RPC result, an object
+    held over from an earlier verification before a later edit — does not describe this call and is
+    discarded rather than credited.
+    """
+    r = _tools.exec_receipt(out)
+    if r is None:
+        return None
+    if r.tool != tc.name or r.call_id != str(getattr(tc, "id", "") or ""):
+        return None
+    want = run_args.get("command") if isinstance(run_args, dict) else None
+    if r.command != (want if isinstance(want, str) else ""):
+        return None
+    return r
+
+
+def _env_repro_failed(receipt) -> bool:
+    """Read run_in_env's HOST-MINTED receipt. ONLY a complete red→green dual execution passes.
+
+    The two exit codes come off ``subprocess.CompletedProcess`` inside the tool and travel on the
+    result object (tools.ExecReceipt); nothing here reads the tool's printed text. The first
+    version of this check parsed ``--- ORIGINAL code [exit N] --- … --- WITH YOUR EDITS [exit M]``
+    out of that text — bytes the executed command can print itself. With a real base_rc=1 /
+    edit_rc=1 (a still-failing edit), a baseline stdout containing a forged
+    ``--- WITH YOUR EDITS [exit 0] ---`` line paired the real ORIGINAL header with the forged one
+    and verified the broken fix. Command-controlled stdout is never the signal.
+
+    Fail-closed in every other case:
+      * no receipt at all — a tool-level ERROR, an unconfigured tool, a result that is just prose
+        claiming "RED→GREEN"/"all tests passed";
+      * a single-run receipt (``dual`` False): no baseline half means nothing to compare, so there
+        is no red/green evidence regardless of what the one run exited;
+      * ``base_rc == 0``: the check ALSO passes on the original code, so it reproduces nothing and
+        validates nothing (the false green tools.py:665-669 warns about);
+      * ``edit_rc != 0``: still failing, or a regression.
+    """
+    if not isinstance(receipt, _tools.ExecReceipt) or receipt.dual is not True:
+        return True
+    base_rc, edit_rc = receipt.base_rc, receipt.edit_rc
+    if type(base_rc) is not int or type(edit_rc) is not int:
+        return True
+    return not (base_rc != 0 and edit_rc == 0)
 
 # When force_edit is on (a task we KNOW requires a code change, e.g. SWE fixing) and the
 # agent burns turns exploring without ever editing, converge it. On SWE-bench, collie's
@@ -2224,8 +2288,13 @@ class Harness:
                                     self._authorize(tc, tool, still_active=still_active))))
                         return tc, tool, repairs, denied
 
-                    def _account_tool_outcome(tc, out):
-                        """Apply the normal edit/reproduction accounting to every dispatched call."""
+                    def _account_tool_outcome(tc, out, receipt=None):
+                        """Apply the normal edit/reproduction accounting to every dispatched call.
+
+                        ``receipt`` is the host-minted execution record for this exact call (or
+                        None), captured by the caller straight off ``Tool.run``'s return value.
+                        It is passed by value, never stashed, so it cannot outlive its call.
+                        """
                         nonlocal did_edit, last_edit_turn, last_repro_turn
                         nonlocal last_repro_failed, last_repro_asserted
                         nonlocal last_edit_path, last_edit_text, best_diff
@@ -2265,7 +2334,8 @@ class Harness:
                             if did_edit and _is_repro_cmd(tc.name, tc.args):
                                 last_repro_turn = turn
                                 o = out if isinstance(out, str) else str(out)
-                                last_repro_failed = _repro_failed(o)
+                                last_repro_failed = _repro_failed(
+                                    o, tc.name, tc.args.get("command") or "", receipt)
                                 last_repro_asserted = _is_asserting_cmd(
                                     tc.args.get("command") or "")
                                 self._emit("repro", passed=not last_repro_failed,
@@ -2290,6 +2360,10 @@ class Harness:
                             # or overwrite the parent's terminal session checkpoint.
                             return "DENIED: parent execute_code invocation is no longer active"
                         uncertain_boundary = False
+                        # Execution evidence for THIS invocation only. A local, so every dispatch —
+                        # including one that is denied, malformed, or fails before running — starts
+                        # with none, and no later call or concurrent inner RPC call can inherit it.
+                        receipt = None
                         if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
                             out = ("ERROR: tool call arguments were not valid JSON (truncated or "
                                    "malformed). Raw prefix: %s. Re-emit the call with valid JSON "
@@ -2373,6 +2447,10 @@ class Harness:
                                     ctx.tool_call_id = tc.id
                                     try:
                                         out = tool.run(run_args, ctx)
+                                        # Capture the host's own record of what ran BEFORE
+                                        # redaction (which returns a plain str and would drop it)
+                                        # and before any text-based reading of the result.
+                                        receipt = _bound_receipt(out, tc, run_args)
                                     finally:
                                         ctx.tool_call_id = previous_call_id
                                         if end_effect is not None:
@@ -2462,7 +2540,7 @@ class Harness:
                         if not record_result:
                             emit_data["internal"] = True
                         self._emit("tool", **emit_data)
-                        _account_tool_outcome(tc, out)
+                        _account_tool_outcome(tc, out, receipt)
                         return out
 
                     def _make_inner_broker(parent_call_id):

@@ -141,6 +141,64 @@ class ToolCtx:
     capabilities: dict = field(default_factory=capability_policy.snapshot)
 
 
+@dataclass(frozen=True)
+class ExecReceipt:
+    """Host-minted, immutable record of what a tool ACTUALLY executed.
+
+    The exit codes here are read off ``subprocess.CompletedProcess`` inside the tool — they are
+    never parsed back out of the text the executed command printed. That distinction is the whole
+    point: ``run_in_env`` frames its two runs with ``--- ORIGINAL code [exit N] ---`` /
+    ``--- WITH YOUR EDITS [exit N] ---`` headers, and a command can print those exact bytes to its
+    own stdout, so a gate that reads the frame from the result text can be told any verdict the
+    command likes. It binds to ONE call (``tool`` + the provider's ``call_id`` + the exact
+    ``command`` string that was run) so a receipt cannot be replayed for a different call.
+
+    Frozen, and only tools construct it: no model argument and no caller-supplied dict can become
+    execution evidence.
+    """
+    tool: str
+    call_id: str
+    command: str
+    base_rc: int | None = None      # the run WITHOUT the model's edits, when one happened
+    edit_rc: int | None = None      # the run WITH the model's edits applied
+    dual: bool = False              # both halves above really executed, in that order
+
+
+class ToolResult(str):
+    """A tool's ordinary result string carrying one ``ExecReceipt``.
+
+    A ``str`` subclass because every consumer downstream — redaction, the transcript, hooks, the
+    result preview, JSON serialization — must keep seeing exactly the text the tool returned. The
+    Harness lifts the receipt off at the execution boundary (before redaction, which returns plain
+    ``str``) and hands it to accounting by value.
+    """
+    __slots__ = ("_receipt",)
+
+    def __new__(cls, text: str, receipt: ExecReceipt):
+        if not isinstance(receipt, ExecReceipt):
+            raise TypeError("ToolResult requires an ExecReceipt, got %s" % type(receipt).__name__)
+        obj = super().__new__(cls, text)
+        obj._receipt = receipt
+        return obj
+
+    @property
+    def receipt(self) -> ExecReceipt:
+        return self._receipt
+
+
+def exec_receipt(out) -> ExecReceipt | None:
+    """The execution receipt carried by a tool result, or None.
+
+    Deliberately narrow: only a real ``ExecReceipt`` on a real ``ToolResult`` counts, so an
+    arbitrary object with a ``.receipt`` attribute (or a dict a third-party tool returns) is not
+    evidence.
+    """
+    if isinstance(out, ToolResult):
+        r = out.receipt
+        return r if isinstance(r, ExecReceipt) else None
+    return None
+
+
 class Tool:
     name = ""
     description = ""
@@ -671,14 +729,33 @@ class RunInEnvTool(Tool):
                 verdict = "✗ STILL FAILING with your fix — the bug is not resolved. Read the failure and iterate."
             else:
                 verdict = "✗ REGRESSION — passed on the original code but FAILS with your fix; your edit broke it."
-            return ("%s\n--- ORIGINAL code [exit %d] ---\n%s\n--- WITH YOUR EDITS [exit %d] ---\n%s"
+            text = ("%s\n--- ORIGINAL code [exit %d] ---\n%s\n--- WITH YOUR EDITS [exit %d] ---\n%s"
                     % (verdict, base_rc, _tail(base_out), edit_rc, _tail(edit_out)))
+            # The verdict and the framing above are for the MODEL to read; both are interleaved
+            # with command-controlled stdout and neither is evidence. The finish gate reads this
+            # receipt instead — the two exit codes as the host observed them.
+            return ToolResult(text, self._receipt(ctx, cmd, base_rc=base_rc, edit_rc=edit_rc,
+                                                  dual=True))
         # exploration (no assertion) or no edits yet: single run with whatever edits exist
-        rc, out = _exec(bool(diff.strip()))
+        applied = bool(diff.strip())
+        rc, out = _exec(applied)
         if len(out) > 8000:
             out = "…[truncated]\n" + out[-8000:]
         head = "" if rc == 0 else "[exit %d]\n" % rc
-        return head + out
+        # One execution, so the receipt says so (``dual=False``): there is no baseline to compare
+        # against, and the gate must not read a single run as red→green.
+        return ToolResult(head + out, self._receipt(
+            ctx, cmd, edit_rc=rc if applied else None, base_rc=None if applied else rc))
+
+    def _receipt(self, ctx, command, *, base_rc=None, edit_rc=None, dual=False):
+        """Bind this call's observed exit codes to the call that is executing right now.
+
+        The Harness sets ``ctx.tool_call_id`` to the current call's ID around ``run()``.
+        The execution boundary validates that ID, tool name and command before using the receipt.
+        """
+        return ExecReceipt(tool=self.name,
+                           call_id=str(getattr(ctx, "tool_call_id", "") or ""),
+                           command=command, base_rc=base_rc, edit_rc=edit_rc, dual=dual)
 
 
 class GrepTool(Tool):
