@@ -11,7 +11,6 @@ import binascii
 import json
 import math
 import os
-import re
 import signal
 import sys
 
@@ -35,8 +34,6 @@ _MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
 _STRUCTURED_FORMAT = "structured"
 _FORMATTER_TOOL = "StructuredOutput"
 _FORMATTER_RECEIPT = "Structured output provided successfully"
-_MAX_RESPONSE_TOOLS = 64
-_TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
 _SDK_ENV = {
     "CLAUDE_CODE_MAX_RETRIES": "0",
@@ -230,11 +227,9 @@ def _response_tools(value) -> list:
     """The validated tool allowlist a structured request may name."""
     if not isinstance(value, list) or not value:
         raise RuntimeError("structured worker request is missing its response tools")
-    if len(value) > _MAX_RESPONSE_TOOLS:
-        raise RuntimeError("structured worker request names too many response tools")
     names = []
     for name in value:
-        if not isinstance(name, str) or not _TOOL_NAME.match(name):
+        if not isinstance(name, str) or not name.strip():
             raise RuntimeError("structured worker request has an invalid response tool")
         if name in names:
             raise RuntimeError("structured worker request repeats a response tool")
@@ -304,9 +299,9 @@ def _build_options(sdk, request: dict):
             "type": "json_schema",
             "schema": _response_schema(_response_tools(request.get("response_tools"))),
         }
-        # Raw stream events are the only place a *second* model response is
-        # visible as such: the formatter receipt shares the first response's
-        # Assistant id, so an id comparison alone cannot count model turns.
+        # Match raw model-response identity against Assistant fragments as an
+        # additional check on the one-response contract. SDK num_turns also
+        # counts the formatter receipt, which is not a model response.
         # The extra traffic is one short-lived worker's discarded deltas, and
         # none of it is accumulated or streamed onward.
         kwargs["include_partial_messages"] = True
@@ -404,14 +399,16 @@ def _validate_init(data, expected_model: str, structured: bool = False) -> str:
                 "mcp_servers"):
         if key not in data:
             raise RuntimeError("SDK init did not attest an empty %s surface" % key)
+        if structured and key == "tools":
+            if data[key] != [_FORMATTER_TOOL]:
+                raise RuntimeError("SDK init did not attest the structured formatter surface")
+            continue
         if _is_empty(data.get(key)):
             continue
         # Structured mode's only admissible surface is the SDK's own synthetic
         # response formatter.  Every other surface, and any additional tool
         # beside the formatter, is still a foreign capability.
-        if not (structured and key == "tools"
-                and list(data.get(key)) == [_FORMATTER_TOOL]):
-            raise RuntimeError("SDK init exposed a non-empty %s surface" % key)
+        raise RuntimeError("SDK init exposed a non-empty %s surface" % key)
     source_keys = [key for key in ("apiKeySource", "api_key_source")
                    if key in data]
     if not source_keys:
@@ -494,7 +491,8 @@ def _formatter_receipt(message) -> str:
     kind = _block_kind(block)
     if "tool_result" not in kind and "toolresult" not in kind:
         raise RuntimeError("SDK emitted a foreign message during structured formatting")
-    if _field(block, "is_error", None) not in (None, False):
+    is_error = _field(block, "is_error", None)
+    if is_error is not None and is_error is not False:
         raise RuntimeError("SDK structured formatter reported a failed tool result")
     if _field(block, "content", None) != _FORMATTER_RECEIPT:
         raise RuntimeError("SDK structured formatter receipt was not recognised")
@@ -578,6 +576,7 @@ async def _query(request: dict, sdk) -> dict:
     formatter_input = None
     receipts = 0
     model_responses = 0
+    model_response_id = ""
     structured_output = None
 
     try:
@@ -591,9 +590,15 @@ async def _query(request: dict, sdk) -> dict:
             if structured and kind in ("stream_event", "streamevent"):
                 event = _field(message, "event", {}) or {}
                 if str(_field(event, "type", "") or "") == "message_start":
+                    if not init_seen:
+                        raise RuntimeError("SDK emitted a model response before validated init")
                     model_responses += 1
                     if model_responses > 1:
                         raise RuntimeError("SDK emitted more than one model response")
+                    raw_message = _field(event, "message", {})
+                    model_response_id = _field(raw_message, "id")
+                    if not isinstance(model_response_id, str) or not model_response_id.strip():
+                        raise RuntimeError("SDK model response is missing its id")
             elif structured and kind == "user":
                 if not init_seen:
                     raise RuntimeError("SDK emitted a tool result before validated init")
@@ -717,9 +722,16 @@ async def _query(request: dict, sdk) -> dict:
             raise RuntimeError("SDK did not invoke the structured formatter")
         if receipts != 1:
             raise RuntimeError("SDK did not emit exactly one structured formatter receipt")
-        if structured_output != formatter_input:
+        if model_response_id != assistant_id:
+            raise RuntimeError("SDK model response id did not match its Assistant message")
+        # Python equality treats True == 1 and 1 == 1.0. Those are distinct
+        # JSON argument values and can produce different host-tool behavior.
+        canonical = _canonical_structured(structured_output, allowed)
+        formatted = _canonical_structured(formatter_input, allowed)
+        if json.dumps(json.loads(canonical), sort_keys=True) != json.dumps(
+                json.loads(formatted), sort_keys=True):
             raise RuntimeError("SDK structured output did not match the formatter input")
-        return {"ok": True, "text": _canonical_structured(structured_output, allowed),
+        return {"ok": True, "text": canonical,
                 "usage": _usage_dict(usage), "api_key_source": api_key_source,
                 "response_format": _STRUCTURED_FORMAT, "response_tools": allowed}
     return {"ok": True, "text": assistant_text, "usage": _usage_dict(usage),

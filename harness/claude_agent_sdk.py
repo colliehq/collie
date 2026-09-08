@@ -16,7 +16,6 @@ import binascii
 import json
 import math
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -47,8 +46,6 @@ _MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
 # mode rejects 3/4 outright, so it can never silently answer in plain mode while
 # the parent believes a provider-enforced schema was in force.
 _STRUCTURED_FORMAT = "structured"
-_MAX_RESPONSE_TOOLS = 64
-_TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
 
 # Provider-rejection categories the worker may report (the SDK's stable
@@ -442,15 +439,12 @@ class ClaudeAgentSdkProvider(ModelProvider):
         names = []
         for schema in tool_schemas:
             name = schema.get("name") if isinstance(schema, dict) else None
-            if not isinstance(name, str) or not _TOOL_NAME.match(name):
+            if not isinstance(name, str) or not name.strip():
                 raise _RequestRefused(
                     "this tool name cannot appear in a response schema: %s"
                     % str(name)[:40])
             if name not in names:
                 names.append(name)
-        if not names or len(names) > _MAX_RESPONSE_TOOLS:
-            raise _RequestRefused(
-                "a response schema needs 1..%d tool names" % _MAX_RESPONSE_TOOLS)
         return names
 
     def _worker_request(self, system, payload, structured_tools=None) -> dict:
@@ -847,13 +841,13 @@ class ClaudeAgentSdkProvider(ModelProvider):
             # have its free-text answer accepted as schema-enforced.
             attested = data.get("response_format")
             if structured_tools is None:
-                if attested is not None:
+                if attested is not None or "response_tools" in data:
                     raise RuntimeError(
                         "Claude Agent SDK worker attested an unexpected response format")
             elif attested != _STRUCTURED_FORMAT:
                 raise RuntimeError(
                     "Claude Agent SDK worker did not attest structured response mode")
-            elif list(data.get("response_tools") or []) != list(structured_tools):
+            elif data.get("response_tools") != structured_tools:
                 raise RuntimeError(
                     "Claude Agent SDK worker attested a different response tool allowlist")
             text = data.get("text")

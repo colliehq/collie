@@ -78,7 +78,8 @@ def _stream(response, *, prose="I'll read the file first.", tool_id="toolu_1",
     content.append({"type": "tool_use", "id": tool_id,
                     "name": "StructuredOutput", "input": response})
     messages = [_init()]
-    messages += [{"type": "stream_event", "event": {"type": "message_start"}}
+    messages += [{"type": "stream_event", "event": {"type": "message_start",
+                  "message": {"id": message_id, "model": "opus"}}}
                  for _ in range(starts)]
     messages.append({"type": "assistant", "id": message_id, "content": content})
     messages.append({"type": "user", "content": [
@@ -251,7 +252,7 @@ def _tool_result_before_call():
     (_stream({"response": {"answer": "ok"}}, num_turns=3), "one-turn limit"),
     (_stream({"response": {"answer": "ok"}}, result_error=True), "reported an error"),
     (_stream({"response": {"answer": "ok"}}, structured_output=None),
-     "did not match the formatter input"),
+     "not a single response wrapper"),
     (_stream({"response": {"answer": "ok"}},
              structured_output={"response": {"answer": "something else"}}),
      "did not match the formatter input"),
@@ -344,10 +345,9 @@ def test_worker_accepts_structured_protocols_and_rejects_unknown_ones(monkeypatc
     ([], "missing its response tools"),
     ("read_file", "missing its response tools"),
     (["read_file", "read_file"], "repeats a response tool"),
-    (["read file"], "invalid response tool"),
+    (["   "], "invalid response tool"),
     ([""], "invalid response tool"),
     ([None], "invalid response tool"),
-    (["t%d" % index for index in range(65)], "too many response tools"),
 ])
 def test_worker_refuses_an_invalid_response_tool_allowlist(tools, match, monkeypatch):
     with pytest.raises(RuntimeError, match=match):
@@ -470,9 +470,51 @@ def test_structured_request_rejects_a_tool_name_it_cannot_put_in_a_schema():
     provider = _Provider(_worker('{"answer": "done"}'))
 
     completion = provider.complete("SYS", [{"role": "user", "content": "fix"}],
-                                   [{"name": "run shell", "input_schema": {}}])
+                                   [{"name": None, "input_schema": {}}])
 
     assert completion.stop_reason == "error"
     assert provider.spawned == 0, "an unschemable allowlist must fail before inference"
     assert completion.request_count == 0, "nothing was physically requested"
     assert "response schema" in completion.error_detail
+
+
+def test_formatter_enum_preserves_large_and_namespaced_host_tool_sets():
+    # These names are JSON string values, not native SDK tools. The formatter
+    # must not impose the native tool name/count limits on Collie's registry.
+    names = ["extension_%d" % n for n in range(90)] + ["mcp__" + "source_" * 15 + "read", "read file"]
+    provider = _Provider(_worker('{"answer": "done"}'))
+    completion = provider.complete("s", [{"role": "user", "content": "u"}],
+        [{"name": name, "description": "tool"} for name in names])
+    assert completion.stop_reason == "end_turn"
+    assert provider.request["response_tools"] == names
+    result, _ = _run(_stream({"response": {"tool": names[-2], "args": {}}}), tools=names)
+    assert result["response_tools"] == names
+
+
+@pytest.mark.parametrize("tools", [[], {}, {"StructuredOutput": True}, "StructuredOutput"])
+def test_structured_init_requires_exact_formatter_attestation(tools):
+    messages = _stream({"response": {"answer": "ok"}})
+    messages[0] = _init(tools=tools)
+    with pytest.raises(RuntimeError, match="formatter surface"):
+        _run(messages)
+
+
+@pytest.mark.parametrize("flag", [0, 1, "false"])
+def test_formatter_receipt_error_flag_is_not_coerced(flag):
+    with pytest.raises(RuntimeError, match="failed tool result"):
+        _run(_stream({"response": {"answer": "ok"}}, is_error=flag))
+
+
+@pytest.mark.parametrize("args,altered", [({"value": True}, {"value": 1}),
+                                       ({"value": 1}, {"value": 1.0})])
+def test_equal_python_values_cannot_mask_changed_json_tool_arguments(args, altered):
+    with pytest.raises(RuntimeError, match="did not match the formatter input"):
+        _run(_stream({"response": {"tool": "grep", "args": args}},
+                    structured_output={"response": {"tool": "grep", "args": altered}}))
+
+
+def test_model_stream_identity_must_match_assistant_fragments():
+    messages = _stream({"response": {"answer": "ok"}})
+    messages[1]["event"]["message"]["id"] = "unrelated"
+    with pytest.raises(RuntimeError, match="response id did not match"):
+        _run(messages)
