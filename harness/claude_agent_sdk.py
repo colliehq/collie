@@ -37,6 +37,37 @@ _MAX_REQUEST_IMAGE_B64 = 8 * 1024 * 1024
 _MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
 
 
+# Provider-rejection categories the worker may report (the SDK's stable
+# ``AssistantMessage.error`` literals), mapped to the status and the wording
+# Collie's existing classify_error() already understands, so a rate limit stays
+# retryable while a billing or auth refusal stays terminal.  The provider's own
+# numeric ``api_error_status`` is deliberately not consulted: nothing here needs
+# it, and a provider-supplied number must not be able to turn a terminal
+# category into a retryable one.
+_PROVIDER_ERROR_CATEGORIES = {
+    "authentication_failed": (401, "authentication_error"),
+    "billing_error": (402, "billing"),
+    "invalid_request": (400, "invalid request"),
+    "rate_limit": (429, "rate limit"),
+    "server_error": (500, "server error"),
+}
+
+
+class _ProviderRejected(RuntimeError):
+    """A physically issued request the provider refused.
+
+    Quota was spent, so the measured usage and the stable category travel with
+    the failure instead of being flattened into a generic worker exit.  This is
+    never a response-contract miss: the model produced no answer to repair.
+    """
+
+    def __init__(self, category: str, usage, api_key_source: str):
+        super().__init__("provider rejected the request: " + category)
+        self.category = category
+        self.usage = usage
+        self.api_key_source = api_key_source
+
+
 class _AttachmentRefused(ValueError):
     """A refusal raised before any physical model request is spent.
 
@@ -232,6 +263,37 @@ def _usage_counter(value, key):
             or not float(raw).is_integer()):
         raise RuntimeError("Claude Agent SDK response has invalid %s usage" % key)
     return int(raw)
+
+
+def _provider_rejection(payload: dict):
+    """A validated provider rejection, or ``None`` to stay on the generic path.
+
+    Every field is re-checked at this process boundary.  A payload that claims
+    success, omits the reviewed auth attestation, or carries assistant content
+    is not a rejection: those remain fail-closed failures rather than becoming a
+    classified, retry-eligible error.
+    """
+    category = payload.get("provider_error")
+    if not isinstance(category, str) or category not in _PROVIDER_ERROR_CATEGORIES:
+        return None
+    if payload.get("ok"):
+        raise RuntimeError(
+            "Claude Agent SDK worker reported both success and a provider error")
+    if payload.get("api_key_source") != "none":
+        raise RuntimeError(
+            "Claude Agent SDK rejection is missing its reviewed auth attestation")
+    if "text" in payload or payload.get("tool_calls"):
+        raise RuntimeError("Claude Agent SDK rejection carried assistant content")
+    usage_data = payload.get("usage")
+    if not isinstance(usage_data, dict):
+        raise RuntimeError("Claude Agent SDK rejection has invalid usage")
+    usage = Usage(
+        input_tokens=_usage_counter(usage_data, "input_tokens"),
+        output_tokens=_usage_counter(usage_data, "output_tokens"),
+        cache_read=_usage_counter(usage_data, "cache_read_input_tokens"),
+        cache_creation=_usage_counter(usage_data, "cache_creation_input_tokens"),
+    )
+    return _ProviderRejected(category, usage, "none")
 
 
 def _sanitized_worker_env(source=None) -> dict[str, str]:
@@ -639,13 +701,20 @@ class ClaudeAgentSdkProvider(ModelProvider):
         if proc.returncode != 0:
             detail = stderr
             if raw:
+                failed = None
                 try:
                     failed = json.loads(raw.decode("utf-8"),
                                         parse_constant=_reject_json_constant)
-                    if isinstance(failed, dict):
-                        detail = failed.get("error") or detail
                 except Exception:
                     detail = detail or raw.decode("utf-8", "replace")
+                if isinstance(failed, dict):
+                    # A rejected request still physically happened.  Recover its
+                    # classification and usage before the exit code becomes a
+                    # generic, unclassifiable failure.
+                    rejection = _provider_rejection(failed)
+                    if rejection is not None:
+                        raise rejection
+                    detail = failed.get("error") or detail
             raise RuntimeError("Claude Agent SDK worker exited %d%s" % (
                 proc.returncode, (": " + _safe_failure(detail)) if detail else ""))
         try:
@@ -658,6 +727,11 @@ class ClaudeAgentSdkProvider(ModelProvider):
         if not result.get("ok"):
             raise RuntimeError("Claude Agent SDK worker failed%s" % (
                 (": " + _safe_failure(result.get("error"))) if result.get("error") else ""))
+        if result.get("provider_error") is not None:
+            # A rejection is reported by a non-zero exit only.  A success
+            # payload which also names a provider error is forged.
+            raise RuntimeError(
+                "Claude Agent SDK worker reported both success and a provider error")
         return result
 
     def complete(self, system, messages, tool_schemas, on_text=None):
@@ -766,6 +840,23 @@ class ClaudeAgentSdkProvider(ModelProvider):
             completion = Completion(text=text, usage=usage,
                                     stop_reason="end_turn", request_count=1)
             completion.api_key_source = api_key_source
+            return completion
+        except _ProviderRejected as exc:
+            # The provider refused a request Collie physically issued and was
+            # billed for.  Report the measured usage and a stable, content-free
+            # category so the host's retry policy can tell a rate limit from an
+            # auth or billing failure.  No rejected assistant text is streamed
+            # or returned, and no structured-response repair turn is implied:
+            # the model produced no answer to repair.  The reservation settles
+            # as an error because the call yielded no usable response.
+            error_status, keyword = _PROVIDER_ERROR_CATEGORIES[exc.category]
+            detail = "provider rejected the request: %s (%s)" % (exc.category, keyword)
+            completion = Completion(
+                text="ERROR(claude-agent-sdk): " + detail, usage=exc.usage,
+                stop_reason="error", error_status=error_status,
+                error_code="provider_" + exc.category, error_detail=detail,
+                request_count=1)
+            completion.api_key_source = exc.api_key_source
             return completion
         except _AttachmentRefused as exc:
             # Refused before the worker was spawned: the reservation is released

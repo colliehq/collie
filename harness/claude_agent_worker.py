@@ -36,6 +36,23 @@ _PARENT_DEATH_FD_FLAG = "--collie-parent-death-fd"
 _PARENT_PID_FLAG = "--collie-parent-pid"
 _EXTERNAL_OWNER_FLAG = "--collie-external-process-owner"
 
+# Stable, content-free rejection categories the SDK documents on
+# ``AssistantMessage.error`` (its ``AssistantMessageError`` literal).  A request
+# rejected this way was physically issued and billed, and the category is the
+# only thing that tells a rate limit apart from a malformed request, so it is
+# reported upward instead of being collapsed into a generic worker failure.
+# ``unknown`` is deliberately absent: it carries no classification, so it stays
+# on the fail-closed generic path.
+_PROVIDER_ERRORS = ("authentication_failed", "billing_error", "invalid_request",
+                    "rate_limit", "server_error")
+
+# The CLI exits non-zero on purpose after emitting an error result, and the SDK
+# replaces that trailing ProcessError with this exact text while iterating
+# (claude_agent_sdk/_internal/query.py).  Only this known post-result exception
+# may be absorbed, and only once a rejection and its terminal result are both
+# validated; every other exception still propagates.
+_SDK_POST_RESULT_ERROR = "Claude Code returned an error result:"
+
 
 def _parent_death_args(argv) -> tuple[int, int]:
     """Parse the private POSIX lifetime channel passed by the transport.
@@ -373,6 +390,11 @@ def _usage_dict(value) -> dict:
     }
 
 
+def _is_post_result_error(exc) -> bool:
+    """True only for the SDK's known post-error-result re-raise."""
+    return isinstance(exc, Exception) and str(exc).startswith(_SDK_POST_RESULT_ERROR)
+
+
 async def _query(request: dict, sdk) -> dict:
     options = _build_options(sdk, request)
     prompt = (_stream_prompt(_anthropic_content(request["content"]))
@@ -384,58 +406,95 @@ async def _query(request: dict, sdk) -> dict:
     assistant_text = ""
     usage = {}
     result_seen = False
+    rejected = ""
 
-    async for message in sdk.query(prompt=prompt, options=options):
-        kind = _message_kind(message)
-        if kind == "system" and str(_field(message, "subtype", "")).lower() == "init":
-            if init_seen:
-                raise RuntimeError("SDK emitted more than one init message")
-            if assistant_seen or result_seen:
-                raise RuntimeError("SDK emitted init after response content")
-            api_key_source = _validate_init(
-                _field(message, "data", {}), request["model"])
-            init_seen = True
-        elif kind == "assistant":
-            if not init_seen:
-                raise RuntimeError("SDK emitted assistant content before validated init")
-            if result_seen:
-                raise RuntimeError("SDK emitted assistant content after result")
-            if _field(message, "error"):
-                raise RuntimeError("SDK assistant reported an error")
-            message_id = (_field(message, "id") or _field(message, "message_id")
-                          or _field(message, "uuid"))
-            if not isinstance(message_id, str) or not message_id.strip():
-                raise RuntimeError("SDK Assistant message is missing an id")
-            message_id = message_id.strip()
-            # The SDK emits thinking and text as separate AssistantMessage
-            # fragments with one shared Anthropic message_id.  That is still
-            # one model answer. A second distinct message id would be another
-            # assistant turn and must fail the one-request/one-turn contract.
-            if assistant_id and message_id != assistant_id:
-                raise RuntimeError(
-                    "SDK emitted more than one Assistant message id")
-            assistant_id = message_id
-            assistant_seen = True
-            assistant_text += _assistant_text(message)
-        elif kind == "result":
-            if not init_seen:
-                raise RuntimeError("SDK emitted result before validated init")
-            if not assistant_seen:
-                raise RuntimeError("SDK emitted result before Assistant message")
-            if result_seen:
-                raise RuntimeError("SDK emitted more than one result message")
-            result_seen = True
-            if _field(message, "is_error", False):
-                raise RuntimeError("SDK result reported an error")
-            turns = int(_field(message, "num_turns", 0) or 0)
-            if turns > 1:
-                raise RuntimeError("SDK exceeded the one-turn limit")
-            usage = _field(message, "usage", {}) or {}
+    try:
+        async for message in sdk.query(prompt=prompt, options=options):
+            kind = _message_kind(message)
+            if kind == "system" and str(_field(message, "subtype", "")).lower() == "init":
+                if init_seen:
+                    raise RuntimeError("SDK emitted more than one init message")
+                if assistant_seen or result_seen:
+                    raise RuntimeError("SDK emitted init after response content")
+                api_key_source = _validate_init(
+                    _field(message, "data", {}), request["model"])
+                init_seen = True
+            elif kind == "assistant":
+                if not init_seen:
+                    raise RuntimeError("SDK emitted assistant content before validated init")
+                if result_seen:
+                    raise RuntimeError("SDK emitted assistant content after result")
+                if rejected:
+                    # A rejection ends this turn.  Another assistant message
+                    # afterwards is a second model turn and must never be hidden
+                    # behind the first one's error classification.
+                    raise RuntimeError(
+                        "SDK emitted assistant content after a rejected turn")
+                error = _field(message, "error")
+                message_id = (_field(message, "id") or _field(message, "message_id")
+                              or _field(message, "uuid"))
+                message_id = (message_id.strip()
+                              if isinstance(message_id, str) else "")
+                # The SDK emits thinking and text as separate AssistantMessage
+                # fragments with one shared Anthropic message_id.  That is still
+                # one model answer. A second distinct message id would be another
+                # assistant turn and must fail the one-request/one-turn contract.
+                if message_id and assistant_id and message_id != assistant_id:
+                    raise RuntimeError(
+                        "SDK emitted more than one Assistant message id")
+                if error:
+                    if not isinstance(error, str) or error not in _PROVIDER_ERRORS:
+                        raise RuntimeError("SDK assistant reported an error")
+                    # A rejected turn carries provider error prose, not a model
+                    # answer: its content is never read, accumulated, or
+                    # returned.  Observed rejections have no message id, so one
+                    # is not required here — only checked when present.
+                    rejected = error
+                    assistant_seen = True
+                    continue
+                if not message_id:
+                    raise RuntimeError("SDK Assistant message is missing an id")
+                assistant_id = message_id
+                assistant_seen = True
+                assistant_text += _assistant_text(message)
+            elif kind == "result":
+                if not init_seen:
+                    raise RuntimeError("SDK emitted result before validated init")
+                if not assistant_seen:
+                    raise RuntimeError("SDK emitted result before Assistant message")
+                if result_seen:
+                    raise RuntimeError("SDK emitted more than one result message")
+                result_seen = True
+                is_error = bool(_field(message, "is_error", False))
+                if rejected and not is_error:
+                    # Observed rejections report subtype "success" with
+                    # is_error true.  A result which claims outright success
+                    # over a rejected turn contradicts it; believe neither.
+                    raise RuntimeError(
+                        "SDK result reported success after a rejected turn")
+                if is_error and not rejected:
+                    raise RuntimeError("SDK result reported an error")
+                turns = int(_field(message, "num_turns", 0) or 0)
+                if turns > 1:
+                    raise RuntimeError("SDK exceeded the one-turn limit")
+                usage = _field(message, "usage", {}) or {}
+    except Exception as exc:
+        # The SDK raises after already delivering the terminal error result.
+        # Absorb that one known exception so the validated classification and
+        # measured usage survive; anything else still fails closed.
+        if not (rejected and result_seen and _is_post_result_error(exc)):
+            raise
 
     if not init_seen:
         raise RuntimeError("SDK did not emit a validated init message")
     if not result_seen:
         raise RuntimeError("SDK did not emit a result message")
+    if rejected:
+        # A billed provider rejection: only the stable category, the measured
+        # usage, and the reviewed auth attestation cross the process boundary.
+        return {"ok": False, "provider_error": rejected,
+                "error": "provider rejected the request: " + rejected,
+                "usage": _usage_dict(usage), "api_key_source": api_key_source}
     if not assistant_seen or not assistant_id:
         raise RuntimeError("SDK did not emit exactly one Assistant message id")
     return {"ok": True, "text": assistant_text, "usage": _usage_dict(usage),
