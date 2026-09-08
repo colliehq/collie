@@ -6881,6 +6881,7 @@ class ModelDecider:
                 cache_read = int(getattr(usage, "cache_read", 0) or 0)
                 cache_creation = int(getattr(usage, "cache_creation", 0) or 0)
                 from .costs import cost_usd
+                from .providers import issued_requests
                 equivalent_cost = cost_usd(
                     model, input_tokens, output_tokens, cache_read, cache_creation)
                 subscription_only = bool(
@@ -6896,8 +6897,7 @@ class ModelDecider:
                     "_cost_usd": 0.0 if subscription_only else equivalent_cost,
                     "_equivalent_cost_usd": equivalent_cost,
                     "_model": model,
-                    "_model_calls": max(
-                        1, int(getattr(comp, "request_count", 1) or 1)),
+                    "_model_calls": issued_requests(comp),
                     "_model_calls_reserved": bool(callable(request_gate)),
                 }
             if getattr(comp, "stop_reason", "") == "error":

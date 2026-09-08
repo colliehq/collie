@@ -56,8 +56,12 @@ class _GatedSdkProvider(ClaudeAgentSdkProvider):
     def _run_worker(self, request, cancel_scope="", registration=None):
         self.spawned += 1
         reply = self._replies[min(self.spawned - 1, len(self._replies) - 1)]
-        return {"ok": True, "text": reply, "api_key_source": "none",
-                "usage": {"input_tokens": 5, "output_tokens": 2}}
+        result = {"ok": True, "text": reply, "api_key_source": "none",
+                  "usage": {"input_tokens": 5, "output_tokens": 2}}
+        if request.get("response_format") == "structured":
+            result.update(response_format="structured",
+                          response_tools=request["response_tools"])
+        return result
 
 
 def _harness(cwd, project, provider, turns):
@@ -90,6 +94,34 @@ def test_a_denied_reservation_reports_no_request_and_never_spawns_a_worker():
     assert provider.spawned == 0, "the gate refused before anything could be issued"
     assert denied.request_count == 0
     assert issued_requests(denied) == 0, "what every ledger in the loop must add"
+
+
+def test_mission_decider_preserves_a_denied_provider_reservation():
+    from harness.mission import ModelDecider, NEEDS_HUMAN
+
+    provider = _GatedSdkProvider(allow=0)
+    decision = ModelDecider(provider)(
+        "inspect the project", {}, [], request_gate=provider._gate,
+        request_complete=provider.request_complete, request_scope="mission-test")
+
+    assert decision["action"] == NEEDS_HUMAN
+    assert decision["_model_calls"] == 0
+    assert decision["_model_calls_reserved"] is True
+    assert provider.reservations == [False]
+    assert provider.spawned == 0
+    assert decision["_usage"] == {
+        "input_tokens": 0, "output_tokens": 0, "cache_tokens": 0}
+
+
+def test_mission_decider_counts_all_requests_in_a_repaired_completion():
+    from harness.mission import ModelDecider
+
+    provider = types.SimpleNamespace(
+        complete=lambda *args: Completion(
+            text='{"action":"wait","args":{"seconds":60}}', request_count=3))
+    decision = ModelDecider(provider)("inspect the project", {}, [])
+    assert decision["action"] == "wait"
+    assert decision["_model_calls"] == 3
 
 
 @pytest.mark.parametrize("value,expected", [
