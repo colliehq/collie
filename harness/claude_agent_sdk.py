@@ -4,6 +4,10 @@ The SDK is deliberately isolated in a short-lived worker process.  The core
 package remains stdlib-only, no ``claude -p`` command is involved, and the SDK
 is configured as a one-message reasoner with every foreign tool surface empty.
 Collie still owns the system prompt, tool protocol, loop, and request budget.
+
+Tool-bearing calls additionally ask the provider to enforce Collie's
+``{tool|answer}`` envelope as a JSON response schema; the tool-less planner
+keeps its own action contract and stays in byte-identical plain mode.
 """
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import binascii
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +40,15 @@ _MAX_IMAGE_B64 = 5 * 1024 * 1024
 _MAX_REQUEST_IMAGES = 16
 _MAX_REQUEST_IMAGE_B64 = 8 * 1024 * 1024
 _MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
+
+# Structured-response transport.  Worker protocols are a capability
+# attestation, not a version number: 1 = text/plain, 2 = image/plain,
+# 3 = text/structured, 4 = image/structured.  A worker that predates structured
+# mode rejects 3/4 outright, so it can never silently answer in plain mode while
+# the parent believes a provider-enforced schema was in force.
+_STRUCTURED_FORMAT = "structured"
+_MAX_RESPONSE_TOOLS = 64
+_TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
 
 # Provider-rejection categories the worker may report (the SDK's stable
@@ -68,7 +82,15 @@ class _ProviderRejected(RuntimeError):
         self.api_key_source = api_key_source
 
 
-class _AttachmentRefused(ValueError):
+class _RequestRefused(ValueError):
+    """A refusal raised before the worker is spawned.
+
+    No physical model request was issued, so the reservation settles as an
+    error and nothing is charged against the request budget.
+    """
+
+
+class _AttachmentRefused(_RequestRefused):
     """A refusal raised before any physical model request is spent.
 
     Malformed, unsupported, or over-budget attachments must fail visibly.  The
@@ -345,13 +367,19 @@ class ClaudeAgentSdkProvider(ModelProvider):
     supports_request_gate = True
 
     def __init__(self, model: str | None = None, timeout: int = 180,
-                 effort: str | None = None, subscription_only: bool = False):
+                 effort: str | None = None, subscription_only: bool = False,
+                 structured_output: bool = True):
         model = model or provider_default_model(self.name)
         self.model = "claude-agent-sdk:" + model
         self._model = model
         self.timeout = int(timeout)
         self.effort = effort or "default"
         self.subscription_only = bool(subscription_only)
+        # Tool-bearing calls ask the provider to enforce Collie's {tool|answer}
+        # envelope as a response schema.  The opt-out exists only for controlled
+        # legacy comparison: it restores the free-text envelope which sometimes
+        # arrived with extra keys and cost a whole corrective turn.
+        self.structured_output = bool(structured_output)
         self._process_condition = threading.Condition(threading.RLock())
         self._active_runs: dict[str, dict] = {}
 
@@ -402,12 +430,36 @@ class ClaudeAgentSdkProvider(ModelProvider):
             return text
         return _spliced_blocks(text, entries)
 
-    def _worker_request(self, system, payload) -> dict:
-        """Worker protocol 1 = text prompt; protocol 2 = canonical content blocks.
+    def _structured_tools(self, tool_schemas):
+        """The response-schema tool allowlist, or ``None`` to stay in plain mode.
 
-        The version is raised only for multimodal calls, so a worker that
-        predates image transport rejects the request outright instead of
-        answering about an image it never received.
+        The names are Collie's own executor tools; nothing else may appear in a
+        provider-enforced enum.  Argument schemas stay owned by the host
+        executor, so no argument restriction is invented here.
+        """
+        if not self.structured_output or not tool_schemas:
+            return None
+        names = []
+        for schema in tool_schemas:
+            name = schema.get("name") if isinstance(schema, dict) else None
+            if not isinstance(name, str) or not _TOOL_NAME.match(name):
+                raise _RequestRefused(
+                    "this tool name cannot appear in a response schema: %s"
+                    % str(name)[:40])
+            if name not in names:
+                names.append(name)
+        if not names or len(names) > _MAX_RESPONSE_TOOLS:
+            raise _RequestRefused(
+                "a response schema needs 1..%d tool names" % _MAX_RESPONSE_TOOLS)
+        return names
+
+    def _worker_request(self, system, payload, structured_tools=None) -> dict:
+        """Worker protocol 1 = text/plain, 2 = image/plain, 3/4 = structured.
+
+        The version is raised for multimodal and for structured calls, so a
+        worker that predates either capability rejects the request outright
+        instead of answering about an image it never received or returning a
+        free-text envelope the caller believes was schema-enforced.
         """
         request = {
             "protocol": 1,
@@ -416,9 +468,13 @@ class ClaudeAgentSdkProvider(ModelProvider):
             "prompt": payload,
             "effort": self.effort,
         }
+        if structured_tools:
+            request["protocol"] = 3
+            request["response_format"] = _STRUCTURED_FORMAT
+            request["response_tools"] = list(structured_tools)
         if isinstance(payload, list):
             request.pop("prompt")
-            request["protocol"] = 2
+            request["protocol"] = 4 if structured_tools else 2
             request["content"] = payload
             size = len(json.dumps(request, ensure_ascii=False,
                                   allow_nan=False).encode("utf-8"))
@@ -776,14 +832,30 @@ class ClaudeAgentSdkProvider(ModelProvider):
                     cancel_scope = request_id
                     self._set_pending_scope(registration, cancel_scope)
 
+            structured_tools = self._structured_tools(tool_schemas)
             payload = self._payload(messages, tool_schemas)
             data = self._run_worker(
-                self._worker_request(system, payload), cancel_scope=cancel_scope,
-                registration=registration)
+                self._worker_request(system, payload, structured_tools),
+                cancel_scope=cancel_scope, registration=registration)
             api_key_source = data.get("api_key_source")
             if api_key_source != "none":
                 raise RuntimeError(
                     "Claude Agent SDK response is missing its reviewed auth attestation")
+            # Capability attestation, checked before the response is parsed or
+            # executed: an older worker which ignored structured mode, or one
+            # which enforced a different tool allowlist, must fail rather than
+            # have its free-text answer accepted as schema-enforced.
+            attested = data.get("response_format")
+            if structured_tools is None:
+                if attested is not None:
+                    raise RuntimeError(
+                        "Claude Agent SDK worker attested an unexpected response format")
+            elif attested != _STRUCTURED_FORMAT:
+                raise RuntimeError(
+                    "Claude Agent SDK worker did not attest structured response mode")
+            elif list(data.get("response_tools") or []) != list(structured_tools):
+                raise RuntimeError(
+                    "Claude Agent SDK worker attested a different response tool allowlist")
             text = data.get("text")
             if not isinstance(text, str):
                 raise RuntimeError("Claude Agent SDK response is missing assistant text")
@@ -869,6 +941,13 @@ class ClaudeAgentSdkProvider(ModelProvider):
             # Refused before the worker was spawned: the reservation is released
             # by the finally block and no physical request was consumed.
             detail = "attachment refused: " + _safe_failure(exc)
+            return Completion(text="ERROR(claude-agent-sdk): " + detail,
+                              stop_reason="error", error_detail=detail,
+                              request_count=0)
+        except _RequestRefused as exc:
+            # Refused while building the request itself, before any worker was
+            # spawned: no physical request was consumed.
+            detail = "request refused: " + _safe_failure(exc)
             return Completion(text="ERROR(claude-agent-sdk): " + detail,
                               stop_reason="error", error_detail=detail,
                               request_count=0)

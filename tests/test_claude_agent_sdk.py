@@ -261,6 +261,10 @@ class _Provider(ClaudeAgentSdkProvider):
         self.spawned += 1
         self.request = request
         self.cancel_scope = cancel_scope
+        if request.get("response_format") and "response_format" not in self.response:
+            # A legitimate worker echoes the structured capability it enforced.
+            return dict(self.response, response_format=request["response_format"],
+                        response_tools=list(request["response_tools"]))
         return self.response
 
 
@@ -278,6 +282,10 @@ def test_provider_uses_collie_prompt_and_parses_tool_protocol():
     assert completion.api_key_source == "none"
     assert provider.request["system_prompt"] == "COLLIE SYSTEM"
     assert "# Tools the executor can run:" in provider.request["prompt"]
+    # Tool-bearing calls are structured by default and name the real allowlist.
+    assert provider.request["protocol"] == 3
+    assert provider.request["response_format"] == "structured"
+    assert provider.request["response_tools"] == ["grep"]
 
 
 def test_provider_rejects_invalid_worker_usage_before_accounting():
@@ -292,11 +300,13 @@ def test_provider_rejects_invalid_worker_usage_before_accounting():
 
 
 def test_provider_accepts_one_unambiguous_fenced_tool_envelope():
+    # Legacy (structured_output=False) comparison path: free assistant text is
+    # still parsed leniently by the host envelope validator.
     provider = _Provider({
         "ok": True,
         "text": '```json\n{"tool":"grep","args":{"pattern":"x"}}\n```',
         "usage": {}, "api_key_source": "none",
-    })
+    }, structured_output=False)
 
     completion = provider.complete(
         "COLLIE SYSTEM", [{"role": "user", "content": "inspect"}], [{
@@ -316,11 +326,13 @@ def test_provider_accepts_one_unambiguous_fenced_tool_envelope():
 ])
 def test_tool_mode_contract_miss_is_completed_and_usage_visible_without_streaming(
         rejected_text):
+    # The envelope miss this feature exists to remove: pinned on the legacy
+    # free-text path, which stays available for controlled comparison.
     provider = _Provider({
         "ok": True, "text": rejected_text,
         "usage": {"input_tokens": 7, "output_tokens": 41},
         "api_key_source": "none",
-    }, subscription_only=True)
+    }, subscription_only=True, structured_output=False)
     events = []
     streamed = []
     provider.request_gate = lambda kind: events.append(("reserve", kind)) or "req-1"

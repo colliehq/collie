@@ -91,7 +91,12 @@ class _Provider(ClaudeAgentSdkProvider):
     def _run_worker(self, request, cancel_scope="", registration=None):
         self.spawned += 1
         self.request = request
-        return self.response
+        response = dict(self.response)
+        if request.get("response_format"):
+            # A legitimate worker echoes the structured capability it enforced.
+            response["response_format"] = request["response_format"]
+            response["response_tools"] = list(request["response_tools"])
+        return response
 
 
 def texts(request) -> list:
@@ -124,7 +129,9 @@ def test_text_only_conversation_keeps_the_byte_identical_string_protocol():
     completion = provider.complete("COLLIE SYSTEM", messages, TOOLS)
 
     assert completion.stop_reason == "end_turn"
-    assert provider.request["protocol"] == 1
+    # Text stays a prompt string; only the response format moved (1 -> 3).
+    assert provider.request["protocol"] == 3
+    assert provider.request["response_tools"] == ["grep"]
     assert "content" not in provider.request
     assert provider.request["prompt"] == ClaudeCliProvider._prompt(
         provider, messages, TOOLS)
@@ -193,7 +200,10 @@ def test_harness_tool_protocol_survives_multimodal_transport():
     assert completion.stop_reason == "tool_use"
     assert completion.tool_calls[0].name == "grep"
     assert completion.request_count == 1
-    assert provider.request["protocol"] == 2
+    # Image + structured response: protocol 4, with the pixels still in blocks.
+    assert provider.request["protocol"] == 4
+    assert provider.request["response_tools"] == ["grep"]
+    assert images(provider.request) == [block]
     assert provider.request["system_prompt"] == "COLLIE SYSTEM"
     trailer = provider.request["content"][-1]["text"]
     assert "# Tools the executor can run:" in trailer
@@ -387,7 +397,7 @@ def test_attachments_never_reach_a_temporary_file(monkeypatch):
 
     provider.complete("S", [user("look", image_block())], TOOLS)
 
-    assert provider.request["protocol"] == 2
+    assert provider.request["protocol"] == 4
 
 
 # --------------------------------------------------------------------------- #
@@ -574,7 +584,7 @@ def test_worker_request_protocol_separates_text_and_multimodal(monkeypatch):
         read_request(dict(base, protocol=2, prompt="hi", content=[block]),
                      monkeypatch)
     with pytest.raises(RuntimeError, match="invalid worker protocol"):
-        read_request(dict(base, protocol=3, prompt="hi"), monkeypatch)
+        read_request(dict(base, protocol=5, prompt="hi"), monkeypatch)
     with pytest.raises(RuntimeError, match="missing prompt"):
         read_request(dict(base, protocol=1), monkeypatch)
     with pytest.raises(RuntimeError, match="carries no image block"):

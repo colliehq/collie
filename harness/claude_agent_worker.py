@@ -11,6 +11,7 @@ import binascii
 import json
 import math
 import os
+import re
 import signal
 import sys
 
@@ -24,6 +25,18 @@ _MAX_IMAGE_B64 = 5 * 1024 * 1024
 _MAX_REQUEST_IMAGES = 16
 _MAX_TEXT_REQUEST_BYTES = 4 * 1024 * 1024
 _MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
+
+# Structured-response mode (worker protocols 3 and 4).  The provider enforces
+# Collie's {tool|answer} envelope through one synthetic formatter tool; the
+# names below are the SDK's observed, stable stream shape for it.  Everything
+# about that shape is re-validated here: a formatter which is invoked twice,
+# receipted by a different id, or contradicted by the terminal result is a
+# formatting failure and never a completed answer.
+_STRUCTURED_FORMAT = "structured"
+_FORMATTER_TOOL = "StructuredOutput"
+_FORMATTER_RECEIPT = "Structured output provided successfully"
+_MAX_RESPONSE_TOOLS = 64
+_TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
 _SDK_ENV = {
     "CLAUDE_CODE_MAX_RETRIES": "0",
@@ -213,6 +226,51 @@ def _message_kind(message) -> str:
     return name
 
 
+def _response_tools(value) -> list:
+    """The validated tool allowlist a structured request may name."""
+    if not isinstance(value, list) or not value:
+        raise RuntimeError("structured worker request is missing its response tools")
+    if len(value) > _MAX_RESPONSE_TOOLS:
+        raise RuntimeError("structured worker request names too many response tools")
+    names = []
+    for name in value:
+        if not isinstance(name, str) or not _TOOL_NAME.match(name):
+            raise RuntimeError("structured worker request has an invalid response tool")
+        if name in names:
+            raise RuntimeError("structured worker request repeats a response tool")
+        names.append(name)
+    return names
+
+
+def _response_schema(names) -> dict:
+    """Collie's {tool|answer} envelope as a provider-enforced JSON schema.
+
+    A top-level ``anyOf`` is rejected by the provider with HTTP 400, so the
+    alternation lives one level down under a required ``response`` wrapper.
+    Tool *arguments* stay an open object: their schema is owned by Collie's host
+    executor, and inventing a stricter one here would reject valid calls.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "response": {
+                "type": "object",
+                "anyOf": [
+                    {"type": "object",
+                     "properties": {"answer": {"type": "string"}},
+                     "required": ["answer"], "additionalProperties": False},
+                    {"type": "object",
+                     "properties": {"tool": {"type": "string", "enum": list(names)},
+                                    "args": {"type": "object"}},
+                     "required": ["tool", "args"], "additionalProperties": False},
+                ],
+            },
+        },
+        "required": ["response"],
+        "additionalProperties": False,
+    }
+
+
 def _build_options(sdk, request: dict):
     extra_args = {
         "safe-mode": None,
@@ -238,6 +296,20 @@ def _build_options(sdk, request: dict):
     effort = str(request.get("effort") or "default").lower()
     if effort not in ("", "default", "auto", "provider-default"):
         kwargs["effort"] = effort
+    if request.get("response_format") == _STRUCTURED_FORMAT:
+        # Structured mode only.  The tool-less planner keeps a byte-identical
+        # plain configuration, because its own action contract is not this
+        # envelope and a schema would turn a valid plan into a failure.
+        kwargs["output_format"] = {
+            "type": "json_schema",
+            "schema": _response_schema(_response_tools(request.get("response_tools"))),
+        }
+        # Raw stream events are the only place a *second* model response is
+        # visible as such: the formatter receipt shares the first response's
+        # Assistant id, so an id comparison alone cannot count model turns.
+        # The extra traffic is one short-lived worker's discarded deltas, and
+        # none of it is accumulated or streamed onward.
+        kwargs["include_partial_messages"] = True
     return sdk.ClaudeAgentOptions(**kwargs)
 
 
@@ -325,14 +397,20 @@ def _is_empty(value) -> bool:
     return value in (None, [], {}, "")
 
 
-def _validate_init(data, expected_model: str) -> str:
+def _validate_init(data, expected_model: str, structured: bool = False) -> str:
     if not isinstance(data, dict):
         raise RuntimeError("SDK init payload is not an object")
     for key in ("tools", "skills", "plugins", "agents", "slash_commands",
                 "mcp_servers"):
         if key not in data:
             raise RuntimeError("SDK init did not attest an empty %s surface" % key)
-        if not _is_empty(data.get(key)):
+        if _is_empty(data.get(key)):
+            continue
+        # Structured mode's only admissible surface is the SDK's own synthetic
+        # response formatter.  Every other surface, and any additional tool
+        # beside the formatter, is still a foreign capability.
+        if not (structured and key == "tools"
+                and list(data.get(key)) == [_FORMATTER_TOOL]):
             raise RuntimeError("SDK init exposed a non-empty %s surface" % key)
     source_keys = [key for key in ("apiKeySource", "api_key_source")
                    if key in data]
@@ -373,6 +451,91 @@ def _assistant_text(message) -> str:
     return "".join(parts)
 
 
+def _block_kind(block) -> str:
+    return str(_field(block, "type", "") or type(block).__name__).lower()
+
+
+def _formatter_call(message, seen_id: str, seen_input):
+    """Accept at most one structured-formatter tool use in an Assistant message.
+
+    Any other tool name is a foreign tool call.  Assistant prose accompanying
+    the formatter is deliberately dropped: only the validated canonical
+    response may reach Collie, so partial or contradictory narration cannot be
+    mistaken for the answer.
+    """
+    content = _field(message, "content", []) or []
+    if isinstance(content, str):
+        content = []
+    for block in content:
+        kind = _block_kind(block)
+        if "tool_use" in kind or "tooluse" in kind:
+            if _field(block, "name", "") != _FORMATTER_TOOL:
+                raise RuntimeError("SDK assistant attempted foreign tool use")
+            if seen_id:
+                raise RuntimeError("SDK invoked the structured formatter more than once")
+            block_id = _field(block, "id", "")
+            if not isinstance(block_id, str) or not block_id.strip():
+                raise RuntimeError("SDK structured formatter call is missing its id")
+            value = _field(block, "input", None)
+            if not isinstance(value, dict):
+                raise RuntimeError("SDK structured formatter call has invalid input")
+            seen_id, seen_input = block_id.strip(), value
+        elif "tool" in kind:
+            raise RuntimeError("SDK assistant attempted foreign tool use")
+    return seen_id, seen_input
+
+
+def _formatter_receipt(message) -> str:
+    """The tool-use id receipted by exactly one successful formatter result."""
+    content = _field(message, "content", []) or []
+    if not isinstance(content, list) or len(content) != 1:
+        raise RuntimeError("SDK structured formatter receipt is not a single tool result")
+    block = content[0]
+    kind = _block_kind(block)
+    if "tool_result" not in kind and "toolresult" not in kind:
+        raise RuntimeError("SDK emitted a foreign message during structured formatting")
+    if _field(block, "is_error", None) not in (None, False):
+        raise RuntimeError("SDK structured formatter reported a failed tool result")
+    if _field(block, "content", None) != _FORMATTER_RECEIPT:
+        raise RuntimeError("SDK structured formatter receipt was not recognised")
+    tool_use_id = _field(block, "tool_use_id", "")
+    if not isinstance(tool_use_id, str) or not tool_use_id.strip():
+        raise RuntimeError("SDK structured formatter receipt is missing its tool id")
+    return tool_use_id.strip()
+
+
+def _canonical_structured(value, allowed) -> str:
+    """Validated structured output -> Collie's canonical envelope text.
+
+    Structural validation is done here, at the process boundary, and the host
+    still re-parses the returned text with its own envelope validator.
+    """
+    if not isinstance(value, dict) or set(value) != {"response"}:
+        raise RuntimeError("SDK structured output is not a single response wrapper")
+    response = value["response"]
+    if not isinstance(response, dict):
+        raise RuntimeError("SDK structured response is not an object")
+    keys = set(response)
+    if keys == {"answer"}:
+        answer = response["answer"]
+        if not isinstance(answer, str):
+            raise RuntimeError("SDK structured answer is not a string")
+        canonical = {"answer": answer}
+    elif keys == {"tool", "args"}:
+        name, args = response["tool"], response["args"]
+        if not isinstance(name, str) or name not in allowed:
+            raise RuntimeError("SDK structured response named a tool outside the allowlist")
+        if not isinstance(args, dict):
+            raise RuntimeError("SDK structured tool arguments are not an object")
+        canonical = {"tool": name, "args": args}
+    else:
+        raise RuntimeError("SDK structured response is not exactly one tool call or answer")
+    try:
+        return json.dumps(canonical, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise RuntimeError("SDK structured response is not finite JSON") from exc
+
+
 def _usage_dict(value) -> dict:
     value = value if isinstance(value, dict) else {}
     def counter(key):
@@ -401,6 +564,8 @@ async def _query(request: dict, sdk) -> dict:
     options = _build_options(sdk, request)
     prompt = (_stream_prompt(_anthropic_content(request["content"]))
               if "content" in request else request["prompt"])
+    structured = request.get("response_format") == _STRUCTURED_FORMAT
+    allowed = _response_tools(request.get("response_tools")) if structured else []
     init_seen = False
     api_key_source = ""
     assistant_id = ""
@@ -409,17 +574,46 @@ async def _query(request: dict, sdk) -> dict:
     usage = {}
     result_seen = False
     rejected = ""
+    formatter_id = ""
+    formatter_input = None
+    receipts = 0
+    model_responses = 0
+    structured_output = None
 
     try:
         async for message in sdk.query(prompt=prompt, options=options):
             kind = _message_kind(message)
-            if kind == "system" and str(_field(message, "subtype", "")).lower() == "init":
+            if structured and result_seen:
+                # The terminal result closes a structured turn.  Anything after
+                # it is unaccounted-for content, not a late fragment of the one
+                # validated response.
+                raise RuntimeError("SDK emitted content after the terminal result")
+            if structured and kind in ("stream_event", "streamevent"):
+                event = _field(message, "event", {}) or {}
+                if str(_field(event, "type", "") or "") == "message_start":
+                    model_responses += 1
+                    if model_responses > 1:
+                        raise RuntimeError("SDK emitted more than one model response")
+            elif structured and kind == "user":
+                if not init_seen:
+                    raise RuntimeError("SDK emitted a tool result before validated init")
+                if not formatter_id:
+                    raise RuntimeError(
+                        "SDK emitted a tool result before the structured formatter call")
+                if _formatter_receipt(message) != formatter_id:
+                    raise RuntimeError(
+                        "SDK structured formatter receipt did not match its call id")
+                receipts += 1
+                if receipts > 1:
+                    raise RuntimeError(
+                        "SDK emitted more than one structured formatter receipt")
+            elif kind == "system" and str(_field(message, "subtype", "")).lower() == "init":
                 if init_seen:
                     raise RuntimeError("SDK emitted more than one init message")
                 if assistant_seen or result_seen:
                     raise RuntimeError("SDK emitted init after response content")
                 api_key_source = _validate_init(
-                    _field(message, "data", {}), request["model"])
+                    _field(message, "data", {}), request["model"], structured)
                 init_seen = True
             elif kind == "assistant":
                 if not init_seen:
@@ -458,7 +652,11 @@ async def _query(request: dict, sdk) -> dict:
                     raise RuntimeError("SDK Assistant message is missing an id")
                 assistant_id = message_id
                 assistant_seen = True
-                assistant_text += _assistant_text(message)
+                if structured:
+                    formatter_id, formatter_input = _formatter_call(
+                        message, formatter_id, formatter_input)
+                else:
+                    assistant_text += _assistant_text(message)
             elif kind == "result":
                 if not init_seen:
                     raise RuntimeError("SDK emitted result before validated init")
@@ -482,9 +680,14 @@ async def _query(request: dict, sdk) -> dict:
                 if (not isinstance(turns, int) or isinstance(turns, bool)
                         or turns < 0):
                     raise RuntimeError("SDK result has an invalid turn count")
-                if turns > 1:
+                # Structured mode spends a second accounted turn on the
+                # formatter receipt, which is a tool result rather than another
+                # model response.  Plain mode keeps its strict one-turn limit.
+                if turns > (2 if structured else 1):
                     raise RuntimeError("SDK exceeded the one-turn limit")
                 usage = _field(message, "usage", {}) or {}
+                if structured:
+                    structured_output = _field(message, "structured_output", None)
     except Exception as exc:
         # The SDK raises after already delivering the terminal error result.
         # Absorb that one known exception so the validated classification and
@@ -504,6 +707,21 @@ async def _query(request: dict, sdk) -> dict:
                 "usage": _usage_dict(usage), "api_key_source": api_key_source}
     if not assistant_seen or not assistant_id:
         raise RuntimeError("SDK did not emit exactly one Assistant message id")
+    if structured:
+        # A formatting failure is never a completed answer: every one of these
+        # paths fails the call instead of returning prose the provider never
+        # validated against the schema.
+        if model_responses != 1:
+            raise RuntimeError("SDK did not emit exactly one model response")
+        if not formatter_id:
+            raise RuntimeError("SDK did not invoke the structured formatter")
+        if receipts != 1:
+            raise RuntimeError("SDK did not emit exactly one structured formatter receipt")
+        if structured_output != formatter_input:
+            raise RuntimeError("SDK structured output did not match the formatter input")
+        return {"ok": True, "text": _canonical_structured(structured_output, allowed),
+                "usage": _usage_dict(usage), "api_key_source": api_key_source,
+                "response_format": _STRUCTURED_FORMAT, "response_tools": allowed}
     return {"ok": True, "text": assistant_text, "usage": _usage_dict(usage),
             "api_key_source": api_key_source}
 
@@ -516,12 +734,22 @@ def _read_request() -> dict:
         raise ValueError("non-finite JSON number is forbidden: %s" % value)
     request = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
     protocol = request.get("protocol") if isinstance(request, dict) else None
-    if protocol not in (1, 2) or isinstance(protocol, bool):
+    if protocol not in (1, 2, 3, 4) or isinstance(protocol, bool):
         raise RuntimeError("invalid worker protocol")
     for key in ("model", "system_prompt"):
         if not isinstance(request.get(key), str):
             raise RuntimeError("worker request is missing %s" % key)
-    if protocol == 1:
+    # Protocols 3/4 are 1/2 plus provider-enforced structured responses.  The
+    # capability is validated here, before the SDK, its runtime, or any socket
+    # exists, so an unsupported or half-specified mode never reaches inference.
+    structured = protocol in (3, 4)
+    if structured:
+        if request.get("response_format") != _STRUCTURED_FORMAT:
+            raise RuntimeError("invalid worker response format")
+        request["response_tools"] = _response_tools(request.get("response_tools"))
+    elif "response_format" in request or "response_tools" in request:
+        raise RuntimeError("plain worker request must not carry a response format")
+    if protocol in (1, 3):
         # The text protocol keeps its original, smaller stdin budget.
         if len(raw) > _MAX_TEXT_REQUEST_BYTES:
             raise RuntimeError("worker request exceeded the safety limit")
