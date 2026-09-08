@@ -74,6 +74,7 @@ from .agent_runners import (
     _workspace,
 )
 from .verification import workspace_snapshot
+from .providers import provider_retry_at
 
 
 KEY = "claude-code"
@@ -146,6 +147,72 @@ _BANNED_ARGV = frozenset({
     "bypasspermissions",
 })
 _BANNED_PREFIX = "--dangerously"
+
+
+class _QuotaTurn:
+    """Current invocation's native quota and file-tool completion receipts.
+
+    Model prose and old persisted events never establish a timer.  A completed
+    file edit followed by a quota rejection can resume; an unmatched or failed
+    tool receipt still requires inspection of the workspace.
+    """
+
+    def __init__(self):
+        self.windows = {}
+        self.rate_limited = False
+        self.pending = set()
+        self.seen = set()
+        self.tools_complete = True
+        self.saw_write = False
+
+    def observe(self, value):
+        kind = value.get("type")
+        if kind == "rate_limit_event":
+            info = value.get("rate_limit_info")
+            if not isinstance(info, dict):
+                return
+            window = info.get("rateLimitType", info.get("rate_limit_type"))
+            if window not in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+                return
+            status = info.get("status")
+            reset = provider_retry_at(info.get("resetsAt", info.get("resets_at")))
+            if status == "rejected" and reset:
+                self.windows[window] = reset
+            else:
+                self.windows.pop(window, None)
+        elif kind in ("assistant", "user"):
+            if kind == "assistant":
+                self.rate_limited = value.get("error") == "rate_limit"
+            message = value.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(blocks, list):
+                return
+            for block in blocks:
+                if not isinstance(block, dict):
+                    self.tools_complete = False
+                    continue
+                if block.get("type") == "tool_use":
+                    call_id = block.get("id")
+                    name = block.get("name")
+                    if (kind != "assistant" or not isinstance(call_id, str) or not call_id
+                            or call_id in self.seen or name not in DEFAULT_TOOLS
+                            or len(self.seen) >= 10000):
+                        self.tools_complete = False
+                        continue
+                    self.seen.add(call_id)
+                    self.pending.add(call_id)
+                    self.saw_write = self.saw_write or name in ("Write", "Edit")
+                elif block.get("type") == "tool_result":
+                    call_id = block.get("tool_use_id")
+                    if (kind != "user" or not isinstance(call_id, str)
+                            or call_id not in self.pending
+                            or block.get("is_error", False) is not False):
+                        self.tools_complete = False
+                        continue
+                    self.pending.remove(call_id)
+
+    def reset(self):
+        return max(self.windows.values(), default=0) if self.rate_limited else 0
 
 
 def _check_tools(tools: Any) -> tuple[str, ...]:
@@ -515,7 +582,7 @@ class ClaudeCodeRunner:
 
         assert outcome is not None
         cancelled = bool(cancelled or outcome.cancelled)
-        data, native_events, protocol_error, native_event_count, reported_ids = self._parse_stream(
+        data, native_events, protocol_error, native_event_count, reported_ids, quota = self._parse_stream(
             outcome.stdout, prior_cursor)
         protocol_error = protocol_error or bool(outcome.output_truncated)
 
@@ -543,6 +610,10 @@ class ClaudeCodeRunner:
         is_error = data.get("is_error") is True
         exit_code = outcome.exit_code
         timed_out = bool(outcome.timed_out)
+        retry_at = (quota.reset() if (is_error and type(exit_code) is int
+                    and exit_code in (0, 1) and reported == session_id
+                    and not timed_out and not cancelled and not protocol_error
+                    and not turns_exhausted) else 0)
 
         settled = (exit_code == 0 and not is_error and not turns_exhausted
                    and not timed_out and not cancelled and not protocol_error)
@@ -559,6 +630,9 @@ class ClaudeCodeRunner:
                      % (outcome.stderr or outcome.stdout or "(no output)"))
         elif turns_exhausted:
             error = "Claude Code stopped at its own turn limit (subtype=%s)" % subtype
+        elif retry_at:
+            error = "HTTP 429: Claude Code rate limit; subscription resets at %s UTC" % (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(retry_at)))
         elif is_error:
             error = result_text or subtype or "Claude Code reported is_error"
         elif exit_code is None:
@@ -570,6 +644,11 @@ class ClaudeCodeRunner:
         events = prior_events + tuple(native_events)
         mutated, complete = _mutation(before, after)
         recovery = (not settled) and (mutated or (process_started and not complete))
+        if (retry_at and complete and quota.tools_complete and not quota.pending
+                and (not mutated or quota.saw_write)):
+            recovery = False
+        elif retry_at and (not quota.tools_complete or quota.pending):
+            recovery = True
         return RunnerSnapshot(
             runner=self.key, workspace=workspace, thread_id=thread_id,
             cursor=prior_cursor + native_event_count,
@@ -580,12 +659,12 @@ class ClaudeCodeRunner:
             workspace_digest=str(after.get("tree_digest") or ""),
             final_output=result_text or (prior.final_output if prior else ""),
             timed_out=timed_out, cancelled=cancelled, invocation=invocation,
-            started_at=started_at, finished_at=finished_at)
+            started_at=started_at, finished_at=finished_at, retry_at=retry_at)
 
     # --- parsing ------------------------------------------------------------
     def _parse_stream(self, stdout: str, prior_cursor: int
                       ) -> tuple[dict[str, Any], list[RunnerEvent], bool, int,
-                                 list[str]]:
+                                 list[str], _QuotaTurn]:
         """Parse strict LF/CRLF JSONL and return its terminal result object.
 
         Every non-empty record becomes durable evidence.  Noise is recorded as
@@ -601,6 +680,7 @@ class ClaudeCodeRunner:
         event_count = 0
         reported_ids: list[str] = []
         saw_result = False
+        quota = _QuotaTurn()
         for raw in _lf_records(stdout):
             if not raw.strip():
                 continue
@@ -627,6 +707,8 @@ class ClaudeCodeRunner:
                     event = self._protocol_event(
                         raw, event.cursor, "duplicate terminal result")
                     invalid = True
+            if not invalid:
+                quota.observe(value)
             events.append(event)
             malformed = malformed or invalid
         if result_count == 0:
@@ -637,7 +719,7 @@ class ClaudeCodeRunner:
                 events.append(self._protocol_event(
                     "", prior_cursor + event_count,
                     "stream ended without a terminal result"))
-        return result, list(events), malformed, event_count, reported_ids
+        return result, list(events), malformed, event_count, reported_ids, quota
 
     def _event_from_line(self, raw: str, cursor: int
                          ) -> tuple[RunnerEvent, dict[str, Any], bool]:

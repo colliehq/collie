@@ -40,6 +40,7 @@ class RunResult:
     budget_limits: dict = field(default_factory=dict)
     canceled: bool = False
     stop_reason: str = ""
+    retry_at: int = 0              # upstream quota reset; Mission persists its wait separately
     tool_calls: int = 0
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
     contract_repairs: int = 0  # bounded structured-response corrections (not transport retries)

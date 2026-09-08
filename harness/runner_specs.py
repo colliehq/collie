@@ -1624,6 +1624,7 @@ def snapshot_to_run_result(snapshot: Any, spec: HarnessSpec, probe: RunnerProbe,
         cost_usd=cost_usd,
         answer=str(getattr(snapshot, "final_output", "") or ""),
         error=error,
+        retry_at=getattr(snapshot, "retry_at", 0),
         messages=[],                         # an external runner keeps its own thread
     )
 

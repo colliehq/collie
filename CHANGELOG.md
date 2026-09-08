@@ -17,6 +17,9 @@
   finish gate, while command output imitating a successful result cannot provide evidence.
 - Continue preserves unsent text, images and IDE context for review before sending. An empty
   composer keeps its direct continuation shortcut, and narrow screens retain the active task title.
+- Claude subscription quota resets become durable Mission waits. SDK and native Claude Code
+  workers preserve the provider's reset timestamp and resume the saved task after it, within the
+  task's deadline. Incomplete tool effects and missing usage evidence still require attention.
 
 ## v0.25.0 — Tasks keep their place
 

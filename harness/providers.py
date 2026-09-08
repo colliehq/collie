@@ -112,6 +112,17 @@ class Completion:
     # the assistant turn on the next request — so the loop stores these and _to_anthropic prepends
     # them. Empty when thinking is off (the normal path).
     thinking_blocks: list = field(default_factory=list)
+    retry_at: int = 0              # provider-attested quota reset (UTC epoch seconds)
+
+
+def provider_retry_at(value, now=None) -> int:
+    """An upcoming provider reset, or zero for absent/stale/invalid metadata.
+
+    This is machine metadata, never a date extracted from assistant prose.
+    Eight days covers weekly windows without accepting unbounded waits.
+    """
+    now = time.time() if now is None else now
+    return value if type(value) is int and now < value <= now + 8 * 86400 else 0
 
 
 def issued_requests(comp, maximum: int | None = None, default: int = 1) -> int:

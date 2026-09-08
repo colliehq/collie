@@ -6161,8 +6161,15 @@ class MissionDriver:
                             result.get("retry_after_seconds", 0) or 1)))
                         wake_at = int(time.time()) + retry_after
                         if result.get("transient"):
+                            from .providers import provider_retry_at
+                            reset = provider_retry_at(result.get("retry_at"))
+                            if reset:
+                                wake_at = reset + 3  # let the provider's reset boundary pass
                             self.store.account_runtime(
                                 mission_id, token, retries=1)
+                        deadline = self._deadline_epoch(self.store.get(mission_id).leash)
+                        if deadline:
+                            wake_at = min(wake_at, deadline)
                         self.store.schedule_wait(mission_id, wake_at)
                         self.store.record_event(
                             mission_id, "control", "nested_slice_yielded", nonce,
@@ -6901,7 +6908,7 @@ class ModelDecider:
                     "_model_calls_reserved": bool(callable(request_gate)),
                 }
             if getattr(comp, "stop_reason", "") == "error":
-                from .providers import classify_error
+                from .providers import classify_error, provider_retry_at
                 detail = getattr(comp, "error_detail", "") or getattr(comp, "text", "")
                 kind = classify_error(detail, int(getattr(comp, "error_status", 0) or 0))
                 if kind == "retryable":
@@ -6909,9 +6916,13 @@ class ModelDecider:
                               if e.get("kind") == "control" and e.get("name") == WAIT and
                               (e.get("payload") or {}).get("transient")]
                     delay = min(3600, 60 * (2 ** min(len(recent), 6)))
+                    reset = provider_retry_at(getattr(comp, "retry_at", 0))
+                    if reset:
+                        delay = max(1, reset - int(time.time()) + 3)
                     return {"action": WAIT,
                             "args": {"seconds": delay, "transient": True},
-                            "reason": "temporary model/provider error; retry with backoff",
+                            "reason": ("provider quota exhausted; resume after its reset" if reset else
+                                       "temporary model/provider error; retry with backoff"),
                             "_retry": 1, **meta}
             else:
                 # Models commonly wrap a valid JSON decision in a Markdown fence

@@ -165,8 +165,9 @@ def test_external_mission_slice_keeps_host_verification_and_worker_receipt(monke
         "update the value", "updated the value"]
 
 
+@pytest.mark.parametrize("provider_error", ["", "HTTP 429: subscription rate limit"])
 def test_external_mission_slice_fails_closed_when_usage_is_unknown(monkeypatch,
-                                                                    tmp_path):
+                                                                    tmp_path, provider_error):
     workspace = tmp_path / "repo"
     workspace.mkdir()
     (workspace / ".git").mkdir()
@@ -198,7 +199,8 @@ def test_external_mission_slice_fails_closed_when_usage_is_unknown(monkeypatch,
             task_id="code:external", harness="codex-exec", provider="codex",
             model="", input_tokens=None, output_tokens=None, total_tokens=None,
             cache_read=None, cache_creation=None, cost_usd=None, turns=1,
-            success=True, answer="updated the value", error="", messages=[])
+            success=not provider_error, answer="updated the value", error=provider_error,
+            retry_at=int(time.time()) + 18000 if provider_error else 0, messages=[])
         setattr(result, runner_slice.RECEIPT_ATTR, unknown_receipt)
         return result
 
@@ -227,6 +229,45 @@ def test_external_mission_slice_fails_closed_when_usage_is_unknown(monkeypatch,
     assert "did not report usage" in receipt["verification"]["usage_guard"]
     assert "Worker error" in saved["messages"][-1]["content"]
     assert "did not report usage" in saved["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("requires_recovery", [False, True])
+def test_external_quota_wait_preserves_the_workers_recovery_boundary(monkeypatch, tmp_path,
+                                                                    requires_recovery):
+    from dataclasses import replace
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / ".git").mkdir()
+    (workspace / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(state / "sessions"))
+    monkeypatch.setattr(cli, "_paths", lambda: (
+        str(state / "memory.db"), str(state / "runs.db"),
+        str(state / "dashboard.html"), str(state / "sandbox")))
+    monkeypatch.setattr(runner_registry, "probe_all",
+                        lambda keys=None, **kw: {key: _probe(key) for key in (keys or ())})
+    receipt = replace(_receipt(workspace), settled=False, recovery_required=requires_recovery)
+    reset = int(time.time()) + 18000
+
+    def fake_run(*args, **kwargs):
+        (workspace / "value.py").write_text("VALUE = 2\n", encoding="utf-8")
+        result = RunResult(task_id="quota", input_tokens=40, output_tokens=12,
+                           error="HTTP 429: rate limit", retry_at=reset, messages=[])
+        setattr(result, runner_slice.RECEIPT_ATTR, receipt)
+        return result
+
+    monkeypatch.setattr(runner_slice, "run_adhoc", fake_run)
+    out = _live_code(
+        "update the value", str(workspace), mission_id="quota-worker",
+        worker_profile=_profile(workspace),
+        execution_profile={"version": 1, "profile": "durable-code", "provider": "codex-oauth",
+                           "model": "gpt-5.6-sol", "billing_mode": "subscription",
+                           "subscription_only": True, "allow_provider_fallback": False})
+    assert out["retry_at"] == reset and not out["verified"]
+    assert out["recovery_required"] is requires_recovery
+    assert out["continue_needed"] is (not requires_recovery)
 
 
 def test_worker_profile_refresh_rejects_a_changed_billing_route(tmp_path):

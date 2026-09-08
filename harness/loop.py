@@ -27,7 +27,7 @@ from .context import ContextComposer
 from .hooks import HookManager
 from .providers import (ModelProvider, Usage, ToolCall, classify_error, content_text,
                         is_overflow, is_known_terminal, issued_requests, request_count_of,
-                        _error_completion)
+                        _error_completion, provider_retry_at)
 from .recorder import Recorder, RunResult
 from . import tools as _tools
 from .tools import ToolRegistry, ToolCtx, repair_args
@@ -1996,6 +1996,18 @@ class Harness:
                     cls = classify_error(
                         comp.error_detail or comp.text or "", comp.error_status,
                         getattr(comp, "error_code", ""))
+                    retry_at = provider_retry_at(getattr(comp, "retry_at", 0))
+                    if cls == "retryable" and retry_at:
+                        # Checkpoint instead of sleeping or spending more calls
+                        # before a provider-attested quota reset. Mission owns
+                        # the durable timer; a foreground run returns its reason.
+                        res.retry_at = retry_at
+                        comp.text = "retryable: [provider quota reset at %s UTC] HTTP %d %s" % (
+                            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(retry_at)),
+                            comp.error_status, comp.error_detail or "rate limit")
+                        self._emit("provider_wait", retry_at=retry_at,
+                                   error_code=getattr(comp, "error_code", ""))
+                        break
                     if (cls == "overflow" and self.overflow_recovery
                             and (not overflow_tried or compaction_since_overflow)
                             and _has_next_turn(turn)):

@@ -86,11 +86,12 @@ class _ProviderRejected(RuntimeError):
     never a response-contract miss: the model produced no answer to repair.
     """
 
-    def __init__(self, category: str, usage, api_key_source: str):
+    def __init__(self, category: str, usage, api_key_source: str, retry_at: int = 0):
         super().__init__("provider rejected the request: " + category)
         self.category = category
         self.usage = usage
         self.api_key_source = api_key_source
+        self.retry_at = retry_at
 
 
 class _StructuredContractRejected(RuntimeError):
@@ -347,7 +348,9 @@ def _provider_rejection(payload: dict):
         cache_read=_usage_counter(usage_data, "cache_read_input_tokens"),
         cache_creation=_usage_counter(usage_data, "cache_creation_input_tokens"),
     )
-    return _ProviderRejected(category, usage, "none")
+    from .providers import provider_retry_at
+    retry_at = provider_retry_at(payload.get("retry_at")) if category == "rate_limit" else 0
+    return _ProviderRejected(category, usage, "none", retry_at=retry_at)
 
 
 def _formatter_refusal(payload: dict):
@@ -1004,7 +1007,7 @@ class ClaudeAgentSdkProvider(ModelProvider):
                 text="ERROR(claude-agent-sdk): " + detail, usage=exc.usage,
                 stop_reason="error", error_status=error_status,
                 error_code="provider_" + exc.category, error_detail=detail,
-                request_count=1)
+                request_count=1, retry_at=exc.retry_at)
             completion.api_key_source = exc.api_key_source
             return completion
         except _StructuredContractRejected as exc:

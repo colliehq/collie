@@ -2040,8 +2040,10 @@ def _live_code_slice(goal, workspace=None, mission_id=None, host_verifier=None,
             # the verifier's own watcher reports the fault in its evidence.
             run_cancelled = False
     stop_reason = str(getattr(res, "stop_reason", "") or "")
-    boundary_uncertain = False
+    boundary_uncertain = bool(external_worker and (
+        worker_receipt is None or worker_receipt.recovery_required))
     skip_reason = ("the code worker was cancelled" if run_cancelled else
+                   "the external worker requires recovery" if boundary_uncertain else
                    "the code worker stopped with an error" if error_text else "")
     # If the loop ran the same command itself and nothing has moved since, the
     # host already owns a receipt for exactly these bytes.  Running it a second
@@ -2122,6 +2124,10 @@ def _live_code_slice(goal, workspace=None, mission_id=None, host_verifier=None,
     if verification.get("cancelled") or check_evidence.get("cancelled"):
         run_cancelled = True
     verified = bool(verification.get("verified"))
+    if boundary_uncertain:
+        verified = False
+        verification["verified"] = False
+        verification["recovery_required"] = True
     if usage_error:
         verified = False
         verification["verified"] = False
@@ -2135,9 +2141,12 @@ def _live_code_slice(goal, workspace=None, mission_id=None, host_verifier=None,
         verification["verified"] = False
         verification["cancelled"] = True
     transient = False
+    retry_at = 0
     if error_text:
-        from .providers import classify_error
+        from .providers import classify_error, provider_retry_at
         transient = classify_error(error_text) == "retryable"
+        if transient:
+            retry_at = provider_retry_at(getattr(res, "retry_at", 0))
     post_slice = workspace_snapshot(cwd)
     slice_snapshot_complete = bool(agent_snapshot_complete and
                                    post_slice.get("snapshot_complete"))
@@ -2160,8 +2169,8 @@ def _live_code_slice(goal, workspace=None, mission_id=None, host_verifier=None,
                              session_recovery.get("recovery_required"))
     recovery_required = bool(journal_uncertain or not slice_snapshot_complete or
                              not transcript_persisted or boundary_uncertain)
-    needs_human = bool(error_text and not transient and not verified and
-                       not recovery_required)
+    needs_human = bool((usage_error or (error_text and not transient)) and
+                       not verified and not recovery_required)
     # A cancelled slice is a settled stop, not a scheduling yield: continuing it
     # automatically would replay work the user asked to stop.
     continue_needed = bool(not verified and not recovery_required and not needs_human and
@@ -2286,6 +2295,7 @@ def _live_code_slice(goal, workspace=None, mission_id=None, host_verifier=None,
         "receipt_error": receipt_error,
         "transient": transient,
         "retry_after_seconds": 60 if transient else 0,
+        "retry_at": retry_at,
         "recovery_required": recovery_required,
         "needs_human": needs_human,
         "slice_mutated": slice_mutated,
@@ -2457,6 +2467,7 @@ def _real_code(runner=None):
             "configuration_error": bool(out.get("configuration_error")),
             "transient": bool(out.get("transient")),
             "retry_after_seconds": int(out.get("retry_after_seconds", 0) or 0),
+            "retry_at": out.get("retry_at", 0),
             "turns_exhausted": bool(out.get("turns_exhausted")),
             "turns": int(out.get("turns", 0) or 0),
             "cancelled": bool(out.get("cancelled")),

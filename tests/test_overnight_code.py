@@ -611,6 +611,7 @@ def test_transient_provider_error_after_safe_edit_continues_from_checkpoint(
         answer="ERROR(provider): 429 rate limit", error="429 rate limit",
         messages=[{"role": "assistant", "content": "edit checkpointed"}],
         exhausted=False)
+    result.retry_at = int(time.time()) + 18000
     monkeypatch.setattr(
         "harness.cli.make_harness",
         lambda *_args, **_kwargs: EditingHarness(result, []))
@@ -625,6 +626,7 @@ def test_transient_provider_error_after_safe_edit_continues_from_checkpoint(
         host_verifier=lambda *_: False)
 
     assert out["transient"] is True
+    assert out["retry_at"] == result.retry_at
     assert out["slice_mutated"] is True
     assert out["recovery_required"] is False
     assert out["continue_needed"] is True

@@ -256,8 +256,11 @@ class RunnerSnapshot:
     finished_at: float = 0.0
     terminal_state: str = ""  # completed | failed | cancelled | interrupted | waiting
     pending_interactions: tuple[runner_specs.PendingInteraction, ...] = ()
+    retry_at: int = 0  # provider-attested quota reset; persisted across restarts
 
     def __post_init__(self) -> None:
+        if type(self.retry_at) is not int or not 0 < self.retry_at < 2 ** 53:
+            object.__setattr__(self, "retry_at", 0)
         pending: list[runner_specs.PendingInteraction] = []
         for item in tuple(self.pending_interactions or ())[-256:]:
             if isinstance(item, runner_specs.PendingInteraction):
@@ -306,6 +309,7 @@ class RunnerSnapshot:
             "terminal_state": self.terminal_state,
             "pending_interactions": [item.to_dict()
                                      for item in self.pending_interactions],
+            **({"retry_at": self.retry_at} if self.retry_at else {}),
         }
 
     @classmethod
@@ -360,6 +364,7 @@ class RunnerSnapshot:
                 runner_specs.PendingInteraction.from_dict(item)
                 for item in raw_interactions[-256:]
                 if isinstance(item, dict)),
+            retry_at=value.get("retry_at", 0),
         )
 
 

@@ -321,7 +321,7 @@ def _build_options(sdk, request: dict):
         # A consumer stopping at a failed formatter receipt cannot prevent the
         # CLI from already starting its next request. Disable that native retry
         # path explicitly; only Collie's separately reserved repair may run.
-        # Documented CLI env control, verified with CLI 2.1.221 / SDK 0.2.136.
+        # Documented CLI env control; SDK 0.2.136 uses bundled CLI 2.1.228.
         kwargs["env"]["MAX_STRUCTURED_OUTPUT_RETRIES"] = "0"
         # Structured mode only.  The tool-less planner keeps a byte-identical
         # plain configuration, because its own action contract is not this
@@ -639,6 +639,7 @@ async def _query(request: dict, sdk) -> dict:
     model_response_id = ""
     start_usage = {}
     structured_output = None
+    quota_resets = {}
 
     try:
         async for message in sdk.query(prompt=prompt, options=options):
@@ -648,7 +649,22 @@ async def _query(request: dict, sdk) -> dict:
                 # it is unaccounted-for content, not a late fragment of the one
                 # validated response.
                 raise RuntimeError("SDK emitted content after the terminal result")
-            if structured and kind in ("stream_event", "streamevent"):
+            if kind in ("rate_limit_event", "ratelimitevent"):
+                if not init_seen or result_seen:
+                    continue  # only this authenticated, still-open invocation
+                info = _field(message, "rate_limit_info", {})
+                window = _field(info, "rate_limit_type", _field(info, "rateLimitType"))
+                status = _field(info, "status")
+                if window in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+                    if status == "rejected":
+                        reset = _field(info, "resets_at", _field(info, "resetsAt"))
+                        if type(reset) is int and 0 < reset < 2 ** 53:
+                            quota_resets[window] = reset
+                        else:
+                            quota_resets.pop(window, None)
+                    elif status in ("allowed", "allowed_warning"):
+                        quota_resets.pop(window, None)
+            elif structured and kind in ("stream_event", "streamevent"):
                 event = _field(message, "event", {}) or {}
                 if str(_field(event, "type", "") or "") == "message_start":
                     if not init_seen:
@@ -785,9 +801,12 @@ async def _query(request: dict, sdk) -> dict:
     if rejected:
         # A provider rejection: only the stable category, the measured
         # usage, and the reviewed auth attestation cross the process boundary.
-        return {"ok": False, "provider_error": rejected,
+        payload = {"ok": False, "provider_error": rejected,
                 "error": "provider rejected the request: " + rejected,
                 "usage": _usage_dict(usage), "api_key_source": api_key_source}
+        if rejected == "rate_limit" and quota_resets:
+            payload["retry_at"] = max(quota_resets.values())
+        return payload
     if not assistant_seen or not assistant_id:
         raise RuntimeError("SDK did not emit exactly one Assistant message id")
     if structured:
