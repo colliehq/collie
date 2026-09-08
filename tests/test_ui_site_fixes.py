@@ -555,11 +555,11 @@ def test_run_configuration_is_snapshotted_and_mobile_drawer_is_modal():
 
     assert "var runConfig = readRunConfig(), runSession = currentSession" in desktop
     assert "runStream(q, imgs, runConfig, runSession, userMsgEl, contexts)" in desktop
-    assert "if (thisLaunch !== streamLaunchToken || !running) return" in desktop
+    # Upload/navigation and exact draft restoration are exercised through the browser
+    # in test_web_busy_send_ui.py, including attachment-only sends and newer drafts.
     assert "if (routePending) return" in desktop
     assert 'typeof d.id !== "string"' in desktop
     assert "Image upload failed — no run was started." in desktop
-    assert "attached = imgs.slice(); renderAttached()" in desktop
     assert ".catch(function () { launch([]); })" not in desktop
 
     assert 'role="dialog" aria-modal="true"' in mobile

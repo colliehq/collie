@@ -9754,7 +9754,7 @@
       meta.textContent = t(held.reason === "unknown" ? "Not confirmed — never acknowledged"
                            : held.reason === "unsent" ? "Not sent — nothing reached Collie"
                            : "Save not confirmed — still here") + " · " +
-                         t(currentSession ? "Send it again or discard it" : "Put it back in the composer or discard it");
+                         t(currentSession && held.text.trim() ? "Send it again or discard it" : "Put it back in the composer or discard it");
       if (held.lostImages) meta.textContent += " · " + t("Attachments not restored — reattach before sending");
       else if (held.omittedImages) meta.textContent += " · " + t("Sent without its attachments");
       else if ((held.images || []).length) meta.textContent += " · " + t("Attachments saved");
@@ -9768,11 +9768,11 @@
         button.disabled = !!held.sending || !!blocked; button.onclick = action; actions.appendChild(button);
       }
       // Sending is blocked, not silently stripped: the row promised the files were coming.
-      held_button(held.sending ? "Sending…" : (currentSession ? "Send again" : "Put in composer"),
+      held_button(held.sending ? "Sending…" : (currentSession && held.text.trim() ? "Send again" : "Put in composer"),
                   function () { resendRetained(currentSession, held.id); }, !!held.lostImages);
       if (held.lostImages) {
         held_button("Reattach files", function () { reattachRetained(currentSession, held.id); });
-        held_button("Send without attachments", function () { omitRetainedAttachments(currentSession, held.id); });
+        if (held.text.trim()) held_button("Send without attachments", function () { omitRetainedAttachments(currentSession, held.id); });
       }
       held_button("Discard", function () { discardRetained(currentSession, held.id); });
       row.appendChild(actions);
@@ -10031,7 +10031,8 @@
                            row.contexts || [], row.images || [], row.lostImages || 0]);
   }
   function retainSubmission(sid, q, contexts, imgs, config, reason, opts) {
-    if (!q) return null;
+    if (!q && !(imgs || []).length && !(contexts || []).length) return null;
+    q = q || "";
     opts = opts || {};
     var rows = retainedFor(sid), fresh = {
       id:(window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID()
@@ -10094,7 +10095,7 @@
   function resendRetained(sid, id) {
     var row = retainedFor(sid).filter(function (r) { return r.id === id; })[0];
     if (!row || row.sending || row.lostImages) return;   // files first, or an explicit omission
-    if (!sid) { restoreRetainedToComposer(sid, id); return; }
+    if (!sid || !row.text.trim()) { restoreRetainedToComposer(sid, id); return; }
     row.sending = true; renderTaskQueue();
     queueInput(row.text, row.contexts, row.images, row.mode || "follow_up",
                   {session:sid, config:row.config, draft:null, requestId:row.requestId,

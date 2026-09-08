@@ -39,6 +39,8 @@
   without replacing newer drafts. Unconfirmed requests are retained for review; inbox receipts
   clear uncertainty automatically, and retries reuse the same request identity. Missing attachments
   require reattachment or explicit omission, and new-task recovery restores the captured setup.
+  Attachment-only submissions also survive navigation and reload; recovery returns their files
+  to the composer when there is no text to queue.
 
 ## v0.25.0 — Tasks keep their place
 

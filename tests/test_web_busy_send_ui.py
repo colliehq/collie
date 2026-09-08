@@ -524,3 +524,31 @@ def test_inbox_receipt_after_reload_retires_uncertainty_without_a_resend(ui):
     expect(page.locator(".task-queue-row:not(.retained)")).to_have_count(1)
     assert len(_Fixture.queue_posts) == 1
     expect(page.locator("#input")).to_have_value(NEWER)
+
+
+@pytest.mark.parametrize("existing_thread", [False, True])
+def test_attachment_only_submission_survives_navigation_and_reload(ui, existing_thread):
+    page = ui.page
+    _Fixture.upload_delay = 1.0
+    if existing_thread:
+        open_read_thread(page)
+    attach(page)
+    page.press("#input", "Enter")
+    page.wait_for_timeout(100)
+    open_cap_thread(page)
+    page.wait_for_timeout(1200)
+    if existing_thread:
+        open_read_thread(page)
+    else:
+        page.locator("#newChat").click()
+    expect(retained_rows(page)).to_have_count(1)
+    page.reload(wait_until="load")
+    row = retained_rows(page)
+    expect(row).to_have_count(1)
+    expect(row.locator(".task-queue-meta")).to_contain_text("Attachments saved")
+    row.get_by_role("button", name="Put in composer").click()
+    expect(retained_rows(page)).to_have_count(0)
+    expect(page.locator("#attachStrip .thumb")).to_have_count(1)
+    expect(page.locator("#input")).to_have_value("")
+    assert not _Fixture.stream_requests
+    assert not _Fixture.queue_posts
