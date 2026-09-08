@@ -26,6 +26,9 @@
 - Pack uses its candidate check on desktop and phone without demanding a second verification
   command. Empty checks and invalid attempt counts still prevent launch, including in a fresh
   installed workspace where no repository check can be detected.
+- Successful model responses restore the allowance for a later response-format correction.
+  Consecutive malformed replies remain bounded, and all corrections still count toward the
+  task's actual request and token limits; separate recovered errors no longer end a long task.
 
 ## v0.25.0 — Tasks keep their place
 

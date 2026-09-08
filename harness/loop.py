@@ -599,9 +599,9 @@ class Harness:
             self.retry_base = max(0.0, float(_settings.get("RETRY_BASE", "2")))
         except (TypeError, ValueError):
             self.retry_base = 2.0
-        # A single run-global structured-response correction.  This is intentionally separate from
-        # transport retries and fixed at one by default so malformed model output cannot double an
-        # overnight run's request budget. Tests/embedders may lower it to zero.
+        # One correction per malformed response episode, separate from transport retries.
+        # A valid response restores this allowance; actual calls and tokens still consume
+        # the run's shared budget. Tests/embedders may lower it to zero.
         self.max_contract_repairs = 1
         # context-overflow recovery (point 9): on an input-too-long error, shrink the history once
         # and retry the turn. COLLIE_OVERFLOW_RECOVERY=0 restores the old die-on-overflow behavior.
@@ -1760,6 +1760,7 @@ class Harness:
         # Tool output uses the same vault initialized before the prompt above.
         total = Usage()
         model_calls = 0
+        consecutive_contract_repairs = 0
         if not getattr(self, "delegation_depth", 0):
             parent = self
 
@@ -2002,6 +2003,7 @@ class Harness:
                             answer = comp.text
                         break
                     if comp.stop_reason != "error":
+                        consecutive_contract_repairs = 0
                         break
                     cls = classify_error(
                         comp.error_detail or comp.text or "", comp.error_status,
@@ -2038,12 +2040,13 @@ class Harness:
                                             and self.shared_budget.exceeded())
                     call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
                     if (cls == "protocol"
-                            and res.contract_repairs < max(
+                            and consecutive_contract_repairs < max(
                                 0, int(getattr(self, "max_contract_repairs", 1) or 0))
                             and (not call_cap or model_calls < call_cap)
                             and not shared_exhausted
                             and not self._over_budget(total)):
                         res.contract_repairs += 1
+                        consecutive_contract_repairs += 1
                         # Do not append either the rejected output or this synthetic correction to
                         # session["messages"].  The next successful tool/answer is the only assistant
                         # turn that becomes durable history.
@@ -2054,11 +2057,12 @@ class Harness:
                         self.recorder.log_turn(
                             rid, turn, "format_repair",
                             "response_contract_error; corrective request %d/%d" % (
-                                res.contract_repairs, self.max_contract_repairs),
+                                consecutive_contract_repairs, self.max_contract_repairs),
                             comp.usage.input_tokens, comp.usage.output_tokens,
                             meta.prefix_tokens, 0, cache_read=comp.usage.cache_read)
                         self._emit(
-                            "format_repair", attempt=res.contract_repairs,
+                            "format_repair", attempt=consecutive_contract_repairs,
+                            total_repairs=res.contract_repairs,
                             max=self.max_contract_repairs,
                             error_code=(getattr(comp, "error_code", "")
                                         or "response_contract_error"))
@@ -2103,8 +2107,8 @@ class Harness:
                         # Content-free terminal form: malformed assistant text must not enter the
                         # result, recorder, session checkpoint, or memory through an error string.
                         note = ("gave up after %d structured-response repair%s" % (
-                            res.contract_repairs, "" if res.contract_repairs == 1 else "s")
-                                if res.contract_repairs else
+                            consecutive_contract_repairs, "" if consecutive_contract_repairs == 1 else "s")
+                                if consecutive_contract_repairs else
                                 "structured-response repair unavailable at the request budget")
                         comp.text = "protocol: [%s] %sresponse_contract_error" % (
                             note, ("HTTP %d " % comp.error_status) if comp.error_status else "")
