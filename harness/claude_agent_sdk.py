@@ -356,8 +356,11 @@ class ClaudeAgentSdkProvider(ModelProvider):
         self._active_runs: dict[str, dict] = {}
 
     def _prompt(self, messages, tool_schemas) -> str:
-        # Reuse the already-tested text protocol; this is not the CLI transport.
-        return ClaudeCliProvider._prompt(self, messages, tool_schemas)
+        # ContextComposer already chooses which tool results to keep or elide.
+        # A second, silent 2,000-character cut here hid recent file/error tails
+        # and even the composer's omission markers from the model.
+        return ClaudeCliProvider._prompt(
+            self, messages, tool_schemas, tool_result_limit=None)
 
     @staticmethod
     def _plain_prompt(messages) -> str:
@@ -380,8 +383,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
     def _payload(self, messages, tool_schemas):
         """The model-facing prompt: a plain string, or ordered content blocks.
 
-        Text-only conversations keep the exact byte-identical string prompt, so
-        neither the response contract nor prompt caching moves.
+        Text-only conversations share the same serializer as the text portions
+        of multimodal requests, including composer-selected tool results.
         """
         entries = _attachments(messages)
         if not entries:

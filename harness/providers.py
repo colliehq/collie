@@ -1009,7 +1009,7 @@ class ClaudeCliProvider(ModelProvider):
             os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
         self.effort, _ = resolve_reasoning_effort(self.name, model, requested_effort)
 
-    def _prompt(self, messages, tool_schemas):
+    def _prompt(self, messages, tool_schemas, *, tool_result_limit=2000):
         # NB: collie's system prompt is passed via --system-prompt, NOT embedded here.
         # Embedding collie's agentic "use tools / run tests" language in the -p body made
         # Claude attempt real tool_use (→ error_max_turns); as the system role it's config
@@ -1028,7 +1028,10 @@ class ClaudeCliProvider(ModelProvider):
                 if m.get("content"):
                     L.append("Assistant: " + m["content"])
             elif r == "tool":
-                L.append("Result of %s: %s" % (m.get("name"), str(m.get("content", ""))[:2000]))
+                result = str(m.get("content", ""))
+                if tool_result_limit is not None:
+                    result = result[:tool_result_limit]
+                L.append("Result of %s: %s" % (m.get("name"), result))
         tools = "\n".join("- %s(%s): %s" % (
             t["name"], ",".join((t.get("input_schema", {}).get("properties", {}) or {}).keys()),
             t["description"]) for t in tool_schemas)
