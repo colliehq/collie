@@ -34,6 +34,11 @@
 - Resuming older tool-call records no longer repeatedly appends their history. Checkpoints
   retain original stored records and preserve new incoming metadata. Journal writes encode once
   before the existing atomic replace, reducing serialization overhead without changing the format.
+- A send refused because its conversation is already running becomes a queued follow-up.
+  Navigation, reloads and delayed save responses preserve its text, settings and attachments
+  without replacing newer drafts. Unconfirmed requests are retained for review; inbox receipts
+  clear uncertainty automatically, and retries reuse the same request identity. Missing attachments
+  require reattachment or explicit omission, and new-task recovery restores the captured setup.
 
 ## v0.25.0 — Tasks keep their place
 
