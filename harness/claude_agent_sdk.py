@@ -46,6 +46,15 @@ _MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
 # mode rejects 3/4 outright, so it can never silently answer in plain mode while
 # the parent believes a provider-enforced schema was in force.
 _STRUCTURED_FORMAT = "structured"
+_STRUCTURED_SYSTEM_SUFFIX = (
+    "\n\nCollie response transport: the executor tool names in the conversation "
+    "are actions for the Collie host, not SDK tools. Your only SDK tool is "
+    "StructuredOutput. Call it exactly once to provide every response, using "
+    '{"response":{"tool":"<executor name>","args":{...}}} for an action or '
+    '{"response":{"answer":"<final answer>"}} when the work is complete. '
+    "Do not call an executor tool directly and do not emit its JSON envelope "
+    "as plain text. The host will execute a validated action after this response."
+)
 
 
 # Provider-rejection categories the worker may report (the SDK's stable
@@ -385,7 +394,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
         # A second, silent 2,000-character cut here hid recent file/error tails
         # and even the composer's omission markers from the model.
         return ClaudeCliProvider._prompt(
-            self, messages, tool_schemas, tool_result_limit=None)
+            self, messages, tool_schemas, tool_result_limit=None,
+            structured_response=self.structured_output)
 
     @staticmethod
     def _plain_prompt(messages) -> str:
@@ -464,6 +474,7 @@ class ClaudeAgentSdkProvider(ModelProvider):
         }
         if structured_tools:
             request["protocol"] = 3
+            request["system_prompt"] += _STRUCTURED_SYSTEM_SUFFIX
             request["response_format"] = _STRUCTURED_FORMAT
             request["response_tools"] = list(structured_tools)
         if isinstance(payload, list):

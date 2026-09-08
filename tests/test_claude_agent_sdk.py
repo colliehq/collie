@@ -280,7 +280,8 @@ def test_provider_uses_collie_prompt_and_parses_tool_protocol():
     assert completion.request_count == 1
     assert completion.tool_calls[0].name == "grep"
     assert completion.api_key_source == "none"
-    assert provider.request["system_prompt"] == "COLLIE SYSTEM"
+    assert provider.request["system_prompt"].startswith("COLLIE SYSTEM\n\n")
+    assert "Your only SDK tool is StructuredOutput" in provider.request["system_prompt"]
     assert "# Tools the executor can run:" in provider.request["prompt"]
     # Tool-bearing calls are structured by default and name the real allowlist.
     assert provider.request["protocol"] == 3

@@ -122,7 +122,7 @@ def assert_no_base64_in_prose(request, *blocks):
 # --------------------------------------------------------------------------- #
 #  Text-only regression: the string protocol must not move at all.
 # --------------------------------------------------------------------------- #
-def test_text_only_conversation_keeps_the_byte_identical_string_protocol():
+def test_text_only_conversation_keeps_string_payload_with_formatter_contract():
     provider = _Provider()
     messages = [{"role": "user", "content": "fix it"}]
 
@@ -134,7 +134,7 @@ def test_text_only_conversation_keeps_the_byte_identical_string_protocol():
     assert provider.request["response_tools"] == ["grep"]
     assert "content" not in provider.request
     assert provider.request["prompt"] == ClaudeCliProvider._prompt(
-        provider, messages, TOOLS)
+        provider, messages, TOOLS, structured_response=True, tool_result_limit=None)
 
 
 def test_plain_text_only_prompt_is_unchanged_and_never_stringifies_blocks():
@@ -204,7 +204,8 @@ def test_harness_tool_protocol_survives_multimodal_transport():
     assert provider.request["protocol"] == 4
     assert provider.request["response_tools"] == ["grep"]
     assert images(provider.request) == [block]
-    assert provider.request["system_prompt"] == "COLLIE SYSTEM"
+    assert provider.request["system_prompt"].startswith("COLLIE SYSTEM\n\n")
+    assert "Your only SDK tool is StructuredOutput" in provider.request["system_prompt"]
     trailer = provider.request["content"][-1]["text"]
     assert "# Tools the executor can run:" in trailer
     assert "# RESPONSE FORMAT (strict):" in trailer

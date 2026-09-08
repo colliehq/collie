@@ -394,6 +394,9 @@ def test_tool_bearing_calls_are_structured_by_default_end_to_end():
     assert completion.request_count == 1
     assert provider.request["protocol"] == 3
     assert provider.request["response_tools"] == NAMES
+    assert 'Call the StructuredOutput formatter exactly once' in provider.request['prompt']
+    assert 'Reply with EXACTLY ONE JSON object and nothing else' not in provider.request['prompt']
+    assert provider.request['system_prompt'].startswith('SYS\n\n')
 
 
 def test_structured_answer_reaches_the_caller_and_is_streamed_once():

@@ -1009,7 +1009,8 @@ class ClaudeCliProvider(ModelProvider):
             os.environ.get("COLLIE_REASONING_EFFORT") or os.environ.get("COLLIE_EFFORT"))
         self.effort, _ = resolve_reasoning_effort(self.name, model, requested_effort)
 
-    def _prompt(self, messages, tool_schemas, *, tool_result_limit=2000):
+    def _prompt(self, messages, tool_schemas, *, tool_result_limit=2000,
+                structured_response=False):
         # NB: collie's system prompt is passed via --system-prompt, NOT embedded here.
         # Embedding collie's agentic "use tools / run tests" language in the -p body made
         # Claude attempt real tool_use (→ error_max_turns); as the system role it's config
@@ -1040,14 +1041,23 @@ class ClaudeCliProvider(ModelProvider):
               "You cannot inspect or change the workspace except by emitting a tool JSON below. "
               "Until the requested work has actually been performed, an answer JSON is a failure. "
               "On the first turn of a coding task, inspect the workspace with grep, glob, or "
-              "read_file; use edit_file/write_file to make the change before answering.", "",
-              "# RESPONSE FORMAT (strict):",
+              "read_file; use edit_file/write_file to make the change before answering.", ""]
+        if structured_response:
+            L += ["# RESPONSE FORMAT (strict):",
+                  "Call the StructuredOutput formatter exactly once. Its input must contain "
+                  "one response object. Do not emit this object as plain text.",
+                  'To request a host tool: {"response":{"tool":"<name>","args":{...}}}',
+                  'To finish: {"response":{"answer":"<final answer>"}}',
+                  "The listed executor tools run in Collie after this response; they are not "
+                  "SDK tools you can call directly. Your only SDK tool is StructuredOutput."]
+        else:
+            L += ["# RESPONSE FORMAT (strict):",
               "Reply with EXACTLY ONE JSON object and nothing else — no prose, no markdown "
               "fence, no explanation before or after.",
               'To run a tool:      {"tool":"<name>","args":{...}}',
               'To finish (only when the task is fully done): {"answer":"<final answer>"}',
               "A strong model tends to explain instead of emitting JSON — do NOT. One JSON "
-              "object, that is your entire reply. Respond to the latest User message now."]
+                  "object, that is your entire reply. Respond to the latest User message now."]
         return "\n".join(L)
 
     def _call(self, prompt, system):
